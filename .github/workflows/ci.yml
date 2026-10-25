@@ -1,0 +1,32 @@
+name: Clinical workflow
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: engine_test
+          POSTGRES_PASSWORD: synthetic-ci-only
+          POSTGRES_DB: engine_test
+        ports: ['55473:5432']
+        options: >-
+          --health-cmd "pg_isready -U engine_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://engine_test:synthetic-ci-only@127.0.0.1:55473/engine_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - run: node scripts/test_practice_ui.cjs
+      - run: for file in web/*.js; do node --check "$file" || exit; done

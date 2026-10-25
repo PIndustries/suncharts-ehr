@@ -1,0 +1,13 @@
+# SunCharts Engine
+
+Standalone clinical service. Engine source is AGPL-3.0-only; files under api/ are
+Apache-2.0. Do not copy proprietary source or third-party application code here
+without the necessary rights and compatible licensing.
+Clients communicate through HTTP; do not link this crate into proprietary apps.
+Use synthetic data only. Every clinical query must scope by trusted tenant and
+every state mutation and its audit event must commit atomically. Signed note
+content is immutable; corrections append attributed amendments. Never log JWTs,
+patient content, database URLs or credentials. Run cargo fmt --check,
+cargo clippy --all-targets -- -D warnings, and the PostgreSQL integration tests.
+Keep existing integrations operational in the separate SunCharts application repository.
+No deployment, public publication or production-data migration is part of bootstrap.
