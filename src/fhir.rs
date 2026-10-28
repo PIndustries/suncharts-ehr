@@ -21,6 +21,8 @@ use uuid::Uuid;
 
 #[path = "fhir_documents.rs"]
 mod documents;
+#[path = "fhir_immunizations.rs"]
+mod immunizations;
 #[path = "fhir_orders.rs"]
 mod orders;
 #[path = "fhir_practice.rs"]
@@ -61,6 +63,7 @@ pub fn router() -> Router<State> {
         .merge(practice::routes())
         .merge(orders::routes())
         .merge(documents::routes())
+        .merge(immunizations::routes())
 }
 pub struct Fhir(pub Value);
 fn search_bundle(links: Vec<Value>, entries: Vec<Value>) -> Fhir {
@@ -106,6 +109,11 @@ impl IntoResponse for Failure {
                 StatusCode::PRECONDITION_FAILED,
                 "conflict",
                 "Patient identity changed; reload before saving",
+            ),
+            Error::Conflict("immunization changed; reload before saving") => (
+                StatusCode::PRECONDITION_FAILED,
+                "conflict",
+                "Immunization changed; reload before saving",
             ),
             Error::Conflict("clinical entry changed; reload before saving") => (
                 StatusCode::PRECONDITION_FAILED,
@@ -176,11 +184,12 @@ async fn metadata(ExtractState(s): ExtractState<State>) -> std::result::Result<F
     for kind in practice::RESOURCES {
         resources.push(practice::capability(kind));
     }
+    resources.push(immunizations::capability());
     for kind in ["DocumentReference", "Binary", "MedicationRequest"] {
         resources.push(documents::capability(kind));
     }
     Ok(Fhir(
-        json!({"resourceType":"CapabilityStatement","status":"draft","date":"2026-10-27","kind":"instance","software":{"name":"SunCharts EHR","version":env!("CARGO_PKG_VERSION")},"implementation":{"description":"Development preview: native document/prescription projections and bounded identity, clinical-list and local draft-order writes","url":format!("{base}/fhir")},"fhirVersion":"4.0.1","format":["json"],"rest":[{"mode":"server","security":{"service":[{"coding":[{"system":"http://terminology.hl7.org/CodeSystem/restful-security-service","code":"OAuth"}]}],"description":"Staff OAuth2 clinical.read for clinical projections, billing.read for Coverage, clinical.write for bounded owner/clinician writes; standalone staff sessions retain role checks. Patient-role credentials cannot use this boundary. SMART, US Core and Bulk Data conformance are not claimed."},"resource":resources}]}),
+        json!({"resourceType":"CapabilityStatement","status":"draft","date":"2026-10-28","kind":"instance","software":{"name":"SunCharts EHR","version":env!("CARGO_PKG_VERSION")},"implementation":{"description":"Development preview: native document/prescription projections and bounded identity, clinical-list and local draft-order writes","url":format!("{base}/fhir")},"fhirVersion":"4.0.1","format":["json"],"rest":[{"mode":"server","security":{"service":[{"coding":[{"system":"http://terminology.hl7.org/CodeSystem/restful-security-service","code":"OAuth"}]}],"description":"Staff OAuth2 clinical.read for clinical projections, billing.read for Coverage, clinical.write for bounded owner/clinician writes (also nurse for Immunization); standalone staff sessions retain role checks. Patient-role credentials cannot use this boundary. SMART, US Core and Bulk Data conformance are not claimed."},"resource":resources}]}),
     ))
 }
 async fn read(

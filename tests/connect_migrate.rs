@@ -725,6 +725,7 @@ async fn fhir_patient_boundary_is_scoped_and_honest() {
             "DiagnosticReport",
             "DocumentReference",
             "Encounter",
+            "Immunization",
             "Location",
             "MedicationRequest",
             "MedicationStatement",

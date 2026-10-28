@@ -167,7 +167,7 @@ fn decrypt_aad(key: &[u8], context: &str, encrypted: &[u8]) -> Result<Secret> {
     Ok(Secret(Zeroizing::new(value)))
 }
 pub(crate) async fn credential_storage_ready(pool: &PgPool) -> Result<bool> {
-    let saved:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM edi_provider_settings) OR EXISTS(SELECT 1 FROM payment_credentials) OR EXISTS(SELECT 1 FROM reminder_credentials) OR EXISTS(SELECT 1 FROM connect_service_credentials) OR EXISTS(SELECT 1 FROM connect_onboarding_intents) OR EXISTS(SELECT 1 FROM referral_delivery_destinations WHERE encrypted_credential IS NOT NULL)").fetch_one(pool).await?;
+    let saved:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM edi_provider_settings) OR EXISTS(SELECT 1 FROM payment_credentials) OR EXISTS(SELECT 1 FROM reminder_credentials) OR EXISTS(SELECT 1 FROM connect_service_credentials) OR EXISTS(SELECT 1 FROM connect_onboarding_intents) OR EXISTS(SELECT 1 FROM referral_delivery_destinations WHERE encrypted_credential IS NOT NULL) OR EXISTS(SELECT 1 FROM erx_setup_requests) OR EXISTS(SELECT 1 FROM erx_connections WHERE encrypted_credentials IS NOT NULL) OR EXISTS(SELECT 1 FROM erx_prescribers WHERE encrypted_credentials IS NOT NULL) OR EXISTS(SELECT 1 FROM erx_setup_history WHERE encrypted_credentials IS NOT NULL)").fetch_one(pool).await?;
     Ok(!saved || existing_key().is_ok())
 }
 pub(crate) async fn seal_secret(
@@ -177,7 +177,7 @@ pub(crate) async fn seal_secret(
     purpose: &str,
     secret: &str,
 ) -> Result<Vec<u8>> {
-    let saved:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM edi_provider_settings) OR EXISTS(SELECT 1 FROM payment_credentials) OR EXISTS(SELECT 1 FROM reminder_credentials) OR EXISTS(SELECT 1 FROM connect_service_credentials) OR EXISTS(SELECT 1 FROM connect_onboarding_intents) OR EXISTS(SELECT 1 FROM referral_delivery_destinations WHERE encrypted_credential IS NOT NULL)").fetch_one(pool).await?;
+    let saved:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM edi_provider_settings) OR EXISTS(SELECT 1 FROM payment_credentials) OR EXISTS(SELECT 1 FROM reminder_credentials) OR EXISTS(SELECT 1 FROM connect_service_credentials) OR EXISTS(SELECT 1 FROM connect_onboarding_intents) OR EXISTS(SELECT 1 FROM referral_delivery_destinations WHERE encrypted_credential IS NOT NULL) OR EXISTS(SELECT 1 FROM erx_setup_requests) OR EXISTS(SELECT 1 FROM erx_connections WHERE encrypted_credentials IS NOT NULL) OR EXISTS(SELECT 1 FROM erx_prescribers WHERE encrypted_credentials IS NOT NULL) OR EXISTS(SELECT 1 FROM erx_setup_history WHERE encrypted_credentials IS NOT NULL)").fetch_one(pool).await?;
     let key = if saved {
         existing_key()?
     } else {
@@ -411,7 +411,7 @@ async fn create(
     let mut tx = db(&s)?.begin().await?;
     crate::billing::tenant_lock(&mut tx, &a).await?;
     validate_partner(&mut tx, &a, &v).await?;
-    let any_saved: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM edi_provider_settings) OR EXISTS(SELECT 1 FROM payment_credentials) OR EXISTS(SELECT 1 FROM reminder_credentials) OR EXISTS(SELECT 1 FROM connect_service_credentials) OR EXISTS(SELECT 1 FROM connect_onboarding_intents) OR EXISTS(SELECT 1 FROM referral_delivery_destinations WHERE encrypted_credential IS NOT NULL)")
+    let any_saved: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM edi_provider_settings) OR EXISTS(SELECT 1 FROM payment_credentials) OR EXISTS(SELECT 1 FROM reminder_credentials) OR EXISTS(SELECT 1 FROM connect_service_credentials) OR EXISTS(SELECT 1 FROM connect_onboarding_intents) OR EXISTS(SELECT 1 FROM referral_delivery_destinations WHERE encrypted_credential IS NOT NULL) OR EXISTS(SELECT 1 FROM erx_setup_requests) OR EXISTS(SELECT 1 FROM erx_connections WHERE encrypted_credentials IS NOT NULL) OR EXISTS(SELECT 1 FROM erx_prescribers WHERE encrypted_credentials IS NOT NULL) OR EXISTS(SELECT 1 FROM erx_setup_history WHERE encrypted_credentials IS NOT NULL)")
         .fetch_one(&mut *tx)
         .await?;
     let master = if any_saved {

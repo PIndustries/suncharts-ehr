@@ -233,7 +233,7 @@ async fn native_clinical_fhir_is_scoped_paged_read_only_and_semantically_honest(
     let metadata = call(&r, None, "/fhir/metadata").await.1;
     assert_eq!(
         metadata["rest"][0]["resource"].as_array().unwrap().len(),
-        16
+        17
     );
     let audits:i64=sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE tenant_id=$1 AND action LIKE 'patient.fhir_clinical%'").bind(a.tenant_id).fetch_one(&db).await.unwrap();
     assert!(audits > 10);

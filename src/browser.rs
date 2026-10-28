@@ -78,6 +78,20 @@ impl BrowserAuth {
         let row:Option<(Uuid,Uuid,String)>=sqlx::query_as("SELECT u.id,u.tenant_id,u.role FROM browser_sessions s JOIN browser_users u ON u.id=s.user_id AND u.tenant_id=s.tenant_id WHERE s.token_hash=$1 AND s.expires_at>now() AND NOT u.disabled")
             .bind(hash(&token)).fetch_optional(&self.db).await?;
         let (sub, tenant_id, role) = row.ok_or(Error::Unauthorized)?;
+        if h.contains_key("x-suncharts-staff-context") {
+            let mut values = h.get_all("x-suncharts-staff-context").iter();
+            let context = values.next().and_then(|v| v.to_str().ok());
+            let parsed = context
+                .and_then(|v| v.split_once(':'))
+                .and_then(|(tenant, user)| {
+                    Some((tenant.parse::<Uuid>().ok()?, user.parse::<Uuid>().ok()?))
+                });
+            if values.next().is_some() || parsed != Some((tenant_id, sub)) {
+                return Err(Error::Conflict(
+                    "Staff account changed. Sign in again to continue.",
+                ));
+            }
+        }
         let role = serde_json::from_value(json!(role)).map_err(|_| Error::Unauthorized)?;
         let now = chrono::Utc::now().timestamp();
         Ok(Actor {

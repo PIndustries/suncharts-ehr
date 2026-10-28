@@ -15,7 +15,7 @@ function captureVisitDrafts(includeRooming=true){
  if(typeof captureReferralDraft==='function')captureReferralDraft();
  if(typeof captureOrderDiagnosisLinkDraft==='function')captureOrderDiagnosisLinkDraft();
  if(typeof captureAccountDiagnosisLinkDraft==='function')captureAccountDiagnosisLinkDraft();
- if(typeof captureHealthHistoryDraft==='function')captureHealthHistoryDraft();
+ if(typeof captureHealthHistoryDraft==='function')captureHealthHistoryDraft(); if(typeof captureImmunizationDraft==='function')captureImmunizationDraft();
  if(includeRooming&&typeof captureRoomingDraft==='function')captureRoomingDraft();
  if(includeRooming&&typeof captureVisitDiagnosisDraft==='function')captureVisitDiagnosisDraft();
  if(typeof captureCheckoutDraft==='function')captureCheckoutDraft();
@@ -40,13 +40,17 @@ function updateDraftStatus(){
 
 let me, patients = [], cursor, selected, workspace, activeVisit, busy = false;
 async function api(path, method = 'GET', body, version) {
+  const requestIdentity = me;
   const headers = {};
+  if(me?.tenant_id&&me?.user_id)headers['X-SunCharts-Staff-Context']=`${me.tenant_id}:${me.user_id}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (version !== undefined) headers['If-Match'] = `"${version}"`;
   let response;
   try { response = await fetch(path, {method, headers, body: body === undefined ? undefined : JSON.stringify(body), credentials:'same-origin', cache:'no-store'}); }
   catch { throw new Error(method === 'GET' ? 'Connection interrupted. Please try loading again.' : 'Connection interrupted. This change may have saved. Reload the patient before trying again.'); }
   const data = await response.json().catch(() => ({}));
+  if(me!==requestIdentity)throw new Error('Staff account changed. Sign in again to continue.');
+  if(response.status===409&&data.message==='Staff account changed. Sign in again to continue.'){signInScreen();$('login-error').textContent=data.message;throw new Error(data.message);}
   if (response.status === 401) { signInScreen(); throw new Error('Please sign in to continue.'); }
   if (!response.ok) throw new Error(data.message || (response.status === 409 ? 'This visit changed. Reload it before saving.' : 'Unable to complete this action. Please check your entries.'));
   return data;
@@ -63,7 +67,7 @@ function signInScreen() {
   if(typeof clearReferralSession==='function')clearReferralSession();
   if(typeof resetOrderDiagnosisLinkDrafts==='function')resetOrderDiagnosisLinkDrafts();
   if(typeof resetAccountDiagnosisLinkDrafts==='function')resetAccountDiagnosisLinkDrafts();
-  if(typeof clearHealthHistorySession==='function')clearHealthHistorySession();
+  if(typeof clearHealthHistorySession==='function')clearHealthHistorySession(); if(typeof clearImmunizationSession==='function')clearImmunizationSession();
   visitDrafts.clear();
   if(typeof roomingDrafts!=='undefined'){roomingDrafts.clear();roomingPending.clear();roomingGeneration++;}
   if(typeof visitDiagnosisDrafts!=='undefined'){visitDiagnosisDrafts.clear();visitDiagnosisStates.clear();visitDiagnosisPending.clear();visitDiagnosisGeneration++;}
@@ -146,13 +150,13 @@ function renderChart() {
   if(typeof captureReferralDraft==='function')captureReferralDraft();
   if(typeof captureOrderDiagnosisLinkDraft==='function')captureOrderDiagnosisLinkDraft();
   if(typeof captureAccountDiagnosisLinkDraft==='function')captureAccountDiagnosisLinkDraft();
-  if(typeof captureHealthHistoryDraft==='function')captureHealthHistoryDraft();
+  if(typeof captureHealthHistoryDraft==='function')captureHealthHistoryDraft(); if(typeof captureImmunizationDraft==='function')captureImmunizationDraft();
   const p=workspace.patient;
   const allergies=workspace.clinical.items.filter(e=>e.kind==='allergy'&&e.content.status==='active'&&!['refuted','entered_in_error'].includes(e.content.verification));
   const allergyReview=workspace.clinical.reviews.find(r=>r.kind==='allergy');
   const allergyText=allergies.length?allergies.map(e=>`${e.content.title} (${e.content.verification})`).join(', '):allergyReview?.review_state==='no_known'?'No known allergies — reviewed':'Allergy status not confirmed';
   if(typeof capturePrescribingDraft==='function')capturePrescribingDraft();
-  const tabs=[['overview','Summary'],['profile','Patient details'],['clinical','Clinical lists'],['prescribing','Prescribing'],['history','Surgical & dental history'],['documents','Documents'],['referrals','Referrals'],['orders','Orders & results'],['visits','Encounters'],['checkout','Checkout & AVS'],['billing','Financials'],['source','Source records']];
+  const tabs=[['overview','Summary'],['profile','Patient details'],['clinical','Clinical lists'],['prescribing','Prescribing'],['immunizations','Immunizations'],['history','Surgical & dental history'],['documents','Documents'],['referrals','Referrals'],['orders','Orders & results'],['visits','Encounters'],['checkout','Checkout & AVS'],['billing','Financials'],['source','Source records']];
   const preferred=workspace.demographics?.content?.preferred_name;
   const birth=new Date(p.birth_date+'T12:00:00'),now=new Date();let age=now.getFullYear()-birth.getFullYear();if(now.getMonth()<birth.getMonth()||(now.getMonth()===birth.getMonth()&&now.getDate()<birth.getDate()))age--;
   const encounter=activeVisit?workspace.appointments.find(a=>a.id===activeVisit.appointment_id):null;
@@ -164,7 +168,7 @@ function renderChart() {
   <div id="visit-checkout"><div class="panel"><h2>Checkout & after-visit summary</h2><p>Select an encounter from Encounters to review its handoff and follow-up.</p></div></div>
   ${patientAppointmentWorkspace()}
   <div id="visits-panel" class="panel"><div class="section-head"><h2>Visits</h2><span class="pill">${workspace.visits.length}</span></div>${workspace.visits.map(v=>`<div class="timeline-row"><div><p>${v.status==='signed'?'Signed visit':'Visit in progress'}</p><small>${v.signed_at?esc(date(v.signed_at)):'Documentation in progress'}</small></div><button data-visit="${esc(v.id)}">${v.status==='signed'?'View record':'Open visit'}</button></div>`).join('')||'<p class="muted">Your first visit will appear here after check-in.</p>'}</div>`;
-  if(typeof renderPrescribing==='function')void renderPrescribing(); renderClinical(); renderLabs(); renderBilling(); renderHistory(); if(typeof renderHealthHistory==='function')void renderHealthHistory(); if(typeof renderDocuments==='function')void renderDocuments(); if(typeof renderPatientIdentity==='function')void renderPatientIdentity(); if(typeof renderReferrals==='function')void renderReferrals(); if(typeof renderDemographics==='function')renderDemographics(selected,workspace.demographics); if(activeVisit) renderVisit(false); applyChartSection();
+  if(typeof renderPrescribing==='function')void renderPrescribing(); renderClinical(); renderLabs(); renderBilling(); renderHistory(); if(typeof renderHealthHistory==='function')void renderHealthHistory(); if(typeof renderImmunizations==='function')void renderImmunizations(); if(typeof renderDocuments==='function')void renderDocuments(); if(typeof renderPatientIdentity==='function')void renderPatientIdentity(); if(typeof renderReferrals==='function')void renderReferrals(); if(typeof renderDemographics==='function')renderDemographics(selected,workspace.demographics); if(activeVisit) renderVisit(false); applyChartSection();
 }
 function canRegisterPatient(){return ['owner','clinician','front_desk'].includes(me?.role);}
 function isRoomingStaff(){return ['nurse','medical_assistant'].includes(me?.role);}
@@ -246,7 +250,7 @@ function chartOverview(){
  return `<section id="chart-overview" class="chart-overview-workbench"><div class="chart-primary-column"><section class="panel chart-summary-section"><div class="section-head"><h2>Clinical summary</h2><button type="button" class="text-button" data-chart-section="clinical">Manage clinical lists →</button></div><div class="clinical-summary-columns"><section><h3>Active problems <span class="pill">${problems.length}</span></h3>${problemRows||'<div class="chart-empty-row">No active problems recorded.<small>Review the clinical list to confirm status.</small></div>'}${problems.length>6?'<button type="button" class="text-button" data-chart-section="clinical">View all recorded problems</button>':''}</section><section><h3>Medication statements <span class="pill">${meds.length}</span></h3>${medRows||'<div class="chart-empty-row">No active medications recorded.<small>Review the medication list to confirm status.</small></div>'}${meds.length>6?'<button type="button" class="text-button" data-chart-section="clinical">View all recorded medications</button>':''}</section></div></section><section class="panel chart-summary-section"><div class="section-head"><h2>Results awaiting review <span class="pill">${reports.length}</span></h2><button type="button" class="text-button" data-chart-section="orders">Orders & results →</button></div>${reports.length?`<table class="chart-results-table"><thead><tr><th>Report / laboratory</th><th>Status</th><th>Reported</th></tr></thead><tbody>${reports.slice(0,5).map(r=>`<tr><td><strong>${esc(r.content.accession)}</strong><small>${esc(r.content.performing_lab||'Laboratory not recorded')}</small></td><td>${critical(r)?'<span class="critical-label">Critical</span>':esc(r.status)}<small>Revision ${r.version}</small></td><td>${esc(date(r.content.reported_at))}</td></tr>`).join('')}</tbody></table>`:'<div class="chart-empty-row">No unacknowledged report revisions returned.<small>Orders and follow-up retain independent statuses.</small></div>'}<div class="chart-summary-footer">${workspace.labs.orders.length} recorded orders · ${reports.length} revisions awaiting acknowledgment</div></section></div><aside class="chart-secondary-column"><section class="panel chart-summary-section"><div class="section-head"><h2>Recorded vitals</h2><button type="button" class="text-button" data-encounter-step="vitals">Open →</button></div>${observations.length?`<dl class="chart-vital-list">${observations.map(([label,value,unit])=>`<div><dt>${label}</dt><dd>${esc(value)} <small>${unit}</small></dd></div>`).join('')}</dl><p class="chart-summary-footer">${recordedVisit.id===activeVisit?.id?'Selected encounter':'Most recent encounter with saved vitals'} · ${esc(encounterDateLabel(recordedVisit))}</p>`:'<div class="chart-empty-row">No saved vitals found.<small>Open an encounter to record observations.</small></div>'}</section><section class="panel chart-summary-section"><div class="section-head"><h2>Encounter history</h2><button type="button" class="text-button" data-chart-section="visits">View all →</button></div>${workspace.visits.slice(0,4).map(v=>`<div class="chart-history-row"><div><strong>${v.status==='signed'?'Signed encounter':'In progress'}</strong><small>${esc(encounterDateLabel(v))}</small></div><button type="button" class="quiet" data-visit="${esc(v.id)}">Open</button></div>`).join('')||'<div class="chart-empty-row">No native encounters recorded.</div>'}<p class="chart-summary-footer">${workspace.visits.length} encounters loaded${workspace.visits.length>=100?' · latest 100 shown':''}</p></section></aside></section>`;
 }
 function applyChartSection(){
- const groups={overview:['chart-overview'],profile:['patient-identity-panel','patient-demographics'],clinical:['clinical-lists'],prescribing:['prescribing-panel'],history:['health-history-panel'],documents:['documents-panel'],referrals:['referrals-panel'],orders:['lab-workspace'],visits:['appointments-panel','visits-panel','visit-editor'],billing:['billing-workspace'],checkout:['visit-checkout'],source:['source-history']};
+ const groups={overview:['chart-overview'],profile:['patient-identity-panel','patient-demographics'],clinical:['clinical-lists'],prescribing:['prescribing-panel'],immunizations:['immunizations-panel'],history:['health-history-panel'],documents:['documents-panel'],referrals:['referrals-panel'],orders:['lab-workspace'],visits:['appointments-panel','visits-panel','visit-editor'],billing:['billing-workspace'],checkout:['visit-checkout'],source:['source-history']};
  for(const [key,ids] of Object.entries(groups))for(const id of ids)if($(id))$(id).hidden=key!==chartSection;
  document.querySelectorAll('.chart-tabs button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.chartSection===chartSection)));
 }
@@ -256,8 +260,8 @@ function showChartSection(key){
  if(typeof captureReferralDeliveryDraft==='function')captureReferralDeliveryDraft();
  if(typeof captureDocumentDraft==='function')captureDocumentDraft();
  if(typeof captureReferralDraft==='function')captureReferralDraft();
- if(typeof captureHealthHistoryDraft==='function')captureHealthHistoryDraft();
- if(!['overview','profile','clinical','prescribing','history','documents','referrals','orders','visits','checkout','billing','source'].includes(key))return;
+ if(typeof captureHealthHistoryDraft==='function')captureHealthHistoryDraft(); if(typeof captureImmunizationDraft==='function')captureImmunizationDraft();
+ if(!['overview','profile','clinical','prescribing','immunizations','history','documents','referrals','orders','visits','checkout','billing','source'].includes(key))return;
  chartSection=key;applyChartSection();
 }
 const formData=f=>Object.fromEntries(new FormData(f));
@@ -370,4 +374,4 @@ $('search').addEventListener('input',renderPatients);
 document.addEventListener('DOMContentLoaded',()=>enter().catch(()=>signInScreen()),{once:true});
 
 document.addEventListener('input',e=>{if(e.target.closest?.('#note-form,#vitals-form'))captureVisitDrafts();});
-window.addEventListener('beforeunload',e=>{captureVisitDrafts();if((typeof prescribingHaveDrafts==='function'&&prescribingHaveDrafts())||(typeof portalStaffHasDrafts==='function'&&portalStaffHasDrafts())||(typeof supportHasDrafts==='function'&&supportHasDrafts())||(typeof patientIdentityHasDrafts==='function'&&patientIdentityHasDrafts())||(typeof referralDeliveryHasDrafts==='function'&&referralDeliveryHasDrafts())||(typeof documentsHaveDrafts==='function'&&documentsHaveDrafts())||(typeof referralHasDrafts==='function'&&referralHasDrafts())||(typeof orderDiagnosisLinkDrafts!=='undefined'&&orderDiagnosisLinkDrafts.size)||(typeof accountDiagnosisLinkDrafts!=='undefined'&&accountDiagnosisLinkDrafts.size)||(typeof healthHistoryHasDrafts==='function'&&healthHistoryHasDrafts())||visitDrafts.size||(typeof visitDiagnosisDrafts!=='undefined'&&visitDiagnosisDrafts.size)||(typeof roomingDrafts!=='undefined'&&roomingDrafts.size)||(typeof checkoutDrafts!=='undefined'&&checkoutDrafts.size)){e.preventDefault();e.returnValue='';}});
+window.addEventListener('beforeunload',e=>{captureVisitDrafts();if((typeof prescribingHaveDrafts==='function'&&prescribingHaveDrafts())||(typeof portalStaffHasDrafts==='function'&&portalStaffHasDrafts())||(typeof supportHasDrafts==='function'&&supportHasDrafts())||(typeof patientIdentityHasDrafts==='function'&&patientIdentityHasDrafts())||(typeof referralDeliveryHasDrafts==='function'&&referralDeliveryHasDrafts())||(typeof documentsHaveDrafts==='function'&&documentsHaveDrafts())||(typeof referralHasDrafts==='function'&&referralHasDrafts())||(typeof orderDiagnosisLinkDrafts!=='undefined'&&orderDiagnosisLinkDrafts.size)||(typeof accountDiagnosisLinkDrafts!=='undefined'&&accountDiagnosisLinkDrafts.size)||(typeof healthHistoryHasDrafts==='function'&&healthHistoryHasDrafts())||(typeof immunizationHasDrafts==='function'&&immunizationHasDrafts())||visitDrafts.size||(typeof visitDiagnosisDrafts!=='undefined'&&visitDiagnosisDrafts.size)||(typeof roomingDrafts!=='undefined'&&roomingDrafts.size)||(typeof checkoutDrafts!=='undefined'&&checkoutDrafts.size)){e.preventDefault();e.returnValue='';}});

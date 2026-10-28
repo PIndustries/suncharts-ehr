@@ -17,7 +17,8 @@ route is not evidence of a complete practice workflow.
   broader clinician-controlled results/document release.
 - Connect local prescription orders to enrolled eRx networks, EPCS, medication
   safety services, refill messages and dispensing reconciliation.
-- Implement immunizations and registry exchange.
+- Expand documented immunizations with validated vaccine catalogs, forecasting,
+  inventory and enrolled registry exchange.
 - Expand results follow-up, escalation, general staff inbox and specialty workflows.
 
 ## Practice and revenue cycle

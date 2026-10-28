@@ -33,6 +33,7 @@ jobs:
       - run: node scripts/test_rooming_ui.cjs
       - run: node scripts/test_visit_diagnoses_ui.cjs
       - run: node scripts/test_health_history_ui.cjs
+      - run: node scripts/test_immunizations_ui.cjs
       - run: node scripts/test_documents_ui.cjs
       - run: node scripts/test_referrals_ui.cjs
       - run: node scripts/test_referral_delivery_ui.cjs
@@ -45,6 +46,8 @@ jobs:
       - run: node scripts/test_connect_services_ui.cjs
       - run: node scripts/test_connect_updates_ui.cjs
       - run: node scripts/test_prescribing_ui.cjs
+      - run: node scripts/test_staff_context_ui.cjs
+      - run: node scripts/test_erx_setup_ui.cjs
       - run: node scripts/test_patient_portal_ui.cjs
       - run: node scripts/test_provider_settings_ui.cjs
       - run: node scripts/test_checkout_ui.cjs

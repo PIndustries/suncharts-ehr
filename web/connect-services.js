@@ -91,8 +91,10 @@ function captureSupportDrafts(){
 }
 function clearSupportSession(){supportNavigationGeneration++;supportRequestGeneration++;supportLiveGeneration++;supportDrafts.clear();}
 function supportHasDrafts(){rememberSupportForm($('support-create-form'));rememberSupportForm($('support-reply-form'));return supportDrafts.size>0;}
-function supportTicketRows(data){return (data.items||[]).map(t=>`<tr><td>${esc(t.subject)}</td><td>${esc(scheduleLabel(t.status))}</td><td>${esc(date(t.updated_at||t.created_at))}</td><td><button type="button" data-support-ticket="${esc(t.id)}">Open request</button></td></tr>`).join('')||'<tr><td colspan="4">No support requests for this installation.</td></tr>';}
-function supportMessageRows(data){const t=data.ticket||data;return `${(data.messages_has_more||t.messages_has_more)?'<p class="notice">Showing the latest 200 messages. Earlier conversation history is retained in SunCharts.</p>':''}${(data.messages||t.messages||[]).map(m=>`<article class="billing-section" data-support-message="${esc(m.id||'')}"><b>${esc(m.author==='support'?'SunCharts support':m.author_kind||m.author_role||'Practice')}</b><small> · ${esc(date(m.created_at))}</small><p class="support-message-body">${esc(m.message||m.body||'')}</p></article>`).join('')||'<p class="muted">No conversation messages returned.</p>'}`;}
+function supportProviderLabel(ticket){const provider=ticket?.support_provider;return provider&&typeof provider==='object'?(typeof provider.display_name==='string'&&provider.display_name.trim()?'Support provider: '+provider.display_name.trim().slice(0,200):'Assigned support provider'):'SunCharts support';}
+function supportMessageAuthor(message){const provider=message.support_provider;if(message.actor_kind==='partner'||provider){const name=typeof message.author_label==='string'&&message.author_label.trim()?message.author_label.trim():typeof provider?.display_name==='string'&&provider.display_name.trim()?provider.display_name.trim():'Support provider';return name==='Support provider'?name:name.slice(0,200)+' · Support provider';}if(message.actor_kind==='platform'||message.author==='support')return typeof message.author_label==='string'&&message.author_label.trim()?message.author_label.trim().slice(0,200):'SunCharts support';return message.actor_kind==='installation'?'Practice':message.author_kind||message.author_role||'Practice';}
+function supportTicketRows(data){return (data.items||[]).map(t=>`<tr><td>${esc(t.subject)}<small>${esc(supportProviderLabel(t))}</small></td><td>${esc(scheduleLabel(t.status))}</td><td>${esc(date(t.updated_at||t.created_at))}</td><td><button type="button" data-support-ticket="${esc(t.id)}">Open request</button></td></tr>`).join('')||'<tr><td colspan="4">No support requests for this installation.</td></tr>';}
+function supportMessageRows(data){const t=data.ticket||data;return `${(data.messages_has_more||t.messages_has_more)?'<p class="notice">Showing the latest 200 messages. Earlier conversation history is retained in SunCharts.</p>':''}${(data.messages||t.messages||[]).map(m=>`<article class="billing-section" data-support-message="${esc(m.id||'')}"><b>${esc(supportMessageAuthor(m))}</b><small> · ${esc(date(m.created_at))}</small><p class="support-message-body">${esc(m.message||m.body||'')}</p></article>`).join('')||'<p class="muted">No conversation messages returned.</p>'}`;}
 function supportReplyForm(t){
  const draft=supportDrafts.get(t.id),closed=t.status==='closed';
  if(closed&&!draft?.message)return '<p>This request is closed. Start a new request if you need further help.</p>';
@@ -111,7 +113,7 @@ async function showSupportTicket(id){
  const data=await api(`${connectServicesApi}/tickets/${id}`),t=data.ticket||data;
  if(me!==identity||generation!==supportRequestGeneration||navigation!==supportNavigationGeneration)return;
  showTool('Support tickets');
- $('tools').innerHTML=`<section id="support-ticket-detail" data-ticket="${esc(id)}"><div class="section-head"><div><h2 data-support-subject>${esc(t.subject)}</h2><p data-support-status>${esc(scheduleLabel(t.status))}</p></div><button type="button" data-support-tickets>All requests</button></div><div class="support-messages">${supportMessageRows(data)}</div><div class="support-reply-area">${supportReplyForm(t)}</div></section>`;
+ $('tools').innerHTML=`<section id="support-ticket-detail" data-ticket="${esc(id)}"><div class="section-head"><div><h2 data-support-subject>${esc(t.subject)}</h2><p data-support-status>${esc(scheduleLabel(t.status))}</p><p data-support-provider>${esc(supportProviderLabel(t))}</p></div><button type="button" data-support-tickets>All requests</button></div><div class="support-messages">${supportMessageRows(data)}</div><div class="support-reply-area">${supportReplyForm(t)}</div></section>`;
  if(typeof refreshSupportViews==='function')void refreshSupportViews({resource_id:id}).catch(()=>{});
  if(typeof markConnectTicketRead==='function'&&document.visibilityState!=='hidden')void markConnectTicketRead(id,(data.messages||t.messages||[]).map(message=>message.id));
 }
@@ -124,6 +126,7 @@ async function refreshSupportViews(change){
   rememberSupportForm($('support-reply-form'));
   detail.querySelector('[data-support-subject]').textContent=t.subject;
   detail.querySelector('[data-support-status]').textContent=scheduleLabel(t.status);
+  const providerLabel=detail.querySelector('[data-support-provider]');if(providerLabel)providerLabel.textContent=supportProviderLabel(t);
   detail.querySelector('.support-messages').innerHTML=supportMessageRows(data);
   const form=$('support-reply-form'),area=detail.querySelector('.support-reply-area');
   if(t.status==='closed'){
