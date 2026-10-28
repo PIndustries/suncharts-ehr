@@ -240,6 +240,8 @@ async fn update(
         ));
     }
     let mut tx = database(&s)?.begin().await?;
+    // Contact invalidation and appointment scheduling use the same lock order.
+    crate::scheduling::tenant_lock(&mut tx, &a).await?;
     let exists: Option<Uuid> =
         sqlx::query_scalar("SELECT id FROM patients WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
             .bind(a.tenant_id)

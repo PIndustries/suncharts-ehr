@@ -13,7 +13,7 @@ function fixture({search = '', practice = false} = {}) {
     if (!nodes.has(id)) {
       const attributes = new Map(), classes = new Set();
       nodes.set(id, {
-        innerHTML: '', value: '', hidden: false, textContent: '', title: '',
+        innerHTML: '', value: '', hidden: false, textContent: '', title: '', dataset: {},
         get outerHTML() { return this.innerHTML; },
         set outerHTML(value) { this.innerHTML = value; },
         setAttribute(name, value) { attributes.set(name, value); },
@@ -28,7 +28,8 @@ function fixture({search = '', practice = false} = {}) {
   }
   const context = vm.createContext({
     console, Date, Intl, URL, URLSearchParams, TextEncoder,
-    location: {search}, window: {scrollTo() {}}, crypto: {randomUUID: () => 'fixture-request'},
+    FormData: class { constructor(form) {this.form=form;} *[Symbol.iterator]() {yield* Object.entries(this.form.values||{});} },
+    location: {search}, window: {scrollTo() {},addEventListener() {}}, crypto: {randomUUID: () => 'fixture-request'},
     document: {
       getElementById: node, querySelectorAll: () => [],
       addEventListener(type, callback, options) {
@@ -50,7 +51,7 @@ function clinicalFixture() {
   const f = fixture();
   f.evaluate(`
     me={role:'clinician',user_id:'author'};
-    workspace={appointments:[{id:'appointment-1',title:'Follow-up',starts_at:'2026-10-25T14:00:00Z',status:'in_progress'}],
+    selected='patient-1';workspace={appointments:[{id:'appointment-1',title:'Follow-up',starts_at:'2026-10-25T14:00:00Z',status:'in_progress'}],
       visits:[],amendments:[],clinical:{items:[],reviews:[{kind:'allergy',review_state:'no_known'}]},
       labs:{orders:[],reports:[],acknowledgments:[]},billing:{accounts:[]}};
     activeVisit={id:'visit-1',appointment_id:'appointment-1',clinician_id:'author',status:'in_progress',version:1,note:null,vitals:null};
@@ -60,6 +61,8 @@ function clinicalFixture() {
 
 async function testEncounterStates() {
   const f = clinicalFixture();
+  assert.doesNotMatch(f.evaluate('encounterDateLabel(activeVisit)'), /Invalid Date/);
+  assert.equal(f.evaluate("encounterDateLabel({appointment_id:'missing'})"),'Encounter date not recorded');
   f.evaluate('renderVisit(false)');
   assert.match(f.node('encounter-progress').innerHTML, /Note incomplete/);
   assert.match(f.node('encounter-progress').innerHTML, /1\/3 lists confirmed/);
@@ -81,6 +84,73 @@ async function testEncounterStates() {
   }
   f.evaluate(`me.role='front_desk';activeVisit.clinician_id='author';activeVisit.status='in_progress';renderVisit(false)`);
   assert.doesNotMatch(f.node('visit-editor').innerHTML, /data-action="sign"|>Save note</);
+}
+
+async function testDelegatedRoomingControls(){
+ const f=clinicalFixture();
+ for(const role of ['nurse','medical_assistant']){
+  f.evaluate(`me.role=${JSON.stringify(role)};activeVisit.clinician_id='another-clinician';activeVisit.status='in_progress';renderVisit(false)`);
+  assert.match(f.node('visit-editor').innerHTML,/>Save vitals</,role);
+  assert.doesNotMatch(f.node('visit-editor').innerHTML,/data-action="sign"|>Save note<|id="amendment-form"/,role);
+  assert.match(f.node('encounter-progress').innerHTML,/Room patient/,role);
+  f.evaluate(`activeVisit.status='signed';renderVisit(false)`);
+  assert.doesNotMatch(f.node('visit-editor').innerHTML,/>Save vitals<|>Save note<|data-action="sign"|id="amendment-form"/,role);
+ }
+ f.evaluate(`me.role='nurse';activeVisit=null;workspace.appointments=[{id:'arrived',status:'checked_in',clinician_id:'another-clinician'}]`);
+ assert.match(f.evaluate('encounterWorkflow()'),/data-start="arrived"/);
+ f.evaluate(`me.role='front_desk'`);
+ assert.doesNotMatch(f.evaluate('encounterWorkflow()'),/data-start="arrived"/);
+}
+
+async function testVisitDrafts(){
+ const f=clinicalFixture();
+ f.node('note-form').dataset={visitId:'visit-1',version:'1'};
+ f.node('note-form').values={subjective:'Unfinished & <safe>',objective:'',assessment:'',plan:''};
+ f.evaluate('captureVisitDrafts();renderVisit(false)');
+ assert.match(f.node('visit-editor').innerHTML,/Unfinished &amp; &lt;safe&gt;/);
+ assert.match(f.node('visit-draft-status').textContent,/Unsaved note/);
+ // An unrelated chart refresh must retain both text and its optimistic-lock version.
+ f.evaluate('activeVisit={...activeVisit,version:2};renderVisit(false)');
+ assert.match(f.node('visit-editor').innerHTML,/id="note-form"[^>]*data-version="1"/);
+ assert.match(f.node('visit-draft-status').textContent,/saved encounter changed/);
+ // Saving our own vitals advances the sibling note only from the same base revision.
+ f.evaluate('activeVisit={...activeVisit,version:1};rememberVisit({...activeVisit,version:2,vitals:{heart_rate_bpm:72}},"vitals");renderVisit(false)');
+ assert.match(f.node('visit-editor').innerHTML,/id="note-form"[^>]*data-version="2"/);
+ assert.match(f.node('visit-editor').innerHTML,/Unfinished &amp; &lt;safe&gt;/);
+ // Typing during a save response must remain marked unsaved after that save succeeds.
+ f.node('note-form').values.subjective='Typed while request was in flight';
+ f.evaluate('rememberVisit({...activeVisit,version:3,note:{subjective:"Earlier submitted note",objective:"",assessment:"",plan:""}},"note");renderVisit(false)');
+ assert.match(f.node('visit-editor').innerHTML,/Typed while request was in flight/);
+ assert.match(f.node('visit-draft-status').textContent,/Unsaved note/);
+ // A different patient or encounter must never inherit this note.
+ f.evaluate('selected="patient-2";renderVisit(false)');
+ assert.doesNotMatch(f.node('visit-editor').innerHTML,/Unfinished/);
+ f.evaluate('selected="patient-1";activeVisit={...activeVisit,id:"visit-2"};renderVisit(false)');
+ assert.doesNotMatch(f.node('visit-editor').innerHTML,/Unfinished/);
+ f.evaluate('activeVisit={...activeVisit,id:"visit-1",status:"signed",note:{subjective:"Saved signed note"}};renderVisit(false)');
+ assert.match(f.node('visit-editor').innerHTML,/Saved signed note/);
+ assert.doesNotMatch(f.node('visit-editor').innerHTML,/Unfinished/);
+}
+
+async function testEncounterSelectionRefresh(){
+ const f=clinicalFixture();f.context.pending=[];
+ f.evaluate(`api=async()=>({...activeVisit,id:'signed-visit',status:'signed'});run=action=>pending.push(Promise.resolve().then(action));renderChart=()=>calls.push(['chart',activeVisit.id]);renderVisit=()=>calls.push(['editor-only']);`);
+ const button={id:'',type:'button',dataset:{visit:'signed-visit'},closest(){return null;},hasAttribute(){return false;}};
+ f.listeners.get('click')[0].callback({target:{closest:()=>button}});
+ await Promise.all(f.context.pending);
+ assert.deepEqual(JSON.parse(JSON.stringify(f.context.calls)),[['chart','signed-visit']]);
+}
+
+async function testSunChartsConnection(){
+ const f=fixture();
+ f.evaluate(fs.readFileSync(path.join(root,'web/connect-onboarding.js'),'utf8'));
+ f.evaluate('me={role:"owner"};api=async()=>({items:[]});showTool=()=>{};');
+ await f.evaluate('showApps()');
+ const html=f.node('tools').innerHTML;
+ assert.match(html,/Connect to SunCharts/);
+ assert.doesNotMatch(html,/name="(?:write|billing_read|billing_write|events|migrate)"/);
+ assert.match(html,/No client secrets, installation tokens or email keys to copy/);
+ assert.doesNotMatch(html,/id="client-form"|id="client-result"/);
 }
 
 function practiceHtml(f) { return ['practice-home','practice-worklist','practice-results'].map(id=>f.node(id).innerHTML).join(''); }
@@ -166,7 +236,7 @@ async function testPracticeFilters() {
   assert.doesNotMatch(f.node('practice-worklist').innerHTML,/First Patient|Third Patient/);
   await dispatch({practiceFlow:'completed'},'data-practice-flow');
   assert.match(f.node('practice-worklist').innerHTML,/Third Patient/);
-  const input=f.listeners.get('input')[0].callback;
+  const input=event=>f.listeners.get('input').forEach(item=>item.callback(event));
   input({target:{id:'practice-search',value:'MATCH-1'}});
   assert.match(f.node('practice-worklist').innerHTML,/No matching patients/);
   await dispatch({},'data-practice-clear');
@@ -188,10 +258,12 @@ async function testEntryRouting() {
   for (const [search, expected] of [
     [`?oauth_request=${id}&era_batch=${id}`, [['consent']]],
     [`?era_batch=${id}`, [['claims'], ['batch',id]]],
+    ['?payment_settings=1', [['billing'], ['payment-settings']]],
+    [`?payment_checkout=${id}&payment_settings=1`, [['billing'], ['payment',id]]],
     ['', [['practice']]]
   ]) {
     const f = fixture({search});
-    f.evaluate(`api=async path=>path==='/auth/me'?{role:'owner',user_id:'author'}:{items:[],next_cursor:null};showConsent=async()=>calls.push(['consent']);showClaimsWorkspace=async()=>calls.push(['claims']);showEraBatch=async id=>calls.push(['batch',id]);showPracticeWorkspace=async()=>calls.push(['practice']);`);
+    f.evaluate(`api=async path=>path==='/auth/me'?{role:'owner',user_id:'author'}:{items:[],next_cursor:null};showBillingQueue=async()=>calls.push(['billing']);openPaymentSettings=async()=>calls.push(['payment-settings']);openPaymentStatus=async id=>calls.push(['payment',id]);showConsent=async()=>calls.push(['consent']);showClaimsWorkspace=async()=>calls.push(['claims']);showEraBatch=async id=>calls.push(['batch',id]);showPracticeWorkspace=async()=>calls.push(['practice']);`);
     await f.evaluate('enter()');
     assert.deepEqual(JSON.parse(JSON.stringify(f.context.calls)), expected, search);
   }
@@ -208,6 +280,10 @@ async function testEntryRouting() {
 (async()=>{
   for (const [name, test] of [
     ['encounter persisted state and role-protected controls', testEncounterStates],
+    ['delegated rooming controls preserve clinician signing',testDelegatedRoomingControls],
+    ['unsaved encounter drafts, version conflicts, and patient isolation',testVisitDrafts],
+    ['single bundled SunCharts connection setup',testSunChartsConnection],
+    ['encounter selection refreshes header and chart context',testEncounterSelectionRefresh],
     ['practice queues, escaping, and encounter routing', testPracticeQueues],
     ['practice workboard filters, search, and exact resume links', testPracticeFilters],
     ['entry route precedence and deferred bootstrap', testEntryRouting]

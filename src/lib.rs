@@ -5,12 +5,18 @@ pub mod backend;
 pub mod billing;
 pub mod browser;
 pub mod ca277;
+pub mod checkout;
 pub mod claimmd;
 pub mod claims;
 pub mod clearinghouse;
 pub mod clinical;
+pub mod connect_onboarding;
+pub mod connect_services;
+pub mod connect_transport;
+pub mod connect_updates;
 pub mod delivery;
 pub mod demographics;
+pub mod documents;
 pub mod era835;
 pub mod era_batches;
 pub mod era_chains;
@@ -18,18 +24,31 @@ pub mod era_file;
 pub mod error;
 pub mod events;
 pub mod fhir;
+pub mod health_history;
 pub mod labs;
 pub mod migration;
 pub mod model;
 pub mod oauth;
+pub mod patient_identity;
+pub mod patient_portal;
+pub mod payments;
 pub mod postgres;
 pub mod practice;
+pub mod practice_admin;
+pub mod prescribing;
+pub mod provider_settings;
+pub mod recurrence;
+pub mod referral_delivery;
+pub mod referrals;
+pub mod reminders;
 pub mod remittance_automation;
 pub mod retrieval;
+pub mod rooming;
 pub mod scheduling;
 pub mod settlements;
 pub mod sftp_transport;
 pub mod stedi;
+pub mod visit_diagnoses;
 pub mod x12;
 
 use auth::Actor;
@@ -62,17 +81,35 @@ pub fn app(state: State) -> Router {
     Router::new()
         .merge(oauth::router())
         .merge(clinical::router())
+        .merge(health_history::routes())
+        .merge(documents::routes())
+        .merge(referrals::routes())
+        .merge(referral_delivery::routes())
+        .merge(patient_identity::routes())
+        .merge(patient_portal::router())
+        .merge(prescribing::router())
         .merge(labs::router())
         .merge(scheduling::router())
+        .merge(recurrence::router())
+        .merge(reminders::router())
+        .merge(connect_services::router())
+        .merge(connect_updates::router())
+        .merge(connect_onboarding::router())
         .merge(practice::router())
+        .merge(practice_admin::router())
+        .merge(rooming::routes())
+        .merge(visit_diagnoses::routes())
         .merge(demographics::router())
         .merge(billing::router())
+        .merge(payments::router())
         .merge(claims::router())
+        .merge(checkout::router())
         .merge(era_batches::router())
         .merge(era_chains::router())
         .merge(settlements::router())
         .merge(clearinghouse::router())
         .merge(delivery::router())
+        .merge(provider_settings::router())
         .merge(retrieval::router())
         .merge(remittance_automation::router())
         .merge(ca277::router())
@@ -81,7 +118,111 @@ pub fn app(state: State) -> Router {
         .merge(fhir::router())
         .route(
             "/",
-            get(|| async { axum::response::Html(include_str!("../web/index.html")) }),
+            get(|| async {
+                axum::response::Html(
+                    include_str!("../web/index.html")
+                        .replace("__SUN_CHARTS_BUILD__", env!("SUN_CHARTS_BUILD")),
+                )
+            }),
+        )
+        .route(
+            "/connect-onboarding.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../web/connect-onboarding.js"),
+                )
+            }),
+        )
+        .route(
+            "/connect-services.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../web/connect-services.js"),
+                )
+            }),
+        )
+        .route(
+            "/appointment-workflows.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../web/appointment-workflows.js"),
+                )
+            }),
+        )
+        .route(
+            "/payments.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/payments.js"),
+                )
+            }),
+        )
+        .route(
+            "/avs-print.css",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/css")],
+                    include_str!("../web/avs-print.css"),
+                )
+            }),
+        )
+        .route(
+            "/checkout.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/checkout.js"),
+                )
+            }),
+        )
+        .route(
+            "/prescribing.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/prescribing.js"),
+                )
+            }),
+        )
+        .route(
+            "/portal-staff.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/portal-staff.js"),
+                )
+            }),
+        )
+        .route(
+            "/patient-portal",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                    include_str!("../web/patient-portal.html"),
+                )
+            }),
+        )
+        .route(
+            "/patient-portal.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/patient-portal.js"),
+                )
+            }),
+        )
+        .route(
+            "/patient-portal.css",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/css")],
+                    include_str!("../web/patient-portal.css"),
+                )
+            }),
         )
         .route(
             "/app.js",
@@ -107,6 +248,87 @@ pub fn app(state: State) -> Router {
                 (
                     [(header::CONTENT_TYPE, "application/javascript")],
                     include_str!("../web/demographics.js"),
+                )
+            }),
+        )
+        .route(
+            "/practice-admin.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/practice-admin.js"),
+                )
+            }),
+        )
+        .route(
+            "/patient-identity.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/patient-identity.js"),
+                )
+            }),
+        )
+        .route(
+            "/referral-delivery.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/referral-delivery.js"),
+                )
+            }),
+        )
+        .route(
+            "/connect-updates.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/connect-updates.js"),
+                )
+            }),
+        )
+        .route(
+            "/documents.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/documents.js"),
+                )
+            }),
+        )
+        .route(
+            "/referrals.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/referrals.js"),
+                )
+            }),
+        )
+        .route(
+            "/health-history.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/health-history.js"),
+                )
+            }),
+        )
+        .route(
+            "/visit-diagnoses.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/visit-diagnoses.js"),
+                )
+            }),
+        )
+        .route(
+            "/rooming.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/rooming.js"),
                 )
             }),
         )
@@ -188,6 +410,15 @@ pub fn app(state: State) -> Router {
                 (
                     [(header::CONTENT_TYPE, "application/javascript")],
                     include_str!("../web/retrieval.js"),
+                )
+            }),
+        )
+        .route(
+            "/provider-settings.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/provider-settings.js"),
                 )
             }),
         )

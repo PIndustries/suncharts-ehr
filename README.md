@@ -1,50 +1,33 @@
 # SunCharts EHR
 
-[Source](https://github.com/PIndustries/suncharts-ehr) · [Developer preview](docs/releases/developer-preview.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+A self-hosted electronic health record built with Rust and PostgreSQL, with an
+included web workspace. It runs independently; SunCharts services and native
+clients connect through its HTTP API.
 
-SunCharts EHR is an open-source, self-hosted electronic health record with a Rust
-server, PostgreSQL storage and an included clinical web workspace. **SunCharts
-Engine** powers the API. Clinics can run the web application independently;
-optional SunCharts services and clients connect through HTTP APIs.
+**Under development. Use synthetic data only.** The project is not certified or
+ready for clinical production. See the [roadmap](docs/roadmap.md) for missing work.
 
-**Developer preview: use synthetic data only.** This release is not certified or
-ready for clinical production. [The roadmap](docs/roadmap.md) describes current
-capabilities and remaining work.
+## Features
 
-## What you can explore
+- Patient charts, contact details, problems, allergies, medications and surgical/dental histories.
+- Provider calendars, recurring appointments, rescheduling and email reminders.
+- Nurse/MA intake and vitals, clinician SOAP notes, signatures and amendments.
+- Local orders and results, patient documents, referrals, checkout, after-visit summaries and follow-up tasks.
+- Insurance, charges, professional claims, clearinghouse connections and remittances.
+- Staff administration, provider profiles, facilities and rooms.
+- Local prescription preparation, safety-review attestations, authorization and print handoff.
+- A separate patient portal for released visit summaries, appointment requests and secure messages.
+- OAuth2 connections, clinical/document FHIR reads and bounded native clinical writes.
 
-- **Practice home:** daily patient flow, checked-in appointments, unfinished
-  encounters and results awaiting acknowledgment, with links to the relevant chart.
-- **Patient charts:** patient finder, clinical summaries, contact details,
-  attributed contact revisions, recorded vitals and encounter history.
-- **Scheduling:** day and seven-day agendas, provider filters, booking/rescheduling,
-  arrival/cancel/no-show actions, provider blocks and encounter handoff.
-- **Encounters:** appointment-linked visits, SOAP notes and vitals, signing,
-  immutable signed content and attributed amendments.
-- **Clinical lists:** problems, allergies and medication statements, explicit
-  review states, versioned edits and source reconciliation. Medication statements
-  record history; they do not provide electronic prescribing.
-- **Orders and results:** local orders, specimen intake, typed result panels,
-  report corrections, version-specific acknowledgment and a results inbox.
-- **Revenue cycle:** payer and coverage records, encounter charges, account ledgers,
-  recorded payments/adjustments, claim preparation and bounded 837P generation.
-- **Remittances:** reviewed 835 import, provider adjustments, correction/reversal
-  chains and atomic multi-transaction file posting or undo.
-- **Connected applications:** scoped per-user OAuth2 grants and durable change
-  notices. An installation connection does not start data streaming automatically.
-- **Source import:** staged archival records, reconciliation and explicit native
-  mappings that preserve the original evidence. Production cutover remains disabled.
-
-External provider adapters require operator configuration and enrollment. Local
-protocol and accounting tests do not establish live provider acceptance. Recording
-a payment does not collect funds; placing a local order does not transmit it.
+Prescription authorization is local: electronic pharmacy transmission and EPCS are
+not implemented. Medication statements remain separate from prescriptions. Local
+orders do not transmit to a laboratory, and payment collection supports test mode only.
 
 ## Run locally
 
-Use Rust 1.89+, PostgreSQL 16+, Python 3 and a native C build toolchain, including
-CMake where required by AWS-LC. Node 22+ runs the UI fixture tests. Create a
-dedicated development database and export the settings in [.env.example](.env.example).
-The binary reads process environment variables; it does not load a dotenv file.
+Install Rust (declared minimum 1.89), PostgreSQL 16+ and a C build toolchain with CMake. Python 3
+supports import tools; Node 22+ runs frontend tests. Settings come from process
+environment variables; the server does not load a dotenv file.
 
 ```sh
 createdb suncharts_ehr_dev
@@ -59,79 +42,30 @@ cargo run --locked
 ```
 
 Open [localhost:8090](http://127.0.0.1:8090/). Bootstrap creates an owner account
-once; restarting does not reset its password or identity. Keep the tenant and
-clinician UUIDs stable for this installation. Use different UUIDs and credentials
-for a separate synthetic clinic. Full staff administration, account recovery and
-MFA remain development work; use a controlled local environment.
+once; restarting does not reset it. Keep installation UUIDs stable. Review
+[.env.example](.env.example) and [operations](docs/operations.md) before changing
+storage, keys or the public address.
 
-## Data and access controls
+## Documentation
 
-Tenant identity comes from authenticated sessions or scoped per-user OAuth2 grants.
-Writes and audit events commit together. Versioned updates require the current
-quoted `If-Match`; stale writers receive a conflict. Signed records, revisions,
-source evidence and ledger history have database immutability protections.
-These controls do not make records tamper-proof against a database administrator.
+| Guide | Contents |
+|---|---|
+| [Clinical workflow](docs/clinical.md) | Registration, chart review, rooming, notes, results and checkout |
+| [Scheduling](docs/scheduling.md) | Calendars, conflicts, recurring visits and reminders |
+| [Billing](docs/billing.md) | Coverage, charges, claims, ERA posting and test payments |
+| [Clearinghouses](docs/clearinghouses.md) | Claim.MD setup, HTTP/SFTP adapters and retrieval |
+| [Connected services](docs/integrations.md) | OAuth onboarding, managed reminders and support |
+| [API](docs/api.md) | Authentication, concurrency, FHIR and the OpenAPI contract |
+| [Migration](docs/migration.md) | Source exports, staged import and reconciliation |
+| [Operations](docs/operations.md) | Staff, credentials, backups, builds and releases |
+| [Architecture](docs/architecture.md) | Service layout and data boundaries |
+| [Roadmap](docs/roadmap.md) | Current gaps and development priorities |
 
-The browser uses opaque HttpOnly/SameSite=Strict session cookies, marked Secure
-over HTTPS. Cookie-authenticated mutations require the configured Origin.
-Clinical responses are `no-store`; browser chart data and tokens are not stored
-in localStorage. Staff roles further restrict actions.
-
-Owners register connected applications with exact callbacks. Authorization code
-with S256 PKCE, short-lived opaque access tokens, rotating refresh tokens and
-revocable grants support independent installations. Discovery is available at
-`/.well-known/oauth-authorization-server`. This OAuth2 implementation is not
-SMART or OIDC. The development HS256 gateway is disabled by default.
-
-## API and source
-
-- `/openapi.json` — the Apache-2.0 API specification.
-- `/source` — the source archive embedded at build time, including build materials,
-  web assets, migrations and documentation. Rebuild it when modifying a distribution.
-- `/health` — process liveness, not database readiness.
-- `/fhir/metadata`, `/fhir/Patient`, `/fhir/Patient/{id}` — initial read-only FHIR R4
-  Patient discovery/search/read; broader resources and conformance remain pending.
-
-See [architecture](docs/architecture.md), [standards](docs/standards.md),
-[patient details](docs/patient-demographics.md), [scheduling](docs/scheduling.md),
-[clinical lists](docs/clinical-lists.md), [orders/results](docs/orders-labs-results.md),
-[billing](docs/billing-insurance.md), [claims/remittances](docs/claims-remittances.md),
-[835 file workflows](docs/era-files-corrections.md) and [migration](docs/migration.md)
-for the supported contracts and their limits.
-
-## Development checks
-
-Use a disposable PostgreSQL database; tests create isolated schemas.
-
-```sh
-cargo fmt --check
-cargo clippy --locked --all-targets -- -D warnings
-TEST_DATABASE_URL=postgres://localhost/suncharts_ehr_test cargo test --locked
-python3 -m unittest discover -s scripts -p 'test_*.py'
-node scripts/test_practice_ui.cjs
-```
-
-[Contribution guidance](CONTRIBUTING.md) explains test prerequisites and change
-requirements. [Verification](docs/verification.md) distinguishes automated checks,
-interactive UI acceptance and external acceptance. Passing local tests does not
-establish clinical production readiness.
-
-## Current development boundaries
-
-Work remains on staff administration and care-team permissions, richer registration,
-prescribing, external clinical interfaces, attachments, patient communication and
-release workflows, terminology validation, reporting, production migration,
-backup/restore operations and security hardening. Some worklists are bounded;
-large-history pagination remains necessary. FHIR profile validation, SMART, Bulk
-Data and formal certification have not been completed.
-
-The [roadmap](docs/roadmap.md), [release notes](docs/releases/developer-preview.md)
-and [release checklist](docs/release-checklist.md) document these boundaries.
-Public source availability is a developer milestone, separate from clinical use.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development checks and
+[SECURITY.md](SECURITY.md) for private vulnerability reporting.
 
 ## License
 
-Copyright 2026 P Industries. The server and included web interface are
-**AGPL-3.0-only** under [LICENSE](LICENSE). The API specification under `api/` is
-**Apache-2.0** under [api/LICENSE](api/LICENSE). See [licensing](docs/licensing.md)
-for source-offer and independent-client considerations.
+The server and web interface are **AGPL-3.0-only**; see [LICENSE](LICENSE).
+The API specification is **Apache-2.0**; see [api/LICENSE](api/LICENSE).
+The running application offers its build-time source at `/source`.

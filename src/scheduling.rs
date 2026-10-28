@@ -23,8 +23,26 @@ fn db(s: &State) -> Result<&sqlx::PgPool> {
 }
 pub async fn provider(db: &sqlx::PgPool, a: &Actor, id: Uuid) -> Result<()> {
     a.scheduling()?;
-    let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM browser_users WHERE tenant_id=$1 AND id=$2 AND NOT disabled AND role IN ('owner','clinician'))").bind(a.tenant_id).bind(id).fetch_one(db).await?;
+    let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM browser_users u LEFT JOIN practice_providers p ON p.tenant_id=u.tenant_id AND p.id=u.id WHERE u.tenant_id=$1 AND u.id=$2 AND NOT u.disabled AND u.role IN ('owner','clinician') AND coalesce(p.active,true))").bind(a.tenant_id).bind(id).fetch_one(db).await?;
     if exists {
+        Ok(())
+    } else {
+        Err(Error::Invalid(
+            "choose an active clinician in this practice",
+        ))
+    }
+}
+// Call while holding the tenant scheduling lock. Administration takes that same
+// lock before changing provider access, so eligibility and booking commit together.
+pub async fn provider_locked(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    id: Uuid,
+    allow_unmapped_legacy: bool,
+) -> Result<()> {
+    let eligible: Option<bool> = sqlx::query_scalar("SELECT NOT u.disabled AND u.role IN ('owner','clinician') AND coalesce(p.active,true) FROM browser_users u LEFT JOIN practice_providers p ON p.tenant_id=u.tenant_id AND p.id=u.id WHERE u.tenant_id=$1 AND u.id=$2")
+        .bind(a.tenant_id).bind(id).fetch_optional(&mut **tx).await?;
+    if eligible == Some(true) || (eligible.is_none() && allow_unmapped_legacy) {
         Ok(())
     } else {
         Err(Error::Invalid(
@@ -145,7 +163,7 @@ struct Range {
 }
 async fn providers(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json<Value>> {
     a.staff()?;
-    let items:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',id,'label',email) FROM browser_users WHERE tenant_id=$1 AND NOT disabled AND role IN ('owner','clinician') ORDER BY email").bind(a.tenant_id).fetch_all(db(&s)?).await?;
+    let items:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',u.id,'label',coalesce(nullif(p.display_name,''),nullif(u.display_name,''),u.email)) FROM browser_users u LEFT JOIN practice_providers p ON p.tenant_id=u.tenant_id AND p.id=u.id WHERE u.tenant_id=$1 AND NOT u.disabled AND u.role IN ('owner','clinician') AND coalesce(p.active,true) ORDER BY coalesce(nullif(p.display_name,''),nullif(u.display_name,''),u.email),u.id").bind(a.tenant_id).fetch_all(db(&s)?).await?;
     Ok(Json(json!({"items":items})))
 }
 async fn schedule(
@@ -160,7 +178,7 @@ async fn schedule(
         ));
     }
     let mut tx = db(&s)?.begin().await?;
-    let items:Vec<Value>=sqlx::query_scalar("SELECT (to_jsonb(ap)-'tenant_id'-'request_digest'-'request_id') || jsonb_build_object('patient_name',p.family_name||', '||p.given_name,'mrn',p.mrn,'provider_label',coalesce(u.email,'Unmapped provider')) FROM appointments ap JOIN patients p ON p.tenant_id=ap.tenant_id AND p.id=ap.patient_id LEFT JOIN browser_users u ON u.tenant_id=ap.tenant_id AND u.id=ap.clinician_id WHERE ap.tenant_id=$1 AND ap.starts_at<$3 AND ap.ends_at>$2 AND ($4::uuid IS NULL OR ap.clinician_id=$4) ORDER BY ap.starts_at,ap.id LIMIT 1001").bind(a.tenant_id).bind(q.start).bind(q.end).bind(q.clinician_id).fetch_all(&mut *tx).await?;
+    let items:Vec<Value>=sqlx::query_scalar("SELECT (to_jsonb(ap)-'tenant_id'-'request_digest'-'request_id') || jsonb_build_object('patient_name',p.family_name||', '||p.given_name,'mrn',p.mrn,'provider_label',coalesce(nullif(pp.display_name,''),nullif(u.display_name,''),u.email,'Unmapped provider')) FROM appointments ap JOIN patients p ON p.tenant_id=ap.tenant_id AND p.id=ap.patient_id LEFT JOIN browser_users u ON u.tenant_id=ap.tenant_id AND u.id=ap.clinician_id LEFT JOIN practice_providers pp ON pp.tenant_id=ap.tenant_id AND pp.id=ap.clinician_id WHERE ap.tenant_id=$1 AND ap.starts_at<$3 AND ap.ends_at>$2 AND ($4::uuid IS NULL OR ap.clinician_id=$4) ORDER BY ap.starts_at,ap.id LIMIT 1001").bind(a.tenant_id).bind(q.start).bind(q.end).bind(q.clinician_id).fetch_all(&mut *tx).await?;
     let blocks:Vec<Value>=sqlx::query_scalar("SELECT to_jsonb(b)-'tenant_id'-'request_digest'-'request_id' FROM schedule_blocks b WHERE tenant_id=$1 AND active AND starts_at<$3 AND ends_at>$2 AND ($4::uuid IS NULL OR clinician_id=$4) ORDER BY starts_at,id LIMIT 1001").bind(a.tenant_id).bind(q.start).bind(q.end).bind(q.clinician_id).fetch_all(&mut *tx).await?;
     if items.len() > 1000 || blocks.len() > 1000 {
         return Err(Error::Invalid(
@@ -215,6 +233,7 @@ async fn edit(
     let version = crate::expected(&h)?;
     let mut tx = db(&s)?.begin().await?;
     tenant_lock(&mut tx, &a).await?;
+    provider_locked(&mut tx, &a, p.clinician_id, false).await?;
     let old = row(&mut tx, &a, id).await?;
     if old.version != version {
         return Err(Error::Conflict(
@@ -340,6 +359,7 @@ async fn block(
     );
     let mut tx = db(&s)?.begin().await?;
     tenant_lock(&mut tx, &a).await?;
+    provider_locked(&mut tx, &a, p.clinician_id, false).await?;
     let old: Option<(Uuid, String)> = sqlx::query_as(
         "SELECT id,request_digest FROM schedule_blocks WHERE tenant_id=$1 AND request_id=$2",
     )

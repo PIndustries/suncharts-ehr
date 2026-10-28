@@ -26,6 +26,9 @@ pub(crate) fn validate(r: &Route) -> Result<()> {
     Ok(())
 }
 fn token(r: &Route) -> Result<String> {
+    if let Some(v) = &r.credential_value {
+        return Ok(v.expose().to_owned());
+    }
     match &r.credential_env {
         Some(k) => std::env::var(k)
             .ok()

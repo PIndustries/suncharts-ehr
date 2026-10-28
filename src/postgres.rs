@@ -56,6 +56,31 @@ async fn lock_visit(tx: &mut Tx<'_>, actor: &Actor, id: Uuid, version: i64) -> R
     Ok(v)
 }
 
+pub(crate) async fn rooming_authorized(
+    tx: &mut Tx<'_>,
+    a: &Actor,
+    clinician_id: Uuid,
+) -> Result<()> {
+    a.rooming()?;
+    if matches!(a.role, Role::Nurse | Role::MedicalAssistant) {
+        // Recheck the live account under a shared lock: stale gateway claims never
+        // authorize a disabled or demoted assistant to write clinical intake.
+        let expected = if matches!(a.role, Role::Nurse) {
+            "nurse"
+        } else {
+            "medical_assistant"
+        };
+        let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM browser_users WHERE tenant_id=$1 AND id=$2 AND role=$3 AND NOT disabled FOR SHARE")
+            .bind(a.tenant_id).bind(a.sub).bind(expected).fetch_optional(&mut **tx).await?;
+        if exists.is_none() {
+            return Err(Error::Forbidden);
+        }
+    } else if clinician_id != a.sub {
+        return Err(Error::Forbidden);
+    }
+    Ok(())
+}
+
 fn editable(v: &Visit) -> Result<()> {
     if v.status != "in_progress" {
         Err(Error::Conflict(
@@ -128,6 +153,7 @@ impl ClinicalBackend for PostgresBackend {
         let p = sqlx::query_as("INSERT INTO patients (tenant_id,id,mrn,given_name,family_name,birth_date) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id,mrn,given_name,family_name,birth_date")
             .bind(a.tenant_id).bind(id).bind(p.mrn.trim()).bind(p.given_name.trim()).bind(p.family_name.trim()).bind(p.birth_date)
             .fetch_one(&mut *tx).await?;
+        crate::patient_identity::record_initial(&mut tx, a, &p, "Patient registered").await?;
         audit(&mut tx, a, "patient.create", id).await?;
         tx.commit().await?;
         Ok(p)
@@ -177,6 +203,7 @@ impl ClinicalBackend for PostgresBackend {
         if let Some(source) = p.source_history_id {
             crate::scheduling::source(&mut tx, a, p.patient_id, source).await?;
         }
+        crate::scheduling::provider_locked(&mut tx, a, p.clinician_id, true).await?;
         crate::scheduling::available(
             &mut tx,
             a,
@@ -225,7 +252,7 @@ impl ClinicalBackend for PostgresBackend {
     }
 
     async fn start_visit(&self, a: &Actor, input: StartVisit) -> Result<Visit> {
-        a.clinical()?;
+        a.rooming()?;
         let mut tx = self.0.begin().await?;
         let row: Appointment =
             sqlx::query_as("SELECT * FROM appointments WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
@@ -234,9 +261,7 @@ impl ClinicalBackend for PostgresBackend {
                 .fetch_optional(&mut *tx)
                 .await?
                 .ok_or(Error::NotFound)?;
-        if row.clinician_id != a.sub {
-            return Err(Error::Forbidden);
-        }
+        rooming_authorized(&mut tx, a, row.clinician_id).await?;
         if row.status != "checked_in" {
             return Err(Error::Conflict(
                 "appointment must be checked in before starting a visit",
@@ -244,7 +269,7 @@ impl ClinicalBackend for PostgresBackend {
         }
         let id = Uuid::new_v4();
         let v = sqlx::query_as("INSERT INTO visits (tenant_id,id,patient_id,appointment_id,clinician_id) VALUES ($1,$2,$3,$4,$5) RETURNING *")
-            .bind(a.tenant_id).bind(id).bind(row.patient_id).bind(row.id).bind(a.sub).fetch_one(&mut *tx).await?;
+            .bind(a.tenant_id).bind(id).bind(row.patient_id).bind(row.id).bind(row.clinician_id).fetch_one(&mut *tx).await?;
         sqlx::query("UPDATE appointments SET status='in_progress',version=version+1 WHERE tenant_id=$1 AND id=$2")
             .bind(a.tenant_id)
             .bind(row.id)
@@ -289,9 +314,20 @@ impl ClinicalBackend for PostgresBackend {
         version: i64,
         vitals: Vitals,
     ) -> Result<Visit> {
+        a.rooming()?;
         vitals.validate()?;
         let mut tx = self.0.begin().await?;
-        let v = lock_visit(&mut tx, a, id, version).await?;
+        let v: Visit =
+            sqlx::query_as("SELECT * FROM visits WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
+                .bind(a.tenant_id)
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or(Error::NotFound)?;
+        rooming_authorized(&mut tx, a, v.clinician_id).await?;
+        if v.version != version {
+            return Err(Error::Conflict("visit changed; reload before saving"));
+        }
         editable(&v)?;
         sqlx::query("UPDATE visits SET vitals=$3, version=version+1 WHERE tenant_id=$1 AND id=$2")
             .bind(a.tenant_id)
@@ -300,6 +336,7 @@ impl ClinicalBackend for PostgresBackend {
             .execute(&mut *tx)
             .await?;
         let v = visit_row(&mut tx, a, id).await?;
+        crate::rooming::record_vitals_revision(&mut tx, a, &v).await?;
         audit(&mut tx, a, "visit.vitals_save", id).await?;
         tx.commit().await?;
         Ok(v)

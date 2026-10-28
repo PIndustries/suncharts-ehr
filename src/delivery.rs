@@ -28,6 +28,8 @@ pub struct Route {
     pub endpoint: String,
     pub usage: String,
     pub credential_env: Option<String>,
+    #[serde(skip)]
+    pub credential_value: Option<std::sync::Arc<crate::provider_settings::Secret>>,
     #[serde(default)]
     pub loopback_test: bool,
     #[serde(default)]
@@ -75,7 +77,12 @@ impl Config {
             crate::stedi::validate(r)?;
             if matches!(r.adapter, Adapter::Stedi | Adapter::ClaimMd) {
                 if let Some(key) = &r.credential_env {
-                    let identity = std::env::var(key)
+                    let identity = r
+                        .credential_value
+                        .as_ref()
+                        .map(|v| v.expose().to_owned())
+                        .map(Ok)
+                        .unwrap_or_else(|| std::env::var(key))
                         .map(|v| crate::oauth::hash(&v))
                         .unwrap_or_else(|_| key.clone());
                     if !credentials.insert(identity) {
@@ -131,12 +138,14 @@ impl Config {
             if !local
                 && (r.loopback_test
                     || u.scheme() != "https"
-                    || r.credential_env.as_ref().is_none_or(|v| {
-                        !v.starts_with("ENGINE_CLEARINGHOUSE_TOKEN_")
-                            || !v
-                                .bytes()
-                                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
-                    }))
+                    || (r.credential_value.is_some() && r.adapter != Adapter::ClaimMd)
+                    || (r.credential_value.is_none()
+                        && r.credential_env.as_ref().is_none_or(|v| {
+                            !v.starts_with("ENGINE_CLEARINGHOUSE_TOKEN_")
+                                || !v.bytes().all(|b| {
+                                    b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_'
+                                })
+                        })))
             {
                 return Err(Error::Invalid("gateway requires HTTPS and an operator-managed credential reference; HTTP only for explicit numeric loopback test routes"));
             }
@@ -236,11 +245,11 @@ pub fn router() -> Router<State> {
         .route("/api/v1/billing/delivery/jobs/{id}", get(detail))
         .route("/api/v1/billing/delivery/jobs/{id}/actions", post(action))
 }
-async fn routes(a: Actor) -> Result<Json<Value>> {
+async fn routes(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json<Value>> {
     a.staff()?;
-    let c = Config::from_env()?;
+    let c = crate::provider_settings::load_for_tenant(db(&s)?, a.tenant_id).await?;
     Ok(Json(
-        json!({"items":c.routes.iter().filter(|r|r.tenant_id==a.tenant_id).map(|r|json!({"key":r.key,"partner_id":r.partner_id,"usage":r.usage,"adapter":r.adapter,"retrieval_enabled":r.retrieval.is_some(),"loopback_test":r.loopback_test,"credential_configured":if r.sftp.is_some(){crate::sftp_transport::credentials_available(r)}else{r.credential_env.as_ref().is_none_or(|k|std::env::var(k).is_ok_and(|v| !v.trim().is_empty()))}})).collect::<Vec<_>>(),"worker":"operator-configured provider adapters and HTTPS gateway"}),
+        json!({"items":c.routes.iter().filter(|r|r.tenant_id==a.tenant_id).map(|r|json!({"key":r.key,"partner_id":r.partner_id,"usage":r.usage,"adapter":r.adapter,"retrieval_enabled":r.retrieval.is_some(),"loopback_test":r.loopback_test,"credential_configured":if r.sftp.is_some(){crate::sftp_transport::credentials_available(r)}else{r.credential_value.is_some() || r.credential_env.as_ref().is_none_or(|k|std::env::var(k).is_ok_and(|v| !v.trim().is_empty()))}})).collect::<Vec<_>>(),"worker":"operator-configured provider adapters and HTTPS gateway"}),
     ))
 }
 async fn queue(
@@ -454,9 +463,16 @@ pub async fn process_one(pool: &PgPool, config: &Config) -> Result<bool> {
     let valid = route.is_some_and(|r| {
         r.partner_id == out.partner_id && r.usage == out.partner_snapshot["content"]["usage"]
     });
-    let token = route
-        .and_then(|r| r.credential_env.as_ref())
-        .and_then(|key| std::env::var(key).ok());
+    let token = route.and_then(|r| {
+        r.credential_value
+            .as_ref()
+            .map(|v| v.expose().to_owned())
+            .or_else(|| {
+                r.credential_env
+                    .as_ref()
+                    .and_then(|key| std::env::var(key).ok())
+            })
+    });
     let binding_valid = if let Some(r) = route {
         crate::retrieval::delivery_binding(&mut tx, &a, r).await?
     } else {
@@ -648,10 +664,17 @@ pub async fn process_one(pool: &PgPool, config: &Config) -> Result<bool> {
     tx.commit().await?;
     Ok(true)
 }
-pub async fn run(pool: PgPool, config: Config) {
+pub async fn run(pool: PgPool, _config: Config) {
     let mut tick = tokio::time::interval(Duration::from_secs(2));
     loop {
         tick.tick().await;
+        let config = match crate::provider_settings::load(&pool).await {
+            Ok(c) => c,
+            Err(_) => {
+                eprintln!("Clearinghouse configuration unavailable; delivery held");
+                continue;
+            }
+        };
         if process_one(&pool, &config).await.is_err() {
             eprintln!("Clearinghouse delivery processing failed; durable job requires inspection");
         }

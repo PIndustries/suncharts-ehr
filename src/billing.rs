@@ -192,6 +192,7 @@ struct Entity {
 }
 #[derive(Serialize, sqlx::FromRow)]
 pub(crate) struct Account {
+    pub(crate) diagnosis_snapshot: Option<Value>,
     pub(crate) id: Uuid,
     pub(crate) patient_id: Uuid,
     pub(crate) content: Value,
@@ -235,7 +236,7 @@ pub(crate) async fn tenant_lock(tx: &mut Transaction<'_, Postgres>, a: &Actor) -
         .await?;
     Ok(())
 }
-async fn account_row(
+pub(crate) async fn account_row(
     tx: &mut Transaction<'_, Postgres>,
     a: &Actor,
     p: Uuid,
@@ -443,6 +444,10 @@ pub fn router() -> Router<State> {
             axum::routing::put(edit_account),
         )
         .route(
+            "/api/v1/patients/{p}/billing/accounts/{id}/diagnoses",
+            axum::routing::put(link_account_diagnoses),
+        )
+        .route(
             "/api/v1/patients/{p}/billing/accounts/{id}/actions",
             post(account_action),
         )
@@ -617,6 +622,12 @@ async fn edit_account(
             "only the current draft billing account can be edited",
         ));
     }
+    if old.diagnosis_snapshot.is_some()
+        && (old.content["visit_id"] != json!(v.content.visit_id)
+            || old.content["lines"] != json!(v.content.lines))
+    {
+        return Err(Error::Conflict("clear draft diagnosis links before changing the visit or charge lines; existing diagnosis codes are retained"));
+    }
     account_links(&mut tx, &a, p, &v.content, old.source_history_id, false).await?;
     sqlx::query("UPDATE billing_accounts SET visit_id=$3,coverage_id=$4,content=$5,total_cents=$6,version=version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(id).bind(v.content.visit_id).bind(v.content.coverage_id).bind(json!(v.content)).bind(total).execute(&mut *tx).await?;
     let row = account_revision(&mut tx, &a, p, id, &v.reason).await?;
@@ -725,7 +736,7 @@ async fn new_entry(
             .reverses_id
             .ok_or(Error::Invalid("select the entry to reverse"))?;
         let managed: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM era_posting_entries WHERE tenant_id=$1 AND entry_id=$2)",
+            "SELECT EXISTS(SELECT 1 FROM era_posting_entries WHERE tenant_id=$1 AND entry_id=$2) OR EXISTS(SELECT 1 FROM payment_ledger_links WHERE tenant_id=$1 AND entry_id=$2)",
         )
         .bind(a.tenant_id)
         .bind(original)
@@ -733,7 +744,7 @@ async fn new_entry(
         .await?;
         if managed {
             return Err(Error::Conflict(
-                "reverse ERA-generated entries from the remittance workflow",
+                "reverse managed entries through their remittance or payment workflow",
             ));
         }
         let row:Option<(String,i64)>=sqlx::query_as("SELECT kind,effect_cents FROM billing_entries WHERE tenant_id=$1 AND account_id=$2 AND id=$3").bind(a.tenant_id).bind(id).bind(original).fetch_optional(&mut *tx).await?;
@@ -774,6 +785,12 @@ async fn new_entry(
     let balance = old.total_cents + prior + effect;
     if !(0..=1000000000).contains(&balance) {
         return Err(Error::Conflict("entry would overpay the account or exceed its supported balance; reverse dependent entries first"));
+    }
+    if effect < 0 {
+        let reserved:i64=sqlx::query_scalar("SELECT coalesce(sum(amount_cents),0)::bigint FROM payment_attempts WHERE tenant_id=$1 AND account_id=$2 AND status IN ('creating','open','needs_review') AND paid_entry_id IS NULL").bind(a.tenant_id).bind(id).fetch_one(&mut *tx).await?;
+        if balance < reserved {
+            return Err(Error::Conflict("account balance is reserved by hosted checkout; expire or reconcile it before reducing the balance"));
+        }
     }
     let entry = Uuid::new_v4();
     sqlx::query("INSERT INTO billing_entries (tenant_id,id,account_id,kind,effect_cents,content,request_id,creation_hash,reverses_id,actor_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)").bind(a.tenant_id).bind(entry).bind(id).bind(&v.kind).bind(effect).bind(json!(v)).bind(v.request_id).bind(hash).bind(v.reverses_id).bind(a.sub).execute(&mut *tx).await?;
@@ -921,4 +938,103 @@ async fn payer_sources(a: Actor, ExtractState(s): ExtractState<State>) -> Result
     crate::postgres::audit(&mut tx, &a, "billing.payer_sources", a.tenant_id).await?;
     tx.commit().await?;
     Ok(Json(json!({"items":items})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiagnosisLineSelection {
+    line_index: usize,
+    diagnosis_ids: Vec<Uuid>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AccountDiagnosisSelection {
+    visit_version: i64,
+    lines: Vec<DiagnosisLineSelection>,
+    reason: String,
+}
+async fn link_account_diagnoses(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((p, id)): Path<(Uuid, Uuid)>,
+    h: HeaderMap,
+    Json(input): Json<AccountDiagnosisSelection>,
+) -> Result<Json<Account>> {
+    write(&a)?;
+    text(&input.reason, 1000)?;
+    if input.lines.len() > 100 {
+        return Err(Error::Invalid(
+            "at most 100 charge line selections are supported",
+        ));
+    }
+    let expected = crate::expected(&h)?;
+    let mut tx = db(&s)?.begin().await?;
+    tenant_lock(&mut tx, &a).await?;
+    let old = account_row(&mut tx, &a, p, id).await?;
+    if old.version != expected || old.status != "draft" {
+        return Err(Error::Conflict(
+            "only the current draft account can change diagnosis links",
+        ));
+    }
+    let mut content: AccountContent = serde_json::from_value(old.content.clone())
+        .map_err(|_| Error::Invalid("invalid stored billing account"))?;
+    let visit = content
+        .visit_id
+        .ok_or(Error::Invalid("link the account to a native visit first"))?;
+    // Even clearing validates encounter context; there is no silent rebase.
+    crate::labs::diagnosis_snapshot(&mut tx, &a, p, visit, input.visit_version, &[]).await?;
+    let mut seen = std::collections::HashSet::new();
+    let mut snapshots = Vec::new();
+    for selection in &input.lines {
+        if !seen.insert(selection.line_index)
+            || selection.line_index >= content.lines.len()
+            || selection.diagnosis_ids.len() > 12
+        {
+            return Err(Error::Invalid(
+                "choose distinct existing charge lines and at most 12 diagnoses per line",
+            ));
+        }
+        let snapshot = crate::labs::diagnosis_snapshot(
+            &mut tx,
+            &a,
+            p,
+            visit,
+            input.visit_version,
+            &selection.diagnosis_ids,
+        )
+        .await?;
+        let line = &mut content.lines[selection.line_index];
+        for d in snapshot["diagnoses"]
+            .as_array()
+            .ok_or(Error::Invalid("invalid encounter diagnoses"))?
+        {
+            let code = d["code"]
+                .as_str()
+                .ok_or(Error::Invalid("invalid encounter diagnosis code"))?;
+            if !line
+                .diagnosis_codes
+                .iter()
+                .any(|old| old.eq_ignore_ascii_case(code))
+            {
+                line.diagnosis_codes.push(code.into());
+            }
+        }
+        if !selection.diagnosis_ids.is_empty() {
+            snapshots
+                .push(json!({"line_index":selection.line_index,"diagnoses":snapshot["diagnoses"]}));
+        }
+    }
+    content.total()?;
+    let snapshot = if snapshots.is_empty() {
+        None
+    } else {
+        Some(
+            json!({"visit_id":visit,"visit_version":input.visit_version,"code_system":"http://hl7.org/fhir/sid/icd-10-cm","lines":snapshots}),
+        )
+    };
+    sqlx::query("UPDATE billing_accounts SET content=$3,diagnosis_snapshot=$4,version=version+1 WHERE tenant_id=$1 AND id=$2")
+        .bind(a.tenant_id).bind(id).bind(json!(content)).bind(snapshot).execute(&mut *tx).await?;
+    let row = account_revision(&mut tx, &a, p, id, &input.reason).await?;
+    tx.commit().await?;
+    Ok(Json(row))
 }

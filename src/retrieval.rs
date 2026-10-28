@@ -101,12 +101,17 @@ pub(crate) struct Page {
     pub next: Option<String>,
 }
 pub(crate) fn binding(r: &Route) -> String {
-    crate::oauth::hash(&json!({"partner":r.partner_id,"usage":r.usage,"adapter":r.adapter,"endpoint":r.endpoint,"credential_ref":r.credential_env,"sftp":r.sftp,"core_base":r.retrieval.as_ref().map(|s|s.core_base.as_str()).unwrap_or(stedi::CORE)}).to_string())
+    let mut value = json!({"partner":r.partner_id,"usage":r.usage,"adapter":r.adapter,"endpoint":r.endpoint,"credential_ref":r.credential_env,"sftp":r.sftp,"core_base":r.retrieval.as_ref().map(|s|s.core_base.as_str()).unwrap_or(stedi::CORE)});
+    if let Some(secret) = &r.credential_value {
+        value["native_credential"] = json!(crate::oauth::hash(secret.expose()));
+    }
+    crate::oauth::hash(&value.to_string())
 }
+
 fn db(s: &State) -> Result<&PgPool> {
     Ok(&s.browser.as_ref().ok_or(Error::NotFound)?.db)
 }
-async fn connection_event(
+pub(crate) async fn connection_event(
     tx: &mut Transaction<'_, Postgres>,
     a: &Actor,
     key: &str,
@@ -476,10 +481,17 @@ pub async fn fetch_one(pool: &PgPool, c: &Config) -> Result<bool> {
     tx.commit().await?;
     Ok(true)
 }
-pub async fn run(pool: PgPool, c: Config) {
+pub async fn run(pool: PgPool, _c: Config) {
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
     loop {
         tick.tick().await;
+        let c = match crate::provider_settings::load(&pool).await {
+            Ok(c) => c,
+            Err(_) => {
+                eprintln!("Clearinghouse configuration unavailable; retrieval held");
+                continue;
+            }
+        };
         if poll_one(&pool, &c).await.is_err() {
             eprintln!("Provider polling failed; durable cursor retained");
         }

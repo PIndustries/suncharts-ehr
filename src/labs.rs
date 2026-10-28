@@ -52,10 +52,10 @@ pub struct NewOrder {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct EditOrder {
-    visit_id: Option<Uuid>,
-    content: OrderContent,
-    reason: String,
+pub(crate) struct EditOrder {
+    pub(crate) visit_id: Option<Uuid>,
+    pub(crate) content: OrderContent,
+    pub(crate) reason: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -65,6 +65,7 @@ struct Action {
 }
 #[derive(Serialize, sqlx::FromRow)]
 struct Order {
+    diagnosis_snapshot: Option<Value>,
     id: Uuid,
     patient_id: Uuid,
     visit_id: Option<Uuid>,
@@ -331,7 +332,7 @@ async fn patient(tx: &mut Transaction<'_, Postgres>, a: &Actor, p: Uuid) -> Resu
     }
 }
 async fn order(tx: &mut Transaction<'_, Postgres>, a: &Actor, p: Uuid, id: Uuid) -> Result<Order> {
-    sqlx::query_as("SELECT id,patient_id,visit_id,content,status,version,source_history_id,created_by,placed_by,placed_at,created_at FROM lab_orders WHERE tenant_id=$1 AND patient_id=$2 AND id=$3 FOR UPDATE").bind(a.tenant_id).bind(p).bind(id).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)
+    sqlx::query_as("SELECT id,patient_id,visit_id,content,status,version,source_history_id,created_by,placed_by,placed_at,created_at,diagnosis_snapshot FROM lab_orders WHERE tenant_id=$1 AND patient_id=$2 AND id=$3 FOR UPDATE").bind(a.tenant_id).bind(p).bind(id).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)
 }
 async fn report(
     tx: &mut Transaction<'_, Postgres>,
@@ -430,6 +431,10 @@ pub fn router() -> Router<State> {
             get(history),
         )
         .route(
+            "/api/v1/patients/{patient}/orders/{order}/diagnoses",
+            put(link_diagnoses),
+        )
+        .route(
             "/api/v1/patients/{patient}/orders/{order}/specimens",
             post(specimen),
         )
@@ -468,7 +473,7 @@ async fn list(
     tx.commit().await?;
     Ok(Json(data))
 }
-async fn create(
+pub(crate) async fn create(
     a: Actor,
     ExtractState(s): ExtractState<State>,
     Path(p): Path<Uuid>,
@@ -525,7 +530,7 @@ async fn create(
     tx.commit().await?;
     Ok(response(o, 1))
 }
-async fn edit(
+pub(crate) async fn edit(
     a: Actor,
     ExtractState(s): ExtractState<State>,
     Path((p, id)): Path<(Uuid, Uuid)>,
@@ -541,6 +546,11 @@ async fn edit(
     if o.status != "draft" {
         return Err(Error::Conflict(
             "placed orders are immutable; cancel or create a replacement",
+        ));
+    }
+    if o.diagnosis_snapshot.is_some() && input.visit_id != o.visit_id {
+        return Err(Error::Conflict(
+            "clear draft diagnosis links before changing the linked visit",
         ));
     }
     if let Some(v) = input.visit_id {
@@ -1020,4 +1030,113 @@ async fn mapping(
     crate::postgres::audit(&mut tx, &a, "patient.lab_mapping.read", p).await?;
     tx.commit().await?;
     Ok(Json(data))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LinkDiagnoses {
+    visit_version: i64,
+    diagnosis_ids: Vec<Uuid>,
+    reason: String,
+}
+/// Resolve the explicit selection under the same visit lock used by signing and
+/// diagnosis edits. Consumers persist this value, never a live lookup.
+pub(crate) async fn diagnosis_snapshot(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    patient: Uuid,
+    visit: Uuid,
+    expected: i64,
+    ids: &[Uuid],
+) -> Result<Value> {
+    if ids.len() > 20 || ids.iter().collect::<HashSet<_>>().len() != ids.len() {
+        return Err(Error::Invalid(
+            "select at most 20 distinct encounter diagnoses",
+        ));
+    }
+    let version: i64 = sqlx::query_scalar(
+        "SELECT version FROM visits WHERE tenant_id=$1 AND patient_id=$2 AND id=$3 FOR SHARE",
+    )
+    .bind(a.tenant_id)
+    .bind(patient)
+    .bind(visit)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or(Error::NotFound)?;
+    if version != expected {
+        return Err(Error::Conflict(
+            "encounter changed; review its current diagnoses",
+        ));
+    }
+    let stored: Value = sqlx::query_scalar(
+        "SELECT diagnoses FROM visit_diagnoses WHERE tenant_id=$1 AND visit_id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(visit)
+    .fetch_optional(&mut **tx)
+    .await?
+    .unwrap_or_else(|| json!([]));
+    let mut selected = Vec::new();
+    for id in ids {
+        let item = stored
+            .as_array()
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|item| item["id"].as_str() == Some(id.to_string().as_str()))
+            })
+            .ok_or(Error::Invalid(
+                "selected diagnosis is not part of this encounter",
+            ))?;
+        selected.push(item.clone());
+    }
+    Ok(
+        json!({"visit_id":visit,"visit_version":version,"code_system":"http://hl7.org/fhir/sid/icd-10-cm","diagnoses":selected}),
+    )
+}
+async fn link_diagnoses(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((p, id)): Path<(Uuid, Uuid)>,
+    h: HeaderMap,
+    Json(input): Json<LinkDiagnoses>,
+) -> Result<Response> {
+    a.clinical()?;
+    text(&input.reason, 1000)?;
+    let mut tx = db(&s)?.begin().await?;
+    let old = order(&mut tx, &a, p, id).await?;
+    version(old.version, &h)?;
+    if old.status != "draft" {
+        return Err(Error::Conflict(
+            "only draft orders can change diagnosis links",
+        ));
+    }
+    let visit = old
+        .visit_id
+        .ok_or(Error::Invalid("link the order to a native visit first"))?;
+    let snapshot = diagnosis_snapshot(
+        &mut tx,
+        &a,
+        p,
+        visit,
+        input.visit_version,
+        &input.diagnosis_ids,
+    )
+    .await?;
+    let snapshot = if input.diagnosis_ids.is_empty() {
+        None
+    } else {
+        Some(snapshot)
+    };
+    sqlx::query("UPDATE lab_orders SET diagnosis_snapshot=$3 WHERE tenant_id=$1 AND id=$2")
+        .bind(a.tenant_id)
+        .bind(id)
+        .bind(snapshot)
+        .execute(&mut *tx)
+        .await?;
+    let o = bump(&mut tx, &a, &old, "draft", &input.reason).await?;
+    crate::postgres::audit(&mut tx, &a, "patient.order.diagnoses", p).await?;
+    tx.commit().await?;
+    let v = o.version;
+    Ok(response(o, v))
 }

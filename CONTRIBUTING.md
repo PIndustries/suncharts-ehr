@@ -1,60 +1,66 @@
-# Contributing to SunCharts EHR
+# Contributing
 
-SunCharts EHR is an independent Rust EHR and web interface under development.
-Use synthetic data only. It is not certified or ready for clinical production.
-See [the roadmap](docs/roadmap.md) and [release checklist](docs/release-checklist.md)
-for the supported workflow scope and release evidence.
+Read [README.md](README.md), [AGENTS.md](AGENTS.md) and the
+[architecture guide](docs/architecture.md) before changing the engine.
+Use synthetic patients and dedicated development databases. Never commit credentials,
+clinical exports, private keys or screenshots containing real patient information.
 
-Read [AGENTS.md](AGENTS.md) and [the architecture](docs/architecture.md).
-The engine/GUI use [AGPL-3.0-only](LICENSE); the API specification under `api/`
-uses [Apache-2.0](api/LICENSE). Preserve the applicable notices. Submit only work
-you have the right to contribute under the applicable project license. There is
-no adopted contributor relicensing grant or commercial dual-license program.
-Do not transfer proprietary source or third-party application implementation
-into this repository without the necessary rights and compatible licensing. Public specifications/schema documentation can inform an
-independent implementation; cite the source and pin the relevant version.
+## Checks
 
-## Development and validation
-
-Use the Rust and PostgreSQL setup in [README.md](README.md), a dedicated local
-PostgreSQL 16+ database, and private environment variables. `.env.example` contains
-variable names and development defaults; it is not a production configuration.
-Do not commit credentials, real patients, production exports, provider tokens,
-SSH private keys, screenshots of real charts or clinical logs.
-
-Before submitting:
+Set `TEST_DATABASE_URL` to a disposable PostgreSQL database with permission to
+create isolated test schemas. Do not point tests at an installation database.
 
 ```sh
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 TEST_DATABASE_URL=postgres://localhost/suncharts_ehr_test cargo test --locked
 python3 -m unittest discover -s scripts -p 'test_*.py'
-node scripts/test_practice_ui.cjs
+for test_file in scripts/test_*ui.cjs scripts/test_chart_scheduling.cjs scripts/test_schedule_calendar.cjs scripts/test_week_calendar.cjs; do
+  node "$test_file" || exit 1
+done
+for source_file in web/*.js; do node --check "$source_file" || exit 1; done
 ```
 
-Set `TEST_DATABASE_URL` to a disposable database with permission to create test
-schemas. The tests do not use your clinical database. The optional loopback SFTP
-verification in `scripts/verify_provider_sftp.py` requires its documented local SSH
-prerequisites; ordinary ignored tests are not proof that transport was exercised.
-Also run `node --check` on changed web JavaScript. Test commands may require a
-newer Rust toolchain than the package minimum; record the actual toolchain used.
+The three optional SSH tests require a provisioned loopback fixture. See
+`scripts/verify_provider_sftp.py` for its prerequisites. Do not report skipped
+transport tests as successful provider validation.
 
-Keep changes reviewable and include a concrete before/after behavior, validation
-performed, remaining gaps and any external protocol/version assumptions. Test
-state transitions, failure/rollback, permissions, tenant/patient isolation and
-concurrent versions when the change affects them. A backend test does not establish
-interactive visual acceptance or partner acceptance; label those separately.
+## Changes
 
-Every clinical query must use the authenticated tenant. Every state change and
-its audit event must commit together. Signed records, source evidence and history
-must remain immutable; corrections append attributed revisions. Do not weaken
-these controls to make a demo convenient. Never modify an already-applied migration;
-add a sequential successor. Do not log secrets or patient content.
+Local development and test builds omit debug symbols and incremental caches to
+limit storage. For a debugger session, explicitly set
+`CARGO_PROFILE_DEV_DEBUG=2`; restore the default afterwards.
 
-For API changes, update the Apache-2.0 contract, migration/workflow documentation
-and evidence. For GUI changes, preserve patient context and unsaved clinical work,
-show errors instead of fabricated empty data, and do not imply that an unsent
-order or recorded payment was transmitted or collected.
+`python3 scripts/clean_build_cache.py --project "$PWD"` previews cache maintenance;
+add `--apply` to remove idle compiler caches older than seven days, over the
+8 GiB budget, or when available disk space is below 15 GiB. Cargo-locked profiles
+are skipped. Built application executables, source, settings and data are retained.
+The budget applies to idle caches, not to an active build's peak disk usage.
 
-Security issues require private handling. Read [SECURITY.md](SECURITY.md); do not
-post sensitive vulnerability details, credentials or patient information publicly.
+Keep pull requests focused. Explain the behavior changed, the reason for it and
+how it was tested. Include relevant failure cases and remaining limitations.
+Update [api/openapi.json](api/openapi.json) when an HTTP contract changes.
+
+Clinical queries must use the authenticated tenant. Writes and audit events must
+commit together. Preserve signed content and history; corrections append records.
+Test permissions, stale versions, concurrency and rollback where they affect the
+change. Never edit an applied migration; add a sequential successor.
+
+For web changes, exercise the affected workflow in a browser as well as running
+fixtures. Preserve patient context and unsaved work, and show failures explicitly.
+A local order is not a transmitted order; a recorded payment is not a collection.
+
+Documentation should explain installation, operation or a supported contract.
+Keep commands and limits current. Avoid duplicate API payload catalogs, development
+diaries, per-build test reports, speculative completion percentages and unverified
+release claims. Keep internal engineering notes outside the public source tree.
+
+## Licensing and security
+
+Submit only code you can contribute under the applicable project license:
+AGPL-3.0-only for the implementation, Apache-2.0 for `api/`. Preserve notices.
+Do not copy proprietary or incompatible third-party implementation code.
+Cite versioned public specifications when implementing an external protocol.
+No contributor relicensing grant or commercial dual-license program is adopted.
+
+Report vulnerabilities privately using [SECURITY.md](SECURITY.md).
