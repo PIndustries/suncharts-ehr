@@ -1,66 +1,60 @@
-# Product and backend boundaries
+# Architecture
 
-SunCharts EHR is a separate Git repository and deployable. SunCharts Engine is
-its Rust server; `web/` is its independent clinical interface. A clinic can use
-the open-source product without SunCharts SaaS or a subscription. Authentication,
-the native database, audit trail and the first clinical UI run in this service.
+SunCharts Engine is a Rust HTTP service with PostgreSQL persistence and a web
+interface served by the same binary. It is the backend for SunCharts EHR. Separate
+clients use HTTP contracts and do not link the AGPL crate.
 
-The proprietary SunCharts repository retains its existing Apple/Android/web apps,
-accounts, billing and source system connection management. Its new optional gateway
-talks to this service over HTTP; it does not depend on the AGPL crate. The API
-specification is Apache-2.0. A separate repository is a useful release boundary;
-licensing separation depends on the actual software relationship, not folder names.
+## Layout
 
-## Optional client connections
+| Path | Purpose |
+|---|---|
+| `src/` | Authentication, clinical workflows, billing, integrations and HTTP handlers |
+| `web/` | Browser workspace and styles; no separate frontend build step |
+| `migrations/` | Sequential PostgreSQL schema migrations |
+| `api/openapi.json` | Published API contract |
+| `tests/` | Database-backed and HTTP integration tests |
+| `scripts/` | Import tools, frontend fixtures and transport verification |
 
-The clinic owner registers an exact OAuth2 callback for an independent SunCharts
-application. Each staff member grants access separately; installation and user
-identities remain independently pinned. Native patient portal reads are not yet
-connected to an external patient identity. Matching email addresses or identifiers
-must never substitute for verified identity mapping.
+`src/lib.rs` assembles routes. `src/main.rs` applies migrations and starts the
+server and background workers. `ClinicalBackend` defines the core visit interface;
+`PostgresBackend` implements it. Other workflow modules use the authenticated
+installation database directly.
 
-OAuth linking does not move clinical records or authorize a migration. A separate
-legacy import is staged, reconciled and explicitly reviewed. Client connections
-use HTTP contracts and do not link this Rust crate into another application.
+## Identity and transactions
 
-## Native workflow
+The standalone EHR has its own staff accounts and sessions. Tenant identity comes
+from authentication, never a request body. OAuth grants bind an application,
+tenant and user; local role permissions still apply. Patient portal accounts use
+a separate cookie, account-bound requests and explicit publication of immutable
+visit-summary versions; a staff session does not grant patient portal access.
 
-Patient identifiers are tenant-scoped. Booking serializes competing bookings per
-tenant/clinician and rejects overlapping active appointments. An appointment
-transitions `booked → checked_in → in_progress → completed`. A visit can be
-created only from the assigned clinician's checked-in appointment. Only that
-clinician can edit, sign or amend its documentation.
+State mutations and their audit events share a database transaction. Versioned
+writes use quoted `If-Match` headers. Clinical signatures, amendments, revisions,
+source imports and ledger entries preserve history rather than overwrite it.
 
-SOAP and vitals updates increment a version under a row lock. `If-Match` is required;
-concurrent or stale writers receive 409. Signing requires a complete SOAP note,
-attributes signer/time and completes the appointment in the same audited transaction.
-The signed note and vitals remain unchanged when an amendment is appended.
-Patient-scoped reads expose only signed visits and their amendments; failed reads
-return an error, not a successful empty chart. Reads are also audited before return.
+An appointment moves from booking through arrival to an encounter. Enabled rooming
+staff may start a checked-in visit and record intake/vitals while retaining its
+assigned clinician. That clinician owns SOAP, signing and amendments. Checkout,
+results, follow-up tasks and billing have separate state transitions. Prescription
+orders also retain their own versioned lifecycle and reviewed authorization
+snapshots, distinct from reported medication use and external pharmacy delivery.
 
-## Next milestones
+Background delivery and retrieval use durable jobs, leases and provider evidence.
+Ambiguous external outcomes require reconciliation rather than an unqualified
+retry. See [clearinghouses](clearinghouses.md) and [scheduling](scheduling.md).
 
-- Extend the browser-verified first visit with account management/MFA and ongoing UI regression tests.
-- Extend the implemented external identity mappings and reconciled archival import
-  into clinically equivalent workflows; never keep two authoritative writers.
-- Add coded observations/conditions/allergies/medications, units, provenance,
-  consent, corrections and long-term history before producing conformant FHIR.
-- Expand the initial FHIR Patient boundary and validate against pinned implementation-guide packages and
-  selected Inferno tests, with results tracked per capability.
-- Add attachments, lab interfaces, eRx vendor integration and claims workflows
-  as separate milestones. A medication-list CRUD endpoint is not e-prescribing.
+## Connections and imports
 
-## Connection, events and migration
+Optional SunCharts services connect through OAuth and server-to-server APIs.
+New installations initiate an authenticated outbound TLS WebSocket to SunCharts;
+no public EHR URL or inbound firewall port is required. The installation channel
+transports bounded requests but grants no clinical authority. Requests retain
+user OAuth credentials and pass the ordinary local router authorization.
+Enrollment uses session-bound owner approval and PKCE, then rotates to the
+installation credential. Heartbeats and reconnects update local connection health.
+A connection neither migrates records nor proves every workflow is synchronized.
+Change notices identify changed records without embedding chart contents or secrets.
 
-OAuth clients belong to an installation tenant; grants bind client + tenant + staff
-user and current role. Secrets/tokens are hashed locally and encrypted in SunCharts.
-No password/secret or full chart payload enters change notices. The feed is tenant
-scoped and grant scoped; SSE checks revocation/expiry each second. Tenant advisory
-locking orders audit inserts through commit so a replay cursor does not skip a
-late-committing earlier notice. Consumers must tolerate reconnects and duplicates.
-
-Migration jobs explicitly declare source instance/revision/counts/limitations. A
-source ID mapping is distinct from a native patient UUID. Import commits all rows,
-external identities and audit events atomically, preserving source history without
-fabricating signatures. MRN conflicts block rather than merge patients silently.
-See [migration.md](migration.md); cutover remains blocked in this preview.
+Migration preserves source records separately from native clinical state. Staff
+must review supported mappings explicitly. An imported note never becomes a newly
+signed native encounter. See [migration](migration.md).

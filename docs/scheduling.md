@@ -1,93 +1,86 @@
-# Native scheduling and appointments
+# Scheduling and reminders
 
-The standalone web **Schedule** covers a day or seven-day agenda, provider/date
-filters, patient selection, booking, editing/rescheduling, facility/room/category
-and notes, provider time blocks and removal, check-in, cancellation, no-show,
-patient-chart handoff, encounter start, and attributed appointment history.
-Times display in the browser's IANA timezone; the API stores UTC instants. The UI
-rejects ambiguous/nonexistent DST local times; the API accepts explicit offsets.
-This is a synthetic-data development preview, not complete calendar coverage.
+## Calendar and patient flow
 
-## Contract and concurrency
+Schedule includes day/seven-day agendas, a month calendar and a week calendar
+with provider columns and 30-minute slots. Provider/date filters apply to each
+view. Appointments link to their patient and encounter.
 
-See `/openapi.json`. `GET /api/v1/schedule?start=...&end=...&clinician_id=...`
-returns half-open interval overlaps (maximum 31 days, maximum 1000 appointments
-and 1000 active blocks; narrow filters when exceeded). Active owner/clinician
-accounts populate `/schedule/providers`; imported users are not authentication
-accounts. Scheduling writes require owner, clinician or front-desk roles; read-only
-staff can view; patient credentials cannot access the staff schedule. OAuth uses
-existing `clinical.read` / `clinical.write` scopes plus local role checks.
+Book or reschedule with a provider, time, visit category and optional facility,
+room and notes. Active directory locations appear as suggestions; existing text
+locations remain supported. Booked appointments can be dragged to another time or
+provider. Review the proposed move and supply a reason before saving. A keyboard
+**Choose calendar slot to move** action provides the same review.
 
-Appointment edits and `/appointments/{id}/actions` require a quoted `If-Match`.
-Check-in, encounter start and signed completion also increment the appointment
-version and append immutable snapshots. The original `/check-in` endpoint remains
-for compatibility and is state-checked. Legacy gateway-only instances without
-browser auth retain their trusted-identity booking boundary; the native browser
-and OAuth service require an active local provider account.
+The server checks overlapping provider, patient and named-room bookings and provider
+blocks. Adjacent intervals are allowed. Completed visits preserve their occupied
+interval; cancellations and no-shows release capacity. Inactive provider profiles
+cannot receive new bookings. Arrival, encounter start and signing use separate
+state transitions; started appointments cannot be dragged.
 
-New booking/block clients supply a stable `request_id`. Exact retries return the
-same current resource; reusing an ID with different input conflicts. Legacy
-minimal appointment payloads remain accepted without automatic retry safety.
-All scheduling mutations and audits share a transaction. A tenant scheduling
-advisory lock serializes conflict checks across instances: provider, patient and
-named facility/room intervals cannot overlap other appointments, and provider
-blocks cannot overlap active appointments/blocks. Cancelled/no-show appointments
-release capacity; completed visits preserve their occupied interval. Adjacent
-intervals are allowed. Textual facility/room identifiers use exact comparison;
-a canonical facility/resource directory remains future work.
+Times are stored as UTC instants and displayed in the browser's IANA timezone.
+The UI rejects ambiguous or nonexistent local times at clock changes. An API client
+must supply explicit offsets.
 
-Only booked appointments can be edited. Booked/checked-in can be cancelled;
-no-show applies only to booked appointments whose start is past. Terminal entries
-are never deleted or reopened. In-progress/completed states follow the encounter
-workflow, preventing an administrator from fabricating a signed visit. Blocks are
-retained after removal with an immutable operator/reason cancellation record.
-Existing appointments get an explicitly labeled upgrade baseline, not an inferred
-original author or original booking time.
+## Recurring appointments
 
-## Legacy mapping
+Daily, weekly and monthly series contain 2–52 explicitly reviewed occurrences,
+with an interval of 1–12. Preview lists each occurrence and its conflicts; creation
+rechecks the complete plan and books all occurrences atomically or none.
 
-Original appointment rows are already exported by `export_legacy.py` and imported
-as immutable `kind=appointment` history with stable source identifiers. Import
-**does not activate bookings**. The chart's **Review appointment mapping** opens
-staff reconciliation, showing original time/provider/status/recurrence. The
-operator selects the matching active native provider, verifies the occurrence,
-source status and timezone, and creates one booked appointment with
-`source_history_id`. Unique source linkage prevents duplicate activation; the
-original payload remains available. Past/completed source encounters should remain
-history until a separate encounter migration/reconciliation workflow is validated.
+Each occurrence is an ordinary versioned appointment. Editing one creates an
+exception without regenerating the series. Cancelling upcoming visits requires
+the current series version and full occurrence-version list; past, started and
+otherwise ineligible members remain unchanged.
 
-| legacy source field | Native mapping / required review |
-| --- | --- |
-| `pc_eid` / source UUID | Source identifier retained, immutable history linkage |
-| `pc_pid` | Export patient-source reference → reviewed native patient identity |
-| `pc_aid` | Explicit source-provider → active native clinician selection; never assume matching numeric IDs |
-| `pc_eventDate`, `pc_startTime` | Source IANA timezone → explicit UTC instant; never assume browser timezone is the source timezone |
-| `pc_duration` | Seconds added to the UTC start; positive, maximum 24 hours |
-| `pc_endTime`, `pc_endDate` | Retained for comparison; review discrepancies and recurrence boundary |
-| `pc_title` | Appointment title, maximum 200 characters |
-| `pc_catid`, `pc_prefcatid` | Preserve source IDs; explicitly select native category text |
-| `pc_facility`, `pc_billing_location`, `pc_room` | Preserve IDs; verify facility name/room before native resource use; billing location remains archival |
-| `pc_hometext` | Scheduling notes, maximum 2000 characters |
-| `pc_apptstatus` | Preserve custom source code; operator verifies booked status; never guess a code or fabricate completion |
-| `pc_recurrtype`, `pc_recurrspec`, `pc_recurrfreq`, `pc_alldayevent`, `pc_multiple` | Preserve original series/multi-provider data; source-side expansion and occurrence review required |
-| Tracker/encounter links, confirmations and reminder metadata | Preserve in source payload; do not infer a signed encounter or sent message |
+Series preserve the selected local start time and timezone across clock changes.
+Monthly series use the original day or the final day of a shorter month. Infinite
+recurrence and bulk rescheduling of an entire series are not supported.
 
-`scripts/map_legacy_appointment.py --help` prepares a POST body from one original
-nonrecurring source row. Supply explicit patient/provider/history UUIDs, source
-IANA timezone, the installation's booked status, category and review reason. It
-rejects unmatched statuses, recurrence/all-day events, invalid duration and
-nonexistent clock-change times; ambiguous times require `--fold 0|1`. It never
-calls an API. Treat its clinical output privately and review before submission.
-The web form requires manual date/time for raw naive source dates; it only prefills
-normalized instants carrying an explicit timezone offset.
+## Reminder setup
 
-Source schema versions and customizations must be inventoried per installation.
+New future bookings receive 24-hour and 2-hour reminder definitions. Past reminder
+windows are recorded as missed; historical appointments are not backfilled. Staff
+can add custom reminders. Rescheduling supersedes unsent reminders and generates
+new ones; cancellation, arrival and completion suppress unsent sends.
 
-## Remaining capabilities
+Record the patient's permission and verification of the exact saved destination.
+Matching an email address is not consent. Changing contact details invalidates
+verification. Phone reminders are staff tasks; automated SMS is not implemented.
 
-Recurring series/exceptions and multi-provider group events, working-hours templates
-and free-slot search, drag/drop and month/resource grids, configured facilities and
-calendar category/status administration, waitlists, portal self-booking, automated
-reminders/confirmations, resource capacity/overbooking policy, tracker/wait-time
-reports, FHIR Appointment/Schedule/Slot remain
-pending. No production cutover, deployment or certification is claimed.
+In **Schedule → Reminders → Sender settings**, choose:
+
+- **SunCharts Connect:** managed email for a connected, entitled practice. See
+  [connected services](integrations.md).
+- **Own Resend account:** enter a key and sender address. The key must list domains,
+  send emails and retrieve sent emails. Test the saved sender against its exact
+  verified domain, then explicitly enable delivery. Saving changes pauses sends.
+
+Credentials are encrypted with the installation's master key. Follow the
+[backup and recovery instructions](operations.md#credentials-and-backups).
+
+## Delivery and recovery
+
+Messages contain a generic subject and appointment time, without patient names,
+MRNs, clinical notes or visit reasons. The recipient and appointment time still
+require appropriate provider arrangements and consent.
+
+Provider acceptance and confirmed delivery are separate states. Workers retrieve
+provider evidence before marking a message delivered. Unknown outcomes retain
+the same request identity; retries stop after five attempts or 23 hours. An
+uncertain request without a provider ID requires review, not a blind resend.
+Changing senders does not reroute an already-attempted message.
+
+Patient confirmations, self-service preferences, message templates and provider
+webhook ingestion are not implemented.
+
+## API limits
+
+Use [the OpenAPI contract](../api/openapi.json) for request bodies and actions.
+Schedule reads cover at most 31 days and 1,000 appointments/blocks each. Narrow
+filters when the limit is exceeded. Series lists return at most 100 entries with
+`has_more`. Updates require quoted versions; exact idempotent creation retries use
+stable request UUIDs. On a network failure, reload before retrying a mutation.
+
+Working-hours templates, free-slot search, waitlists and portal booking remain
+on the [roadmap](roadmap.md).

@@ -52,7 +52,7 @@ async fn worklist(ExtractState(s): ExtractState<State>, a: Actor) -> Result<Json
     let items = sqlx::query_as::<_, UnfinishedVisit>(
         "SELECT v.id AS visit_id,v.appointment_id,v.patient_id,p.mrn,
          p.family_name || ', ' || p.given_name AS patient_name,
-         v.clinician_id,coalesce(u.email,'Unmapped provider') AS provider_label,
+         v.clinician_id,coalesce(nullif(pp.display_name,''),nullif(u.display_name,''),u.email,'Unmapped provider') AS provider_label,
          a.facility,a.room,a.starts_at,v.created_at,v.version,
          v.note IS NOT NULL AS note_saved,v.vitals IS NOT NULL AS vitals_saved,
          a.title,count(*) OVER() AS total
@@ -60,6 +60,7 @@ async fn worklist(ExtractState(s): ExtractState<State>, a: Actor) -> Result<Json
          JOIN patients p ON p.tenant_id=v.tenant_id AND p.id=v.patient_id
          JOIN appointments a ON a.tenant_id=v.tenant_id AND a.id=v.appointment_id
          LEFT JOIN browser_users u ON u.tenant_id=v.tenant_id AND u.id=v.clinician_id
+         LEFT JOIN practice_providers pp ON pp.tenant_id=v.tenant_id AND pp.id=v.clinician_id
          WHERE v.tenant_id=$1 AND v.status='in_progress'
          ORDER BY a.starts_at,v.id LIMIT 100",
     )

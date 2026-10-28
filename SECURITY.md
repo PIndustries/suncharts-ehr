@@ -1,31 +1,21 @@
-# Security policy — development preview
+# Security policy
 
-SunCharts EHR is a synthetic-data development preview. No release is designated
-for clinical production or real patient data. Passing local tests is not a security
-assessment, certification or promise that a deployment is safe for clinical use.
+SunCharts EHR is under development. No release is designated for clinical
+production or real patient data. There is no supported-release or guaranteed
+security response schedule yet.
 
-## Report a vulnerability privately
+## Reporting
 
-Use the repository’s [Security → Advisories page](https://github.com/PIndustries/suncharts-ehr/security/advisories)
-and choose **Report a vulnerability**. GitHub private vulnerability reporting was
-enabled and verified through the repository API on October 25, 2026. Reports are
-private to the reporter and repository maintainers; a GitHub account is required.
-Do not use a public issue or pull request for sensitive vulnerability details.
+Use [GitHub private vulnerability reporting](https://github.com/PIndustries/suncharts-ehr/security/advisories)
+and choose **Report a vulnerability**. Do not post sensitive details in a public
+issue or pull request. GitHub documents the process in its
+[reporting guide](https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/report-privately).
 
-Use a synthetic reproduction. Do not include real patient data, production exports,
-provider credentials or access tokens. This preview has no guaranteed response or
-patch-service timetable. Repository administrators should keep their security
-notifications enabled and maintain this policy as supported releases develop.
-See [GitHub’s reporting instructions](https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/report-privately)
-and the [release checklist](docs/release-checklist.md).
+Provide a minimal synthetic reproduction, affected version and expected versus
+actual behavior. Do not include patient data, production exports, credentials or
+access tokens. Do not test a clinic or provider account without its operator's
+authorization.
 
-## Scope and disclosure
-
-Use synthetic reproductions and the minimum information needed to demonstrate an
-issue. Tenant/patient isolation, authorization, audit integrity, immutable signed
-records, source archives and credential handling are security-sensitive boundaries.
-Do not test against a clinic, production patient records or provider accounts
-without the operator's explicit authorization.
-
-There is currently no defined supported-release/patch-service schedule. Maintainers should publish supported versions and update these instructions
-when a supported release and patch-service schedule exist.
+Tenant isolation, authorization, signatures, audit/history integrity, credential
+storage and the corresponding source archive are within scope. Maintain deployment
+and dependency protections independently of this reporting process.

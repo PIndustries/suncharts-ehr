@@ -286,7 +286,7 @@ async fn lists(
     tx.commit().await?;
     Ok(Json(data))
 }
-async fn create(
+pub(crate) async fn create(
     a: Actor,
     ExtractState(s): ExtractState<State>,
     Path(p): Path<Uuid>,
@@ -322,7 +322,7 @@ async fn create(
     tx.commit().await?;
     Ok(response(e))
 }
-async fn update(
+pub(crate) async fn update(
     a: Actor,
     ExtractState(s): ExtractState<State>,
     Path((p, id)): Path<(Uuid, Uuid)>,

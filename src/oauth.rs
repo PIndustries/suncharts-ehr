@@ -473,6 +473,8 @@ pub async fn authenticate(s: &State, raw: &str, method: &Method, path: &str) -> 
         "migration.manage"
     } else if path.starts_with("/api/v1/events") {
         "events.read"
+    } else if path == "/fhir/Coverage" || path.starts_with("/fhir/Coverage/") {
+        "billing.read"
     } else if path.split('/').any(|segment| {
         ["billing", "coverages", "billing-mapping", "claim-mapping"].contains(&segment)
     }) {

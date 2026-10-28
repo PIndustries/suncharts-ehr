@@ -17,6 +17,8 @@ use uuid::Uuid;
 pub enum Role {
     Owner,
     Clinician,
+    Nurse,
+    MedicalAssistant,
     FrontDesk,
     ReadOnly,
     Patient,
@@ -44,6 +46,17 @@ impl Actor {
     }
     pub fn scheduling(&self) -> Result<()> {
         if matches!(self.role, Role::Owner | Role::Clinician | Role::FrontDesk) {
+            Ok(())
+        } else {
+            Err(Error::Forbidden)
+        }
+    }
+    /// Rooming does not confer prescribing, SOAP or signature authority.
+    pub fn rooming(&self) -> Result<()> {
+        if matches!(
+            self.role,
+            Role::Owner | Role::Clinician | Role::Nurse | Role::MedicalAssistant
+        ) {
             Ok(())
         } else {
             Err(Error::Forbidden)

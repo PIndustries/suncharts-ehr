@@ -1,0 +1,2 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+body{font:14px system-ui;max-width:800px;margin:30px;color:#182b34}h1{font-size:24px}h2{font-size:18px}h4{margin:16px 0 8px}p{white-space:pre-wrap}.avs-summary-grid{display:grid;grid-template-columns:1fr 1fr;gap:25px}button,.actions{display:none}@media print{body{margin:0}}

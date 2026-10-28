@@ -509,7 +509,14 @@ async fn commit(
         );
         if r.kind == "patient" {
             let p = patient(r)?;
-            sqlx::query("INSERT INTO patients (tenant_id,id,mrn,given_name,family_name,birth_date) VALUES ($1,$2,$3,$4,$5,$6)").bind(a.tenant_id).bind(target).bind(p.mrn).bind(p.given_name).bind(p.family_name).bind(p.birth_date).execute(&mut *tx).await?;
+            let registered: crate::model::Patient = sqlx::query_as("INSERT INTO patients (tenant_id,id,mrn,given_name,family_name,birth_date) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id,mrn,given_name,family_name,birth_date").bind(a.tenant_id).bind(target).bind(p.mrn).bind(p.given_name).bind(p.family_name).bind(p.birth_date).fetch_one(&mut *tx).await?;
+            crate::patient_identity::record_initial(
+                &mut tx,
+                &a,
+                &registered,
+                "Patient registered from reviewed source import",
+            )
+            .await?;
         } else {
             let patient_id: Option<Uuid> = if let Some(ref p) = r.patient_source_id {
                 sqlx::query_scalar("SELECT target_id FROM source_identifiers WHERE tenant_id=$1 AND source_instance=$2 AND kind='patient' AND source_id=$3").bind(a.tenant_id).bind(&j.source_instance).bind(p).fetch_optional(&mut *tx).await?

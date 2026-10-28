@@ -17,7 +17,7 @@ use axum::{
 use chrono::{NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sqlx::{Postgres, Transaction};
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 fn db(s: &State) -> Result<&sqlx::PgPool> {
     Ok(&s.browser.as_ref().ok_or(Error::NotFound)?.db)
@@ -200,7 +200,7 @@ async fn partners(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json
     crate::postgres::audit(&mut tx, &a, "edi.partner_directory", a.tenant_id).await?;
     tx.commit().await?;
     Ok(Json(
-        json!({"items":items,"transport":transport(a.tenant_id)?.0,"network_sender_configured":transport(a.tenant_id)?.1}),
+        json!({"items":items,"transport":transport(db(&s)?, a.tenant_id).await?.0,"network_sender_configured":transport(db(&s)?, a.tenant_id).await?.1}),
     ))
 }
 async fn new_partner(
@@ -373,7 +373,7 @@ async fn worklist(
     crate::postgres::audit(&mut tx, &a, "edi.worklist", a.tenant_id).await?;
     tx.commit().await?;
     Ok(Json(
-        json!({"items":items,"next_cursor":next,"transport":transport(a.tenant_id)?.0}),
+        json!({"items":items,"next_cursor":next,"transport":transport(db(&s)?, a.tenant_id).await?.0}),
     ))
 }
 async fn detail(
@@ -390,7 +390,7 @@ async fn detail(
     crate::postgres::audit(&mut tx, &a, "edi.submission_read", id).await?;
     tx.commit().await?;
     Ok(Json(
-        json!({"submission":v,"claim":c,"events":history,"acknowledgments":acks,"transport":transport(a.tenant_id)?.0,"network_sender_configured":transport(a.tenant_id)?.1}),
+        json!({"submission":v,"claim":c,"events":history,"acknowledgments":acks,"transport":transport(db(&s)?, a.tenant_id).await?.0,"network_sender_configured":transport(db(&s)?, a.tenant_id).await?.1}),
     ))
 }
 async fn download(
@@ -586,8 +586,8 @@ async fn sources(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json<
     Ok(Json(json!({"items":items})))
 }
 
-fn transport(tenant: Uuid) -> Result<(&'static str, bool)> {
-    let config = crate::delivery::Config::from_env()?;
+async fn transport(pool: &PgPool, tenant: Uuid) -> Result<(&'static str, bool)> {
+    let config = crate::provider_settings::load_for_tenant(pool, tenant).await?;
     let configured = config.routes.iter().any(|r| r.tenant_id == tenant);
     let providers = config
         .routes

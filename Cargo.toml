@@ -9,6 +9,9 @@ description = "SunCharts Engine: an independent clinical record service"
 
 [dependencies]
 axum = "0.8"
+futures-util = "0.3"
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+tower = { version = "0.5", features = ["util"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "process", "fs", "io-util"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -19,6 +22,8 @@ jsonwebtoken = { version = "10.4", default-features = false, features = ["aws_lc
 thiserror = "2"
 async-trait = "0.1"
 argon2 = "0.5"
+aws-lc-rs = "1.18"
+zeroize = "1"
 sha2 = "0.10"
 rand = "0.8"
 url = "2"
@@ -32,5 +37,10 @@ flate2 = "1"
 tar = "0.4"
 
 [dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+
+# Keep ordinary local builds and tests compact. Full debugger information can
+# be requested explicitly with CARGO_PROFILE_DEV_DEBUG=2 when needed.
+[profile.dev]
+debug = 0
+incremental = false

@@ -1,7 +1,7 @@
-# Legacy migration foundation
+# Migration
 
-This preview preserves synthetic source history; it does not authorize production
-cutover or claim complete EHI export. Plan one authoritative writer per clinic
+Imports preserve source history. Production cutover is disabled; complete EHI
+export is not implemented. Plan one authoritative writer per clinic
 throughout transition.
 
 ## Import path
@@ -44,7 +44,7 @@ staff separately from newly authored notes. No source note becomes a newly signe
 native encounter; no history is automatically released to the patient portal.
 Problems/allergies/medications can now be explicitly reconciled into native list
 entries by a clinician, with immutable links to source history; see
-[clinical-lists.md](clinical-lists.md). Other archival rows remain read-only.
+[clinical workflow](clinical.md). Other archival rows remain read-only.
 Directory entries can be preserved but are not native identity accounts. Recognizing
 a kind name in the preservation schema does not implement that domain's workflow.
 
@@ -64,34 +64,26 @@ claims and messages need their actual clinical/financial interfaces, not just
 archival preservation. No automatic source deletion or two-way write replication
 is implemented.
 
-The lab EHI converter and explicit native order/report reconciliation are described
-in [orders-labs-results.md](orders-labs-results.md). This preserves source order
-relationships and labels external signatures as unverified; it does not enable
-external lab delivery, full EHI coverage or production cutover.
+## Domain tools
 
-Appointment history now supports explicit staff reconciliation into native bookings,
-with patient/provider/timezone/status review and a unique immutable source link.
-See [scheduling.md](scheduling.md) for the complete field mapping, DST-safe proposal
-utility, supported workflow and remaining calendar gaps. Recurrence and
-source completion states are never executed automatically during import.
+Run each script with `--help` for required inputs and its output contract:
 
-Insurance and billing now have native review workflows. The financial EHI exporter
-preserves payer/coverage, encounter charge bundles and AR evidence with exact
-source decimals. Import never posts balances or payments. Payer, coverage and
-charge activation require explicit staff reconciliation; source charge accounts
-start as drafts. See [billing-insurance.md](billing-insurance.md) for field maps,
-workflow limits, financial permissions and remaining revenue-cycle work.
+| Tool | Purpose |
+|---|---|
+| `export_legacy.py` | Patient and core clinical history package |
+| `export_legacy_labs.py` | Join order/report/result exports into the same snapshot |
+| `export_legacy_billing.py` | Payer, coverage, charge and AR evidence |
+| `export_legacy_claims.py` | Claim/remittance and settlement source evidence |
+| `export_legacy_clearinghouse.py` | Trading partner and transport history |
+| `map_legacy_appointment.py` | Prepare a reviewed nonrecurring booking proposal |
 
-## Claim and remittance sources
+These tools do not migrate authentication secrets or enable live provider routes.
+Domain reconciliation retains source identities, originals and explicit reviewer
+attribution. Historical signatures stay unverified; historical payments do not
+post to the native ledger automatically. Source-side completion states and
+recurrence are not executed during import.
 
-The financial source package can be extended with `export_legacy_claims.py`.
-Patient-scoped claim rows and global original ERA documents remain historical
-until independently reconciled. See [claims-remittances.md](claims-remittances.md)
-for exact identities, same-snapshot requirements and prevention of duplicate AR.
-
-EDI source packages can now be extended with allowlisted nonsecret trading-partner
-identifiers and original 999/TA1/277CA files. See
-[x12-clearinghouse.md](x12-clearinghouse.md) for the exporter, exact relationships,
-reviewed test-mode profile activation and native submission matching boundary.
-
-API 0.11.0 now supports [multi-transaction files and ordered correction chains](era-files-corrections.md), including repeated correction cycles and atomic reverse-order file undo. The earlier single-transaction/repeated-chain exclusions describe the 0.10.0 profile. Broader payer-specific/TR3 conformance remains pending.
+Review native [clinical](clinical.md), [scheduling](scheduling.md) and
+[billing](billing.md) semantics before activating a mapping. Test a complete frozen
+snapshot, reconcile totals and identities, rehearse rollback and obtain clinic
+sign-off before any separately approved production cutover.
