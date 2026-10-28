@@ -703,10 +703,54 @@ async fn fhir_patient_boundary_is_scoped_and_honest() {
         assert_eq!(status, StatusCode::CREATED);
         ids.push(p["id"].as_str().unwrap().to_string());
     }
-    let (status, _, cap) = json_call(&r, "GET", "/fhir/metadata", None, None, Value::Null).await;
+    let (status, metadata_headers, cap) =
+        json_call(&r, "GET", "/fhir/metadata", None, None, Value::Null).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(cap["fhirVersion"], "4.0.1");
-    assert_eq!(cap["rest"][0]["resource"].as_array().unwrap().len(), 1);
+    assert_eq!(metadata_headers["cache-control"], "no-store");
+    let resources = cap["rest"][0]["resource"].as_array().unwrap();
+    let mut types: Vec<_> = resources
+        .iter()
+        .map(|r| r["type"].as_str().unwrap())
+        .collect();
+    types.sort_unstable();
+    assert_eq!(
+        types,
+        vec![
+            "AllergyIntolerance",
+            "Appointment",
+            "Binary",
+            "Condition",
+            "Coverage",
+            "DiagnosticReport",
+            "DocumentReference",
+            "Encounter",
+            "Location",
+            "MedicationRequest",
+            "MedicationStatement",
+            "Observation",
+            "Patient",
+            "Practitioner",
+            "ServiceRequest",
+            "Specimen"
+        ]
+    );
+    // Document originals have no FHIR search/write interaction, while native
+    // prescriptions are read/search projections rather than medication-use rows.
+    for (kind, interactions) in [
+        ("Binary", vec!["read"]),
+        ("DocumentReference", vec!["read", "search-type"]),
+        ("MedicationRequest", vec!["read", "search-type"]),
+    ] {
+        let resource = resources.iter().find(|r| r["type"] == kind).unwrap();
+        let actual: Vec<_> = resource["interaction"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["code"].as_str().unwrap())
+            .collect();
+        assert_eq!(actual, interactions);
+    }
     let (status, h, bundle) = json_call(
         &r,
         "GET",
@@ -718,6 +762,7 @@ async fn fhir_patient_boundary_is_scoped_and_honest() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(h["content-type"], "application/fhir+json");
+    assert_eq!(h["cache-control"], "no-store");
     assert_eq!(bundle["entry"].as_array().unwrap().len(), 1);
     let next = url::Url::parse(bundle["link"][1]["url"].as_str().unwrap()).unwrap();
     let (_, _, second) = json_call(
@@ -758,6 +803,18 @@ async fn fhir_patient_boundary_is_scoped_and_honest() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(out["resourceType"], "OperationOutcome");
+    let (status, _, empty) = json_call(
+        &r,
+        "GET",
+        "/fhir/Patient",
+        Some(&bearer(&other)),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(empty["type"], "searchset");
+    assert!(empty.get("entry").is_none());
     let (status, _, _) = json_call(
         &r,
         "GET",
@@ -1935,6 +1992,17 @@ async fn native_scheduling_conflicts_versions_roles_and_visit_handoff() {
         .0,
         409
     );
+    // Drag rescheduling uses this same versioned edit boundary, including blocks.
+    let move_into_block = json!({"clinician_id":a.sub,"starts_at":"2026-11-02T18:00:00Z","ends_at":"2026-11-02T18:45:00Z","title":"Rescheduled review","category":"Follow-up","facility":"Example clinic","room":"1","notes":"New time","reason":"Synthetic calendar move"});
+    assert_eq!(
+        schedule_call(&r, &desk, "PUT", &path, move_into_block, Some(2))
+            .await
+            .0,
+        409
+    );
+    let (_, retained) = schedule_call(&r, &desk, "GET", &path, Value::Null, None).await;
+    assert_eq!(retained["version"], 2);
+    assert_eq!(retained["starts_at"], "2026-11-02T16:00:00Z");
     let cancel = format!(
         "/api/v1/schedule/blocks/{}/cancel",
         block["id"].as_str().unwrap()
@@ -3953,6 +4021,7 @@ async fn automated_delivery_real_http_receipts_retries_and_tenant_boundaries() {
             endpoint,
             usage: "T".into(),
             credential_env: None,
+            credential_value: None,
             loopback_test: true,
             adapter: Default::default(),
             retrieval: None,
@@ -4064,6 +4133,7 @@ async fn ambiguous_delivery_requires_receipt_reconciliation_and_expired_lease_ne
             endpoint,
             usage: "T".into(),
             credential_env: None,
+            credential_value: None,
             loopback_test: true,
             adapter: Default::default(),
             retrieval: None,
@@ -4337,6 +4407,7 @@ fn delivery_configuration_rejects_unbound_insecure_or_secret_bearing_routes() {
             endpoint: "http://127.0.0.1:4567/claims".into(),
             usage: "T".into(),
             credential_env: None,
+            credential_value: None,
             loopback_test: true,
             adapter: Default::default(),
             retrieval: None,
@@ -4458,6 +4529,7 @@ async fn delivery_receipt_audit_failure_rolls_back_result_and_holds_expired_leas
             endpoint,
             usage: "T".into(),
             credential_env: None,
+            credential_value: None,
             loopback_test: true,
             adapter: Default::default(),
             retrieval: None,
@@ -6793,4 +6865,185 @@ async fn practice_worklist_follows_saved_encounters_without_cross_tenant_or_pati
     assert_eq!(work["total"], 101);
     assert_eq!(work["items"].as_array().unwrap().len(), 100);
     assert_eq!(work["has_more"], true);
+}
+
+#[tokio::test]
+async fn native_claimmd_settings_encrypt_secrets_and_scope_runtime_activation() {
+    let (r, db, a, _) = setup().await;
+    let key_dir =
+        std::env::temp_dir().join(format!("suncharts-provider-settings-{}", Uuid::new_v4()));
+    std::env::set_var("ENGINE_CREDENTIAL_KEY_FILE", key_dir.join("master.key"));
+    let (status,p)=schedule_call(&r,&a,"POST","/api/v1/billing/clearinghouses",json!({"request_id":Uuid::new_v4(),"content":edi_partner_content(),"reason":"Synthetic native provider configuration"}),None).await;
+    assert_eq!(status, 200, "{p}");
+    let secret = "synthetic-claimmd-account-key-not-real";
+    let base = "/api/v1/billing/provider-settings";
+    let mut request = json!({"label":"Synthetic Claim.MD","partner_id":p["id"],"usage":"T","account_key":secret,"start_at":(Utc::now()-chrono::Duration::days(2)).to_rfc3339(),"response_id":"0","interval_seconds":60});
+    let mut reader = a.clone();
+    reader.role = Role::Clinician;
+    assert_eq!(
+        schedule_call(&r, &reader, "POST", base, request.clone(), None)
+            .await
+            .0,
+        403
+    );
+    let (status, saved) = schedule_call(&r, &a, "POST", base, request.clone(), None).await;
+    assert_eq!(status, 200, "{saved}");
+    assert_eq!(saved["enabled"], false);
+    assert_eq!(saved["verified"], false);
+    assert!(!saved.to_string().contains(secret));
+    assert!(saved.get("encrypted_key").is_none());
+    let id = Uuid::parse_str(saved["id"].as_str().unwrap()).unwrap();
+    let path = format!("{base}/{id}");
+    let encrypted: Vec<u8> = sqlx::query_scalar(
+        "SELECT encrypted_key FROM edi_provider_settings WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert!(!encrypted
+        .windows(secret.len())
+        .any(|b| b == secret.as_bytes()));
+    let mut outsider = a.clone();
+    outsider.tenant_id = Uuid::new_v4();
+    assert_eq!(
+        schedule_call(&r, &outsider, "GET", &path, Value::Null, None)
+            .await
+            .0,
+        404
+    );
+    assert_eq!(
+        schedule_call(&r, &reader, "GET", base, Value::Null, None)
+            .await
+            .0,
+        403
+    );
+    assert_eq!(
+        schedule_call(&r, &a, "POST", &format!("{path}/test"), json!({}), None)
+            .await
+            .0,
+        428
+    );
+    assert_eq!(
+        schedule_call(
+            &r,
+            &a,
+            "POST",
+            &format!("{path}/activation"),
+            json!({"enabled":true}),
+            Some(1)
+        )
+        .await
+        .0,
+        400
+    );
+    assert!(suncharts_engine::provider_settings::load(&db)
+        .await
+        .unwrap()
+        .routes
+        .iter()
+        .all(|v| v.tenant_id != a.tenant_id));
+    // Authentication is fixture evidence here; no external service is contacted.
+    sqlx::query("UPDATE edi_provider_settings SET verified=true WHERE tenant_id=$1 AND id=$2")
+        .bind(a.tenant_id)
+        .bind(id)
+        .execute(&db)
+        .await
+        .unwrap();
+    let (status, enabled) = schedule_call(
+        &r,
+        &a,
+        "POST",
+        &format!("{path}/activation"),
+        json!({"enabled":true}),
+        Some(1),
+    )
+    .await;
+    assert_eq!(status, 200, "{enabled}");
+    let config = suncharts_engine::provider_settings::load(&db)
+        .await
+        .unwrap();
+    let current = config
+        .routes
+        .iter()
+        .find(|v| v.tenant_id == a.tenant_id)
+        .unwrap();
+    assert_eq!(current.key, saved["route_key"]);
+    assert_eq!(current.endpoint, suncharts_engine::claimmd::UPLOAD);
+    assert!(current.credential_value.is_some());
+    config.validate().unwrap();
+    suncharts_engine::retrieval::sync(&db, &config)
+        .await
+        .unwrap();
+    let (status, disabled) = schedule_call(
+        &r,
+        &a,
+        "POST",
+        &format!("{path}/activation"),
+        json!({"enabled":false}),
+        Some(2),
+    )
+    .await;
+    assert_eq!(status, 200, "{disabled}");
+    assert!(suncharts_engine::provider_settings::load(&db)
+        .await
+        .unwrap()
+        .routes
+        .iter()
+        .all(|v| v.tenant_id != a.tenant_id));
+    let paused: bool = sqlx::query_scalar(
+        "SELECT paused FROM edi_connections WHERE tenant_id=$1 AND route_key=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(current.key.clone())
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert!(paused);
+    request["account_key"] = json!("synthetic-rotated-claimmd-key-not-real");
+    let (status, rotated) = schedule_call(&r, &a, "PUT", &path, request.clone(), Some(3)).await;
+    assert_eq!(status, 200, "{rotated}");
+    assert_ne!(rotated["route_key"], saved["route_key"]);
+    assert_eq!(rotated["verified"], false);
+    assert_eq!(rotated["enabled"], false);
+    assert_eq!(
+        schedule_call(&r, &a, "PUT", &path, request.clone(), Some(3))
+            .await
+            .0,
+        409
+    );
+    let (_, detail) = schedule_call(&r, &a, "GET", &path, Value::Null, None).await;
+    assert!(!detail.to_string().contains(secret));
+    assert!(!detail
+        .to_string()
+        .contains("synthetic-rotated-claimmd-key-not-real"));
+    assert_eq!(detail["events"].as_array().unwrap().len(), 4);
+    let (_, list) = schedule_call(&r, &a, "GET", base, Value::Null, None).await;
+    assert_eq!(list["credential_storage_ready"], true);
+    // Losing the master key cannot silently replace it or expose usable credentials.
+    let key_path = key_dir.join("master.key");
+    let retained = std::fs::read(&key_path).unwrap();
+    std::fs::remove_file(&key_path).unwrap();
+    let (_, list) = schedule_call(&r, &a, "GET", base, Value::Null, None).await;
+    assert_eq!(list["credential_storage_ready"], false);
+    assert!(!key_path.exists());
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    use std::io::Write;
+    options
+        .open(&key_path)
+        .unwrap()
+        .write_all(&retained)
+        .unwrap();
+    let (_, list) = schedule_call(&r, &a, "GET", base, Value::Null, None).await;
+    assert_eq!(list["credential_storage_ready"], true);
+    std::env::remove_var("ENGINE_CREDENTIAL_KEY_FILE");
+    std::fs::remove_dir_all(key_dir).unwrap();
+    db.close().await;
 }
