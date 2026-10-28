@@ -41,6 +41,12 @@ Keep pull requests focused. Explain the behavior changed, the reason for it and
 how it was tested. Include relevant failure cases and remaining limitations.
 Update [api/openapi.json](api/openapi.json) when an HTTP contract changes.
 
+Browser workflows must retain newer record versions when delayed reads or replayed
+writes return older snapshots. Refetch the current record after an uncertain or
+replayed mutation. Preserve an unchanged recorded timestamp exactly, including its
+offset and fractional seconds; a notes-only correction must not change the event
+time. Exercise these cases in UI regressions.
+
 Clinical queries must use the authenticated tenant. Writes and audit events must
 commit together. Preserve signed content and history; corrections append records.
 Test permissions, stale versions, concurrency and rollback where they affect the

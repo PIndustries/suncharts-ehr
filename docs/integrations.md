@@ -50,6 +50,11 @@ Connected owners, clinicians and front-desk staff can create and reply to operat
 support tickets. Keep clinical records and credentials out of ticket subjects and
 messages. Support availability does not grant remote access to an installation.
 
+When SunCharts assigns a support provider, ticket lists and conversations identify
+that provider. Replies retain their original provider or platform attribution when
+a request is reassigned or escalated. These labels do not grant a partner clinical
+API access or change the installation’s OAuth permissions.
+
 Support replies and reminder delivery changes update the open EHR automatically.
 The outbound channel signals committed service events; the EHR resumes from its
 saved cursor after a connection interruption. A bounded server-side fallback

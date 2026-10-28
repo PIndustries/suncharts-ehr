@@ -46,6 +46,38 @@ order does not prove electronic transmission, pharmacy acceptance or dispensing.
 E-prescribing networks, EPCS, refill messages and pharmacy reconciliation remain
 unfinished. Unsaved edits remain only in the current browser session.
 
+## E-prescribing enrollment preparation
+
+The **Prescribing** workspace includes **E-prescribing setup**. It starts with no
+provider selected. An owner can compare documented candidate workflows, record
+an evaluation candidate, desired capabilities and enrollment progress. These are
+staff reports; saving them does not connect a vendor. Clinicians can prepare their
+own prescriber/location mapping; an owner can prepare eligible local mappings.
+
+Optional organization and prescriber credential blocks are encrypted by this
+server. Supply credentials only after the practice has a vendor agreement and
+receives test access. Blank inputs retain a stored block; supplying any credential
+replaces the entire block. Use explicit clearing when changing candidates. Earlier
+candidate mappings require re-review. Do not enter patient records, EPCS
+one-time codes or authenticator secrets in these fields.
+
+**Record current readiness check** creates an attributed, immutable check for the
+current chart. It always records that it was blocked before vendor contact. It
+does not open vendor prescribing, send a native draft or alter the prescription
+list. No network adapter, receipt synchronization or EPCS function is active.
+
+Before enabling a real integration, the practice must select and enroll with a
+provider; obtain its current technical contract and test access; establish the
+required prescriber/location identities, drug/pharmacy data and receipt handling;
+and complete the provider's acceptance process. Candidate descriptions link to
+[Photon's public integration guide](https://docs.photon.health/docs/integration-guide),
+[Weno's hosted workflow overview](https://wenoexchange.com/wp-content/uploads/2025/08/EZ_Integration_Overview.pdf),
+[Weno's separate Online API overview](https://wenoexchange.com/wp-content/uploads/2025/07/WOL_API_Overview-07-21-2025.pdf)
+and [DoseSpot's integration process](https://dosespot.com/full-integration/).
+A vendor-hosted composition workflow is distinct from transmission of a locally
+authored prescription. A launch or local authorization cannot establish pharmacy
+acceptance or dispensing.
+
 ## Patient portal
 
 The standalone `/patient-portal` uses patient accounts and sessions separate from
@@ -241,3 +273,35 @@ bounded release/event/task histories with truncation flags.
 Patient-scoped APIs can read signed records and the latest released AVS. A patient
 portal with identity onboarding, proxies and messaging is still missing. See the
 [API guide](api.md) for access rules and response limits.
+
+## Immunization records
+
+The Immunizations chart tab distinguishes an administered vaccine, a historical
+report, and an event where a vaccine was not given. Owner, clinician and nurse
+roles may record or correct events; medical assistants and other staff may read.
+Saving documents an event. It does not administer a vaccine, decrement inventory,
+validate a vaccine schedule or transmit to an immunization registry.
+
+For an administered event, select the actual administering staff separately from
+the recorder and enter the actual timestamp with seconds and an explicit UTC
+offset (or Z), recorded dose/unit, route and site. Notes-only corrections preserve
+the stored timestamp precision; ambiguous offset-free local times are rejected.
+Historical records accept a complete date, timestamp, or explicit unknown-date
+text; no date is guessed from a narrative. A not-given event requires its reason
+and cannot assert an administered dose, lot or performer. The primary-source
+choice states whether information came from the administering person; secondary
+reports require the recorded source. Vaccine codes and manufacturer text are
+recorded as supplied; no catalog, CVX validation or clinical dose checking is
+claimed. Lot and product expiration may be recorded when known.
+
+Corrections require the current version and a reason and append a new attributed
+revision. The prior record remains available through Revision history. Staff labels
+use the current directory name/email, with an immutable actor-ID fallback; they
+are not historical identity snapshots. The editor
+retains unsaved changes after a conflict and offers explicit comparison/rebase.
+A mistaken event can be marked entered in error through an inline reason/review
+form. The reason, version and request identity survive an uncertain response;
+compare the saved record before retrying or rebasing. That terminal
+record cannot be reopened or deleted. Record the replacement separately rather
+than turning a not-given event into an administration. Empty lists do not establish
+immunity, vaccine completeness or which vaccines are due.

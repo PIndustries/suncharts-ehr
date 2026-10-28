@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "SunCharts EHR Clinical API",
-    "version": "0.27.0",
+    "version": "0.28.0",
     "license": {
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
@@ -23565,6 +23565,1493 @@
           }
         }
       }
+    },
+    "/api/v1/prescribing/erx": {
+      "get": {
+        "operationId": "erxEnrollmentStatus",
+        "summary": "erxEnrollmentStatus",
+        "tags": [
+          "Prescribing"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "description": "Local browser session with rooming authority. Candidate profiles are documentation references, never active providers. Owner sees organization and eligible local mappings; clinicians see their own. No vendor call or enrollment verification occurs.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErxSetupStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsupported input"
+          },
+          "401": {
+            "description": "Authentication required or expired"
+          },
+          "403": {
+            "description": "Scope, role, Origin or patient access denied"
+          },
+          "404": {
+            "description": "Record not found in authenticated tenant/patient"
+          },
+          "409": {
+            "description": "Version, immutable-state or request identity conflict"
+          },
+          "500": {
+            "description": "Atomic operation or audit failed"
+          },
+          "422": {
+            "description": "Body fields missing, unknown or incorrectly typed"
+          }
+        },
+        "parameters": []
+      }
+    },
+    "/api/v1/prescribing/erx/connection": {
+      "put": {
+        "operationId": "saveErxEnrollmentPreparation",
+        "summary": "saveErxEnrollmentPreparation",
+        "tags": [
+          "Prescribing"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "description": "Owner browser session and Origin required. Body version starts at 0. Request UUID binds exact actor/body including encrypted credential inputs. Candidate changes require explicit credential replacement/clearing and invalidate older prescriber mappings. This cannot activate a provider or send prescriptions.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErxConnectionState"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsupported input"
+          },
+          "401": {
+            "description": "Authentication required or expired"
+          },
+          "403": {
+            "description": "Scope, role, Origin or patient access denied"
+          },
+          "404": {
+            "description": "Record not found in authenticated tenant/patient"
+          },
+          "409": {
+            "description": "Version, immutable-state or request identity conflict"
+          },
+          "500": {
+            "description": "Atomic operation or audit failed"
+          },
+          "422": {
+            "description": "Body fields missing, unknown or incorrectly typed"
+          }
+        },
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ErxConnectionPreparation"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/prescribing/erx/prescribers/{user}": {
+      "put": {
+        "operationId": "saveErxPrescriberPreparation",
+        "summary": "saveErxPrescriberPreparation",
+        "tags": [
+          "Prescribing"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "description": "Owner or that clinician in a real local browser session, with Origin. Body version starts at 0. Metadata reports vendor references, not verified prescribing or EPCS authority. Cross-candidate credentials require explicit clearing/replacement.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErxPrescriberState"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsupported input"
+          },
+          "401": {
+            "description": "Authentication required or expired"
+          },
+          "403": {
+            "description": "Scope, role, Origin or patient access denied"
+          },
+          "404": {
+            "description": "Record not found in authenticated tenant/patient"
+          },
+          "409": {
+            "description": "Version, immutable-state or request identity conflict"
+          },
+          "500": {
+            "description": "Atomic operation or audit failed"
+          },
+          "422": {
+            "description": "Body fields missing, unknown or incorrectly typed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "user",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ErxPrescriberPreparation"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/patients/{patient}/prescribing/erx/attempts": {
+      "get": {
+        "operationId": "listErxReadinessAttempts",
+        "summary": "listErxReadinessAttempts",
+        "tags": [
+          "Prescribing"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "description": "Rooming browser authority, tenant/patient scoped, latest 100 immutable checks and truncated flag.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "maxItems": 100,
+                      "items": {
+                        "$ref": "#/components/schemas/ErxReadinessAttempt"
+                      }
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "truncated"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsupported input"
+          },
+          "401": {
+            "description": "Authentication required or expired"
+          },
+          "403": {
+            "description": "Scope, role, Origin or patient access denied"
+          },
+          "404": {
+            "description": "Record not found in authenticated tenant/patient"
+          },
+          "409": {
+            "description": "Version, immutable-state or request identity conflict"
+          },
+          "500": {
+            "description": "Atomic operation or audit failed"
+          },
+          "422": {
+            "description": "Body fields missing, unknown or incorrectly typed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      },
+      "post": {
+        "operationId": "recordErxReadinessCheck",
+        "summary": "recordErxReadinessCheck",
+        "tags": [
+          "Prescribing"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "description": "Clinician/owner browser session and Origin. Idempotently records a check blocked before vendor contact. Native prescription reference must belong to this patient, and its content/status is never modified. No vendor launch, queue, send or receipt is created.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErxReadinessAttempt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or unsupported input"
+          },
+          "401": {
+            "description": "Authentication required or expired"
+          },
+          "403": {
+            "description": "Scope, role, Origin or patient access denied"
+          },
+          "404": {
+            "description": "Record not found in authenticated tenant/patient"
+          },
+          "409": {
+            "description": "Version, immutable-state or request identity conflict"
+          },
+          "500": {
+            "description": "Atomic operation or audit failed"
+          },
+          "422": {
+            "description": "Body fields missing, unknown or incorrectly typed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ErxReadinessCheck"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/immunizations/performers": {
+      "get": {
+        "operationId": "immunizationPerformers",
+        "summary": "immunizationPerformers",
+        "tags": [
+          "Immunizations"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "description": "Staff only; active local owner/clinician/nurse names and IDs, at most 500 with truncated flag. Actual performer must be explicitly selected, not inferred from recorder.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "maxItems": 500,
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "display": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "display"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "truncated"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid/unsupported content or context"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Scope or role denied"
+          },
+          "404": {
+            "description": "Record not found in authenticated tenant/patient"
+          },
+          "409": {
+            "description": "Version, request identity or immutable-state conflict"
+          },
+          "500": {
+            "description": "Atomic write/audit failed"
+          }
+        }
+      }
+    },
+    "/api/v1/patients/{patient}/immunizations": {
+      "get": {
+        "operationId": "listImmunizations",
+        "summary": "listImmunizations",
+        "tags": [
+          "Immunizations"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "description": "Staff only. Patient-scoped UUID keyset pages with explicit next_cursor; an empty list does not establish vaccination status.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImmunizationPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid/unsupported content or context"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Scope or role denied"
+          },
+          "404": {
+            "description": "Record not found in authenticated tenant/patient"
+          },
+          "409": {
+            "description": "Version, request identity or immutable-state conflict"
+          },
+          "500": {
+            "description": "Atomic write/audit failed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": ""
+          },
+          {
+            "name": "_after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": ""
+          },
+          {
+            "name": "_count",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            },
+            "description": ""
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "completed",
+                "not_done",
+                "entered_in_error"
+              ]
+            },
+            "description": ""
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createImmunization",
+        "summary": "createImmunization",
+        "tags": [
+          "Immunizations"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "description": "Owner, clinician or nurse and clinical.write; medical assistants have read access only. Exactly matched request UUID replays are actor/content-bound. Every mutation/revision/audit commits atomically; no vaccine administration, registry exchange or clinical decision support is performed by saving.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImmunizationRecord"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "description": "Current native version; weak ETag on FHIR",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid/unsupported content or context"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Scope or role denied"
+          },
+          "404": {
+            "description": "Record not found in authenticated tenant/patient"
+          },
+          "409": {
+            "description": "Version, request identity or immutable-state conflict"
+          },
+          "500": {
+            "description": "Atomic write/audit failed"
+          },
+          "422": {
+            "description": "JSON shape, typed date/timestamp or unsupported field deserialization rejected before the native write boundary"
+          }
+        },
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": ""
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateImmunization"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/patients/{patient}/immunizations/{id}": {
+      "get": {
+        "operationId": "readImmunization",
+        "summary": "readImmunization",
+        "tags": [
+          "Immunizations"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "description": "Staff, tenant/patient scoped; includes historical performer snapshot.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImmunizationRecord"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "description": "Current native version; weak ETag on FHIR",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid/unsupported content or context"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Scope or role denied"
+          },
+          "404": {
+            "description": "Record not found in authenticated tenant/patient"
+          },
+          "409": {
+            "description": "Version, request identity or immutable-state conflict"
+          },
+          "500": {
+            "description": "Atomic write/audit failed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": ""
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": ""
+          }
+        ]
+      },
+      "put": {
+        "operationId": "correctImmunization",
+        "summary": "correctImmunization",
+        "tags": [
+          "Immunizations"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "description": "Owner, clinician or nurse and clinical.write; medical assistants have read access only. Exactly matched request UUID replays are actor/content-bound. Every mutation/revision/audit commits atomically; no vaccine administration, registry exchange or clinical decision support is performed by saving. Record type/status are unchanged; previous content remains in revisions. Previously recorded performer snapshots survive subsequent staff disablement.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImmunizationRecord"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "description": "Current native version; weak ETag on FHIR",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid/unsupported content or context"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Scope or role denied"
+          },
+          "404": {
+            "description": "Record not found in authenticated tenant/patient"
+          },
+          "409": {
+            "description": "Version, request identity or immutable-state conflict"
+          },
+          "500": {
+            "description": "Atomic write/audit failed"
+          },
+          "428": {
+            "description": "Current If-Match required"
+          },
+          "422": {
+            "description": "JSON shape, typed date/timestamp or unsupported field deserialization rejected before the native write boundary"
+          }
+        },
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": ""
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": ""
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Quoted current version; FHIR also accepts W/\"n\"."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectImmunization"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/patients/{patient}/immunizations/{id}/entered-in-error": {
+      "post": {
+        "operationId": "immunizationEnteredInError",
+        "summary": "immunizationEnteredInError",
+        "tags": [
+          "Immunizations"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "description": "Owner, clinician or nurse and clinical.write; medical assistants have read access only. Exactly matched request UUID replays are actor/content-bound. Every mutation/revision/audit commits atomically; no vaccine administration, registry exchange or clinical decision support is performed by saving. Terminal error marking; record cannot be reopened or deleted.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImmunizationRecord"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "description": "Current native version; weak ETag on FHIR",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid/unsupported content or context"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Scope or role denied"
+          },
+          "404": {
+            "description": "Record not found in authenticated tenant/patient"
+          },
+          "409": {
+            "description": "Version, request identity or immutable-state conflict"
+          },
+          "500": {
+            "description": "Atomic write/audit failed"
+          },
+          "428": {
+            "description": "Current If-Match required"
+          },
+          "422": {
+            "description": "JSON shape, typed date/timestamp or unsupported field deserialization rejected before the native write boundary"
+          }
+        },
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": ""
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": ""
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Quoted current version; FHIR also accepts W/\"n\"."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImmunizationError"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/patients/{patient}/immunizations/{id}/revisions": {
+      "get": {
+        "operationId": "immunizationRevisions",
+        "summary": "immunizationRevisions",
+        "tags": [
+          "Immunizations"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "description": "Staff; up to 100 immutable attributed revision snapshots with truncated flag.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "maxItems": 100,
+                      "items": {
+                        "$ref": "#/components/schemas/ImmunizationRevision"
+                      }
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "truncated"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid/unsupported content or context"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Scope or role denied"
+          },
+          "404": {
+            "description": "Record not found in authenticated tenant/patient"
+          },
+          "409": {
+            "description": "Version, request identity or immutable-state conflict"
+          },
+          "500": {
+            "description": "Atomic write/audit failed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": ""
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/fhir/Immunization": {
+      "get": {
+        "operationId": "fhirImmunizationSearch",
+        "summary": "fhirImmunizationSearch",
+        "tags": [
+          "FHIR"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "description": "Staff clinical.read only. Native event projection; exact date matches UTC day for timestamps and excludes historical occurrence strings. No patient-role access. Unsupported/repeated filters fail. Empty Bundle omits entry.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid/unsupported content or context",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Scope or role denied",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Record not found in authenticated tenant/patient",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version, request identity or immutable-state conflict",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Atomic write/audit failed",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": ""
+          },
+          {
+            "name": "patient",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "completed",
+                "not-done",
+                "entered-in-error"
+              ]
+            },
+            "description": ""
+          },
+          {
+            "name": "date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "description": ""
+          },
+          {
+            "name": "_after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": ""
+          },
+          {
+            "name": "_count",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            },
+            "description": ""
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createFhirImmunization",
+        "summary": "createFhirImmunization",
+        "tags": [
+          "FHIR"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "description": "Owner/clinician/nurse clinical.write only. Bounded explicit native provenance and source; ordinary POST creates a new record and is not replay-safe. No forecasting, terminology validation or registry transmission.",
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "description": "Current native version; weak ETag on FHIR",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid/unsupported content or context",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Scope or role denied",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Record not found in authenticated tenant/patient",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version, request identity or immutable-state conflict",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Atomic write/audit failed",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/fhir+json": {
+              "schema": {
+                "$ref": "#/components/schemas/WritableFhirImmunization"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/fhir/Immunization/{id}": {
+      "get": {
+        "operationId": "fhirImmunizationRead",
+        "summary": "fhirImmunizationRead",
+        "tags": [
+          "FHIR"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "description": "Staff clinical.read only; immutable revisions remain native, no FHIR vread endpoint.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "description": "Current native version; weak ETag on FHIR",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid/unsupported content or context",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Scope or role denied",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Record not found in authenticated tenant/patient",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version, request identity or immutable-state conflict",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Atomic write/audit failed",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": ""
+          }
+        ]
+      },
+      "put": {
+        "operationId": "correctFhirImmunization",
+        "summary": "correctFhirImmunization",
+        "tags": [
+          "FHIR"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "description": "Owner/clinician/nurse clinical.write. Uses native correction boundary; record type/status cannot change. Entered-in-error uses native reviewed action. Unsupported fields fail rather than being discarded.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "description": "Current native version; weak ETag on FHIR",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid/unsupported content or context",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Scope or role denied",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Record not found in authenticated tenant/patient",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version, request identity or immutable-state conflict",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Atomic write/audit failed",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "Current If-Match required"
+          },
+          "412": {
+            "description": "Stale Immunization version",
+            "content": {
+              "application/fhir+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FhirOperationOutcome"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": ""
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Quoted current version; FHIR also accepts W/\"n\"."
+          },
+          {
+            "name": "X-Change-Reason",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000
+            },
+            "description": ""
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/fhir+json": {
+              "schema": {
+                "$ref": "#/components/schemas/WritableFhirImmunization"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -35948,6 +37435,1214 @@
           "expires_in_seconds",
           "delivery",
           "email_sent"
+        ]
+      },
+      "ErxCredentialsInput": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "maxLength": 8192,
+            "writeOnly": true
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 8192,
+            "writeOnly": true
+          },
+          "api_key": {
+            "type": "string",
+            "maxLength": 8192,
+            "writeOnly": true
+          },
+          "encryption_key": {
+            "type": "string",
+            "maxLength": 8192,
+            "writeOnly": true
+          }
+        },
+        "required": [],
+        "additionalProperties": false,
+        "description": "Write only. The entire credential block is replaced when supplied; null retains it unless clear_credentials is true. Never provide EPCS authenticator codes or patient data.",
+        "anyOf": [
+          {
+            "required": [
+              "username"
+            ],
+            "properties": {
+              "username": {
+                "minLength": 1
+              }
+            }
+          },
+          {
+            "required": [
+              "password"
+            ],
+            "properties": {
+              "password": {
+                "minLength": 1
+              }
+            }
+          },
+          {
+            "required": [
+              "api_key"
+            ],
+            "properties": {
+              "api_key": {
+                "minLength": 1
+              }
+            }
+          },
+          {
+            "required": [
+              "encryption_key"
+            ],
+            "properties": {
+              "encryption_key": {
+                "minLength": 1
+              }
+            }
+          }
+        ]
+      },
+      "ErxCredentialFlags": {
+        "type": "object",
+        "properties": {
+          "stored": {
+            "type": "boolean"
+          },
+          "readable": {
+            "type": "boolean"
+          },
+          "username": {
+            "type": "boolean"
+          },
+          "password": {
+            "type": "boolean"
+          },
+          "api_key": {
+            "type": "boolean"
+          },
+          "encryption_key": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "stored",
+          "readable"
+        ],
+        "additionalProperties": false
+      },
+      "ErxConnectionPreparation": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "candidate_profile": {
+            "type": "string",
+            "enum": [
+              "none",
+              "photon",
+              "weno_ez",
+              "weno_online",
+              "dosespot_full",
+              "other"
+            ]
+          },
+          "enrollment_stage": {
+            "type": "string",
+            "enum": [
+              "not_started",
+              "contact_planned",
+              "awaiting_vendor",
+              "agreement_in_progress",
+              "test_access_reported"
+            ]
+          },
+          "organization_reference": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "requested_capabilities": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "string",
+              "enum": [
+                "non_controlled",
+                "epcs",
+                "renewals",
+                "cancel",
+                "rx_change",
+                "medication_history",
+                "formulary",
+                "prior_authorization"
+              ]
+            }
+          },
+          "credentials": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ErxCredentialsInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "clear_credentials": {
+            "type": "boolean",
+            "default": false
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "request_id",
+          "version",
+          "candidate_profile",
+          "enrollment_stage",
+          "organization_reference",
+          "requested_capabilities",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "ErxPrescriberPreparation": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "facility_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "vendor_user_id": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "vendor_username": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "vendor_location_id": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "enrollment_reported": {
+            "type": "boolean"
+          },
+          "credentials": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ErxCredentialsInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "clear_credentials": {
+            "type": "boolean",
+            "default": false
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "request_id",
+          "version",
+          "vendor_user_id",
+          "vendor_username",
+          "vendor_location_id",
+          "enrollment_reported",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "ErxReadiness": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "const": "not_enrolled"
+          },
+          "ready": {
+            "const": false
+          },
+          "active_provider": {
+            "type": "null"
+          },
+          "launch_available": {
+            "const": false
+          },
+          "transmission_available": {
+            "const": false
+          },
+          "epcs_available": {
+            "const": false
+          },
+          "receipt_sync_available": {
+            "const": false
+          },
+          "vendor_contacted": {
+            "const": false
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "ready",
+          "active_provider",
+          "launch_available",
+          "transmission_available",
+          "epcs_available",
+          "receipt_sync_available",
+          "vendor_contacted",
+          "missing",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "ErxConnectionState": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "candidate_profile": {
+            "type": "string",
+            "enum": [
+              "none",
+              "photon",
+              "weno_ez",
+              "weno_online",
+              "dosespot_full",
+              "other"
+            ]
+          },
+          "profile_revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "enrollment_stage": {
+            "type": "string",
+            "enum": [
+              "not_started",
+              "contact_planned",
+              "awaiting_vendor",
+              "agreement_in_progress",
+              "test_access_reported"
+            ]
+          },
+          "organization_reference": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "requested_capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "non_controlled",
+                "epcs",
+                "renewals",
+                "cancel",
+                "rx_change",
+                "medication_history",
+                "formulary",
+                "prior_authorization"
+              ]
+            }
+          },
+          "credentials": {
+            "$ref": "#/components/schemas/ErxCredentialFlags"
+          },
+          "active": {
+            "const": false
+          },
+          "vendor_verified": {
+            "const": false
+          }
+        },
+        "required": [
+          "version",
+          "candidate_profile",
+          "profile_revision",
+          "enrollment_stage",
+          "organization_reference",
+          "requested_capabilities",
+          "credentials",
+          "active",
+          "vendor_verified"
+        ],
+        "additionalProperties": false
+      },
+      "ErxPrescriberState": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "connection_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "profile_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "profile_current": {
+            "type": "boolean"
+          },
+          "facility_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "vendor_user_id": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "vendor_username": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "vendor_location_id": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "enrollment_reported": {
+            "type": "boolean"
+          },
+          "credentials": {
+            "$ref": "#/components/schemas/ErxCredentialFlags"
+          },
+          "vendor_verified": {
+            "const": false
+          }
+        },
+        "required": [
+          "user_id",
+          "version",
+          "connection_id",
+          "profile_revision",
+          "profile_current",
+          "facility_id",
+          "vendor_user_id",
+          "vendor_username",
+          "vendor_location_id",
+          "enrollment_reported",
+          "credentials",
+          "vendor_verified"
+        ],
+        "additionalProperties": false
+      },
+      "ErxReadinessCheck": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "connection_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "native_prescription_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "request_id",
+          "connection_version",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "ErxReadinessAttempt": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "patient_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "actor_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "candidate_profile": {
+            "type": "string",
+            "enum": [
+              "none",
+              "photon",
+              "weno_ez",
+              "weno_online",
+              "dosespot_full",
+              "other"
+            ]
+          },
+          "connection_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "prescriber_version": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "outcome": {
+            "const": "blocked"
+          },
+          "vendor_contacted": {
+            "const": false
+          },
+          "native_prescription_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "patient_id",
+          "actor_id",
+          "candidate_profile",
+          "connection_version",
+          "prescriber_version",
+          "outcome",
+          "vendor_contacted",
+          "native_prescription_id",
+          "missing",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "ErxSetupStatus": {
+        "type": "object",
+        "properties": {
+          "connection": {
+            "$ref": "#/components/schemas/ErxConnectionState"
+          },
+          "readiness": {
+            "$ref": "#/components/schemas/ErxReadiness"
+          },
+          "credential_storage_ready": {
+            "type": "boolean"
+          },
+          "profiles": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "prescribers": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "type": "object"
+            }
+          },
+          "prescribers_truncated": {
+            "type": "boolean"
+          },
+          "facilities": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "type": "object"
+            }
+          },
+          "facilities_truncated": {
+            "type": "boolean"
+          },
+          "mappings": {
+            "type": "array",
+            "maxItems": 201,
+            "items": {
+              "$ref": "#/components/schemas/ErxPrescriberState"
+            }
+          }
+        },
+        "required": [
+          "connection",
+          "readiness",
+          "credential_storage_ready",
+          "profiles",
+          "prescribers",
+          "facilities",
+          "mappings"
+        ]
+      },
+      "CorrectImmunization": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "content": {
+            "$ref": "#/components/schemas/ImmunizationContent"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "request_id",
+          "content",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "CreateImmunization": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "content": {
+            "$ref": "#/components/schemas/ImmunizationContent"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "request_id",
+          "content",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "ImmunizationContent": {
+        "type": "object",
+        "properties": {
+          "record_type": {
+            "type": "string",
+            "enum": [
+              "administered",
+              "historical",
+              "not_given"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "not_done",
+              "entered_in_error"
+            ]
+          },
+          "vaccine_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "vaccine_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FhirWriteCoding"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "occurred_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "occurred_on": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "occurrence_text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200
+          },
+          "primary_source": {
+            "type": "boolean"
+          },
+          "report_origin": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "visit_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "performer_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "manufacturer": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "lot_number": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "expiration_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "route": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "site": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "dose": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImmunizationDose"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "not_done_reason": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 10000
+          }
+        },
+        "required": [
+          "record_type",
+          "status",
+          "vaccine_name",
+          "primary_source"
+        ],
+        "additionalProperties": false,
+        "description": "Exactly one occurrence timestamp/date/nonempty historical description. Administered requires timestamp, active authorized local performer, dose, route and site. Not-given requires reason and excludes dose/lot/performer. Secondary reports require report_origin; primary reports omit it. No future occurrence or occurrence before patient birth. Record type cannot change; status changes only through native entered-in-error action.",
+        "oneOf": [
+          {
+            "properties": {
+              "occurred_at": {
+                "type": "string"
+              },
+              "occurred_on": {
+                "type": "null"
+              },
+              "occurrence_text": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "occurred_at"
+            ]
+          },
+          {
+            "properties": {
+              "occurred_at": {
+                "type": "null"
+              },
+              "occurred_on": {
+                "type": "string"
+              },
+              "occurrence_text": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "occurred_on"
+            ]
+          },
+          {
+            "properties": {
+              "occurred_at": {
+                "type": "null"
+              },
+              "occurred_on": {
+                "type": "null"
+              },
+              "occurrence_text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "occurrence_text"
+            ]
+          }
+        ]
+      },
+      "ImmunizationDose": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string",
+            "pattern": "^(?!0+(?:\\.0+)?$)\\d{1,7}(\\.\\d{1,3})?$",
+            "description": "Positive decimal; zero rejected; up to three decimal places. Units are recorded text, not validated UCUM."
+          },
+          "unit": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          }
+        },
+        "required": [
+          "value",
+          "unit"
+        ],
+        "additionalProperties": false
+      },
+      "ImmunizationError": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "request_id",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "ImmunizationPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/ImmunizationRecord"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "additionalProperties": false
+      },
+      "ImmunizationRecord": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "patient_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "content": {
+            "$ref": "#/components/schemas/ImmunizationContent"
+          },
+          "performer_snapshot": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "display": {
+                "type": "string"
+              }
+            }
+          },
+          "created_by": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "updated_by": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "patient_id",
+          "version",
+          "content",
+          "created_by",
+          "updated_by",
+          "created_at",
+          "updated_at"
+        ]
+      },
+      "WritableFhirImmunization": {
+        "type": "object",
+        "properties": {
+          "resourceType": {
+            "type": "string",
+            "const": "Immunization"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/FhirWriteMeta"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "not-done"
+            ]
+          },
+          "vaccineCode": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "coding": {
+                "type": "array",
+                "maxItems": 1,
+                "items": {
+                  "$ref": "#/components/schemas/FhirWriteCoding"
+                }
+              }
+            },
+            "required": [
+              "text"
+            ]
+          },
+          "patient": {
+            "$ref": "#/components/schemas/FhirWriteReference"
+          },
+          "encounter": {
+            "type": "object",
+            "properties": {
+              "reference": {
+                "type": "string",
+                "pattern": "^Encounter/[0-9a-fA-F-]{36}$"
+              }
+            },
+            "required": [
+              "reference"
+            ],
+            "additionalProperties": false
+          },
+          "occurrenceDateTime": {
+            "type": "string",
+            "description": "Exact YYYY-MM-DD date or full RFC3339 timestamp with offset. Administered requires full timestamp."
+          },
+          "occurrenceString": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Historical only; no date is inferred from this text."
+          },
+          "primarySource": {
+            "type": "boolean"
+          },
+          "reportOrigin": {
+            "$ref": "#/components/schemas/FhirWriteText"
+          },
+          "extension": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "url": {
+                  "type": "string",
+                  "description": "Exact installation origin + /StructureDefinition/immunization-record-type"
+                },
+                "valueCode": {
+                  "type": "string",
+                  "enum": [
+                    "administered",
+                    "historical",
+                    "not_given"
+                  ]
+                }
+              },
+              "required": [
+                "url",
+                "valueCode"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "performer": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "actor": {
+                  "type": "object",
+                  "properties": {
+                    "identifier": {
+                      "type": "object",
+                      "properties": {
+                        "system": {
+                          "type": "string",
+                          "description": "Exact installation origin + /identifier/staff"
+                        },
+                        "value": {
+                          "type": "string",
+                          "format": "uuid"
+                        }
+                      },
+                      "required": [
+                        "system",
+                        "value"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "identifier"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "actor"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "manufacturer": {
+            "type": "object",
+            "properties": {
+              "display": {
+                "type": "string",
+                "maxLength": 200
+              }
+            },
+            "required": [
+              "display"
+            ],
+            "additionalProperties": false
+          },
+          "lotNumber": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "expirationDate": {
+            "type": "string",
+            "format": "date"
+          },
+          "route": {
+            "$ref": "#/components/schemas/FhirWriteText"
+          },
+          "site": {
+            "$ref": "#/components/schemas/FhirWriteText"
+          },
+          "doseQuantity": {
+            "type": "object",
+            "properties": {
+              "value": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 9999999.999,
+                "multipleOf": 0.001
+              },
+              "unit": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              }
+            },
+            "required": [
+              "value",
+              "unit"
+            ],
+            "additionalProperties": false
+          },
+          "statusReason": {
+            "$ref": "#/components/schemas/FhirWriteText"
+          },
+          "note": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/FhirWriteText"
+            }
+          }
+        },
+        "required": [
+          "resourceType",
+          "status",
+          "vaccineCode",
+          "patient",
+          "primarySource",
+          "extension"
+        ],
+        "additionalProperties": false,
+        "description": "Bounded native vaccine-event subset. Exactly one occurrenceDateTime/occurrenceString. Explicit native record-type extension is required and distinct from primarySource. Performer is a local staff identifier, not an invented Practitioner resource. New entered-in-error records, unsupported fields, recorded timestamps supplied by caller, unknown extensions, and conditional/idempotency headers are rejected. Native entered-in-error action is the reviewed error workflow. POST assigns ID/version; PUT requires matching id, If-Match and X-Change-Reason."
+      },
+      "ImmunizationRevision": {
+        "type": "object",
+        "properties": {
+          "immunization_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "actor_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "author_label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Current tenant staff directory label, not a historical identity snapshot; immutable actor_id remains authoritative."
+          },
+          "reason": {
+            "type": "string"
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/ImmunizationRecord"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "immunization_id",
+          "version",
+          "actor_id",
+          "author_label",
+          "reason",
+          "snapshot",
+          "created_at"
         ]
       }
     }

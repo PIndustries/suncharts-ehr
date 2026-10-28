@@ -1,5 +1,11 @@
 # API
 
+The staff browser sends `X-SunCharts-Staff-Context: <tenant_uuid>:<user_uuid>`
+on authenticated requests. A malformed or mismatched context returns HTTP 409
+before accessing records or changing the cookie session. Clients without this
+optional header retain cookie API compatibility; first-party tabs clear their
+local workspace and ask for sign-in when the shared browser account changes.
+
 [api/openapi.json](../api/openapi.json) is the request/response contract. A running
 server exposes the same specification at `/openapi.json`.
 
@@ -64,6 +70,7 @@ lists and single-test draft orders also support the bounded writes described her
 | DocumentReference | Native document metadata and immutable original references | `_id`, `patient` |
 | MedicationRequest | Native local prescription orders | `_id`, `patient` |
 | Binary | Immutable original document bytes | Read only; no search |
+| Immunization | Native documented vaccine events/reports | `_id`, `patient`, `status`, exact `date` |
 
 Searchable resources support `GET /fhir/{Resource}` and `GET /fhir/{Resource}/{id}`.
 Binary supports only `GET /fhir/Binary/{id}`. Metadata at
@@ -169,7 +176,7 @@ Reference baseline: [FHIR R4](https://hl7.org/fhir/R4/).
 create native list entries. Corresponding `PUT /fhir/{Resource}/{id}` corrects an
 existing entry through the same attributed revision and review-invalidation
 transaction as the native workspace. Both require `clinical.write` and an
-owner/clinician role. PUT requires a matching resource ID, `If-Match: W/"n"`
+owner/clinician role. Immunization additionally allows nurses as described below. PUT requires a matching resource ID, `If-Match: W/"n"`
 (or quoted strong version), and nonblank `X-Change-Reason`. Stale versions return
 412; absent versions return 428; errors are FHIR OperationOutcome JSON.
 
@@ -274,3 +281,62 @@ ETags where the response is a single versioned record.
 Printing displays the saved authorized record. record_print and fulfill_local
 record local handling only; they require rooming authority and an active authorized
 order. No eRx network, EPCS, pharmacy acceptance or dispensing endpoint is claimed.
+
+
+### E-prescribing setup boundary
+
+`GET /api/v1/prescribing/erx` is a local browser-only rooming read. It returns
+candidate profiles, unverified preparation settings, eligible local mappings and
+an explicit not-enrolled readiness result. There is no active provider or vendor
+call. These endpoints do not accept OAuth clinical scopes in place of a local
+browser session.
+
+Owner-only `PUT /api/v1/prescribing/erx/connection` records preparation. An owner
+or the same clinician can `PUT /api/v1/prescribing/erx/prescribers/{user}`. Both use
+body `version` (0 for first creation), a stable `request_id` and a reason. Writes
+require Origin and recheck current local permissions. Credential blocks are write
+only; reads return stored/readable flags. Requests containing credential values
+are encrypted for exact idempotent replay, never saved as plaintext or returned.
+Changing candidates invalidates older mappings and requires explicit clearing or
+replacement of prior credentials.
+
+`GET /api/v1/patients/{patient}/prescribing/erx/attempts` returns the latest 100
+readiness checks and a truncation flag. Clinician/owner `POST` records a blocked
+check, bound to the expected `connection_version`, request UUID and optional
+same-patient native prescription reference. This never updates the prescription,
+launches a vendor workflow or contacts a provider. The database currently permits
+only `outcome=blocked`, `vendor_contacted=false` and inactive connections.
+## Immunization events
+
+Native `/api/v1/patients/{patient}/immunizations` collection/item routes record
+administered, historical and not-given events with immutable attributed revisions.
+Writes require owner/clinician/nurse authority and `clinical.write`; medical
+assistants retain read access. Native create/correction/error actions require a
+stable actor/content-bound request UUID. Corrections and entered-in-error actions
+also require a quoted current If-Match. Stale native versions return 409. The
+performer directory lists active eligible local staff; historical performer
+snapshots are preserved if that staff member later becomes inactive.
+
+FHIR Immunization supports staff read/search and bounded create/update through
+the same native write service. Search accepts `_id`, `patient`, exact `status`,
+exact `date` (`YYYY-MM-DD`), `_after` and `_count` (1–100). A timestamp matches
+its UTC date; a historical occurrenceString never implies an exact date. Empty
+Bundles omit entry. Patient-role credentials cannot use this boundary.
+
+FHIR writes require the explicit installation extension
+`{origin}/StructureDefinition/immunization-record-type` with valueCode
+`administered`, `historical` or `not_given`. This local distinction is separate
+from primarySource; it is not inferred from that boolean. Exactly one complete
+occurrenceDateTime or historical occurrenceString is required. Recorded performer
+identifiers use `{origin}/identifier/staff`; a Practitioner resource or professional
+qualification is not invented for nursing staff. Only the typed supported request
+subset is accepted. Caller-supplied recorded timestamps, unknown extensions,
+unsupported fields and conditional/idempotency headers fail. Ordinary FHIR POST
+is not replay-safe; retrieve/reconcile uncertain writes before repeating them.
+
+FHIR PUT requires matching id, If-Match (weak or quoted strong), and
+X-Change-Reason. Stale FHIR versions return 412 with OperationOutcome. Record type
+and status cannot change through correction; entered-in-error uses the native
+reviewed action. These records do not provide vaccine forecasting, terminology
+validation, inventory, registry enrollment/exchange, evaluation or recommendation
+resources. See [FHIR R4 Immunization](https://hl7.org/fhir/R4/immunization.html).

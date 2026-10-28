@@ -10,6 +10,7 @@ ready for clinical production. See the [roadmap](docs/roadmap.md) for missing wo
 ## Features
 
 - Patient charts, contact details, problems, allergies, medications and surgical/dental histories.
+- Immunization events, reported history, not-given records and attributed corrections.
 - Provider calendars, recurring appointments, rescheduling and email reminders.
 - Nurse/MA intake and vitals, clinician SOAP notes, signatures and amendments.
 - Local orders and results, patient documents, referrals, checkout, after-visit summaries and follow-up tasks.

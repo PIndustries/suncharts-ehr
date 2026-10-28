@@ -22,9 +22,11 @@ pub mod era_batches;
 pub mod era_chains;
 pub mod era_file;
 pub mod error;
+pub mod erx_setup;
 pub mod events;
 pub mod fhir;
 pub mod health_history;
+pub mod immunizations;
 pub mod labs;
 pub mod migration;
 pub mod model;
@@ -82,12 +84,14 @@ pub fn app(state: State) -> Router {
         .merge(oauth::router())
         .merge(clinical::router())
         .merge(health_history::routes())
+        .merge(immunizations::routes())
         .merge(documents::routes())
         .merge(referrals::routes())
         .merge(referral_delivery::routes())
         .merge(patient_identity::routes())
         .merge(patient_portal::router())
         .merge(prescribing::router())
+        .merge(erx_setup::router())
         .merge(labs::router())
         .merge(scheduling::router())
         .merge(recurrence::router())
@@ -176,6 +180,15 @@ pub fn app(state: State) -> Router {
                 (
                     [(header::CONTENT_TYPE, "application/javascript")],
                     include_str!("../web/checkout.js"),
+                )
+            }),
+        )
+        .route(
+            "/erx-setup.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/erx-setup.js"),
                 )
             }),
         )
@@ -302,6 +315,15 @@ pub fn app(state: State) -> Router {
                 (
                     [(header::CONTENT_TYPE, "application/javascript")],
                     include_str!("../web/referrals.js"),
+                )
+            }),
+        )
+        .route(
+            "/immunizations.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/immunizations.js"),
                 )
             }),
         )

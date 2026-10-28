@@ -41,7 +41,7 @@ when only part of a directory is loaded.
 
 ## Credentials and backups
 
-Clearinghouse, payment and reminder credentials are encrypted with a private
+Clearinghouse, payment, reminder and e-prescribing preparation credentials are encrypted with a private
 32-byte master key. Its default path is `.suncharts/provider-master.key`;
 `ENGINE_CREDENTIAL_KEY_FILE` can select another path. The key must be a regular,
 owner-only file (0600 on Unix), in a private directory.
@@ -79,3 +79,11 @@ local test reports do not belong in the public handbook.
 The implementation license is [AGPL-3.0-only](../LICENSE); the API specification
 uses [Apache-2.0](../api/LICENSE). Preserve notices and the source link in modified
 distributions. Consult the license texts for their terms.
+
+
+E-prescribing preparation also encrypts exact mutation requests and retained
+credential history. Keep the original server credential key even when the current
+credential block is cleared; historical encrypted requests still depend on it.
+Loss of the key fails setup mutations closed and requires restoring the original
+backup. There is no credential reveal endpoint. No enrolled provider or active
+transmission adapter is included in the enrollment-preparation feature.
