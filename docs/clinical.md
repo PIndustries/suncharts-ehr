@@ -283,9 +283,10 @@ Saving documents an event. It does not administer a vaccine, decrement inventory
 validate a vaccine schedule or transmit to an immunization registry.
 
 For an administered event, select the actual administering staff separately from
-the recorder and enter the actual timestamp with seconds and an explicit UTC
-offset (or Z), recorded dose/unit, route and site. Notes-only corrections preserve
-the stored timestamp precision; ambiguous offset-free local times are rejected.
+the recorder and choose the actual date/time and its recorded UTC offset,
+recorded dose/unit, route and site. The date/time picker supports milliseconds;
+notes-only corrections preserve the complete stored precision. New records require
+an explicit offset selection, and no local time zone is assumed.
 Historical records accept a complete date, timestamp, or explicit unknown-date
 text; no date is guessed from a narrative. A not-given event requires its reason
 and cannot assert an administered dose, lot or performer. The primary-source
