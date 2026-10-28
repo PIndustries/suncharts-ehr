@@ -17,10 +17,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
-const CLOUD: &str = "https://my.suncharts.app";
+pub const CLOUD: &str = "https://connect.suncharts.app";
+pub const LEGACY_CLOUD: &str = "https://my.suncharts.app";
+pub(crate) fn official_cloud(origin: &str) -> bool {
+    matches!(origin, CLOUD | LEGACY_CLOUD)
+}
 pub fn cloud_origin() -> Result<String> {
     let origin = std::env::var("ENGINE_CONNECT_CLOUD_URL").unwrap_or_else(|_| CLOUD.into());
-    if origin == CLOUD {
+    if official_cloud(&origin) {
         return Ok(origin);
     }
     let u = url::Url::parse(&origin).map_err(|_| Error::Invalid("invalid Connect cloud URL"))?;
@@ -44,13 +48,35 @@ const SCOPE:&str="clinical.read clinical.write billing.read billing.write events
 #[async_trait::async_trait]
 pub trait OnboardingCloud: Send + Sync {
     async fn post(&self, path: &str, body: &Value, bearer: Option<&str>) -> Result<Value>;
+    async fn post_at(
+        &self,
+        _origin: &str,
+        path: &str,
+        body: &Value,
+        bearer: Option<&str>,
+    ) -> Result<Value> {
+        self.post(path, body, bearer).await
+    }
 }
 struct Cloud;
 #[async_trait::async_trait]
 impl OnboardingCloud for Cloud {
     async fn post(&self, path: &str, body: &Value, bearer: Option<&str>) -> Result<Value> {
+        self.post_at(&cloud_origin()?, path, body, bearer).await
+    }
+    async fn post_at(
+        &self,
+        origin: &str,
+        path: &str,
+        body: &Value,
+        bearer: Option<&str>,
+    ) -> Result<Value> {
+        // A pending attempt retains its registered callback origin across a domain cutover.
+        if !official_cloud(origin) && origin != cloud_origin()? {
+            return Err(Error::Invalid("unexpected Connect cloud origin"));
+        }
         let mut q = crate::stedi::client()?
-            .post(format!("{}{path}", cloud_origin()?))
+            .post(format!("{origin}{path}"))
             .json(body);
         if let Some(token) = bearer {
             q = q.bearer_auth(token);
@@ -99,7 +125,19 @@ impl Intent {
         } else {
             self.status.as_str()
         };
-        json!({"id":self.id,"status":status,"version":self.version,"expires_at":self.expires_at,"authorization_url":self.authorization_url,"transport":self.transport,"cloud_origin":cloud_origin().ok()})
+        json!({"id":self.id,"status":status,"version":self.version,"expires_at":self.expires_at,"authorization_url":self.authorization_url,"transport":self.transport,"cloud_origin":self.cloud_origin().ok()})
+    }
+    fn cloud_origin(&self) -> Result<String> {
+        if let Some(authorization) = &self.authorization_url {
+            let url = url::Url::parse(authorization)
+                .map_err(|_| Error::Invalid("invalid saved Connect authorization URL"))?;
+            let origin = url.origin().ascii_serialization();
+            if official_cloud(&origin) || origin == cloud_origin()? {
+                return Ok(origin);
+            }
+            return Err(Error::Invalid("unexpected saved Connect origin"));
+        }
+        cloud_origin()
     }
 }
 #[derive(Deserialize, Serialize)]
@@ -145,6 +183,22 @@ async fn lock(tx: &mut Transaction<'_, Postgres>, a: &Actor) -> Result<()> {
         .execute(&mut **tx)
         .await?;
     Ok(())
+}
+async fn intent_cloud(tx: &mut Transaction<'_, Postgres>, r: &Intent) -> Result<String> {
+    let redirect: String =
+        sqlx::query_scalar("SELECT redirect_uri FROM oauth_clients WHERE tenant_id=$1 AND id=$2")
+            .bind(r.tenant_id)
+            .bind(r.client_id)
+            .fetch_one(&mut **tx)
+            .await?;
+    let origin = redirect
+        .strip_suffix("/oauth/ehr/callback")
+        .ok_or(Error::Invalid("invalid saved Connect callback"))?;
+    if official_cloud(origin) || origin == cloud_origin()? {
+        Ok(origin.to_owned())
+    } else {
+        Err(Error::Invalid("unexpected saved Connect origin"))
+    }
 }
 async fn row(tx: &mut Transaction<'_, Postgres>, a: &Actor, id: Uuid) -> Result<Intent> {
     sqlx::query_as("SELECT * FROM connect_onboarding_intents WHERE tenant_id=$1 AND actor_id=$2 AND id=$3 FOR UPDATE").bind(a.tenant_id).bind(a.sub).bind(id).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)
@@ -257,9 +311,10 @@ pub async fn begin_with_cloud(
         event(&mut tx, &a, id, "connect.onboarding_started").await?;
         row(&mut tx, &a, id).await?
     };
+    let cloud_origin = intent_cloud(&mut tx, &r).await?;
     tx.commit().await?;
     let secret = pending(&r)?;
-    let response=cloud.post("/api/v1/ehr-pairing/requests",&json!({"request_id":r.id,"ehr_origin":r.issuer,"remote_tenant_id":a.tenant_id,"remote_user_id":a.sub,"client_id":r.client_id,"client_secret":secret.client_secret,"code_challenge":crate::oauth::challenge(&secret.verifier),"code_challenge_method":"S256","state":secret.state,"transport":r.transport,"relay_token":secret.relay_token}),None).await?;
+    let response=cloud.post_at(&cloud_origin,"/api/v1/ehr-pairing/requests",&json!({"request_id":r.id,"ehr_origin":r.issuer,"remote_tenant_id":a.tenant_id,"remote_user_id":a.sub,"client_id":r.client_id,"client_secret":secret.client_secret,"code_challenge":crate::oauth::challenge(&secret.verifier),"code_challenge_method":"S256","state":secret.state,"transport":r.transport,"relay_token":secret.relay_token}),None).await?;
     let uri = response["request_uri"]
         .as_str()
         .filter(|v| {
@@ -325,8 +380,7 @@ async fn callback(
 }
 #[doc(hidden)]
 pub async fn stage_callback(s: &State, q: Callback) -> Result<Uuid> {
-    if q.iss != cloud_origin()?
-        || q.state.len() > 128
+    if q.state.len() > 128
         || q.code.as_ref().is_some_and(|c| c.len() > 512)
         || q.error.as_deref().is_some_and(|e| e != "access_denied")
         || q.code.is_some() == q.error.is_some()
@@ -348,6 +402,9 @@ pub async fn stage_callback(s: &State, q: Callback) -> Result<Uuid> {
             .bind(crate::oauth::hash(&q.state))
             .fetch_one(&mut *tx)
             .await?;
+    if q.iss != intent_cloud(&mut tx, &r).await? {
+        return Err(Error::Unauthorized);
+    }
     if r.expires_at < Utc::now() {
         return Err(Error::Conflict("connection attempt expired"));
     }
@@ -483,6 +540,7 @@ pub async fn complete_with_cloud(
     sqlx::query("UPDATE connect_onboarding_intents SET status='completing',confirmed_at=coalesce(confirmed_at,now()),lease_until=now()+interval '60 seconds',version=version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(id).execute(&mut *tx).await?;
     event(&mut tx, &a, id, "connect.onboarding_owner_confirmed").await?;
     r = row(&mut tx, &a, id).await?;
+    let intent_origin = intent_cloud(&mut tx, &r).await?;
     tx.commit().await?;
     let secret = pending(&r)?;
     let request_uri = r
@@ -510,7 +568,7 @@ pub async fn complete_with_cloud(
                 .as_ref()
                 .ok_or(Error::Invalid("approval callback missing"))?,
         )?;
-        let value=cloud.post("/api/v1/ehr-pairing/token",&json!({"request_uri":request_uri,"code":code.expose(),"code_verifier":secret.verifier}),None).await?;
+        let value=cloud.post_at(&intent_origin,"/api/v1/ehr-pairing/token",&json!({"request_uri":request_uri,"code":code.expose(),"code_verifier":secret.verifier}),None).await?;
         let x = exchange(&value, &a)?;
         if value["activation_required"] != true {
             return Err(Error::Invalid(
@@ -541,7 +599,7 @@ pub async fn complete_with_cloud(
         x
     };
     // The owner confirmation and the encrypted response are durable BEFORE remote activation.
-    let active=cloud.post("/api/v1/ehr-pairing/complete",&json!({"request_uri":request_uri,"code_verifier":secret.verifier,"installation_id":x.installation_id}),Some(&x.installation_token)).await?;
+    let active=cloud.post_at(&intent_origin,"/api/v1/ehr-pairing/complete",&json!({"request_uri":request_uri,"code_verifier":secret.verifier,"installation_id":x.installation_id}),Some(&x.installation_token)).await?;
     if active["installation_id"] != x.installation_id.to_string()
         || active["remote_tenant_id"] != a.tenant_id.to_string()
         || active["remote_user_id"] != a.sub.to_string()
@@ -671,11 +729,13 @@ pub async fn cancel_with_cloud(
     sqlx::query("UPDATE oauth_grants SET revoked_at=coalesce(revoked_at,now()) WHERE client_id=$1 AND tenant_id=$2").bind(r.client_id).bind(a.tenant_id).execute(&mut *tx).await?;
     sqlx::query("UPDATE connect_onboarding_intents SET status='cancelling',lease_until=NULL,version=version+1,last_result='owner_requested_cloud_cleanup' WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(id).execute(&mut *tx).await?;
     event(&mut tx, &a, id, "connect.onboarding_cancellation_requested").await?;
+    let intent_origin = intent_cloud(&mut tx, &r).await?;
     tx.commit().await?;
     if let Some(uri) = r.request_uri.as_deref() {
         let secret = pending(&r)?;
         let response = cloud
-            .post(
+            .post_at(
+                &intent_origin,
                 "/api/v1/ehr-pairing/cancel",
                 &json!({"request_uri":uri,"code_verifier":secret.verifier}),
                 None,

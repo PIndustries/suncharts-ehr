@@ -110,6 +110,7 @@ async fn session(db: &PgPool, tenant: Uuid, user: Uuid) -> HeaderMap {
 #[derive(Default)]
 struct Cloud {
     calls: Mutex<Vec<(String, Value, Option<String>)>>,
+    origins: Mutex<Vec<String>>,
     invalid_url: bool,
     fail_token: AtomicBool,
     fail_complete: AtomicBool,
@@ -123,13 +124,23 @@ impl Cloud {
         Callback {
             code: Some("synthetic-one-use-code".into()),
             state: self.start()["state"].as_str().unwrap().into(),
-            iss: "https://my.suncharts.app".into(),
+            iss: "https://connect.suncharts.app".into(),
             error: None,
         }
     }
 }
 #[async_trait::async_trait]
 impl OnboardingCloud for Cloud {
+    async fn post_at(
+        &self,
+        origin: &str,
+        path: &str,
+        body: &Value,
+        bearer: Option<&str>,
+    ) -> Result<Value> {
+        self.origins.lock().unwrap().push(origin.to_owned());
+        self.post(path, body, bearer).await
+    }
     async fn post(&self, path: &str, body: &Value, bearer: Option<&str>) -> Result<Value> {
         self.calls
             .lock()
@@ -138,7 +149,7 @@ impl OnboardingCloud for Cloud {
         if path == "/api/v1/ehr-pairing/requests" {
             assert!(bearer.is_none());
             return Ok(
-                json!({"request_uri":"epr_synthetic_request", "authorization_url":if self.invalid_url {"https://evil.example/connect/ehr?request=epr_synthetic_request"} else {"https://my.suncharts.app/connect/ehr?request=epr_synthetic_request"}}),
+                json!({"request_uri":"epr_synthetic_request", "authorization_url":if self.invalid_url {"https://evil.example/connect/ehr?request=epr_synthetic_request".to_owned()} else {format!("{}/connect/ehr?request=epr_synthetic_request",self.origins.lock().unwrap().last().cloned().unwrap_or_else(||connect_onboarding::CLOUD.into()))}}),
             );
         }
         let start = self.start();
@@ -869,4 +880,50 @@ async fn outbound_badge_requires_fresh_live_channel_and_enabled_local_owner() {
         .unwrap();
     assert_eq!(status(&f.db, f.tenant).await.unwrap()["state"], "offline");
     f.db.close().await;
+}
+
+#[tokio::test]
+async fn pending_legacy_pairing_keeps_its_callback_issuer_and_exchange_origin() {
+    let f = Fixture::new().await;
+    let cloud = Cloud::default();
+    let started = connect_onboarding::begin_with_cloud(&f.state, &f.headers, &cloud)
+        .await
+        .unwrap();
+    let id = Uuid::parse_str(started["id"].as_str().unwrap()).unwrap();
+    sqlx::query("UPDATE oauth_clients SET redirect_uri='https://my.suncharts.app/oauth/ehr/callback' WHERE id=(SELECT client_id FROM connect_onboarding_intents WHERE id=$1)").bind(id).execute(&f.db).await.unwrap();
+    sqlx::query("UPDATE connect_onboarding_intents SET authorization_url='https://my.suncharts.app/connect/ehr?request=epr_synthetic_request' WHERE id=$1").bind(id).execute(&f.db).await.unwrap();
+    let resumed = connect_onboarding::begin_with_cloud(&f.state, &f.headers, &cloud)
+        .await
+        .unwrap();
+    assert_eq!(resumed["cloud_origin"], connect_onboarding::LEGACY_CLOUD);
+    assert!(
+        connect_onboarding::stage_callback(&f.state, cloud.callback())
+            .await
+            .is_err(),
+        "a new primary issuer cannot be mixed into an existing legacy-origin attempt"
+    );
+    let mut callback = cloud.callback();
+    callback.iss = connect_onboarding::LEGACY_CLOUD.into();
+    connect_onboarding::stage_callback(&f.state, callback)
+        .await
+        .unwrap();
+    f.grant(id).await;
+    connect_onboarding::complete_with_cloud(
+        &f.state,
+        &f.headers,
+        id,
+        intent_version(&f, id).await,
+        &cloud,
+    )
+    .await
+    .unwrap();
+    let origins = cloud.origins.lock().unwrap();
+    assert_eq!(
+        origins.as_slice(),
+        [
+            connect_onboarding::CLOUD,
+            connect_onboarding::LEGACY_CLOUD,
+            connect_onboarding::LEGACY_CLOUD
+        ]
+    );
 }

@@ -148,8 +148,18 @@ struct Health {
 }
 async fn status_snapshot(tx: &mut Transaction<'_, Postgres>, a: &Actor) -> Result<Value> {
     let cloud = crate::connect_onboarding::cloud_origin()?;
-    let redirect = format!("{cloud}/oauth/ehr/callback");
-    let (active_grants,your_account_authorized):(i64,bool)=sqlx::query_as("SELECT count(*),coalesce(bool_or(g.user_id=$2),false) FROM oauth_grants g JOIN oauth_clients c ON c.id=g.client_id AND c.tenant_id=g.tenant_id JOIN browser_users u ON u.id=g.user_id AND u.tenant_id=g.tenant_id WHERE g.tenant_id=$1 AND c.redirect_uri=$3 AND NOT c.disabled AND g.revoked_at IS NULL AND NOT u.disabled AND u.role IN ('owner','clinician','front_desk','read_only') AND EXISTS(SELECT 1 FROM oauth_tokens t WHERE t.grant_id=g.id AND t.expires_at>now() AND t.used_at IS NULL AND t.kind IN ('access','refresh'))").bind(a.tenant_id).bind(a.sub).bind(redirect).fetch_one(&mut **tx).await?;
+    let redirects = if crate::connect_onboarding::official_cloud(&cloud) {
+        vec![
+            format!("{}/oauth/ehr/callback", crate::connect_onboarding::CLOUD),
+            format!(
+                "{}/oauth/ehr/callback",
+                crate::connect_onboarding::LEGACY_CLOUD
+            ),
+        ]
+    } else {
+        vec![format!("{cloud}/oauth/ehr/callback")]
+    };
+    let (active_grants,your_account_authorized):(i64,bool)=sqlx::query_as("SELECT count(*),coalesce(bool_or(g.user_id=$2),false) FROM oauth_grants g JOIN oauth_clients c ON c.id=g.client_id AND c.tenant_id=g.tenant_id JOIN browser_users u ON u.id=g.user_id AND u.tenant_id=g.tenant_id WHERE g.tenant_id=$1 AND c.redirect_uri=ANY($3) AND NOT c.disabled AND g.revoked_at IS NULL AND NOT u.disabled AND u.role IN ('owner','clinician','front_desk','read_only') AND EXISTS(SELECT 1 FROM oauth_tokens t WHERE t.grant_id=g.id AND t.expires_at>now() AND t.used_at IS NULL AND t.kind IN ('access','refresh'))").bind(a.tenant_id).bind(a.sub).bind(&redirects).fetch_one(&mut **tx).await?;
     let setting: Option<Setting> =
         sqlx::query_as("SELECT * FROM connect_service_settings WHERE tenant_id=$1")
             .bind(a.tenant_id)

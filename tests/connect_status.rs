@@ -200,7 +200,7 @@ async fn official_authorization_and_fresh_roundtrip_are_distinct_and_tenant_scop
         &db,
         &a,
         a.sub,
-        "https://my.suncharts.app/oauth/ehr/callback",
+        "https://connect.suncharts.app/oauth/ehr/callback",
     )
     .await;
     let (_, own) = call(&r, &a, "GET", path, Value::Null, None).await;
