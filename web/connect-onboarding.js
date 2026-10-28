@@ -5,12 +5,12 @@ function connectOnboardingCard(data,connection){
  const p=data?.pending;
  if(p?.status==='completed')return '<section class="connect-onboarding"><h3>SunCharts connection set up</h3><p>Check the live status above for current connectivity. Your practice connection is set up. Manage appointment email and support in Connect services.</p><details><summary>Set up a different connection</summary><p>You will review and approve the practice connection again.</p><button type="button" data-connect-start>Reconnect to SunCharts</button></details></section>';
  const pending=p&&!['completed','cancelled','denied','failed'].includes(p.status);
- return `<section class="connect-onboarding"><h3>Connect to SunCharts</h3><p>Sign in at my.suncharts.app, choose your practice and approve the connection. Your EHR opens a secure outbound connection and sets up clinical access, managed appointment email and support automatically. No public EHR address or inbound firewall port is needed.</p><p class="muted">No client secrets, installation tokens or email keys to copy. Your practice’s permissions and patient reminder consent still apply.</p>${!data?.available?`<p class="notice">${esc(data?.reason||'This installation is not ready to connect. Check its connection configuration.')}</p>`:''}${pending?`<p>Connection setup: ${esc(String(p.status).replaceAll('_',' '))}. ${p.expires_at?'Expires '+esc(date(p.expires_at))+'.':''}</p>`:''}<div class="actions">${pending?`<button class="primary" type="button" data-connect-resume ${['expired','cancelling'].includes(p.status)?'disabled':''}>Continue connection</button><button type="button" data-connect-cancel>${p.status==='cancelling'?'Retry cancellation':'Cancel setup'}</button>`:`<button class="primary" type="button" data-connect-start ${data?.available?'':'disabled'}>Connect to SunCharts</button>`}</div></section>`;
+ return `<section class="connect-onboarding"><h3>Connect to SunCharts</h3><p>Sign in at connect.suncharts.app, choose your practice and approve the connection. Your EHR opens a secure outbound connection and sets up clinical access, managed appointment email and support automatically. No public EHR address or inbound firewall port is needed.</p><p class="muted">No client secrets, installation tokens or email keys to copy. Your practice’s permissions and patient reminder consent still apply.</p>${!data?.available?`<p class="notice">${esc(data?.reason||'This installation is not ready to connect. Check its connection configuration.')}</p>`:''}${pending?`<p>Connection setup: ${esc(String(p.status).replaceAll('_',' '))}. ${p.expires_at?'Expires '+esc(date(p.expires_at))+'.':''}</p>`:''}<div class="actions">${pending?`<button class="primary" type="button" data-connect-resume ${['expired','cancelling'].includes(p.status)?'disabled':''}>Continue connection</button><button type="button" data-connect-cancel>${p.status==='cancelling'?'Retry cancellation':'Cancel setup'}</button>`:`<button class="primary" type="button" data-connect-start ${data?.available?'':'disabled'}>Connect to SunCharts</button>`}</div></section>`;
 }
-function connectAuthorizationDestination(value,expectedOrigin='https://my.suncharts.app'){
+function connectAuthorizationDestination(value,expectedOrigin='https://connect.suncharts.app'){
  const expected=new URL(expectedOrigin);
  const loopback=expected.protocol==='http:'&&['127.0.0.1','[::1]'].includes(expected.hostname);
- if(expected.origin!=='https://my.suncharts.app'&&!loopback)throw new Error('Unexpected SunCharts service configuration.');
+ if(!['https://connect.suncharts.app','https://my.suncharts.app'].includes(expected.origin)&&!loopback)throw new Error('Unexpected SunCharts service configuration.');
  const url=new URL(value);
  if(url.origin!==expected.origin||url.pathname!=='/connect/ehr'||url.username||url.password||url.hash)throw new Error('SunCharts returned an invalid authorization address. Start the connection again.');
  return url.href;
@@ -50,6 +50,6 @@ document.addEventListener('click',event=>{
   if(['callback_received','exchanged','completing'].includes(p.status)){
    const query=new URLSearchParams(location.search);query.set('connect_onboarding',p.id);history.replaceState(null,'',location.pathname+'?'+query);await finishConnectOnboarding();return;
   }
-  location.assign(connectAuthorizationDestination(data.authorization_url||p.authorization_url,data.cloud_origin));
+  location.assign(connectAuthorizationDestination(data.authorization_url||p.authorization_url,p.cloud_origin||data.cloud_origin));
  });
 },true);

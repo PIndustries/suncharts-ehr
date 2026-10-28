@@ -5,9 +5,11 @@ available managed services and access from SunCharts clients.
 
 ## Connect to SunCharts
 
-1. Configure the EHR address staff use in their browser. It can remain private. Allow the EHR server to make outbound HTTPS/WebSocket connections to `my.suncharts.app` on port 443. Use HTTPS for staff browser access outside localhost; it does not need to be publicly reachable.
+1. Configure the EHR address staff use in their browser. It can remain private. Allow the EHR server to make outbound HTTPS/WebSocket connections to `connect.suncharts.app` on port 443. Use HTTPS for staff browser access outside localhost; it does not need to be publicly reachable.
 2. Open **Connected apps → Connect to SunCharts**.
-3. Sign in at `my.suncharts.app`, choose the owning practice and approve the connection.
+3. Sign in at `connect.suncharts.app`, choose the owning practice and approve the connection.
+
+Existing authorized installations keep their stored credentials. The former official host remains accepted for legacy callbacks and in-progress connection attempts; new setup and outbound connections use SunCharts Connect. No inbound port or new public EHR address is required.
 4. Return to the EHR and review its connection status and available services.
 
 There are no client IDs, secrets or service tokens to copy in this flow. Setup
