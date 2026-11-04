@@ -202,6 +202,9 @@ pub async fn logout(
 ) -> Result<(HeaderMap, Json<Value>)> {
     let auth = s.browser.as_ref().ok_or(Error::NotFound)?;
     auth.check_origin(&h)?;
+    // Authenticate before deletion so a stale staff-context header cannot be used to log out a
+    // different shared-browser account. Delegated support sessions use the same context fence.
+    auth.authenticate(&h, true).await?;
     let token = cookie(&h).ok_or(Error::Unauthorized)?;
     let token_hash = hash(&token);
     let mut tx = auth.db.begin().await?;
