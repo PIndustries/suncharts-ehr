@@ -18,8 +18,7 @@ DO $$
 DECLARE constraint_name text;
 BEGIN
  SELECT c.conname INTO constraint_name FROM pg_constraint c
- JOIN pg_class t ON t.oid=c.conrelid
- WHERE t.relname='patient_portal_accounts' AND c.contype='c'
+ WHERE c.conrelid='patient_portal_accounts'::regclass AND c.contype='c'
    AND pg_get_constraintdef(c.oid) LIKE '%password_hash IS NOT NULL%';
  IF constraint_name IS NULL THEN RAISE EXCEPTION 'patient portal active-password constraint not found'; END IF;
  EXECUTE format('ALTER TABLE patient_portal_accounts DROP CONSTRAINT %I',constraint_name);
