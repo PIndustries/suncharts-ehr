@@ -19,12 +19,21 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 pub const CLOUD: &str = "https://connect.suncharts.app";
 pub const LEGACY_CLOUD: &str = "https://my.suncharts.app";
+pub const DEVELOPMENT_CLOUD: &str = "https://dev.suncharts.app";
 pub(crate) fn official_cloud(origin: &str) -> bool {
     matches!(origin, CLOUD | LEGACY_CLOUD)
 }
+fn development_cloud(origin: &str, allowed: bool) -> bool {
+    allowed && origin == DEVELOPMENT_CLOUD
+}
 pub fn cloud_origin() -> Result<String> {
     let origin = std::env::var("ENGINE_CONNECT_CLOUD_URL").unwrap_or_else(|_| CLOUD.into());
-    if official_cloud(&origin) {
+    if official_cloud(&origin)
+        || development_cloud(
+            &origin,
+            std::env::var("ENGINE_CONNECT_ALLOW_DEVELOPMENT").as_deref() == Ok("true"),
+        )
+    {
         return Ok(origin);
     }
     let u = url::Url::parse(&origin).map_err(|_| Error::Invalid("invalid Connect cloud URL"))?;
@@ -42,6 +51,19 @@ pub fn cloud_origin() -> Result<String> {
         return Err(Error::Invalid("Connect cloud must be SunCharts HTTPS; loopback requires explicit development configuration"));
     }
     Ok(origin.trim_end_matches('/').to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn development_cloud_is_exact_and_explicit() {
+        assert!(development_cloud(DEVELOPMENT_CLOUD, true));
+        assert!(!development_cloud(DEVELOPMENT_CLOUD, false));
+        assert!(!development_cloud("https://preview.suncharts.app", true));
+        assert!(!development_cloud("http://dev.suncharts.app", true));
+    }
 }
 
 const SCOPE:&str="clinical.read clinical.write billing.read billing.write events.read migration.manage offline_access";
