@@ -110,6 +110,7 @@ async function refreshSignInMode(){
   const connected=mode.mode==='connect';$('local-login-fields').hidden=connected;$('connect-login').hidden=!connected;
   for(const input of $('local-login-fields').querySelectorAll('input'))input.required=!connected;
   if(connected){$('connect-login').href=mode.staff_sign_in_url;$('login-description').textContent='Use your SunCharts Connect passkey or emailed sign-in link.';$('login-connect-state').hidden=false;$('login-connect-state').textContent='Connected to SunCharts Connect · authorization is checked in real time.';}
+  else{$('connect-login').href='#';$('login-description').textContent='Sign in to your self-hosted SunCharts EHR.';$('login-connect-state').hidden=true;$('login-connect-state').textContent='';}
  }catch{$('login-connect-state').hidden=false;$('login-connect-state').textContent='Unable to verify Connect status. Try again shortly.';}
 }
 function notice(message, error = false) { $('notice').textContent=message; $('notice').className=`notice${error?' error':''}`; $('notice').hidden=false; }

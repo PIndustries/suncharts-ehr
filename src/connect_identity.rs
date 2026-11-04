@@ -81,6 +81,13 @@ fn http() -> Result<reqwest::Client> {
 fn issuer() -> Result<String> {
     crate::connect_onboarding::cloud_origin()
 }
+pub(crate) fn staff_sign_in_url(audience: &str) -> Result<String> {
+    let cloud = issuer()?;
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("audience", audience)
+        .finish();
+    Ok(format!("{cloud}/ehr/launch?{query}"))
+}
 fn validate(c: &Claims, iss: &str, aud: &str, now: i64) -> Result<()> {
     if c.iss != iss
         || c.aud != aud
@@ -112,16 +119,14 @@ pub(crate) async fn connected(db: &sqlx::PgPool) -> Result<bool> {
 pub async fn mode(ExtractState(s): ExtractState<State>) -> Result<Json<Value>> {
     let auth = s.browser.as_ref().ok_or(Error::NotFound)?;
     let connected = connected(&auth.db).await?;
+    let staff_sign_in_url = staff_sign_in_url(auth.origin())?;
     let cloud = issuer()?;
-    let staff_query = url::form_urlencoded::Serializer::new(String::new())
-        .append_pair("audience", auth.origin())
-        .finish();
     let patient_query = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("ehr_audience", auth.origin())
         .finish();
     Ok(Json(json!({
         "mode": if connected {"connect"} else {"local"}, "connected": connected,
-        "staff_sign_in_url": connected.then(|| format!("{cloud}/ehr/launch?{staff_query}")),
+        "staff_sign_in_url": connected.then_some(staff_sign_in_url),
         "patient_sign_in_url": connected.then(|| format!("{cloud}/patient/?{patient_query}")),
         "patient_identity": "explicit_link_required"
     })))
