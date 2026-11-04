@@ -105,6 +105,7 @@ struct BootstrapResponse {
     connected: bool,
     connection_status: String,
     transport: String,
+    infrastructure_ready: bool,
     managed_email_ready: bool,
     managed_email_from: Option<String>,
     support_ready: bool,
@@ -406,6 +407,7 @@ fn validate_response(v: &Value, e: &Envelope) -> Result<BootstrapResponse> {
         || r.expected_version != e.expected_version
         || !status_consistent
         || r.transport != "outbound_websocket"
+        || !r.infrastructure_ready
         || !ready_consistent
         || (r.managed_email_ready
             && r.managed_email_from
@@ -676,7 +678,7 @@ mod tests {
     #[test]
     fn response_requires_exact_paid_order_binding_and_real_services() {
         let e = Envelope { capability:format!("scb_{}", "x".repeat(43)), provisioning_request_id:Uuid::new_v4(), order_id:Uuid::new_v4(), tenant_id:Uuid::new_v4(), owner_user_id:Uuid::new_v4(), owner_email:"owner@example.test".into(), instance_origin:"https://clinic.suncharts.app".into(), expected_version:"26.11.04.1".into(), expected_image_reference:"ghcr.io/pindustries/suncharts-ehr@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into() };
-        let base = json!({"contract_version":1,"provisioning_request_id":e.provisioning_request_id,"order_id":e.order_id,"tenant_id":e.tenant_id,"connection_id":Uuid::new_v4(),"installation_id":Uuid::new_v4(),"installation_token":format!("scs_inst_{}", "x".repeat(48)),"authorization_source":"managed_hosted_order","authorization_reference":format!("managed-order:{}:job:{}",e.order_id,e.provisioning_request_id),"terms_version":"managed-hosted-terms-v1","granted_scope":OWNER_SCOPE,"authorization_actor":"system:managed_provisioning","authorized_at":chrono::Utc::now().to_rfc3339(),"connected":false,"connection_status":"pending","transport":"outbound_websocket","managed_email_ready":true,"managed_email_from":"SunCharts <appointments@suncharts.app>","support_ready":true,"ready":false,"expected_version":e.expected_version,"expected_image_reference":e.expected_image_reference});
+        let base = json!({"contract_version":1,"provisioning_request_id":e.provisioning_request_id,"order_id":e.order_id,"tenant_id":e.tenant_id,"connection_id":Uuid::new_v4(),"installation_id":Uuid::new_v4(),"installation_token":format!("scs_inst_{}", "x".repeat(48)),"authorization_source":"managed_hosted_order","authorization_reference":format!("managed-order:{}:job:{}",e.order_id,e.provisioning_request_id),"terms_version":"managed-hosted-terms-v1","granted_scope":OWNER_SCOPE,"authorization_actor":"system:managed_provisioning","authorized_at":chrono::Utc::now().to_rfc3339(),"connected":false,"connection_status":"pending","transport":"outbound_websocket","infrastructure_ready":true,"managed_email_ready":true,"managed_email_from":"SunCharts <appointments@suncharts.app>","support_ready":true,"ready":false,"expected_version":e.expected_version,"expected_image_reference":e.expected_image_reference});
         assert!(validate_response(&base, &e).is_ok());
         let mut changed = base.clone();
         changed["tenant_id"] = json!(Uuid::new_v4());
