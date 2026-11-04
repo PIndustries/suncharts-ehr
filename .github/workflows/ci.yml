@@ -1,5 +1,8 @@
 name: Clinical workflow
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
 jobs:
   verify:
     runs-on: ubuntu-latest
