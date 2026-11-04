@@ -278,19 +278,20 @@ pub(crate) async fn patient_session(
     db: &sqlx::PgPool,
     token: &str,
 ) -> Result<Option<(Uuid, Uuid, Uuid)>> {
-    let row: Option<(Uuid,Uuid,i64,Uuid,String,String,DateTime<Utc>,Uuid)> = sqlx::query_as("SELECT s.tenant_id,s.account_id,s.account_version,s.grant_id,s.issuer,s.audience,s.expires_at,a.patient_id FROM patient_connect_sessions s JOIN patient_portal_accounts a ON a.tenant_id=s.tenant_id AND a.id=s.account_id AND a.version=s.account_version WHERE s.token_hash=$1 AND s.expires_at>now() AND s.revoked_at IS NULL AND a.status='active'")
+    let row: Option<PatientSession> = sqlx::query_as("SELECT s.tenant_id,s.account_id,s.grant_id,s.issuer,s.audience,s.expires_at,a.patient_id FROM patient_connect_sessions s JOIN patient_portal_accounts a ON a.tenant_id=s.tenant_id AND a.id=s.account_id AND a.version=s.account_version WHERE s.token_hash=$1 AND s.expires_at>now() AND s.revoked_at IS NULL AND a.status='active'")
         .bind(crate::browser::hash(token)).fetch_optional(db).await?;
-    let Some((tenant, account, _version, grant, iss, aud, exp, patient)) = row else {
+    let Some(session) = row else {
         return Ok(None);
     };
-    let i = introspect(&iss, grant, &aud).await?;
+    let i = introspect(&session.issuer, session.grant_id, &session.audience).await?;
     let now = Utc::now().timestamp();
     let valid = i.active
-        && i.jti == Some(grant)
+        && i.jti == Some(session.grant_id)
         && i.kind.as_deref() == Some("patient")
-        && i.tenant_id == Some(tenant)
-        && i.patient_ehr_puuid.as_deref() == Some(&patient.to_string())
-        && i.exp.is_some_and(|v| v > now && v <= exp.timestamp());
+        && i.tenant_id == Some(session.tenant_id)
+        && i.patient_ehr_puuid.as_deref() == Some(&session.patient_id.to_string())
+        && i.exp
+            .is_some_and(|v| v > now && v <= session.expires_at.timestamp());
     if !valid {
         sqlx::query("UPDATE patient_connect_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE token_hash=$1")
             .bind(crate::browser::hash(token)).execute(db).await?;
@@ -302,7 +303,22 @@ pub(crate) async fn patient_session(
     .bind(crate::browser::hash(token))
     .execute(db)
     .await?;
-    Ok(Some((tenant, patient, account)))
+    Ok(Some((
+        session.tenant_id,
+        session.patient_id,
+        session.account_id,
+    )))
+}
+
+#[derive(sqlx::FromRow)]
+struct PatientSession {
+    tenant_id: Uuid,
+    account_id: Uuid,
+    grant_id: Uuid,
+    issuer: String,
+    audience: String,
+    expires_at: DateTime<Utc>,
+    patient_id: Uuid,
 }
 
 #[cfg(test)]
