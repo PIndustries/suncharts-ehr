@@ -197,16 +197,9 @@ async fn delegated_support_is_read_only_revalidated_and_audited() {
     let revoked_cookie = revoked_cookie.unwrap();
     active.store(false, Ordering::SeqCst);
     assert_eq!(
-        call(
-            &app,
-            "GET",
-            "/auth/me",
-            Some(&revoked_cookie),
-            None,
-            None,
-        )
-        .await
-        .0,
+        call(&app, "GET", "/auth/me", Some(&revoked_cookie), None, None,)
+            .await
+            .0,
         StatusCode::UNAUTHORIZED
     );
     let actions: Vec<String> = sqlx::query_scalar(
