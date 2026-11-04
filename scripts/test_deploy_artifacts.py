@@ -59,7 +59,9 @@ class DeploymentArtifactsTest(unittest.TestCase):
         self.assertRegex(dockerfile, r"rust:1\.89-bookworm@sha256:[0-9a-f]{64}")
         self.assertRegex(dockerfile, r"debian:bookworm-slim@sha256:[0-9a-f]{64}")
         self.assertIn('ARG DEBIAN_SNAPSHOT="20250910T000000Z"', dockerfile)
-        self.assertIn("snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}", dockerfile)
+        self.assertIn("https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}", dockerfile)
+        self.assertGreaterEqual(dockerfile.count("Acquire::Retries=5"), 4)
+        self.assertIn("--mount=type=cache,id=suncharts-ehr-target", dockerfile)
 
     def test_image_workflow_actions_are_commit_pinned(self):
         workflow = (ROOT / ".github" / "workflows" / "publish-image.yml").read_text()
@@ -67,6 +69,8 @@ class DeploymentArtifactsTest(unittest.TestCase):
         self.assertGreaterEqual(len(uses), 7)
         for action in uses:
             self.assertRegex(action, r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
+        self.assertIn("cache-from: type=gha,scope=suncharts-ehr-image", workflow)
+        self.assertIn("cache-to: type=gha,mode=max,scope=suncharts-ehr-image", workflow)
 
     def test_release_manifest_binds_digest_source_and_schema(self):
         version = (ROOT / "BUILD_VERSION").read_text().strip()
