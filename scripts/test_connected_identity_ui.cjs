@@ -9,9 +9,16 @@ const browser = fs.readFileSync(path.join(root, 'src/browser.rs'), 'utf8');
 const patient = fs.readFileSync(path.join(root, 'src/patient_portal.rs'), 'utf8');
 const identity = fs.readFileSync(path.join(root, 'src/connect_identity.rs'), 'utf8');
 
-assert.match(index, /id="connect-login"[^>]+hidden/);
+assert.match(index, /id="local-login-fields" __LOCAL_LOGIN_VISIBILITY__/);
+assert.match(index, /id="connect-login"[^>]+__CONNECT_LOGIN_VISIBILITY__/);
+assert.match(index, /href="__CONNECT_LOGIN_URL__"/);
+assert.match(index, /__LOGIN_DESCRIPTION__/);
+assert.match(index, /__CLINIC_LOGIN_BRAND__/);
+assert.match(index, /__CLINIC_SIDEBAR_IDENTITY__/);
+assert.doesNotMatch(index, /id="local-login-fields"><label>/, 'local credentials must not be visible before the server selects an authentication mode');
 assert.match(app, /mode\.mode==='connect'/);
 assert.match(app, /local-login-fields'\)\.hidden=connected/);
+assert.match(app, /else\{\$\('connect-login'\)\.href='#'/);
 assert.match(browser, /connected && !recovery/);
 assert.match(browser, /ENGINE_BREAK_GLASS_LOCAL_AUTH/);
 assert.match(browser, /role != "owner"/);

@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod backend;
 pub mod billing;
+mod branding;
 pub mod browser;
 pub mod ca277;
 pub mod checkout;
@@ -104,10 +105,106 @@ async fn readiness(ExtractState(state): ExtractState<State>) -> impl IntoRespons
     }
 }
 
-async fn index() -> axum::response::Html<String> {
-    axum::response::Html(
-        include_str!("../web/index.html").replace("__SUN_CHARTS_BUILD__", env!("SUN_CHARTS_BUILD")),
-    )
+enum LoginPresentation {
+    Local,
+    Connect(String),
+    Pending,
+}
+
+fn render_index(login: LoginPresentation, branding: &branding::InstanceBranding) -> String {
+    let (local_visibility, connect_visibility, connect_url, description, state_visibility) =
+        match login {
+            LoginPresentation::Local => (
+                "",
+                "hidden",
+                "#".to_owned(),
+                "Sign in to your self-hosted SunCharts EHR.",
+                "hidden",
+            ),
+            LoginPresentation::Connect(url) => (
+                "hidden",
+                "",
+                url,
+                "Use your SunCharts Connect passkey or emailed sign-in link.",
+                "",
+            ),
+            LoginPresentation::Pending => (
+                "hidden",
+                "hidden",
+                "#".to_owned(),
+                "Checking your sign-in options…",
+                "",
+            ),
+        };
+    include_str!("../web/index.html")
+        .replace("__SUN_CHARTS_BUILD__", env!("SUN_CHARTS_BUILD"))
+        .replace("__CLINIC_LOGIN_BRAND__", &branding.login_html())
+        .replace("__CLINIC_SIDEBAR_IDENTITY__", &branding.sidebar_html())
+        .replace("__LOCAL_LOGIN_VISIBILITY__", local_visibility)
+        .replace("__CONNECT_LOGIN_VISIBILITY__", connect_visibility)
+        .replace("__CONNECT_LOGIN_URL__", &connect_url)
+        .replace("__LOGIN_DESCRIPTION__", description)
+        .replace("__CONNECT_STATE_VISIBILITY__", state_visibility)
+}
+
+async fn index(ExtractState(state): ExtractState<State>) -> axum::response::Html<String> {
+    let login = match state.browser.as_ref() {
+        Some(auth) => match connect_identity::connected(&auth.db).await {
+            Ok(false) => LoginPresentation::Local,
+            Ok(true) => match connect_identity::staff_sign_in_url(auth.origin()) {
+                Ok(url) => LoginPresentation::Connect(url),
+                Err(_) => LoginPresentation::Pending,
+            },
+            Err(_) => LoginPresentation::Pending,
+        },
+        None => LoginPresentation::Pending,
+    };
+    axum::response::Html(render_index(login, &branding::InstanceBranding::from_env()))
+}
+
+#[cfg(test)]
+mod login_presentation_tests {
+    use super::{branding::InstanceBranding, render_index, LoginPresentation};
+
+    #[test]
+    fn connected_first_paint_contains_only_connect_sign_in() {
+        let html = render_index(
+            LoginPresentation::Connect(
+                "https://connect.suncharts.app/ehr/launch?audience=https%3A%2F%2Fclinic.example"
+                    .to_owned(),
+            ),
+            &InstanceBranding::default(),
+        );
+        assert!(html.contains("id=\"local-login-fields\" hidden"));
+        assert!(html.contains(
+            "id=\"connect-login\" class=\"primary\" href=\"https://connect.suncharts.app/ehr/launch?audience=https%3A%2F%2Fclinic.example\" >"
+        ));
+        assert!(!html.contains("__CONNECT_LOGIN_"));
+        assert!(!html.contains("__LOCAL_LOGIN_"));
+    }
+
+    #[test]
+    fn unresolved_first_paint_does_not_expose_local_credentials() {
+        let html = render_index(LoginPresentation::Pending, &InstanceBranding::default());
+        assert!(html.contains("id=\"local-login-fields\" hidden"));
+        assert!(html.contains("id=\"connect-login\" class=\"primary\" href=\"#\" hidden"));
+        assert!(html.contains("Checking your sign-in options…"));
+    }
+
+    #[test]
+    fn managed_brand_is_present_on_login_and_sidebar() {
+        let html = render_index(
+            LoginPresentation::Pending,
+            &InstanceBranding {
+                display_name: "Synthetic Specialty Clinic".into(),
+                logo_url: Some("https://connect.suncharts.app/api/v1/managed-ehr/branding/assets/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into()),
+                managed: true,
+            },
+        );
+        assert!(html.contains("Synthetic Specialty Clinic"));
+        assert_eq!(html.matches("/managed-ehr/branding/assets/").count(), 2);
+        assert!(!html.contains("__CLINIC_"));
+    }
 }
 
 pub fn app(state: State) -> Router {
@@ -568,7 +665,11 @@ async fn headers(req: axum::extract::Request, next: Next) -> Response {
         "x-content-type-options",
         HeaderValue::from_static("nosniff"),
     );
-    r.headers_mut().insert(header::CONTENT_SECURITY_POLICY,HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; form-action 'self'; base-uri 'none'"));
+    let policy = branding::InstanceBranding::from_env().content_security_policy();
+    if let Ok(value) = HeaderValue::from_str(&policy) {
+        r.headers_mut()
+            .insert(header::CONTENT_SECURITY_POLICY, value);
+    }
     r.headers_mut().insert(
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),

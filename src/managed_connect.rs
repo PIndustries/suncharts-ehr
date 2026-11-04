@@ -29,6 +29,10 @@ pub struct Envelope {
     pub tenant_id: Uuid,
     pub owner_user_id: Uuid,
     pub owner_email: String,
+    #[serde(default)]
+    pub brand_display_name: Option<String>,
+    #[serde(default)]
+    pub brand_logo_url: Option<String>,
     pub instance_origin: String,
     pub expected_version: String,
     pub expected_image_reference: String,
@@ -204,6 +208,25 @@ fn validate_envelope(e: &Envelope) -> Result<()> {
         || e.owner_email.trim().is_empty()
         || e.owner_email.len() > 254
         || !e.owner_email.contains('@')
+        || e.brand_display_name
+            .as_deref()
+            .is_some_and(|value| !crate::branding::valid_display_name(value))
+        || e.brand_logo_url.as_deref().is_some_and(|value| {
+            match crate::connect_onboarding::cloud_origin() {
+                Ok(origin) => !crate::branding::valid_logo_url(value, &origin),
+                Err(_) => true,
+            }
+        })
+        || e.brand_display_name.as_deref().is_some_and(|value| {
+            env::var("ENGINE_BRAND_DISPLAY_NAME")
+                .map(|configured| configured.trim() != value.trim())
+                .unwrap_or(true)
+        })
+        || e.brand_logo_url.as_deref().is_some_and(|value| {
+            env::var("ENGINE_BRAND_LOGO_URL")
+                .map(|configured| configured.trim() != value.trim())
+                .unwrap_or(true)
+        })
         || !valid_image_reference(&e.expected_image_reference)
         || e.expected_version.trim().is_empty()
         || e.expected_version.len() > 80
@@ -676,7 +699,7 @@ mod tests {
     use super::*;
     #[test]
     fn response_requires_exact_paid_order_binding_and_real_services() {
-        let e = Envelope { capability:format!("scb_{}", "x".repeat(43)), provisioning_request_id:Uuid::new_v4(), order_id:Uuid::new_v4(), tenant_id:Uuid::new_v4(), owner_user_id:Uuid::new_v4(), owner_email:"owner@example.test".into(), instance_origin:"https://clinic.suncharts.app".into(), expected_version:"26.11.04.1".into(), expected_image_reference:"ghcr.io/pindustries/suncharts-ehr@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into() };
+        let e = Envelope { capability:format!("scb_{}", "x".repeat(43)), provisioning_request_id:Uuid::new_v4(), order_id:Uuid::new_v4(), tenant_id:Uuid::new_v4(), owner_user_id:Uuid::new_v4(), owner_email:"owner@example.test".into(), brand_display_name:None, brand_logo_url:None, instance_origin:"https://clinic.suncharts.app".into(), expected_version:"26.11.04.1".into(), expected_image_reference:"ghcr.io/pindustries/suncharts-ehr@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into() };
         let base = json!({"contract_version":1,"provisioning_request_id":e.provisioning_request_id,"order_id":e.order_id,"tenant_id":e.tenant_id,"connection_id":Uuid::new_v4(),"installation_id":Uuid::new_v4(),"installation_token":format!("scs_inst_{}", "x".repeat(48)),"authorization_source":"managed_hosted_order","authorization_reference":format!("managed-order:{}:job:{}",e.order_id,e.provisioning_request_id),"terms_version":"managed-hosted-terms-v1","granted_scope":OWNER_SCOPE,"authorization_actor":"system:managed_provisioning","authorized_at":chrono::Utc::now().to_rfc3339(),"connected":false,"connection_status":"pending","transport":"outbound_websocket","infrastructure_ready":true,"managed_email_ready":true,"managed_email_from":"SunCharts <appointments@suncharts.app>","support_ready":true,"ready":false,"expected_version":e.expected_version,"expected_image_reference":e.expected_image_reference});
         assert!(validate_response(&base, &e).is_ok());
         let mut changed = base.clone();

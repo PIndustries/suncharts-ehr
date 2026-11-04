@@ -4,7 +4,7 @@
 <body>
 <section id="login-screen" class="login-screen">
   <div class="intro"><div class="wordmark"><span class="sun">✳</span> SunCharts <b>EHR</b></div><p class="eyebrow">OPEN SOURCE. BUILT AROUND CARE.</p><h1>A clearer view.<br>A better visit.</h1><p class="lede">Your patients, your practice, your records.<br>A clinical workspace you can make your own.</p><a class="source-link" href="/source">AGPLv3 · View source ↗</a><p class="login-build">Build __SUN_CHARTS_BUILD__</p></div>
-  <form id="login-form" class="login-card"><span class="eyebrow">YOUR CLINICAL WORKSPACE</span><h2>Welcome back</h2><p id="login-description" class="muted">Sign in to your self-hosted SunCharts EHR.</p><div id="local-login-fields"><label>Email<input name="email" type="email" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button class="primary" type="submit">Sign in →</button></div><a id="connect-login" class="primary" href="#" hidden>Continue with SunCharts Connect →</a><p id="login-connect-state" class="muted" hidden></p><p id="login-error" class="error" role="alert"></p><p><a href="/patient-portal">Patient? Open your patient portal →</a></p><p class="preview">Development preview · Synthetic data only</p></form>
+  <form id="login-form" class="login-card">__CLINIC_LOGIN_BRAND__<span class="eyebrow">YOUR CLINICAL WORKSPACE</span><h2>Welcome back</h2><p id="login-description" class="muted">__LOGIN_DESCRIPTION__</p><div id="local-login-fields" __LOCAL_LOGIN_VISIBILITY__><label>Email<input name="email" type="email" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label><button class="primary" type="submit">Sign in →</button></div><a id="connect-login" class="primary" href="__CONNECT_LOGIN_URL__" __CONNECT_LOGIN_VISIBILITY__>Continue with SunCharts Connect →</a><p id="login-connect-state" class="muted" __CONNECT_STATE_VISIBILITY__>Connected to SunCharts Connect · authorization is checked in real time.</p><p id="login-error" class="error" role="alert"></p><p><a href="/patient-portal">Patient? Open your patient portal →</a></p><p class="preview">Development preview · Synthetic data only</p></form>
 </section>
 <div id="app" class="shell" hidden>
   <aside class="sidebar" id="sidebar" aria-label="Workspace sidebar">
@@ -12,7 +12,7 @@
       <div><div class="wordmark"><span class="sun" aria-hidden="true">✳</span> SunCharts <b>EHR</b></div><p class="sidebar-subtitle">Open-source clinical workspace</p></div>
       <button id="nav-toggle" class="nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="workspace-navigation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
     </div>
-    <div class="practice-identity"><span class="practice-identity-mark" aria-hidden="true">S</span><div><strong>Self-hosted workspace</strong><span>SunCharts EHR <span class="identity-preview">Preview</span> · <span class="build-version">__SUN_CHARTS_BUILD__</span></span></div></div>
+    __CLINIC_SIDEBAR_IDENTITY__
     <nav class="sidebar-navigation" id="workspace-navigation" aria-label="Main navigation">
       <div class="nav-group" role="group" aria-labelledby="nav-practice-label">
         <p class="nav-group-label" id="nav-practice-label">Practice</p>
