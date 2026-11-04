@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Connect-delegated, read-only partner support sessions.
+//! Connect-delegated, tenant-admin partner support sessions.
 //!
 //! The browser supplies a short code from a URL fragment. This server exchanges and introspects
 //! it over outbound HTTPS; no Connect token or EHR bootstrap credential is stored in the browser.
@@ -108,7 +108,7 @@ fn configured_issuer() -> Result<String> {
 fn validate_claims(claims: &Claims, issuer: &str, audience: &str, now: i64) -> Result<()> {
     if claims.iss != issuer
         || claims.aud != audience
-        || claims.role != "partner_support"
+        || !matches!(claims.role.as_str(), "partner_support" | "partner_admin")
         || claims.sub.is_empty()
         || claims.sub.len() > 500
         || claims.iat > now + 5
@@ -183,7 +183,7 @@ pub async fn accept(
     .bind(claims.exp as f64)
     .execute(&mut *tx)
     .await?;
-    sqlx::query("INSERT INTO audit_events(tenant_id,actor_id,action,resource_id) VALUES($1,$2,'partner_support.session_created',$2)")
+    sqlx::query("INSERT INTO audit_events(tenant_id,actor_id,action,resource_id) VALUES($1,$2,'partner_admin.session_created',$2)")
         .bind(claims.tenant_id).bind(claims.jti).execute(&mut *tx).await?;
     tx.commit().await?;
 
@@ -197,7 +197,9 @@ pub async fn accept(
     );
     Ok((
         response_headers,
-        Json(json!({"authenticated":true,"role":"partner_support","expires_at":claims.exp})),
+        Json(
+            json!({"authenticated":true,"role":"owner","delegated_role":"partner_admin","expires_at":claims.exp}),
+        ),
     ))
 }
 
@@ -237,7 +239,10 @@ pub(crate) async fn authenticate(auth: &BrowserAuth, token: &str) -> Result<Opti
     let valid = introspection.active
         && introspection.jti == Some(session.grant_id)
         && introspection.aud.as_deref() == Some(auth.origin())
-        && introspection.role.as_deref() == Some("partner_support")
+        && matches!(
+            introspection.role.as_deref(),
+            Some("partner_support" | "partner_admin")
+        )
         && introspection.tenant_id == Some(session.tenant_id)
         && introspection.partner_id == Some(session.partner_id)
         && introspection.customer_id == Some(session.customer_id)
@@ -255,7 +260,7 @@ pub(crate) async fn authenticate(auth: &BrowserAuth, token: &str) -> Result<Opti
         .execute(&mut *tx)
         .await?;
         if revoked.rows_affected() == 1 {
-            sqlx::query("INSERT INTO audit_events(tenant_id,actor_id,action,resource_id) VALUES($1,$2,'partner_support.revoked',$2)")
+            sqlx::query("INSERT INTO audit_events(tenant_id,actor_id,action,resource_id) VALUES($1,$2,'partner_admin.revoked',$2)")
                 .bind(session.tenant_id).bind(session.grant_id).execute(&mut *tx).await?;
         }
         tx.commit().await?;
@@ -266,7 +271,10 @@ pub(crate) async fn authenticate(auth: &BrowserAuth, token: &str) -> Result<Opti
     Ok(Some(Actor {
         sub: session.grant_id,
         tenant_id: session.tenant_id,
-        role: Role::PartnerSupport,
+        // The grant is tenant, audience and time bounded, but within that boundary a contracted
+        // support partner has the same application authority as the practice owner. The grant id
+        // remains the actor id so every action is attributable to the delegated session.
+        role: Role::Owner,
         patient_id: None,
         iss: session.issuer,
         aud: session.audience,
@@ -287,7 +295,7 @@ mod tests {
             aud: "https://ehr.example.test".into(),
             sub: "partner:synthetic".into(),
             jti: Uuid::new_v4(),
-            role: "partner_support".into(),
+            role: "partner_admin".into(),
             partner_id: Uuid::new_v4(),
             customer_id: Uuid::new_v4(),
             order_id: Uuid::new_v4(),
@@ -310,7 +318,7 @@ mod tests {
             now
         )
         .is_err());
-        claims.role = "partner_support".into();
+        claims.role = "partner_admin".into();
         claims.exp = now + 901;
         assert!(validate_claims(
             &claims,

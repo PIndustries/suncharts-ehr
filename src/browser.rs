@@ -225,7 +225,7 @@ pub async fn logout(
         .fetch_optional(&mut *tx)
         .await?;
         let (tenant, actor) = delegated.ok_or(Error::Unauthorized)?;
-        sqlx::query("INSERT INTO audit_events(tenant_id,actor_id,action,resource_id) VALUES($1,$2,'partner_support.logout',$2)")
+        sqlx::query("INSERT INTO audit_events(tenant_id,actor_id,action,resource_id) VALUES($1,$2,'partner_admin.logout',$2)")
             .bind(tenant).bind(actor).execute(&mut *tx).await?;
     }
     tx.commit().await?;
@@ -240,7 +240,15 @@ pub async fn logout(
 }
 
 pub async fn me(a: Actor) -> Json<Value> {
-    Json(json!({"user_id":a.sub,"tenant_id":a.tenant_id,"role":a.role}))
+    let delegated = a.iss != "suncharts-ehr-browser";
+    Json(json!({
+        "user_id":a.sub,
+        "tenant_id":a.tenant_id,
+        "role":a.role,
+        "delegated":delegated,
+        "delegated_role":delegated.then_some("partner_admin"),
+        "session_expires_at":delegated.then_some(a.exp)
+    }))
 }
 
 pub async fn bootstrap(db: &PgPool) -> std::result::Result<(), Box<dyn std::error::Error>> {
