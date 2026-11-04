@@ -222,7 +222,24 @@ pub async fn me(a: Actor) -> Json<Value> {
 
 pub async fn bootstrap(db: &PgPool) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let email = std::env::var("ENGINE_BOOTSTRAP_EMAIL").ok();
-    let password = std::env::var("ENGINE_BOOTSTRAP_PASSWORD").ok();
+    let password = match (
+        std::env::var("ENGINE_BOOTSTRAP_PASSWORD").ok(),
+        std::env::var_os("ENGINE_BOOTSTRAP_PASSWORD_FILE"),
+    ) {
+        (Some(_), Some(_)) => {
+            return Err(
+                "set only one of ENGINE_BOOTSTRAP_PASSWORD or ENGINE_BOOTSTRAP_PASSWORD_FILE"
+                    .into(),
+            )
+        }
+        (Some(value), None) => Some(value),
+        (None, Some(path)) => {
+            let value = std::fs::read_to_string(path)
+                .map_err(|_| "ENGINE_BOOTSTRAP_PASSWORD_FILE could not be read")?;
+            Some(value.trim_end_matches(['\r', '\n']).to_string())
+        }
+        (None, None) => None,
+    };
     if email.is_none() && password.is_none() {
         return Ok(());
     }

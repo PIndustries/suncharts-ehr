@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://suncharts.app/schemas/ehr-provisioning-request-v1.json",
+  "title": "SunCharts EHR managed provisioning request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "request_id", "order_id", "tenant_id", "clinician_id", "hostname", "owner_email", "image_reference"],
+  "properties": {
+    "contract_version": {"const": "1"},
+    "request_id": {"type": "string", "format": "uuid"},
+    "order_id": {"type": "string", "format": "uuid"},
+    "tenant_id": {"type": "string", "format": "uuid"},
+    "clinician_id": {"type": "string", "format": "uuid"},
+    "hostname": {"type": "string", "format": "hostname", "maxLength": 253},
+    "owner_email": {"type": "string", "format": "email", "maxLength": 320},
+    "image_reference": {
+      "type": "string",
+      "pattern": "^ghcr\\.io/pindustries/suncharts-ehr@sha256:[0-9a-f]{64}$"
+    },
+    "region": {"type": "string", "pattern": "^[a-z0-9-]{1,32}$"}
+  }
+}

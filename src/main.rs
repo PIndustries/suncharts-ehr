@@ -4,16 +4,41 @@ use sqlx::postgres::PgPoolOptions;
 use std::{env, future::IntoFuture, sync::Arc, time::Duration};
 use suncharts_engine::{postgres::PostgresBackend, State};
 
+fn env_or_file(name: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let file_name = format!("{name}_FILE");
+    match (env::var(name).ok(), env::var_os(&file_name)) {
+        (Some(_), Some(_)) => Err(format!("set only one of {name} or {file_name}").into()),
+        (Some(value), None) if !value.is_empty() => Ok(value),
+        (None, Some(path)) => {
+            let value = std::fs::read_to_string(path)
+                .map_err(|_| format!("{file_name} could not be read"))?;
+            let value = value.trim_end_matches(['\r', '\n']).to_string();
+            if value.is_empty() {
+                Err(format!("{file_name} is empty").into())
+            } else {
+                Ok(value)
+            }
+        }
+        _ => Err(format!("{name} is required").into()),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let allow_legacy_gateway = env::var("ENGINE_ALLOW_LEGACY_GATEWAY").as_deref() == Ok("true");
-    let secret = env::var("ENGINE_JWT_SECRET").unwrap_or_default();
+    let jwt_configured = env::var_os("ENGINE_JWT_SECRET").is_some()
+        || env::var_os("ENGINE_JWT_SECRET_FILE").is_some();
+    let secret = if jwt_configured {
+        env_or_file("ENGINE_JWT_SECRET")?
+    } else {
+        String::new()
+    };
     if allow_legacy_gateway && secret.len() < 32 {
         return Err("ENGINE_JWT_SECRET must contain at least 32 bytes".into());
     }
     let db = PgPoolOptions::new()
         .max_connections(10)
-        .connect(&env::var("ENGINE_DATABASE_URL").map_err(|_| "ENGINE_DATABASE_URL is required")?)
+        .connect(&env_or_file("ENGINE_DATABASE_URL")?)
         .await
         .map_err(|_| "engine database connection failed")?;
     suncharts_engine::MIGRATOR

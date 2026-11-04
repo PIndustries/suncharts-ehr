@@ -1,0 +1,17 @@
+.git
+.env
+.env.*
+!.env.example
+target
+node_modules
+__pycache__
+*.log
+*.db
+*.sqlite*
+*.key
+*.pem
+*.p12
+*.pfx
+*.p8
+private
+secrets

@@ -65,6 +65,7 @@ use axum::{
 use backend::ClinicalBackend;
 use error::{Error, Result};
 use model::*;
+use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -78,6 +79,22 @@ pub struct State {
     pub browser: Option<Arc<browser::BrowserAuth>>,
 }
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+
+async fn readiness(ExtractState(state): ExtractState<State>) -> impl IntoResponse {
+    let Some(auth) = state.browser.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "browser database unavailable",
+        );
+    };
+    match sqlx::query_scalar::<_, i32>("SELECT 1")
+        .fetch_one(&auth.db)
+        .await
+    {
+        Ok(1) => (StatusCode::OK, "ready"),
+        _ => (StatusCode::SERVICE_UNAVAILABLE, "database unavailable"),
+    }
+}
 
 pub fn app(state: State) -> Router {
     Router::new()
@@ -475,6 +492,16 @@ pub fn app(state: State) -> Router {
         .route("/auth/logout", post(browser::logout))
         .route("/auth/me", get(browser::me))
         .route("/health", get(|| async { "ok" }))
+        .route("/ready", get(readiness))
+        .route(
+            "/version",
+            get(|| async {
+                let release: serde_json::Value =
+                    serde_json::from_str(include_str!("../deploy/release-metadata.json"))
+                        .expect("release metadata must be valid JSON");
+                Json(json!({"build": env!("SUN_CHARTS_BUILD"), "release": release}))
+            }),
+        )
         .route(
             "/source",
             get(|| async {

@@ -1,0 +1,345 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: __NAMESPACE__
+  labels:
+    app.kubernetes.io/managed-by: suncharts-connect
+    suncharts.app/tenant: __TENANT_ID__
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: suncharts-ehr
+    app.kubernetes.io/component: database
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: suncharts-ehr
+    app.kubernetes.io/component: database
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: suncharts-ehr
+    app.kubernetes.io/component: database
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: suncharts-ehr
+      app.kubernetes.io/component: database
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: suncharts-ehr
+        app.kubernetes.io/component: database
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:16-bookworm@sha256:e8a07d2c7579b038938cdba6c539e580e5001caf9ea203d397b5cc83e76bd938
+          env:
+            - name: POSTGRES_DB
+              value: suncharts
+            - name: POSTGRES_USER
+              value: suncharts
+            - name: POSTGRES_PASSWORD_FILE
+              value: /run/secrets/postgres_password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "suncharts", "-d", "suncharts"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "suncharts", "-d", "suncharts"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: database-secret
+              mountPath: /run/secrets
+              readOnly: true
+            - name: postgres-run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: database-secret
+          secret:
+            secretName: suncharts-ehr-database
+            defaultMode: 288
+        - name: postgres-run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: private-credentials
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: suncharts-ehr
+    app.kubernetes.io/component: web
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ehr
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: suncharts-ehr
+    app.kubernetes.io/component: web
+spec:
+  selector:
+    app.kubernetes.io/name: suncharts-ehr
+    app.kubernetes.io/component: web
+  ports:
+    - name: http
+      port: 8090
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ehr
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: suncharts-ehr
+    app.kubernetes.io/component: web
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: suncharts-ehr
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: suncharts-ehr
+        app.kubernetes.io/component: web
+      annotations:
+        suncharts.app/image-reference: __IMAGE_REFERENCE__
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ehr
+          image: __IMAGE_REFERENCE__
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ENGINE_BIND
+              value: 0.0.0.0:8090
+            - name: ENGINE_DATABASE_URL_FILE
+              value: /run/secrets/database/engine_database_url
+            - name: ENGINE_PUBLIC_URL
+              value: __PUBLIC_URL_JSON__
+            - name: ENGINE_BOOTSTRAP_EMAIL
+              value: __OWNER_EMAIL_JSON__
+            - name: ENGINE_BOOTSTRAP_PASSWORD_FILE
+              value: /run/secrets/bootstrap/bootstrap_password
+            - name: ENGINE_BOOTSTRAP_TENANT_ID
+              value: __TENANT_ID__
+            - name: ENGINE_BOOTSTRAP_CLINICIAN_ID
+              value: __CLINICIAN_ID__
+            - name: ENGINE_BOOTSTRAP_ROLE
+              value: owner
+            - name: ENGINE_CONNECT_CLOUD_URL
+              value: __CONNECT_CLOUD_URL_JSON__
+            - name: ENGINE_CREDENTIAL_KEY_FILE
+              value: /var/lib/suncharts/private/provider-master.key
+          ports:
+            - name: http
+              containerPort: 8090
+          startupProbe:
+            httpGet: {path: /ready, port: http}
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /ready, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: database-secret
+              mountPath: /run/secrets/database
+              readOnly: true
+            - name: bootstrap-secret
+              mountPath: /run/secrets/bootstrap
+              readOnly: true
+            - name: private-credentials
+              mountPath: /var/lib/suncharts/private
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: database-secret
+          secret:
+            secretName: suncharts-ehr-database
+            defaultMode: 288
+        - name: bootstrap-secret
+          secret:
+            secretName: suncharts-ehr-bootstrap
+            defaultMode: 288
+        - name: private-credentials
+          persistentVolumeClaim:
+            claimName: private-credentials
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ehr
+  namespace: __NAMESPACE__
+  annotations:
+    cert-manager.io/cluster-issuer: __CLUSTER_ISSUER__
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: __INGRESS_CLASS__
+  tls:
+    - hosts: [__HOSTNAME_JSON__]
+      secretName: ehr-tls
+  rules:
+    - host: __HOSTNAME_JSON__
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ehr
+                port:
+                  number: 8090
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: __NAMESPACE__
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ehr-network
+  namespace: __NAMESPACE__
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: suncharts-ehr
+      app.kubernetes.io/component: web
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: __INGRESS_NAMESPACE__
+      ports:
+        - {protocol: TCP, port: 8090}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: suncharts-ehr
+              app.kubernetes.io/component: database
+      ports:
+        - {protocol: TCP, port: 5432}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - ports:
+        - {protocol: TCP, port: 443}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-network
+  namespace: __NAMESPACE__
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: suncharts-ehr
+      app.kubernetes.io/component: database
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: suncharts-ehr
+              app.kubernetes.io/component: web
+      ports:
+        - {protocol: TCP, port: 5432}
