@@ -70,8 +70,28 @@ class DeploymentArtifactsTest(unittest.TestCase):
         self.assertGreaterEqual(len(uses), 7)
         for action in uses:
             self.assertRegex(action, r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
-        self.assertIn("cache-from: type=gha,scope=suncharts-ehr-image", workflow)
-        self.assertIn("cache-to: type=gha,mode=max,scope=suncharts-ehr-image", workflow)
+        self.assertIn("cache-from: type=gha,scope=suncharts-ehr-amd64", workflow)
+        self.assertIn("cache-to: type=gha,mode=max,scope=suncharts-ehr-amd64", workflow)
+        self.assertIn("cache-from: type=gha,scope=suncharts-ehr-arm64", workflow)
+        self.assertIn("cache-to: type=gha,mode=max,scope=suncharts-ehr-arm64", workflow)
+
+    def test_release_fast_path_does_not_wait_for_arm_emulation(self):
+        workflow = (ROOT / ".github" / "workflows" / "publish-image.yml").read_text()
+        amd64 = workflow.split("  publish_amd64:", 1)[1].split("  publish_arm64:", 1)[0]
+        arm64 = workflow.split("  publish_arm64:", 1)[1].split("  community-notification:", 1)[0]
+
+        self.assertIn("platforms: linux/amd64", amd64)
+        self.assertNotIn("setup-qemu-action", amd64)
+        self.assertIn("Build release control manifest", amd64)
+        self.assertIn("Attach immutable inputs to existing GitHub Release", amd64)
+        self.assertIn("platforms: linux/arm64", arm64)
+        self.assertIn("setup-qemu-action", arm64)
+        self.assertIn("continue-on-error: true", arm64)
+        self.assertIn("github.event_name == 'schedule'", arm64)
+        self.assertIn("inputs.lane == 'arm64-mirror'", arm64)
+        self.assertIn("provenance: mode=max", arm64)
+        self.assertIn("sbom: true", arm64)
+        self.assertIn("Attest the ARM64 mirror digest", arm64)
 
     def test_release_manifest_binds_digest_source_and_schema(self):
         version = (ROOT / "BUILD_VERSION").read_text().strip()
