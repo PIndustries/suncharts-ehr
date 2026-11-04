@@ -47,6 +47,8 @@ jobs:
             RUST_IMAGE=${{ env.RUST_IMAGE }}
             RUNTIME_IMAGE=${{ env.RUNTIME_IMAGE }}
             DEBIAN_SNAPSHOT=${{ env.DEBIAN_SNAPSHOT }}
+          cache-from: type=gha,scope=suncharts-ehr-image
+          cache-to: type=gha,mode=max,scope=suncharts-ehr-image
           provenance: mode=max
           sbom: true
       - name: Record immutable provisioning input
