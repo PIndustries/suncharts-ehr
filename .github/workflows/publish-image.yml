@@ -3,7 +3,13 @@ name: Publish immutable EHR image
 on:
   push:
     tags: ['v*']
+  schedule:
+    - cron: '17 6 * * *'
   workflow_dispatch:
+
+concurrency:
+  group: publish-ehr-image-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write

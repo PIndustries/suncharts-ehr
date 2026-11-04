@@ -114,7 +114,15 @@ impl Fixture {
         self.request("POST","/api/v1/patient-portal/activate","",Some(json!({"token":url.split("#invite=").nth(1).unwrap(),"password":"synthetic strong passphrase 2026"})),None).await
     }
     async fn login(&self, email: &str) -> String {
-        let(status,value,cookie)=self.request("POST","/api/v1/patient-portal/login","",Some(json!({"practice_id":self.tenant,"email":email,"password":"synthetic strong passphrase 2026"})),None).await;
+        let (status, value, cookie) = self
+            .request(
+                "POST",
+                "/api/v1/patient-portal/login",
+                "",
+                Some(json!({"email":email,"password":"synthetic strong passphrase 2026"})),
+                None,
+            )
+            .await;
         assert_eq!(status, StatusCode::OK, "{value}");
         assert!(cookie.contains("HttpOnly"));
         assert!(cookie.contains("SameSite=Strict"));
@@ -594,16 +602,13 @@ async fn authentication_budget_does_not_persist_an_installation_wide_lockout() {
         .0,
         StatusCode::OK
     );
-    let key = format!(
-        "{:x}",
-        Sha256::digest(format!("{}:{}", f.tenant, "blocked@example.test").as_bytes())
-    );
+    let key = format!("{:x}", Sha256::digest("blocked@example.test".as_bytes()));
     sqlx::query("INSERT INTO patient_portal_rate_limits(key,attempts) VALUES($1,11)")
         .bind(key)
         .execute(&f.db)
         .await
         .unwrap();
-    let(status,_,_)=f.request("POST","/api/v1/patient-portal/login","",Some(json!({"practice_id":f.tenant,"email":"blocked@example.test","password":"synthetic strong passphrase 2026"})),None).await;
+    let(status,_,_)=f.request("POST","/api/v1/patient-portal/login","",Some(json!({"email":"blocked@example.test","password":"synthetic strong passphrase 2026"})),None).await;
     assert_eq!(
         status,
         StatusCode::UNAUTHORIZED,
@@ -622,6 +627,57 @@ async fn authentication_budget_does_not_persist_an_installation_wide_lockout() {
         .0,
         StatusCode::OK
     );
+}
+
+#[tokio::test]
+async fn login_derives_the_only_active_practice_and_fails_closed_when_ambiguous() {
+    let f = Fixture::new().await;
+    let email = "single-practice@example.test";
+    let invite = f.invite(f.patient, email, 0).await;
+    assert_eq!(
+        f.activate(invite["invitation_url"].as_str().unwrap())
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert!(!f.login(email).await.is_empty());
+
+    let second_tenant = Uuid::new_v4();
+    let second_patient = Uuid::new_v4();
+    let password_hash: String = sqlx::query_scalar(
+        "SELECT password_hash FROM patient_portal_accounts WHERE tenant_id=$1 AND email=$2",
+    )
+    .bind(f.tenant)
+    .bind(email)
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO patients(tenant_id,id,mrn,given_name,family_name,birth_date) VALUES($1,$2,'AMBIGUOUS-PORTAL','Synthetic','Duplicate','2000-01-01')")
+        .bind(second_tenant)
+        .bind(second_patient)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO patient_portal_accounts(tenant_id,id,patient_id,email,password_hash,status) VALUES($1,$2,$3,$4,$5,'active')")
+        .bind(second_tenant)
+        .bind(Uuid::new_v4())
+        .bind(second_patient)
+        .bind(email)
+        .bind(password_hash)
+        .execute(&f.db)
+        .await
+        .unwrap();
+
+    let (status, _, _) = f
+        .request(
+            "POST",
+            "/api/v1/patient-portal/login",
+            "",
+            Some(json!({"email":email,"password":"synthetic strong passphrase 2026"})),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

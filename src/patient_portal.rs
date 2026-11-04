@@ -345,13 +345,12 @@ async fn activate(
     .await?;
     tx.commit().await?;
     Ok(Json(
-        json!({"activated":true,"practice_id":tenant,"email":email,"message":"Account activated. Sign in with your practice code, email and password."}),
+        json!({"activated":true,"practice_id":tenant,"email":email,"message":"Account activated. Sign in with your email and password."}),
     ))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Login {
-    practice_id: Uuid,
     email: String,
     password: String,
 }
@@ -368,13 +367,12 @@ async fn login(
         return Err(Error::Unauthorized);
     }
     input.email = input.email.trim().to_lowercase();
-    rate(
-        &s,
-        hash(&format!("{}:{}", input.practice_id, input.email)),
-        10,
-    )
-    .await?;
-    let row:Option<(Uuid,Uuid,i64,String)>=sqlx::query_as("SELECT id,patient_id,version,password_hash FROM patient_portal_accounts WHERE tenant_id=$1 AND email=$2 AND status='active'").bind(input.practice_id).bind(&input.email).fetch_optional(db(&s)?).await?;
+    rate(&s, hash(&input.email), 10).await?;
+    // One EHR installation belongs to one practice. Resolve that practice from the active
+    // invitation-backed account rather than asking a patient for an internal tenant identifier.
+    // A damaged or unsupported multi-tenant database with duplicate active emails fails closed.
+    let mut matches:Vec<(Uuid,Uuid,Uuid,i64,String)>=sqlx::query_as("SELECT tenant_id,id,patient_id,version,password_hash FROM patient_portal_accounts WHERE email=$1 AND status='active' ORDER BY tenant_id LIMIT 2").bind(&input.email).fetch_all(db(&s)?).await?;
+    let row = (matches.len() == 1).then(|| matches.pop().unwrap());
     // Initialize the dummy verifier for every login path, then perform one verification
     // whether or not an active account exists. No account-existence response is returned.
     static DUMMY: OnceLock<String> = OnceLock::new();
@@ -393,7 +391,7 @@ async fn login(
     })
     .await
     .map_err(|_| Error::Unauthorized)?;
-    let hashed = row.as_ref().map(|v| v.3.clone()).unwrap_or(dummy);
+    let hashed = row.as_ref().map(|v| v.4.clone()).unwrap_or(dummy);
     let old_hash = hashed.clone();
     let good = tokio::task::spawn_blocking(move || {
         PasswordHash::new(&hashed).is_ok_and(|h| {
@@ -404,17 +402,17 @@ async fn login(
     })
     .await
     .map_err(|_| Error::Unauthorized)?;
-    let (account, p, version, _) = row.filter(|_| good).ok_or(Error::Unauthorized)?;
+    let (tenant, account, p, version, _) = row.filter(|_| good).ok_or(Error::Unauthorized)?;
     let mut tx = db(&s)?.begin().await?;
-    let current:Option<String>=sqlx::query_scalar("SELECT password_hash FROM patient_portal_accounts WHERE tenant_id=$1 AND id=$2 AND status='active' AND version=$3 FOR SHARE").bind(input.practice_id).bind(account).bind(version).fetch_optional(&mut *tx).await?;
+    let current:Option<String>=sqlx::query_scalar("SELECT password_hash FROM patient_portal_accounts WHERE tenant_id=$1 AND id=$2 AND status='active' AND version=$3 FOR SHARE").bind(tenant).bind(account).bind(version).fetch_optional(&mut *tx).await?;
     if current.as_deref() != Some(&old_hash) {
         return Err(Error::Unauthorized);
     }
     let token = secret();
-    sqlx::query("INSERT INTO patient_portal_sessions(token_hash,tenant_id,account_id,account_version,expires_at) VALUES($1,$2,$3,$4,now()+interval '2 hours')").bind(hash(&token)).bind(input.practice_id).bind(account).bind(version).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO patient_portal_sessions(token_hash,tenant_id,account_id,account_version,expires_at) VALUES($1,$2,$3,$4,now()+interval '2 hours')").bind(hash(&token)).bind(tenant).bind(account).bind(version).execute(&mut *tx).await?;
     audit(
         &mut tx,
-        input.practice_id,
+        tenant,
         p,
         account,
         "patient",
