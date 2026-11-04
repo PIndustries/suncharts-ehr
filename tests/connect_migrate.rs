@@ -1851,7 +1851,7 @@ async fn native_scheduling_conflicts_versions_roles_and_visit_handoff() {
     read.role = Role::ReadOnly;
     let other = Uuid::new_v4();
     sqlx::query("INSERT INTO browser_users (id,tenant_id,email,password_hash,role) VALUES ($1,$2,'provider2@example.test','synthetic-no-login','clinician')").bind(other).bind(a.tenant_id).execute(&db).await.unwrap();
-    let booking = json!({"request_id":Uuid::new_v4(),"patient_id":p["id"],"clinician_id":a.sub,"starts_at":"2026-11-02T15:00:00Z","ends_at":"2026-11-02T15:30:00Z","title":"Annual review","category":"Office visit","facility":"Example clinic","room":"1","notes":"Synthetic","reason":"Patient requested"});
+    let booking = json!({"request_id":Uuid::new_v4(),"patient_id":p["id"],"clinician_id":a.sub,"starts_at":"2099-11-02T15:00:00Z","ends_at":"2099-11-02T15:30:00Z","title":"Annual review","category":"Office visit","facility":"Example clinic","room":"1","notes":"Synthetic","reason":"Patient requested"});
     assert_eq!(
         schedule_call(
             &r,
@@ -1925,7 +1925,7 @@ async fn native_scheduling_conflicts_versions_roles_and_visit_handoff() {
             .0,
         409
     ); // patient
-    let edit = json!({"clinician_id":a.sub,"starts_at":"2026-11-02T16:00:00Z","ends_at":"2026-11-02T16:45:00Z","title":"Rescheduled review","category":"Follow-up","facility":"Example clinic","room":"1","notes":"New time","reason":"Patient preference"});
+    let edit = json!({"clinician_id":a.sub,"starts_at":"2099-11-02T16:00:00Z","ends_at":"2099-11-02T16:45:00Z","title":"Rescheduled review","category":"Follow-up","facility":"Example clinic","room":"1","notes":"New time","reason":"Patient preference"});
     assert_eq!(
         schedule_call(&r, &desk, "PUT", &path, edit.clone(), None)
             .await
@@ -1956,14 +1956,14 @@ async fn native_scheduling_conflicts_versions_roles_and_visit_handoff() {
         &r,
         &read,
         "GET",
-        "/api/v1/schedule?start=2026-11-02T00:00:00Z&end=2026-11-03T00:00:00Z",
+        "/api/v1/schedule?start=2099-11-02T00:00:00Z&end=2099-11-03T00:00:00Z",
         Value::Null,
         None,
     )
     .await;
     assert_eq!(list["appointments"].as_array().unwrap().len(), 1);
     assert!(list["appointments"][0].get("request_digest").is_none());
-    let b = json!({"request_id":Uuid::new_v4(),"clinician_id":a.sub,"starts_at":"2026-11-02T18:00:00Z","ends_at":"2026-11-02T19:00:00Z","label":"Administrative time"});
+    let b = json!({"request_id":Uuid::new_v4(),"clinician_id":a.sub,"starts_at":"2099-11-02T18:00:00Z","ends_at":"2099-11-02T19:00:00Z","label":"Administrative time"});
     let (code, block) = schedule_call(
         &r,
         &desk,
@@ -1978,8 +1978,8 @@ async fn native_scheduling_conflicts_versions_roles_and_visit_handoff() {
     assert_eq!(retry["id"], block["id"]);
     let mut blocked = booking.clone();
     blocked["request_id"] = json!(Uuid::new_v4());
-    blocked["starts_at"] = json!("2026-11-02T18:00:00Z");
-    blocked["ends_at"] = json!("2026-11-02T18:30:00Z");
+    blocked["starts_at"] = json!("2099-11-02T18:00:00Z");
+    blocked["ends_at"] = json!("2099-11-02T18:30:00Z");
     assert_eq!(
         schedule_call(
             &r,
@@ -1994,7 +1994,7 @@ async fn native_scheduling_conflicts_versions_roles_and_visit_handoff() {
         409
     );
     // Drag rescheduling uses this same versioned edit boundary, including blocks.
-    let move_into_block = json!({"clinician_id":a.sub,"starts_at":"2026-11-02T18:00:00Z","ends_at":"2026-11-02T18:45:00Z","title":"Rescheduled review","category":"Follow-up","facility":"Example clinic","room":"1","notes":"New time","reason":"Synthetic calendar move"});
+    let move_into_block = json!({"clinician_id":a.sub,"starts_at":"2099-11-02T18:00:00Z","ends_at":"2099-11-02T18:45:00Z","title":"Rescheduled review","category":"Follow-up","facility":"Example clinic","room":"1","notes":"New time","reason":"Synthetic calendar move"});
     assert_eq!(
         schedule_call(&r, &desk, "PUT", &path, move_into_block, Some(2))
             .await
@@ -2003,7 +2003,7 @@ async fn native_scheduling_conflicts_versions_roles_and_visit_handoff() {
     );
     let (_, retained) = schedule_call(&r, &desk, "GET", &path, Value::Null, None).await;
     assert_eq!(retained["version"], 2);
-    assert_eq!(retained["starts_at"], "2026-11-02T16:00:00Z");
+    assert_eq!(retained["starts_at"], "2099-11-02T16:00:00Z");
     let cancel = format!(
         "/api/v1/schedule/blocks/{}/cancel",
         block["id"].as_str().unwrap()
@@ -2221,7 +2221,7 @@ async fn native_scheduling_conflicts_versions_roles_and_visit_handoff() {
             &r,
             &patient_actor,
             "GET",
-            "/api/v1/schedule?start=2026-11-02T00:00:00Z&end=2026-11-03T00:00:00Z",
+            "/api/v1/schedule?start=2099-11-02T00:00:00Z&end=2099-11-03T00:00:00Z",
             Value::Null,
             None
         )
