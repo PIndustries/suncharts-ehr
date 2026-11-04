@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Delegated partner support is read-only, revalidated and audited without staff credentials.
+//! Delegated partner support is tenant-admin, revalidated and audited without staff credentials.
 
 use axum::{
     body::Body,
@@ -42,7 +42,7 @@ async fn exchange(
     let now = chrono::Utc::now().timestamp();
     Json(json!({
         "iss":cloud.issuer,"aud":cloud.audience,"sub":"partner:synthetic",
-        "jti":grant,"role":"partner_support","partner_id":cloud.partner,
+        "jti":grant,"role":"partner_admin","partner_id":cloud.partner,
         "customer_id":cloud.customer,"order_id":cloud.order,"tenant_id":cloud.tenant,
         "iat":now,"exp":now+600
     }))
@@ -56,7 +56,7 @@ async fn introspect(
         return Json(json!({"active":false}));
     }
     Json(json!({
-        "active":true,"jti":body["jti"],"aud":cloud.audience,"role":"partner_support",
+        "active":true,"jti":body["jti"],"aud":cloud.audience,"role":"partner_admin",
         "partner_id":cloud.partner,"customer_id":cloud.customer,"order_id":cloud.order,
         "tenant_id":cloud.tenant,"exp":chrono::Utc::now().timestamp()+590
     }))
@@ -98,7 +98,7 @@ async fn call(
 }
 
 #[tokio::test]
-async fn delegated_support_is_read_only_revalidated_and_audited() {
+async fn delegated_support_is_tenant_admin_revalidated_and_audited() {
     let Ok(database_url) = std::env::var("TEST_DATABASE_URL") else {
         eprintln!("skip: TEST_DATABASE_URL is unset");
         return;
@@ -165,7 +165,10 @@ async fn delegated_support_is_read_only_revalidated_and_audited() {
     let cookie = cookie.unwrap();
     let (status, me, _) = call(&app, "GET", "/auth/me", Some(&cookie), None, None).await;
     assert_eq!(status, StatusCode::OK, "{me}");
-    assert_eq!(me["role"], "partner_support");
+    assert_eq!(me["role"], "owner");
+    assert_eq!(me["delegated"], true);
+    assert_eq!(me["delegated_role"], "partner_admin");
+    let mrn = format!("PARTNER-{}", Uuid::new_v4().simple());
     assert_eq!(
         call(
             &app,
@@ -173,11 +176,16 @@ async fn delegated_support_is_read_only_revalidated_and_audited() {
             "/api/v1/patients",
             Some(&cookie),
             Some(&audience),
-            Some(json!({})),
+            Some(json!({
+                "mrn":mrn,
+                "given_name":"Synthetic",
+                "family_name":"Partner Admin",
+                "birth_date":"1990-01-01"
+            })),
         )
         .await
         .0,
-        StatusCode::FORBIDDEN
+        StatusCode::CREATED
     );
     assert_eq!(
         call(
@@ -203,7 +211,7 @@ async fn delegated_support_is_read_only_revalidated_and_audited() {
         StatusCode::UNAUTHORIZED
     );
     let actions: Vec<String> = sqlx::query_scalar(
-        "SELECT action FROM audit_events WHERE action LIKE 'partner_support.%' ORDER BY id",
+        "SELECT action FROM audit_events WHERE action LIKE 'partner_admin.%' ORDER BY id",
     )
     .fetch_all(&db)
     .await
@@ -211,10 +219,10 @@ async fn delegated_support_is_read_only_revalidated_and_audited() {
     assert_eq!(
         actions,
         vec![
-            "partner_support.session_created",
-            "partner_support.logout",
-            "partner_support.session_created",
-            "partner_support.revoked"
+            "partner_admin.session_created",
+            "partner_admin.logout",
+            "partner_admin.session_created",
+            "partner_admin.revoked"
         ]
     );
 
