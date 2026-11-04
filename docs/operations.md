@@ -44,6 +44,12 @@ inputs. The workflow publishes an SBOM, provenance and `build-inputs.sha256`. It
 also resolves build packages from the pinned Debian snapshot declared in the
 Dockerfile. It does not deploy an EHR.
 
+Public community notifications are optional. Set the repository Actions secret
+`DISCORD_COMMUNITY_WEBHOOK_URL` to report tagged releases, explicitly dispatched
+image publications and their failures. Scheduled images and ordinary CI stay
+silent. A merged pull request is reported only when maintainers apply the
+`community-update` label. If the secret is absent, notification steps are skipped.
+
 For dev Kubernetes, render [the runtime template](../deploy/kubernetes/runtime.template.yaml)
 from a validated provisioning request:
 
