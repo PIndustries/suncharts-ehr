@@ -2,6 +2,26 @@
 'use strict';
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// Connect delivers delegated support codes in the fragment so they never reach an HTTP log.
+// Remove it before making any request, then exchange through this EHR's same-origin server.
+async function acceptPartnerSupportLaunch(){
+ if(location.pathname!=='/api/v1/connect/support/accept'||!location.hash)return false;
+ let code,issuer;
+ try{
+  const input=new URLSearchParams(location.hash.slice(1));
+  code=input.get('code');issuer=input.get('issuer');
+  history.replaceState(null,'','/');
+  let issuerUrl;
+  try{issuerUrl=new URL(issuer);}catch{throw new Error('This support sign-in link is invalid or incomplete.');}
+  const loopback=issuerUrl.protocol==='http:'&&['127.0.0.1','::1'].includes(issuerUrl.hostname);
+  if(!code||code.length<32||code.length>256||issuerUrl.origin!==issuer||(!loopback&&issuerUrl.protocol!=='https:'))throw new Error('This support sign-in link is invalid or incomplete.');
+  const response=await fetch('/api/v1/connect/support/accept',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',cache:'no-store',body:JSON.stringify({code,issuer})});
+  if(!response.ok)throw new Error('This support sign-in link expired, was already used, or was revoked.');
+  return true;
+ }finally{code=undefined;issuer=undefined;}
+}
+const partnerSupportAcceptance=acceptPartnerSupportLaunch();
 let chartSection='overview';
 // Unsaved clinical edits live only in this tab, isolated by encounter and patient.
 const visitDrafts=new Map();
@@ -93,13 +113,14 @@ async function enter() {
   if($('nav-portal'))$('nav-portal').hidden=!['owner','clinician','front_desk'].includes(me.role);
   $('login-screen').hidden=true; $('app').hidden=false;$('toggle-directory').hidden=false;
   $('identity').textContent=me.role.replaceAll('_',' ');
-  $('sidebar-role').textContent=({owner:'Practice owner',clinician:'Clinician',front_desk:'Front desk',read_only:'Read only',nurse:'Nurse',medical_assistant:'Medical assistant'})[me.role]||me.role.replaceAll('_',' ');
+  $('sidebar-role').textContent=({owner:'Practice owner',clinician:'Clinician',front_desk:'Front desk',read_only:'Read only',nurse:'Nurse',medical_assistant:'Medical assistant',partner_support:'Partner support · read only'})[me.role]||me.role.replaceAll('_',' ');
   setPage('Patients & visits');
   if(typeof refreshConnectionBadge==='function')void refreshConnectionBadge();
   if(typeof startConnectUpdates==='function')void startConnectUpdates(me);
   $('nav-migration').hidden=me.role!=='owner';
   if($('nav-admin'))$('nav-admin').hidden=me.role!=='owner';
   const page=await api('/api/v1/patients'); patients=page.items; cursor=page.next_cursor; renderPatients();
+  if(me.role==='partner_support')notice('Delegated partner support session. Clinical and administrative changes are disabled.');
   if(typeof finishConnectOnboarding==='function'&&await finishConnectOnboarding())return;
   if (new URLSearchParams(location.search).has('oauth_request')) { await showConsent(); return; }
   if (!selected) $('chart').innerHTML='<div class="panel empty"><span class="empty-mark" aria-hidden="true">⊕</span><h2>Open a patient chart</h2><p>Select a patient from the directory to review their record,<br>manage orders, or document an encounter.</p><div class="empty-shortcuts"><button type="button" data-open-schedule>View schedule</button></div></div>';
@@ -371,7 +392,7 @@ document.addEventListener('click',e=>{
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('sidebar').classList.contains('menu-open')){closeNavigation();$('nav-toggle').focus();}});
 $('search').addEventListener('input',renderPatients);
 // Every workspace module is deferred; initialize after all of them are loaded.
-document.addEventListener('DOMContentLoaded',()=>enter().catch(()=>signInScreen()),{once:true});
+document.addEventListener('DOMContentLoaded',()=>partnerSupportAcceptance.then(()=>enter()).catch(error=>{signInScreen();$('login-error').textContent=error.message;}),{once:true});
 
 document.addEventListener('input',e=>{if(e.target.closest?.('#note-form,#vitals-form'))captureVisitDrafts();});
 window.addEventListener('beforeunload',e=>{captureVisitDrafts();if((typeof prescribingHaveDrafts==='function'&&prescribingHaveDrafts())||(typeof portalStaffHasDrafts==='function'&&portalStaffHasDrafts())||(typeof supportHasDrafts==='function'&&supportHasDrafts())||(typeof patientIdentityHasDrafts==='function'&&patientIdentityHasDrafts())||(typeof referralDeliveryHasDrafts==='function'&&referralDeliveryHasDrafts())||(typeof documentsHaveDrafts==='function'&&documentsHaveDrafts())||(typeof referralHasDrafts==='function'&&referralHasDrafts())||(typeof orderDiagnosisLinkDrafts!=='undefined'&&orderDiagnosisLinkDrafts.size)||(typeof accountDiagnosisLinkDrafts!=='undefined'&&accountDiagnosisLinkDrafts.size)||(typeof healthHistoryHasDrafts==='function'&&healthHistoryHasDrafts())||(typeof immunizationHasDrafts==='function'&&immunizationHasDrafts())||visitDrafts.size||(typeof visitDiagnosisDrafts!=='undefined'&&visitDiagnosisDrafts.size)||(typeof roomingDrafts!=='undefined'&&roomingDrafts.size)||(typeof checkoutDrafts!=='undefined'&&checkoutDrafts.size)){e.preventDefault();e.returnValue='';}});

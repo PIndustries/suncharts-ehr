@@ -31,6 +31,7 @@ pub mod labs;
 pub mod migration;
 pub mod model;
 pub mod oauth;
+pub mod partner_support;
 pub mod patient_identity;
 pub mod patient_portal;
 pub mod payments;
@@ -96,6 +97,12 @@ async fn readiness(ExtractState(state): ExtractState<State>) -> impl IntoRespons
     }
 }
 
+async fn index() -> axum::response::Html<String> {
+    axum::response::Html(
+        include_str!("../web/index.html").replace("__SUN_CHARTS_BUILD__", env!("SUN_CHARTS_BUILD")),
+    )
+}
+
 pub fn app(state: State) -> Router {
     Router::new()
         .merge(oauth::router())
@@ -137,14 +144,10 @@ pub fn app(state: State) -> Router {
         .merge(events::router())
         .merge(migration::router())
         .merge(fhir::router())
+        .route("/", get(index))
         .route(
-            "/",
-            get(|| async {
-                axum::response::Html(
-                    include_str!("../web/index.html")
-                        .replace("__SUN_CHARTS_BUILD__", env!("SUN_CHARTS_BUILD")),
-                )
-            }),
+            "/api/v1/connect/support/accept",
+            get(index).post(partner_support::accept),
         )
         .route(
             "/connect-onboarding.js",

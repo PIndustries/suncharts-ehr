@@ -21,6 +21,7 @@ pub enum Role {
     MedicalAssistant,
     FrontDesk,
     ReadOnly,
+    PartnerSupport,
     Patient,
 }
 
@@ -80,7 +81,14 @@ impl FromRequestParts<State> for Actor {
                 parts.method,
                 axum::http::Method::GET | axum::http::Method::HEAD
             );
-            return browser.authenticate(&parts.headers, write).await;
+            let actor = browser.authenticate(&parts.headers, write).await?;
+            if matches!(actor.role, Role::PartnerSupport)
+                && write
+                && parts.uri.path() != "/auth/logout"
+            {
+                return Err(Error::Forbidden);
+            }
+            return Ok(actor);
         }
         let token = parts
             .headers
@@ -110,6 +118,7 @@ impl FromRequestParts<State> for Actor {
         if actor.iat > now + 5
             || actor.exp <= actor.iat
             || actor.exp - actor.iat > 120
+            || matches!(actor.role, Role::PartnerSupport)
             || (matches!(actor.role, Role::Patient) && actor.patient_id.is_none())
         {
             return Err(Error::Unauthorized);
