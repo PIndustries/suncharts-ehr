@@ -148,9 +148,7 @@ fn file_env(name: &str) -> Result<Option<String>> {
                 Ok(Some(value.trim_end_matches(['\r', '\n']).to_owned()))
             }
         }
-        (Some(_), None) | (None, Some(_)) => {
-            Err(Error::Invalid("managed Connect bootstrap secret is empty"))
-        }
+        (Some(_), None) => Err(Error::Invalid("managed Connect bootstrap secret is empty")),
         (None, None) => Ok(None),
     }
 }
@@ -606,18 +604,18 @@ pub async fn run(pool: PgPool) {
         let result = match config() {
             Ok(Some(e)) => attempt(&pool, &e).await,
             Ok(None) => return,
-            Err(error) => {
-                tracing::error!("managed Connect bootstrap configuration is invalid: {error}");
+            Err(_error) => {
+                eprintln!("managed Connect bootstrap configuration is invalid");
                 return;
             }
         };
         match result {
             Ok(()) => {
-                tracing::info!("managed Connect bootstrap verified");
+                println!("managed Connect bootstrap verified");
                 return;
             }
-            Err(error) => {
-                tracing::warn!("managed Connect bootstrap will retry: {error}");
+            Err(_error) => {
+                eprintln!("managed Connect bootstrap will retry");
                 if let Ok(Some(e)) = config() {
                     let _ = sqlx::query("UPDATE managed_connect_bootstrap SET connection_status='failed',last_error='bootstrap_pending_retry',updated_at=clock_timestamp() WHERE provisioning_request_id=$1 AND completed_at IS NULL")
                         .bind(e.provisioning_request_id).execute(&pool).await;
@@ -669,7 +667,7 @@ pub async fn readiness(pool: &PgPool) -> Value {
     } else {
         "pending"
     };
-    json!({"infrastructure_ready":true,"connection_status":connection_status,"connected":connected && selected_matches && version_matches,"authorization_source":authorization_source,"managed_email_ready":managed_email_ready && selected_matches && version_matches,"support_ready":support_ready && selected_matches && version_matches,"ready":connected && managed_email_ready && support_ready && selected_matches && version_matches,"selected_version":expected_version,"observed_version":observed_version,"selected_image_reference":expected_image_reference,"observed_image_reference":selected,"image_reference":selected,"build":env!("SUN_CHARTS_BUILD"),"version":env!("ENGINE_DEPLOYED_VERSION").unwrap_or_else(|_| env!("SUN_CHARTS_BUILD").to_owned())})
+    json!({"infrastructure_ready":true,"connection_status":connection_status,"connected":connected && selected_matches && version_matches,"authorization_source":authorization_source,"managed_email_ready":managed_email_ready && selected_matches && version_matches,"support_ready":support_ready && selected_matches && version_matches,"ready":connected && managed_email_ready && support_ready && selected_matches && version_matches,"selected_version":expected_version,"observed_version":observed_version,"selected_image_reference":expected_image_reference,"observed_image_reference":selected,"image_reference":selected,"build":env!("SUN_CHARTS_BUILD"),"version":observed_version})
 }
 
 #[cfg(test)]
