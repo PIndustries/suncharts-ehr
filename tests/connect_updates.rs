@@ -2,8 +2,10 @@
 //! Actual PostgreSQL boundaries for durable service updates and browser notifications.
 use axum::{
     body::Body,
+    extract::State as ExtractState,
     http::{HeaderMap, HeaderValue, Request, StatusCode},
-    Router,
+    routing::post,
+    Json, Router,
 };
 use chrono::Utc;
 use http_body_util::BodyExt;
@@ -31,6 +33,7 @@ struct Fixture {
     user: Uuid,
     setting: Uuid,
     installation: Uuid,
+    identity_issuer: String,
     headers: HeaderMap,
 }
 impl Fixture {
@@ -74,7 +77,16 @@ impl Fixture {
         let user = Uuid::new_v4();
         let setting = Uuid::new_v4();
         let installation = Uuid::new_v4();
-        let headers = user_session(&db, tenant, user, "owner").await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let identity_issuer = format!("http://{}", listener.local_addr().unwrap());
+        let identity_app = Router::new()
+            .route(
+                "/api/v1/managed-ehr/identity/introspect",
+                post(identity_introspect),
+            )
+            .with_state(db.clone());
+        tokio::spawn(async move { axum::serve(listener, identity_app).await.unwrap() });
+        let headers = user_session(&db, tenant, user, "owner", &identity_issuer).await;
         sqlx::query("INSERT INTO connect_service_settings(tenant_id,id,installation_id,enabled,verified,support_available,reminders_available,from_email) VALUES($1,$2,$3,true,true,true,true,'synthetic@example.test')").bind(tenant).bind(setting).bind(installation).execute(&db).await.unwrap();
         let encrypted = seal_secret(
             tenant,
@@ -98,6 +110,7 @@ impl Fixture {
             user,
             setting,
             installation,
+            identity_issuer,
             headers,
         }
     }
@@ -145,10 +158,45 @@ impl Fixture {
         v
     }
 }
-async fn user_session(db: &PgPool, tenant: Uuid, user: Uuid, role: &str) -> HeaderMap {
+async fn identity_introspect(
+    ExtractState(db): ExtractState<PgPool>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let Some(grant) = body["jti"]
+        .as_str()
+        .and_then(|value| Uuid::parse_str(value).ok())
+    else {
+        return Json(json!({"active":false}));
+    };
+    let row: Option<(Uuid, String, chrono::DateTime<Utc>)> = sqlx::query_as(
+        "SELECT s.tenant_id,u.email,s.expires_at FROM connect_identity_sessions s
+          JOIN browser_users u ON u.tenant_id=s.tenant_id AND u.id=s.user_id
+         WHERE s.grant_id=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND NOT u.disabled",
+    )
+    .bind(grant)
+    .fetch_optional(&db)
+    .await
+    .unwrap();
+    Json(match row {
+        Some((tenant, email, expires_at)) => json!({
+            "active":true,"jti":grant,"aud":body["audience"],"kind":"staff",
+            "tenant_id":tenant,"email":email,"exp":expires_at.timestamp()
+        }),
+        None => json!({"active":false}),
+    })
+}
+async fn user_session(
+    db: &PgPool,
+    tenant: Uuid,
+    user: Uuid,
+    role: &str,
+    issuer: &str,
+) -> HeaderMap {
     sqlx::query("INSERT INTO browser_users(id,tenant_id,email,password_hash,role) VALUES($1,$2,$3,'synthetic-not-a-login',$4) ON CONFLICT(id) DO NOTHING").bind(user).bind(tenant).bind(format!("{}@example.test",user.simple())).bind(role).execute(db).await.unwrap();
     let token = format!("synthetic-session-{}", Uuid::new_v4());
-    sqlx::query("INSERT INTO browser_sessions(token_hash,tenant_id,user_id,expires_at) VALUES($1,$2,$3,now()+interval '1 hour')").bind(suncharts_engine::oauth::hash(&token)).bind(tenant).bind(user).execute(db).await.unwrap();
+    sqlx::query("INSERT INTO connect_identity_sessions(token_hash,tenant_id,user_id,grant_id,issuer,audience,expires_at) VALUES($1,$2,$3,$4,$5,$6,now()+interval '1 hour')")
+        .bind(suncharts_engine::oauth::hash(&token)).bind(tenant).bind(user).bind(Uuid::new_v4())
+        .bind(issuer).bind(ORIGIN).execute(db).await.unwrap();
     let mut h = HeaderMap::new();
     h.insert("origin", HeaderValue::from_static(ORIGIN));
     h.insert(
@@ -209,11 +257,32 @@ async fn durable_notifications_are_tenant_scoped_per_user_and_replay_safe() {
     assert_eq!(data["items"][0]["ticket_id"], ticket.to_string());
     assert_eq!(data["items"][0]["message_id"], message.to_string());
     assert!(!data.to_string().contains("scs_inst_"));
-    let other = user_session(&f.db, f.tenant, Uuid::new_v4(), "front_desk").await;
+    let other = user_session(
+        &f.db,
+        f.tenant,
+        Uuid::new_v4(),
+        "front_desk",
+        &f.identity_issuer,
+    )
+    .await;
     assert_eq!(f.notifications(&other).await["unread_count"], 1);
-    let foreign = user_session(&f.db, Uuid::new_v4(), Uuid::new_v4(), "owner").await;
+    let foreign = user_session(
+        &f.db,
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        "owner",
+        &f.identity_issuer,
+    )
+    .await;
     assert_eq!(f.notifications(&foreign).await["unread_count"], 0);
-    let reader = user_session(&f.db, f.tenant, Uuid::new_v4(), "read_only").await;
+    let reader = user_session(
+        &f.db,
+        f.tenant,
+        Uuid::new_v4(),
+        "read_only",
+        &f.identity_issuer,
+    )
+    .await;
     assert_eq!(
         call(
             &f.app,
@@ -445,13 +514,13 @@ async fn service_stream_baselines_replays_and_stops_after_logout() {
             break;
         }
     }
-    sqlx::query("DELETE FROM browser_sessions WHERE user_id=$1")
+    sqlx::query("DELETE FROM connect_identity_sessions WHERE user_id=$1")
         .bind(f.user)
         .execute(&f.db)
         .await
         .unwrap();
     assert!(frame(&mut feed).await.is_none());
-    let headers = user_session(&f.db, f.tenant, f.user, "owner").await;
+    let headers = user_session(&f.db, f.tenant, f.user, "owner", &f.identity_issuer).await;
     let mut resumed = stream(&f, &headers, Some(1)).await;
     let _ = frame(&mut resumed).await.unwrap();
     let replay = frame(&mut resumed).await.unwrap();

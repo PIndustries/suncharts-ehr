@@ -118,6 +118,30 @@ async fn patient_identity<'a>(
         origin(s, h)?;
     }
     let t = token(h)?;
+    if let Some((tenant, id, account)) =
+        crate::connect_identity::patient_session(db(s)?, &t).await?
+    {
+        if bound {
+            let expected = h
+                .get("X-SunCharts-Portal-Account")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| Uuid::parse_str(v).ok());
+            if expected != Some(account) {
+                return Err(Error::Conflict(ACCOUNT_CHANGED));
+            }
+        }
+        return Ok((
+            db(s)?.begin().await?,
+            Patient {
+                tenant,
+                id,
+                account,
+            },
+        ));
+    }
+    if crate::connect_identity::connected(db(s)?).await? {
+        return Err(Error::Unauthorized);
+    }
     let mut tx = db(s)?.begin().await?;
     let row:Option<(Uuid,Uuid,Uuid)>=sqlx::query_as("SELECT a.tenant_id,a.patient_id,a.id FROM patient_portal_sessions s JOIN patient_portal_accounts a ON a.tenant_id=s.tenant_id AND a.id=s.account_id AND a.version=s.account_version WHERE s.token_hash=$1 AND s.expires_at>now() AND s.last_seen_at>now()-interval '20 minutes' AND a.status='active' FOR SHARE OF a FOR UPDATE OF s").bind(hash(&t)).fetch_optional(&mut *tx).await?;
     let (tenant, id, account) = row.ok_or(Error::Unauthorized)?;
@@ -304,6 +328,9 @@ async fn activate(
     Json(input): Json<Activation>,
 ) -> Result<Json<Value>> {
     origin(&s, &h)?;
+    if crate::connect_identity::connected(db(&s)?).await? {
+        return Err(Error::Unauthorized);
+    }
     let _permit = AUTH_WORK
         .try_acquire()
         .map_err(|_| Error::Conflict("Portal sign-in is busy; try again shortly"))?;
@@ -360,6 +387,9 @@ async fn login(
     Json(mut input): Json<Login>,
 ) -> Result<(HeaderMap, Json<Value>)> {
     origin(&s, &h)?;
+    if crate::connect_identity::connected(db(&s)?).await? {
+        return Err(Error::Unauthorized);
+    }
     let _permit = AUTH_WORK
         .try_acquire()
         .map_err(|_| Error::Conflict("Portal sign-in is busy; try again shortly"))?;
@@ -434,6 +464,10 @@ async fn logout(
 ) -> Result<(HeaderMap, Json<Value>)> {
     let (mut tx, p) = patient(&s, &h, true).await?;
     sqlx::query("DELETE FROM patient_portal_sessions WHERE token_hash=$1")
+        .bind(hash(&token(&h)?))
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM patient_connect_sessions WHERE token_hash=$1")
         .bind(hash(&token(&h)?))
         .execute(&mut *tx)
         .await?;
