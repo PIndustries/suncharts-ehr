@@ -78,6 +78,8 @@ struct Introspection {
     order_id: Option<Uuid>,
     #[serde(default)]
     exp: Option<i64>,
+    #[serde(default)]
+    sub: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -90,6 +92,7 @@ struct Session {
     issuer: String,
     audience: String,
     expires_at: DateTime<Utc>,
+    actor_subject: String,
 }
 
 fn http() -> std::result::Result<reqwest::Client, Error> {
@@ -169,8 +172,8 @@ pub async fn accept(
         .await?;
     sqlx::query(
         "INSERT INTO partner_support_sessions
-         (token_hash,tenant_id,grant_id,partner_id,customer_id,order_id,issuer,audience,expires_at)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,to_timestamp($9))",
+         (token_hash,tenant_id,grant_id,partner_id,customer_id,order_id,issuer,audience,expires_at,actor_subject)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,to_timestamp($9),$10)",
     )
     .bind(crate::browser::hash(&token))
     .bind(claims.tenant_id)
@@ -181,6 +184,7 @@ pub async fn accept(
     .bind(&issuer)
     .bind(auth.origin())
     .bind(claims.exp as f64)
+    .bind(&claims.sub)
     .execute(&mut *tx)
     .await?;
     sqlx::query("INSERT INTO audit_events(tenant_id,actor_id,action,resource_id) VALUES($1,$2,'partner_admin.session_created',$2)")
@@ -207,7 +211,7 @@ pub async fn accept(
 /// response permanently revokes the local session and records that revocation atomically.
 pub(crate) async fn authenticate(auth: &BrowserAuth, token: &str) -> Result<Option<Actor>> {
     let session: Option<Session> = sqlx::query_as(
-        "SELECT tenant_id,grant_id,partner_id,customer_id,order_id,issuer,audience,expires_at FROM partner_support_sessions
+        "SELECT tenant_id,grant_id,partner_id,customer_id,order_id,issuer,audience,expires_at,actor_subject FROM partner_support_sessions
           WHERE token_hash=$1 AND expires_at>now() AND revoked_at IS NULL",
     )
     .bind(crate::browser::hash(token))
@@ -247,6 +251,7 @@ pub(crate) async fn authenticate(auth: &BrowserAuth, token: &str) -> Result<Opti
         && introspection.partner_id == Some(session.partner_id)
         && introspection.customer_id == Some(session.customer_id)
         && introspection.order_id == Some(session.order_id)
+        && introspection.sub.as_deref() == Some(session.actor_subject.as_str())
         && introspection
             .exp
             .is_some_and(|exp| exp > now && exp <= session.expires_at.timestamp());
