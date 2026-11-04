@@ -41,7 +41,7 @@ def main() -> int:
     args = parser.parse_args()
 
     request = json.loads(args.request.read_text())
-    required = {"contract_version", "request_id", "order_id", "tenant_id", "clinician_id", "hostname", "owner_email", "image_reference"}
+    required = {"contract_version", "request_id", "order_id", "tenant_id", "clinician_id", "hostname", "owner_email", "expected_version", "image_reference"}
     if set(request) - (required | {"region"}) or not required.issubset(request):
         raise ValueError("request fields do not match provisioning contract v1")
     if request["contract_version"] != "1":
@@ -49,6 +49,9 @@ def main() -> int:
     image = str(request["image_reference"])
     if not IMAGE.fullmatch(image):
         raise ValueError("image_reference must be the published GHCR image by sha256 digest")
+    expected_version = str(request["expected_version"]).strip()
+    if not expected_version or len(expected_version) > 80 or any(c in expected_version for c in "\r\n\0\""):
+        raise ValueError("expected_version is invalid")
     tenant = uuid_value(request["tenant_id"], "tenant_id")
     uuid_value(request["request_id"], "request_id")
     uuid_value(request["order_id"], "order_id")
@@ -70,6 +73,8 @@ def main() -> int:
         "__CLINICIAN_ID__": clinician,
         "__IMAGE_REFERENCE__": image,
         "__PUBLIC_URL_JSON__": json.dumps(f"https://{hostname}"),
+        "__IMAGE_REFERENCE_JSON__": json.dumps(image),
+        "__EXPECTED_VERSION_JSON__": json.dumps(expected_version),
         "__OWNER_EMAIL_JSON__": json.dumps(owner),
         "__CONNECT_CLOUD_URL_JSON__": json.dumps(https_origin(args.connect_origin, "connect origin")),
         "__HOSTNAME_JSON__": json.dumps(hostname),

@@ -6,6 +6,7 @@
   "clinician_id": "00000000-0000-4000-8000-000000000004",
   "hostname": "synthetic-clinic.dev-ehr.example.test",
   "owner_email": "owner@example.test",
+  "expected_version": "26.11.04.1",
   "image_reference": "ghcr.io/pindustries/suncharts-ehr@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "region": "dev"
 }

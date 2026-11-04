@@ -32,6 +32,11 @@ class DeploymentArtifactsTest(unittest.TestCase):
         self.assertIn(request["image_reference"], manifest)
         self.assertIn("path: /ready", manifest)
         self.assertIn("readOnlyRootFilesystem: true", manifest)
+        self.assertIn("secretName: suncharts-ehr-connect-bootstrap", manifest)
+        self.assertIn("ENGINE_MANAGED_CONNECT_BOOTSTRAP_FILE", manifest)
+        self.assertIn("ENGINE_DEPLOYED_IMAGE_REFERENCE", manifest)
+        self.assertIn("ENGINE_DEPLOYED_VERSION", manifest)
+        self.assertNotIn("capability:", manifest)
         self.assertNotIn("__IMAGE_REFERENCE__", manifest)
         self.assertNotIn("bootstrap_password:", manifest)
 
@@ -85,7 +90,7 @@ class DeploymentArtifactsTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             manifest = json.loads(output.read_text())
             self.assertEqual(manifest["version"], version)
-            self.assertEqual(manifest["database"]["schema_revision"], 49)
+            self.assertEqual(manifest["database"]["schema_revision"], 50)
             self.assertEqual(manifest["database"]["rollback_mode"], "restore_pre_update_backup")
             self.assertTrue(manifest["image_reference"].endswith("b" * 64))
 

@@ -20,7 +20,11 @@ schema migrations at startup. Back up before upgrading and never edit applied
 migration files.
 
 `/ready` verifies that the process can query PostgreSQL. Container orchestrators
-should use `/health` for liveness and `/ready` for readiness.
+should use `/health` for liveness and `/ready` for infrastructure readiness. Its
+JSON response reports `infrastructure_ready`, `connection_status`, `connected`,
+`managed_email_ready`, `support_ready` and overall `ready` separately. A hosted
+instance can serve its web workspace while its outbound Connect channel is still
+connecting; that does not mean managed services are ready.
 
 ## Container deployment foundation
 
@@ -64,6 +68,11 @@ logging their values:
   latter uses the in-namespace `postgres:5432` Service).
 - `suncharts-ehr-bootstrap`: `bootstrap_password`, 14–1024 bytes, delivered to
   the owner through an out-of-band secure channel.
+- `suncharts-ehr-connect-bootstrap`: `managed_connect_bootstrap.json`, a
+  short-lived capability bound to one paid or explicitly admin-activated hosted
+  order, tenant, owner and HTTPS hostname. The EHR exchanges it outbound with
+  Connect once and erases the capability from process memory. The raw capability
+  must never enter rendered/logged YAML, a URL, or browser storage.
 
 The runtime mounts those values as files. The provisioner generates them, the
 stable tenant/clinician UUIDs and the hostname exactly once per `request_id`.
@@ -81,7 +90,9 @@ not change.
 Managed provisioners exchange only the identifiers and owner email described by
 [`provisioning-request.schema.json`](../deploy/provisioning-request.schema.json)
 and [`provisioning-result.schema.json`](../deploy/provisioning-result.schema.json).
-`request_id` is the idempotency identity and `image_reference` is always a digest. A retry must reconcile the same
+`request_id` is the idempotency identity. `expected_version` and `image_reference` bind the selected immutable
+release catalog version to its digest; `/ready` reports both observed values and Connect waits for exact equality.
+A retry must reconcile the same
 deployment, never create another instance. Passwords, API keys, database URLs and
 patient information are outside this contract and must use the provisioner's
 secret store. A `ready` result requires the assigned HTTPS URL and successful

@@ -4,7 +4,7 @@
   "title": "SunCharts EHR managed provisioning request v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["contract_version", "request_id", "order_id", "tenant_id", "clinician_id", "hostname", "owner_email", "image_reference"],
+  "required": ["contract_version", "request_id", "order_id", "tenant_id", "clinician_id", "hostname", "owner_email", "expected_version", "image_reference"],
   "properties": {
     "contract_version": {"const": "1"},
     "request_id": {"type": "string", "format": "uuid"},
@@ -13,6 +13,7 @@
     "clinician_id": {"type": "string", "format": "uuid"},
     "hostname": {"type": "string", "format": "hostname", "maxLength": 253},
     "owner_email": {"type": "string", "format": "email", "maxLength": 320},
+    "expected_version": {"type": "string", "minLength": 1, "maxLength": 80},
     "image_reference": {
       "type": "string",
       "pattern": "^ghcr\\.io/pindustries/suncharts-ehr@sha256:[0-9a-f]{64}$"
