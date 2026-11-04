@@ -126,3 +126,44 @@ jobs:
             release-manifest.json release-assets.sha256 image-reference.txt build-inputs.sha256 build-inputs.env \
             image.attestation.json release-manifest.attestation.json \
             --repo "$GITHUB_REPOSITORY"
+
+  community-notification:
+    needs: publish
+    if: >-
+      always() && github.event_name != 'schedule' &&
+      (needs.publish.result == 'success' || needs.publish.result == 'failure')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      DISCORD_COMMUNITY_WEBHOOK_URL: ${{ secrets.DISCORD_COMMUNITY_WEBHOOK_URL }}
+    steps:
+      - name: Check out notification builder
+        if: env.DISCORD_COMMUNITY_WEBHOOK_URL != ''
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build public publication payload
+        if: env.DISCORD_COMMUNITY_WEBHOOK_URL != ''
+        env:
+          PUBLICATION_RESULT: ${{ needs.publish.result }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            kind=release
+            version="$GITHUB_REF_NAME"
+            url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME"
+          else
+            kind=image
+            version="sha-${GITHUB_SHA:0:12}"
+            url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          fi
+          if [[ "$PUBLICATION_RESULT" == success ]]; then status=succeeded; else status=failed; fi
+          python3 scripts/discord_community_payload.py \
+            --kind "$kind" --status "$status" --version "$version" --url "$url" \
+            --output community-payload.json
+      - name: Notify Discord
+        if: env.DISCORD_COMMUNITY_WEBHOOK_URL != ''
+        continue-on-error: true
+        run: >-
+          curl --silent --show-error --fail --output /dev/null
+          --header 'Content-Type: application/json'
+          --data-binary @community-payload.json
+          "$DISCORD_COMMUNITY_WEBHOOK_URL"

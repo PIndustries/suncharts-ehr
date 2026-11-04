@@ -1,0 +1,41 @@
+name: Community milestone notification
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+
+jobs:
+  merged-community-update:
+    if: >-
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.labels.*.name, 'community-update')
+    runs-on: ubuntu-latest
+    env:
+      DISCORD_COMMUNITY_WEBHOOK_URL: ${{ secrets.DISCORD_COMMUNITY_WEBHOOK_URL }}
+    steps:
+      - name: Check out the public repository
+        if: env.DISCORD_COMMUNITY_WEBHOOK_URL != ''
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build public community payload
+        if: env.DISCORD_COMMUNITY_WEBHOOK_URL != ''
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: >-
+          python3 scripts/discord_community_payload.py
+          --kind pull_request
+          --status merged
+          --version "PR #$PR_NUMBER"
+          --url "$PR_URL"
+          --output community-payload.json
+      - name: Notify Discord
+        if: env.DISCORD_COMMUNITY_WEBHOOK_URL != ''
+        continue-on-error: true
+        run: >-
+          curl --silent --show-error --fail --output /dev/null
+          --header 'Content-Type: application/json'
+          --data-binary @community-payload.json
+          "$DISCORD_COMMUNITY_WEBHOOK_URL"
