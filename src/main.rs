@@ -46,6 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(|_| "engine database migration failed")?;
     suncharts_engine::browser::bootstrap(&db).await?;
+    tokio::spawn(suncharts_engine::managed_connect::run(db.clone()));
     tokio::spawn(suncharts_engine::reminders::run(db.clone()));
     tokio::spawn(suncharts_engine::connect_updates::run(db.clone()));
     tokio::spawn(suncharts_engine::referral_delivery::run(db.clone()));

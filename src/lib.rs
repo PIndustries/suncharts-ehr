@@ -28,6 +28,7 @@ pub mod fhir;
 pub mod health_history;
 pub mod immunizations;
 pub mod labs;
+pub mod managed_connect;
 pub mod migration;
 pub mod model;
 pub mod oauth;
@@ -86,14 +87,19 @@ async fn readiness(ExtractState(state): ExtractState<State>) -> impl IntoRespons
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             "browser database unavailable",
-        );
+        )
+            .into_response();
     };
     match sqlx::query_scalar::<_, i32>("SELECT 1")
         .fetch_one(&auth.db)
         .await
     {
-        Ok(1) => (StatusCode::OK, "ready"),
-        _ => (StatusCode::SERVICE_UNAVAILABLE, "database unavailable"),
+        Ok(1) => (
+            StatusCode::OK,
+            Json(crate::managed_connect::readiness(&auth.db).await),
+        )
+            .into_response(),
+        _ => (StatusCode::SERVICE_UNAVAILABLE, "database unavailable").into_response(),
     }
 }
 

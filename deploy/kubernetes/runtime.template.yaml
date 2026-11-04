@@ -190,6 +190,12 @@ spec:
               value: /run/secrets/database/engine_database_url
             - name: ENGINE_PUBLIC_URL
               value: __PUBLIC_URL_JSON__
+            - name: ENGINE_DEPLOYED_IMAGE_REFERENCE
+              value: __IMAGE_REFERENCE_JSON__
+            - name: ENGINE_DEPLOYED_VERSION
+              value: __EXPECTED_VERSION_JSON__
+            - name: ENGINE_MANAGED_CONNECT_BOOTSTRAP_FILE
+              value: /run/secrets/managed-connect/managed_connect_bootstrap.json
             - name: ENGINE_BOOTSTRAP_EMAIL
               value: __OWNER_EMAIL_JSON__
             - name: ENGINE_BOOTSTRAP_PASSWORD_FILE
@@ -235,6 +241,9 @@ spec:
             - name: bootstrap-secret
               mountPath: /run/secrets/bootstrap
               readOnly: true
+            - name: managed-connect-bootstrap
+              mountPath: /run/secrets/managed-connect
+              readOnly: true
             - name: private-credentials
               mountPath: /var/lib/suncharts/private
             - name: tmp
@@ -248,6 +257,11 @@ spec:
           secret:
             secretName: suncharts-ehr-bootstrap
             defaultMode: 288
+        - name: managed-connect-bootstrap
+          secret:
+            secretName: suncharts-ehr-connect-bootstrap
+            defaultMode: 288
+            optional: true
         - name: private-credentials
           persistentVolumeClaim:
             claimName: private-credentials
