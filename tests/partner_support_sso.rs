@@ -57,6 +57,7 @@ async fn introspect(
     }
     Json(json!({
         "active":true,"jti":body["jti"],"aud":cloud.audience,"role":"partner_admin",
+        "sub":"partner:synthetic",
         "partner_id":cloud.partner,"customer_id":cloud.customer,"order_id":cloud.order,
         "tenant_id":cloud.tenant,"exp":chrono::Utc::now().timestamp()+590
     }))
