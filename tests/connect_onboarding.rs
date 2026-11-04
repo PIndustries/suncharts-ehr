@@ -375,8 +375,8 @@ async fn completion_requires_original_session_and_installs_once_without_public_t
     assert!(!completed.to_string().contains("scs_inst_"));
     let replay = connect_onboarding::complete_with_cloud(&f.state, &f.headers, id, version, &cloud)
         .await
-        .unwrap();
-    assert_eq!(replay["status"], "completed");
+        .unwrap_err();
+    assert!(matches!(replay, Error::Unauthorized));
     let row:(bool,bool,String,i64,i64)=sqlx::query_as("SELECT s.enabled,s.verified,r.delivery_mode,(SELECT count(*) FROM connect_service_credentials),(SELECT count(*) FROM reminder_credentials) FROM connect_service_settings s JOIN reminder_sender_settings r USING(tenant_id) WHERE s.tenant_id=$1").bind(f.tenant).fetch_one(&f.db).await.unwrap();
     assert_eq!(row, (true, true, "suncharts_connect".into(), 1, 1));
     let encrypted: Vec<u8> = sqlx::query_scalar(
