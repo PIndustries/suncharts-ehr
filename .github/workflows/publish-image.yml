@@ -6,6 +6,15 @@ on:
   schedule:
     - cron: '17 6 * * *'
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: Container platforms for this publication
+        required: true
+        default: linux/amd64
+        type: choice
+        options:
+          - linux/amd64
+          - linux/amd64,linux/arm64
 
 concurrency:
   group: publish-ehr-image-${{ github.ref }}
@@ -41,7 +50,10 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64
+          # Customer hotfix publications default to the Fleet architecture so an
+          # unrelated ARM mirror outage cannot block provisioning. Tagged and
+          # scheduled releases remain multi-architecture.
+          platforms: ${{ github.event_name == 'workflow_dispatch' && inputs.platforms || 'linux/amd64,linux/arm64' }}
           tags: ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
           build-args: |
             RUST_IMAGE=${{ env.RUST_IMAGE }}
