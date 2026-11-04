@@ -26,6 +26,7 @@ jobs:
           node-version: '22'
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked --test partner_support_sso
       - run: cargo test --locked
       - run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - run: node scripts/test_practice_ui.cjs
