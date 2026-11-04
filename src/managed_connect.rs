@@ -18,6 +18,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 const BOOTSTRAP_PATH: &str = "/api/internal/v1/hosted-ehr/bootstrap/complete";
 const OWNER_SCOPE: &str = "clinical.read clinical.write billing.read billing.write events.read migration.manage offline_access";
+type ReadinessRow = (String, bool, bool, Option<String>, String, String, Uuid);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -629,7 +630,7 @@ pub async fn run(pool: PgPool) {
 
 pub async fn readiness(pool: &PgPool) -> Value {
     let selected = env::var("ENGINE_DEPLOYED_IMAGE_REFERENCE").ok();
-    let result: Option<(String,bool,bool,Option<String>,String,String,Uuid)> = sqlx::query_as("SELECT connection_status,managed_email_ready,support_ready,authorization_source,expected_version,expected_image_reference,tenant_id FROM managed_connect_bootstrap ORDER BY created_at DESC LIMIT 1").fetch_optional(pool).await.ok().flatten();
+    let result: Option<ReadinessRow> = sqlx::query_as("SELECT connection_status,managed_email_ready,support_ready,authorization_source,expected_version,expected_image_reference,tenant_id FROM managed_connect_bootstrap ORDER BY created_at DESC LIMIT 1").fetch_optional(pool).await.ok().flatten();
     let (
         stored_status,
         managed_email_ready,
