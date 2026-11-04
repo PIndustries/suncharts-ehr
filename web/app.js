@@ -5,8 +5,10 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&
 
 // Connect delivers delegated support codes in the fragment so they never reach an HTTP log.
 // Remove it before making any request, then exchange through this EHR's same-origin server.
-async function acceptPartnerSupportLaunch(){
- if(location.pathname!=='/api/v1/connect/support/accept'||!location.hash)return false;
+async function acceptConnectLaunch(){
+ const support=location.pathname==='/api/v1/connect/support/accept';
+ const identity=location.pathname==='/api/v1/connect/identity/accept';
+ if((!support&&!identity)||!location.hash)return false;
  let code,issuer;
  try{
   const input=new URLSearchParams(location.hash.slice(1));
@@ -16,12 +18,14 @@ async function acceptPartnerSupportLaunch(){
   try{issuerUrl=new URL(issuer);}catch{throw new Error('This support sign-in link is invalid or incomplete.');}
   const loopback=issuerUrl.protocol==='http:'&&['127.0.0.1','::1'].includes(issuerUrl.hostname);
   if(!code||code.length<32||code.length>256||issuerUrl.origin!==issuer||(!loopback&&issuerUrl.protocol!=='https:'))throw new Error('This support sign-in link is invalid or incomplete.');
-  const response=await fetch('/api/v1/connect/support/accept',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',cache:'no-store',body:JSON.stringify({code,issuer})});
-  if(!response.ok)throw new Error('This support sign-in link expired, was already used, or was revoked.');
+  const response=await fetch(support?'/api/v1/connect/support/accept':'/api/v1/connect/identity/accept',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',cache:'no-store',body:JSON.stringify({code,issuer})});
+  if(!response.ok)throw new Error('This Connect sign-in link expired, was already used, or was revoked.');
+  const accepted=await response.json().catch(()=>({}));
+  if(accepted.kind==='patient'){location.replace('/patient-portal');return new Promise(()=>{});}
   return true;
  }finally{code=undefined;issuer=undefined;}
 }
-const partnerSupportAcceptance=acceptPartnerSupportLaunch();
+const connectLaunchAcceptance=acceptConnectLaunch();
 let chartSection='overview';
 // Unsaved clinical edits live only in this tab, isolated by encounter and patient.
 const visitDrafts=new Map();
@@ -98,6 +102,15 @@ function signInScreen() {
   $('app').hidden = true; $('login-screen').hidden = false;
   $('patients').replaceChildren(); $('chart').replaceChildren(); $('patient-form').reset(); $('patient-form').hidden=true;
   $('search').value=''; $('notice').hidden=true; $('tools').replaceChildren(); $('tools').hidden=true;
+  void refreshSignInMode();
+}
+async function refreshSignInMode(){
+ try{
+  const mode=await fetch('/auth/mode',{credentials:'same-origin',cache:'no-store'}).then(r=>r.ok?r.json():Promise.reject());
+  const connected=mode.mode==='connect';$('local-login-fields').hidden=connected;$('connect-login').hidden=!connected;
+  for(const input of $('local-login-fields').querySelectorAll('input'))input.required=!connected;
+  if(connected){$('connect-login').href=mode.staff_sign_in_url;$('login-description').textContent='Use your SunCharts Connect passkey or emailed sign-in link.';$('login-connect-state').hidden=false;$('login-connect-state').textContent='Connected to SunCharts Connect · authorization is checked in real time.';}
+ }catch{$('login-connect-state').hidden=false;$('login-connect-state').textContent='Unable to verify Connect status. Try again shortly.';}
 }
 function notice(message, error = false) { $('notice').textContent=message; $('notice').className=`notice${error?' error':''}`; $('notice').hidden=false; }
 async function run(action) {
@@ -392,7 +405,7 @@ document.addEventListener('click',e=>{
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('sidebar').classList.contains('menu-open')){closeNavigation();$('nav-toggle').focus();}});
 $('search').addEventListener('input',renderPatients);
 // Every workspace module is deferred; initialize after all of them are loaded.
-document.addEventListener('DOMContentLoaded',()=>partnerSupportAcceptance.then(()=>enter()).catch(error=>{signInScreen();$('login-error').textContent=error.message;}),{once:true});
+document.addEventListener('DOMContentLoaded',()=>connectLaunchAcceptance.then(()=>enter()).catch(error=>{signInScreen();$('login-error').textContent=error.message;}),{once:true});
 
 document.addEventListener('input',e=>{if(e.target.closest?.('#note-form,#vitals-form'))captureVisitDrafts();});
 window.addEventListener('beforeunload',e=>{captureVisitDrafts();if((typeof prescribingHaveDrafts==='function'&&prescribingHaveDrafts())||(typeof portalStaffHasDrafts==='function'&&portalStaffHasDrafts())||(typeof supportHasDrafts==='function'&&supportHasDrafts())||(typeof patientIdentityHasDrafts==='function'&&patientIdentityHasDrafts())||(typeof referralDeliveryHasDrafts==='function'&&referralDeliveryHasDrafts())||(typeof documentsHaveDrafts==='function'&&documentsHaveDrafts())||(typeof referralHasDrafts==='function'&&referralHasDrafts())||(typeof orderDiagnosisLinkDrafts!=='undefined'&&orderDiagnosisLinkDrafts.size)||(typeof accountDiagnosisLinkDrafts!=='undefined'&&accountDiagnosisLinkDrafts.size)||(typeof healthHistoryHasDrafts==='function'&&healthHistoryHasDrafts())||(typeof immunizationHasDrafts==='function'&&immunizationHasDrafts())||visitDrafts.size||(typeof visitDiagnosisDrafts!=='undefined'&&visitDiagnosisDrafts.size)||(typeof roomingDrafts!=='undefined'&&roomingDrafts.size)||(typeof checkoutDrafts!=='undefined'&&checkoutDrafts.size)){e.preventDefault();e.returnValue='';}});

@@ -10,6 +10,7 @@ pub mod claimmd;
 pub mod claims;
 pub mod clearinghouse;
 pub mod clinical;
+pub mod connect_identity;
 pub mod connect_onboarding;
 pub mod connect_services;
 pub mod connect_transport;
@@ -498,6 +499,12 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route("/auth/login", post(browser::login))
+        .route("/auth/recovery/login", post(browser::recovery_login))
+        .route("/auth/mode", get(connect_identity::mode))
+        .route(
+            "/api/v1/connect/identity/accept",
+            get(index).post(connect_identity::accept),
+        )
         .route("/auth/logout", post(browser::logout))
         .route("/auth/me", get(browser::me))
         .route("/health", get(|| async { "ok" }))

@@ -75,9 +75,12 @@ impl BrowserAuth {
             self.check_origin(h)?;
         }
         let token = cookie(h).ok_or(Error::Unauthorized)?;
-        let row:Option<(Uuid,Uuid,String)>=sqlx::query_as("SELECT u.id,u.tenant_id,u.role FROM browser_sessions s JOIN browser_users u ON u.id=s.user_id AND u.tenant_id=s.tenant_id WHERE s.token_hash=$1 AND s.expires_at>now() AND NOT u.disabled")
+        let row:Option<(Uuid,Uuid,String,String)>=sqlx::query_as("SELECT u.id,u.tenant_id,u.role,s.auth_method FROM browser_sessions s JOIN browser_users u ON u.id=s.user_id AND u.tenant_id=s.tenant_id WHERE s.token_hash=$1 AND s.expires_at>now() AND NOT u.disabled")
             .bind(hash(&token)).fetch_optional(&self.db).await?;
-        let actor = if let Some((sub, tenant_id, role)) = row {
+        let actor = if let Some((sub, tenant_id, role, method)) = row {
+            if crate::connect_identity::connected(&self.db).await? && method != "break_glass" {
+                return Err(Error::Unauthorized);
+            }
             let role = serde_json::from_value(json!(role)).map_err(|_| Error::Unauthorized)?;
             let now = chrono::Utc::now().timestamp();
             Actor {
@@ -90,6 +93,10 @@ impl BrowserAuth {
                 iat: now,
                 exp: now + 60,
             }
+        } else if let Some(actor) =
+            crate::connect_identity::authenticate_staff(self, &token).await?
+        {
+            actor
         } else {
             crate::partner_support::authenticate(self, &token)
                 .await?
@@ -135,6 +142,26 @@ pub async fn login(
     h: HeaderMap,
     Json(input): Json<Login>,
 ) -> Result<(HeaderMap, Json<Value>)> {
+    login_with_policy(s, h, input, false).await
+}
+
+pub async fn recovery_login(
+    ExtractState(s): ExtractState<State>,
+    h: HeaderMap,
+    Json(input): Json<Login>,
+) -> Result<(HeaderMap, Json<Value>)> {
+    if std::env::var("ENGINE_BREAK_GLASS_LOCAL_AUTH").as_deref() != Ok("true") {
+        return Err(Error::NotFound);
+    }
+    login_with_policy(s, h, input, true).await
+}
+
+async fn login_with_policy(
+    s: State,
+    h: HeaderMap,
+    input: Login,
+    recovery: bool,
+) -> Result<(HeaderMap, Json<Value>)> {
     let auth = s.browser.as_ref().ok_or(Error::NotFound)?;
     auth.check_origin(&h)?;
     if input.email.len() > 254 || input.password.len() > 1024 {
@@ -150,8 +177,8 @@ pub async fn login(
             return Err(Error::Unauthorized);
         }
     }
-    let row: Option<(Uuid, Uuid, String)> = sqlx::query_as(
-        "SELECT id,tenant_id,password_hash FROM browser_users WHERE email=$1 AND NOT disabled",
+    let row: Option<(Uuid, Uuid, String, String)> = sqlx::query_as(
+        "SELECT id,tenant_id,password_hash,role FROM browser_users WHERE email=$1 AND NOT disabled",
     )
     .bind(input.email.trim().to_lowercase())
     .fetch_optional(&auth.db)
@@ -174,7 +201,14 @@ pub async fn login(
     })
     .await
     .map_err(|_| Error::Unauthorized)?;
-    let (id, tenant, _) = row.filter(|_| valid).ok_or(Error::Unauthorized)?;
+    let (id, tenant, _, role) = row.filter(|_| valid).ok_or(Error::Unauthorized)?;
+    let connected = crate::connect_identity::connected(&auth.db).await?;
+    if connected && !recovery {
+        return Err(Error::Unauthorized);
+    }
+    if recovery && role != "owner" {
+        return Err(Error::Forbidden);
+    }
     let mut raw = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut raw);
     let token = raw.iter().map(|b| format!("{b:02x}")).collect::<String>();
@@ -182,14 +216,27 @@ pub async fn login(
     sqlx::query("DELETE FROM browser_sessions WHERE expires_at<=now()")
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO browser_sessions (token_hash,tenant_id,user_id,expires_at) VALUES ($1,$2,$3,now()+interval '8 hours')")
-        .bind(hash(&token)).bind(tenant).bind(id).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO audit_events (tenant_id,actor_id,action,resource_id) VALUES ($1,$2,'auth.login',$2)").bind(tenant).bind(id).execute(&mut *tx).await?;
+    let session_seconds = if recovery { 30 * 60 } else { 8 * 3600 };
+    sqlx::query("INSERT INTO browser_sessions (token_hash,tenant_id,user_id,expires_at,auth_method) VALUES ($1,$2,$3,now()+make_interval(secs=>$4),$5)")
+        .bind(hash(&token)).bind(tenant).bind(id).bind(session_seconds).bind(if recovery{"break_glass"}else{"local"}).execute(&mut *tx).await?;
+    let action = if recovery {
+        "auth.break_glass_login"
+    } else {
+        "auth.login"
+    };
+    sqlx::query(
+        "INSERT INTO audit_events (tenant_id,actor_id,action,resource_id) VALUES ($1,$2,$3,$2)",
+    )
+    .bind(tenant)
+    .bind(id)
+    .bind(action)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     let mut headers = HeaderMap::new();
     headers.insert(
         header::SET_COOKIE,
-        auth.session_cookie(&token, 8 * 3600)
+        auth.session_cookie(&token, session_seconds as u64)
             .parse()
             .map_err(|_| Error::Unauthorized)?,
     );
@@ -218,15 +265,26 @@ pub async fn logout(
         sqlx::query("INSERT INTO audit_events (tenant_id,actor_id,action,resource_id) VALUES ($1,$2,'auth.logout',$2)")
             .bind(tenant).bind(actor).execute(&mut *tx).await?;
     } else {
-        let delegated: Option<(Uuid, Uuid)> = sqlx::query_as(
+        let connected: Option<(Uuid, Uuid)> = sqlx::query_as(
+            "DELETE FROM connect_identity_sessions WHERE token_hash=$1 RETURNING tenant_id,user_id",
+        )
+        .bind(&token_hash)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some((tenant, actor)) = connected {
+            sqlx::query("INSERT INTO audit_events(tenant_id,actor_id,action,resource_id) VALUES($1,$2,'connect_identity.logout',$2)")
+                .bind(tenant).bind(actor).execute(&mut *tx).await?;
+        } else {
+            let delegated: Option<(Uuid, Uuid)> = sqlx::query_as(
             "DELETE FROM partner_support_sessions WHERE token_hash=$1 RETURNING tenant_id,grant_id",
         )
         .bind(&token_hash)
         .fetch_optional(&mut *tx)
         .await?;
-        let (tenant, actor) = delegated.ok_or(Error::Unauthorized)?;
-        sqlx::query("INSERT INTO audit_events(tenant_id,actor_id,action,resource_id) VALUES($1,$2,'partner_admin.logout',$2)")
+            let (tenant, actor) = delegated.ok_or(Error::Unauthorized)?;
+            sqlx::query("INSERT INTO audit_events(tenant_id,actor_id,action,resource_id) VALUES($1,$2,'partner_admin.logout',$2)")
             .bind(tenant).bind(actor).execute(&mut *tx).await?;
+        }
     }
     tx.commit().await?;
     let mut headers = HeaderMap::new();
