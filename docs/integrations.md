@@ -57,6 +57,15 @@ that provider. Replies retain their original provider or platform attribution wh
 a request is reassigned or escalated. These labels do not grant a partner clinical
 API access or change the installation’s OAuth permissions.
 
+For managed installations, an authorized service partner may launch a delegated,
+read-only support session from SunCharts Connect. Connect issues a single-use code
+valid for 60 seconds in the browser URL fragment; the EHR clears the fragment and
+exchanges the code server-to-server over outbound HTTPS. The resulting
+`partner_support` session lasts at most 15 minutes, is audience-bound to this EHR,
+and is introspected with Connect on every request. Connect unavailability or
+revocation fails closed. Session creation, revocation and logout are audited, all
+mutations are rejected, and no EHR password or bootstrap credential is disclosed.
+
 Support replies and reminder delivery changes update the open EHR automatically.
 The outbound channel signals committed service events; the EHR resumes from its
 saved cursor after a connection interruption. A bounded server-side fallback

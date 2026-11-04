@@ -64,7 +64,7 @@ impl BrowserAuth {
         }
         Ok(())
     }
-    fn cookie(&self, token: &str, seconds: u64) -> String {
+    pub(crate) fn session_cookie(&self, token: &str, seconds: u64) -> String {
         format!(
             "sce_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={seconds}{}",
             if self.secure { "; Secure" } else { "" }
@@ -77,7 +77,24 @@ impl BrowserAuth {
         let token = cookie(h).ok_or(Error::Unauthorized)?;
         let row:Option<(Uuid,Uuid,String)>=sqlx::query_as("SELECT u.id,u.tenant_id,u.role FROM browser_sessions s JOIN browser_users u ON u.id=s.user_id AND u.tenant_id=s.tenant_id WHERE s.token_hash=$1 AND s.expires_at>now() AND NOT u.disabled")
             .bind(hash(&token)).fetch_optional(&self.db).await?;
-        let (sub, tenant_id, role) = row.ok_or(Error::Unauthorized)?;
+        let actor = if let Some((sub, tenant_id, role)) = row {
+            let role = serde_json::from_value(json!(role)).map_err(|_| Error::Unauthorized)?;
+            let now = chrono::Utc::now().timestamp();
+            Actor {
+                sub,
+                tenant_id,
+                role,
+                patient_id: None,
+                iss: "suncharts-ehr-browser".into(),
+                aud: "suncharts-engine".into(),
+                iat: now,
+                exp: now + 60,
+            }
+        } else {
+            crate::partner_support::authenticate(self, &token)
+                .await?
+                .ok_or(Error::Unauthorized)?
+        };
         if h.contains_key("x-suncharts-staff-context") {
             let mut values = h.get_all("x-suncharts-staff-context").iter();
             let context = values.next().and_then(|v| v.to_str().ok());
@@ -86,31 +103,20 @@ impl BrowserAuth {
                 .and_then(|(tenant, user)| {
                     Some((tenant.parse::<Uuid>().ok()?, user.parse::<Uuid>().ok()?))
                 });
-            if values.next().is_some() || parsed != Some((tenant_id, sub)) {
+            if values.next().is_some() || parsed != Some((actor.tenant_id, actor.sub)) {
                 return Err(Error::Conflict(
                     "Staff account changed. Sign in again to continue.",
                 ));
             }
         }
-        let role = serde_json::from_value(json!(role)).map_err(|_| Error::Unauthorized)?;
-        let now = chrono::Utc::now().timestamp();
-        Ok(Actor {
-            sub,
-            tenant_id,
-            role,
-            patient_id: None,
-            iss: "suncharts-ehr-browser".into(),
-            aud: "suncharts-engine".into(),
-            iat: now,
-            exp: now + 60,
-        })
+        Ok(actor)
     }
 }
 
-fn hash(s: &str) -> String {
+pub(crate) fn hash(s: &str) -> String {
     format!("{:x}", Sha256::digest(s.as_bytes()))
 }
-fn cookie(h: &HeaderMap) -> Option<String> {
+pub(crate) fn cookie(h: &HeaderMap) -> Option<String> {
     h.get(header::COOKIE)?
         .to_str()
         .ok()?
@@ -183,7 +189,7 @@ pub async fn login(
     let mut headers = HeaderMap::new();
     headers.insert(
         header::SET_COOKIE,
-        auth.cookie(&token, 8 * 3600)
+        auth.session_cookie(&token, 8 * 3600)
             .parse()
             .map_err(|_| Error::Unauthorized)?,
     );
@@ -191,25 +197,42 @@ pub async fn login(
 }
 
 pub async fn logout(
-    a: Actor,
     ExtractState(s): ExtractState<State>,
     h: HeaderMap,
 ) -> Result<(HeaderMap, Json<Value>)> {
     let auth = s.browser.as_ref().ok_or(Error::NotFound)?;
     auth.check_origin(&h)?;
+    // Authenticate before deletion so a stale staff-context header cannot be used to log out a
+    // different shared-browser account. Delegated support sessions use the same context fence.
+    auth.authenticate(&h, true).await?;
+    let token = cookie(&h).ok_or(Error::Unauthorized)?;
+    let token_hash = hash(&token);
     let mut tx = auth.db.begin().await?;
-    if let Some(token) = cookie(&h) {
-        sqlx::query("DELETE FROM browser_sessions WHERE token_hash=$1")
-            .bind(hash(&token))
-            .execute(&mut *tx)
-            .await?;
+    let regular: Option<(Uuid, Uuid)> = sqlx::query_as(
+        "DELETE FROM browser_sessions WHERE token_hash=$1 RETURNING tenant_id,user_id",
+    )
+    .bind(&token_hash)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some((tenant, actor)) = regular {
+        sqlx::query("INSERT INTO audit_events (tenant_id,actor_id,action,resource_id) VALUES ($1,$2,'auth.logout',$2)")
+            .bind(tenant).bind(actor).execute(&mut *tx).await?;
+    } else {
+        let delegated: Option<(Uuid, Uuid)> = sqlx::query_as(
+            "DELETE FROM partner_support_sessions WHERE token_hash=$1 RETURNING tenant_id,grant_id",
+        )
+        .bind(&token_hash)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let (tenant, actor) = delegated.ok_or(Error::Unauthorized)?;
+        sqlx::query("INSERT INTO audit_events(tenant_id,actor_id,action,resource_id) VALUES($1,$2,'partner_support.logout',$2)")
+            .bind(tenant).bind(actor).execute(&mut *tx).await?;
     }
-    sqlx::query("INSERT INTO audit_events (tenant_id,actor_id,action,resource_id) VALUES ($1,$2,'auth.logout',$2)").bind(a.tenant_id).bind(a.sub).execute(&mut *tx).await?;
     tx.commit().await?;
     let mut headers = HeaderMap::new();
     headers.insert(
         header::SET_COOKIE,
-        auth.cookie("", 0)
+        auth.session_cookie("", 0)
             .parse()
             .map_err(|_| Error::Unauthorized)?,
     );
