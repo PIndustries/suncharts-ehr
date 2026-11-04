@@ -84,6 +84,7 @@ fn main() {
         "src",
         "web",
         "scripts",
+        "deploy",
         "migrations",
         "tests",
         "api",
@@ -100,6 +101,8 @@ fn main() {
         "SECURITY.md",
         ".env.example",
         ".gitignore",
+        ".dockerignore",
+        "Dockerfile",
     ] {
         println!("cargo:rerun-if-changed={name}");
         let path = Path::new(name);

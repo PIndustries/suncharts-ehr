@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://suncharts.app/schemas/ehr-provisioning-result-v1.json",
+  "title": "SunCharts EHR managed provisioning result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "request_id", "status"],
+  "properties": {
+    "contract_version": {"const": "1"},
+    "request_id": {"type": "string", "format": "uuid"},
+    "status": {"enum": ["accepted", "provisioning", "ready", "failed"]},
+    "image_reference": {
+      "type": "string",
+      "pattern": "^ghcr\\.io/pindustries/suncharts-ehr@sha256:[0-9a-f]{64}$"
+    },
+    "namespace": {"type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"},
+    "public_url": {"type": "string", "format": "uri", "pattern": "^https://"},
+    "health": {"enum": ["unknown", "starting", "ready", "unavailable"]},
+    "failure_code": {"type": "string", "pattern": "^[a-z0-9_]{1,64}$"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "ready"}}},
+      "then": {"required": ["public_url", "health", "image_reference", "namespace"]}
+    },
+    {
+      "if": {"properties": {"status": {"const": "failed"}}},
+      "then": {"required": ["failure_code"]}
+    }
+  ]
+}

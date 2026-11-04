@@ -1,0 +1,66 @@
+services:
+  database:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: suncharts
+      POSTGRES_USER: suncharts
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U suncharts -d suncharts"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  ehr:
+    build:
+      context: ..
+    image: ${SUNCHARTS_EHR_IMAGE:-suncharts-ehr:local}
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+    environment:
+      ENGINE_DATABASE_URL_FILE: /run/secrets/engine_database_url
+      ENGINE_PUBLIC_URL: ${ENGINE_PUBLIC_URL:?set the externally reachable HTTPS origin}
+      ENGINE_BOOTSTRAP_EMAIL: ${ENGINE_BOOTSTRAP_EMAIL:?set the initial owner email}
+      ENGINE_BOOTSTRAP_PASSWORD_FILE: /run/secrets/engine_bootstrap_password
+      ENGINE_BOOTSTRAP_TENANT_ID: ${ENGINE_BOOTSTRAP_TENANT_ID:?set a stable UUID}
+      ENGINE_BOOTSTRAP_CLINICIAN_ID: ${ENGINE_BOOTSTRAP_CLINICIAN_ID:?set a stable UUID}
+      ENGINE_BOOTSTRAP_ROLE: owner
+      ENGINE_CONNECT_CLOUD_URL: ${ENGINE_CONNECT_CLOUD_URL:-https://connect.suncharts.app}
+    secrets:
+      - engine_database_url
+      - engine_bootstrap_password
+    volumes:
+      - private-credentials:/var/lib/suncharts/private
+    ports:
+      - "127.0.0.1:${ENGINE_PORT:-8090}:8090"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8090/ready"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+secrets:
+  postgres_password:
+    file: ${POSTGRES_PASSWORD_FILE:?set the PostgreSQL password file}
+  engine_database_url:
+    file: ${ENGINE_DATABASE_URL_FILE:?set the PostgreSQL URL file}
+  engine_bootstrap_password:
+    file: ${ENGINE_BOOTSTRAP_PASSWORD_FILE:?set the initial owner password file}
+
+volumes:
+  postgres-data:
+  private-credentials:

@@ -1,0 +1,11 @@
+{
+  "contract_version": "1",
+  "request_id": "00000000-0000-4000-8000-000000000001",
+  "order_id": "00000000-0000-4000-8000-000000000002",
+  "tenant_id": "00000000-0000-4000-8000-000000000003",
+  "clinician_id": "00000000-0000-4000-8000-000000000004",
+  "hostname": "synthetic-clinic.dev-ehr.example.test",
+  "owner_email": "owner@example.test",
+  "image_reference": "ghcr.io/pindustries/suncharts-ehr@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "region": "dev"
+}
