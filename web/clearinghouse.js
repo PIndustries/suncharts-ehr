@@ -1,10 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
-const ediBase='/api/v1/billing';let ediPartners=[],ediSources=[],ediCurrent,ediClaim,ediPartner,ediSource,ediCursor;
+const ediBase='/api/v1/billing';let ediPartners=[],ediSources=[],ediCurrent,ediClaim,ediPartner,ediSource,ediCursor,ediWorkspaceGeneration=0;
 const ediOwner=()=>me.role==='owner';
 const ediField=(name,label,value='',max=200,required=true)=>billingField(name,label,value,'text',max,required);
 function ediPane(html){$('edi-detail').innerHTML=html;$('edi-detail').scrollIntoView({block:'start'});}
+function ediWorkspaceCurrent(generation){return generation===ediWorkspaceGeneration&&!!$('edi-tool')&&!!$('edi-automation');}
+function ediWorkspaceWarning(generation,message){if(ediWorkspaceCurrent(generation))$('edi-automation').insertAdjacentHTML('beforeend',`<div class="notice error">${esc(message)}</div>`);}
+async function loadEdiOptionalPanels(generation){
+ try{await showDeliveryPanels();}catch{ediWorkspaceWarning(generation,'Delivery and acknowledgment panels are temporarily unavailable. Claim.MD account setup remains available.');}
+ if(!ediWorkspaceCurrent(generation))return;
+ if(typeof showClaimMdExtended==='function')try{await showClaimMdExtended();}catch{ediWorkspaceWarning(generation,'Additional Claim.MD account activity is temporarily unavailable. Core account setup remains available.');}
+ if(ediWorkspaceCurrent(generation))$('edi-optional-loading')?.remove();
+}
 async function showEdiWorkspace(after){
+ const generation=++ediWorkspaceGeneration;
  showTool('Clearinghouse');
  $('tools').innerHTML='<section class="panel empty"><span class="empty-mark" aria-hidden="true">↔</span><h2>Loading clearinghouse workspace</h2><p>Checking the clinic connection and recent claim activity.</p></section>';
  let claimMdStatusError;
@@ -26,9 +35,13 @@ async function showEdiWorkspace(after){
   if(partnerHeading)partnerHeading.closest('.billing-section').hidden=true;
   const empty=[...$('edi-tool').querySelectorAll('.table-empty')].find(v=>v.textContent.includes('Generate X12 837P'));if(empty)empty.textContent='No Claim.MD submissions yet. Open a ready claim and choose Submit to Claim.MD.';
  }
- try{await showProviderSettingsPanel();}catch(error){$('edi-automation').insertAdjacentHTML('afterbegin','<div class="notice error">Saved Claim.MD connections could not be loaded. You can still use Connect Claim.MD above to enter this clinic’s AccountKey.</div>');}
- try{await showDeliveryPanels();}catch(error){$('edi-automation').insertAdjacentHTML('beforeend','<div class="notice error">Delivery and acknowledgment panels are temporarily unavailable. Claim.MD account setup remains available.</div>');}
- if(typeof showClaimMdExtended==='function')try{await showClaimMdExtended();}catch(error){$('edi-automation').insertAdjacentHTML('beforeend','<div class="notice error">Additional Claim.MD account activity is temporarily unavailable. Core account setup remains available.</div>');}
+ try{await showProviderSettingsPanel();}catch{if(ediWorkspaceCurrent(generation))$('edi-automation').insertAdjacentHTML('afterbegin','<div class="notice error">Saved Claim.MD connections could not be loaded. You can still use Connect Claim.MD above to enter this clinic’s AccountKey.</div>');}
+ if(ediWorkspaceCurrent(generation)){
+  $('edi-automation').insertAdjacentHTML('beforeend','<section id="edi-optional-loading" class="billing-section"><p class="muted">Loading delivery, acknowledgment and account activity…</p></section>');
+  // The account connection and submission queue are usable now. Optional provider history must
+  // never keep the global navigation lock active or replace a populated workspace with a blank page.
+  void loadEdiOptionalPanels(generation);
+ }
 }
 function ediPartnerEditor(p=null,source=null){ediPartner=p;ediSource=source;const raw=source?.source_data?.partner||{},v=p?.content||{name:raw.name||'',active:true,sender_qualifier:raw.x12_isa05||'ZZ',sender_id:raw.x12_sender_id||'',receiver_qualifier:raw.x12_isa07||'ZZ',receiver_id:raw.x12_receiver_id||'',application_sender:raw.x12_gs02||'',application_receiver:raw.x12_gs03||'',submitter_name:raw.x12_submitter_name||'',submitter_id:raw.id_number||'',receiver_name:'',receiver_identifier:'',contact_name:'',contact_phone:'',usage:'T',guide_reference:''};
  ediPane(`<form id="edi-partner-form" data-request="${crypto.randomUUID()}"><h2>${p?'Edit trading partner':source?'Reconcile source trading partner':'Add trading partner'}</h2>${sourceNotice(source?{...source,policy:'Only nonsecret source identifiers are preserved. Verify every ISA/GS/submitter/receiver field with this partner. Source usage remains historical; the new profile starts in test mode.'}:null)}<div class="form-grid">${ediField('name','Partner name',v.name,100)}${selectField('active','Profile status',['true','false'],String(v.active))}${selectField('usage','File usage',['T','P'],v.usage)}${ediField('guide_reference','Reviewed companion guide / enrollment reference',v.guide_reference)}${selectField('sender_qualifier','ISA sender qualifier',['ZZ','01','14','30'],v.sender_qualifier)}${ediField('sender_id','ISA sender ID',v.sender_id,15)}${selectField('receiver_qualifier','ISA receiver qualifier',['ZZ','01','14','30'],v.receiver_qualifier)}${ediField('receiver_id','ISA receiver ID',v.receiver_id,15)}${ediField('application_sender','GS application sender',v.application_sender,15)}${ediField('application_receiver','GS application receiver',v.application_receiver,15)}${ediField('submitter_name','Submitter organization',v.submitter_name,60)}${ediField('submitter_id','Submitter identifier (NM1 41)',v.submitter_id,80)}${ediField('receiver_name','Receiver organization',v.receiver_name,60)}${ediField('receiver_identifier','Receiver identifier (NM1 40)',v.receiver_identifier,80)}${ediField('contact_name','EDI contact name',v.contact_name,60)}${ediField('contact_phone','EDI contact phone (10 digits)',v.contact_phone,10)}</div><p class="muted">Profile changes affect future files. Existing artifacts retain the exact partner version used. Credentials and transport endpoints are not stored in this profile.</p>${ediField('reason','Configuration / source review reason','',1000)}<label class="review-ack"><input type="checkbox" required> I verified these identifiers and file usage against the partner enrollment and companion guide.</label><button class="primary" type="submit">Save partner profile</button></form>`);

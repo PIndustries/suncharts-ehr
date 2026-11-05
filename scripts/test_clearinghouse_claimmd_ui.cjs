@@ -6,7 +6,7 @@ const vm=require('node:vm');
 const deliverySource=fs.readFileSync('web/delivery.js','utf8');
 
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const handlers={click:[],submit:[]},calls=[],order=[];let statusFailure=false,legacyFailure=false,optionalFailure=false;
+const handlers={click:[],submit:[]},calls=[],order=[];let statusFailure=false,legacyFailure=false,optionalFailure=false,optionalHang=false;
 let workspaceHtml='',providerHtml='';
 const nodes={};
 const manualSection={hidden:false,insertAdjacentHTML(){}};
@@ -40,7 +40,7 @@ const context={
   throw new Error(`Unexpected API ${path}`);
  },
  showTool:title=>{order.push(`show:${title}`);},
- showDeliveryPanels:async()=>{order.push('delivery');if(optionalFailure)throw new Error('synthetic delivery outage');},
+ showDeliveryPanels:async()=>{order.push('delivery');if(optionalHang)return new Promise(()=>{});if(optionalFailure)throw new Error('synthetic delivery outage');},
  showClaimMdExtended:async()=>{order.push('extended');if(optionalFailure)throw new Error('synthetic extended outage');},
  run:action=>{context.pending=action();},notice:()=>{},scheduleInstant:value=>value,
  FormData:class{constructor(form){return Object.entries(form.values||{})[Symbol.iterator]();}},
@@ -49,9 +49,11 @@ vm.createContext(context);
 for(const file of ['web/claimmd-native.js','web/provider-settings.js','web/clearinghouse.js'])vm.runInContext(fs.readFileSync(file,'utf8'),context,{filename:file});
 
 (async()=>{
+ const settle=()=>new Promise(resolve=>setImmediate(resolve));
  assert.match(deliverySource,/\$\('edi-automation'\)\.insertAdjacentHTML\('beforeend'/);
  assert.doesNotMatch(deliverySource,/\$\('edi-automation'\)\.innerHTML=/);
  await vm.runInContext('showEdiWorkspace()',context);
+ await settle();
  assert.equal(order[0],'show:Clearinghouse','workspace must become visible before any API work');
  assert.match(connectionNotice.outerHTML,/Claim\.MD is not connected/);
  assert.match(connectionNotice.outerHTML,/data-provider-new/);
@@ -61,18 +63,27 @@ for(const file of ['web/claimmd-native.js','web/provider-settings.js','web/clear
  assert(calls.indexOf('/api/v1/billing/provider-settings')<calls.indexOf('/api/v1/billing/delivery/routes')||!calls.includes('/api/v1/billing/delivery/routes'));
  console.log('PASS Clearinghouse renders native Claim.MD zero state before optional legacy panels');
 
- statusFailure=true;connectionNotice.outerHTML='';await vm.runInContext('showEdiWorkspace()',context);
+ statusFailure=true;connectionNotice.outerHTML='';await vm.runInContext('showEdiWorkspace()',context);await settle();
  assert.match(connectionNotice.outerHTML,/data-provider-new/);
  assert.match(providerHtml,/Claim\.MD is not connected/);
  console.log('PASS Claim.MD status refresh failure cannot blank or block AccountKey setup');
 
- statusFailure=false;legacyFailure=true;optionalFailure=true;connectionNotice.outerHTML='';await vm.runInContext('showEdiWorkspace()',context);
+ statusFailure=false;legacyFailure=true;optionalFailure=true;connectionNotice.outerHTML='';await vm.runInContext('showEdiWorkspace()',context);await settle();
  assert.match(workspaceHtml,/manual clearinghouse history is temporarily unavailable/);
  assert.match(connectionNotice.outerHTML,/data-provider-new/);
  assert.match(providerHtml,/Claim\.MD is not connected/);
  assert.match(providerHtml,/Delivery and acknowledgment panels are temporarily unavailable/);
  assert.match(providerHtml,/Additional Claim\.MD account activity is temporarily unavailable/);
  console.log('PASS legacy and optional API outages preserve native Claim.MD setup with section warnings');
+
+ legacyFailure=false;optionalFailure=false;optionalHang=true;connectionNotice.outerHTML='';
+ const load=vm.runInContext('showEdiWorkspace()',context);
+ await Promise.race([load,new Promise((_,reject)=>setTimeout(()=>reject(new Error('core workspace remained blocked on optional provider history')),100))]);
+ assert.match(workspaceHtml,/Electronic claim operations/);
+ assert.match(connectionNotice.outerHTML,/data-provider-new/);
+ assert.match(providerHtml,/Loading delivery, acknowledgment and account activity/);
+ console.log('PASS a hung optional provider panel cannot block or blank the populated Clearinghouse workspace');
+ optionalHang=false;
 
  const button={dataset:{},hasAttribute:name=>name==='data-provider-new',closest:selector=>selector==='button'?button:null};
  const event={target:{closest:selector=>selector==='button'?button:null},preventDefault(){},stopImmediatePropagation(){}};
