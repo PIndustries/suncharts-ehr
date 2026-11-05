@@ -749,6 +749,7 @@ async fn test(
         ));
     }
     let route = r.route(&existing_key()?)?;
+    crate::claimmd_eligibility::acquire_rate_limit(db(&s)?, &route).await?;
     let ok = probe(
         route
             .credential_value

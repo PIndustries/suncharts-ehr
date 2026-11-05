@@ -114,7 +114,11 @@ fn rows(value: &Value, field: &str) -> Result<Vec<Value>> {
 }
 
 pub(crate) async fn acquire_rate_limit(pool: &PgPool, route: &Route) -> Result<()> {
-    let account_hash = crate::oauth::hash(key(route)?);
+    acquire_rate_limit_key(pool, key(route)?).await
+}
+
+pub(crate) async fn acquire_rate_limit_key(pool: &PgPool, account_key: &str) -> Result<()> {
+    let account_hash = crate::oauth::hash(account_key);
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM claimmd_api_rate_windows WHERE window_start<date_trunc('minute',clock_timestamp())-interval '1 day'")
         .execute(&mut *tx)

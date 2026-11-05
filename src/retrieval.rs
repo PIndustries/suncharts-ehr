@@ -377,7 +377,10 @@ pub async fn poll_one(pool: &PgPool, c: &Config) -> Result<bool> {
         Adapter::Stedi => stedi::page(r, token.as_deref(), start)
             .await
             .and_then(|v| stedi_page(v, &r.usage)),
-        Adapter::ClaimMd => crate::claimmd::page(r, token.as_deref().unwrap_or("0")).await,
+        Adapter::ClaimMd => {
+            crate::claimmd_eligibility::acquire_rate_limit(pool, r).await?;
+            crate::claimmd::page(r, token.as_deref().unwrap_or("0")).await
+        }
         Adapter::OfficeAllySftp | Adapter::AvailitySftp => crate::sftp_transport::page(r).await,
         _ => Err(Error::Invalid("unsupported retrieval adapter")),
     };
@@ -442,6 +445,7 @@ pub async fn fetch_one(pool: &PgPool, c: &Config) -> Result<bool> {
             Err(_) => Err(Error::Invalid("invalid Stedi transaction ID")),
         }
     } else if r.adapter == Adapter::ClaimMd {
+        crate::claimmd_eligibility::acquire_rate_limit(pool, r).await?;
         crate::claimmd::era_input(r, &remote).await
     } else {
         crate::sftp_transport::input(r, &remote).await

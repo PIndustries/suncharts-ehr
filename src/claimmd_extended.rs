@@ -100,7 +100,13 @@ fn service_url(route: &Route, service: &str) -> Result<String> {
     }
 }
 
-async fn form(route: &Route, service: &str, mut fields: Vec<(String, String)>) -> Result<Value> {
+async fn form(
+    pool: &PgPool,
+    route: &Route,
+    service: &str,
+    mut fields: Vec<(String, String)>,
+) -> Result<Value> {
+    crate::claimmd_eligibility::acquire_rate_limit(pool, route).await?;
     fields.push(("AccountKey".into(), crate::claimmd::token(route)?));
     let response = crate::stedi::client()?
         .post(service_url(route, service)?)
@@ -218,7 +224,7 @@ async fn start_enrollment(
     ] {
         optional(&mut fields, key, value, max)?;
     }
-    let response = form(&route, "enroll", fields).await?;
+    let response = form(db(&state)?, &route, "enroll", fields).await?;
     let link = provider_link(&response)?;
     let id = Uuid::new_v4();
     let request = json!({
@@ -315,7 +321,7 @@ async fn start_appeal(
     ] {
         optional(&mut fields, key, value, max)?;
     }
-    let response = form(&route, "appeal", fields).await?;
+    let response = form(db(&state)?, &route, "appeal", fields).await?;
     let link = provider_link(&response)?;
     let id = Uuid::new_v4();
     let request = json!({"native_claim_id":input.native_claim_id,"claimid":input.claimid,"remote_claimid":remote,"reason":reason});
@@ -365,7 +371,7 @@ async fn fetch_era_pdf(
     let (setting, route) = route(db(&state)?, actor.tenant_id, input.setting_id).await?;
     let mut fields = vec![("eraid".into(), eraid.clone())];
     optional(&mut fields, "pcn", &input.pcn, 150)?;
-    let mut response = form(&route, "erapdf", fields).await?;
+    let mut response = form(db(&state)?, &route, "erapdf", fields).await?;
     let encoded = response_data(&mut response)?
         .as_str()
         .ok_or(Error::Invalid("Claim.MD ERA PDF encoding invalid"))?
@@ -408,7 +414,13 @@ async fn fetch_era_structured(
     }
     let reason = clean(&input.reason, 1000, true)?;
     let (setting, route) = route(db(&state)?, actor.tenant_id, input.setting_id).await?;
-    let response = form(&route, "eradata", vec![("eraid".into(), eraid.clone())]).await?;
+    let response = form(
+        db(&state)?,
+        &route,
+        "eradata",
+        vec![("eraid".into(), eraid.clone())],
+    )
+    .await?;
     if !response.is_object() {
         return Err(Error::Invalid("Claim.MD structured ERA invalid"));
     }
