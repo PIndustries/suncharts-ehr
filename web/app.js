@@ -13,7 +13,8 @@ async function acceptConnectLaunch(){
  try{
   const input=new URLSearchParams(location.hash.slice(1));
   code=input.get('code');issuer=input.get('issuer');
-  history.replaceState(null,'','/');
+  const next=input.get('next')==='claimmd'?'claimmd':null;
+  history.replaceState(null,'',next?'/?open=claimmd':'/');
   let issuerUrl;
   try{issuerUrl=new URL(issuer);}catch{throw new Error('This support sign-in link is invalid or incomplete.');}
   const loopback=issuerUrl.protocol==='http:'&&['127.0.0.1','::1'].includes(issuerUrl.hostname);
@@ -154,6 +155,9 @@ async function enter() {
   }
   if(new URLSearchParams(location.search).get('payment_settings')==='1'&&typeof openPaymentSettings==='function'){
     await showBillingQueue();await openPaymentSettings();return;
+  }
+  if(new URLSearchParams(location.search).get('open')==='claimmd'&&typeof showEdiWorkspace==='function'){
+    await showEdiWorkspace();return;
   }
   const batchId=new URLSearchParams(location.search).get('era_batch');
   if (batchId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(batchId)) {
