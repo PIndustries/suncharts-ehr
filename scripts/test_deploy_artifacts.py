@@ -77,6 +77,7 @@ class DeploymentArtifactsTest(unittest.TestCase):
             self.assertRegex(action, r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
         self.assertIn("cache-from: type=gha,scope=suncharts-ehr-amd64", workflow)
         self.assertIn("cache-to: type=gha,mode=max,scope=suncharts-ehr-amd64", workflow)
+        self.assertIn("timeout-minutes: 60", workflow)
         self.assertIn("cache-from: type=gha,scope=suncharts-ehr-arm64", workflow)
         self.assertIn("cache-to: type=gha,mode=max,scope=suncharts-ehr-arm64", workflow)
 
