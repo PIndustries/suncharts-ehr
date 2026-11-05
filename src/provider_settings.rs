@@ -310,11 +310,12 @@ pub fn router() -> Router<State> {
 async fn status(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Response> {
     a.staff()?;
     let mut tx = db(&s)?.begin().await?;
-    let rows: Vec<(Uuid, String, String, bool, bool, Option<DateTime<Utc>>)> = sqlx::query_as(
-        "SELECT id,label,usage,enabled,verified,last_test_at
-           FROM edi_provider_settings
-          WHERE tenant_id=$1
-          ORDER BY enabled DESC,verified DESC,created_at,id
+    let rows: Vec<(Uuid, String, String, bool, bool, Option<DateTime<Utc>>, Uuid, i64, i64)> = sqlx::query_as(
+        "SELECT s.id,s.label,s.usage,s.enabled,s.verified,s.last_test_at,s.partner_id,s.credential_revision,p.version
+           FROM edi_provider_settings s
+           JOIN edi_partners p ON p.tenant_id=s.tenant_id AND p.id=s.partner_id
+          WHERE s.tenant_id=$1
+          ORDER BY s.enabled DESC,s.verified DESC,s.created_at,s.id
           LIMIT 20",
     )
     .bind(a.tenant_id)
@@ -332,6 +333,9 @@ async fn status(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Respon
             "label":row.1,
             "usage":row.2,
             "last_test_at":row.5,
+            "partner_id":row.6,
+            "route_key":format!("native_claimmd_{}_{}",row.0.simple(),row.7),
+            "partner_version":row.8,
         })),
         "connections":rows.iter().map(|row|json!({
             "id":row.0,
@@ -340,6 +344,9 @@ async fn status(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Respon
             "enabled":row.3,
             "verified":row.4,
             "last_test_at":row.5,
+            "partner_id":row.6,
+            "route_key":format!("native_claimmd_{}_{}",row.0.simple(),row.7),
+            "partner_version":row.8,
         })).collect::<Vec<_>>(),
     })))
 }

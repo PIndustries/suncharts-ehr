@@ -90,7 +90,13 @@ fn rows(value: &Value, key: &'static str) -> Result<Vec<Value>> {
         _ => Err(Error::Invalid("invalid Claim.MD response collection")),
     }
 }
-async fn form(route: &Route, service: &str, mut fields: Vec<(String, String)>) -> Result<Value> {
+async fn form(
+    pool: &PgPool,
+    route: &Route,
+    service: &str,
+    mut fields: Vec<(String, String)>,
+) -> Result<Value> {
+    crate::claimmd_eligibility::acquire_rate_limit(pool, route).await?;
     fields.push(("AccountKey".into(), token(route)?.into()));
     let response = crate::stedi::client()?
         .post(format!("{}/services/{service}/", base(route)?))
@@ -162,7 +168,7 @@ async fn sync_uploaded(
     if let Some(date) = input.upload_date {
         fields.push(("UploadDate".into(), date.to_string()));
     }
-    let response = form(&route, "uploadlist", fields).await?;
+    let response = form(db(&state)?, &route, "uploadlist", fields).await?;
     let files = rows(&response, "file")?;
     if files.len() > 500 {
         return Err(Error::Invalid(
@@ -221,7 +227,7 @@ async fn sync_modifications(
     if let Some(value) = &claimmd_id {
         fields.push(("ClaimMD_ID".into(), value.clone()));
     }
-    let response = form(&route, "modify", fields).await?;
+    let response = form(db(&state)?, &route, "modify", fields).await?;
     let last = numeric(
         &response["LastModid"],
         "Claim.MD modification cursor is invalid",
@@ -289,7 +295,7 @@ async fn sync_notes(
     if let Some(value) = &claimmd_id {
         fields.push(("ClaimMD_ID".into(), value.clone()));
     }
-    let response = form(&route, "notes", fields).await?;
+    let response = form(db(&state)?, &route, "notes", fields).await?;
     let last = numeric(&response["LastNoteID"], "Claim.MD note cursor is invalid")?;
     if claimmd_id.is_none() && last.parse::<u128>().ok() < cursor.parse::<u128>().ok() {
         return Err(Error::Invalid("Claim.MD note cursor regressed"));
@@ -367,6 +373,7 @@ async fn claim_data(
     let payer = simple_filter(input.payerid, 20)?;
     if let Some((id,date,form,page,filters))=sqlx::query_as::<_,(Uuid,NaiveDate,String,i32,Value)>("SELECT id,transmit_date,claim_form,page,filters FROM claimmd_transmitted_claim_files WHERE tenant_id=$1 AND request_id=$2").bind(actor.tenant_id).bind(input.request_id).fetch_optional(db(&state)?).await?{let expected=json!({"bill_npi":npi,"bill_taxid":tax,"payerid":payer});if date!=input.transmit_date||form!=input.claim_form||page!=i32::from(input.page)||filters!=expected{return Err(Error::Conflict("request ID was already used for different Claim.MD filters"));}return Ok(Json(json!({"id":id,"replayed":true})));}
     let route = route(&state, &actor, setting).await?;
+    crate::claimmd_eligibility::acquire_rate_limit(db(&state)?, &route).await?;
     let mut fields = vec![
         ("AccountKey".into(), token(&route)?.into()),
         ("transmit_date".into(), input.transmit_date.to_string()),
@@ -476,7 +483,7 @@ async fn archive(
         .iter()
         .map(|id| ("claimid".into(), id.clone()))
         .collect();
-    let outcome = form(&route, "archive", fields).await;
+    let outcome = form(db(&state)?, &route, "archive", fields).await;
     let response = match outcome {
         Ok(v) => v,
         Err(e) => {
