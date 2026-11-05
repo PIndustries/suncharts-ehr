@@ -171,6 +171,66 @@ async fn delegated_support_is_tenant_admin_revalidated_and_audited() {
     assert_eq!(me["delegated_role"], "partner_admin");
     assert_eq!(me["display_name"], "partner:synthetic");
     assert!(me["email"].is_null());
+
+    let credential_dir = std::env::temp_dir().join(format!(
+        "suncharts-partner-provider-settings-{}",
+        Uuid::new_v4()
+    ));
+    std::env::set_var(
+        "ENGINE_CREDENTIAL_KEY_FILE",
+        credential_dir.join("provider-master.key"),
+    );
+    let account_key = "synthetic-delegated-account-key-not-real";
+    let (status, setting, _) = call(
+        &app,
+        "POST",
+        "/api/v1/billing/provider-settings",
+        Some(&cookie),
+        Some(&audience),
+        Some(json!({
+            "label":"Delegated Claim.MD",
+            "usage":"T",
+            "account_key":account_key,
+            "start_at":"2026-11-01T00:00:00Z",
+            "response_id":"0",
+            "interval_seconds":60
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{setting}");
+    assert_eq!(setting["label"], "Delegated Claim.MD");
+    assert!(!setting.to_string().contains(account_key));
+    let setting_id = Uuid::parse_str(setting["id"].as_str().unwrap()).unwrap();
+    let partner_id = Uuid::parse_str(setting["partner_id"].as_str().unwrap()).unwrap();
+    let (status, settings, _) = call(
+        &app,
+        "GET",
+        "/api/v1/billing/provider-settings",
+        Some(&cookie),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{settings}");
+    assert_eq!(settings["items"].as_array().unwrap().len(), 1);
+    assert_eq!(settings["items"][0]["id"], setting_id.to_string());
+    let (saved_tenant, guide_reference): (Uuid, String) = sqlx::query_as(
+        "SELECT s.tenant_id,p.content->>'guide_reference'
+           FROM edi_provider_settings s
+           JOIN edi_partners p ON p.tenant_id=s.tenant_id AND p.id=s.partner_id
+          WHERE s.id=$1 AND p.id=$2",
+    )
+    .bind(setting_id)
+    .bind(partner_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(saved_tenant, tenant);
+    assert_eq!(
+        guide_reference,
+        "Claim.MD native professional-claims JSON upload"
+    );
+
     let mrn = format!("PARTNER-{}", Uuid::new_v4().simple());
     assert_eq!(
         call(
@@ -232,4 +292,6 @@ async fn delegated_support_is_tenant_admin_revalidated_and_audited() {
     cloud_task.abort();
     std::env::remove_var("ENGINE_CONNECT_CLOUD_URL");
     std::env::remove_var("ENGINE_CONNECT_ALLOW_LOOPBACK");
+    std::env::remove_var("ENGINE_CREDENTIAL_KEY_FILE");
+    std::fs::remove_dir_all(credential_dir).unwrap();
 }
