@@ -69,8 +69,8 @@ CREATE INDEX claimmd_transmitted_claim_files_lookup_idx
 
 CREATE TRIGGER claimmd_operation_records_immutable
     BEFORE UPDATE OR DELETE ON claimmd_operation_records
-    FOR EACH ROW EXECUTE FUNCTION audit_log_immutable();
+    FOR EACH ROW EXECUTE FUNCTION reject_history_mutation();
 
 CREATE TRIGGER claimmd_transmitted_claim_files_immutable
     BEFORE UPDATE OR DELETE ON claimmd_transmitted_claim_files
-    FOR EACH ROW EXECUTE FUNCTION audit_log_immutable();
+    FOR EACH ROW EXECUTE FUNCTION reject_history_mutation();
