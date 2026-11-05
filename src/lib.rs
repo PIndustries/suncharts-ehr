@@ -221,6 +221,10 @@ mod login_presentation_tests {
         assert!(html.contains(
             "id=\"connect-login\" class=\"primary\" href=\"https://connect.suncharts.app/ehr/launch?audience=https%3A%2F%2Fclinic.example\" >"
         ));
+        assert!(html.contains("class=\"login-panel\""));
+        assert!(html.contains("class=\"login-connection\""));
+        assert!(html.contains("Open the patient portal"));
+        assert!(html.contains("Secure organizational access"));
         assert!(!html.contains("__CONNECT_LOGIN_"));
         assert!(!html.contains("__LOCAL_LOGIN_"));
     }
