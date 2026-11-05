@@ -36,6 +36,7 @@ class DeploymentArtifactsTest(unittest.TestCase):
         self.assertIn("ENGINE_MANAGED_CONNECT_BOOTSTRAP_FILE", manifest)
         self.assertIn("ENGINE_DEPLOYED_IMAGE_REFERENCE", manifest)
         self.assertIn("ENGINE_DEPLOYED_VERSION", manifest)
+        self.assertIn("name: ENGINE_ENVIRONMENT\n              value: production", manifest)
         self.assertNotIn("capability:", manifest)
         self.assertNotIn("__IMAGE_REFERENCE__", manifest)
         self.assertNotIn("bootstrap_password:", manifest)
