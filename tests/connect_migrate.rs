@@ -6904,6 +6904,18 @@ async fn native_claimmd_settings_encrypt_secrets_and_scope_runtime_activation() 
     );
     assert!(!saved.to_string().contains(secret));
     assert!(saved.get("encrypted_key").is_none());
+    let (status, connection) = schedule_call(
+        &r,
+        &reader,
+        "GET",
+        "/api/v1/billing/claimmd/status",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{connection}");
+    assert_eq!(connection["configured"], true);
+    assert_eq!(connection["connected"], false);
     let id = Uuid::parse_str(saved["id"].as_str().unwrap()).unwrap();
     let path = format!("{base}/{id}");
     let encrypted: Vec<u8> = sqlx::query_scalar(
@@ -6984,6 +6996,27 @@ async fn native_claimmd_settings_encrypt_secrets_and_scope_runtime_activation() 
     assert_eq!(current.key, saved["route_key"]);
     assert_eq!(current.endpoint, suncharts_engine::claimmd::UPLOAD);
     assert!(current.credential_value.is_some());
+    let (_, connection) = schedule_call(
+        &r,
+        &reader,
+        "GET",
+        "/api/v1/billing/claimmd/status",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(connection["connected"], true);
+    assert_eq!(connection["active"]["usage"], "T");
+    let (_, outside_connection) = schedule_call(
+        &r,
+        &outsider,
+        "GET",
+        "/api/v1/billing/claimmd/status",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(outside_connection["configured"], false);
     config.validate().unwrap();
     suncharts_engine::retrieval::sync(&db, &config)
         .await

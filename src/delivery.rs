@@ -545,6 +545,7 @@ pub async fn process_one(pool: &PgPool, config: &Config) -> Result<bool> {
             });
         }
     } else if route.adapter == Adapter::ClaimMd {
+        crate::claimmd_eligibility::acquire_rate_limit(pool, &route).await?;
         if let Ok(Some(reference)) = crate::claimmd::upload(&route, &out).await {
             result = "claimmd_upload_confirmed";
             receipt = Some(Receipt {

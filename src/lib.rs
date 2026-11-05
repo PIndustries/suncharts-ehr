@@ -8,6 +8,9 @@ pub mod browser;
 pub mod ca277;
 pub mod checkout;
 pub mod claimmd;
+pub mod claimmd_eligibility;
+pub mod claimmd_extended;
+pub mod claimmd_operations;
 pub mod claims;
 pub mod clearinghouse;
 pub mod clinical;
@@ -303,6 +306,7 @@ pub fn app(state: State) -> Router {
         .merge(visit_diagnoses::routes())
         .merge(demographics::router())
         .merge(billing::router())
+        .merge(claimmd_eligibility::router())
         .merge(payments::router())
         .merge(claims::router())
         .merge(checkout::router())
@@ -312,6 +316,8 @@ pub fn app(state: State) -> Router {
         .merge(clearinghouse::router())
         .merge(delivery::router())
         .merge(provider_settings::router())
+        .merge(claimmd_operations::router())
+        .merge(claimmd_extended::router())
         .merge(retrieval::router())
         .merge(remittance_automation::router())
         .merge(ca277::router())
@@ -603,6 +609,15 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/claimmd-eligibility.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/claimmd-eligibility.js"),
+                )
+            }),
+        )
+        .route(
             "/era-batches.js",
             get(|| async {
                 (
@@ -635,6 +650,33 @@ pub fn app(state: State) -> Router {
                 (
                     [(header::CONTENT_TYPE, "application/javascript")],
                     include_str!("../web/provider-settings.js"),
+                )
+            }),
+        )
+        .route(
+            "/claimmd-native.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/claimmd-native.js"),
+                )
+            }),
+        )
+        .route(
+            "/claimmd-operations.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/claimmd-operations.js"),
+                )
+            }),
+        )
+        .route(
+            "/claimmd-extended.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/claimmd-extended.js"),
                 )
             }),
         )

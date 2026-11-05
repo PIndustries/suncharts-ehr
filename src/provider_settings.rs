@@ -266,6 +266,45 @@ pub async fn load(pool: &PgPool) -> Result<Config> {
 pub(crate) async fn load_for_tenant(pool: &PgPool, tenant: Uuid) -> Result<Config> {
     load_scope(pool, Some(tenant)).await
 }
+pub(crate) async fn claimmd_route(pool: &PgPool, tenant: Uuid, id: Uuid) -> Result<Route> {
+    let row: Setting = sqlx::query_as(
+        "SELECT * FROM edi_provider_settings WHERE tenant_id=$1 AND id=$2 AND enabled AND verified",
+    )
+    .bind(tenant)
+    .bind(id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or(Error::NotFound)?;
+    row.route(&existing_key()?)
+}
+pub(crate) async fn active_claimmd_routes(
+    pool: &PgPool,
+    tenant: Uuid,
+) -> Result<Vec<(Uuid, Route)>> {
+    let rows: Vec<Setting> = sqlx::query_as(
+        "SELECT * FROM edi_provider_settings WHERE tenant_id=$1 AND enabled AND verified ORDER BY created_at,id LIMIT 50",
+    )
+    .bind(tenant)
+    .fetch_all(pool)
+    .await?;
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let key = existing_key()?;
+    rows.into_iter()
+        .map(|setting| Ok((setting.id, setting.route(&key)?)))
+        .collect()
+}
+pub(crate) async fn active_claimmd_route_by_id(pool: &PgPool, id: Uuid) -> Result<(Uuid, Route)> {
+    let setting: Setting =
+        sqlx::query_as("SELECT * FROM edi_provider_settings WHERE id=$1 AND enabled AND verified")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .ok_or(Error::NotFound)?;
+    let key = existing_key()?;
+    Ok((setting.tenant_id, setting.route(&key)?))
+}
 async fn load_scope(pool: &PgPool, tenant: Option<Uuid>) -> Result<Config> {
     let mut config = Config::from_env()?;
     if let Some(tenant) = tenant {
@@ -284,6 +323,7 @@ async fn load_scope(pool: &PgPool, tenant: Option<Uuid>) -> Result<Config> {
 }
 pub fn router() -> Router<State> {
     Router::new()
+        .route("/api/v1/billing/claimmd/status", get(status))
         .route("/api/v1/billing/provider-settings", get(list).post(create))
         .route(
             "/api/v1/billing/provider-settings/{id}",
@@ -294,6 +334,61 @@ pub fn router() -> Router<State> {
             "/api/v1/billing/provider-settings/{id}/activation",
             post(activate),
         )
+}
+#[derive(sqlx::FromRow)]
+struct ClaimMdStatusRow {
+    id: Uuid,
+    label: String,
+    usage: String,
+    enabled: bool,
+    verified: bool,
+    last_test_at: Option<DateTime<Utc>>,
+    partner_id: Uuid,
+    credential_revision: i64,
+    partner_version: i64,
+}
+async fn status(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Response> {
+    a.staff()?;
+    let mut tx = db(&s)?.begin().await?;
+    let rows: Vec<ClaimMdStatusRow> = sqlx::query_as(
+        "SELECT s.id,s.label,s.usage,s.enabled,s.verified,s.last_test_at,s.partner_id,s.credential_revision,p.version AS partner_version
+           FROM edi_provider_settings s
+           JOIN edi_partners p ON p.tenant_id=s.tenant_id AND p.id=s.partner_id
+          WHERE s.tenant_id=$1
+          ORDER BY s.enabled DESC,s.verified DESC,s.created_at,s.id
+          LIMIT 20",
+    )
+    .bind(a.tenant_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    crate::postgres::audit(&mut tx, &a, "edi.claimmd_status_read", a.tenant_id).await?;
+    tx.commit().await?;
+    let active = rows.iter().find(|row| row.enabled && row.verified);
+    Ok(reply(json!({
+        "provider":"claim_md",
+        "configured":!rows.is_empty(),
+        "connected":active.is_some(),
+        "active":active.map(|row|json!({
+            "id":row.id,
+            "label":row.label,
+            "usage":row.usage,
+            "last_test_at":row.last_test_at,
+            "partner_id":row.partner_id,
+            "route_key":format!("native_claimmd_{}_{}",row.id.simple(),row.credential_revision),
+            "partner_version":row.partner_version,
+        })),
+        "connections":rows.iter().map(|row|json!({
+            "id":row.id,
+            "label":row.label,
+            "usage":row.usage,
+            "enabled":row.enabled,
+            "verified":row.verified,
+            "last_test_at":row.last_test_at,
+            "partner_id":row.partner_id,
+            "route_key":format!("native_claimmd_{}_{}",row.id.simple(),row.credential_revision),
+            "partner_version":row.partner_version,
+        })).collect::<Vec<_>>(),
+    })))
 }
 fn reply(value: Value) -> Response {
     ([(header::CACHE_CONTROL, "no-store")], Json(value)).into_response()
@@ -666,6 +761,7 @@ async fn test(
         ));
     }
     let route = r.route(&existing_key()?)?;
+    crate::claimmd_eligibility::acquire_rate_limit(db(&s)?, &route).await?;
     let ok = probe(
         route
             .credential_value
