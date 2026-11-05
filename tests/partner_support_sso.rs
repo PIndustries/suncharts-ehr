@@ -169,6 +169,8 @@ async fn delegated_support_is_tenant_admin_revalidated_and_audited() {
     assert_eq!(me["role"], "owner");
     assert_eq!(me["delegated"], true);
     assert_eq!(me["delegated_role"], "partner_admin");
+    assert_eq!(me["display_name"], "partner:synthetic");
+    assert!(me["email"].is_null());
     let mrn = format!("PARTNER-{}", Uuid::new_v4().simple());
     assert_eq!(
         call(

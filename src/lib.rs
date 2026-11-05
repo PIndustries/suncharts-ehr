@@ -170,9 +170,11 @@ fn render_index(
             ),
         };
     include_str!("../web/index.html")
-        .replace("__SUN_CHARTS_BUILD__", env!("SUN_CHARTS_BUILD"))
         .replace("__CLINIC_LOGIN_BRAND__", &branding.login_html())
         .replace("__CLINIC_SIDEBAR_IDENTITY__", &branding.sidebar_html())
+        // Branding HTML can contain the build placeholder, so expand branding before the
+        // final build substitution. This keeps every visible build label consistent.
+        .replace("__SUN_CHARTS_BUILD__", env!("SUN_CHARTS_BUILD"))
         .replace("__LOCAL_LOGIN_VISIBILITY__", local_visibility)
         .replace("__CONNECT_LOGIN_VISIBILITY__", connect_visibility)
         .replace("__CONNECT_LOGIN_URL__", &connect_url)
@@ -253,8 +255,11 @@ mod login_presentation_tests {
             DeploymentEnvironment::Development,
         );
         assert!(html.contains("Synthetic Specialty Clinic"));
+        assert!(html.contains(&format!("Build {}", env!("SUN_CHARTS_BUILD"))));
         assert_eq!(html.matches("/managed-ehr/branding/assets/").count(), 2);
         assert!(!html.contains("__CLINIC_"));
+        assert!(!html.contains("__SUN_CHARTS_BUILD__"));
+        assert!(!html.contains("identity-preview"));
     }
 
     #[test]

@@ -297,16 +297,45 @@ pub async fn logout(
     Ok((headers, Json(json!({"authenticated":false}))))
 }
 
-pub async fn me(a: Actor) -> Json<Value> {
-    let delegated = a.iss != "suncharts-ehr-browser";
-    Json(json!({
+pub async fn me(ExtractState(s): ExtractState<State>, a: Actor) -> Result<Json<Value>> {
+    let auth = s.browser.as_ref().ok_or(Error::NotFound)?;
+    let identity: Option<(String, String)> = sqlx::query_as(
+        "SELECT COALESCE(NULLIF(display_name,''),email),email FROM browser_users
+         WHERE tenant_id=$1 AND id=$2 AND NOT disabled",
+    )
+    .bind(a.tenant_id)
+    .bind(a.sub)
+    .fetch_optional(&auth.db)
+    .await?;
+    let support_subject: Option<String> = if identity.is_none() {
+        sqlx::query_scalar(
+            "SELECT actor_subject FROM partner_support_sessions
+             WHERE tenant_id=$1 AND grant_id=$2 AND expires_at>now() AND revoked_at IS NULL",
+        )
+        .bind(a.tenant_id)
+        .bind(a.sub)
+        .fetch_optional(&auth.db)
+        .await?
+    } else {
+        None
+    };
+    let delegated = support_subject.is_some();
+    let display_name = identity
+        .as_ref()
+        .map(|(name, _)| name.as_str())
+        .or(support_subject.as_deref())
+        .unwrap_or("Signed-in user");
+    let email = identity.as_ref().map(|(_, email)| email.as_str());
+    Ok(Json(json!({
         "user_id":a.sub,
         "tenant_id":a.tenant_id,
         "role":a.role,
+        "display_name":display_name,
+        "email":email,
         "delegated":delegated,
         "delegated_role":delegated.then_some("partner_admin"),
         "session_expires_at":delegated.then_some(a.exp)
-    }))
+    })))
 }
 
 pub async fn bootstrap(db: &PgPool) -> std::result::Result<(), Box<dyn std::error::Error>> {

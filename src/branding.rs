@@ -138,7 +138,7 @@ impl InstanceBranding {
             "SunCharts EHR"
         };
         format!(
-            "<div class=\"practice-identity\">{mark}<div><strong>{name}</strong><span>{context} <span class=\"identity-preview\">Preview</span> · <span class=\"build-version\">__SUN_CHARTS_BUILD__</span></span></div></div>"
+            "<div class=\"practice-identity\">{mark}<div><strong>{name}</strong><span>{context} · Build <span class=\"build-version\">__SUN_CHARTS_BUILD__</span></span></div></div>"
         )
     }
 
