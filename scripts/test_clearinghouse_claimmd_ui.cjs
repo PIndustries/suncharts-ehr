@@ -6,7 +6,7 @@ const vm=require('node:vm');
 const deliverySource=fs.readFileSync('web/delivery.js','utf8');
 
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const handlers={click:[],submit:[]},calls=[],order=[];let statusFailure=false;
+const handlers={click:[],submit:[]},calls=[],order=[];let statusFailure=false,legacyFailure=false,optionalFailure=false;
 let workspaceHtml='',providerHtml='';
 const nodes={};
 const manualSection={hidden:false,insertAdjacentHTML(){}};
@@ -17,7 +17,7 @@ const ediTool={
  querySelectorAll(selector){return selector==='h3'?[partnerHeading]:selector==='.table-empty'?[emptyRow]:[];},
  querySelector(selector){return selector==='.mapping-notice'?connectionNotice:null;},
 };
-nodes.tools={hidden:false,set innerHTML(value){workspaceHtml=value;if(value.includes('id="edi-tool"')){nodes['edi-tool']=ediTool;nodes['edi-automation']={prepend(section){providerHtml=section.innerHTML;}};nodes['edi-detail']={set innerHTML(html){providerHtml=html;},get innerHTML(){return providerHtml;},scrollIntoView(){}};}},get innerHTML(){return workspaceHtml;}};
+nodes.tools={hidden:false,set innerHTML(value){workspaceHtml=value;if(value.includes('id="edi-tool"')){providerHtml='';nodes['edi-tool']=ediTool;nodes['edi-automation']={prepend(section){providerHtml=section.innerHTML;},insertAdjacentHTML(_position,html){providerHtml+=html;}};nodes['edi-detail']={set innerHTML(html){providerHtml=html;},get innerHTML(){return providerHtml;},scrollIntoView(){}};}},get innerHTML(){return workspaceHtml;}};
 nodes['provider-settings-form']={providerSetting:null,elements:{account_key:{value:''}}};
 
 const context={
@@ -32,6 +32,7 @@ const context={
  api:async path=>{
   calls.push(path);
   if(path==='/api/v1/billing/claimmd/status'){if(statusFailure)throw new Error('synthetic status outage');return {provider:'claim_md',configured:false,connected:false,connections:[]};}
+  if(['/api/v1/billing/clearinghouses','/api/v1/billing/submissions','/api/v1/billing/clearinghouse-sources'].includes(path)&&legacyFailure)throw new Error('synthetic legacy outage');
   if(path==='/api/v1/billing/clearinghouses')return {items:[]};
   if(path==='/api/v1/billing/submissions')return {items:[],next_cursor:null};
   if(path==='/api/v1/billing/clearinghouse-sources')return {items:[]};
@@ -39,8 +40,8 @@ const context={
   throw new Error(`Unexpected API ${path}`);
  },
  showTool:title=>{order.push(`show:${title}`);},
- showDeliveryPanels:async()=>{order.push('delivery');},
- showClaimMdExtended:async()=>{order.push('extended');},
+ showDeliveryPanels:async()=>{order.push('delivery');if(optionalFailure)throw new Error('synthetic delivery outage');},
+ showClaimMdExtended:async()=>{order.push('extended');if(optionalFailure)throw new Error('synthetic extended outage');},
  run:action=>{context.pending=action();},notice:()=>{},scheduleInstant:value=>value,
  FormData:class{constructor(form){return Object.entries(form.values||{})[Symbol.iterator]();}},
 };
@@ -64,6 +65,14 @@ for(const file of ['web/claimmd-native.js','web/provider-settings.js','web/clear
  assert.match(connectionNotice.outerHTML,/data-provider-new/);
  assert.match(providerHtml,/Claim\.MD is not connected/);
  console.log('PASS Claim.MD status refresh failure cannot blank or block AccountKey setup');
+
+ statusFailure=false;legacyFailure=true;optionalFailure=true;connectionNotice.outerHTML='';await vm.runInContext('showEdiWorkspace()',context);
+ assert.match(workspaceHtml,/manual clearinghouse history is temporarily unavailable/);
+ assert.match(connectionNotice.outerHTML,/data-provider-new/);
+ assert.match(providerHtml,/Claim\.MD is not connected/);
+ assert.match(providerHtml,/Delivery and acknowledgment panels are temporarily unavailable/);
+ assert.match(providerHtml,/Additional Claim\.MD account activity is temporarily unavailable/);
+ console.log('PASS legacy and optional API outages preserve native Claim.MD setup with section warnings');
 
  const button={dataset:{},hasAttribute:name=>name==='data-provider-new',closest:selector=>selector==='button'?button:null};
  const event={target:{closest:selector=>selector==='button'?button:null},preventDefault(){},stopImmediatePropagation(){}};
