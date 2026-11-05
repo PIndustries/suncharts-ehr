@@ -4,6 +4,7 @@ use crate::{
     auth::{Actor, Role},
     delivery::{Adapter, Config, Route},
     error::{Error, Result},
+    x12::PartnerContent,
     State,
 };
 use aws_lc_rs::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
@@ -346,7 +347,6 @@ async fn detail(
 #[serde(deny_unknown_fields)]
 struct Save {
     label: String,
-    partner_id: Uuid,
     usage: String,
     account_key: Option<String>,
     start_at: DateTime<Utc>,
@@ -385,14 +385,55 @@ fn validate(v: &Save) -> Result<()> {
     }
     Ok(())
 }
-async fn validate_partner(tx: &mut Transaction<'_, Postgres>, a: &Actor, v: &Save) -> Result<()> {
-    let p = crate::clearinghouse::partner(tx, a, v.partner_id).await?;
-    if p.content["usage"] != v.usage || p.content["active"] != true {
-        return Err(Error::Invalid(
-            "choose an active trading partner with the same test or production mode",
-        ));
-    }
-    Ok(())
+fn claimmd_partner(v: &Save) -> Result<PartnerContent> {
+    let content = PartnerContent {
+        name: "Claim.MD native JSON".into(),
+        active: true,
+        sender_qualifier: "ZZ".into(),
+        sender_id: "SUNCHARTS".into(),
+        receiver_qualifier: "ZZ".into(),
+        receiver_id: "CLAIMMD".into(),
+        application_sender: "SUNCHARTS".into(),
+        application_receiver: "CLAIMMD".into(),
+        submitter_name: "SunCharts EHR".into(),
+        submitter_id: "SUNCHARTS".into(),
+        receiver_name: "Claim.MD".into(),
+        receiver_identifier: "CLAIMMD".into(),
+        contact_name: "SunCharts EHR".into(),
+        contact_phone: "0000000000".into(),
+        usage: v.usage.clone(),
+        guide_reference: "Claim.MD native professional-claims JSON upload".into(),
+    };
+    content.validate()?;
+    Ok(content)
+}
+async fn create_claimmd_partner(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    v: &Save,
+) -> Result<Uuid> {
+    let content = claimmd_partner(v)?;
+    let id = Uuid::new_v4();
+    let request_id = Uuid::new_v4();
+    let creation_hash = crate::oauth::hash(
+        &serde_json::to_string(&content).map_err(|_| Error::Invalid("invalid Claim.MD profile"))?,
+    );
+    sqlx::query("INSERT INTO edi_partners (tenant_id,id,content,request_id,creation_hash) VALUES ($1,$2,$3,$4,$5)")
+        .bind(a.tenant_id)
+        .bind(id)
+        .bind(json!(content))
+        .bind(request_id)
+        .bind(creation_hash)
+        .execute(&mut **tx)
+        .await?;
+    crate::clearinghouse::partner_revision(
+        tx,
+        a,
+        id,
+        "Created automatically for the native Claim.MD connection",
+    )
+    .await?;
+    Ok(id)
 }
 async fn create(
     a: Actor,
@@ -410,7 +451,7 @@ async fn create(
 
     let mut tx = db(&s)?.begin().await?;
     crate::billing::tenant_lock(&mut tx, &a).await?;
-    validate_partner(&mut tx, &a, &v).await?;
+    let partner_id = create_claimmd_partner(&mut tx, &a, &v).await?;
     let any_saved: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM edi_provider_settings) OR EXISTS(SELECT 1 FROM payment_credentials) OR EXISTS(SELECT 1 FROM reminder_credentials) OR EXISTS(SELECT 1 FROM connect_service_credentials) OR EXISTS(SELECT 1 FROM connect_onboarding_intents) OR EXISTS(SELECT 1 FROM referral_delivery_destinations WHERE encrypted_credential IS NOT NULL) OR EXISTS(SELECT 1 FROM erx_setup_requests) OR EXISTS(SELECT 1 FROM erx_connections WHERE encrypted_credentials IS NOT NULL) OR EXISTS(SELECT 1 FROM erx_prescribers WHERE encrypted_credentials IS NOT NULL) OR EXISTS(SELECT 1 FROM erx_setup_history WHERE encrypted_credentials IS NOT NULL)")
         .fetch_one(&mut *tx)
         .await?;
@@ -439,7 +480,7 @@ async fn create(
             "AccountKey is already assigned to a connection",
         ));
     }
-    sqlx::query("INSERT INTO edi_provider_settings(tenant_id,id,partner_id,provider,usage,label,encrypted_key,credential_fingerprint,start_at,response_id,interval_seconds) VALUES($1,$2,$3,'claim_md',$4,$5,$6,$7,$8,$9,$10)").bind(a.tenant_id).bind(id).bind(v.partner_id).bind(v.usage).bind(v.label).bind(encrypted).bind(crate::oauth::hash(&key)).bind(v.start_at).bind(v.response_id).bind(v.interval_seconds).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO edi_provider_settings(tenant_id,id,partner_id,provider,usage,label,encrypted_key,credential_fingerprint,start_at,response_id,interval_seconds) VALUES($1,$2,$3,'claim_md',$4,$5,$6,$7,$8,$9,$10)").bind(a.tenant_id).bind(id).bind(partner_id).bind(v.usage).bind(v.label).bind(encrypted).bind(crate::oauth::hash(&key)).bind(v.start_at).bind(v.response_id).bind(v.interval_seconds).execute(&mut *tx).await?;
     event(&mut tx, &a, id, "credentials_saved_disabled").await?;
     let r = row(&mut tx, &a, id).await?;
     tx.commit().await?;
@@ -477,12 +518,14 @@ async fn update(
             "provider settings changed; reload before saving",
         ));
     }
-    if old.partner_id != v.partner_id || old.usage != v.usage {
+    let partner = crate::clearinghouse::partner(&mut tx, &a, old.partner_id).await?;
+    if old.usage != v.usage
+        || partner.content["guide_reference"] != "Claim.MD native professional-claims JSON upload"
+    {
         return Err(Error::Invalid(
-            "create a separate connection for a different trading partner or mode",
+            "create a separate connection to change the Claim.MD account mode",
         ));
     }
-    validate_partner(&mut tx, &a, &v).await?;
     let secret = v.account_key.take().map(Zeroizing::new);
     let changed_discovery =
         old.start_at != v.start_at || old.response_id != v.response_id || secret.is_some();
@@ -657,6 +700,28 @@ async fn test(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn synthetic_save() -> Save {
+        Save {
+            label: "Synthetic Claim.MD".into(),
+            usage: "T".into(),
+            account_key: Some("synthetic-account-key".into()),
+            start_at: Utc::now() - chrono::Duration::days(1),
+            response_id: "0".into(),
+            interval_seconds: 60,
+        }
+    }
+    #[test]
+    fn claimmd_profile_is_internal_to_native_json_routing() {
+        let profile = claimmd_partner(&synthetic_save()).unwrap();
+        assert_eq!(profile.sender_id, "SUNCHARTS");
+        assert_eq!(profile.application_sender, "SUNCHARTS");
+        assert_eq!(profile.receiver_id, "CLAIMMD");
+        assert_eq!(profile.application_receiver, "CLAIMMD");
+        assert_eq!(
+            profile.guide_reference,
+            "Claim.MD native professional-claims JSON upload"
+        );
+    }
     #[test]
     fn credential_ciphertext_is_random_bound_and_authenticated() {
         let key = [3u8; 32];
