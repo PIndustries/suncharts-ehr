@@ -130,7 +130,9 @@ async function enter() {
   me=await api('/auth/me');
   if($('nav-portal'))$('nav-portal').hidden=!['owner','clinician','front_desk'].includes(me.role);
   $('login-screen').hidden=true; $('app').hidden=false;$('toggle-directory').hidden=false;
-  const roleLabel=({owner:'Practice owner',clinician:'Clinician',front_desk:'Front desk',read_only:'Read only',nurse:'Nurse',medical_assistant:'Medical assistant',partner_support:'Partner support · read only'})[me.role]||me.role.replaceAll('_',' ');
+  const roleLabel=me.delegated_role==='partner_admin'
+    ?'Partner administrator (delegated)'
+    :({owner:'Practice owner',clinician:'Clinician',front_desk:'Front desk',read_only:'Read only',nurse:'Nurse',medical_assistant:'Medical assistant',partner_support:'Partner support · read only'})[me.role]||me.role.replaceAll('_',' ');
   const userLabel=me.display_name||me.email||'Signed-in user';
   $('sidebar-user').textContent=userLabel;
   $('sidebar-user').title=me.email||userLabel;

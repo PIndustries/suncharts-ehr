@@ -5,6 +5,7 @@ const source=fs.readFileSync('web/app.js','utf8');
 const fn=source.match(/async function acceptConnectLaunch\(\)\{[\s\S]*?^\}/m)?.[0];
 assert.ok(fn,'delegated support acceptance function is present');
 assert.match(source,/const connectLaunchAcceptance=acceptConnectLaunch\(\);/,'fragment processing starts during the first deferred script');
+assert.match(source,/me\.delegated_role==='partner_admin'[\s\S]*?'Partner administrator \(delegated\)'/,'delegated partner administrators have an attributable UI label');
 function fixture(hash){
  const calls=[],location={pathname:'/api/v1/connect/support/accept',hash},history={replaceState(_a,_b,path){location.pathname=path;location.hash='';}};
  const context={URL,URLSearchParams,JSON,Error,location,history,fetch:async(...args)=>{calls.push(args);assert.equal(location.hash,'','fragment must be cleared before exchange');return {ok:true,json:async()=>({kind:'staff'})};}};
