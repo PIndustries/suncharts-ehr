@@ -682,6 +682,9 @@ async fn standalone_browser_sessions_require_origin_and_revoke_on_logout() {
         serde_json::from_slice(&me.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(who["user_id"], json!(user));
     assert_eq!(who["tenant_id"], json!(tenant));
+    assert_eq!(who["display_name"], "clinician@example.test");
+    assert_eq!(who["email"], "clinician@example.test");
+    assert_eq!(who["delegated"], false);
     let patient = json!({"mrn":"WEB-001","given_name":"Taylor","family_name":"Synthetic","birth_date":"1992-05-01"});
     assert_eq!(
         router

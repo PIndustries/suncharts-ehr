@@ -118,18 +118,27 @@ function notice(message, error = false) { $('notice').textContent=message; $('no
 async function run(action) {
   if (busy) return;
   busy=true; $('notice').hidden=true;
+  $('shell-loading').hidden=false;
+  document.documentElement?.classList.add('app-busy');
   const buttons = Array.from(document.querySelectorAll('button'), b=>[b,b.disabled]);
   buttons.forEach(([b])=>{b.disabled=true;});
   try { await action(); } catch(e) { if (me) notice(e.message,true); else $('login-error').textContent=e.message; }
-  finally { busy=false; buttons.forEach(([b,disabled])=>{if(b.isConnected)b.disabled=disabled;}); }
+  finally { busy=false;$('shell-loading').hidden=true;document.documentElement?.classList.remove('app-busy');buttons.forEach(([b,disabled])=>{if(b.isConnected)b.disabled=disabled;}); }
 }
 async function enter() {
   me=await api('/auth/me');
   if($('nav-portal'))$('nav-portal').hidden=!['owner','clinician','front_desk'].includes(me.role);
   $('login-screen').hidden=true; $('app').hidden=false;$('toggle-directory').hidden=false;
-  $('identity').textContent=me.role.replaceAll('_',' ');
-  $('sidebar-role').textContent=({owner:'Practice owner',clinician:'Clinician',front_desk:'Front desk',read_only:'Read only',nurse:'Nurse',medical_assistant:'Medical assistant',partner_support:'Partner support · read only'})[me.role]||me.role.replaceAll('_',' ');
-  setPage('Patients & visits');
+  const roleLabel=({owner:'Practice owner',clinician:'Clinician',front_desk:'Front desk',read_only:'Read only',nurse:'Nurse',medical_assistant:'Medical assistant',partner_support:'Partner support · read only'})[me.role]||me.role.replaceAll('_',' ');
+  const userLabel=me.display_name||me.email||'Signed-in user';
+  $('sidebar-user').textContent=userLabel;
+  $('sidebar-user').title=me.email||userLabel;
+  $('sidebar-role').textContent=roleLabel;
+  $('identity-name').textContent=userLabel;
+  $('identity-role').textContent=roleLabel;
+  $('identity').title=me.email&&me.email!==userLabel?`${userLabel} · ${me.email} · ${roleLabel}`:`${userLabel} · ${roleLabel}`;
+  $('identity').setAttribute('aria-label',`Signed in as ${userLabel}, ${roleLabel}`);
+  setPage('Patients & encounters');
   if(typeof refreshConnectionBadge==='function')void refreshConnectionBadge();
   if(typeof startConnectUpdates==='function')void startConnectUpdates(me);
   $('nav-migration').hidden=me.role!=='owner';
@@ -302,9 +311,42 @@ function showChartSection(key){
 }
 const formData=f=>Object.fromEntries(new FormData(f));
 function closeNavigation() {const wasOpen=$('sidebar').classList.contains('menu-open');$('sidebar').classList.remove('menu-open');$('nav-toggle').setAttribute('aria-expanded','false');$('nav-toggle').setAttribute('aria-label','Open navigation');if(wasOpen)$('page-title').focus({preventScroll:true});}
-function setPage(title) {if(!title.startsWith('Patient portal')&&typeof leavePortalStaffWorkspace==='function')leavePortalStaffWorkspace();$('page-title').textContent=title;$('page-description').textContent=({'Practice home':'Daily schedule and clinical work needing attention','Practice overview':'Daily schedule and clinical work needing attention','Practice administration':'Staff access, providers, facilities and rooms','Patients & visits':'Patient records and encounter documentation','Schedule':'Appointments and provider availability','Appointment reminders':'Due reminders, contact readiness and delivery history','Reminder settings':'Encrypted appointment email sender configuration','Labs & results':'Clinical review queue','Billing & insurance':'Local billing worklist and insurance administration','Clearinghouse':'837P files, external delivery and acknowledgments','Claims & remittances':'Claim preparation and payer remittance review','Payment settings':'Stripe and SunCharts Payments account configuration','Payment review':'Verified checkout status and payment history','Referral delivery settings':'Receiving partners and delivery credentials','Referrals':'Referral handoffs, follow-up dates and recorded outcomes','Follow-up tasks':'Assigned work, due dates and completion history','Connected apps':'Authorized applications and access','Connect services':'Managed reminders and SunCharts support','Support tickets':'SunCharts service requests and conversation history','Data import':'Source records and import reconciliation'})[title]||'Practice workspace';const active=['Practice home','Practice overview'].includes(title)?'nav-practice':title==='Patients & visits'?'nav-clinical':['Schedule','Appointment reminders','Reminder settings'].includes(title)?'nav-schedule':title==='Labs & results'?'nav-labs':['Billing & insurance','Payment settings','Payment review'].includes(title)?'nav-billing':title==='Clearinghouse'?'nav-edi':title==='Claims & remittances'?'nav-claims':['Referrals','Referral delivery settings'].includes(title)?'nav-referrals':title.startsWith('Patient portal')?'nav-portal':title==='Follow-up tasks'?'nav-followup':['Connected apps','Connect services','Support tickets'].includes(title)?'nav-apps':title==='Data import'?'nav-migration':title==='Practice administration'?'nav-admin':null;for(const id of ['nav-practice','nav-clinical','nav-schedule','nav-labs','nav-referrals','nav-followup','nav-portal','nav-billing','nav-claims','nav-edi','nav-apps','nav-migration','nav-admin']){if(!$(id))continue;if(id===active)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}closeNavigation();window.scrollTo(0,0);}
+function setPage(title) {
+ if(!title.startsWith('Patient portal')&&typeof leavePortalStaffWorkspace==='function')leavePortalStaffWorkspace();
+ const descriptions={
+  'Practice home':'Today’s schedule, unfinished encounters and clinical work needing attention',
+  'Practice overview':'Today’s schedule, unfinished encounters and clinical work needing attention',
+  'Practice administration':'Manage staff access, providers, facilities and rooms',
+  'Patients & encounters':'Find a patient, review their chart and continue encounter work',
+  'Schedule':'Book appointments, manage provider availability and follow reminders',
+  'Appointment reminders':'Review due reminders, contact readiness and delivery history',
+  'Reminder settings':'Configure appointment delivery and sender identity',
+  'Labs & results':'Review ordered tests, reported results and acknowledgment work',
+  'Billing & insurance':'Manage coverage, charges, balances and patient payments',
+  'Clearinghouse':'Prepare 837P files, deliver claims and review acknowledgments',
+  'Claims & remittances':'Prepare claims, post remittances and resolve corrections',
+  'Payment settings':'Configure Stripe or SunCharts Payments for this practice',
+  'Payment review':'Review checkout status and verified payment history',
+  'Referral delivery settings':'Configure receiving partners and delivery credentials',
+  'Referrals':'Coordinate referral handoffs, follow-up dates and outcomes',
+  'Follow-up tasks':'Work assigned tasks by due date and completion status',
+  'Connected apps':'Review the EHR connection, managed services and authorized applications',
+  'Connect services':'Manage reminders and SunCharts support services',
+  'Support tickets':'Track SunCharts service requests and replies',
+  'Data import':'Stage source records and reconcile imported data'
+ };
+ const patientCare=['Patients & encounters','Schedule','Appointment reminders','Reminder settings','Labs & results','Referrals','Referral delivery settings','Follow-up tasks'];
+ const revenue=['Billing & insurance','Payment settings','Payment review','Claims & remittances','Clearinghouse'];
+ const administration=['Practice administration','Connected apps','Connect services','Support tickets','Data import'];
+ $('page-title').textContent=title;
+ $('page-description').textContent=descriptions[title]||'Practice workspace';
+ $('workspace-section').textContent=patientCare.includes(title)?'PATIENT CARE':revenue.includes(title)?'REVENUE CYCLE':administration.includes(title)?'ADMINISTRATION':'PRACTICE';
+ const active=['Practice home','Practice overview'].includes(title)?'nav-practice':title==='Patients & encounters'?'nav-clinical':['Schedule','Appointment reminders','Reminder settings'].includes(title)?'nav-schedule':title==='Labs & results'?'nav-labs':['Billing & insurance','Payment settings','Payment review'].includes(title)?'nav-billing':title==='Clearinghouse'?'nav-edi':title==='Claims & remittances'?'nav-claims':['Referrals','Referral delivery settings'].includes(title)?'nav-referrals':title.startsWith('Patient portal')?'nav-portal':title==='Follow-up tasks'?'nav-followup':['Connected apps','Connect services','Support tickets'].includes(title)?'nav-apps':title==='Data import'?'nav-migration':title==='Practice administration'?'nav-admin':null;
+ for(const id of ['nav-practice','nav-clinical','nav-schedule','nav-labs','nav-referrals','nav-followup','nav-portal','nav-billing','nav-claims','nav-edi','nav-apps','nav-migration','nav-admin']){if(!$(id))continue;if(id===active)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}
+ closeNavigation();window.scrollTo(0,0);
+}
 function showTool(title) {if(typeof captureSupportDrafts==='function')captureSupportDrafts();setPage(title);$('clinical-workspace').hidden=true;$('patient-form').hidden=true;$('tools').hidden=false;$('new-patient').hidden=true;$('toggle-directory').hidden=true;}
-async function showClinical() {captureVisitDrafts();const page=await api('/api/v1/patients');setPage('Patients & visits');patients=page.items;cursor=page.next_cursor;renderPatients();$('tools').replaceChildren();$('tools').hidden=true;$('clinical-workspace').hidden=false;$('new-patient').hidden=!canRegisterPatient();$('toggle-directory').hidden=false;}
+async function showClinical() {captureVisitDrafts();const page=await api('/api/v1/patients');setPage('Patients & encounters');patients=page.items;cursor=page.next_cursor;renderPatients();$('tools').replaceChildren();$('tools').hidden=true;$('clinical-workspace').hidden=false;$('new-patient').hidden=!canRegisterPatient();$('toggle-directory').hidden=false;}
 const scopeNames={'clinical.read':'Read clinical records','clinical.write':'Update records using your clinical permissions','billing.read':'Read insurance and billing records','billing.write':'Update insurance and local billing records','events.read':'Receive record-change notices','migration.manage':'Stage and import EHR exports','offline_access':'Stay connected while you are away'};
 async function showConsent() {
   const id=new URLSearchParams(location.search).get('oauth_request');
