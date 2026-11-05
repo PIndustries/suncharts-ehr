@@ -97,12 +97,8 @@ fn endpoint(route: &Route, service: &str) -> Result<String> {
     }
 }
 
-fn key(route: &Route) -> Result<&str> {
-    route
-        .credential_value
-        .as_ref()
-        .map(|secret| secret.expose())
-        .ok_or(Error::Conflict("Claim.MD credential unavailable"))
+fn key(route: &Route) -> Result<String> {
+    crate::claimmd::token(route)
 }
 
 fn rows(value: &Value, field: &str) -> Result<Vec<Value>> {
@@ -114,7 +110,7 @@ fn rows(value: &Value, field: &str) -> Result<Vec<Value>> {
 }
 
 pub(crate) async fn acquire_rate_limit(pool: &PgPool, route: &Route) -> Result<()> {
-    acquire_rate_limit_key(pool, key(route)?).await
+    acquire_rate_limit_key(pool, &key(route)?).await
 }
 
 pub(crate) async fn acquire_rate_limit_key(pool: &PgPool, account_key: &str) -> Result<()> {
@@ -144,7 +140,7 @@ pub(crate) async fn acquire_rate_limit_key(pool: &PgPool, account_key: &str) -> 
 }
 
 async fn post(route: &Route, service: &str, mut fields: Vec<(String, String)>) -> Result<Value> {
-    fields.push(("AccountKey".into(), key(route)?.into()));
+    fields.push(("AccountKey".into(), key(route)?));
     let response = crate::stedi::client()?
         .post(endpoint(route, service)?)
         .header("Accept", "application/json")
