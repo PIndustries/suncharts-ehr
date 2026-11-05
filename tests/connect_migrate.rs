@@ -4730,11 +4730,10 @@ async fn claimmd_multipart_delivery_and_responseid_feed_preserve_structured_evid
     let (c, p, out) = automated_fixture(&r, &a).await;
     let control = c["control_number"].clone();
     let control2 = control.clone();
-    let payload = out["payload"].as_str().unwrap().to_owned();
     let cursors = Arc::new(Mutex::new(Vec::<String>::new()));
     let cc = cursors.clone();
-    let gateway=Router::new().route("/services/upload/",axum::routing::post(move |h:HeaderMap,body:axum::body::Bytes|{let control=control.clone();let payload=payload.clone();async move{
-        assert_eq!(h["accept"],"application/json");assert!(h["content-type"].to_str().unwrap().starts_with("multipart/form-data; boundary="));assert!(!h.contains_key("authorization"));let b=String::from_utf8(body.to_vec()).unwrap();assert!(b.contains("name=\"AccountKey\""));assert!(b.contains("synthetic-loopback-key"));assert!(b.contains(&payload));
+    let gateway=Router::new().route("/services/upload/",axum::routing::post(move |h:HeaderMap,body:axum::body::Bytes|{let control=control.clone();async move{
+        assert_eq!(h["accept"],"application/json");assert!(h["content-type"].to_str().unwrap().starts_with("multipart/form-data; boundary="));assert!(!h.contains_key("authorization"));let b=String::from_utf8(body.to_vec()).unwrap();assert!(b.contains("name=\"AccountKey\""));assert!(b.contains("synthetic-loopback-key"));assert!(b.contains("filename=\"claim_"));assert!(b.contains("\"claim_form\":\"1500\""));assert!(b.contains("\"remote_claimid\":"));assert!(!b.contains("ISA*00*"));
         axum::Json(json!({"claim":[{"pcn":control,"bill_npi":"1234567893","fileid":"123456","status":"A"}]}))
     }})).route("/services/response/",axum::routing::post(move |h:HeaderMap,body:axum::body::Bytes|{let control=control2.clone();let cc=cc.clone();async move{
         assert_eq!(h["accept"],"application/json");let form:std::collections::HashMap<String,String>=url::form_urlencoded::parse(&body).into_owned().collect();assert_eq!(form["AccountKey"],"synthetic-loopback-key");cc.lock().unwrap().push(form["ResponseID"].clone());
@@ -6874,11 +6873,9 @@ async fn native_claimmd_settings_encrypt_secrets_and_scope_runtime_activation() 
     let key_dir =
         std::env::temp_dir().join(format!("suncharts-provider-settings-{}", Uuid::new_v4()));
     std::env::set_var("ENGINE_CREDENTIAL_KEY_FILE", key_dir.join("master.key"));
-    let (status,p)=schedule_call(&r,&a,"POST","/api/v1/billing/clearinghouses",json!({"request_id":Uuid::new_v4(),"content":edi_partner_content(),"reason":"Synthetic native provider configuration"}),None).await;
-    assert_eq!(status, 200, "{p}");
     let secret = "synthetic-claimmd-account-key-not-real";
     let base = "/api/v1/billing/provider-settings";
-    let mut request = json!({"label":"Synthetic Claim.MD","partner_id":p["id"],"usage":"T","account_key":secret,"start_at":(Utc::now()-chrono::Duration::days(2)).to_rfc3339(),"response_id":"0","interval_seconds":60});
+    let mut request = json!({"label":"Synthetic Claim.MD","usage":"T","account_key":secret,"start_at":(Utc::now()-chrono::Duration::days(2)).to_rfc3339(),"response_id":"0","interval_seconds":60});
     let mut reader = a.clone();
     reader.role = Role::Clinician;
     assert_eq!(
@@ -6891,6 +6888,20 @@ async fn native_claimmd_settings_encrypt_secrets_and_scope_runtime_activation() 
     assert_eq!(status, 200, "{saved}");
     assert_eq!(saved["enabled"], false);
     assert_eq!(saved["verified"], false);
+    let managed_partner: Value =
+        sqlx::query_scalar("SELECT content FROM edi_partners WHERE tenant_id=$1 AND id=$2")
+            .bind(a.tenant_id)
+            .bind(Uuid::parse_str(saved["partner_id"].as_str().unwrap()).unwrap())
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(managed_partner["sender_id"], "SUNCHARTS");
+    assert_eq!(managed_partner["receiver_id"], "CLAIMMD");
+    assert_eq!(managed_partner["application_receiver"], "CLAIMMD");
+    assert_eq!(
+        managed_partner["guide_reference"],
+        "Claim.MD native professional-claims JSON upload"
+    );
     assert!(!saved.to_string().contains(secret));
     assert!(saved.get("encrypted_key").is_none());
     let id = Uuid::parse_str(saved["id"].as_str().unwrap()).unwrap();

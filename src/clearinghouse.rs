@@ -142,7 +142,7 @@ async fn source(tx: &mut Transaction<'_, Postgres>, a: &Actor, id: Uuid, kind: &
         Err(Error::NotFound)
     }
 }
-async fn partner_revision(
+pub(crate) async fn partner_revision(
     tx: &mut Transaction<'_, Postgres>,
     a: &Actor,
     id: Uuid,
