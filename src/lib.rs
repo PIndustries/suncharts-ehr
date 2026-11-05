@@ -8,6 +8,7 @@ pub mod browser;
 pub mod ca277;
 pub mod checkout;
 pub mod claimmd;
+pub mod claimmd_eligibility;
 pub mod claims;
 pub mod clearinghouse;
 pub mod clinical;
@@ -303,6 +304,7 @@ pub fn app(state: State) -> Router {
         .merge(visit_diagnoses::routes())
         .merge(demographics::router())
         .merge(billing::router())
+        .merge(claimmd_eligibility::router())
         .merge(payments::router())
         .merge(claims::router())
         .merge(checkout::router())
@@ -599,6 +601,15 @@ pub fn app(state: State) -> Router {
                 (
                     [(header::CONTENT_TYPE, "application/javascript")],
                     include_str!("../web/billing.js"),
+                )
+            }),
+        )
+        .route(
+            "/claimmd-eligibility.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/claimmd-eligibility.js"),
                 )
             }),
         )
