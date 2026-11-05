@@ -374,7 +374,7 @@ async fn claim_data(
     if let Some((id,date,form,page,filters))=sqlx::query_as::<_,(Uuid,NaiveDate,String,i32,Value)>("SELECT id,transmit_date,claim_form,page,filters FROM claimmd_transmitted_claim_files WHERE tenant_id=$1 AND request_id=$2").bind(actor.tenant_id).bind(input.request_id).fetch_optional(db(&state)?).await?{let expected=json!({"bill_npi":npi,"bill_taxid":tax,"payerid":payer});if date!=input.transmit_date||form!=input.claim_form||page!=i32::from(input.page)||filters!=expected{return Err(Error::Conflict("request ID was already used for different Claim.MD filters"));}return Ok(Json(json!({"id":id,"replayed":true})));}
     let route = route(&state, &actor, setting).await?;
     crate::claimmd_eligibility::acquire_rate_limit(db(&state)?, &route).await?;
-    let mut fields = vec![
+    let mut fields: Vec<(String, String)> = vec![
         ("AccountKey".into(), token(&route)?.into()),
         ("transmit_date".into(), input.transmit_date.to_string()),
         ("claim_form".into(), input.claim_form.clone()),
