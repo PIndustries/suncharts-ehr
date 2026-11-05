@@ -6,7 +6,7 @@ async function loadClaimMdConnection(){
  return claimMdConnectionState;
 }
 function claimMdConnectionCard(state=claimMdConnectionState){
- if(!state?.configured)return '<section class="mapping-notice"><b>Claim.MD is not connected</b><p>A practice owner or authorized service partner can connect the clinic AccountKey. Manual clearinghouse workflows remain available.</p></section>';
+ if(!state?.configured)return `<section class="mapping-notice"><div class="section-head"><div><b>Claim.MD is not connected</b><p>Connect the clinic AccountKey to use native eligibility, claims, status and ERA workflows. No trading-partner profile is required.</p></div>${me?.role==='owner'?'<button type="button" class="primary" data-provider-new>Connect Claim.MD</button>':''}</div></section>`;
  if(!state.connected)return '<section class="mapping-notice"><b>Claim.MD setup needs attention</b><p>The saved connection must pass authentication and be enabled before native workflows can transmit or retrieve data.</p></section>';
  const active=state.active||{};
  return `<section class="connection-summary" aria-label="Claim.MD connection"><div class="section-head"><div><h3>Claim.MD</h3><p><b>Connected</b> · ${esc(active.usage==='P'?'Production':'Test')}</p></div><div class="actions"><span class="pill">Native integration</span><button type="button" data-claimmd-operations="${esc(active.id)}">Account activity</button></div></div><p class="muted">Eligibility, claims, status, remittance and follow-up actions stay attached to SunCharts patient, coverage, claim and ledger records.</p></section>`;
