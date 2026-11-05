@@ -335,11 +335,23 @@ pub fn router() -> Router<State> {
             post(activate),
         )
 }
+#[derive(sqlx::FromRow)]
+struct ClaimMdStatusRow {
+    id: Uuid,
+    label: String,
+    usage: String,
+    enabled: bool,
+    verified: bool,
+    last_test_at: Option<DateTime<Utc>>,
+    partner_id: Uuid,
+    credential_revision: i64,
+    partner_version: i64,
+}
 async fn status(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Response> {
     a.staff()?;
     let mut tx = db(&s)?.begin().await?;
-    let rows: Vec<(Uuid, String, String, bool, bool, Option<DateTime<Utc>>, Uuid, i64, i64)> = sqlx::query_as(
-        "SELECT s.id,s.label,s.usage,s.enabled,s.verified,s.last_test_at,s.partner_id,s.credential_revision,p.version
+    let rows: Vec<ClaimMdStatusRow> = sqlx::query_as(
+        "SELECT s.id,s.label,s.usage,s.enabled,s.verified,s.last_test_at,s.partner_id,s.credential_revision,p.version AS partner_version
            FROM edi_provider_settings s
            JOIN edi_partners p ON p.tenant_id=s.tenant_id AND p.id=s.partner_id
           WHERE s.tenant_id=$1
@@ -351,30 +363,30 @@ async fn status(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Respon
     .await?;
     crate::postgres::audit(&mut tx, &a, "edi.claimmd_status_read", a.tenant_id).await?;
     tx.commit().await?;
-    let active = rows.iter().find(|row| row.3 && row.4);
+    let active = rows.iter().find(|row| row.enabled && row.verified);
     Ok(reply(json!({
         "provider":"claim_md",
         "configured":!rows.is_empty(),
         "connected":active.is_some(),
         "active":active.map(|row|json!({
-            "id":row.0,
-            "label":row.1,
-            "usage":row.2,
-            "last_test_at":row.5,
-            "partner_id":row.6,
-            "route_key":format!("native_claimmd_{}_{}",row.0.simple(),row.7),
-            "partner_version":row.8,
+            "id":row.id,
+            "label":row.label,
+            "usage":row.usage,
+            "last_test_at":row.last_test_at,
+            "partner_id":row.partner_id,
+            "route_key":format!("native_claimmd_{}_{}",row.id.simple(),row.credential_revision),
+            "partner_version":row.partner_version,
         })),
         "connections":rows.iter().map(|row|json!({
-            "id":row.0,
-            "label":row.1,
-            "usage":row.2,
-            "enabled":row.3,
-            "verified":row.4,
-            "last_test_at":row.5,
-            "partner_id":row.6,
-            "route_key":format!("native_claimmd_{}_{}",row.0.simple(),row.7),
-            "partner_version":row.8,
+            "id":row.id,
+            "label":row.label,
+            "usage":row.usage,
+            "enabled":row.enabled,
+            "verified":row.verified,
+            "last_test_at":row.last_test_at,
+            "partner_id":row.partner_id,
+            "route_key":format!("native_claimmd_{}_{}",row.id.simple(),row.credential_revision),
+            "partner_version":row.partner_version,
         })).collect::<Vec<_>>(),
     })))
 }

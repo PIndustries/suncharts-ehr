@@ -541,7 +541,7 @@ async fn file(
         header::CONTENT_DISPOSITION,
         HeaderValue::from_str(&format!(
             "attachment; filename=claimmd-transmitted-{}.x12",
-            &id.simple()
+            id.simple()
         ))
         .map_err(|_| Error::Invalid("invalid artifact filename"))?,
     );
