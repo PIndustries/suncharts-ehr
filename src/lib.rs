@@ -111,7 +111,40 @@ enum LoginPresentation {
     Pending,
 }
 
-fn render_index(login: LoginPresentation, branding: &branding::InstanceBranding) -> String {
+#[derive(Clone, Copy)]
+enum DeploymentEnvironment {
+    Development,
+    Production,
+}
+
+impl DeploymentEnvironment {
+    fn from_env() -> Self {
+        match std::env::var("ENGINE_ENVIRONMENT").as_deref() {
+            Ok("production") => Self::Production,
+            _ => Self::Development,
+        }
+    }
+
+    fn notice(self) -> &'static str {
+        match self {
+            Self::Development => "Development preview · Synthetic data only",
+            Self::Production => "Production environment",
+        }
+    }
+
+    fn short(self) -> &'static str {
+        match self {
+            Self::Development => "Synthetic data",
+            Self::Production => "Production",
+        }
+    }
+}
+
+fn render_index(
+    login: LoginPresentation,
+    branding: &branding::InstanceBranding,
+    environment: DeploymentEnvironment,
+) -> String {
     let (local_visibility, connect_visibility, connect_url, description, state_visibility) =
         match login {
             LoginPresentation::Local => (
@@ -145,6 +178,8 @@ fn render_index(login: LoginPresentation, branding: &branding::InstanceBranding)
         .replace("__CONNECT_LOGIN_URL__", &connect_url)
         .replace("__LOGIN_DESCRIPTION__", description)
         .replace("__CONNECT_STATE_VISIBILITY__", state_visibility)
+        .replace("__ENVIRONMENT_NOTICE__", environment.notice())
+        .replace("__ENVIRONMENT_SHORT__", environment.short())
 }
 
 async fn index(ExtractState(state): ExtractState<State>) -> axum::response::Html<String> {
@@ -159,12 +194,18 @@ async fn index(ExtractState(state): ExtractState<State>) -> axum::response::Html
         },
         None => LoginPresentation::Pending,
     };
-    axum::response::Html(render_index(login, &branding::InstanceBranding::from_env()))
+    axum::response::Html(render_index(
+        login,
+        &branding::InstanceBranding::from_env(),
+        DeploymentEnvironment::from_env(),
+    ))
 }
 
 #[cfg(test)]
 mod login_presentation_tests {
-    use super::{branding::InstanceBranding, render_index, LoginPresentation};
+    use super::{
+        branding::InstanceBranding, render_index, DeploymentEnvironment, LoginPresentation,
+    };
 
     #[test]
     fn connected_first_paint_contains_only_connect_sign_in() {
@@ -174,6 +215,7 @@ mod login_presentation_tests {
                     .to_owned(),
             ),
             &InstanceBranding::default(),
+            DeploymentEnvironment::Development,
         );
         assert!(html.contains("id=\"local-login-fields\" hidden"));
         assert!(html.contains(
@@ -185,7 +227,11 @@ mod login_presentation_tests {
 
     #[test]
     fn unresolved_first_paint_does_not_expose_local_credentials() {
-        let html = render_index(LoginPresentation::Pending, &InstanceBranding::default());
+        let html = render_index(
+            LoginPresentation::Pending,
+            &InstanceBranding::default(),
+            DeploymentEnvironment::Development,
+        );
         assert!(html.contains("id=\"local-login-fields\" hidden"));
         assert!(html.contains("id=\"connect-login\" class=\"primary\" href=\"#\" hidden"));
         assert!(html.contains("Checking your sign-in options…"));
@@ -200,10 +246,25 @@ mod login_presentation_tests {
                 logo_url: Some("https://connect.suncharts.app/api/v1/managed-ehr/branding/assets/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into()),
                 managed: true,
             },
+            DeploymentEnvironment::Development,
         );
         assert!(html.contains("Synthetic Specialty Clinic"));
         assert_eq!(html.matches("/managed-ehr/branding/assets/").count(), 2);
         assert!(!html.contains("__CLINIC_"));
+    }
+
+    #[test]
+    fn production_first_paint_has_no_synthetic_or_development_labels() {
+        let html = render_index(
+            LoginPresentation::Pending,
+            &InstanceBranding::default(),
+            DeploymentEnvironment::Production,
+        );
+        assert!(html.contains("Production environment"));
+        assert!(html.contains("class=\"shell-environment\">Production</span>"));
+        assert!(!html.contains("Synthetic data"));
+        assert!(!html.contains("Development preview"));
+        assert!(!html.contains("__ENVIRONMENT_"));
     }
 }
 

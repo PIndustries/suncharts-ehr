@@ -27,6 +27,7 @@ services:
     environment:
       ENGINE_DATABASE_URL_FILE: /run/secrets/engine_database_url
       ENGINE_PUBLIC_URL: ${ENGINE_PUBLIC_URL:?set the externally reachable HTTPS origin}
+      ENGINE_ENVIRONMENT: ${ENGINE_ENVIRONMENT:-development}
       ENGINE_BOOTSTRAP_EMAIL: ${ENGINE_BOOTSTRAP_EMAIL:?set the initial owner email}
       ENGINE_BOOTSTRAP_PASSWORD_FILE: /run/secrets/engine_bootstrap_password
       ENGINE_BOOTSTRAP_TENANT_ID: ${ENGINE_BOOTSTRAP_TENANT_ID:?set a stable UUID}

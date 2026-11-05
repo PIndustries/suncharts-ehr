@@ -190,6 +190,8 @@ spec:
               value: /run/secrets/database/engine_database_url
             - name: ENGINE_PUBLIC_URL
               value: __PUBLIC_URL_JSON__
+            - name: ENGINE_ENVIRONMENT
+              value: production
             - name: ENGINE_DEPLOYED_IMAGE_REFERENCE
               value: __IMAGE_REFERENCE_JSON__
             - name: ENGINE_DEPLOYED_VERSION
