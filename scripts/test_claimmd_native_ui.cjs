@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs');
+const native=fs.readFileSync('web/claimmd-native.js','utf8');
+const billing=fs.readFileSync('web/billing.js','utf8');
+const claims=fs.readFileSync('web/claims.js','utf8');
+const index=fs.readFileSync('web/index.html','utf8');
+assert.match(index,/claimmd-native\.js/);
+assert.match(native,/\/api\/v1\/billing\/claimmd\/status/);
+assert.match(native,/Native integration/);
+assert.match(native,/patient, coverage, claim and ledger records/);
+assert.doesNotMatch(native,/account_key|encrypted_key|credential_fingerprint/,'staff connection card must not expose secret fields');
+assert.match(billing,/loadClaimMdConnection\(\)/);
+assert.match(billing,/claimMdConnectionCard\(\)/);
+assert.match(billing,/Patient coverage, charges and connected revenue-cycle workflows/);
+assert.match(claims,/loadClaimMdConnection\(\)/);
+assert.match(claims,/claimMdConnectionCard\(\)/);
+assert.match(claims,/Claims, payer responses and reviewed remittances/);
+console.log('PASS Claim.MD is presented as a native revenue-cycle connection');

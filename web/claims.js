@@ -5,7 +5,7 @@ const claimsBase='/api/v1/billing/claims',eraBase='/api/v1/billing/remittances';
 const claimIssues=items=>items.length?`<div class="mapping-notice"><b>Review required</b><ul>${items.map(i=>`<li>${esc(i)}</li>`).join('')}</ul></div>`:'<p class="claim-clear">Review checks passed for this local workflow.</p>';
 const claimHistory=h=>h.items.map(r=>`<details class="amendment"><summary>v${r.version} · ${esc(r.reason)} · ${esc(date(r.created_at))}</summary><p>Recorded by ${esc(r.actor_id)}</p><pre class="billing-source">${esc(JSON.stringify(r.evidence||r.snapshot,null,2))}</pre></details>`).join('');
 async function showClaimsWorkspace(afterClaim,afterEra){
- const [c,r,p,s]=await Promise.all([api(`${claimsBase}${afterClaim?'?after='+afterClaim:''}`),api(`${eraBase}${afterEra?'?after='+afterEra:''}`),api('/api/v1/billing/payers'),billingWrite()?api('/api/v1/billing/remittance-sources'):{items:[]}]);
+ const [c,r,p,s,claimmd]=await Promise.all([api(`${claimsBase}${afterClaim?'?after='+afterClaim:''}`),api(`${eraBase}${afterEra?'?after='+afterEra:''}`),api('/api/v1/billing/payers'),billingWrite()?api('/api/v1/billing/remittance-sources'):{items:[]},loadClaimMdConnection()]);
  claimRows=c.items;eraRows=r.items;billingPayers=p.items;claimNext=c.next_cursor;eraNext=r.next_cursor;showTool('Claims & remittances');
  $('tools').innerHTML=`<section id="claims-tool"><div class="section-head"><div><h2>Revenue cycle</h2><p class="muted">Claim packets, external event evidence and reviewed payer remittances</p></div><button type="button" data-claims-refresh>Refresh worklists</button></div><div class="billing-totals"><span>Claims on this page <b>${c.items.length}</b></span><span>Remittances awaiting review <b>${r.items.filter(x=>['staged','reconciled'].includes(x.status)).length}</b></span><span>Posted remittances <b>${r.items.filter(x=>x.status==='posted').length}</b></span></div>
  <section class="billing-section"><div class="section-head"><h3>Claims worklist</h3><span class="pill">Local packets · external delivery evidence</span></div><p class="muted">Prepare a claim from a posted, insured patient charge account. Packet export is JSON; clearinghouse submission is recorded separately.</p><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Patient / claim control</th><th>Payer / frequency</th><th>State</th><th class="money-cell">Charges</th><th></th></tr></thead><tbody>${c.items.map(v=>`<tr><td><b>${esc(v.patient_name)}</b><small class="claim-control">${esc(v.control_number)}</small></td><td>${esc(v.payer_name)}<small>${esc(human(v.frequency))}</small></td><td><span class="pill">${esc(v.status)}</span></td><td class="money-cell">${money(v.total_cents)}</td><td><button type="button" data-claim-open="${v.id}">Review claim</button></td></tr>`).join('')||'<tr><td colspan="5" class="table-empty">No claims. Patient chart → Billing & insurance → Posted account → Prepare claim.</td></tr>'}</tbody></table></div>${claimNext?'<button type="button" data-claims-next>Next 100 claims</button>':''}</section>
@@ -68,3 +68,12 @@ document.addEventListener('submit',e=>{const f=e.target;if(!['claim-editor-form'
  notice('Revenue cycle change recorded with history.');});});
 
 document.addEventListener('click',e=>{const b=e.target.closest('[data-chain-select]');if(!b)return;const field=$('era-matches').querySelector(`[data-row="${b.dataset.chainRow}"]`),source=field.chainHistory[Number(b.dataset.chainSelect)],reversal=field.querySelector('[name=reverses_remittance_id]');if(reversal){reversal.value=source.remittance_id;field.querySelector('[name=reverses_row]').value=source.row_index+1;}else{field.querySelector('[name=correction_of_remittance_id]').value=source.remittance_id;field.querySelector('[name=correction_of_row]').value=source.row_index+1;}notice('Exact source selected; validate its role and the ordered correction sequence before saving.');});
+
+const showClaimsWorkspaceWithoutClaimMdCard=showClaimsWorkspace;
+showClaimsWorkspace=async function(...args){
+ await showClaimsWorkspaceWithoutClaimMdCard(...args);
+ const heading=$('claims-tool')?.querySelector('.section-head');
+ const subtitle=heading?.querySelector('.muted');
+ if(subtitle)subtitle.textContent='Claims, payer responses and reviewed remittances';
+ if(heading)heading.insertAdjacentHTML('afterend',claimMdConnectionCard());
+};

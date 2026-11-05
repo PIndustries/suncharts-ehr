@@ -639,6 +639,15 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/claimmd-native.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/claimmd-native.js"),
+                )
+            }),
+        )
+        .route(
             "/delivery.js",
             get(|| async {
                 (

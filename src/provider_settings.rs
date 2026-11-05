@@ -284,6 +284,7 @@ async fn load_scope(pool: &PgPool, tenant: Option<Uuid>) -> Result<Config> {
 }
 pub fn router() -> Router<State> {
     Router::new()
+        .route("/api/v1/billing/claimmd/status", get(status))
         .route("/api/v1/billing/provider-settings", get(list).post(create))
         .route(
             "/api/v1/billing/provider-settings/{id}",
@@ -294,6 +295,42 @@ pub fn router() -> Router<State> {
             "/api/v1/billing/provider-settings/{id}/activation",
             post(activate),
         )
+}
+async fn status(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Response> {
+    a.staff()?;
+    let mut tx = db(&s)?.begin().await?;
+    let rows: Vec<(Uuid, String, String, bool, bool, Option<DateTime<Utc>>)> = sqlx::query_as(
+        "SELECT id,label,usage,enabled,verified,last_test_at
+           FROM edi_provider_settings
+          WHERE tenant_id=$1
+          ORDER BY enabled DESC,verified DESC,created_at,id
+          LIMIT 20",
+    )
+    .bind(a.tenant_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    crate::postgres::audit(&mut tx, &a, "edi.claimmd_status_read", a.tenant_id).await?;
+    tx.commit().await?;
+    let active = rows.iter().find(|row| row.3 && row.4);
+    Ok(reply(json!({
+        "provider":"claim_md",
+        "configured":!rows.is_empty(),
+        "connected":active.is_some(),
+        "active":active.map(|row|json!({
+            "id":row.0,
+            "label":row.1,
+            "usage":row.2,
+            "last_test_at":row.5,
+        })),
+        "connections":rows.iter().map(|row|json!({
+            "id":row.0,
+            "label":row.1,
+            "usage":row.2,
+            "enabled":row.3,
+            "verified":row.4,
+            "last_test_at":row.5,
+        })).collect::<Vec<_>>(),
+    })))
 }
 fn reply(value: Value) -> Response {
     ([(header::CACHE_CONTROL, "no-store")], Json(value)).into_response()
