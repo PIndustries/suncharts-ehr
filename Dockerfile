@@ -11,13 +11,29 @@ RUN printf '%s\n' \
       "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT} bookworm-security main" \
       > /etc/apt/sources.list \
     && rm -f /etc/apt/sources.list.d/debian.sources \
-    && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update \
-    && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 install -y --no-install-recommends clang cmake perl pkg-config \
+    && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update \
+    && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 install -y --no-install-recommends clang cmake perl pkg-config \
     && rm -rf /var/lib/apt/lists/*
+
+# Compile the locked dependency graph in a source-independent layer. The real
+# crate is rebuilt below, but web-only and application-source changes retain the
+# expensive third-party Rust artifacts exported by BuildKit's mode=max cache.
+FROM builder AS dependencies
+COPY Cargo.toml Cargo.lock ./
+RUN --mount=type=cache,id=suncharts-ehr-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=suncharts-ehr-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    mkdir -p src \
+    && printf 'fn main() {}\n' > src/main.rs \
+    && printf 'pub fn dependency_cache_seed() {}\n' > src/lib.rs \
+    && printf 'fn main() {}\n' > build.rs \
+    && cargo build --locked --release \
+    && cargo clean --release -p suncharts-engine \
+    && rm -rf src build.rs
+
+FROM dependencies AS application
 COPY . .
 RUN --mount=type=cache,id=suncharts-ehr-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=suncharts-ehr-cargo-git,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=cache,id=suncharts-ehr-target,target=/src/target,sharing=locked \
     cargo build --locked --release \
     && install -D -m 0755 target/release/suncharts-engine /out/suncharts-engine
 
@@ -33,13 +49,13 @@ RUN printf '%s\n' \
       "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT} bookworm-security main" \
       > /etc/apt/sources.list \
     && rm -f /etc/apt/sources.list.d/debian.sources \
-    && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update \
-    && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 install -y --no-install-recommends ca-certificates curl \
+    && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update \
+    && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 suncharts \
     && useradd --uid 10001 --gid 10001 --create-home --home-dir /var/lib/suncharts suncharts \
     && install -d -o suncharts -g suncharts -m 0700 /var/lib/suncharts/private
-COPY --from=builder /out/suncharts-engine /usr/local/bin/suncharts-engine
+COPY --from=application /out/suncharts-engine /usr/local/bin/suncharts-engine
 USER 10001:10001
 WORKDIR /var/lib/suncharts
 ENV ENGINE_BIND=0.0.0.0:8090 \

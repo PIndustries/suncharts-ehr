@@ -65,9 +65,24 @@ class DeploymentArtifactsTest(unittest.TestCase):
             "COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt",
             dockerfile,
         )
-        self.assertIn("Acquire::http::Timeout=60", dockerfile)
+        self.assertGreaterEqual(dockerfile.count("Acquire::http::Timeout=60"), 4)
+        self.assertGreaterEqual(dockerfile.count("Acquire::https::Timeout=60"), 4)
         self.assertGreaterEqual(dockerfile.count("Acquire::Retries=5"), 4)
-        self.assertIn("--mount=type=cache,id=suncharts-ehr-target", dockerfile)
+
+    def test_dependency_layer_precedes_application_source(self):
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        dependency_copy = dockerfile.index("COPY Cargo.toml Cargo.lock ./")
+        dependency_build = dockerfile.index("cargo build --locked --release", dependency_copy)
+        application_stage = dockerfile.index("FROM dependencies AS application")
+        application_copy = dockerfile.index("COPY . .", application_stage)
+        application_build = dockerfile.index("cargo build --locked --release", application_copy)
+
+        self.assertLess(dependency_copy, dependency_build)
+        self.assertLess(dependency_build, application_stage)
+        self.assertLess(application_stage, application_copy)
+        self.assertLess(application_copy, application_build)
+        self.assertNotIn("suncharts-ehr-target", dockerfile)
+        self.assertIn("COPY --from=application /out/suncharts-engine", dockerfile)
 
     def test_image_workflow_actions_are_commit_pinned(self):
         workflow = (ROOT / ".github" / "workflows" / "publish-image.yml").read_text()
