@@ -266,6 +266,17 @@ pub async fn load(pool: &PgPool) -> Result<Config> {
 pub(crate) async fn load_for_tenant(pool: &PgPool, tenant: Uuid) -> Result<Config> {
     load_scope(pool, Some(tenant)).await
 }
+pub(crate) async fn claimmd_route(pool: &PgPool, tenant: Uuid, id: Uuid) -> Result<Route> {
+    let row: Setting = sqlx::query_as(
+        "SELECT * FROM edi_provider_settings WHERE tenant_id=$1 AND id=$2 AND verified",
+    )
+    .bind(tenant)
+    .bind(id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or(Error::NotFound)?;
+    row.route(&existing_key()?)
+}
 async fn load_scope(pool: &PgPool, tenant: Option<Uuid>) -> Result<Config> {
     let mut config = Config::from_env()?;
     if let Some(tenant) = tenant {
