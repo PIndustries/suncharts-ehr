@@ -60,7 +60,11 @@ class DeploymentArtifactsTest(unittest.TestCase):
         self.assertRegex(dockerfile, r"rust:1\.89-bookworm@sha256:[0-9a-f]{64}")
         self.assertRegex(dockerfile, r"debian:bookworm-slim@sha256:[0-9a-f]{64}")
         self.assertIn('ARG DEBIAN_SNAPSHOT="20250910T000000Z"', dockerfile)
-        self.assertIn("http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}", dockerfile)
+        self.assertIn("https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}", dockerfile)
+        self.assertIn(
+            "COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt",
+            dockerfile,
+        )
         self.assertIn("Acquire::http::Timeout=60", dockerfile)
         self.assertGreaterEqual(dockerfile.count("Acquire::Retries=5"), 4)
         self.assertIn("--mount=type=cache,id=suncharts-ehr-target", dockerfile)
