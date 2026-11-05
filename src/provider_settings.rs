@@ -268,7 +268,7 @@ pub(crate) async fn load_for_tenant(pool: &PgPool, tenant: Uuid) -> Result<Confi
 }
 pub(crate) async fn claimmd_route(pool: &PgPool, tenant: Uuid, id: Uuid) -> Result<Route> {
     let row: Setting = sqlx::query_as(
-        "SELECT * FROM edi_provider_settings WHERE tenant_id=$1 AND id=$2 AND verified",
+        "SELECT * FROM edi_provider_settings WHERE tenant_id=$1 AND id=$2 AND enabled AND verified",
     )
     .bind(tenant)
     .bind(id)
@@ -276,6 +276,34 @@ pub(crate) async fn claimmd_route(pool: &PgPool, tenant: Uuid, id: Uuid) -> Resu
     .await?
     .ok_or(Error::NotFound)?;
     row.route(&existing_key()?)
+}
+pub(crate) async fn active_claimmd_routes(
+    pool: &PgPool,
+    tenant: Uuid,
+) -> Result<Vec<(Uuid, Route)>> {
+    let rows: Vec<Setting> = sqlx::query_as(
+        "SELECT * FROM edi_provider_settings WHERE tenant_id=$1 AND enabled AND verified ORDER BY created_at,id LIMIT 50",
+    )
+    .bind(tenant)
+    .fetch_all(pool)
+    .await?;
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let key = existing_key()?;
+    rows.into_iter()
+        .map(|setting| Ok((setting.id, setting.route(&key)?)))
+        .collect()
+}
+pub(crate) async fn active_claimmd_route_by_id(pool: &PgPool, id: Uuid) -> Result<(Uuid, Route)> {
+    let setting: Setting =
+        sqlx::query_as("SELECT * FROM edi_provider_settings WHERE id=$1 AND enabled AND verified")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .ok_or(Error::NotFound)?;
+    let key = existing_key()?;
+    Ok((setting.tenant_id, setting.route(&key)?))
 }
 async fn load_scope(pool: &PgPool, tenant: Option<Uuid>) -> Result<Config> {
     let mut config = Config::from_env()?;

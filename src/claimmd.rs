@@ -25,7 +25,7 @@ pub(crate) fn validate(r: &Route) -> Result<()> {
     }
     Ok(())
 }
-fn token(r: &Route) -> Result<String> {
+pub(crate) fn token(r: &Route) -> Result<String> {
     if let Some(v) = &r.credential_value {
         return Ok(v.expose().to_owned());
     }
