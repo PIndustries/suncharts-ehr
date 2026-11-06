@@ -98,6 +98,8 @@ def build_plan(changed_files: list[str]) -> dict[str, object]:
     deploy_contract = False
 
     for path in files:
+        if path == "BUILD_VERSION":
+            rust_changed = True
         if (
             path in {"Cargo.toml", "Cargo.lock", "build.rs"}
             or path.startswith("src/") and path.endswith(".rs")

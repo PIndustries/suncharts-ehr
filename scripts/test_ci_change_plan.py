@@ -7,6 +7,12 @@ from scripts.ci_change_plan import build_plan, write_github_outputs
 
 
 class ChangePlanTest(unittest.TestCase):
+    def test_build_version_change_compiles_without_unrelated_migration_smoke(self):
+        plan = build_plan(["BUILD_VERSION"])
+        self.assertTrue(plan["rust_changed"])
+        self.assertFalse(plan["migration_smoke"])
+        self.assertEqual(plan["rust_tests"], [])
+
     def test_docs_only_skips_application_builds(self):
         plan = build_plan(["docs/operations.md"])
         self.assertFalse(plan["rust_changed"])
