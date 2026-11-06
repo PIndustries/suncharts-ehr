@@ -251,6 +251,10 @@ pub fn router() -> Router<State> {
             post(refresh_outbound),
         )
         .route(
+            "/api/v1/integrations/ringcentral/{id}/outbound/{draft_id}/reconcile",
+            post(reconcile_outbound),
+        )
+        .route(
             "/api/v1/integrations/ringcentral/webhooks/{hook_key}",
             post(webhook),
         )
@@ -607,6 +611,10 @@ fn provider_id(value: &Value) -> Option<String> {
         })
 }
 
+fn reconcilable_outbound_status(status: &str) -> bool {
+    matches!(status, "sending" | "needs_review")
+}
+
 async fn parse_provider_receipt(
     response: reqwest::Response,
     kind: &str,
@@ -617,13 +625,13 @@ async fn parse_provider_receipt(
     let bytes = response
         .bytes()
         .await
-        .map_err(|_| Error::Invalid("RingCentral response unavailable"))?;
+        .map_err(|_| Error::Invalid("ringcentral_outbound_unknown"))?;
     if bytes.len() > 262_144 {
-        return Err(Error::Invalid("RingCentral response invalid"));
+        return Err(Error::Invalid("ringcentral_outbound_unknown"));
     }
     let raw: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| Error::Invalid("RingCentral response invalid"))?;
-    let id = provider_id(&raw).ok_or(Error::Invalid("RingCentral response invalid"))?;
+        .map_err(|_| Error::Invalid("ringcentral_outbound_unknown"))?;
+    let id = provider_id(&raw).ok_or(Error::Invalid("ringcentral_outbound_unknown"))?;
     let uri = raw
         .get("uri")
         .and_then(Value::as_str)
@@ -641,7 +649,7 @@ async fn parse_provider_receipt(
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     {
-        return Err(Error::Invalid("RingCentral response invalid"));
+        return Err(Error::Invalid("ringcentral_outbound_unknown"));
     }
     Ok(ProviderReceipt {
         id,
@@ -896,6 +904,74 @@ async fn refresh_outbound(
     );
     Ok(no_store(
         json!({"id":draft_id,"status":"accepted","provider_id":receipt.id,"provider_status":receipt.status,"delivery_confirmed":delivered}),
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReconcileOutbound {
+    provider_id: String,
+    reason: String,
+}
+
+async fn reconcile_outbound(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((id, draft_id)): Path<(Uuid, Uuid)>,
+    Json(input): Json<ReconcileOutbound>,
+) -> Result<Response> {
+    let reason = input.reason.trim();
+    if reason.is_empty()
+        || reason.len() > 500
+        || input.provider_id.is_empty()
+        || input.provider_id.len() > 240
+        || !input
+            .provider_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(Error::Invalid(
+            "provider evidence and reconciliation reason are required",
+        ));
+    }
+    let row: Option<(String, String)> = sqlx::query_as("SELECT kind,status FROM ringcentral_outbound_drafts WHERE tenant_id=$1 AND integration_id=$2 AND id=$3")
+        .bind(a.tenant_id).bind(id).bind(draft_id).fetch_optional(db(&s)?).await?;
+    let (kind, status) = row.ok_or(Error::NotFound)?;
+    send_role(&a, &kind)?;
+    if !reconcilable_outbound_status(&status) {
+        return Err(Error::Conflict(
+            "RingCentral draft does not require reconciliation",
+        ));
+    }
+    let receipt =
+        refresh_provider_status(db(&s)?, a.tenant_id, id, a.sub, &kind, &input.provider_id).await?;
+    if receipt.id != input.provider_id {
+        return Err(Error::Conflict(
+            "RingCentral provider evidence does not match the requested receipt",
+        ));
+    }
+    let serialized = Zeroizing::new(
+        serde_json::to_string(&receipt.raw)
+            .map_err(|_| Error::Invalid("RingCentral response invalid"))?,
+    );
+    let encrypted = crate::provider_settings::seal_secret(
+        db(&s)?,
+        a.tenant_id,
+        draft_id,
+        "ringcentral-outbound-receipt",
+        &serialized,
+    )
+    .await?;
+    let mut tx = db(&s)?.begin().await?;
+    let changed = sqlx::query("UPDATE ringcentral_outbound_drafts SET status='accepted',provider_id=$4,provider_uri=$5,provider_status=$6,encrypted_provider_receipt=$7,last_error=NULL,updated_at=now() WHERE tenant_id=$1 AND integration_id=$2 AND id=$3 AND status IN ('sending','needs_review')")
+        .bind(a.tenant_id).bind(id).bind(draft_id).bind(&receipt.id).bind(&receipt.uri).bind(&receipt.status).bind(encrypted).execute(&mut *tx).await?;
+    if changed.rows_affected() != 1 {
+        return Err(Error::Conflict("RingCentral reconciliation state changed"));
+    }
+    outbound_event(&mut tx,a.tenant_id,draft_id,a.sub,"manually_reconciled",json!({"provider_id":receipt.id,"provider_status":receipt.status,"reason":reason,"provider_verified":true})).await?;
+    tx.commit().await?;
+    Ok(no_store(
+        json!({"id":draft_id,"status":"accepted","provider_id":receipt.id,"provider_status":receipt.status,"provider_verified":true,"delivery_confirmed":matches!(receipt.status.as_str(),"Delivered"|"CallConnected"|"Success")}),
     ))
 }
 
@@ -1914,5 +1990,12 @@ mod tests {
         assert_eq!(provider_id(&json!({"id":1234})).as_deref(), Some("1234"));
         assert_eq!(provider_id(&json!({"id":"abc"})).as_deref(), Some("abc"));
         assert!(provider_id(&json!({"id":null})).is_none());
+    }
+    #[test]
+    fn only_ambiguous_outbound_states_can_be_reconciled() {
+        assert!(reconcilable_outbound_status("sending"));
+        assert!(reconcilable_outbound_status("needs_review"));
+        assert!(!reconcilable_outbound_status("approved"));
+        assert!(!reconcilable_outbound_status("accepted"));
     }
 }

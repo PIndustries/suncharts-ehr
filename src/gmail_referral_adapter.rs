@@ -1661,6 +1661,26 @@ fn encoded_subject(subject: &str) -> String {
     }
 }
 
+fn reconciliation_query(message_id: &str) -> Result<String> {
+    let id = message_id
+        .strip_prefix('<')
+        .and_then(|value| value.strip_suffix('>'))
+        .ok_or(Error::Invalid("stored Gmail Message-ID is invalid"))?;
+    if id.is_empty()
+        || id.len() > 996
+        || id
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+    {
+        return Err(Error::Invalid("stored Gmail Message-ID is invalid"));
+    }
+    Ok(format!("rfc822msgid:{id}"))
+}
+
+fn reconcilable_outbound_status(status: &str) -> bool {
+    matches!(status, "sending" | "needs_review")
+}
+
 fn address_header(name: &str, values: &[String]) -> String {
     let mut header = format!("{name}: ");
     for (index, value) in values.iter().enumerate() {
@@ -1775,6 +1795,17 @@ async fn outbound_draft_action(
     }
     if input.action == "send" {
         return send_outbound_draft(
+            &actor,
+            db(&state)?,
+            id,
+            draft_id,
+            input.expected_version,
+            &reason,
+        )
+        .await;
+    }
+    if input.action == "reconcile" {
+        return reconcile_outbound_draft(
             &actor,
             db(&state)?,
             id,
@@ -1901,7 +1932,7 @@ async fn send_outbound_draft(
     let response = match response {
         Ok(response) if response.status().is_success() => response,
         _ => {
-            mark_outbound_failed(
+            mark_outbound_ambiguous(
                 pool,
                 actor,
                 integration_id,
@@ -1914,16 +1945,39 @@ async fn send_outbound_draft(
             ));
         }
     };
-    let provider: Value = bounded_json(response, 64 * 1024)
-        .await
-        .map_err(|_| Error::Invalid("invalid Gmail send receipt"))?;
+    let provider: Value = match bounded_json(response, 64 * 1024).await {
+        Ok(provider) => provider,
+        Err(_) => {
+            mark_outbound_ambiguous(
+                pool,
+                actor,
+                integration_id,
+                draft_id,
+                "provider_receipt_invalid",
+            )
+            .await?;
+            return Err(Error::Invalid("Gmail accepted the request but returned an invalid receipt; reconcile from Sent mail"));
+        }
+    };
     let gmail_message_id = provider
         .get("id")
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty() && value.len() <= 200)
-        .ok_or(Error::Invalid(
-            "Gmail send receipt has no message identifier",
-        ))?;
+        .map(ToOwned::to_owned);
+    let gmail_message_id = match gmail_message_id {
+        Some(id) => id,
+        None => {
+            mark_outbound_ambiguous(
+                pool,
+                actor,
+                integration_id,
+                draft_id,
+                "provider_receipt_invalid",
+            )
+            .await?;
+            return Err(Error::Invalid("Gmail accepted the request but returned no message identifier; reconcile from Sent mail"));
+        }
+    };
     let gmail_thread_id = provider
         .get("threadId")
         .and_then(Value::as_str)
@@ -1933,7 +1987,7 @@ async fn send_outbound_draft(
         .map_err(|_| Error::Invalid("Gmail receipt cannot be serialized"))?;
     let mut tx = pool.begin().await?;
     sqlx::query("INSERT INTO gmail_outbound_receipts(tenant_id,draft_id,gmail_message_id,gmail_thread_id,provider_response_digest,provider_response,sent_by) VALUES($1,$2,$3,$4,$5,$6,$7)")
-        .bind(actor.tenant_id).bind(draft_id).bind(gmail_message_id).bind(gmail_thread_id).bind(hash(&receipt_bytes)).bind(&receipt).bind(actor.sub).execute(&mut *tx).await?;
+        .bind(actor.tenant_id).bind(draft_id).bind(&gmail_message_id).bind(gmail_thread_id).bind(hash(&receipt_bytes)).bind(&receipt).bind(actor.sub).execute(&mut *tx).await?;
     sqlx::query("UPDATE gmail_outbound_drafts SET status='sent',sent_at=now(),last_error=NULL,version=version+1,updated_at=now() WHERE tenant_id=$1 AND integration_id=$2 AND id=$3 AND status='sending' AND send_started_by=$4")
         .bind(actor.tenant_id).bind(integration_id).bind(draft_id).bind(actor.sub).execute(&mut *tx).await?;
     adapter_event(&mut tx,actor.tenant_id,integration_id,actor.sub,"outbound_sent",json!({"draft_id":draft_id,"gmail_message_id":gmail_message_id,"gmail_thread_id":gmail_thread_id,"provider_response_digest":hash(&receipt_bytes)})).await?;
@@ -1943,7 +1997,7 @@ async fn send_outbound_draft(
     ))
 }
 
-async fn mark_outbound_failed(
+async fn mark_outbound_ambiguous(
     pool: &PgPool,
     actor: &Actor,
     integration_id: Uuid,
@@ -1951,19 +2005,95 @@ async fn mark_outbound_failed(
     error: &str,
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
-    sqlx::query("UPDATE gmail_outbound_drafts SET status='failed',last_error=$4,version=version+1,updated_at=now() WHERE tenant_id=$1 AND integration_id=$2 AND id=$3 AND status='sending'")
+    sqlx::query("UPDATE gmail_outbound_drafts SET status='needs_review',last_error=$4,version=version+1,updated_at=now() WHERE tenant_id=$1 AND integration_id=$2 AND id=$3 AND status='sending'")
         .bind(actor.tenant_id).bind(integration_id).bind(draft_id).bind(error).execute(&mut *tx).await?;
     adapter_event(
         &mut tx,
         actor.tenant_id,
         integration_id,
         actor.sub,
-        "outbound_send_failed",
+        "outbound_send_ambiguous",
         json!({"draft_id":draft_id,"error":error}),
     )
     .await?;
     tx.commit().await?;
     Ok(())
+}
+
+async fn reconcile_outbound_draft(
+    actor: &Actor,
+    pool: &PgPool,
+    integration_id: Uuid,
+    draft_id: Uuid,
+    expected_version: i64,
+    reason: &str,
+) -> Result<Response> {
+    let integration = integration(pool, actor.tenant_id, integration_id).await?;
+    if !integration.enabled || integration.status != "connected" {
+        return Err(Error::Conflict(
+            "Gmail integration is not enabled and connected",
+        ));
+    }
+    let bundle = load_bundle(pool, &integration).await?;
+    if !has_scope(&bundle, GMAIL_SEND_SCOPE) {
+        return Err(Error::Conflict(
+            "Gmail send scope is not authorized; reconnect Gmail",
+        ));
+    }
+    let row:Option<(String,String,i64)>=sqlx::query_as("SELECT status,rfc_message_id,version FROM gmail_outbound_drafts WHERE tenant_id=$1 AND integration_id=$2 AND id=$3")
+        .bind(actor.tenant_id).bind(integration_id).bind(draft_id).fetch_optional(pool).await?;
+    let (status, message_id, version) = row.ok_or(Error::NotFound)?;
+    if version != expected_version || !reconcilable_outbound_status(&status) {
+        return Err(Error::Conflict(
+            "Gmail draft does not require reconciliation",
+        ));
+    }
+    let token = access_token(pool, &integration).await?;
+    let query = reconciliation_query(&message_id)?;
+    let response = client()?
+        .get(format!("{GMAIL_API}/users/me/messages"))
+        .bearer_auth(token.as_str())
+        .query(&[("q", query), ("maxResults", "2".to_owned())])
+        .send()
+        .await
+        .map_err(|_| Error::Invalid("Gmail reconciliation search unavailable"))?;
+    let search: Value = bounded_json(response, 64 * 1024).await?;
+    let matches = search
+        .get("messages")
+        .and_then(Value::as_array)
+        .ok_or(Error::Conflict(
+            "Gmail Sent mail has no matching message yet",
+        ))?;
+    if matches.len() != 1 {
+        return Err(Error::Conflict(
+            "Gmail Sent mail did not return one unambiguous matching message",
+        ));
+    }
+    let provider_id = matches[0]
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty() && id.len() <= 200)
+        .ok_or(Error::Invalid("Gmail reconciliation result is invalid"))?;
+    let thread_id = matches[0]
+        .get("threadId")
+        .and_then(Value::as_str)
+        .filter(|id| id.len() <= 200);
+    let receipt = json!({"id":provider_id,"threadId":thread_id,"reconciled":true,"query":"rfc822msgid","provider_verified":true});
+    let receipt_bytes = serde_json::to_vec(&receipt)
+        .map_err(|_| Error::Invalid("Gmail receipt cannot be serialized"))?;
+    let mut tx = pool.begin().await?;
+    let changed=sqlx::query("UPDATE gmail_outbound_drafts SET status='sent',sent_at=coalesce(sent_at,now()),last_error=NULL,version=version+1,updated_at=now() WHERE tenant_id=$1 AND integration_id=$2 AND id=$3 AND version=$4 AND status IN ('sending','needs_review')")
+        .bind(actor.tenant_id).bind(integration_id).bind(draft_id).bind(expected_version).execute(&mut *tx).await?;
+    if changed.rows_affected() != 1 {
+        return Err(Error::Conflict("Gmail reconciliation state changed"));
+    }
+    sqlx::query("INSERT INTO gmail_outbound_receipts(tenant_id,draft_id,gmail_message_id,gmail_thread_id,provider_response_digest,provider_response,sent_by) VALUES($1,$2,$3,$4,$5,$6,$7)")
+        .bind(actor.tenant_id).bind(draft_id).bind(provider_id).bind(thread_id).bind(hash(&receipt_bytes)).bind(&receipt).bind(actor.sub).execute(&mut *tx).await?;
+    adapter_event(&mut tx,actor.tenant_id,integration_id,actor.sub,"outbound_reconciled",json!({"draft_id":draft_id,"gmail_message_id":provider_id,"reason":reason,"provider_verified":true,"provider_response_digest":hash(&receipt_bytes)})).await?;
+    tx.commit().await?;
+    Ok(reply(
+        json!({"id":draft_id,"status":"sent","receipt":receipt,"provider_verified":true}),
+    ))
 }
 
 #[cfg(test)]
@@ -2088,5 +2218,17 @@ mod tests {
         assert!(human_browser(&actor).is_err());
         actor.iss = "suncharts-ehr-browser".into();
         assert!(human_browser(&actor).is_ok());
+    }
+    #[test]
+    fn reconciliation_requires_an_unambiguous_message_identity_and_state() {
+        assert_eq!(
+            reconciliation_query("<synthetic-message@example.test>").unwrap(),
+            "rfc822msgid:synthetic-message@example.test"
+        );
+        assert!(reconciliation_query("synthetic-message@example.test").is_err());
+        assert!(reconcilable_outbound_status("sending"));
+        assert!(reconcilable_outbound_status("needs_review"));
+        assert!(!reconcilable_outbound_status("approved"));
+        assert!(!reconcilable_outbound_status("sent"));
     }
 }
