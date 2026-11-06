@@ -673,14 +673,16 @@ async fn review_packet(
     crate::care_pathways::observe_event_in_tx(
         &mut tx,
         &actor,
-        packet,
-        "intake.reviewed",
-        patient,
-        Some(appointment),
-        None,
-        &json!({"reviewed":true}),
-        &json!({"packet_id":packet,"packet_version":next}),
-        "Reviewed intake packet",
+        crate::care_pathways::WorkflowEventObservation {
+            request_id: packet,
+            event_type: "intake.reviewed",
+            patient_id: patient,
+            appointment_id: Some(appointment),
+            visit_id: None,
+            context: &json!({"reviewed":true}),
+            source_evidence: &json!({"packet_id":packet,"packet_version":next}),
+            reason: "Reviewed intake packet",
+        },
     )
     .await?;
     crate::postgres::audit(&mut tx, &actor, "previsit.packet_review", packet).await?;

@@ -1409,18 +1409,32 @@ async fn refresh_ready_steps(
 
 /// Reconciles a durable native workflow event against active pathway templates.
 /// Templates opt in by event name; the runtime never branches on a clinic slug.
+pub struct WorkflowEventObservation<'a> {
+    pub request_id: Uuid,
+    pub event_type: &'a str,
+    pub patient_id: Uuid,
+    pub appointment_id: Option<Uuid>,
+    pub visit_id: Option<Uuid>,
+    pub context: &'a Value,
+    pub source_evidence: &'a Value,
+    pub reason: &'a str,
+}
+
 pub async fn observe_event_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     actor: &Actor,
-    request_id: Uuid,
-    event_type: &str,
-    patient_id: Uuid,
-    appointment_id: Option<Uuid>,
-    visit_id: Option<Uuid>,
-    context: &Value,
-    source_evidence: &Value,
-    reason: &str,
+    event: WorkflowEventObservation<'_>,
 ) -> Result<Vec<Uuid>> {
+    let WorkflowEventObservation {
+        request_id,
+        event_type,
+        patient_id,
+        appointment_id,
+        visit_id,
+        context,
+        source_evidence,
+        reason,
+    } = event;
     if !valid_event_type(event_type) {
         return Err(Error::Invalid("invalid workflow event type"));
     }
@@ -1523,14 +1537,16 @@ async fn observe_workflow_event(
     let instances = observe_event_in_tx(
         &mut tx,
         &actor,
-        input.request_id,
-        &input.event_type,
-        input.patient_id,
-        input.appointment_id,
-        input.visit_id,
-        &input.context,
-        &input.evidence,
-        &input.reason,
+        WorkflowEventObservation {
+            request_id: input.request_id,
+            event_type: &input.event_type,
+            patient_id: input.patient_id,
+            appointment_id: input.appointment_id,
+            visit_id: input.visit_id,
+            context: &input.context,
+            source_evidence: &input.evidence,
+            reason: &input.reason,
+        },
     )
     .await?;
     audit(

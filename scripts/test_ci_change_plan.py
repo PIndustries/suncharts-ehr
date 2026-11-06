@@ -85,6 +85,9 @@ class ChangePlanTest(unittest.TestCase):
         release = (root / ".github/workflows/full-regression.yml").read_text()
         self.assertIn("ci_change_plan.py", development)
         self.assertIn("cargo check --locked --all-targets", development)
+        self.assertIn(
+            "cargo clippy --locked --all-targets --no-deps -- -D warnings", development
+        )
         self.assertIn("  verify:\n", development)
         self.assertIn("needs: [plan, fast-rust, targeted-scripts]", development)
         self.assertNotIn("cargo test --locked\n", development)

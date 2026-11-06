@@ -672,14 +672,16 @@ async fn create_functional_status(
     crate::care_pathways::observe_event_in_tx(
         &mut tx,
         &a,
-        v.request_id,
-        "functional_status.recorded",
-        patient,
-        None,
-        v.visit_id,
-        &json!({"recorded":true,"supersedes_prior":v.supersedes_id.is_some()}),
-        &json!({"assessment_id":id}),
-        "Functional status assessment recorded",
+        crate::care_pathways::WorkflowEventObservation {
+            request_id: v.request_id,
+            event_type: "functional_status.recorded",
+            patient_id: patient,
+            appointment_id: None,
+            visit_id: v.visit_id,
+            context: &json!({"recorded":true,"supersedes_prior":v.supersedes_id.is_some()}),
+            source_evidence: &json!({"assessment_id":id}),
+            reason: "Functional status assessment recorded",
+        },
     )
     .await?;
     audit(&mut tx, &a, "patient.functional_status.create", patient).await?;
