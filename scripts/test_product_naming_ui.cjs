@@ -26,7 +26,7 @@ for (const [source, marker] of [
   [payments, 'SunCharts EHR never asks for or stores a clinic Stripe API key'],
   [payments, 'copy into SunCharts EHR'],
   [provider, 'encrypted in this SunCharts EHR instance'],
-  [pathways, 'configured SunCharts EHR event'],
+  [pathways, 'SUNCHARTS EHR CONFIGURATION'],
   [acceptance, 'SunCharts EHR /version build'],
   [acceptance, 'SunCharts EHR /ready must report'],
 ]) {
