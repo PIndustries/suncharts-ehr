@@ -478,7 +478,7 @@ async fn public_book(
     ))
 }
 
-async fn issue_for_appointment(
+pub(crate) async fn issue_for_appointment(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
     appointment: Uuid,

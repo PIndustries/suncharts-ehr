@@ -38,6 +38,7 @@ pub mod managed_connect;
 pub mod migration;
 pub mod model;
 pub mod oauth;
+pub mod partner_scheduling;
 pub mod partner_support;
 pub mod patient_identity;
 pub mod patient_portal;
@@ -306,6 +307,7 @@ pub fn app(state: State) -> Router {
         .merge(practice::router())
         .merge(practice_admin::router())
         .merge(previsit::router())
+        .merge(partner_scheduling::router())
         .merge(specialty_workspace::router())
         .merge(rooming::routes())
         .merge(visit_diagnoses::routes())
