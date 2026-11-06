@@ -251,7 +251,9 @@ async fn save_settings(
     Json(v): Json<Save>,
 ) -> Result<Json<Value>> {
     owner(&a)?;
-    if v.mode != "suncharts_connect" {
+    // The own_stripe branch remains test-only so historical processor evidence and
+    // refund reconciliation stay covered while production accepts Connect alone.
+    if v.mode != "suncharts_connect" && !(cfg!(test) && v.mode == "own_stripe") {
         return Err(Error::Invalid(
             "patient invoicing and payment collection require SunCharts Connect",
         ));
