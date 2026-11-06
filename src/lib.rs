@@ -489,6 +489,24 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/care-pathways.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/care-pathways.js"),
+                )
+            }),
+        )
+        .route(
+            "/workflow-studio.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/workflow-studio.js"),
+                )
+            }),
+        )
+        .route(
             "/patient-identity.js",
             get(|| async {
                 (

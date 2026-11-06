@@ -307,9 +307,9 @@ pub async fn me(ExtractState(s): ExtractState<State>, a: Actor) -> Result<Json<V
     .bind(a.sub)
     .fetch_optional(&auth.db)
     .await?;
-    let support_subject: Option<String> = if identity.is_none() {
-        sqlx::query_scalar(
-            "SELECT actor_subject FROM partner_support_sessions
+    let delegated_session: Option<(String, String)> = if identity.is_none() {
+        sqlx::query_as(
+            "SELECT actor_subject,delegated_role FROM partner_support_sessions
              WHERE tenant_id=$1 AND grant_id=$2 AND expires_at>now() AND revoked_at IS NULL",
         )
         .bind(a.tenant_id)
@@ -319,11 +319,13 @@ pub async fn me(ExtractState(s): ExtractState<State>, a: Actor) -> Result<Json<V
     } else {
         None
     };
-    let delegated = support_subject.is_some();
+    let delegated = delegated_session.is_some();
     let display_name = identity
         .as_ref()
         .map(|(name, _)| name.as_str())
-        .or(support_subject.as_deref())
+        .or(delegated_session
+            .as_ref()
+            .map(|(subject, _)| subject.as_str()))
         .unwrap_or("Signed-in user");
     let email = identity.as_ref().map(|(_, email)| email.as_str());
     Ok(Json(json!({
@@ -333,7 +335,7 @@ pub async fn me(ExtractState(s): ExtractState<State>, a: Actor) -> Result<Json<V
         "display_name":display_name,
         "email":email,
         "delegated":delegated,
-        "delegated_role":delegated.then_some("partner_admin"),
+        "delegated_role":delegated_session.as_ref().map(|(_, role)| if role == "workflow_manager" { "workflow_manager" } else { "partner_admin" }),
         "session_expires_at":delegated.then_some(a.exp)
     })))
 }
