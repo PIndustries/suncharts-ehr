@@ -91,7 +91,9 @@ class ChangePlanTest(unittest.TestCase):
         self.assertIn("  verify:\n", development)
         self.assertIn("needs: [plan, fast-rust, targeted-scripts]", development)
         self.assertNotIn("cargo test --locked\n", development)
-        self.assertIn("cargo test --locked\n", release)
+        self.assertIn("cargo test --locked --lib --bins", release)
+        self.assertIn("scripts/connect_migrate_shards.py", release)
+        self.assertIn("  release-gate:\n", release)
         self.assertIn("cargo clippy --locked --all-targets -- -D warnings", release)
 
     def test_ci_actions_are_supply_chain_pinned(self):
