@@ -65,9 +65,10 @@ jobs:
         run: |
           cargo test --locked --lib --bins
           cargo test --locked --doc
+          cargo test --locked --test partner_support_sso
           for path in tests/*.rs; do
             test_name="$(basename "$path" .rs)"
-            if [[ "$test_name" != connect_migrate ]]; then
+            if [[ "$test_name" != connect_migrate && "$test_name" != partner_support_sso ]]; then
               cargo test --locked --test "$test_name"
             fi
           done
@@ -111,6 +112,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - name: Run all Python contracts
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - name: Run all browser fixture contracts
