@@ -6,6 +6,7 @@ use crate::{
     model::text,
     State,
 };
+use aws_lc_rs::hmac;
 use axum::{
     extract::{Path, Query, State as ExtractState},
     http::{header, HeaderMap, StatusCode},
@@ -16,8 +17,11 @@ use axum::{
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sqlx::{Postgres, Transaction};
-use std::net::IpAddr;
+use sqlx::{PgPool, Postgres, Transaction};
+use std::{
+    net::{IpAddr, SocketAddr},
+    time::Duration as StdDuration,
+};
 use uuid::Uuid;
 
 fn db(s: &State) -> Result<&sqlx::PgPool> {
@@ -614,23 +618,66 @@ fn public_webhook_host(url: &url::Url) -> bool {
     if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") {
         return false;
     }
-    match host.parse::<IpAddr>() {
-        Ok(IpAddr::V4(ip)) => {
-            !(ip.is_private()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || ip.is_broadcast()
-                || ip.is_documentation()
-                || ip.is_unspecified())
+    host.parse::<IpAddr>().is_err()
+}
+fn public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v) => {
+            let b = v.octets();
+            !v.is_private()
+                && !v.is_loopback()
+                && !v.is_link_local()
+                && !v.is_unspecified()
+                && !v.is_multicast()
+                && !v.is_broadcast()
+                && !v.is_documentation()
+                && b[0] != 0
+                && b[0] < 224
+                && !(b[0] == 100 && (64..=127).contains(&b[1]))
+                && !(b[0] == 198 && (b[1] == 18 || b[1] == 19))
         }
-        Ok(IpAddr::V6(ip)) => {
-            !(ip.is_loopback()
-                || ip.is_unspecified()
-                || ip.is_unique_local()
-                || ip.is_unicast_link_local())
+        IpAddr::V6(v) => {
+            let b = v.segments();
+            !v.is_loopback()
+                && !v.is_unspecified()
+                && !v.is_unique_local()
+                && !v.is_unicast_link_local()
+                && !v.is_multicast()
+                && v.to_ipv4_mapped().is_none()
+                && b[0] & 0xe000 == 0x2000
+                && !(b[0] == 0x2001 && b[1] == 0x0db8)
         }
-        Err(_) => true,
     }
+}
+async fn webhook_client(endpoint: &str) -> Result<reqwest::Client> {
+    let url = url::Url::parse(endpoint)
+        .map_err(|_| Error::Invalid("saved webhook endpoint is invalid"))?;
+    if url.scheme() != "https" || !public_webhook_host(&url) {
+        return Err(Error::Invalid("saved webhook endpoint is not public HTTPS"));
+    }
+    let host = url
+        .host_str()
+        .ok_or(Error::Invalid("saved webhook endpoint has no host"))?;
+    let port = url
+        .port_or_known_default()
+        .ok_or(Error::Invalid("saved webhook endpoint has no port"))?;
+    let addresses: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|_| Error::Invalid("webhook endpoint DNS unavailable"))?
+        .collect();
+    if addresses.is_empty() || addresses.iter().any(|address| !public_ip(address.ip())) {
+        return Err(Error::Invalid(
+            "webhook endpoint resolved to a disallowed address",
+        ));
+    }
+    reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(StdDuration::from_secs(5))
+        .timeout(StdDuration::from_secs(15))
+        .resolve_to_addrs(host, &addresses)
+        .build()
+        .map_err(|_| Error::Invalid("webhook HTTP client unavailable"))
 }
 async fn webhooks(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json<Value>> {
     a.scheduling()?;
@@ -697,9 +744,165 @@ async fn disable_webhook(
     if changed.rows_affected() != 1 {
         return Err(Error::Conflict("webhook changed or was not found"));
     }
+    sqlx::query("UPDATE scheduling_webhook_outbox SET failed_at=now(),last_error='subscription_disabled',lease_id=NULL,lease_until=NULL WHERE tenant_id=$1 AND subscription_id=$2 AND delivered_at IS NULL AND failed_at IS NULL")
+        .bind(a.tenant_id).bind(id).execute(&mut *tx).await?;
     crate::postgres::audit(&mut tx, &a, "partner_schedule.webhook_disable", id).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(sqlx::FromRow)]
+struct WebhookDelivery {
+    tenant_id: Uuid,
+    id: i64,
+    subscription_id: Uuid,
+    event_id: Uuid,
+    event_type: String,
+    payload: Value,
+    created_at: DateTime<Utc>,
+    attempt_count: i32,
+    endpoint: String,
+    encrypted_signing_secret: Vec<u8>,
+}
+fn retry_seconds(attempt: i32) -> i64 {
+    30_i64
+        .saturating_mul(2_i64.saturating_pow(attempt.saturating_sub(1).min(7) as u32))
+        .min(3600)
+}
+fn signed_payload(
+    row: &WebhookDelivery,
+    timestamp: i64,
+    secret: &str,
+) -> Result<(Vec<u8>, String)> {
+    let body = serde_json::to_vec(&json!({
+        "id": row.event_id,
+        "type": &row.event_type,
+        "created_at": &row.created_at,
+        "data": &row.payload,
+    }))
+    .map_err(|_| Error::Invalid("webhook payload is invalid"))?;
+    let mut message = timestamp.to_string().into_bytes();
+    message.push(b'.');
+    message.extend_from_slice(&body);
+    let tag = hmac::sign(
+        &hmac::Key::new(hmac::HMAC_SHA256, secret.as_bytes()),
+        &message,
+    );
+    let signature = tag
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok((body, format!("v1={signature}")))
+}
+async fn claim_webhook(pool: &PgPool) -> Result<Option<(WebhookDelivery, Uuid)>> {
+    let mut tx = pool.begin().await?;
+    let row: Option<WebhookDelivery> = sqlx::query_as("SELECT o.tenant_id,o.id,o.subscription_id,o.event_id,o.event_type,o.payload,o.created_at,o.attempt_count,s.endpoint,s.encrypted_signing_secret FROM scheduling_webhook_outbox o JOIN scheduling_webhook_subscriptions s ON s.tenant_id=o.tenant_id AND s.id=o.subscription_id WHERE o.delivered_at IS NULL AND o.failed_at IS NULL AND o.next_attempt_at<=now() AND (o.lease_until IS NULL OR o.lease_until<now()) AND o.attempt_count<8 AND s.enabled ORDER BY o.next_attempt_at,o.id FOR UPDATE OF o SKIP LOCKED LIMIT 1")
+        .fetch_optional(&mut *tx).await?;
+    let Some(mut row) = row else {
+        tx.commit().await?;
+        return Ok(None);
+    };
+    let lease = Uuid::new_v4();
+    let changed = sqlx::query("UPDATE scheduling_webhook_outbox SET lease_id=$3,lease_until=now()+interval '60 seconds',attempt_count=attempt_count+1 WHERE tenant_id=$1 AND id=$2 AND delivered_at IS NULL AND failed_at IS NULL")
+        .bind(row.tenant_id).bind(row.id).bind(lease).execute(&mut *tx).await?;
+    if changed.rows_affected() != 1 {
+        tx.commit().await?;
+        return Ok(None);
+    }
+    row.attempt_count += 1;
+    tx.commit().await?;
+    Ok(Some((row, lease)))
+}
+async fn subscription_still_enabled(
+    pool: &PgPool,
+    row: &WebhookDelivery,
+    lease: Uuid,
+) -> Result<bool> {
+    let enabled = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM scheduling_webhook_outbox o JOIN scheduling_webhook_subscriptions s ON s.tenant_id=o.tenant_id AND s.id=o.subscription_id WHERE o.tenant_id=$1 AND o.id=$2 AND o.lease_id=$3 AND o.delivered_at IS NULL AND o.failed_at IS NULL AND s.enabled)")
+        .bind(row.tenant_id).bind(row.id).bind(lease).fetch_one(pool).await?;
+    Ok(enabled)
+}
+async fn finish_webhook(
+    pool: &PgPool,
+    row: &WebhookDelivery,
+    lease: Uuid,
+    delivered: bool,
+    result: &'static str,
+) -> Result<()> {
+    let terminal = !delivered && (row.attempt_count >= 8 || result == "subscription_disabled");
+    sqlx::query("UPDATE scheduling_webhook_outbox SET delivered_at=CASE WHEN $4 THEN now() ELSE delivered_at END,failed_at=CASE WHEN $5 THEN now() ELSE failed_at END,last_error=CASE WHEN $4 THEN NULL ELSE $6 END,next_attempt_at=CASE WHEN $4 OR $5 THEN next_attempt_at ELSE now()+make_interval(secs=>$7) END,lease_id=NULL,lease_until=NULL WHERE tenant_id=$1 AND id=$2 AND lease_id=$3")
+        .bind(row.tenant_id).bind(row.id).bind(lease).bind(delivered).bind(terminal).bind(result).bind(retry_seconds(row.attempt_count) as f64).execute(pool).await?;
+    Ok(())
+}
+pub async fn process_webhook(pool: &PgPool) -> Result<bool> {
+    let Some((row, lease)) = claim_webhook(pool).await? else {
+        return Ok(false);
+    };
+    if !subscription_still_enabled(pool, &row, lease).await? {
+        finish_webhook(pool, &row, lease, false, "subscription_disabled").await?;
+        return Ok(true);
+    }
+    let secret = match crate::provider_settings::open_secret(
+        row.tenant_id,
+        row.subscription_id,
+        "scheduling-webhook",
+        &row.encrypted_signing_secret,
+    ) {
+        Ok(secret) => secret,
+        Err(_) => {
+            finish_webhook(pool, &row, lease, false, "credential_unavailable").await?;
+            return Ok(true);
+        }
+    };
+    let client = match webhook_client(&row.endpoint).await {
+        Ok(client) => client,
+        Err(_) => {
+            finish_webhook(pool, &row, lease, false, "destination_unavailable").await?;
+            return Ok(true);
+        }
+    };
+    if !subscription_still_enabled(pool, &row, lease).await? {
+        finish_webhook(pool, &row, lease, false, "subscription_disabled").await?;
+        return Ok(true);
+    }
+    let timestamp = Utc::now().timestamp();
+    let (body, signature) = signed_payload(&row, timestamp, secret.expose())?;
+    let response = client
+        .post(&row.endpoint)
+        .header("SunCharts-Event-Id", row.event_id.to_string())
+        .header("SunCharts-Event-Type", &row.event_type)
+        .header(
+            "SunCharts-Delivery-Id",
+            format!("{}:{}", row.subscription_id, row.event_id),
+        )
+        .header("Idempotency-Key", row.event_id.to_string())
+        .header("SunCharts-Timestamp", timestamp.to_string())
+        .header("SunCharts-Signature", signature)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body)
+        .send()
+        .await;
+    let (delivered, result) = match response {
+        Ok(response) if response.status().is_success() => (true, "delivered"),
+        Ok(response) if response.status().is_client_error() => (false, "receiver_4xx"),
+        Ok(response) if response.status().is_server_error() => (false, "receiver_5xx"),
+        Ok(_) => (false, "receiver_unexpected_status"),
+        Err(error) if error.is_timeout() => (false, "transport_timeout"),
+        Err(error) if error.is_connect() => (false, "transport_connect_failed"),
+        Err(_) => (false, "transport_failed"),
+    };
+    finish_webhook(pool, &row, lease, delivered, result).await?;
+    Ok(true)
+}
+pub async fn run_webhooks(pool: PgPool) {
+    let mut tick = tokio::time::interval(StdDuration::from_secs(2));
+    loop {
+        tick.tick().await;
+        if process_webhook(&pool).await.is_err() {
+            eprintln!("Scheduling webhook delivery unavailable; durable event retained");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -723,6 +926,61 @@ mod tests {
         assert!(public_webhook_host(
             &url::Url::parse("https://partner.example/hook").expect("valid public URL")
         ));
+    }
+
+    #[test]
+    fn resolved_webhook_addresses_must_be_public() {
+        for raw in ["127.0.0.1", "10.2.3.4", "169.254.2.3", "::1", "fd00::1"] {
+            assert!(!public_ip(raw.parse().expect("valid private IP")));
+        }
+        assert!(public_ip("8.8.8.8".parse().expect("valid public IP")));
+        assert!(public_ip(
+            "2606:4700:4700::1111".parse().expect("valid public IP")
+        ));
+    }
+
+    fn synthetic_delivery() -> WebhookDelivery {
+        WebhookDelivery {
+            tenant_id: Uuid::nil(),
+            id: 1,
+            subscription_id: Uuid::from_u128(1),
+            event_id: Uuid::from_u128(2),
+            event_type: "appointment.changed".into(),
+            payload: json!({"appointment_id":"synthetic"}),
+            created_at: DateTime::parse_from_rfc3339("2026-11-06T18:00:00Z")
+                .expect("valid date")
+                .with_timezone(&Utc),
+            attempt_count: 1,
+            endpoint: "https://partner.example/hook".into(),
+            encrypted_signing_secret: vec![],
+        }
+    }
+
+    #[test]
+    fn webhook_signature_covers_exact_body_and_timestamp() {
+        let row = synthetic_delivery();
+        let (body, signature) =
+            signed_payload(&row, 1_799_000_000, "synthetic-secret").expect("signed payload");
+        let (same_body, same_signature) =
+            signed_payload(&row, 1_799_000_000, "synthetic-secret").expect("signed payload");
+        assert_eq!(body, same_body);
+        assert_eq!(signature, same_signature);
+        assert_ne!(
+            signature,
+            signed_payload(&row, 1_799_000_001, "synthetic-secret")
+                .expect("signed payload")
+                .1
+        );
+        assert!(signature.starts_with("v1="));
+        assert_eq!(signature.len(), 67);
+    }
+
+    #[test]
+    fn webhook_retry_backoff_is_bounded() {
+        assert_eq!(retry_seconds(1), 30);
+        assert_eq!(retry_seconds(2), 60);
+        assert_eq!(retry_seconds(8), 3600);
+        assert_eq!(retry_seconds(i32::MAX), 3600);
     }
 
     #[test]

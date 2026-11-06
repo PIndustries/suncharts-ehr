@@ -53,11 +53,13 @@ CREATE TABLE scheduling_webhook_subscriptions (
 CREATE TABLE scheduling_webhook_outbox (
  tenant_id uuid NOT NULL,id bigint GENERATED ALWAYS AS IDENTITY,subscription_id uuid NOT NULL,event_id uuid NOT NULL,
  event_type text NOT NULL,payload jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),delivered_at timestamptz,
- attempt_count integer NOT NULL DEFAULT 0,next_attempt_at timestamptz NOT NULL DEFAULT now(),last_error text,
+ failed_at timestamptz,attempt_count integer NOT NULL DEFAULT 0 CHECK(attempt_count BETWEEN 0 AND 8),
+ next_attempt_at timestamptz NOT NULL DEFAULT now(),lease_id uuid,lease_until timestamptz,
+ last_error text CHECK(last_error IS NULL OR length(last_error)<=80),
  PRIMARY KEY(tenant_id,id),UNIQUE(tenant_id,subscription_id,event_id),
  FOREIGN KEY(tenant_id,subscription_id) REFERENCES scheduling_webhook_subscriptions(tenant_id,id)
 );
-CREATE INDEX scheduling_webhook_due ON scheduling_webhook_outbox(next_attempt_at) WHERE delivered_at IS NULL;
+CREATE INDEX scheduling_webhook_due ON scheduling_webhook_outbox(next_attempt_at) WHERE delivered_at IS NULL AND failed_at IS NULL;
 
 CREATE TRIGGER scheduling_external_links_immutable BEFORE UPDATE OR DELETE ON scheduling_external_appointments
  FOR EACH ROW EXECUTE FUNCTION reject_history_mutation();

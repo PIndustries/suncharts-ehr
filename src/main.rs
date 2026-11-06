@@ -93,6 +93,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(suncharts_engine::reminders::run(db.clone()));
     tokio::spawn(suncharts_engine::connect_updates::run(db.clone()));
     tokio::spawn(suncharts_engine::referral_delivery::run(db.clone()));
+    tokio::spawn(suncharts_engine::partner_scheduling::run_webhooks(
+        db.clone(),
+    ));
     let delivery_config = suncharts_engine::delivery::Config::from_env()
         .map_err(|_| "invalid clearinghouse configuration")?;
     {
