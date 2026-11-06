@@ -231,9 +231,672 @@ pub fn router() -> Router<State> {
             get(event_detail).post(review),
         )
         .route(
+            "/api/v1/integrations/ringcentral/{id}/outbound",
+            get(list_outbound).post(create_outbound),
+        )
+        .route(
+            "/api/v1/integrations/ringcentral/{id}/outbound/{draft_id}",
+            get(outbound_detail),
+        )
+        .route(
+            "/api/v1/integrations/ringcentral/{id}/outbound/{draft_id}/approve",
+            post(approve_outbound),
+        )
+        .route(
+            "/api/v1/integrations/ringcentral/{id}/outbound/{draft_id}/send",
+            post(send_outbound),
+        )
+        .route(
+            "/api/v1/integrations/ringcentral/{id}/outbound/{draft_id}/refresh",
+            post(refresh_outbound),
+        )
+        .route(
             "/api/v1/integrations/ringcentral/webhooks/{hook_key}",
             post(webhook),
         )
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OutboundDraftInput {
+    pub kind: String,
+    pub recipient: String,
+    #[serde(default)]
+    pub sender: Option<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub cover_page_text: Option<String>,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default)]
+    pub content_type: Option<String>,
+    #[serde(default)]
+    pub document_base64: Option<String>,
+    #[serde(default)]
+    pub play_prompt: Option<bool>,
+}
+
+fn e164(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (9..=16).contains(&bytes.len())
+        && bytes.first() == Some(&b'+')
+        && bytes[1..].iter().all(u8::is_ascii_digit)
+}
+
+fn draft_role(actor: &Actor) -> Result<()> {
+    if matches!(
+        actor.role,
+        Role::Owner | Role::Clinician | Role::FrontDesk | Role::PartnerSupport
+    ) {
+        Ok(())
+    } else {
+        Err(Error::Forbidden)
+    }
+}
+
+fn send_role(actor: &Actor, kind: &str) -> Result<()> {
+    if matches!(actor.role, Role::Owner | Role::Clinician)
+        || (matches!(actor.role, Role::FrontDesk) && matches!(kind, "sms" | "ringout"))
+    {
+        Ok(())
+    } else {
+        Err(Error::Forbidden)
+    }
+}
+
+fn validate_outbound(input: &OutboundDraftInput) -> Result<()> {
+    if !e164(input.recipient.trim()) {
+        return Err(Error::Invalid("recipient must be an E.164 phone number"));
+    }
+    match input.kind.as_str() {
+        "sms" => {
+            let sender = input.sender.as_deref().unwrap_or("").trim();
+            let text = input.text.as_deref().unwrap_or("");
+            if !e164(sender) || text.is_empty() || text.encode_utf16().count() > 1000 {
+                return Err(Error::Invalid("invalid RingCentral SMS draft"));
+            }
+            if input.document_base64.is_some()
+                || input.cover_page_text.is_some()
+                || input.filename.is_some()
+                || input.content_type.is_some()
+                || input.play_prompt.is_some()
+            {
+                return Err(Error::Invalid("invalid RingCentral SMS draft"));
+            }
+        }
+        "fax" => {
+            let filename = input.filename.as_deref().unwrap_or("");
+            let content_type = input.content_type.as_deref().unwrap_or("");
+            let encoded = input.document_base64.as_deref().unwrap_or("");
+            let cover = input.cover_page_text.as_deref().unwrap_or("");
+            if input.sender.is_some()
+                || input.text.is_some()
+                || input.play_prompt.is_some()
+                || content_type != "application/pdf"
+                || filename.len() > 200
+                || !filename.ends_with(".pdf")
+                || !filename
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+                || cover.chars().count() > 1024
+            {
+                return Err(Error::Invalid("invalid RingCentral fax draft"));
+            }
+            let document = STANDARD
+                .decode(encoded)
+                .map_err(|_| Error::Invalid("invalid RingCentral fax document"))?;
+            if document.is_empty() || document.len() > 10 * 1024 * 1024 {
+                return Err(Error::Invalid("invalid RingCentral fax document"));
+            }
+        }
+        "ringout" => {
+            if input.sender.as_deref().is_some_and(|v| !e164(v.trim()))
+                || input.text.is_some()
+                || input.document_base64.is_some()
+                || input.cover_page_text.is_some()
+                || input.filename.is_some()
+                || input.content_type.is_some()
+            {
+                return Err(Error::Invalid("invalid RingCentral RingOut draft"));
+            }
+        }
+        _ => return Err(Error::Invalid("unsupported RingCentral outbound kind")),
+    }
+    Ok(())
+}
+
+async fn outbound_event(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    draft: Uuid,
+    actor: Uuid,
+    action: &str,
+    evidence: Value,
+) -> Result<()> {
+    let sequence: i64 = sqlx::query_scalar("SELECT coalesce(max(sequence),0)+1 FROM ringcentral_outbound_events WHERE tenant_id=$1 AND draft_id=$2")
+        .bind(tenant).bind(draft).fetch_one(&mut **tx).await?;
+    sqlx::query("INSERT INTO ringcentral_outbound_events(tenant_id,draft_id,sequence,actor_id,action,evidence) VALUES($1,$2,$3,$4,$5,$6)")
+        .bind(tenant).bind(draft).bind(sequence).bind(actor).bind(action).bind(evidence).execute(&mut **tx).await?;
+    sqlx::query(
+        "INSERT INTO audit_events(tenant_id,actor_id,action,resource_id) VALUES($1,$2,$3,$4)",
+    )
+    .bind(tenant)
+    .bind(actor)
+    .bind(format!("integration.ringcentral_outbound_{action}"))
+    .bind(draft)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn create_outbound_draft(
+    pool: &PgPool,
+    actor: &Actor,
+    integration_id: Uuid,
+    request_id: Uuid,
+    source: &str,
+    input: OutboundDraftInput,
+) -> Result<Value> {
+    draft_role(actor)?;
+    validate_outbound(&input)?;
+    if !matches!(source, "staff" | "workflow" | "ai_draft") {
+        return Err(Error::Invalid("invalid RingCentral draft source"));
+    }
+    let serialized = Zeroizing::new(
+        serde_json::to_string(&input)
+            .map_err(|_| Error::Invalid("invalid RingCentral outbound draft"))?,
+    );
+    let payload_hash = crate::oauth::hash(&serialized);
+    let id = Uuid::new_v4();
+    let encrypted = crate::provider_settings::seal_secret(
+        pool,
+        actor.tenant_id,
+        id,
+        "ringcentral-outbound",
+        &serialized,
+    )
+    .await?;
+    let mut tx = pool.begin().await?;
+    integration(&mut tx, actor.tenant_id, integration_id).await?;
+    if let Some((existing_hash, existing)) = sqlx::query_as::<_, (String, Value)>("SELECT payload_hash,jsonb_build_object('id',id,'kind',kind,'status',status,'source',source,'created_at',created_at) FROM ringcentral_outbound_drafts WHERE tenant_id=$1 AND integration_id=$2 AND request_id=$3")
+        .bind(actor.tenant_id).bind(integration_id).bind(request_id).fetch_optional(&mut *tx).await? {
+        if existing_hash != payload_hash {
+            return Err(Error::Conflict(
+                "RingCentral request ID was already used for a different draft",
+            ));
+        }
+        tx.commit().await?;
+        return Ok(existing);
+    }
+    sqlx::query("INSERT INTO ringcentral_outbound_drafts(tenant_id,id,integration_id,kind,request_id,source,encrypted_payload,payload_hash,recipient_hash,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
+        .bind(actor.tenant_id).bind(id).bind(integration_id).bind(&input.kind).bind(request_id).bind(source).bind(encrypted).bind(payload_hash).bind(crate::oauth::hash(input.recipient.trim())).bind(actor.sub).execute(&mut *tx).await?;
+    outbound_event(
+        &mut tx,
+        actor.tenant_id,
+        id,
+        actor.sub,
+        "drafted",
+        json!({"kind":input.kind,"source":source}),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(json!({"id":id,"kind":input.kind,"status":"draft","source":source}))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateOutbound {
+    request_id: Uuid,
+    #[serde(flatten)]
+    draft: OutboundDraftInput,
+}
+
+async fn create_outbound(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(id): Path<Uuid>,
+    Json(input): Json<CreateOutbound>,
+) -> Result<Response> {
+    let value =
+        create_outbound_draft(db(&s)?, &a, id, input.request_id, "staff", input.draft).await?;
+    Ok(no_store(value))
+}
+
+async fn list_outbound(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(id): Path<Uuid>,
+) -> Result<Response> {
+    draft_role(&a)?;
+    let mut tx = db(&s)?.begin().await?;
+    integration(&mut tx, a.tenant_id, id).await?;
+    let items: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('id',id,'kind',kind,'source',source,'status',status,'created_by',created_by,'approved_by',approved_by,'sent_by',sent_by,'provider_status',provider_status,'last_error',last_error,'created_at',created_at,'updated_at',updated_at) FROM ringcentral_outbound_drafts WHERE tenant_id=$1 AND integration_id=$2 ORDER BY created_at DESC,id DESC LIMIT 100")
+        .bind(a.tenant_id).bind(id).fetch_all(&mut *tx).await?;
+    sqlx::query("INSERT INTO audit_events(tenant_id,actor_id,action,resource_id) VALUES($1,$2,'integration.ringcentral_outbound_list_read',$3)")
+        .bind(a.tenant_id).bind(a.sub).bind(id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(no_store(json!({"items":items})))
+}
+
+async fn outbound_detail(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((id, draft_id)): Path<(Uuid, Uuid)>,
+) -> Result<Response> {
+    draft_role(&a)?;
+    let mut tx = db(&s)?.begin().await?;
+    let row: Option<(Vec<u8>, Value)> = sqlx::query_as("SELECT encrypted_payload,jsonb_build_object('id',id,'kind',kind,'source',source,'status',status,'created_by',created_by,'approved_by',approved_by,'approval_reason',approval_reason,'approved_at',approved_at,'sent_by',sent_by,'sent_at',sent_at,'provider_id',provider_id,'provider_uri',provider_uri,'provider_status',provider_status,'last_error',last_error,'created_at',created_at,'updated_at',updated_at) FROM ringcentral_outbound_drafts WHERE tenant_id=$1 AND integration_id=$2 AND id=$3")
+        .bind(a.tenant_id).bind(id).bind(draft_id).fetch_optional(&mut *tx).await?;
+    let (encrypted, metadata) = row.ok_or(Error::NotFound)?;
+    let payload = crate::provider_settings::open_secret(
+        a.tenant_id,
+        draft_id,
+        "ringcentral-outbound",
+        &encrypted,
+    )?;
+    let payload: Value = serde_json::from_str(payload.expose())
+        .map_err(|_| Error::Invalid("saved RingCentral outbound draft invalid"))?;
+    let events: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('sequence',sequence,'actor_id',actor_id,'action',action,'evidence',evidence,'created_at',created_at) FROM ringcentral_outbound_events WHERE tenant_id=$1 AND draft_id=$2 ORDER BY sequence")
+        .bind(a.tenant_id).bind(draft_id).fetch_all(&mut *tx).await?;
+    sqlx::query("INSERT INTO audit_events(tenant_id,actor_id,action,resource_id) VALUES($1,$2,'integration.ringcentral_outbound_read',$3)")
+        .bind(a.tenant_id).bind(a.sub).bind(draft_id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(no_store(
+        json!({"draft":metadata,"payload":payload,"events":events}),
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApproveOutbound {
+    request_id: Uuid,
+    confirmed_recipient: String,
+    reason: String,
+}
+
+async fn approve_outbound(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((id, draft_id)): Path<(Uuid, Uuid)>,
+    Json(input): Json<ApproveOutbound>,
+) -> Result<Response> {
+    let reason = input.reason.trim();
+    if reason.is_empty() || reason.len() > 500 || !e164(input.confirmed_recipient.trim()) {
+        return Err(Error::Invalid(
+            "recipient confirmation and reason are required",
+        ));
+    }
+    let mut tx = db(&s)?.begin().await?;
+    let row: Option<(String, String, String, Option<Uuid>)> = sqlx::query_as("SELECT kind,status,recipient_hash,approval_request_id FROM ringcentral_outbound_drafts WHERE tenant_id=$1 AND integration_id=$2 AND id=$3 FOR UPDATE")
+        .bind(a.tenant_id).bind(id).bind(draft_id).fetch_optional(&mut *tx).await?;
+    let (kind, status, recipient_hash, existing_request) = row.ok_or(Error::NotFound)?;
+    send_role(&a, &kind)?;
+    if existing_request == Some(input.request_id)
+        && matches!(
+            status.as_str(),
+            "approved" | "sending" | "accepted" | "failed" | "needs_review"
+        )
+    {
+        tx.commit().await?;
+        return Ok(no_store(
+            json!({"id":draft_id,"status":status,"idempotent":true}),
+        ));
+    }
+    if status != "draft" || existing_request.is_some() {
+        return Err(Error::Conflict("RingCentral draft cannot be approved"));
+    }
+    aws_lc_rs::constant_time::verify_slices_are_equal(
+        recipient_hash.as_bytes(),
+        crate::oauth::hash(input.confirmed_recipient.trim()).as_bytes(),
+    )
+    .map_err(|_| Error::Invalid("confirmed recipient does not match the draft"))?;
+    sqlx::query("UPDATE ringcentral_outbound_drafts SET status='approved',approved_by=$4,approval_request_id=$5,approval_reason=$6,approved_at=now(),updated_at=now() WHERE tenant_id=$1 AND integration_id=$2 AND id=$3")
+        .bind(a.tenant_id).bind(id).bind(draft_id).bind(a.sub).bind(input.request_id).bind(reason).execute(&mut *tx).await?;
+    outbound_event(
+        &mut tx,
+        a.tenant_id,
+        draft_id,
+        a.sub,
+        "approved",
+        json!({"kind":kind,"recipient_confirmed":true}),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(no_store(json!({"id":draft_id,"status":"approved"})))
+}
+
+#[derive(sqlx::FromRow)]
+struct OutboundRow {
+    kind: String,
+    status: String,
+    encrypted_payload: Vec<u8>,
+    send_request_id: Option<Uuid>,
+    provider_id: Option<String>,
+    provider_status: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SendOutbound {
+    request_id: Uuid,
+}
+
+struct ProviderReceipt {
+    id: String,
+    uri: Option<String>,
+    status: String,
+    raw: Value,
+}
+
+fn provider_id(value: &Value) -> Option<String> {
+    value
+        .get("id")
+        .and_then(|id| {
+            id.as_str()
+                .map(ToOwned::to_owned)
+                .or_else(|| id.as_i64().map(|v| v.to_string()))
+                .or_else(|| id.as_u64().map(|v| v.to_string()))
+        })
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 240
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
+}
+
+async fn parse_provider_receipt(
+    response: reqwest::Response,
+    kind: &str,
+) -> Result<ProviderReceipt> {
+    if !response.status().is_success() {
+        return Err(Error::Invalid(bounded_provider_error(response.status())));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| Error::Invalid("RingCentral response unavailable"))?;
+    if bytes.len() > 262_144 {
+        return Err(Error::Invalid("RingCentral response invalid"));
+    }
+    let raw: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| Error::Invalid("RingCentral response invalid"))?;
+    let id = provider_id(&raw).ok_or(Error::Invalid("RingCentral response invalid"))?;
+    let uri = raw
+        .get("uri")
+        .and_then(Value::as_str)
+        .filter(|v| v.len() <= 2000)
+        .map(ToOwned::to_owned);
+    let status = if kind == "ringout" {
+        raw.pointer("/status/callStatus").and_then(Value::as_str)
+    } else {
+        raw.get("messageStatus").and_then(Value::as_str)
+    }
+    .unwrap_or("Accepted");
+    if status.is_empty()
+        || status.len() > 120
+        || !status
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(Error::Invalid("RingCentral response invalid"));
+    }
+    Ok(ProviderReceipt {
+        id,
+        uri,
+        status: status.to_owned(),
+        raw,
+    })
+}
+
+async fn send_to_provider(
+    pool: &PgPool,
+    tenant: Uuid,
+    integration_id: Uuid,
+    actor: Uuid,
+    input: &OutboundDraftInput,
+) -> Result<ProviderReceipt> {
+    validate_outbound(input)?;
+    let token = current_access(pool, tenant, integration_id, actor).await?;
+    let config: Value = sqlx::query_scalar("SELECT config FROM instance_integrations WHERE tenant_id=$1 AND id=$2 AND provider='ringcentral'")
+        .bind(tenant).bind(integration_id).fetch_one(pool).await?;
+    let base = platform(&config)?;
+    let client = http()?;
+    let response = match input.kind.as_str() {
+        "sms" => client.post(format!("{base}/restapi/v1.0/account/~/extension/~/sms"))
+            .bearer_auth(token.as_str())
+            .json(&json!({"from":{"phoneNumber":input.sender.as_deref().unwrap_or("")},"to":[{"phoneNumber":input.recipient}],"text":input.text.as_deref().unwrap_or("")}))
+            .send().await,
+        "fax" => {
+            let document = STANDARD.decode(input.document_base64.as_deref().unwrap_or("")).map_err(|_|Error::Invalid("invalid RingCentral fax document"))?;
+            let metadata = json!({"to":[{"phoneNumber":input.recipient}],"faxResolution":"High","coverPageText":input.cover_page_text.as_deref().unwrap_or("")});
+            let json_part = reqwest::multipart::Part::text(metadata.to_string()).file_name("request.json").mime_str("application/json").map_err(|_|Error::Invalid("RingCentral fax unavailable"))?;
+            let attachment = reqwest::multipart::Part::bytes(document).file_name(input.filename.clone().unwrap_or_else(||"document.pdf".into())).mime_str("application/pdf").map_err(|_|Error::Invalid("RingCentral fax unavailable"))?;
+            client.post(format!("{base}/restapi/v1.0/account/~/extension/~/fax"))
+                .bearer_auth(token.as_str()).multipart(reqwest::multipart::Form::new().part("json",json_part).part("attachment",attachment)).send().await
+        }
+        "ringout" => {
+            let mut body = json!({"to":{"phoneNumber":input.recipient},"playPrompt":input.play_prompt.unwrap_or(true)});
+            if let Some(sender) = input.sender.as_ref() { body["from"] = json!({"phoneNumber":sender}); }
+            client.post(format!("{base}/restapi/v1.0/account/~/extension/~/ring-out"))
+                .bearer_auth(token.as_str()).json(&body).send().await
+        }
+        _ => return Err(Error::Invalid("unsupported RingCentral outbound kind")),
+    }.map_err(|_|Error::Invalid("ringcentral_outbound_unknown"))?;
+    parse_provider_receipt(response, &input.kind).await
+}
+
+async fn refresh_provider_status(
+    pool: &PgPool,
+    tenant: Uuid,
+    integration_id: Uuid,
+    actor: Uuid,
+    kind: &str,
+    provider_id: &str,
+) -> Result<ProviderReceipt> {
+    if provider_id.is_empty() || provider_id.len() > 240 {
+        return Err(Error::Invalid("RingCentral provider receipt invalid"));
+    }
+    let token = current_access(pool, tenant, integration_id, actor).await?;
+    let config: Value = sqlx::query_scalar("SELECT config FROM instance_integrations WHERE tenant_id=$1 AND id=$2 AND provider='ringcentral'")
+        .bind(tenant).bind(integration_id).fetch_one(pool).await?;
+    let base = platform(&config)?;
+    let path = if kind == "ringout" {
+        format!("/restapi/v1.0/account/~/extension/~/ring-out/{provider_id}")
+    } else {
+        format!("/restapi/v1.0/account/~/extension/~/message-store/{provider_id}")
+    };
+    let response = http()?
+        .get(format!("{base}{path}"))
+        .bearer_auth(token.as_str())
+        .send()
+        .await
+        .map_err(|_| Error::Invalid("RingCentral status request unavailable"))?;
+    parse_provider_receipt(response, kind).await
+}
+
+async fn record_send_failure(
+    pool: &PgPool,
+    tenant: Uuid,
+    integration: Uuid,
+    draft: Uuid,
+    actor: Uuid,
+    code: &'static str,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    let status = if matches!(
+        code,
+        "ringcentral_outbound_unknown" | "ringcentral_rate_limited" | "ringcentral_unavailable"
+    ) {
+        "needs_review"
+    } else {
+        "failed"
+    };
+    sqlx::query("UPDATE ringcentral_outbound_drafts SET status=$4,last_error=$5,updated_at=now() WHERE tenant_id=$1 AND integration_id=$2 AND id=$3 AND status='sending'")
+        .bind(tenant).bind(integration).bind(draft).bind(status).bind(code).execute(&mut *tx).await?;
+    let action = if status == "needs_review" {
+        "provider_unknown"
+    } else {
+        "provider_rejected"
+    };
+    outbound_event(
+        &mut tx,
+        tenant,
+        draft,
+        actor,
+        action,
+        json!({"result":code,"status":status}),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn send_outbound(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((id, draft_id)): Path<(Uuid, Uuid)>,
+    Json(input): Json<SendOutbound>,
+) -> Result<Response> {
+    let mut tx = db(&s)?.begin().await?;
+    let row: Option<OutboundRow> = sqlx::query_as("SELECT kind,status,encrypted_payload,send_request_id,provider_id,provider_status FROM ringcentral_outbound_drafts WHERE tenant_id=$1 AND integration_id=$2 AND id=$3 FOR UPDATE")
+        .bind(a.tenant_id).bind(id).bind(draft_id).fetch_optional(&mut *tx).await?;
+    let row = row.ok_or(Error::NotFound)?;
+    send_role(&a, &row.kind)?;
+    if row.send_request_id == Some(input.request_id)
+        && matches!(
+            row.status.as_str(),
+            "sending" | "accepted" | "failed" | "needs_review"
+        )
+    {
+        tx.commit().await?;
+        return Ok(no_store(
+            json!({"id":draft_id,"status":row.status,"provider_id":row.provider_id,"provider_status":row.provider_status,"idempotent":true}),
+        ));
+    }
+    if row.status != "approved" || row.send_request_id.is_some() {
+        return Err(Error::Conflict(
+            "RingCentral draft is not approved for sending",
+        ));
+    }
+    sqlx::query("UPDATE ringcentral_outbound_drafts SET status='sending',send_request_id=$4,sent_by=$5,sent_at=now(),updated_at=now() WHERE tenant_id=$1 AND integration_id=$2 AND id=$3")
+        .bind(a.tenant_id).bind(id).bind(draft_id).bind(input.request_id).bind(a.sub).execute(&mut *tx).await?;
+    outbound_event(
+        &mut tx,
+        a.tenant_id,
+        draft_id,
+        a.sub,
+        "send_started",
+        json!({"kind":row.kind}),
+    )
+    .await?;
+    tx.commit().await?;
+    let payload = crate::provider_settings::open_secret(
+        a.tenant_id,
+        draft_id,
+        "ringcentral-outbound",
+        &row.encrypted_payload,
+    )?;
+    let payload: OutboundDraftInput = serde_json::from_str(payload.expose())
+        .map_err(|_| Error::Invalid("saved RingCentral outbound draft invalid"))?;
+    let receipt = match send_to_provider(db(&s)?, a.tenant_id, id, a.sub, &payload).await {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            let code = match error {
+                Error::Invalid(code) if code.starts_with("ringcentral_") => code,
+                _ => "ringcentral_outbound_failed",
+            };
+            record_send_failure(db(&s)?, a.tenant_id, id, draft_id, a.sub, code).await?;
+            return Err(Error::Invalid(code));
+        }
+    };
+    let serialized = Zeroizing::new(
+        serde_json::to_string(&receipt.raw)
+            .map_err(|_| Error::Invalid("RingCentral response invalid"))?,
+    );
+    let encrypted = crate::provider_settings::seal_secret(
+        db(&s)?,
+        a.tenant_id,
+        draft_id,
+        "ringcentral-outbound-receipt",
+        &serialized,
+    )
+    .await?;
+    let mut tx = db(&s)?.begin().await?;
+    let changed = sqlx::query("UPDATE ringcentral_outbound_drafts SET status='accepted',provider_id=$4,provider_uri=$5,provider_status=$6,encrypted_provider_receipt=$7,last_error=NULL,updated_at=now() WHERE tenant_id=$1 AND integration_id=$2 AND id=$3 AND status='sending'")
+        .bind(a.tenant_id).bind(id).bind(draft_id).bind(&receipt.id).bind(&receipt.uri).bind(&receipt.status).bind(encrypted).execute(&mut *tx).await?;
+    if changed.rows_affected() != 1 {
+        return Err(Error::Conflict("RingCentral outbound state changed"));
+    }
+    outbound_event(
+        &mut tx,
+        a.tenant_id,
+        draft_id,
+        a.sub,
+        "provider_accepted",
+        json!({"provider_id":receipt.id,"provider_status":receipt.status}),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(no_store(
+        json!({"id":draft_id,"status":"accepted","provider_id":receipt.id,"provider_status":receipt.status,"delivery_confirmed":false}),
+    ))
+}
+
+async fn refresh_outbound(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((id, draft_id)): Path<(Uuid, Uuid)>,
+) -> Result<Response> {
+    let row: Option<(String, String, Option<String>)> = sqlx::query_as("SELECT kind,status,provider_id FROM ringcentral_outbound_drafts WHERE tenant_id=$1 AND integration_id=$2 AND id=$3")
+        .bind(a.tenant_id).bind(id).bind(draft_id).fetch_optional(db(&s)?).await?;
+    let (kind, status, provider_id) = row.ok_or(Error::NotFound)?;
+    send_role(&a, &kind)?;
+    if status != "accepted" {
+        return Err(Error::Conflict(
+            "RingCentral status is available only after provider acceptance",
+        ));
+    }
+    let provider_id = provider_id.ok_or(Error::Invalid("RingCentral provider receipt invalid"))?;
+    let receipt =
+        refresh_provider_status(db(&s)?, a.tenant_id, id, a.sub, &kind, &provider_id).await?;
+    let serialized = Zeroizing::new(
+        serde_json::to_string(&receipt.raw)
+            .map_err(|_| Error::Invalid("RingCentral response invalid"))?,
+    );
+    let encrypted = crate::provider_settings::seal_secret(
+        db(&s)?,
+        a.tenant_id,
+        draft_id,
+        "ringcentral-outbound-receipt",
+        &serialized,
+    )
+    .await?;
+    let mut tx = db(&s)?.begin().await?;
+    let changed = sqlx::query("UPDATE ringcentral_outbound_drafts SET provider_uri=$4,provider_status=$5,encrypted_provider_receipt=$6,updated_at=now() WHERE tenant_id=$1 AND integration_id=$2 AND id=$3 AND status='accepted'")
+        .bind(a.tenant_id).bind(id).bind(draft_id).bind(&receipt.uri).bind(&receipt.status).bind(encrypted).execute(&mut *tx).await?;
+    if changed.rows_affected() != 1 {
+        return Err(Error::Conflict("RingCentral outbound state changed"));
+    }
+    outbound_event(
+        &mut tx,
+        a.tenant_id,
+        draft_id,
+        a.sub,
+        "status_refreshed",
+        json!({"provider_id":receipt.id,"provider_status":receipt.status}),
+    )
+    .await?;
+    tx.commit().await?;
+    let delivered = matches!(
+        receipt.status.as_str(),
+        "Delivered" | "CallConnected" | "Success"
+    );
+    Ok(no_store(
+        json!({"id":draft_id,"status":"accepted","provider_id":receipt.id,"provider_status":receipt.status,"delivery_confirmed":delivered}),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -1153,6 +1816,31 @@ pub async fn run(pool: PgPool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn actor(role: Role) -> Actor {
+        Actor {
+            sub: Uuid::nil(),
+            tenant_id: Uuid::nil(),
+            role,
+            patient_id: None,
+            iss: "test".into(),
+            aud: "test".into(),
+            iat: 1,
+            exp: 2,
+        }
+    }
+    fn sms() -> OutboundDraftInput {
+        OutboundDraftInput {
+            kind: "sms".into(),
+            recipient: "+18155550100".into(),
+            sender: Some("+18155550101".into()),
+            text: Some("Synthetic appointment message".into()),
+            cover_page_text: None,
+            filename: None,
+            content_type: None,
+            document_base64: None,
+            play_prompt: None,
+        }
+    }
     #[test]
     fn pkce_is_stable_and_url_safe() {
         let value = pkce("sce_rc_pkce_synthetic-verifier");
@@ -1196,5 +1884,35 @@ mod tests {
             oauth_rejection_reason(Some("secret or PHI")),
             "provider_error"
         );
+    }
+    #[test]
+    fn outbound_drafts_are_bounded() {
+        assert!(validate_outbound(&sms()).is_ok());
+        let mut invalid = sms();
+        invalid.recipient = "815-555-0100".into();
+        assert!(validate_outbound(&invalid).is_err());
+        let mut oversized = sms();
+        oversized.text = Some("x".repeat(1001));
+        assert!(validate_outbound(&oversized).is_err());
+        let mut hidden_attachment = sms();
+        hidden_attachment.filename = Some("ignored.pdf".into());
+        assert!(validate_outbound(&hidden_attachment).is_err());
+    }
+    #[test]
+    fn outbound_authorization_is_action_specific() {
+        assert!(draft_role(&actor(Role::FrontDesk)).is_ok());
+        assert!(draft_role(&actor(Role::PartnerSupport)).is_ok());
+        assert!(send_role(&actor(Role::FrontDesk), "sms").is_ok());
+        assert!(send_role(&actor(Role::FrontDesk), "ringout").is_ok());
+        assert!(send_role(&actor(Role::FrontDesk), "fax").is_err());
+        assert!(send_role(&actor(Role::Clinician), "fax").is_ok());
+        assert!(send_role(&actor(Role::PartnerSupport), "sms").is_err());
+        assert!(draft_role(&actor(Role::ReadOnly)).is_err());
+    }
+    #[test]
+    fn provider_receipt_ids_are_bounded_values() {
+        assert_eq!(provider_id(&json!({"id":1234})).as_deref(), Some("1234"));
+        assert_eq!(provider_id(&json!({"id":"abc"})).as_deref(), Some("abc"));
+        assert!(provider_id(&json!({"id":null})).is_none());
     }
 }
