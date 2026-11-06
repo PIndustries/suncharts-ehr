@@ -94,9 +94,16 @@ class DeploymentArtifactsTest(unittest.TestCase):
             "COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt",
             dockerfile,
         )
-        self.assertGreaterEqual(dockerfile.count("Acquire::http::Timeout=60"), 4)
-        self.assertGreaterEqual(dockerfile.count("Acquire::https::Timeout=60"), 4)
-        self.assertGreaterEqual(dockerfile.count("Acquire::Retries=5"), 4)
+        runtime = dockerfile.split("FROM ${RUNTIME_IMAGE} AS runtime", 1)[1]
+        self.assertNotIn("apt-get", runtime)
+        self.assertNotIn("snapshot.debian.org", runtime)
+        self.assertNotIn("curl", runtime.split("# The digest-pinned runtime", 1)[0])
+        self.assertIn(
+            'CMD ["/usr/local/bin/suncharts-engine", "--healthcheck"]', runtime
+        )
+        self.assertGreaterEqual(dockerfile.count("Acquire::http::Timeout=60"), 2)
+        self.assertGreaterEqual(dockerfile.count("Acquire::https::Timeout=60"), 2)
+        self.assertGreaterEqual(dockerfile.count("Acquire::Retries=5"), 2)
 
     def test_dependency_layer_precedes_application_source(self):
         dockerfile = (ROOT / "Dockerfile").read_text()

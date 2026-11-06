@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026 P Industries
 use sqlx::postgres::PgPoolOptions;
-use std::{env, future::IntoFuture, sync::Arc, time::Duration};
+use std::{
+    env,
+    future::IntoFuture,
+    io::{BufRead, BufReader, Read, Write},
+    net::{TcpStream, ToSocketAddrs},
+    sync::Arc,
+    time::Duration,
+};
 use suncharts_engine::{postgres::PostgresBackend, State};
 
 fn env_or_file(name: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -23,8 +30,44 @@ fn env_or_file(name: &str) -> Result<String, Box<dyn std::error::Error>> {
     }
 }
 
+fn run_healthcheck_to(address: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let timeout = Duration::from_secs(3);
+    let mut last_error = None;
+    for socket in address.to_socket_addrs()? {
+        match TcpStream::connect_timeout(&socket, timeout) {
+            Ok(mut stream) => {
+                stream.set_read_timeout(Some(timeout))?;
+                stream.set_write_timeout(Some(timeout))?;
+                stream.write_all(
+                    b"GET /ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                )?;
+                let mut status = String::new();
+                BufReader::new(stream).take(1024).read_line(&mut status)?;
+                if status.starts_with("HTTP/1.1 200 ") || status.starts_with("HTTP/1.0 200 ") {
+                    return Ok(());
+                }
+                return Err(format!("readiness endpoint returned {status:?}").into());
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error
+        .map(|error| format!("readiness endpoint unavailable: {error}"))
+        .unwrap_or_else(|| "healthcheck address did not resolve".to_string())
+        .into())
+}
+
+fn run_healthcheck() -> Result<(), Box<dyn std::error::Error>> {
+    let address =
+        env::var("ENGINE_HEALTHCHECK_ADDR").unwrap_or_else(|_| "127.0.0.1:8090".to_string());
+    run_healthcheck_to(&address)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--healthcheck")) {
+        return run_healthcheck();
+    }
     let allow_legacy_gateway = env::var("ENGINE_ALLOW_LEGACY_GATEWAY").as_deref() == Ok("true");
     let jwt_configured = env::var_os("ENGINE_JWT_SECRET").is_some()
         || env::var_os("ENGINE_JWT_SECRET_FILE").is_some();
@@ -115,6 +158,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     result?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_healthcheck_to;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+    };
+
+    #[test]
+    fn built_in_healthcheck_accepts_ready_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("test listener address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept healthcheck");
+            let mut request = [0_u8; 128];
+            let count = stream.read(&mut request).expect("read healthcheck request");
+            assert!(String::from_utf8_lossy(&request[..count]).starts_with("GET /ready "));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                .expect("write healthcheck response");
+        });
+        let result = run_healthcheck_to(&address.to_string());
+        server.join().expect("healthcheck server");
+        assert!(result.is_ok(), "{result:?}");
+    }
 }
 
 async fn shutdown_signal() -> std::io::Result<()> {

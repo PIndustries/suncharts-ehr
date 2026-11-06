@@ -38,23 +38,17 @@ RUN --mount=type=cache,id=suncharts-ehr-cargo-registry,target=/usr/local/cargo/r
     && install -D -m 0755 target/release/suncharts-engine /out/suncharts-engine
 
 FROM ${RUNTIME_IMAGE} AS runtime
-ARG DEBIAN_SNAPSHOT
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 LABEL org.opencontainers.image.title="SunCharts EHR" \
       org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.source="https://github.com/PIndustries/suncharts-ehr"
-RUN printf '%s\n' \
-      "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} bookworm main" \
-      "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} bookworm-updates main" \
-      "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT} bookworm-security main" \
-      > /etc/apt/sources.list \
-    && rm -f /etc/apt/sources.list.d/debian.sources \
-    && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update \
-    && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 install -y --no-install-recommends ca-certificates curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --gid 10001 suncharts \
-    && useradd --uid 10001 --gid 10001 --create-home --home-dir /var/lib/suncharts suncharts \
-    && install -d -o suncharts -g suncharts -m 0700 /var/lib/suncharts/private
+# The digest-pinned runtime image is used exactly as published. Avoiding apt here
+# removes a release-time dependency on the Debian snapshot service. The engine
+# provides its own healthcheck client, and the builder supplies the pinned CA
+# bundle, so the runtime does not need curl or any downloaded package layer.
+RUN printf 'suncharts:x:10001:\n' >> /etc/group \
+    && printf 'suncharts:x:10001:10001:SunCharts EHR:/var/lib/suncharts:/usr/sbin/nologin\n' >> /etc/passwd \
+    && install -d -o 10001 -g 10001 -m 0700 /var/lib/suncharts/private
 COPY --from=application /out/suncharts-engine /usr/local/bin/suncharts-engine
 USER 10001:10001
 WORKDIR /var/lib/suncharts
@@ -62,5 +56,5 @@ ENV ENGINE_BIND=0.0.0.0:8090 \
     ENGINE_CREDENTIAL_KEY_FILE=/var/lib/suncharts/private/provider-master.key
 EXPOSE 8090
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl --fail --silent --show-error http://127.0.0.1:8090/ready || exit 1
+    CMD ["/usr/local/bin/suncharts-engine", "--healthcheck"]
 ENTRYPOINT ["/usr/local/bin/suncharts-engine"]
