@@ -983,7 +983,7 @@ async fn instance_action(
     Ok(Json(value))
 }
 
-async fn refresh_ready_steps(
+pub(crate) async fn refresh_ready_steps(
     tx: &mut Transaction<'_, Postgres>,
     actor: &Actor,
     id: Uuid,

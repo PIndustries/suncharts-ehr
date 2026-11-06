@@ -13,6 +13,7 @@ pub mod claimmd_eligibility;
 pub mod claimmd_extended;
 pub mod claimmd_operations;
 pub mod claims;
+pub mod claude_adapter;
 pub mod clearinghouse;
 pub mod clinical;
 pub mod connect_identity;
@@ -327,6 +328,7 @@ pub fn app(state: State) -> Router {
         .merge(delivery::router())
         .merge(provider_settings::router())
         .merge(claimmd_operations::router())
+        .merge(claude_adapter::router())
         .merge(claimmd_extended::router())
         .merge(retrieval::router())
         .merge(remittance_automation::router())
