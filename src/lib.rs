@@ -46,6 +46,7 @@ pub mod postgres;
 pub mod practice;
 pub mod practice_admin;
 pub mod prescribing;
+pub mod previsit;
 pub mod provider_settings;
 pub mod recurrence;
 pub mod referral_delivery;
@@ -303,6 +304,7 @@ pub fn app(state: State) -> Router {
         .merge(connect_onboarding::router())
         .merge(practice::router())
         .merge(practice_admin::router())
+        .merge(previsit::router())
         .merge(rooming::routes())
         .merge(visit_diagnoses::routes())
         .merge(demographics::router())

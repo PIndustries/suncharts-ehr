@@ -325,6 +325,7 @@ function setPage(title) {
   'Practice administration':'Manage staff access, providers, facilities and rooms',
   'Patients & encounters':'Find a patient, review their chart and continue encounter work',
   'Schedule':'Book appointments, manage provider availability and follow reminders',
+  'Pre-visit readiness':'Review public bookings, patient forms and visit preparation',
   'Appointment reminders':'Review due reminders, contact readiness and delivery history',
   'Reminder settings':'Configure appointment delivery and sender identity',
   'Labs & results':'Review ordered tests, reported results and acknowledgment work',
@@ -341,14 +342,14 @@ function setPage(title) {
   'Support tickets':'Track SunCharts service requests and replies',
   'Data import':'Stage source records and reconcile imported data'
  };
- const patientCare=['Patients & encounters','Schedule','Appointment reminders','Reminder settings','Labs & results','Referrals','Referral delivery settings','Follow-up tasks'];
+ const patientCare=['Patients & encounters','Schedule','Pre-visit readiness','Appointment reminders','Reminder settings','Labs & results','Referrals','Referral delivery settings','Follow-up tasks'];
  const revenue=['Billing & insurance','Payment settings','Payment review','Claims & remittances','Clearinghouse'];
  const administration=['Practice administration','Connected apps','Connect services','Support tickets','Data import'];
  $('page-title').textContent=title;
  $('page-description').textContent=descriptions[title]||'Practice workspace';
  $('workspace-section').textContent=patientCare.includes(title)?'PATIENT CARE':revenue.includes(title)?'REVENUE CYCLE':administration.includes(title)?'ADMINISTRATION':'PRACTICE';
- const active=['Practice home','Practice overview'].includes(title)?'nav-practice':title==='Patients & encounters'?'nav-clinical':['Schedule','Appointment reminders','Reminder settings'].includes(title)?'nav-schedule':title==='Labs & results'?'nav-labs':['Billing & insurance','Payment settings','Payment review'].includes(title)?'nav-billing':title==='Clearinghouse'?'nav-edi':title==='Claims & remittances'?'nav-claims':['Referrals','Referral delivery settings'].includes(title)?'nav-referrals':title.startsWith('Patient portal')?'nav-portal':title==='Follow-up tasks'?'nav-followup':['Connected apps','Connect services','Support tickets'].includes(title)?'nav-apps':title==='Data import'?'nav-migration':title==='Practice administration'?'nav-admin':null;
- for(const id of ['nav-practice','nav-clinical','nav-schedule','nav-labs','nav-referrals','nav-followup','nav-portal','nav-billing','nav-claims','nav-edi','nav-apps','nav-migration','nav-admin']){if(!$(id))continue;if(id===active)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}
+ const active=['Practice home','Practice overview'].includes(title)?'nav-practice':title==='Patients & encounters'?'nav-clinical':title==='Pre-visit readiness'?'nav-previsit':['Schedule','Appointment reminders','Reminder settings'].includes(title)?'nav-schedule':title==='Labs & results'?'nav-labs':['Billing & insurance','Payment settings','Payment review'].includes(title)?'nav-billing':title==='Clearinghouse'?'nav-edi':title==='Claims & remittances'?'nav-claims':['Referrals','Referral delivery settings'].includes(title)?'nav-referrals':title.startsWith('Patient portal')?'nav-portal':title==='Follow-up tasks'?'nav-followup':['Connected apps','Connect services','Support tickets'].includes(title)?'nav-apps':title==='Data import'?'nav-migration':title==='Practice administration'?'nav-admin':null;
+ for(const id of ['nav-practice','nav-clinical','nav-schedule','nav-previsit','nav-labs','nav-referrals','nav-followup','nav-portal','nav-billing','nav-claims','nav-edi','nav-apps','nav-migration','nav-admin']){if(!$(id))continue;if(id===active)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}
  closeNavigation();window.scrollTo(0,0);
 }
 function showTool(title) {if(typeof captureSupportDrafts==='function')captureSupportDrafts();setPage(title);$('clinical-workspace').hidden=true;$('patient-form').hidden=true;$('tools').hidden=false;$('new-patient').hidden=true;$('toggle-directory').hidden=true;}
