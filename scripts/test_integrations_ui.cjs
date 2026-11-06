@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const source=fs.readFileSync('web/integrations.js','utf8'),app=fs.readFileSync('web/app.js','utf8'),index=fs.readFileSync('web/index.html','utf8'),style=fs.readFileSync('web/style.css','utf8'),lib=fs.readFileSync('src/lib.rs','utf8');
+const handlers={},nodes={tools:{className:'',innerHTML:''},'integration-editor':{innerHTML:'',replaceChildren(){this.innerHTML='';}}},calls=[];
+const api=async(path,method='GET',body,version)=>{
+ calls.push({path,method,body,version});
+ if(path==='/api/v1/integrations')return {credential_storage_ready:true,items:[{id:'claude-1',provider:'claude',label:'Clinic Claude',status:'configured',enabled:false,credential_stored:true,credential_hint:'…1234',version:2,config:{model:'clinic-selected'}}]};
+ if(path==='/api/v1/previsit/settings')return {profile:{enabled:true,public_slug:'new-patients'}};
+ return {items:[]};
+};
+const context=vm.createContext({console,Map,Set,URL,URLSearchParams,Object,Number,Date,JSON,location:{origin:'https://clinic.example',assign:()=>{}},document:{addEventListener:(name,fn)=>(handlers[name]??=[]).push(fn)},$:id=>nodes[id]||null,me:{role:'owner'},esc:value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'),human:value=>String(value??'').replaceAll('_',' '),date:value=>String(value),scopeNames:{'scheduling.read':'Read scheduling'},api,showTool:()=>{},connectStatusCard:()=>'<div>Platform identity connected</div>',notice:()=>{},run:fn=>Promise.resolve().then(fn),showPrevisit:async()=>{},showApps:async()=>{}});
+vm.runInContext(source,context);
+(async()=>{
+ await vm.runInContext("showInstanceIntegrations({connection:{},onboarding:{},grants:{items:[{id:'grant-1',name:'HealthClinics',scope:'scheduling.read'}]},clients:{items:[{id:'client-1',name:'HealthClinics scheduling',redirect_uri:'https://healthclinics.example/oauth/callback',disabled:false}]}})",context);
+ const html=nodes.tools.innerHTML;
+ for(const label of ['SunCharts online booking','HealthClinics','RingCentral','Gmail referrals','Claude','Authorized applications'])assert.match(html,new RegExp(label));
+ assert.match(html,/HealthClinics.*reads availability and writes appointments|External partners use this instance.*authorized API/s);
+ assert.match(html,/Credentials, tokens, workflow settings and audit history remain inside this EHR instance/);
+ assert.match(html,/clinic supplies and governs its own provider account/i);
+ assert.match(html,/Open booking page/);
+ assert.doesNotMatch(html,/HealthClinics API key|Connect stores vendor credentials/);
+ vm.runInContext("integrationEditor('healthclinics')",context);
+ assert.match(nodes['integration-editor'].innerHTML,/HealthClinics connects to SunCharts/);
+ assert.match(nodes['integration-editor'].innerHTML,/does not sign in to or pull from HealthClinics/);
+ assert.match(nodes['integration-editor'].innerHTML,/name="oauth_client_id"/);
+ assert.match(nodes['integration-editor'].innerHTML,/HealthClinics scheduling/);
+ vm.runInContext("integrationEditor('claude')",context);
+ assert.match(nodes['integration-editor'].innerHTML,/Anthropic API key/);
+ assert.match(nodes['integration-editor'].innerHTML,/clinic-selected/);
+ assert.match(nodes['integration-editor'].innerHTML,/clinic is responsible for its Anthropic agreement/);
+ assert.match(index,/src="\/integrations.js"/);assert.match(index,/id="nav-apps"[\s\S]*Integrations/);
+ assert.match(app,/showInstanceIntegrations/);assert.match(style,/Instance integrations/);assert.match(lib,/"\/integrations\.js"/);
+ assert.match(source,/const body=\{label:values\.label,capabilities:definition\.apiCapabilities,config\}/);
+ assert.match(source,/config\.oauth_client_id=values\.oauth_client_id/);
+ assert.match(source,/\{redirect_uri:`\$\{location\.origin\}\/api\/v1\/integrations\/oauth\/callback`,scopes:/);
+ assert.match(source,/\/actions`,'POST',\{action\}/);
+ assert.doesNotMatch(source,/auth_type:integrationDefinitions|settings,reason|\{action,reason:/);
+ console.log('PASS instance-local integrations IA, provider boundaries, native booking and clinic-owned Claude setup');
+})().catch(error=>{console.error(error);process.exitCode=1;});

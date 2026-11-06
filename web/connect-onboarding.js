@@ -20,12 +20,12 @@ async function finishConnectOnboarding(){
  if(!id)return false;
  // The callback already stored the one-use code on the server. Keep only its
  // non-secret intent identifier in the browser until completion succeeds.
- if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))throw new Error('Invalid connection request. Start again from Connected apps.');
+ if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))throw new Error('Invalid connection request. Start again from Integrations.');
  await showApps();
  try{
   const data=await api(connectOnboardingApi),p=data.pending;
-  if(!p||p.id!==id)throw new Error('This connection belongs to another session or has expired. Start again from Connected apps.');
-  if(['denied','cancelled','expired','failed'].includes(p.status))throw new Error('Connection setup was not completed. You can start again from Connected apps.');
+  if(!p||p.id!==id)throw new Error('This connection belongs to another session or has expired. Start again from Integrations.');
+  if(['denied','cancelled','expired','failed'].includes(p.status))throw new Error('Connection setup was not completed. You can start again from Integrations.');
   const result=await api(`${connectOnboardingApi}/${id}/complete`,'POST',{},p.version);
   if((result.pending||result).status!=='completed')throw new Error('Connection setup is still pending. Choose Continue connection to check it again.');
   query.delete('connect_onboarding');history.replaceState(null,'',location.pathname+(query.size?'?'+query:'')+location.hash);
@@ -40,7 +40,7 @@ document.addEventListener('click',event=>{
  event.preventDefault();event.stopImmediatePropagation();run(async()=>{
   let data=await api(connectOnboardingApi);
   if(button.hasAttribute('data-connect-cancel')){
-   if(!data.pending)throw new Error('No pending connection. Refresh Connected apps.');
+   if(!data.pending)throw new Error('No pending connection. Refresh Integrations.');
    await api(`${connectOnboardingApi}/${data.pending.id}/cancel`,'POST',{},data.pending.version);
    const query=new URLSearchParams(location.search);query.delete('connect_onboarding');history.replaceState(null,'',location.pathname+(query.size?'?'+query:'')+location.hash);
    await showApps();notice('Connection setup cancelled.');return;

@@ -20,17 +20,23 @@ use sqlx::{PgPool, Postgres, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
-const TRIGGERS: [&str; 8] = [
+const TRIGGERS: [&str; 14] = [
     "inquiry_received",
     "referral_received",
+    "call_received",
+    "sms_received",
+    "fax_received",
+    "email_received",
+    "external_booking_received",
     "appointment_created",
     "appointment_rescheduled",
+    "appointment_cancelled",
     "eligibility_returned",
     "patient_checked_in",
     "visit_signed",
     "order_placed",
 ];
-const KINDS: [&str; 10] = [
+const KINDS: [&str; 19] = [
     "patient_form",
     "staff_task",
     "eligibility_query",
@@ -41,6 +47,15 @@ const KINDS: [&str; 10] = [
     "order",
     "referral",
     "human_approval",
+    "availability_query",
+    "slot_hold",
+    "appointment_booking",
+    "appointment_reschedule",
+    "appointment_cancel",
+    "intake_request",
+    "communication_send",
+    "ai_extract_draft",
+    "ai_response_draft",
 ];
 const PHASES: [&str; 4] = ["intake", "pre_visit", "visit", "follow_up"];
 
@@ -1119,4 +1134,56 @@ pub fn spasticity_movement_template() -> Value {
             {"key":"visit-pathway","title":"Select specialty visit pathway","kind":"human_approval","required":true,"manual_approval":true,"assigned_role":"clinician","due_after_minutes":10080,"escalation_role":"owner","depends_on":["functional-status","legal-consents"]}
         ]}
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn communications_scheduling_and_ai_modules_are_valid_definition_data() {
+        for kind in [
+            "availability_query",
+            "slot_hold",
+            "appointment_booking",
+            "appointment_reschedule",
+            "appointment_cancel",
+            "intake_request",
+            "communication_send",
+            "ai_extract_draft",
+            "ai_response_draft",
+        ] {
+            let definition = Definition {
+                steps: vec![StepDefinition {
+                    key: format!("{kind}-step"),
+                    title: format!("Reviewed {kind}"),
+                    kind: kind.into(),
+                    phase: Some("pre_visit".into()),
+                    required: true,
+                    manual_approval: true,
+                    assigned_role: Some("front_desk".into()),
+                    escalation_role: None,
+                    due_after_minutes: Some(60),
+                    depends_on: vec![],
+                    condition: None,
+                    form_fields: vec![],
+                }],
+            };
+            definition.validate().expect("new module is valid");
+        }
+    }
+
+    #[test]
+    fn communications_and_external_booking_triggers_are_registered() {
+        for trigger in [
+            "call_received",
+            "sms_received",
+            "fax_received",
+            "email_received",
+            "external_booking_received",
+            "appointment_cancelled",
+        ] {
+            assert!(TRIGGERS.contains(&trigger));
+        }
+    }
 }
