@@ -13,7 +13,10 @@
     "clinician_id": {"type": "string", "format": "uuid"},
     "hostname": {"type": "string", "format": "hostname", "maxLength": 253},
     "owner_email": {"type": "string", "format": "email", "maxLength": 320},
-    "expected_version": {"type": "string", "minLength": 1, "maxLength": 80},
+    "expected_version": {
+      "type": "string",
+      "pattern": "^[0-9]{2}\\.[0-9]{2}\\.[0-9]{2}\\.[1-9][0-9]*$"
+    },
     "image_reference": {
       "type": "string",
       "pattern": "^ghcr\\.io/pindustries/suncharts-ehr@sha256:[0-9a-f]{64}$"
