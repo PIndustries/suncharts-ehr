@@ -612,7 +612,7 @@ async fn care_items(
     let mut tx = db(&s)?.begin().await?;
     context(&mut tx, &a, patient, None).await?;
     let q=format!("SELECT {CARE_ROW} FROM specialty_care_items WHERE tenant_id=$1 AND patient_id=$2 ORDER BY updated_at DESC,id DESC LIMIT 100");
-    let items: Vec<Value> = sqlx::query_scalar(q)
+    let items: Vec<Value> = sqlx::query_scalar(&q)
         .bind(a.tenant_id)
         .bind(patient)
         .fetch_all(&mut *tx)
@@ -780,7 +780,7 @@ async fn care_worklist(a: Actor, ExtractState(s): ExtractState<State>) -> Result
     a.staff()?;
     let mut tx = db(&s)?.begin().await?;
     let q="SELECT (to_jsonb(s)-'tenant_id'-'request_id'-'create_request') || jsonb_build_object('patient_label',p.family_name || ', ' || p.given_name,'mrn',p.mrn) FROM specialty_care_items s JOIN patients p ON p.tenant_id=s.tenant_id AND p.id=s.patient_id WHERE s.tenant_id=$1 AND s.status NOT IN ('completed','cancelled','entered_in_error') ORDER BY s.updated_at DESC,s.id DESC LIMIT 200";
-    let items: Vec<Value> = sqlx::query_scalar(&q)
+    let items: Vec<Value> = sqlx::query_scalar(q)
         .bind(a.tenant_id)
         .fetch_all(&mut *tx)
         .await?;
