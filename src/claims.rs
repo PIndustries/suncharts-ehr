@@ -668,6 +668,11 @@ async fn cms1500(
         .map(|(i, value)| format!("{}: {}", i + 1, html_escape(value)))
         .collect::<Vec<_>>()
         .join(" &nbsp; ");
+    let patient_name = format!(
+        "{} {}",
+        html_escape(json_text(patient, "given_name")),
+        html_escape(json_text(patient, "family_name"))
+    );
     let document = format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><title>CMS-1500 {control}</title><style>
 @page{{size:letter landscape;margin:.3in}}*{{box-sizing:border-box}}body{{font:11px Arial,sans-serif;color:#151515;margin:0}}header{{display:flex;justify-content:space-between;align-items:end;border-bottom:3px solid #d66;padding-bottom:8px;margin-bottom:8px}}h1{{font-size:22px;margin:0}}.note{{color:#555;max-width:520px;text-align:right}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);border-left:1px solid #b55;border-top:1px solid #b55}}.field{{min-height:48px;padding:5px;border-right:1px solid #b55;border-bottom:1px solid #b55}}.wide{{grid-column:span 2}}.full{{grid-column:1/-1}}label{{display:block;color:#7b2e2e;font-size:9px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}}table{{width:100%;border-collapse:collapse;margin-top:8px}}th,td{{border:1px solid #b55;padding:5px;text-align:left}}th{{color:#7b2e2e;font-size:9px;text-transform:uppercase}}.money{{text-align:right}}footer{{display:flex;justify-content:space-between;margin-top:8px;color:#555}}button{{padding:8px 12px}}@media print{{button{{display:none}}}}</style></head><body>
@@ -678,11 +683,7 @@ async fn cms1500(
         member = html_escape(json_text(policy, "member_id")),
         payer = html_escape(json_text(payer, "name")),
         frequency = html_escape(&c.frequency),
-        patient_name = format!(
-            "{} {}",
-            html_escape(json_text(patient, "given_name")),
-            html_escape(json_text(patient, "family_name"))
-        ),
+        patient_name = patient_name,
         patient_dob = html_escape(json_text(patient, "birth_date")),
         mrn = html_escape(json_text(patient, "mrn")),
         patient_address = html_escape(&content.patient_address),
