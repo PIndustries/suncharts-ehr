@@ -314,6 +314,22 @@ async fn send(socket: &mut Socket, message: Message) -> Result<()> {
 async fn close(socket: &mut Socket) {
     let _ = tokio::time::timeout(Duration::from_secs(2), socket.close(None)).await;
 }
+
+fn validate_connected_frame(value: &Value, expected_installation: Option<Uuid>) -> Result<()> {
+    let installation = value["installation_id"]
+        .as_str()
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .ok_or(Error::Invalid(
+            "Connect channel connected frame has an invalid installation identity",
+        ))?;
+    if expected_installation != Some(installation) {
+        return Err(Error::Invalid(
+            "Connect channel connected frame installation mismatch",
+        ));
+    }
+    Ok(())
+}
+
 async fn connection(
     state: &State,
     b: &Binding,
@@ -385,7 +401,7 @@ async fn connection(
                                 let id=value["id"].as_str().and_then(|v|Uuid::parse_str(v).ok()).ok_or(Error::Invalid("invalid Connect heartbeat"))?;
                                 send(&mut socket,Message::Text(json!({"version":1,"type":"heartbeat_ack","id":id}).to_string().into())).await?;
                             },
-                            Some("connected")=>{if b.status=="completed" && value["installation_id"]!=json!(b.connect_installation_id){return Err(Error::Unauthorized);}last=std::time::Instant::now();health(db,b,session,"connected",true).await?;},
+                            Some("connected")=>{if b.status=="completed"{validate_connected_frame(&value,b.connect_installation_id)?;}last=std::time::Instant::now();health(db,b,session,"connected",true).await?;},
                             Some("service_events_available")=>{
                                 let installation=value["installation_id"].as_str().and_then(|v|Uuid::parse_str(v).ok()).ok_or(Error::Invalid("invalid Connect service installation"))?;
                                 let cursor=value["cursor"].as_i64().filter(|v|*v>=0).ok_or(Error::Invalid("invalid Connect service cursor"))?;
@@ -437,7 +453,12 @@ async fn worker(
             break;
         }
         let _ = health(db, &b, session, "connecting", false).await;
-        let _ = connection(&state, &b, session, &mut stop).await;
+        if let Err(error) = connection(&state, &b, session, &mut stop).await {
+            // Error messages are deliberately bounded and credential-free. This is
+            // operationally necessary to distinguish a rejected first frame from
+            // a normal network reconnect without logging tokens or frame bodies.
+            eprintln!("Connect transport session ended: {error}");
+        }
         let _ = health(db, &b, session, "offline", false).await;
         if *stop.borrow() {
             break;
@@ -498,4 +519,25 @@ pub async fn status(db: &PgPool, tenant: Uuid) -> Result<Value> {
     Ok(
         json!({"configured":true,"authorized":authorized,"state":if connected{"connected"}else if live && fresh && state!="offline"{"reconnecting"}else{"offline"},"transport":"outbound_websocket","last_seen_at":last_seen,"pairing_status":pairing}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connected_frame_requires_the_expected_installation() {
+        let installation = Uuid::new_v4();
+        let frame = json!({
+            "version": 1,
+            "type": "connected",
+            "installation_id": installation,
+        });
+        assert!(validate_connected_frame(&frame, Some(installation)).is_ok());
+        assert!(validate_connected_frame(&frame, Some(Uuid::new_v4())).is_err());
+        assert!(
+            validate_connected_frame(&json!({"installation_id": null}), Some(installation))
+                .is_err()
+        );
+    }
 }
