@@ -6,14 +6,14 @@ use crate::{
     State,
 };
 use axum::{
-    extract::{Path, Query, State as ExtractState},
+    extract::{DefaultBodyLimit, Path, Query, State as ExtractState},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use base64::{
-    engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD},
+    engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD},
     Engine,
 };
 use chrono::{DateTime, Duration, TimeZone, Utc};
@@ -31,12 +31,19 @@ const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const GOOGLE_JWKS_URL: &str = "https://www.googleapis.com/oauth2/v3/certs";
 const GMAIL_API: &str = "https://gmail.googleapis.com/gmail/v1";
-const GMAIL_SCOPE: &str = "https://www.googleapis.com/auth/gmail.readonly";
+const GMAIL_READ_SCOPE: &str = "https://www.googleapis.com/auth/gmail.readonly";
+const GMAIL_SEND_SCOPE: &str = "https://www.googleapis.com/auth/gmail.send";
+const GMAIL_SCOPES: &str =
+    "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send";
 const MAX_MESSAGES_PER_SYNC: usize = 500;
 const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
 const MAX_TOTAL_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
 const MAX_MESSAGE_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ATTACHMENT_RESPONSE_BYTES: usize = 14 * 1024 * 1024;
+const MAX_OUTBOUND_BODY_BYTES: usize = 256 * 1024;
+const MAX_OUTBOUND_SUBJECT_BYTES: usize = 500;
+const MAX_OUTBOUND_ATTACHMENT_BYTES: usize = 5 * 1024 * 1024;
+const MAX_OUTBOUND_ATTACHMENTS_BYTES: usize = 6 * 1024 * 1024;
 
 fn db(state: &State) -> Result<&PgPool> {
     Ok(&state.browser.as_ref().ok_or(Error::NotFound)?.db)
@@ -143,6 +150,16 @@ fn credential_bundle(secret: &str) -> CredentialBundle {
         expires_at: None,
         scope: None,
     })
+}
+fn scopes_include(scopes: Option<&str>, required: &str) -> bool {
+    scopes.is_some_and(|scopes| {
+        scopes
+            .split_ascii_whitespace()
+            .any(|scope| scope == required)
+    })
+}
+fn has_scope(bundle: &CredentialBundle, required: &str) -> bool {
+    scopes_include(bundle.scope.as_deref(), required)
 }
 
 #[derive(sqlx::FromRow)]
@@ -266,6 +283,20 @@ pub fn router() -> Router<State> {
             "/api/v1/integrations/{id}/gmail/referrals/{entry}/actions",
             post(inbox_action),
         )
+        .route(
+            "/api/v1/integrations/{id}/gmail/outbound-drafts",
+            get(outbound_drafts)
+                .post(create_outbound_draft)
+                .layer(DefaultBodyLimit::max(12 * 1024 * 1024)),
+        )
+        .route(
+            "/api/v1/integrations/{id}/gmail/outbound-drafts/{draft}",
+            get(outbound_draft),
+        )
+        .route(
+            "/api/v1/integrations/{id}/gmail/outbound-drafts/{draft}/actions",
+            post(outbound_draft_action),
+        )
 }
 
 #[derive(Deserialize)]
@@ -314,7 +345,7 @@ async fn oauth_start(
         id,
         actor.sub,
         "oauth_started",
-        json!({"session_id":session,"expires_at":expires,"scope":GMAIL_SCOPE}),
+        json!({"session_id":session,"expires_at":expires,"scope":GMAIL_SCOPES}),
     )
     .await?;
     tx.commit().await?;
@@ -325,7 +356,7 @@ async fn oauth_start(
         .append_pair("client_id", &client_id)
         .append_pair("redirect_uri", redirect.as_str())
         .append_pair("response_type", "code")
-        .append_pair("scope", GMAIL_SCOPE)
+        .append_pair("scope", GMAIL_SCOPES)
         .append_pair("access_type", "offline")
         .append_pair("include_granted_scopes", "true")
         .append_pair("prompt", "consent")
@@ -333,8 +364,8 @@ async fn oauth_start(
         .append_pair("code_challenge", &pkce_challenge(&verifier))
         .append_pair("code_challenge_method", "S256");
     Ok(reply(
-        json!({"authorization_url":authorization.as_str(),"expires_at":expires,"scope":GMAIL_SCOPE,
-      "restricted_scope_notice":"Google classifies mailbox read access as restricted; production use may require OAuth verification and a security assessment."}),
+        json!({"authorization_url":authorization.as_str(),"expires_at":expires,"scope":GMAIL_SCOPES,
+      "scope_notice":"Google classifies gmail.readonly as restricted and gmail.send as sensitive. Production use may require OAuth verification; storing restricted mailbox data may require a security assessment."}),
     ))
 }
 
@@ -453,6 +484,21 @@ async fn oauth_callback(
         return Err(Error::Invalid("Google token exchange rejected"));
     }
     let tokens: TokenResponse = bounded_json(response, 64 * 1024).await?;
+    if !scopes_include(tokens.scope.as_deref(), GMAIL_READ_SCOPE)
+        || !scopes_include(tokens.scope.as_deref(), GMAIL_SEND_SCOPE)
+    {
+        mark_attention(
+            pool,
+            row.tenant_id,
+            row.id,
+            session.created_by,
+            "oauth_required_scopes_missing",
+        )
+        .await?;
+        return Err(Error::Conflict(
+            "Google did not grant the required Gmail read and send scopes",
+        ));
+    }
     let bundle = CredentialBundle {
         client_secret: existing.client_secret,
         access_token: Some(tokens.access_token),
@@ -1126,6 +1172,14 @@ fn header_value(payload: &Value, name: &str) -> Option<String> {
         .as_str()
         .map(|v| v.chars().take(2000).collect())
 }
+fn rfc_message_id(payload: &Value) -> Option<String> {
+    header_value(payload, "Message-ID").filter(|value| {
+        value.len() <= 900
+            && value.starts_with('<')
+            && value.ends_with('>')
+            && !value.chars().any(char::is_control)
+    })
+}
 async fn stage_message(
     pool: &PgPool,
     http: &reqwest::Client,
@@ -1197,8 +1251,8 @@ async fn stage_message(
         .flatten()
         .collect::<Vec<_>>();
     let mut tx = pool.begin().await?;
-    let inserted=sqlx::query("INSERT INTO gmail_referral_inbox(tenant_id,id,integration_id,gmail_message_id,thread_id,internal_date,sender,recipients,subject,snippet,body_text,labels) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING")
-  .bind(tenant).bind(inbox_id).bind(id).bind(message_id).bind(message.get("threadId").and_then(Value::as_str)).bind(internal).bind(header_value(payload,"From")).bind(json!(recipients)).bind(header_value(payload,"Subject")).bind(message.get("snippet").and_then(Value::as_str).map(|v|v.chars().take(5000).collect::<String>())).bind(if body.is_empty(){None}else{Some(body)}).bind(labels).execute(&mut *tx).await?.rows_affected()==1;
+    let inserted=sqlx::query("INSERT INTO gmail_referral_inbox(tenant_id,id,integration_id,gmail_message_id,thread_id,internal_date,sender,recipients,subject,snippet,body_text,labels,rfc_message_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT DO NOTHING")
+  .bind(tenant).bind(inbox_id).bind(id).bind(message_id).bind(message.get("threadId").and_then(Value::as_str)).bind(internal).bind(header_value(payload,"From")).bind(json!(recipients)).bind(header_value(payload,"Subject")).bind(message.get("snippet").and_then(Value::as_str).map(|v|v.chars().take(5000).collect::<String>())).bind(if body.is_empty(){None}else{Some(body)}).bind(labels).bind(rfc_message_id(payload)).execute(&mut *tx).await?.rows_affected()==1;
     if inserted {
         let attachment_count = fetched.len();
         for (part, bytes) in fetched {
@@ -1286,6 +1340,626 @@ async fn inbox_action(
     ))
 }
 
+#[derive(Clone)]
+pub(crate) struct GmailOutboundAttachmentInput {
+    pub(crate) filename: String,
+    pub(crate) mime_type: String,
+    pub(crate) content: Vec<u8>,
+}
+
+#[derive(Clone)]
+pub(crate) struct GmailOutboundDraftInput {
+    pub(crate) idempotency_key: String,
+    pub(crate) inbox_id: Option<Uuid>,
+    pub(crate) to: Vec<String>,
+    pub(crate) cc: Vec<String>,
+    pub(crate) subject: String,
+    pub(crate) body_text: String,
+    pub(crate) attachments: Vec<GmailOutboundAttachmentInput>,
+}
+
+fn valid_mailbox(value: &str) -> bool {
+    let value = value.trim();
+    let Some((local, domain)) = value.rsplit_once('@') else {
+        return false;
+    };
+    !local.is_empty()
+        && !domain.is_empty()
+        && value.len() <= 320
+        && value.is_ascii()
+        && !value.bytes().any(|byte| {
+            byte.is_ascii_control()
+                || byte.is_ascii_whitespace()
+                || matches!(byte, b',' | b'<' | b'>' | b'"' | b'(' | b')' | b';' | b':')
+        })
+}
+
+fn normalize_recipients(mut values: Vec<String>) -> Result<Vec<String>> {
+    if values.len() > 20 {
+        return Err(Error::Invalid("too many Gmail recipients"));
+    }
+    for value in &mut values {
+        *value = value.trim().to_owned();
+        if !valid_mailbox(value) {
+            return Err(Error::Invalid("invalid Gmail recipient"));
+        }
+    }
+    let mut seen = HashSet::new();
+    values.retain(|value| seen.insert(value.to_ascii_lowercase()));
+    Ok(values)
+}
+
+fn outbound_attachment(
+    input: GmailOutboundAttachmentInput,
+) -> Result<GmailOutboundAttachmentInput> {
+    let filename = clean(&input.filename, 200)?;
+    let mime_type = clean(&input.mime_type, 100)?;
+    if !filename.is_ascii()
+        || filename
+            .bytes()
+            .any(|byte| matches!(byte, b'"' | b'\\' | b';'))
+        || !mime_type.is_ascii()
+        || !mime_type.contains('/')
+        || input.content.is_empty()
+        || input.content.len() > MAX_OUTBOUND_ATTACHMENT_BYTES
+    {
+        return Err(Error::Invalid("invalid outbound Gmail attachment"));
+    }
+    Ok(GmailOutboundAttachmentInput {
+        filename,
+        mime_type,
+        content: input.content,
+    })
+}
+
+/// Creates content that can only be sent after a separate human approval action.
+/// Workflow and Claude dispatchers may call this helper, but no helper exists for
+/// bypassing the browser-only approval/send gate.
+pub(crate) async fn create_outbound_draft_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    actor: &Actor,
+    integration_id: Uuid,
+    mut input: GmailOutboundDraftInput,
+) -> Result<(Uuid, bool)> {
+    actor.staff()?;
+    input.idempotency_key = clean(&input.idempotency_key, 200)?;
+    if input.idempotency_key.len() < 16 {
+        return Err(Error::Invalid("Gmail draft idempotency key is too short"));
+    }
+    input.to = normalize_recipients(input.to)?;
+    input.cc = normalize_recipients(input.cc)?;
+    if input.to.is_empty() || input.to.len() + input.cc.len() > 20 {
+        return Err(Error::Invalid("Gmail draft requires bounded recipients"));
+    }
+    let mut recipient_set = HashSet::new();
+    for recipient in input.to.iter().chain(&input.cc) {
+        if !recipient_set.insert(recipient.to_ascii_lowercase()) {
+            return Err(Error::Invalid("duplicate Gmail recipient"));
+        }
+    }
+    input.subject = clean(&input.subject, 500)?;
+    if input.body_text.trim().is_empty()
+        || input.subject.len() > MAX_OUTBOUND_SUBJECT_BYTES
+        || input.body_text.len() > MAX_OUTBOUND_BODY_BYTES
+        || input.body_text.contains('\0')
+        || input.attachments.len() > 10
+    {
+        return Err(Error::Invalid("invalid outbound Gmail body or attachments"));
+    }
+    input.attachments = input
+        .attachments
+        .into_iter()
+        .map(outbound_attachment)
+        .collect::<Result<Vec<_>>>()?;
+    let total_attachment_bytes = input
+        .attachments
+        .iter()
+        .try_fold(0usize, |total, attachment| {
+            total.checked_add(attachment.content.len())
+        })
+        .ok_or(Error::Invalid("outbound Gmail attachments exceed limit"))?;
+    if total_attachment_bytes > MAX_OUTBOUND_ATTACHMENTS_BYTES {
+        return Err(Error::Invalid("outbound Gmail attachments exceed limit"));
+    }
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM instance_integrations WHERE tenant_id=$1 AND id=$2 AND provider='gmail' AND enabled)")
+        .bind(actor.tenant_id).bind(integration_id).fetch_one(&mut **tx).await?;
+    if !exists {
+        return Err(Error::NotFound);
+    }
+    let reply: Option<(Option<String>, Option<String>, Option<String>)> = if let Some(inbox) =
+        input.inbox_id
+    {
+        Some(sqlx::query_as("SELECT thread_id,rfc_message_id,subject FROM gmail_referral_inbox WHERE tenant_id=$1 AND integration_id=$2 AND id=$3")
+            .bind(actor.tenant_id).bind(integration_id).bind(inbox).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)?)
+    } else {
+        None
+    };
+    let (thread_id, in_reply_to) = if let Some((thread, message_id, original_subject)) = reply {
+        let thread = thread.ok_or(Error::Conflict(
+            "reviewed Gmail message has no thread identifier",
+        ))?;
+        let message_id = message_id.ok_or(Error::Conflict(
+            "reviewed Gmail message has no RFC Message-ID",
+        ))?;
+        if original_subject.as_deref() != Some(input.subject.as_str()) {
+            return Err(Error::Invalid(
+                "Gmail reply subject must match the reviewed message",
+            ));
+        }
+        if message_id.len() > 900
+            || !message_id.starts_with('<')
+            || !message_id.ends_with('>')
+            || message_id.chars().any(char::is_control)
+        {
+            return Err(Error::Invalid("reviewed Gmail Message-ID is invalid"));
+        }
+        (Some(thread), Some(message_id))
+    } else {
+        (None, None)
+    };
+    let attachment_digests = input
+        .attachments
+        .iter()
+        .map(|attachment| {
+            json!({
+                "filename":attachment.filename,"mime_type":attachment.mime_type,
+                "size":attachment.content.len(),"digest":hash(&attachment.content)
+            })
+        })
+        .collect::<Vec<_>>();
+    let canonical = serde_json::to_vec(&json!({
+        "inbox_id":input.inbox_id,"to":input.to,"cc":input.cc,"subject":input.subject,
+        "body_text":input.body_text,"thread_id":thread_id,"in_reply_to":in_reply_to,
+        "attachments":attachment_digests
+    }))
+    .map_err(|_| Error::Invalid("Gmail draft cannot be serialized"))?;
+    let payload_digest = hash(&canonical);
+    if let Some((draft, existing_digest)) = sqlx::query_as::<_,(Uuid,String)>("SELECT id,payload_digest FROM gmail_outbound_drafts WHERE tenant_id=$1 AND integration_id=$2 AND idempotency_key=$3")
+        .bind(actor.tenant_id).bind(integration_id).bind(&input.idempotency_key).fetch_optional(&mut **tx).await? {
+        if existing_digest != payload_digest {
+            return Err(Error::Conflict("Gmail idempotency key was already used for different content"));
+        }
+        return Ok((draft, false));
+    }
+    let draft = Uuid::new_v4();
+    let rfc_message_id = format!("<{draft}@suncharts.app>");
+    sqlx::query("INSERT INTO gmail_outbound_drafts(tenant_id,id,integration_id,inbox_id,idempotency_key,payload_digest,to_addresses,cc_addresses,subject,body_text,rfc_message_id,gmail_thread_id,in_reply_to,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
+        .bind(actor.tenant_id).bind(draft).bind(integration_id).bind(input.inbox_id).bind(&input.idempotency_key).bind(&payload_digest)
+        .bind(json!(input.to)).bind(json!(input.cc)).bind(&input.subject).bind(&input.body_text).bind(&rfc_message_id).bind(&thread_id).bind(&in_reply_to).bind(actor.sub)
+        .execute(&mut **tx).await?;
+    for (position, attachment) in input.attachments.into_iter().enumerate() {
+        sqlx::query("INSERT INTO gmail_outbound_attachments(tenant_id,draft_id,position,filename,mime_type,size_bytes,digest,content) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
+            .bind(actor.tenant_id).bind(draft).bind(position as i32).bind(attachment.filename).bind(attachment.mime_type)
+            .bind(attachment.content.len() as i32).bind(hash(&attachment.content)).bind(attachment.content).execute(&mut **tx).await?;
+    }
+    adapter_event(
+        tx,
+        actor.tenant_id,
+        integration_id,
+        actor.sub,
+        "outbound_draft_created",
+        json!({
+            "draft_id":draft,"inbox_id":input.inbox_id,"payload_digest":payload_digest,
+            "attachment_count":attachment_digests.len()
+        }),
+    )
+    .await?;
+    Ok((draft, true))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutboundAttachmentJson {
+    filename: String,
+    mime_type: String,
+    data_base64: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateOutboundDraft {
+    idempotency_key: String,
+    inbox_id: Option<Uuid>,
+    to: Vec<String>,
+    #[serde(default)]
+    cc: Vec<String>,
+    subject: String,
+    body_text: String,
+    #[serde(default)]
+    attachments: Vec<OutboundAttachmentJson>,
+}
+
+async fn create_outbound_draft(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(id): Path<Uuid>,
+    Json(input): Json<CreateOutboundDraft>,
+) -> Result<Response> {
+    actor.staff()?;
+    let attachments = input
+        .attachments
+        .into_iter()
+        .map(|attachment| {
+            let content = STANDARD
+                .decode(&attachment.data_base64)
+                .or_else(|_| URL_SAFE_NO_PAD.decode(&attachment.data_base64))
+                .map_err(|_| Error::Invalid("invalid outbound attachment encoding"))?;
+            Ok(GmailOutboundAttachmentInput {
+                filename: attachment.filename,
+                mime_type: attachment.mime_type,
+                content,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut tx = db(&state)?.begin().await?;
+    let (draft, created) = create_outbound_draft_in_tx(
+        &mut tx,
+        &actor,
+        id,
+        GmailOutboundDraftInput {
+            idempotency_key: input.idempotency_key,
+            inbox_id: input.inbox_id,
+            to: input.to,
+            cc: input.cc,
+            subject: input.subject,
+            body_text: input.body_text,
+            attachments,
+        },
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(reply(
+        json!({"id":draft,"created":created,"status":"draft","requires_human_approval":true}),
+    ))
+}
+
+async fn outbound_drafts(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(id): Path<Uuid>,
+) -> Result<Response> {
+    actor.staff()?;
+    let items:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',id,'inbox_id',inbox_id,'to',to_addresses,'cc',cc_addresses,'subject',subject,'status',status,'version',version,'created_by',created_by,'approved_by',approved_by,'approved_at',approved_at,'sent_at',sent_at,'last_error',last_error,'created_at',created_at,'attachment_count',(SELECT count(*) FROM gmail_outbound_attachments a WHERE a.tenant_id=d.tenant_id AND a.draft_id=d.id)) FROM gmail_outbound_drafts d WHERE tenant_id=$1 AND integration_id=$2 ORDER BY created_at DESC,id DESC LIMIT 100")
+        .bind(actor.tenant_id).bind(id).fetch_all(db(&state)?).await?;
+    Ok(reply(json!({"items":items})))
+}
+
+async fn outbound_draft(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path((id, draft)): Path<(Uuid, Uuid)>,
+) -> Result<Response> {
+    actor.staff()?;
+    let item:Value=sqlx::query_scalar("SELECT (to_jsonb(d)-'tenant_id'-'integration_id'-'idempotency_key') || jsonb_build_object('attachments',(SELECT coalesce(jsonb_agg(jsonb_build_object('position',position,'filename',filename,'mime_type',mime_type,'size_bytes',size_bytes,'digest',digest) ORDER BY position),'[]'::jsonb) FROM gmail_outbound_attachments a WHERE a.tenant_id=d.tenant_id AND a.draft_id=d.id),'receipt',(SELECT to_jsonb(r)-'tenant_id'-'draft_id' FROM gmail_outbound_receipts r WHERE r.tenant_id=d.tenant_id AND r.draft_id=d.id)) FROM gmail_outbound_drafts d WHERE tenant_id=$1 AND integration_id=$2 AND id=$3")
+        .bind(actor.tenant_id).bind(id).bind(draft).fetch_optional(db(&state)?).await?.ok_or(Error::NotFound)?;
+    Ok(reply(item))
+}
+
+fn human_browser(actor: &Actor) -> Result<()> {
+    actor.clinical()?;
+    if actor.iss != "suncharts-ehr-browser" {
+        return Err(Error::Forbidden);
+    }
+    Ok(())
+}
+
+fn mime_base64(bytes: &[u8]) -> String {
+    let encoded = STANDARD.encode(bytes);
+    let mut folded = String::with_capacity(encoded.len() + encoded.len() / 76 * 2);
+    for chunk in encoded.as_bytes().chunks(76) {
+        folded.push_str(std::str::from_utf8(chunk).unwrap_or_default());
+        folded.push_str("\r\n");
+    }
+    folded
+}
+
+fn encoded_subject(subject: &str) -> String {
+    if subject.is_ascii() {
+        subject.to_owned()
+    } else {
+        format!("=?UTF-8?B?{}?=", STANDARD.encode(subject.as_bytes()))
+    }
+}
+
+fn address_header(name: &str, values: &[String]) -> String {
+    let mut header = format!("{name}: ");
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            header.push_str(",\r\n ");
+        }
+        header.push_str(value);
+    }
+    header.push_str("\r\n");
+    header
+}
+
+#[derive(sqlx::FromRow)]
+struct OutboundDraftRow {
+    id: Uuid,
+    to_addresses: Value,
+    cc_addresses: Value,
+    subject: String,
+    body_text: String,
+    rfc_message_id: String,
+    gmail_thread_id: Option<String>,
+    in_reply_to: Option<String>,
+    status: String,
+    version: i64,
+}
+
+#[derive(sqlx::FromRow)]
+struct OutboundAttachmentRow {
+    position: i32,
+    filename: String,
+    mime_type: String,
+    content: Vec<u8>,
+}
+
+fn build_outbound_mime(
+    mailbox: &str,
+    draft: &OutboundDraftRow,
+    attachments: &[OutboundAttachmentRow],
+) -> Result<Vec<u8>> {
+    let to: Vec<String> = serde_json::from_value(draft.to_addresses.clone())
+        .map_err(|_| Error::Invalid("stored Gmail recipients are invalid"))?;
+    let cc: Vec<String> = serde_json::from_value(draft.cc_addresses.clone())
+        .map_err(|_| Error::Invalid("stored Gmail recipients are invalid"))?;
+    if !valid_mailbox(mailbox)
+        || to.is_empty()
+        || to.iter().chain(&cc).any(|value| !valid_mailbox(value))
+        || draft.rfc_message_id.chars().any(char::is_control)
+    {
+        return Err(Error::Invalid("stored Gmail draft headers are invalid"));
+    }
+    let mut mime = String::new();
+    mime.push_str(&format!("From: {mailbox}\r\n"));
+    mime.push_str(&address_header("To", &to));
+    if !cc.is_empty() {
+        mime.push_str(&address_header("Cc", &cc));
+    }
+    mime.push_str(&format!("Subject: {}\r\n", encoded_subject(&draft.subject)));
+    mime.push_str(&format!("Message-ID: {}\r\n", draft.rfc_message_id));
+    if let Some(reply) = &draft.in_reply_to {
+        if reply.chars().any(char::is_control) {
+            return Err(Error::Invalid("stored Gmail reply header is invalid"));
+        }
+        mime.push_str(&format!("In-Reply-To: {reply}\r\nReferences: {reply}\r\n"));
+    }
+    mime.push_str("MIME-Version: 1.0\r\n");
+    if attachments.is_empty() {
+        mime.push_str(
+            "Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n",
+        );
+        mime.push_str(&mime_base64(draft.body_text.as_bytes()));
+    } else {
+        let boundary = format!("suncharts-{}", draft.id.simple());
+        mime.push_str(&format!(
+            "Content-Type: multipart/mixed; boundary=\"{boundary}\"\r\n\r\n"
+        ));
+        mime.push_str(&format!("--{boundary}\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"));
+        mime.push_str(&mime_base64(draft.body_text.as_bytes()));
+        for attachment in attachments {
+            if attachment.position < 0
+                || !attachment.filename.is_ascii()
+                || !attachment.mime_type.is_ascii()
+                || attachment.content.len() > MAX_OUTBOUND_ATTACHMENT_BYTES
+            {
+                return Err(Error::Invalid("stored Gmail attachment is invalid"));
+            }
+            mime.push_str(&format!("--{boundary}\r\nContent-Type: {}; name=\"{}\"\r\nContent-Disposition: attachment; filename=\"{}\"\r\nContent-Transfer-Encoding: base64\r\n\r\n",attachment.mime_type,attachment.filename,attachment.filename));
+            mime.push_str(&mime_base64(&attachment.content));
+        }
+        mime.push_str(&format!("--{boundary}--\r\n"));
+    }
+    Ok(mime.into_bytes())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutboundDraftAction {
+    action: String,
+    reason: String,
+    expected_version: i64,
+}
+
+async fn outbound_draft_action(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path((id, draft_id)): Path<(Uuid, Uuid)>,
+    Json(input): Json<OutboundDraftAction>,
+) -> Result<Response> {
+    human_browser(&actor)?;
+    let reason = clean(&input.reason, 500)?;
+    if input.expected_version < 1 {
+        return Err(Error::Invalid("invalid Gmail draft version"));
+    }
+    if input.action == "send" {
+        return send_outbound_draft(
+            &actor,
+            db(&state)?,
+            id,
+            draft_id,
+            input.expected_version,
+            &reason,
+        )
+        .await;
+    }
+    let mut tx = db(&state)?.begin().await?;
+    let current:(String,i64)=sqlx::query_as("SELECT status,version FROM gmail_outbound_drafts WHERE tenant_id=$1 AND integration_id=$2 AND id=$3 FOR UPDATE")
+        .bind(actor.tenant_id).bind(id).bind(draft_id).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
+    if current.1 != input.expected_version {
+        return Err(Error::Conflict("Gmail draft version changed"));
+    }
+    let (status, action) = match input.action.as_str() {
+        "approve" if current.0 == "draft" => {
+            sqlx::query("UPDATE gmail_outbound_drafts SET status='approved',approved_by=$4,approved_at=now(),approval_reason=$5,version=version+1,updated_at=now() WHERE tenant_id=$1 AND integration_id=$2 AND id=$3")
+                .bind(actor.tenant_id).bind(id).bind(draft_id).bind(actor.sub).bind(&reason).execute(&mut *tx).await?;
+            ("approved", "outbound_draft_approved")
+        }
+        "cancel" if matches!(current.0.as_str(), "draft" | "approved") => {
+            sqlx::query("UPDATE gmail_outbound_drafts SET status='cancelled',cancelled_by=$4,cancelled_at=now(),version=version+1,updated_at=now() WHERE tenant_id=$1 AND integration_id=$2 AND id=$3")
+                .bind(actor.tenant_id).bind(id).bind(draft_id).bind(actor.sub).execute(&mut *tx).await?;
+            ("cancelled", "outbound_draft_cancelled")
+        }
+        _ => {
+            return Err(Error::Conflict(
+                "Gmail draft action is not valid for its current state",
+            ))
+        }
+    };
+    adapter_event(
+        &mut tx,
+        actor.tenant_id,
+        id,
+        actor.sub,
+        action,
+        json!({"draft_id":draft_id,"reason":reason,"from_status":current.0,"to_status":status}),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(reply(
+        json!({"id":draft_id,"status":status,"version":current.1+1}),
+    ))
+}
+
+async fn send_outbound_draft(
+    actor: &Actor,
+    pool: &PgPool,
+    integration_id: Uuid,
+    draft_id: Uuid,
+    expected_version: i64,
+    reason: &str,
+) -> Result<Response> {
+    let integration = integration(pool, actor.tenant_id, integration_id).await?;
+    let bundle = load_bundle(pool, &integration).await?;
+    if !has_scope(&bundle, GMAIL_SEND_SCOPE) {
+        return Err(Error::Conflict(
+            "Gmail send scope is not authorized; reconnect Gmail",
+        ));
+    }
+    let token = access_token(pool, &integration).await?;
+    let http = client()?;
+    let profile_response = http
+        .get(format!("{GMAIL_API}/users/me/profile"))
+        .bearer_auth(token.as_str())
+        .send()
+        .await
+        .map_err(|_| Error::Invalid("Gmail profile request unavailable"))?;
+    let profile: Profile = bounded_json(profile_response, 64 * 1024).await?;
+
+    let mut tx = pool.begin().await?;
+    let draft:OutboundDraftRow=sqlx::query_as("SELECT id,to_addresses,cc_addresses,subject,body_text,rfc_message_id,gmail_thread_id,in_reply_to,status,version FROM gmail_outbound_drafts WHERE tenant_id=$1 AND integration_id=$2 AND id=$3 FOR UPDATE")
+        .bind(actor.tenant_id).bind(integration_id).bind(draft_id).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
+    if draft.status == "sent" {
+        let receipt:Value=sqlx::query_scalar("SELECT to_jsonb(r)-'tenant_id'-'draft_id' FROM gmail_outbound_receipts r WHERE tenant_id=$1 AND draft_id=$2")
+            .bind(actor.tenant_id).bind(draft_id).fetch_one(&mut *tx).await?;
+        tx.rollback().await?;
+        return Ok(reply(
+            json!({"id":draft_id,"status":"sent","receipt":receipt,"idempotent_replay":true}),
+        ));
+    }
+    if draft.version != expected_version || draft.status != "approved" {
+        return Err(Error::Conflict(
+            "Gmail draft must be approved at the expected version before sending",
+        ));
+    }
+    let attachments:Vec<OutboundAttachmentRow>=sqlx::query_as("SELECT position,filename,mime_type,content FROM gmail_outbound_attachments WHERE tenant_id=$1 AND draft_id=$2 ORDER BY position")
+        .bind(actor.tenant_id).bind(draft_id).fetch_all(&mut *tx).await?;
+    let raw = build_outbound_mime(&profile.email_address, &draft, &attachments)?;
+    if raw.len() > 12 * 1024 * 1024 {
+        return Err(Error::Invalid("encoded Gmail message exceeds limit"));
+    }
+    sqlx::query("UPDATE gmail_outbound_drafts SET status='sending',send_started_by=$4,send_started_at=now(),version=version+1,last_error=NULL,updated_at=now() WHERE tenant_id=$1 AND integration_id=$2 AND id=$3")
+        .bind(actor.tenant_id).bind(integration_id).bind(draft_id).bind(actor.sub).execute(&mut *tx).await?;
+    adapter_event(
+        &mut tx,
+        actor.tenant_id,
+        integration_id,
+        actor.sub,
+        "outbound_send_started",
+        json!({"draft_id":draft_id,"reason":reason,"payload_digest":hash(&raw)}),
+    )
+    .await?;
+    tx.commit().await?;
+
+    let request_body = if let Some(thread) = &draft.gmail_thread_id {
+        json!({"raw":URL_SAFE_NO_PAD.encode(&raw),"threadId":thread})
+    } else {
+        json!({"raw":URL_SAFE_NO_PAD.encode(&raw)})
+    };
+    let response = http
+        .post(format!("{GMAIL_API}/users/me/messages/send"))
+        .bearer_auth(token.as_str())
+        .json(&request_body)
+        .send()
+        .await;
+    let response = match response {
+        Ok(response) if response.status().is_success() => response,
+        _ => {
+            mark_outbound_failed(
+                pool,
+                actor,
+                integration_id,
+                draft_id,
+                "provider_outcome_unknown",
+            )
+            .await?;
+            return Err(Error::Invalid(
+                "Gmail send failed; review Sent mail before creating another draft",
+            ));
+        }
+    };
+    let provider: Value = bounded_json(response, 64 * 1024)
+        .await
+        .map_err(|_| Error::Invalid("invalid Gmail send receipt"))?;
+    let gmail_message_id = provider
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 200)
+        .ok_or(Error::Invalid(
+            "Gmail send receipt has no message identifier",
+        ))?;
+    let gmail_thread_id = provider
+        .get("threadId")
+        .and_then(Value::as_str)
+        .filter(|value| value.len() <= 200);
+    let receipt = json!({"id":gmail_message_id,"threadId":gmail_thread_id,"labelIds":provider.get("labelIds").cloned().unwrap_or_else(||json!([]))});
+    let receipt_bytes = serde_json::to_vec(&receipt)
+        .map_err(|_| Error::Invalid("Gmail receipt cannot be serialized"))?;
+    let mut tx = pool.begin().await?;
+    sqlx::query("INSERT INTO gmail_outbound_receipts(tenant_id,draft_id,gmail_message_id,gmail_thread_id,provider_response_digest,provider_response,sent_by) VALUES($1,$2,$3,$4,$5,$6,$7)")
+        .bind(actor.tenant_id).bind(draft_id).bind(gmail_message_id).bind(gmail_thread_id).bind(hash(&receipt_bytes)).bind(&receipt).bind(actor.sub).execute(&mut *tx).await?;
+    sqlx::query("UPDATE gmail_outbound_drafts SET status='sent',sent_at=now(),last_error=NULL,version=version+1,updated_at=now() WHERE tenant_id=$1 AND integration_id=$2 AND id=$3 AND status='sending' AND send_started_by=$4")
+        .bind(actor.tenant_id).bind(integration_id).bind(draft_id).bind(actor.sub).execute(&mut *tx).await?;
+    adapter_event(&mut tx,actor.tenant_id,integration_id,actor.sub,"outbound_sent",json!({"draft_id":draft_id,"gmail_message_id":gmail_message_id,"gmail_thread_id":gmail_thread_id,"provider_response_digest":hash(&receipt_bytes)})).await?;
+    tx.commit().await?;
+    Ok(reply(
+        json!({"id":draft_id,"status":"sent","receipt":receipt,"idempotent_replay":false}),
+    ))
+}
+
+async fn mark_outbound_failed(
+    pool: &PgPool,
+    actor: &Actor,
+    integration_id: Uuid,
+    draft_id: Uuid,
+    error: &str,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("UPDATE gmail_outbound_drafts SET status='failed',last_error=$4,version=version+1,updated_at=now() WHERE tenant_id=$1 AND integration_id=$2 AND id=$3 AND status='sending'")
+        .bind(actor.tenant_id).bind(integration_id).bind(draft_id).bind(error).execute(&mut *tx).await?;
+    adapter_event(
+        &mut tx,
+        actor.tenant_id,
+        integration_id,
+        actor.sub,
+        "outbound_send_failed",
+        json!({"draft_id":draft_id,"error":error}),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1306,7 +1980,7 @@ mod tests {
             access_token: Some("access".into()),
             refresh_token: Some("refresh".into()),
             expires_at: Some(Utc::now()),
-            scope: Some(GMAIL_SCOPE.into()),
+            scope: Some(GMAIL_SCOPES.into()),
         })
         .unwrap();
         assert_eq!(
@@ -1320,6 +1994,10 @@ mod tests {
         assert_eq!(MAX_TOTAL_ATTACHMENT_BYTES, 20 * 1024 * 1024);
         assert_eq!(MAX_MESSAGE_RESPONSE_BYTES, 2 * 1024 * 1024);
         assert_eq!(MAX_ATTACHMENT_RESPONSE_BYTES, 14 * 1024 * 1024);
+        assert_eq!(MAX_OUTBOUND_BODY_BYTES, 256 * 1024);
+        assert_eq!(MAX_OUTBOUND_SUBJECT_BYTES, 500);
+        assert_eq!(MAX_OUTBOUND_ATTACHMENT_BYTES, 5 * 1024 * 1024);
+        assert_eq!(MAX_OUTBOUND_ATTACHMENTS_BYTES, 6 * 1024 * 1024);
     }
     #[test]
     fn callback_and_push_urls_require_plain_https() {
@@ -1344,5 +2022,65 @@ mod tests {
         assert!(body.contains("synthetic referral body"));
         assert_eq!(attachments.len(), 1);
         assert_eq!(attachments[0].attachment_id, "attachment-1");
+        let headers = json!({"headers":[{"name":"Message-ID","value":"<safe@example.test>"}]});
+        assert_eq!(
+            rfc_message_id(&headers).as_deref(),
+            Some("<safe@example.test>")
+        );
+    }
+    #[test]
+    fn oauth_scope_set_requires_read_and_send() {
+        assert!(scopes_include(Some(GMAIL_SCOPES), GMAIL_READ_SCOPE));
+        assert!(scopes_include(Some(GMAIL_SCOPES), GMAIL_SEND_SCOPE));
+        assert!(!scopes_include(Some(GMAIL_READ_SCOPE), GMAIL_SEND_SCOPE));
+    }
+    #[test]
+    fn recipient_validation_rejects_header_injection_and_duplicates() {
+        assert!(valid_mailbox("referrals@example.test"));
+        assert!(!valid_mailbox(
+            "referrals@example.test\r\nBcc: attacker@example.test"
+        ));
+        assert!(
+            normalize_recipients(vec!["care@example.test".into(), "CARE@example.test".into()])
+                .is_ok_and(|values| values.len() == 1)
+        );
+    }
+    #[test]
+    fn outbound_mime_preserves_reviewed_thread_headers() {
+        let draft = OutboundDraftRow {
+            id: Uuid::nil(),
+            to_addresses: json!(["referrals@example.test"]),
+            cc_addresses: json!([]),
+            subject: "Referral review".into(),
+            body_text: "Reviewed response".into(),
+            rfc_message_id: "<draft@suncharts.app>".into(),
+            gmail_thread_id: Some("thread-1".into()),
+            in_reply_to: Some("<original@example.test>".into()),
+            status: "approved".into(),
+            version: 2,
+        };
+        let mime =
+            String::from_utf8(build_outbound_mime("clinic@example.test", &draft, &[]).unwrap())
+                .unwrap();
+        assert!(mime.contains("In-Reply-To: <original@example.test>\r\n"));
+        assert!(mime.contains("References: <original@example.test>\r\n"));
+        assert!(!mime.contains("Reviewed response"));
+    }
+    #[test]
+    fn automated_actor_cannot_approve_or_send() {
+        let now = Utc::now().timestamp();
+        let mut actor = Actor {
+            sub: Uuid::nil(),
+            tenant_id: Uuid::nil(),
+            role: Role::Owner,
+            patient_id: None,
+            iss: "suncharts-delivery-worker".into(),
+            aud: "suncharts-engine".into(),
+            iat: now,
+            exp: now + 120,
+        };
+        assert!(human_browser(&actor).is_err());
+        actor.iss = "suncharts-ehr-browser".into();
+        assert!(human_browser(&actor).is_ok());
     }
 }
