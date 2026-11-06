@@ -6,6 +6,7 @@ pub mod billing;
 mod branding;
 pub mod browser;
 pub mod ca277;
+pub mod care_pathways;
 pub mod checkout;
 pub mod claimmd;
 pub mod claimmd_eligibility;
@@ -307,6 +308,7 @@ pub fn app(state: State) -> Router {
         .merge(demographics::router())
         .merge(billing::router())
         .merge(claimmd_eligibility::router())
+        .merge(care_pathways::routes())
         .merge(payments::router())
         .merge(claims::router())
         .merge(checkout::router())

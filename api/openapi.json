@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "SunCharts EHR Clinical API",
-    "version": "0.28.0",
+    "version": "0.29.0",
     "license": {
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
@@ -25052,6 +25052,39 @@
           }
         }
       }
+    },
+    "/api/v1/care-pathways/definitions": {
+      "get": {"operationId": "listCarePathwayDefinitions", "responses": {"200": {"description": "Tenant care-pathway definitions"}}},
+      "post": {"operationId": "createCarePathwayDefinition", "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object"}}}}, "responses": {"200": {"description": "Created draft definition"}, "409": {"description": "Slug or request identity conflict"}}}
+    },
+    "/api/v1/care-pathways/definitions/{id}": {
+      "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "get": {"operationId": "readCarePathwayDefinition", "responses": {"200": {"description": "Definition"}}},
+      "put": {"operationId": "updateCarePathwayDefinition", "parameters": [{"name": "If-Match", "in": "header", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "Updated draft definition"}, "428": {"description": "Current If-Match required"}}}
+    },
+    "/api/v1/care-pathways/definitions/{id}/actions": {
+      "post": {"operationId": "actOnCarePathwayDefinition", "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}, {"name": "If-Match", "in": "header", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "Definition activated or archived"}}}
+    },
+    "/api/v1/care-pathways/definitions/{id}/revisions": {
+      "get": {"operationId": "listCarePathwayDefinitionRevisions", "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}], "responses": {"200": {"description": "Immutable definition revisions"}}}
+    },
+    "/api/v1/care-pathways/trigger": {
+      "post": {"operationId": "triggerCarePathways", "summary": "Idempotently instantiate active definitions for a tenant event", "responses": {"200": {"description": "Matching pathway instances"}}}
+    },
+    "/api/v1/care-pathways/instances": {
+      "get": {"operationId": "listCarePathwayInstances", "parameters": [{"name": "patient_id", "in": "query", "schema": {"type": "string", "format": "uuid"}}, {"name": "status", "in": "query", "schema": {"type": "string", "enum": ["active","completed","cancelled"]}}], "responses": {"200": {"description": "Tenant pathway worklist"}}}
+    },
+    "/api/v1/care-pathways/instances/{id}": {
+      "get": {"operationId": "readCarePathwayInstance", "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}], "responses": {"200": {"description": "Pathway instance"}}}
+    },
+    "/api/v1/care-pathways/instances/{id}/actions": {
+      "post": {"operationId": "actOnCarePathwayInstance", "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}, {"name": "If-Match", "in": "header", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "Pathway cancelled or resumed"}, "428": {"description": "Current If-Match required"}}}
+    },
+    "/api/v1/care-pathways/instances/{id}/steps/{step}/actions": {
+      "post": {"operationId": "actOnCarePathwayStep", "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}, {"name": "step", "in": "path", "required": true, "schema": {"type": "string"}}, {"name": "If-Match", "in": "header", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "Updated pathway instance"}, "428": {"description": "Current If-Match required"}}}
+    },
+    "/api/v1/care-pathways/instances/{id}/events": {
+      "get": {"operationId": "listCarePathwayEvents", "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}], "responses": {"200": {"description": "Immutable attributed pathway event history"}}}
     }
   },
   "components": {
