@@ -80,6 +80,13 @@ logging their values:
   Connect once and erases the capability from process memory. The raw capability
   must never enter rendered/logged YAML, a URL, or browser storage.
 
+Managed upgrades do not rewrite that bootstrap provenance. The dev release executor adds a
+separate `managed_release_selection.json` key to the same mounted Secret. Its versioned contract
+names the immutable release digest, installation, release, predecessor selection and rollout or
+rollback reason. The EHR validates it against the running image/build and records an append-only
+selection chain. Older managed installations without this key continue to use their original
+bootstrap version and digest as the active selection.
+
 The runtime mounts those values as files. The provisioner generates them, the
 stable tenant/clinician UUIDs and the hostname exactly once per `request_id`.
 Retries reconcile the same namespace and digest. After initial owner creation,
@@ -96,8 +103,10 @@ not change.
 Managed provisioners exchange only the identifiers and owner email described by
 [`provisioning-request.schema.json`](../deploy/provisioning-request.schema.json)
 and [`provisioning-result.schema.json`](../deploy/provisioning-result.schema.json).
-`request_id` is the idempotency identity. `expected_version` and `image_reference` bind the selected immutable
-release catalog version to its digest; `/ready` reports both observed values and Connect waits for exact equality.
+`request_id` is the idempotency identity. Initial `expected_version` and `image_reference` bind
+the immutable bootstrap release to its digest. Later approved selections are kept separately;
+`/ready` reports bootstrap, selected and observed values and Connect waits for exact selected to
+observed equality.
 A retry must reconcile the same
 deployment, never create another instance. Passwords, API keys, database URLs and
 patient information are outside this contract and must use the provisioner's
