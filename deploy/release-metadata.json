@@ -1,5 +1,5 @@
 {
-  "schema_revision": 56,
+  "schema_revision": 57,
   "minimum_upgrade_schema_revision": 0,
   "database_rollback_mode": "restore_pre_update_backup",
   "channel_eligibility": ["preview", "stable"]
