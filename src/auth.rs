@@ -22,6 +22,7 @@ pub enum Role {
     FrontDesk,
     ReadOnly,
     PartnerSupport,
+    WorkflowManager,
     Patient,
 }
 
@@ -82,6 +83,15 @@ impl FromRequestParts<State> for Actor {
                 axum::http::Method::GET | axum::http::Method::HEAD
             );
             let actor = browser.authenticate(&parts.headers, write).await?;
+            let workflow_path = parts.uri.path();
+            let workflow_manager_allowed = workflow_path
+                .starts_with("/api/v1/care-pathways/definitions")
+                || workflow_path == "/api/v1/care-pathways/sandbox"
+                || workflow_path.starts_with("/api/v1/care-pathways/change-requests/")
+                || matches!(workflow_path, "/auth/me" | "/auth/logout");
+            if matches!(actor.role, Role::WorkflowManager) && !workflow_manager_allowed {
+                return Err(Error::Forbidden);
+            }
             if matches!(actor.role, Role::PartnerSupport)
                 && write
                 && parts.uri.path() != "/auth/logout"
@@ -118,7 +128,7 @@ impl FromRequestParts<State> for Actor {
         if actor.iat > now + 5
             || actor.exp <= actor.iat
             || actor.exp - actor.iat > 120
-            || matches!(actor.role, Role::PartnerSupport)
+            || matches!(actor.role, Role::PartnerSupport | Role::WorkflowManager)
             || (matches!(actor.role, Role::Patient) && actor.patient_id.is_none())
         {
             return Err(Error::Unauthorized);

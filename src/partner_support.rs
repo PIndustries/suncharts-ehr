@@ -45,6 +45,7 @@ struct Claims {
     sub: String,
     jti: Uuid,
     role: String,
+    purpose: String,
     partner_id: Uuid,
     customer_id: Uuid,
     order_id: Uuid,
@@ -68,6 +69,8 @@ struct Introspection {
     aud: Option<String>,
     #[serde(default)]
     role: Option<String>,
+    #[serde(default)]
+    purpose: Option<String>,
     #[serde(default)]
     tenant_id: Option<Uuid>,
     #[serde(default)]
@@ -93,6 +96,8 @@ struct Session {
     audience: String,
     expires_at: DateTime<Utc>,
     actor_subject: String,
+    delegated_role: String,
+    purpose: String,
 }
 
 fn http() -> std::result::Result<reqwest::Client, Error> {
@@ -111,7 +116,11 @@ fn configured_issuer() -> Result<String> {
 fn validate_claims(claims: &Claims, issuer: &str, audience: &str, now: i64) -> Result<()> {
     if claims.iss != issuer
         || claims.aud != audience
-        || !matches!(claims.role.as_str(), "partner_support" | "partner_admin")
+        || !matches!(
+            (claims.role.as_str(), claims.purpose.as_str()),
+            ("partner_support" | "partner_admin", "support")
+                | ("workflow_manager", "workflow_management")
+        )
         || claims.sub.is_empty()
         || claims.sub.len() > 500
         || claims.iat > now + 5
@@ -172,8 +181,8 @@ pub async fn accept(
         .await?;
     sqlx::query(
         "INSERT INTO partner_support_sessions
-         (token_hash,tenant_id,grant_id,partner_id,customer_id,order_id,issuer,audience,expires_at,actor_subject)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,to_timestamp($9),$10)",
+         (token_hash,tenant_id,grant_id,partner_id,customer_id,order_id,issuer,audience,expires_at,actor_subject,delegated_role,purpose)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,to_timestamp($9),$10,$11,$12)",
     )
     .bind(crate::browser::hash(&token))
     .bind(claims.tenant_id)
@@ -185,10 +194,23 @@ pub async fn accept(
     .bind(auth.origin())
     .bind(claims.exp as f64)
     .bind(&claims.sub)
+    .bind(&claims.role)
+    .bind(&claims.purpose)
     .execute(&mut *tx)
     .await?;
-    sqlx::query("INSERT INTO audit_events(tenant_id,actor_id,action,resource_id) VALUES($1,$2,'partner_admin.session_created',$2)")
-        .bind(claims.tenant_id).bind(claims.jti).execute(&mut *tx).await?;
+    let audit_action = if claims.role == "workflow_manager" {
+        "workflow_manager.session_created"
+    } else {
+        "partner_admin.session_created"
+    };
+    sqlx::query(
+        "INSERT INTO audit_events(tenant_id,actor_id,action,resource_id) VALUES($1,$2,$3,$2)",
+    )
+    .bind(claims.tenant_id)
+    .bind(claims.jti)
+    .bind(audit_action)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
 
     let seconds = (claims.exp - now).clamp(1, MAX_SESSION_SECONDS) as u64;
@@ -202,7 +224,7 @@ pub async fn accept(
     Ok((
         response_headers,
         Json(
-            json!({"authenticated":true,"role":"owner","delegated_role":"partner_admin","expires_at":claims.exp}),
+            json!({"authenticated":true,"role":if claims.role == "workflow_manager" {"workflow_manager"} else {"owner"},"delegated_role":claims.role,"expires_at":claims.exp}),
         ),
     ))
 }
@@ -211,7 +233,7 @@ pub async fn accept(
 /// response permanently revokes the local session and records that revocation atomically.
 pub(crate) async fn authenticate(auth: &BrowserAuth, token: &str) -> Result<Option<Actor>> {
     let session: Option<Session> = sqlx::query_as(
-        "SELECT tenant_id,grant_id,partner_id,customer_id,order_id,issuer,audience,expires_at,actor_subject FROM partner_support_sessions
+        "SELECT tenant_id,grant_id,partner_id,customer_id,order_id,issuer,audience,expires_at,actor_subject,delegated_role,purpose FROM partner_support_sessions
           WHERE token_hash=$1 AND expires_at>now() AND revoked_at IS NULL",
     )
     .bind(crate::browser::hash(token))
@@ -243,10 +265,8 @@ pub(crate) async fn authenticate(auth: &BrowserAuth, token: &str) -> Result<Opti
     let valid = introspection.active
         && introspection.jti == Some(session.grant_id)
         && introspection.aud.as_deref() == Some(auth.origin())
-        && matches!(
-            introspection.role.as_deref(),
-            Some("partner_support" | "partner_admin")
-        )
+        && introspection.role.as_deref() == Some(session.delegated_role.as_str())
+        && introspection.purpose.as_deref() == Some(session.purpose.as_str())
         && introspection.tenant_id == Some(session.tenant_id)
         && introspection.partner_id == Some(session.partner_id)
         && introspection.customer_id == Some(session.customer_id)
@@ -279,7 +299,11 @@ pub(crate) async fn authenticate(auth: &BrowserAuth, token: &str) -> Result<Opti
         // The grant is tenant, audience and time bounded, but within that boundary a contracted
         // support partner has the same application authority as the practice owner. The grant id
         // remains the actor id so every action is attributable to the delegated session.
-        role: Role::Owner,
+        role: if session.delegated_role == "workflow_manager" {
+            Role::WorkflowManager
+        } else {
+            Role::Owner
+        },
         patient_id: None,
         iss: session.issuer,
         aud: session.audience,
@@ -301,6 +325,7 @@ mod tests {
             sub: "partner:synthetic".into(),
             jti: Uuid::new_v4(),
             role: "partner_admin".into(),
+            purpose: "support".into(),
             partner_id: Uuid::new_v4(),
             customer_id: Uuid::new_v4(),
             order_id: Uuid::new_v4(),
