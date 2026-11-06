@@ -5,11 +5,11 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&
 
 function organizeWorkspaceNavigation(){
  const navigation=$('workspace-navigation');if(!navigation||typeof document.createElement!=='function'||navigation.dataset.organized==='true')return;
- const items={home:$('nav-practice'),schedule:$('nav-schedule'),queue:$('nav-followup'),messages:$('nav-portal'),patients:$('nav-clinical'),clinical:$('nav-labs'),specialty:$('nav-specialty'),referrals:$('nav-referrals'),billing:$('nav-billing'),claims:$('nav-claims'),clearinghouse:$('nav-edi'),workflows:$('nav-workflows'),admin:$('nav-admin'),apps:$('nav-apps'),migration:$('nav-migration')};
- const labels={home:'Home',schedule:'Schedule',queue:'Work queue',messages:'Messages',patients:'Patient directory',clinical:'Orders & results',specialty:'Specialty care',referrals:'Referrals',billing:'Billing & payments',claims:'Claims & remittances',clearinghouse:'Clearinghouse',workflows:'Workflow Studio',admin:'Practice settings',apps:'Integrations',migration:'Data import'};
+ const items={home:$('nav-practice'),schedule:$('nav-schedule'),queue:$('nav-followup'),messages:$('nav-portal'),communications:$('nav-communications'),patients:$('nav-clinical'),clinical:$('nav-labs'),specialty:$('nav-specialty'),referrals:$('nav-referrals'),billing:$('nav-billing'),claims:$('nav-claims'),clearinghouse:$('nav-edi'),workflows:$('nav-workflows'),aiReview:$('nav-ai-review'),admin:$('nav-admin'),apps:$('nav-apps'),migration:$('nav-migration')};
+ const labels={home:'Home',schedule:'Schedule',queue:'Work queue',messages:'Messages',communications:'Intake inbox',patients:'Patient directory',clinical:'Orders & results',specialty:'Specialty care',referrals:'Referrals',billing:'Billing & payments',claims:'Claims & remittances',clearinghouse:'Clearinghouse',workflows:'Workflow Studio',aiReview:'AI review',admin:'Practice settings',apps:'Integrations',migration:'Data import'};
  for(const [key,item] of Object.entries(items)){const label=item?.querySelector('span');if(label)label.textContent=labels[key];}
  const forms=typeof items.workflows?.cloneNode==='function'?items.workflows.cloneNode(true):null;if(forms){forms.id='nav-forms';forms.classList.add('nav-item-child');forms.querySelector('span').textContent='Forms';}
- const groups=[['Today',['home','schedule','queue','messages']],['Patients',['patients']],['Clinical',['clinical','specialty','referrals']],['Revenue',['billing','claims','clearinghouse']],['Operations',['workflows']],['Settings',['admin','apps','migration']]];
+ const groups=[['Today',['home','schedule','queue','messages']],['Patients',['patients']],['Clinical',['communications','clinical','specialty','referrals']],['Revenue',['billing','claims','clearinghouse']],['Operations',['workflows','aiReview']],['Settings',['admin','apps','migration']]];
  navigation.replaceChildren();
  for(const [label,keys] of groups){const group=document.createElement('div');group.className=`nav-group${label==='Patients'?' nav-group-primary':''}`;group.setAttribute('role','group');const id=`nav-${label.toLowerCase()}-label`;group.setAttribute('aria-labelledby',id);const heading=document.createElement('p');heading.className='nav-group-label';heading.id=id;heading.textContent=label;group.append(heading,...keys.map(key=>items[key]).filter(Boolean));if(label==='Operations'&&forms)group.append(forms);navigation.append(group);}
  navigation.dataset.organized='true';
@@ -144,6 +144,8 @@ async function enter() {
   organizeWorkspaceNavigation();
   if(typeof loadPracticeWorkspaceSettings==='function')await loadPracticeWorkspaceSettings();
   if($('nav-portal'))$('nav-portal').hidden=!['owner','clinician','front_desk'].includes(me.role)||$('nav-portal').dataset.workspaceHidden==='true';
+  if($('nav-communications'))$('nav-communications').hidden=!['owner','clinician','nurse','medical_assistant','front_desk'].includes(me.role);
+  if($('nav-ai-review'))$('nav-ai-review').hidden=!['owner','clinician','nurse','medical_assistant','front_desk'].includes(me.role);
   $('login-screen').hidden=true; $('app').hidden=false;$('toggle-directory').hidden=false;
   const roleLabel=me.delegated_role==='partner_admin'
     ?'Partner administrator (delegated)'
@@ -363,21 +365,23 @@ function setPage(title) {
   'Referrals':'Coordinate referral handoffs, follow-up dates and outcomes',
   'Follow-up tasks':'Work assigned tasks by due date and completion status',
   'Integrations':'Configure this EHR instance’s communications, scheduling partners, AI and authorized applications',
+  'Intake inbox':'Review inbound calls, messages, faxes and referral email before linking records',
+  'AI review':'Generate and review clinic-owned AI drafts before they affect workflow',
   'Connect services':'Manage reminders and SunCharts support services',
   'Support tickets':'Track SunCharts service requests and replies',
   'Data import':'Stage source records and reconcile imported data'
  };
  const today=['Practice home','Practice overview','Schedule','Pre-visit readiness','Appointment reminders','Reminder settings','Follow-up tasks','Patient portal inbox'];
  const patients=['Patients & encounters'];
- const clinical=['Labs & results','Specialty care','Referrals','Referral delivery settings'];
+ const clinical=['Labs & results','Specialty care','Referrals','Referral delivery settings','Intake inbox'];
  const revenue=['Billing & insurance','Payment settings','Payment review','Claims & remittances','Clearinghouse'];
- const operations=['Workflow Studio'];
+ const operations=['Workflow Studio','AI review'];
  const settings=['Practice administration','Integrations','Connect services','Support tickets','Data import'];
  $('page-title').textContent=title;
  $('page-description').textContent=descriptions[title]||'Practice workspace';
  $('workspace-section').textContent=(today.includes(title)||title.startsWith('Patient portal'))?'TODAY':patients.includes(title)?'PATIENTS':clinical.includes(title)?'CLINICAL':revenue.includes(title)?'REVENUE':operations.includes(title)?'OPERATIONS':settings.includes(title)?'SETTINGS':'PRACTICE';
- const active=['Practice home','Practice overview'].includes(title)?'nav-practice':title==='Workflow Studio'&&typeof studioView!=='undefined'&&studioView==='forms'?'nav-forms':title==='Workflow Studio'?'nav-workflows':title==='Patients & encounters'?'nav-clinical':title==='Pre-visit readiness'?'nav-previsit':['Schedule','Appointment reminders','Reminder settings'].includes(title)?'nav-schedule':title==='Labs & results'?'nav-labs':title==='Specialty care'?'nav-specialty':['Billing & insurance','Payment settings','Payment review'].includes(title)?'nav-billing':title==='Clearinghouse'?'nav-edi':title==='Claims & remittances'?'nav-claims':['Referrals','Referral delivery settings'].includes(title)?'nav-referrals':title.startsWith('Patient portal')?'nav-portal':title==='Follow-up tasks'?'nav-followup':['Integrations','Connect services','Support tickets'].includes(title)?'nav-apps':title==='Data import'?'nav-migration':title==='Practice administration'?'nav-admin':null;
- for(const id of ['nav-practice','nav-workflows','nav-forms','nav-clinical','nav-schedule','nav-previsit','nav-labs','nav-specialty','nav-referrals','nav-followup','nav-portal','nav-billing','nav-claims','nav-edi','nav-apps','nav-migration','nav-admin']){if(!$(id))continue;if(id===active)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}
+ const active=['Practice home','Practice overview'].includes(title)?'nav-practice':title==='Workflow Studio'&&typeof studioView!=='undefined'&&studioView==='forms'?'nav-forms':title==='Workflow Studio'?'nav-workflows':title==='AI review'?'nav-ai-review':title==='Intake inbox'?'nav-communications':title==='Patients & encounters'?'nav-clinical':title==='Pre-visit readiness'?'nav-previsit':['Schedule','Appointment reminders','Reminder settings'].includes(title)?'nav-schedule':title==='Labs & results'?'nav-labs':title==='Specialty care'?'nav-specialty':['Billing & insurance','Payment settings','Payment review'].includes(title)?'nav-billing':title==='Clearinghouse'?'nav-edi':title==='Claims & remittances'?'nav-claims':['Referrals','Referral delivery settings'].includes(title)?'nav-referrals':title.startsWith('Patient portal')?'nav-portal':title==='Follow-up tasks'?'nav-followup':['Integrations','Connect services','Support tickets'].includes(title)?'nav-apps':title==='Data import'?'nav-migration':title==='Practice administration'?'nav-admin':null;
+ for(const id of ['nav-practice','nav-workflows','nav-forms','nav-ai-review','nav-communications','nav-clinical','nav-schedule','nav-previsit','nav-labs','nav-specialty','nav-referrals','nav-followup','nav-portal','nav-billing','nav-claims','nav-edi','nav-apps','nav-migration','nav-admin']){if(!$(id))continue;if(id===active)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}
  closeNavigation();window.scrollTo(0,0);
 }
 function showTool(title) {if(typeof captureSupportDrafts==='function')captureSupportDrafts();setPage(title);$('clinical-workspace').hidden=true;$('patient-form').hidden=true;$('tools').hidden=false;$('new-patient').hidden=true;$('toggle-directory').hidden=true;}
@@ -449,6 +453,8 @@ document.addEventListener('click',e=>{
     if(button.id==='nav-schedule'||button.hasAttribute('data-open-schedule')){await showSchedule();return;}
     if(button.id==='nav-workflows'){studioView='overview';await showWorkflowStudio();return;}
     if(button.id==='nav-forms'){studioView='forms';await showWorkflowStudio();return;}
+    if(button.id==='nav-communications'){await showIntegrationInbox();return;}
+    if(button.id==='nav-ai-review'){await showAiReviewWorkspace();return;}
     if(button.id==='nav-referrals'){await showReferralWorkspace();return;}
     if(button.id==='nav-portal'){await showPortalInbox();return;}
     if(button.id==='nav-followup'){await showFollowupWorkspace();return;}
