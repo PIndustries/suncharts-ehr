@@ -3,7 +3,7 @@
 
 This runner deliberately avoids real patient, email, payment, or production data.
 It combines the focused API/browser contracts that make up the clinic journey and
-can also prove that a deployed EHR and Connect report the expected immutable builds.
+can also prove that a deployed SunCharts EHR and Connect report the expected immutable builds.
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ STAGES = (
         "connected_services",
         "Managed connection, reminders, support and payment workspace",
         ("connect_services_workflow", "connect_status"),
-        ("test_connect_services_ui.cjs", "test_payments_ui.cjs"),
+        ("test_connect_services_ui.cjs", "test_payments_ui.cjs", "test_product_naming_ui.cjs"),
     ),
 )
 
@@ -116,11 +116,11 @@ def validate_remote_payloads(
 ) -> None:
     if version.get("build") != expected_ehr:
         raise RuntimeError(
-            f"EHR /version build is {version.get('build')!r}, expected {expected_ehr!r}"
+            f"SunCharts EHR /version build is {version.get('build')!r}, expected {expected_ehr!r}"
         )
     if ready.get("build") != expected_ehr or ready.get("ready") is not True:
         raise RuntimeError(
-            "EHR /ready must report the expected build and ready=true; "
+            "SunCharts EHR /ready must report the expected build and ready=true; "
             f"received build={ready.get('build')!r} ready={ready.get('ready')!r}"
         )
     if connect.get("status") != "ok" or connect.get("version") != expected_connect:

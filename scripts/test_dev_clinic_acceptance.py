@@ -20,6 +20,8 @@ class DevClinicAcceptanceTests(unittest.TestCase):
         for stage in STAGES:
             self.assertTrue(stage.rust_targets, stage.key)
             self.assertTrue(stage.ui_fixtures, stage.key)
+        connected = next(stage for stage in STAGES if stage.key == "connected_services")
+        self.assertIn("test_product_naming_ui.cjs", connected.ui_fixtures)
 
     def test_remote_proof_accepts_exact_healthy_builds(self):
         validate_remote_payloads(
