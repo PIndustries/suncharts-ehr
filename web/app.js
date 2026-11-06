@@ -367,12 +367,15 @@ function setPage(title) {
   'Support tickets':'Track SunCharts service requests and replies',
   'Data import':'Stage source records and reconcile imported data'
  };
- const patientCare=['Patients & encounters','Schedule','Pre-visit readiness','Appointment reminders','Reminder settings','Labs & results','Specialty care','Referrals','Referral delivery settings','Follow-up tasks','Workflow Studio'];
+ const today=['Practice home','Practice overview','Schedule','Pre-visit readiness','Appointment reminders','Reminder settings','Follow-up tasks','Patient portal inbox'];
+ const patients=['Patients & encounters'];
+ const clinical=['Labs & results','Specialty care','Referrals','Referral delivery settings'];
  const revenue=['Billing & insurance','Payment settings','Payment review','Claims & remittances','Clearinghouse'];
- const administration=['Practice administration','Connected apps','Connect services','Support tickets','Data import'];
+ const operations=['Workflow Studio'];
+ const settings=['Practice administration','Connected apps','Connect services','Support tickets','Data import'];
  $('page-title').textContent=title;
  $('page-description').textContent=descriptions[title]||'Practice workspace';
- $('workspace-section').textContent=patientCare.includes(title)?'PATIENT CARE':revenue.includes(title)?'REVENUE CYCLE':administration.includes(title)?'ADMINISTRATION':'PRACTICE';
+ $('workspace-section').textContent=(today.includes(title)||title.startsWith('Patient portal'))?'TODAY':patients.includes(title)?'PATIENTS':clinical.includes(title)?'CLINICAL':revenue.includes(title)?'REVENUE':operations.includes(title)?'OPERATIONS':settings.includes(title)?'SETTINGS':'PRACTICE';
  const active=['Practice home','Practice overview'].includes(title)?'nav-practice':title==='Workflow Studio'&&typeof studioView!=='undefined'&&studioView==='forms'?'nav-forms':title==='Workflow Studio'?'nav-workflows':title==='Patients & encounters'?'nav-clinical':title==='Pre-visit readiness'?'nav-previsit':['Schedule','Appointment reminders','Reminder settings'].includes(title)?'nav-schedule':title==='Labs & results'?'nav-labs':title==='Specialty care'?'nav-specialty':['Billing & insurance','Payment settings','Payment review'].includes(title)?'nav-billing':title==='Clearinghouse'?'nav-edi':title==='Claims & remittances'?'nav-claims':['Referrals','Referral delivery settings'].includes(title)?'nav-referrals':title.startsWith('Patient portal')?'nav-portal':title==='Follow-up tasks'?'nav-followup':['Connected apps','Connect services','Support tickets'].includes(title)?'nav-apps':title==='Data import'?'nav-migration':title==='Practice administration'?'nav-admin':null;
  for(const id of ['nav-practice','nav-workflows','nav-forms','nav-clinical','nav-schedule','nav-previsit','nav-labs','nav-specialty','nav-referrals','nav-followup','nav-portal','nav-billing','nav-claims','nav-edi','nav-apps','nav-migration','nav-admin']){if(!$(id))continue;if(id===active)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}
  closeNavigation();window.scrollTo(0,0);
