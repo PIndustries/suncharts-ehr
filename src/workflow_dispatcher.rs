@@ -541,9 +541,9 @@ async fn execute(state: State, actor: &Actor, row: &DispatchRow) -> Result<Outco
     match row.kind.as_str() {
         "availability_query" => availability(&state, actor, row.instance, &row.input).await,
         "slot_hold" => hold(&state, actor, row.id, row.instance, &row.input).await,
-        "appointment_booking" => book(&state, actor, row.id, &row.input).await,
-        "appointment_reschedule" => reschedule(&state, actor, &row.input).await,
-        "appointment_cancel" => cancel(&state, actor, &row.input).await,
+        "appointment_booking" => book(&state, actor, row.id, row.instance, &row.input).await,
+        "appointment_reschedule" => reschedule(&state, actor, row.instance, &row.input).await,
+        "appointment_cancel" => cancel(&state, actor, row.instance, &row.input).await,
         "intake_request" => intake(&state, actor, row.instance, &row.input).await,
         "communication_send" => communication_draft(&state, actor, row).await,
         "ai_extract_draft" | "ai_response_draft" => claude_draft(&state, actor, row).await,
@@ -658,9 +658,6 @@ async fn pathway_patient(
     instance: Uuid,
     provided: Option<Uuid>,
 ) -> Result<Uuid> {
-    if let Some(patient) = provided {
-        return Ok(patient);
-    }
     let patient: Option<Uuid> = sqlx::query_scalar(
         "SELECT patient_id FROM care_pathway_instances WHERE tenant_id=$1 AND id=$2",
     )
@@ -668,7 +665,14 @@ async fn pathway_patient(
     .bind(instance)
     .fetch_one(&mut **tx)
     .await?;
-    patient.ok_or(Error::Invalid("workflow requires a patient"))
+    match (patient, provided) {
+        (Some(expected), Some(provided)) if expected != provided => Err(Error::Conflict(
+            "workflow patient does not match the requested clinical operation",
+        )),
+        (Some(expected), _) => Ok(expected),
+        (None, Some(provided)) => Ok(provided),
+        (None, None) => Err(Error::Invalid("workflow requires a patient")),
+    }
 }
 
 async fn availability(
@@ -746,9 +750,18 @@ async fn hold(
     })
 }
 
-async fn book(state: &State, actor: &Actor, request: Uuid, input: &Value) -> Result<Outcome> {
+async fn book(
+    state: &State,
+    actor: &Actor,
+    request: Uuid,
+    instance: Uuid,
+    input: &Value,
+) -> Result<Outcome> {
     let mut value: NewAppointment = serde_json::from_value(input.clone())
         .map_err(|_| Error::Invalid("invalid appointment booking input"))?;
+    let mut tx = db(state)?.begin().await?;
+    pathway_patient(&mut tx, actor, instance, Some(value.patient_id)).await?;
+    tx.commit().await?;
     value.request_id = Some(request);
     value.source_history_id = None;
     let appointment = state.backend.book(actor, value).await?;
@@ -758,7 +771,12 @@ async fn book(state: &State, actor: &Actor, request: Uuid, input: &Value) -> Res
     })
 }
 
-async fn reschedule(state: &State, actor: &Actor, input: &Value) -> Result<Outcome> {
+async fn reschedule(
+    state: &State,
+    actor: &Actor,
+    instance: Uuid,
+    input: &Value,
+) -> Result<Outcome> {
     let value: RescheduleInput = serde_json::from_value(input.clone())
         .map_err(|_| Error::Invalid("invalid reschedule input"))?;
     text(&value.title, 200)?;
@@ -777,6 +795,7 @@ async fn reschedule(state: &State, actor: &Actor, input: &Value) -> Result<Outco
             "appointment changed or cannot be rescheduled",
         ));
     }
+    pathway_patient(&mut tx, actor, instance, Some(old.patient_id)).await?;
     let booking = NewAppointment {
         request_id: None,
         source_history_id: None,
@@ -828,7 +847,7 @@ async fn reschedule(state: &State, actor: &Actor, input: &Value) -> Result<Outco
     })
 }
 
-async fn cancel(state: &State, actor: &Actor, input: &Value) -> Result<Outcome> {
+async fn cancel(state: &State, actor: &Actor, instance: Uuid, input: &Value) -> Result<Outcome> {
     let value: AppointmentActionInput = serde_json::from_value(input.clone())
         .map_err(|_| Error::Invalid("invalid cancellation input"))?;
     let mut tx = db(state)?.begin().await?;
@@ -847,6 +866,7 @@ async fn cancel(state: &State, actor: &Actor, input: &Value) -> Result<Outcome> 
             "appointment changed or cannot be cancelled",
         ));
     }
+    pathway_patient(&mut tx, actor, instance, Some(old.patient_id)).await?;
     sqlx::query(
         "UPDATE appointments SET status='cancelled',version=version+1 WHERE tenant_id=$1 AND id=$2",
     )
@@ -900,6 +920,7 @@ async fn intake(state: &State, actor: &Actor, instance: Uuid, input: &Value) -> 
     .fetch_optional(&mut *tx)
     .await?;
     let (patient, due) = row.ok_or(Error::NotFound)?;
+    pathway_patient(&mut tx, actor, instance, Some(patient)).await?;
     if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM previsit_intake_packets WHERE tenant_id=$1 AND appointment_id=$2)").bind(actor.tenant_id).bind(appointment).fetch_one(&mut *tx).await?{return Err(Error::Conflict("an intake packet already exists"));}
     let (packet, token) = crate::previsit::issue_for_appointment(
         &mut tx,

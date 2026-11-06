@@ -659,9 +659,9 @@ async fn send_to_provider(
     input: &OutboundDraftInput,
 ) -> Result<ProviderReceipt> {
     validate_outbound(input)?;
+    let config: Value = sqlx::query_scalar("SELECT config FROM instance_integrations WHERE tenant_id=$1 AND id=$2 AND provider='ringcentral' AND enabled AND status='connected'")
+        .bind(tenant).bind(integration_id).fetch_optional(pool).await?.ok_or(Error::Conflict("RingCentral integration is not enabled and connected"))?;
     let token = current_access(pool, tenant, integration_id, actor).await?;
-    let config: Value = sqlx::query_scalar("SELECT config FROM instance_integrations WHERE tenant_id=$1 AND id=$2 AND provider='ringcentral'")
-        .bind(tenant).bind(integration_id).fetch_one(pool).await?;
     let base = platform(&config)?;
     let client = http()?;
     let response = match input.kind.as_str() {
@@ -699,9 +699,9 @@ async fn refresh_provider_status(
     if provider_id.is_empty() || provider_id.len() > 240 {
         return Err(Error::Invalid("RingCentral provider receipt invalid"));
     }
+    let config: Value = sqlx::query_scalar("SELECT config FROM instance_integrations WHERE tenant_id=$1 AND id=$2 AND provider='ringcentral' AND enabled AND status='connected'")
+        .bind(tenant).bind(integration_id).fetch_optional(pool).await?.ok_or(Error::Conflict("RingCentral integration is not enabled and connected"))?;
     let token = current_access(pool, tenant, integration_id, actor).await?;
-    let config: Value = sqlx::query_scalar("SELECT config FROM instance_integrations WHERE tenant_id=$1 AND id=$2 AND provider='ringcentral'")
-        .bind(tenant).bind(integration_id).fetch_one(pool).await?;
     let base = platform(&config)?;
     let path = if kind == "ringout" {
         format!("/restapi/v1.0/account/~/extension/~/ring-out/{provider_id}")

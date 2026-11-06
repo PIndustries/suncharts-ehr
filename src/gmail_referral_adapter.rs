@@ -170,9 +170,10 @@ struct GmailIntegration {
     credential_revision: i64,
     created_by: Uuid,
     status: String,
+    enabled: bool,
 }
 async fn integration(pool: &PgPool, tenant: Uuid, id: Uuid) -> Result<GmailIntegration> {
-    sqlx::query_as("SELECT tenant_id,id,config,credential_revision,created_by,status FROM instance_integrations WHERE tenant_id=$1 AND id=$2 AND provider='gmail'")
+    sqlx::query_as("SELECT tenant_id,id,config,credential_revision,created_by,status,enabled FROM instance_integrations WHERE tenant_id=$1 AND id=$2 AND provider='gmail'")
         .bind(tenant).bind(id).fetch_optional(pool).await?.ok_or(Error::NotFound)
 }
 async fn load_bundle(pool: &PgPool, row: &GmailIntegration) -> Result<CredentialBundle> {
@@ -1830,6 +1831,11 @@ async fn send_outbound_draft(
     reason: &str,
 ) -> Result<Response> {
     let integration = integration(pool, actor.tenant_id, integration_id).await?;
+    if !integration.enabled || integration.status != "connected" {
+        return Err(Error::Conflict(
+            "Gmail integration is not enabled and connected",
+        ));
+    }
     let bundle = load_bundle(pool, &integration).await?;
     if !has_scope(&bundle, GMAIL_SEND_SCOPE) {
         return Err(Error::Conflict(
