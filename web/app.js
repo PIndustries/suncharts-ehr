@@ -128,6 +128,18 @@ async function run(action) {
 }
 async function enter() {
   me=await api('/auth/me');
+  if(me.role==='workflow_manager'){
+    $('login-screen').hidden=true;$('app').hidden=false;
+    const userLabel=me.display_name||me.email||'Delegated workflow manager',roleLabel='Partner workflow manager (delegated)';
+    $('sidebar-user').textContent=userLabel;$('sidebar-user').title=me.email||userLabel;$('sidebar-role').textContent=roleLabel;
+    $('identity-name').textContent=userLabel;$('identity-role').textContent=roleLabel;
+    $('identity').title=`${userLabel} · ${roleLabel}`;$('identity').setAttribute('aria-label',`Signed in as ${userLabel}, ${roleLabel}`);
+    for(const node of document.querySelectorAll('.nav-item'))node.hidden=true;
+    $('shell-find-patient').hidden=true;$('shell-connect-status').hidden=true;$('new-patient').hidden=true;$('toggle-directory').hidden=true;
+    await renderWorkflowStudio();
+    notice('Delegated workflow session. Changes require approval from a clinic owner.');
+    return;
+  }
   if(typeof loadPracticeWorkspaceSettings==='function')await loadPracticeWorkspaceSettings();
   if($('nav-portal'))$('nav-portal').hidden=!['owner','clinician','front_desk'].includes(me.role)||$('nav-portal').dataset.workspaceHidden==='true';
   $('login-screen').hidden=true; $('app').hidden=false;$('toggle-directory').hidden=false;
@@ -346,11 +358,12 @@ function setPage(title) {
   'Connected apps':'Review the SunCharts EHR connection, managed services and authorized applications',
   'Connect services':'Manage reminders and SunCharts support services',
   'Support tickets':'Track SunCharts service requests and replies',
-  'Data import':'Stage source records and reconcile imported data'
+  'Data import':'Stage source records and reconcile imported data',
+  'Workflow Studio':'Build, test, approve and publish configurable care pathways'
  };
  const patientCare=['Patients & encounters','Schedule','Pre-visit readiness','Appointment reminders','Reminder settings','Labs & results','Specialty care','Referrals','Referral delivery settings','Follow-up tasks'];
  const revenue=['Billing & insurance','Payment settings','Payment review','Claims & remittances','Clearinghouse'];
- const administration=['Practice administration','Connected apps','Connect services','Support tickets','Data import'];
+ const administration=['Practice administration','Connected apps','Connect services','Support tickets','Data import','Workflow Studio'];
  $('page-title').textContent=title;
  $('page-description').textContent=descriptions[title]||'Practice workspace';
  $('workspace-section').textContent=patientCare.includes(title)?'PATIENT CARE':revenue.includes(title)?'REVENUE CYCLE':administration.includes(title)?'ADMINISTRATION':'PRACTICE';
