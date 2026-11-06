@@ -38,10 +38,11 @@ const MODULES: [&str; 14] = [
     "migration",
     "admin",
 ];
-const CHART_TABS: [&str; 15] = [
+const CHART_TABS: [&str; 16] = [
     "overview",
     "profile",
     "clinical",
+    "care_pathways",
     "prescribing",
     "immunizations",
     "functional_status",
@@ -80,6 +81,39 @@ impl Default for WorkspaceContent {
                 .map(|s| (*s).to_owned())
                 .collect(),
         }
+    }
+}
+
+fn current_workspace_content(mut content: Value) -> Value {
+    // Add newly introduced chart areas to legacy saved layouts once. Owners can
+    // subsequently hide them through the normal versioned settings editor.
+    if let Some(tabs) = content.get_mut("chart_tabs").and_then(Value::as_array_mut) {
+        if !tabs.iter().any(|tab| tab == "care_pathways") {
+            let position = tabs
+                .iter()
+                .position(|tab| tab == "clinical")
+                .map_or(tabs.len(), |index| index + 1);
+            tabs.insert(position, json!("care_pathways"));
+        }
+    }
+    content
+}
+
+#[cfg(test)]
+mod workspace_content_tests {
+    use super::current_workspace_content;
+    use serde_json::json;
+
+    #[test]
+    fn legacy_layout_gains_versioned_care_pathway_tab() {
+        let content = current_workspace_content(json!({
+            "chart_tabs": ["overview", "profile", "clinical", "visits"]
+        }));
+        assert_eq!(
+            content["chart_tabs"],
+            json!(["overview", "profile", "clinical", "care_pathways", "visits"])
+        );
+        assert_eq!(current_workspace_content(content.clone()), content);
     }
 }
 
@@ -496,7 +530,7 @@ async fn settings(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json
     tx.commit().await?;
     Ok(Json(match saved {
         Some((version, content, updated_by, updated_at)) => {
-            json!({"version":version,"content":content,"updated_by":updated_by,"updated_at":updated_at})
+            json!({"version":version,"content":current_workspace_content(content),"updated_by":updated_by,"updated_at":updated_at})
         }
         None => {
             json!({"version":0,"content":WorkspaceContent::default(),"updated_by":Value::Null,"updated_at":Value::Null})

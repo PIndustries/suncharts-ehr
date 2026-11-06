@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+'use strict';
+let pathwayDefinitions=[],patientPathways=[],selectedPathwayId=null,pathwayEvents=[],pathwayLoad=0;
+const pathwayClinicalRoles=['owner','clinician','nurse','medical_assistant'];
+const pathwayRole=role=>human(role||'unassigned');
+const pathwayState=state=>({ready:'Ready now',in_progress:'In progress',blocked:'Waiting',awaiting_approval:'Needs approval',completed:'Completed',skipped:'Not applicable'})[state]||human(state);
+const pathwayIsLate=step=>step.due_at&&!['completed','skipped'].includes(step.state)&&new Date(step.due_at)<new Date();
+const pathwayCanWork=step=>me?.role==='owner'||!step.assigned_role||step.assigned_role===me?.role;
+const pathwayActions=step=>{
+ const actions=[];
+ if(step.state==='ready'&&pathwayCanWork(step))actions.push(['start','Start']);
+ if(['ready','in_progress'].includes(step.state)&&pathwayCanWork(step))actions.push(['complete',step.manual_approval?'Submit for approval':'Complete']);
+ if(step.state==='awaiting_approval'&&['owner','clinician'].includes(me?.role))actions.push(['approve','Approve']);
+ if(!step.required&&['ready','in_progress','blocked'].includes(step.state)&&pathwayCanWork(step))actions.push(['skip','Skip']);
+ if(['completed','skipped'].includes(step.state)&&['owner','clinician'].includes(me?.role))actions.push(['reopen','Reopen']);
+ return actions;
+};
+const spasticityPathwayTemplate={slug:'spasticity-movement-previsit',name:'Spasticity & movement pre-visit',description:'Collect intake, verify benefits, prepare payment and route the specialty visit.',trigger_type:'appointment_created',definition:{steps:[
+ {key:'intake-packet',title:'Complete intake packet',kind:'patient_form',required:true,manual_approval:false,due_after_minutes:4320,escalation_role:'front_desk',depends_on:[]},
+ {key:'insurance-eligibility',title:'Verify insurance eligibility',kind:'eligibility_query',required:true,manual_approval:true,assigned_role:'front_desk',due_after_minutes:1440,escalation_role:'owner',depends_on:[]},
+ {key:'patient-estimate',title:'Review patient responsibility',kind:'payment_request',required:false,manual_approval:true,assigned_role:'front_desk',due_after_minutes:2880,escalation_role:'owner',depends_on:['insurance-eligibility'],condition:{field:'/insurance/present',operator:'equals',value:true}},
+ {key:'legal-consents',title:'Sign required legal documents',kind:'document_signature',required:true,manual_approval:false,due_after_minutes:4320,escalation_role:'front_desk',depends_on:[]},
+ {key:'functional-status',title:'Record functional status',kind:'clinical_template',required:true,manual_approval:true,assigned_role:'nurse',due_after_minutes:10080,escalation_role:'clinician',depends_on:['intake-packet']},
+ {key:'visit-pathway',title:'Select specialty visit pathway',kind:'human_approval',required:true,manual_approval:true,assigned_role:'clinician',due_after_minutes:10080,escalation_role:'owner',depends_on:['functional-status','legal-consents']}
+]}};
+
+function pathwayInstanceCard(item){
+ const done=item.steps.filter(s=>['completed','skipped'].includes(s.state)).length,total=item.steps.length,late=item.steps.filter(pathwayIsLate).length;
+ return `<button type="button" class="pathway-instance-card ${item.id===selectedPathwayId?'selected':''}" data-pathway-select="${esc(item.id)}"><span><strong>${esc(item.definition_name)}</strong><small>${esc(pathwayState(item.status))} · ${done}/${total} steps</small></span>${late?`<span class="pathway-alert">${late} overdue</span>`:`<span class="pill">${Math.round(done/Math.max(total,1)*100)}%</span>`}</button>`;
+}
+function pathwayStepCard(step){
+ const late=pathwayIsLate(step),actions=pathwayActions(step),evidence=step.evidence&&Object.keys(step.evidence).length?JSON.stringify(step.evidence):'';
+ return `<article class="pathway-step ${esc(step.state)} ${late?'overdue':''}" data-pathway-step="${esc(step.step_key)}"><div class="pathway-step-rail" aria-hidden="true"></div><div class="pathway-step-body"><div class="section-head"><div><span class="pathway-step-kind">${esc(human(step.kind))}</span><h3>${esc(step.title)}</h3></div><span class="status-badge ${esc(step.state)}">${esc(pathwayState(step.state))}</span></div><div class="pathway-step-meta"><span>${step.required?'Required':'Optional'}</span><span>Assigned: ${esc(pathwayRole(step.assigned_role))}</span>${step.due_at?`<span class="${late?'pathway-alert':''}">${late?'Overdue':'Due'} ${esc(date(step.due_at))}</span>`:''}${step.escalation_role?`<span>Escalates to ${esc(pathwayRole(step.escalation_role))}</span>`:''}${step.manual_approval?'<span>Human approval required</span>':''}</div>${evidence?`<details><summary>Recorded evidence</summary><pre>${esc(evidence)}</pre></details>`:''}${actions.length?`<div class="pathway-step-actions">${actions.map(([action,label])=>`<button type="button" class="${action==='complete'||action==='approve'?'primary':''}" data-pathway-step-action="${action}" data-step-key="${esc(step.step_key)}">${label}</button>`).join('')}</div><div data-pathway-action-host></div>`:'<p class="muted pathway-no-action">No action is available for your role at this state.</p>'}</div></article>`;
+}
+function pathwayTimeline(){
+ return `<section class="pathway-timeline"><div class="section-head"><div><h3>Immutable timeline</h3><p class="muted">Attributed workflow events are append-only.</p></div><span class="pill">${pathwayEvents.length}</span></div>${pathwayEvents.map(event=>`<article class="timeline-row"><div><strong>${esc(human(event.event_type))}</strong><small>${event.step_key?esc(event.step_key)+' · ':''}${esc(event.actor_id)} · ${esc(date(event.created_at))}</small><p>${esc(event.reason)}</p></div><span class="pill">#${esc(event.sequence)}</span></article>`).join('')||'<p class="muted">No events returned.</p>'}</section>`;
+}
+function pathwayBoard(item){
+ if(!item)return `<section class="pathway-empty"><h3>No pathway selected</h3><p>Start an active template for this patient or choose a prior pathway.</p></section>`;
+ const done=item.steps.filter(s=>['completed','skipped'].includes(s.state)).length,total=item.steps.length,current=item.steps.filter(s=>['ready','in_progress','awaiting_approval'].includes(s.state)),next=item.steps.filter(s=>s.state==='blocked');
+ return `<section class="pathway-board"><header class="pathway-board-header"><div><p class="eyebrow">ACTIVE CARE PATHWAY</p><h2>${esc(item.definition_name)}</h2><p>${current.length} current · ${next.length} waiting · revision ${esc(item.definition_version)}</p></div><div class="pathway-progress"><strong>${done}/${total}</strong><span>steps resolved</span></div></header><div class="pathway-progress-track"><span style="width:${Math.round(done/Math.max(total,1)*100)}%"></span></div>${item.status==='active'&&pathwayClinicalRoles.includes(me?.role)?`<button type="button" class="quiet" data-pathway-instance-action="cancel">Cancel pathway</button>`:''}${item.status==='cancelled'&&me?.role==='owner'?`<button type="button" class="primary" data-pathway-instance-action="resume">Resume pathway</button>`:''}<div class="pathway-work-columns"><section><h3>Current work</h3>${current.map(pathwayStepCard).join('')||'<p class="muted">No steps are currently actionable.</p>'}</section><section><h3>Next and completed</h3>${[...next,...item.steps.filter(s=>['completed','skipped'].includes(s.state))].map(pathwayStepCard).join('')||'<p class="muted">No additional steps.</p>'}</section></div>${pathwayTimeline()}</section>`;
+}
+function pathwayStartForm(){
+ const active=pathwayDefinitions.filter(d=>d.status==='active');
+ const request=crypto.randomUUID();
+ return `<details class="clinical-editor pathway-start"><summary>Start a patient pathway</summary>${active.length?`<form id="pathway-start-form" data-request="${esc(request)}" data-trigger="patient:${esc(selected)}:${esc(request)}"><label>Active template<select name="definition_id">${active.map(d=>`<option value="${esc(d.id)}">${esc(d.name)}</option>`).join('')}</select></label><label class="review-ack"><input type="checkbox" name="insurance_present"> Patient has insurance on file</label><label>Reason<input name="reason" required maxlength="1000" value="Start reviewed patient workflow"></label><button type="submit" class="primary">Start pathway</button></form>`:'<p>No active pathway templates are available.</p>'}</details>`;
+}
+function pathwayTemplateLibrary(){
+ const template=pathwayDefinitions.find(d=>d.slug===spasticityPathwayTemplate.slug);
+ if(me?.role!=='owner')return '';
+ return `<details class="clinical-editor pathway-templates"><summary>Template library</summary><article><h3>Spasticity & movement pre-visit</h3><p>Intake, benefits, patient estimate, legal consent, functional status and clinician routing.</p>${!template?`<button type="button" data-pathway-install-template data-request="${esc(crypto.randomUUID())}">Install as draft</button>`:template.status==='draft'?`<button type="button" class="primary" data-pathway-activate="${esc(template.id)}">Activate template</button>`:`<span class="status-badge ${esc(template.status)}">${esc(human(template.status))}</span>`}</article></details>`;
+}
+function renderCarePathwayPanel(){
+ const panel=$('care-pathways-panel');if(!panel)return;
+ const active=patientPathways.find(p=>p.id===selectedPathwayId)||patientPathways.find(p=>p.status==='active')||patientPathways[0]||null;if(active)selectedPathwayId=active.id;
+ panel.innerHTML=`<div class="section-head"><div><h2>Care pathways</h2><p class="muted">Coordinate required work, approvals and escalation without hiding each record's own status.</p></div><button type="button" data-pathway-refresh>Refresh</button></div>${pathwayStartForm()}${pathwayTemplateLibrary()}<div class="pathway-layout"><aside class="pathway-list"><h3>Patient pathways <span class="pill">${patientPathways.length}</span></h3>${patientPathways.map(pathwayInstanceCard).join('')||'<p class="muted">No pathways started.</p>'}</aside>${pathwayBoard(active)}</div>`;
+ applyChartSection();
+}
+async function renderCarePathways(){
+ if(!selected)return;const patient=selected,load=++pathwayLoad,panel=$('care-pathways-panel');if(panel)panel.innerHTML='<p class="muted">Loading care pathways…</p>';
+ const [definitions,instances]=await Promise.all([api('/api/v1/care-pathways/definitions'),api(`/api/v1/care-pathways/instances?patient_id=${encodeURIComponent(patient)}`)]);if(load!==pathwayLoad||patient!==selected)return;
+ pathwayDefinitions=definitions.items;patientPathways=instances.items;if(!patientPathways.some(p=>p.id===selectedPathwayId))selectedPathwayId=patientPathways.find(p=>p.status==='active')?.id||patientPathways[0]?.id||null;
+ pathwayEvents=selectedPathwayId?(await api(`/api/v1/care-pathways/instances/${selectedPathwayId}/events`)).items:[];if(load!==pathwayLoad||patient!==selected)return;renderCarePathwayPanel();
+}
+function pathwayActionForm(button){
+ const step=patientPathways.find(p=>p.id===selectedPathwayId)?.steps.find(s=>s.step_key===button.dataset.stepKey),host=button.closest('[data-pathway-step]').querySelector('[data-pathway-action-host]');
+ host.innerHTML=`<form class="pathway-action-form" data-action="${esc(button.dataset.pathwayStepAction)}" data-step="${esc(step.step_key)}" data-version="${step.version}"><label>Reason<input name="reason" required maxlength="1000"></label><label>Evidence note<textarea name="evidence_note" maxlength="2000"></textarea></label><button type="submit" class="primary">Confirm ${esc(button.textContent)}</button></form>`;host.querySelector('input').focus();
+}
+async function pathwaySelect(id){selectedPathwayId=id;pathwayEvents=(await api(`/api/v1/care-pathways/instances/${id}/events`)).items;renderCarePathwayPanel();}
+document.addEventListener('click',event=>{const b=event.target.closest('button');if(!b)return;if(b.hasAttribute('data-pathway-refresh'))run(renderCarePathways);if(b.dataset.pathwaySelect)run(()=>pathwaySelect(b.dataset.pathwaySelect));if(b.dataset.pathwayStepAction)pathwayActionForm(b);if(b.dataset.pathwayInstanceAction)run(async()=>{const item=patientPathways.find(p=>p.id===selectedPathwayId);await api(`/api/v1/care-pathways/instances/${item.id}/actions`,'POST',{action:b.dataset.pathwayInstanceAction,reason:`${human(b.dataset.pathwayInstanceAction)} patient pathway`},item.version);await renderCarePathways();notice('Pathway status updated.');});if(b.hasAttribute('data-pathway-install-template'))run(async()=>{await api('/api/v1/care-pathways/definitions','POST',{request_id:b.dataset.request,...spasticityPathwayTemplate,reason:'Install reviewed specialty pathway template'});await renderCarePathways();notice('Template installed as a draft.');});if(b.dataset.pathwayActivate)run(async()=>{const d=pathwayDefinitions.find(x=>x.id===b.dataset.pathwayActivate);await api(`/api/v1/care-pathways/definitions/${d.id}/actions`,'POST',{action:'activate',reason:'Activate reviewed specialty pathway template'},d.version);await renderCarePathways();notice('Pathway template activated.');});});
+document.addEventListener('submit',event=>{const form=event.target;if(form.id==='pathway-start-form'){event.preventDefault();run(async()=>{const values=new FormData(form),definition=pathwayDefinitions.find(d=>d.id===values.get('definition_id')),response=await api('/api/v1/care-pathways/trigger','POST',{request_id:form.dataset.request,trigger_type:definition.trigger_type,trigger_key:form.dataset.trigger,definition_id:definition.id,patient_id:selected,appointment_id:activeVisit?.appointment_id||null,visit_id:activeVisit?.id||null,context:{insurance:{present:values.get('insurance_present')==='on'}},reason:values.get('reason')});selectedPathwayId=response.items[0].id;await renderCarePathways();notice('Patient pathway started.');});return;}if(form.classList.contains('pathway-action-form')){event.preventDefault();run(async()=>{const values=new FormData(form),evidence=values.get('evidence_note')?{note:values.get('evidence_note')}:{};await api(`/api/v1/care-pathways/instances/${selectedPathwayId}/steps/${encodeURIComponent(form.dataset.step)}/actions`,'POST',{action:form.dataset.action,reason:values.get('reason'),evidence},Number(form.dataset.version));await renderCarePathways();notice('Pathway step updated.');});}});
