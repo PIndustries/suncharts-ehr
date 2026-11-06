@@ -298,16 +298,18 @@ async fn save_settings(
             .filter(|v| !v.is_empty())
             .or_else(|| previous.and_then(|p| p.broker_token.clone())),
     };
-    broker_base()?;
-    if config.installation_id.is_none()
-        || config
-            .broker_token
-            .as_ref()
-            .is_none_or(|v| !valid_broker_token(v))
-    {
-        return Err(Error::Invalid(
-            "SunCharts Connect has not provisioned payment access for this practice",
-        ));
+    if config.mode == "suncharts_connect" {
+        broker_base()?;
+        if config.installation_id.is_none()
+            || config
+                .broker_token
+                .as_ref()
+                .is_none_or(|v| !valid_broker_token(v))
+        {
+            return Err(Error::Invalid(
+                "SunCharts Connect has not provisioned payment access for this practice",
+            ));
+        }
     }
     let id = prior.as_ref().map(|r| r.id).unwrap_or_else(Uuid::new_v4);
     let revision = prior
