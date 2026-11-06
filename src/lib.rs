@@ -33,6 +33,7 @@ pub mod events;
 pub mod fhir;
 pub mod health_history;
 pub mod immunizations;
+pub mod instance_integrations;
 pub mod labs;
 pub mod managed_connect;
 pub mod migration;
@@ -290,6 +291,7 @@ pub fn app(state: State) -> Router {
         .merge(clinical::router())
         .merge(health_history::routes())
         .merge(immunizations::routes())
+        .merge(instance_integrations::router())
         .merge(documents::routes())
         .merge(referrals::routes())
         .merge(referral_delivery::routes())
@@ -505,6 +507,15 @@ pub fn app(state: State) -> Router {
                 (
                     [(header::CONTENT_TYPE, "application/javascript")],
                     include_str!("../web/workflow-studio.js"),
+                )
+            }),
+        )
+        .route(
+            "/integrations.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/integrations.js"),
                 )
             }),
         )
