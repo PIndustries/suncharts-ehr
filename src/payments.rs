@@ -251,9 +251,9 @@ async fn save_settings(
     Json(v): Json<Save>,
 ) -> Result<Json<Value>> {
     owner(&a)?;
-    if !["own_stripe", "suncharts_connect"].contains(&v.mode.as_str()) {
+    if v.mode != "suncharts_connect" {
         return Err(Error::Invalid(
-            "choose your own Stripe account or SunCharts Payments",
+            "patient invoicing and payment collection require SunCharts Connect",
         ));
     }
     let mut tx = db(&s)?.begin().await?;
@@ -296,35 +296,16 @@ async fn save_settings(
             .filter(|v| !v.is_empty())
             .or_else(|| previous.and_then(|p| p.broker_token.clone())),
     };
-    if config.mode == "own_stripe" {
-        let key = config
-            .api_key
-            .as_deref()
-            .ok_or(Error::Invalid("enter your Stripe test secret API key"))?;
-        if !(ident(key, "sk_test_") || ident(key, "rk_test_")) || key.len() < 16 {
-            return Err(Error::Invalid(
-                "only Stripe test secret or restricted API keys are supported",
-            ));
-        }
-        if config
-            .webhook_secret
+    broker_base()?;
+    if config.installation_id.is_none()
+        || config
+            .broker_token
             .as_ref()
-            .is_some_and(|v| !ident(v, "whsec_") || v.len() < 12)
-        {
-            return Err(Error::Invalid("invalid Stripe webhook signing secret"));
-        }
-    } else {
-        broker_base()?;
-        if config.installation_id.is_none()
-            || config
-                .broker_token
-                .as_ref()
-                .is_none_or(|v| !valid_broker_token(v))
-        {
-            return Err(Error::Invalid(
-                "enter the installation ID and token provisioned by SunCharts Payments",
-            ));
-        }
+            .is_none_or(|v| !valid_broker_token(v))
+    {
+        return Err(Error::Invalid(
+            "SunCharts Connect has not provisioned payment access for this practice",
+        ));
     }
     let id = prior.as_ref().map(|r| r.id).unwrap_or_else(Uuid::new_v4);
     let revision = prior
@@ -529,7 +510,9 @@ async fn activate(
     if row.version != crate::expected(&h)? {
         return Err(Error::Conflict("payment settings changed"));
     }
-    if v.enabled && (!row.verified || row.provider_account_id.is_none()) {
+    if v.enabled
+        && (row.mode != "suncharts_connect" || !row.verified || row.provider_account_id.is_none())
+    {
         return Err(Error::Invalid(
             "test the saved payment connection before enabling",
         ));
@@ -571,7 +554,7 @@ async fn list(
     crate::postgres::audit(&mut tx, &a, "payment.account_read", id).await?;
     tx.commit().await?;
     Ok(Json(
-        json!({"items":items.iter().map(Payment::public).collect::<Vec<_>>(),"balance_cents":current,"reserved_cents":reserved,"available_cents":(current-reserved).max(0),"payments_enabled":settings.as_ref().is_some_and(|(e,v,_)|*e&&*v),"mode":settings.map(|(_,_,m)|m),"test_mode":true}),
+        json!({"items":items.iter().map(Payment::public).collect::<Vec<_>>(),"balance_cents":current,"reserved_cents":reserved,"available_cents":(current-reserved).max(0),"payments_enabled":settings.as_ref().is_some_and(|(e,v,m)|*e&&*v&&m=="suncharts_connect"),"mode":settings.map(|(_,_,m)|m),"test_mode":true,"connect_required":true}),
     ))
 }
 #[derive(Deserialize, Serialize)]
@@ -633,7 +616,7 @@ async fn create(
             ));
         }
         let settings = setting(&mut tx, a.tenant_id).await?;
-        if !settings.enabled || !settings.verified {
+        if settings.mode != "suncharts_connect" || !settings.enabled || !settings.verified {
             return Err(Error::Invalid(
                 "payment collection is not enabled; an owner must configure and test it",
             ));
