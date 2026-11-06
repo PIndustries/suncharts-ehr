@@ -18,6 +18,8 @@ function fixture(hash){
  assert.equal(f.calls[0][0],'/api/v1/connect/support/accept');assert.deepEqual(JSON.parse(f.calls[0][1].body),{code,issuer});assert.equal(f.calls[0][1].credentials,'same-origin');
  f=fixture(`#code=${encodeURIComponent(code)}&issuer=${encodeURIComponent(issuer)}&next=claimmd`);
  assert.equal(await f.context.acceptConnectLaunch(),true);assert.equal(f.context.location.pathname,'/?open=claimmd');assert.equal(f.context.location.hash,'');assert.equal(f.calls.length,1);
+ f=fixture(`#code=${encodeURIComponent(code)}&issuer=${encodeURIComponent(issuer)}&next=care-pathways`);
+ assert.equal(await f.context.acceptConnectLaunch(),true);assert.equal(f.context.location.pathname,'/?open=workflow-studio');assert.equal(f.context.location.hash,'');assert.equal(f.calls.length,1);
  f=fixture(`#code=${encodeURIComponent(code)}&issuer=${encodeURIComponent(issuer)}&next=https%3A%2F%2Fevil.example`);
  assert.equal(await f.context.acceptConnectLaunch(),true);assert.equal(f.context.location.pathname,'/');assert.equal(f.context.location.hash,'');assert.equal(f.calls.length,1);
  f=fixture('#code=short&issuer=https%3A%2F%2Fconnect.suncharts.app');await assert.rejects(f.context.acceptConnectLaunch(),/invalid or incomplete/);assert.equal(f.context.location.hash,'');assert.equal(f.calls.length,0);

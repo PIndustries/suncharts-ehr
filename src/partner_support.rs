@@ -93,6 +93,7 @@ struct Session {
     audience: String,
     expires_at: DateTime<Utc>,
     actor_subject: String,
+    delegated_role: String,
 }
 
 fn http() -> std::result::Result<reqwest::Client, Error> {
@@ -111,7 +112,10 @@ fn configured_issuer() -> Result<String> {
 fn validate_claims(claims: &Claims, issuer: &str, audience: &str, now: i64) -> Result<()> {
     if claims.iss != issuer
         || claims.aud != audience
-        || !matches!(claims.role.as_str(), "partner_support" | "partner_admin")
+        || !matches!(
+            claims.role.as_str(),
+            "partner_support" | "partner_admin" | "workflow_manager"
+        )
         || claims.sub.is_empty()
         || claims.sub.len() > 500
         || claims.iat > now + 5
@@ -172,8 +176,8 @@ pub async fn accept(
         .await?;
     sqlx::query(
         "INSERT INTO partner_support_sessions
-         (token_hash,tenant_id,grant_id,partner_id,customer_id,order_id,issuer,audience,expires_at,actor_subject)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,to_timestamp($9),$10)",
+         (token_hash,tenant_id,grant_id,partner_id,customer_id,order_id,issuer,audience,expires_at,actor_subject,delegated_role)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,to_timestamp($9),$10,$11)",
     )
     .bind(crate::browser::hash(&token))
     .bind(claims.tenant_id)
@@ -185,6 +189,7 @@ pub async fn accept(
     .bind(auth.origin())
     .bind(claims.exp as f64)
     .bind(&claims.sub)
+    .bind(&claims.role)
     .execute(&mut *tx)
     .await?;
     sqlx::query("INSERT INTO audit_events(tenant_id,actor_id,action,resource_id) VALUES($1,$2,'partner_admin.session_created',$2)")
@@ -201,9 +206,12 @@ pub async fn accept(
     );
     Ok((
         response_headers,
-        Json(
-            json!({"authenticated":true,"role":"owner","delegated_role":"partner_admin","expires_at":claims.exp}),
-        ),
+        Json(json!({
+            "authenticated":true,
+            "role":"owner",
+            "delegated_role":if claims.role == "workflow_manager" { "workflow_manager" } else { "partner_admin" },
+            "expires_at":claims.exp
+        })),
     ))
 }
 
@@ -211,7 +219,7 @@ pub async fn accept(
 /// response permanently revokes the local session and records that revocation atomically.
 pub(crate) async fn authenticate(auth: &BrowserAuth, token: &str) -> Result<Option<Actor>> {
     let session: Option<Session> = sqlx::query_as(
-        "SELECT tenant_id,grant_id,partner_id,customer_id,order_id,issuer,audience,expires_at,actor_subject FROM partner_support_sessions
+        "SELECT tenant_id,grant_id,partner_id,customer_id,order_id,issuer,audience,expires_at,actor_subject,delegated_role FROM partner_support_sessions
           WHERE token_hash=$1 AND expires_at>now() AND revoked_at IS NULL",
     )
     .bind(crate::browser::hash(token))
@@ -243,10 +251,7 @@ pub(crate) async fn authenticate(auth: &BrowserAuth, token: &str) -> Result<Opti
     let valid = introspection.active
         && introspection.jti == Some(session.grant_id)
         && introspection.aud.as_deref() == Some(auth.origin())
-        && matches!(
-            introspection.role.as_deref(),
-            Some("partner_support" | "partner_admin")
-        )
+        && introspection.role.as_deref() == Some(session.delegated_role.as_str())
         && introspection.tenant_id == Some(session.tenant_id)
         && introspection.partner_id == Some(session.partner_id)
         && introspection.customer_id == Some(session.customer_id)
@@ -332,5 +337,30 @@ mod tests {
             now
         )
         .is_err());
+    }
+
+    #[test]
+    fn workflow_manager_claim_is_accepted_for_a_tenant_scoped_owner_session() {
+        let now = Utc::now().timestamp();
+        let claims = Claims {
+            iss: "https://connect.example.test".into(),
+            aud: "https://ehr.example.test".into(),
+            sub: "partner:workflow-manager".into(),
+            jti: Uuid::new_v4(),
+            role: "workflow_manager".into(),
+            partner_id: Uuid::new_v4(),
+            customer_id: Uuid::new_v4(),
+            order_id: Uuid::new_v4(),
+            tenant_id: Uuid::new_v4(),
+            iat: now,
+            exp: now + 900,
+        };
+        assert!(validate_claims(
+            &claims,
+            "https://connect.example.test",
+            "https://ehr.example.test",
+            now
+        )
+        .is_ok());
     }
 }

@@ -42,6 +42,19 @@ const KINDS: [&str; 10] = [
     "referral",
     "human_approval",
 ];
+const PHASES: [&str; 4] = ["intake", "pre_visit", "visit", "follow_up"];
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormField {
+    pub key: String,
+    pub label: String,
+    pub field_type: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub options: Vec<String>,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -59,6 +72,8 @@ pub struct StepDefinition {
     pub title: String,
     pub kind: String,
     #[serde(default)]
+    pub phase: Option<String>,
+    #[serde(default)]
     pub required: bool,
     #[serde(default)]
     pub manual_approval: bool,
@@ -72,6 +87,8 @@ pub struct StepDefinition {
     pub depends_on: Vec<String>,
     #[serde(default)]
     pub condition: Option<Condition>,
+    #[serde(default)]
+    pub form_fields: Vec<FormField>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -94,6 +111,41 @@ impl Definition {
                 return Err(Error::Invalid("invalid pathway step key or kind"));
             }
             text(&step.title, 200)?;
+            if step
+                .phase
+                .as_deref()
+                .is_some_and(|phase| !PHASES.contains(&phase))
+            {
+                return Err(Error::Invalid("invalid pathway phase"));
+            }
+            if step.form_fields.len() > 30
+                || (step.kind != "patient_form" && !step.form_fields.is_empty())
+            {
+                return Err(Error::Invalid("invalid pathway form fields"));
+            }
+            let mut form_keys = BTreeSet::new();
+            for field in &step.form_fields {
+                if !valid_key(&field.key)
+                    || !form_keys.insert(field.key.as_str())
+                    || ![
+                        "short_text",
+                        "long_text",
+                        "date",
+                        "choice",
+                        "checkbox",
+                        "number",
+                    ]
+                    .contains(&field.field_type.as_str())
+                    || field.options.len() > 20
+                    || (field.field_type != "choice" && !field.options.is_empty())
+                {
+                    return Err(Error::Invalid("invalid pathway form field"));
+                }
+                text(&field.label, 120)?;
+                for option in &field.options {
+                    text(option, 120)?;
+                }
+            }
             if step.depends_on.len() > 20
                 || step.depends_on.iter().collect::<BTreeSet<_>>().len() != step.depends_on.len()
                 || step
@@ -219,6 +271,8 @@ struct ChangeDefinition {
 struct DefinitionAction {
     action: String,
     reason: String,
+    #[serde(default)]
+    revision_version: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -305,6 +359,14 @@ fn db(state: &State) -> Result<&PgPool> {
 }
 
 fn owner(actor: &Actor) -> Result<()> {
+    if matches!(actor.role, Role::Owner) {
+        Ok(())
+    } else {
+        Err(Error::Forbidden)
+    }
+}
+
+fn definition_editor(actor: &Actor) -> Result<()> {
     if matches!(actor.role, Role::Owner) {
         Ok(())
     } else {
@@ -439,7 +501,7 @@ async fn create_definition(
     ExtractState(state): ExtractState<State>,
     Json(input): Json<CreateDefinition>,
 ) -> Result<Json<Value>> {
-    owner(&actor)?;
+    definition_editor(&actor)?;
     if !valid_key(&input.slug) {
         return Err(Error::Invalid("invalid pathway slug"));
     }
@@ -509,7 +571,7 @@ async fn update_definition(
     headers: HeaderMap,
     Json(input): Json<ChangeDefinition>,
 ) -> Result<Json<Value>> {
-    owner(&actor)?;
+    definition_editor(&actor)?;
     validate_definition_input(
         &input.name,
         &input.description,
@@ -551,31 +613,58 @@ async fn definition_action(
     headers: HeaderMap,
     Json(input): Json<DefinitionAction>,
 ) -> Result<Json<Value>> {
-    owner(&actor)?;
+    definition_editor(&actor)?;
     text(&input.reason, 1000)?;
     let version = expected(&headers)?;
-    let target = match input.action.as_str() {
-        "activate" => "active",
-        "archive" => "archived",
-        _ => return Err(Error::Invalid("invalid pathway definition action")),
-    };
     let mut tx = db(&state)?.begin().await?;
     let previous = definition_row(&mut tx, &actor, id, true).await?;
     if i64_value(&previous, "version")? != version {
         return Err(Error::Conflict("pathway definition changed"));
     }
-    if string_value(&previous, "status")? == "archived" {
+    if string_value(&previous, "status")? == "archived" && input.action != "rollback" {
         return Err(Error::Conflict(
             "archived pathway definitions cannot be changed",
         ));
     }
-    let row: Value = sqlx::query_scalar("UPDATE care_pathway_definitions SET status=$3,version=version+1,updated_by=$4,updated_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING to_jsonb(care_pathway_definitions)-'tenant_id'")
+    let row: Value = if input.action == "rollback" {
+        let revision_version = input
+            .revision_version
+            .filter(|candidate| *candidate > 0 && *candidate < version)
+            .ok_or(Error::Invalid("invalid pathway revision"))?;
+        let revision: (String, String, String, Value) = sqlx::query_as(
+            "SELECT name,description,trigger_type,definition FROM care_pathway_definition_revisions
+             WHERE tenant_id=$1 AND definition_id=$2 AND version=$3",
+        )
         .bind(actor.tenant_id)
         .bind(id)
-        .bind(target)
-        .bind(actor.sub)
-        .fetch_one(&mut *tx)
-        .await?;
+        .bind(revision_version)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(Error::NotFound)?;
+        sqlx::query_scalar("UPDATE care_pathway_definitions SET name=$3,description=$4,trigger_type=$5,definition=$6,status='draft',version=version+1,updated_by=$7,updated_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING to_jsonb(care_pathway_definitions)-'tenant_id'")
+            .bind(actor.tenant_id)
+            .bind(id)
+            .bind(revision.0)
+            .bind(revision.1)
+            .bind(revision.2)
+            .bind(revision.3)
+            .bind(actor.sub)
+            .fetch_one(&mut *tx)
+            .await?
+    } else {
+        let target = match input.action.as_str() {
+            "activate" => "active",
+            "archive" => "archived",
+            _ => return Err(Error::Invalid("invalid pathway definition action")),
+        };
+        sqlx::query_scalar("UPDATE care_pathway_definitions SET status=$3,version=version+1,updated_by=$4,updated_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING to_jsonb(care_pathway_definitions)-'tenant_id'")
+            .bind(actor.tenant_id)
+            .bind(id)
+            .bind(target)
+            .bind(actor.sub)
+            .fetch_one(&mut *tx)
+            .await?
+    };
     save_definition_revision(&mut tx, &actor, &row, &input.reason).await?;
     audit(&mut tx, &actor, "practice.care_pathways.action", id).await?;
     tx.commit().await?;
