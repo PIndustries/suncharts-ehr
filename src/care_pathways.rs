@@ -358,14 +358,6 @@ fn db(state: &State) -> Result<&PgPool> {
     Ok(&state.browser.as_ref().ok_or(Error::NotFound)?.db)
 }
 
-fn owner(actor: &Actor) -> Result<()> {
-    if matches!(actor.role, Role::Owner) {
-        Ok(())
-    } else {
-        Err(Error::Forbidden)
-    }
-}
-
 fn definition_editor(actor: &Actor) -> Result<()> {
     if matches!(actor.role, Role::Owner) {
         Ok(())
