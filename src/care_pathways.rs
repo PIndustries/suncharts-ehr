@@ -14,7 +14,6 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{PgPool, Postgres, Transaction};
@@ -251,6 +250,16 @@ struct StepAction {
 struct InstanceAction {
     action: String,
     reason: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct ExistingInstance {
+    id: Uuid,
+    patient_id: Option<Uuid>,
+    appointment_id: Option<Uuid>,
+    visit_id: Option<Uuid>,
+    trigger_type: String,
+    context: Value,
 }
 
 pub fn routes() -> Router<State> {
@@ -673,23 +682,21 @@ async fn trigger(
         definition.validate()?;
         let definition_id = uuid_value(&definition_row, "id")?;
         let definition_version = i64_value(&definition_row, "version")?;
-        let existing: Option<(Uuid,Option<Uuid>,Option<Uuid>,Option<Uuid>,String,Value)> = sqlx::query_as("SELECT id,patient_id,appointment_id,visit_id,trigger_type,context FROM care_pathway_instances WHERE tenant_id=$1 AND definition_id=$2 AND definition_version=$3 AND trigger_key=$4")
+        let existing: Option<ExistingInstance> = sqlx::query_as("SELECT id,patient_id,appointment_id,visit_id,trigger_type,context FROM care_pathway_instances WHERE tenant_id=$1 AND definition_id=$2 AND definition_version=$3 AND trigger_key=$4")
             .bind(actor.tenant_id).bind(definition_id).bind(definition_version).bind(input.trigger_key.trim())
             .fetch_optional(&mut *tx).await?;
-        let instance_id = if let Some((id, patient, appointment, visit, trigger_type, context)) =
-            existing
-        {
-            if patient != input.patient_id
-                || appointment != input.appointment_id
-                || visit != input.visit_id
-                || trigger_type != input.trigger_type
-                || context != input.context
+        let instance_id = if let Some(existing) = existing {
+            if existing.patient_id != input.patient_id
+                || existing.appointment_id != input.appointment_id
+                || existing.visit_id != input.visit_id
+                || existing.trigger_type != input.trigger_type
+                || existing.context != input.context
             {
                 return Err(Error::Conflict(
                     "pathway trigger identity was reused with different context",
                 ));
             }
-            id
+            existing.id
         } else {
             let id = Uuid::new_v4();
             sqlx::query("INSERT INTO care_pathway_instances(tenant_id,id,definition_id,definition_version,patient_id,appointment_id,visit_id,trigger_type,trigger_key,context,started_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
