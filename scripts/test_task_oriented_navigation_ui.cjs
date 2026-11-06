@@ -10,4 +10,7 @@ assert.match(app,/forms\.id='nav-forms'/);assert.match(app,/button\.id==='nav-fo
 assert.match(app,/nav-forms'.*aria-current|aria-current.*nav-forms/s);assert.match(style,/\.nav-item-child\[aria-current=page\]/);
 assert.match(app,/\$\('nav-migration'\)\.hidden=me\.role!=='owner'/);assert.match(app,/\$\('nav-admin'\)\)\$\('nav-admin'\)\.hidden=me\.role!=='owner'/);
 assert.match(app,/navigation\.dataset\.organized='true'/);assert.match(style,/\.nav-group-primary/);
+assert.match(app,/operations=\['Workflow Studio'\]/);assert.match(app,/operations\.includes\(title\)\?'OPERATIONS'/);
+assert.match(app,/settings=\['Practice administration','Connected apps','Connect services','Support tickets','Data import'\]/);assert.match(app,/settings\.includes\(title\)\?'SETTINGS'/);
+assert.match(app,/today\.includes\(title\).*\?'TODAY'/);assert.match(app,/patients\.includes\(title\)\?'PATIENTS'/);assert.match(app,/clinical\.includes\(title\)\?'CLINICAL'/);
 console.log('PASS task-oriented shell hierarchy, feature preservation, forms route, active state and role gates');
