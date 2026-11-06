@@ -533,6 +533,41 @@ async fn generate(
     Ok(reply(value))
 }
 
+/// Internal Workflow Studio boundary. This uses the same validation, idempotency,
+/// provider call and draft-only persistence as the public handler.
+pub(crate) async fn generate_for_workflow(
+    state: &State,
+    actor: &Actor,
+    request_id: Uuid,
+    integration_id: Option<Uuid>,
+    purpose: &str,
+    instruction: String,
+    source_text: String,
+) -> Result<Uuid> {
+    generate(
+        actor.clone(),
+        ExtractState(state.clone()),
+        Json(Generate {
+            request_id,
+            integration_id,
+            purpose: purpose.to_owned(),
+            instruction,
+            source_text,
+            pathway_instance_id: None,
+            step_key: None,
+        }),
+    )
+    .await?;
+    sqlx::query_scalar(
+        "SELECT id FROM claude_drafts WHERE tenant_id=$1 AND request_id=$2 AND status<>'failed'",
+    )
+    .bind(actor.tenant_id)
+    .bind(request_id)
+    .fetch_optional(db(state)?)
+    .await?
+    .ok_or(Error::Conflict("Claude draft was not created"))
+}
+
 async fn list(
     actor: Actor,
     ExtractState(state): ExtractState<State>,

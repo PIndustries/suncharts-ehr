@@ -66,6 +66,7 @@ pub mod sftp_transport;
 pub mod specialty_workspace;
 pub mod stedi;
 pub mod visit_diagnoses;
+pub mod workflow_dispatcher;
 pub mod x12;
 
 use auth::Actor;
@@ -333,6 +334,7 @@ pub fn app(state: State) -> Router {
         .merge(provider_settings::router())
         .merge(claimmd_operations::router())
         .merge(claude_adapter::router())
+        .merge(workflow_dispatcher::router())
         .merge(claimmd_extended::router())
         .merge(retrieval::router())
         .merge(remittance_automation::router())
