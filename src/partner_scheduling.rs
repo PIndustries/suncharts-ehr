@@ -3,7 +3,6 @@
 use crate::{
     auth::Actor,
     error::{Error, Result},
-    model::text,
     State,
 };
 use aws_lc_rs::hmac;
@@ -614,7 +613,10 @@ fn public_webhook_host(url: &url::Url) -> bool {
     let Some(host) = url.host_str() else {
         return false;
     };
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let host = host
+        .trim_matches(['[', ']'])
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
     if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") {
         return false;
     }
