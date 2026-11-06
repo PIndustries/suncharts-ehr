@@ -16,7 +16,7 @@ permissions:
 jobs:
   full-regression:
     name: Full Rust, UI, and security regression
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     services:
       postgres:
         image: postgres:16-alpine
