@@ -48,6 +48,35 @@ class DeploymentArtifactsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("sha256 digest", result.stderr)
 
+    def test_provisioning_version_requires_exact_numeric_build(self):
+        request = json.loads(EXAMPLE.read_text())
+        for invalid in (
+            "26.11.06.0",
+            "26.11.06.1-dev",
+            "26.11.06.1+sha.abcdef",
+            "2026.11.06.1",
+            "26.1.06.1",
+        ):
+            with self.subTest(version=invalid):
+                request["expected_version"] = invalid
+                result, _ = self.render(request)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("YY.MM.DD.BUILD", result.stderr)
+
+    def test_provisioning_version_allows_positive_multi_digit_build(self):
+        request = json.loads(EXAMPLE.read_text())
+        request["expected_version"] = "26.11.06.12"
+        result, manifest = self.render(request)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('value: "26.11.06.12"', manifest)
+
+    def test_provisioning_schema_matches_renderer_version_contract(self):
+        schema = json.loads((ROOT / "deploy" / "provisioning-request.schema.json").read_text())
+        self.assertEqual(
+            schema["properties"]["expected_version"]["pattern"],
+            r"^[0-9]{2}\.[0-9]{2}\.[0-9]{2}\.[1-9][0-9]*$",
+        )
+
     def test_unknown_request_fields_are_rejected(self):
         request = json.loads(EXAMPLE.read_text())
         request["password"] = "must-not-enter-contract"

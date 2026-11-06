@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 IMAGE = re.compile(r"^ghcr\.io/pindustries/suncharts-ehr@sha256:[0-9a-f]{64}$")
+VERSION = re.compile(r"^[0-9]{2}\.[0-9]{2}\.[0-9]{2}\.[1-9][0-9]*$")
 DNS = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 NAME = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
@@ -50,8 +51,8 @@ def main() -> int:
     if not IMAGE.fullmatch(image):
         raise ValueError("image_reference must be the published GHCR image by sha256 digest")
     expected_version = str(request["expected_version"]).strip()
-    if not expected_version or len(expected_version) > 80 or any(c in expected_version for c in "\r\n\0\""):
-        raise ValueError("expected_version is invalid")
+    if not VERSION.fullmatch(expected_version):
+        raise ValueError("expected_version must use YY.MM.DD.BUILD with a positive build number")
     tenant = uuid_value(request["tenant_id"], "tenant_id")
     uuid_value(request["request_id"], "request_id")
     uuid_value(request["order_id"], "order_id")
