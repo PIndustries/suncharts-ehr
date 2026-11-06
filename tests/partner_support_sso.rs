@@ -34,15 +34,25 @@ async fn exchange(
     ExtractState(cloud): ExtractState<Cloud>,
     Json(body): Json<Value>,
 ) -> Json<Value> {
-    let grant = if body["code"].as_str().unwrap_or_default().contains("logout") {
+    let code = body["code"].as_str().unwrap_or_default();
+    let grant = if code.contains("logout") {
         Uuid::from_u128(1)
+    } else if code.contains("workflow") {
+        Uuid::from_u128(3)
+    } else if code.contains("owner-review") {
+        Uuid::from_u128(4)
     } else {
         Uuid::from_u128(2)
+    };
+    let (role, purpose) = if grant == Uuid::from_u128(3) {
+        ("workflow_manager", "workflow_management")
+    } else {
+        ("partner_admin", "support")
     };
     let now = chrono::Utc::now().timestamp();
     Json(json!({
         "iss":cloud.issuer,"aud":cloud.audience,"sub":"partner:synthetic",
-        "jti":grant,"role":"partner_admin","partner_id":cloud.partner,
+        "jti":grant,"role":role,"purpose":purpose,"partner_id":cloud.partner,
         "customer_id":cloud.customer,"order_id":cloud.order,"tenant_id":cloud.tenant,
         "iat":now,"exp":now+600
     }))
@@ -55,8 +65,12 @@ async fn introspect(
     if !cloud.active.load(Ordering::SeqCst) {
         return Json(json!({"active":false}));
     }
+    let workflow_grant = Uuid::from_u128(3).to_string();
+    let workflow = body["jti"].as_str() == Some(workflow_grant.as_str());
     Json(json!({
-        "active":true,"jti":body["jti"],"aud":cloud.audience,"role":"partner_admin",
+        "active":true,"jti":body["jti"],"aud":cloud.audience,
+        "role":if workflow {"workflow_manager"} else {"partner_admin"},
+        "purpose":if workflow {"workflow_management"} else {"support"},
         "sub":"partner:synthetic",
         "partner_id":cloud.partner,"customer_id":cloud.customer,"order_id":cloud.order,
         "tenant_id":cloud.tenant,"exp":chrono::Utc::now().timestamp()+590
@@ -264,6 +278,112 @@ async fn delegated_support_is_tenant_admin_revalidated_and_audited() {
         StatusCode::OK
     );
 
+    let workflow_definition_id = Uuid::new_v4();
+    let workflow_author = Uuid::new_v4();
+    let workflow_definition = json!({
+        "steps":[{"key":"review","title":"Review intake","kind":"human_approval","required":true,"manual_approval":true,"depends_on":[]}]
+    });
+    sqlx::query("INSERT INTO care_pathway_definitions(tenant_id,id,slug,name,description,trigger_type,definition,request_id,create_request,created_by,updated_by) VALUES($1,$2,'intake-review','Intake review','','appointment_created',$3,$4,'{}',$5,$5)")
+        .bind(tenant).bind(workflow_definition_id).bind(&workflow_definition)
+        .bind(Uuid::new_v4()).bind(workflow_author).execute(&db).await.unwrap();
+
+    let (status, workflow_me, workflow_cookie) =
+        accept("synthetic-workflow-code-abcdefghijklmnopqrstuvwxyz").await;
+    assert_eq!(status, StatusCode::OK, "{workflow_me}");
+    let workflow_cookie = workflow_cookie.unwrap();
+    let (status, workflow_me, _) =
+        call(&app, "GET", "/auth/me", Some(&workflow_cookie), None, None).await;
+    assert_eq!(status, StatusCode::OK, "{workflow_me}");
+    assert_eq!(workflow_me["delegated_role"], "workflow_manager");
+
+    for (method, path, body, origin) in [
+        ("GET", "/api/v1/patients", None, None),
+        (
+            "POST",
+            "/api/v1/patients",
+            Some(
+                json!({"mrn":"DENIED","given_name":"No","family_name":"Access","birth_date":"1990-01-01"}),
+            ),
+            Some(audience.as_str()),
+        ),
+        ("GET", "/api/v1/billing/provider-settings", None, None),
+        ("GET", "/api/v1/billing/claims", None, None),
+        ("GET", "/api/v1/practice/workspace-settings", None, None),
+        ("GET", "/api/v1/care-pathways/instances", None, None),
+    ] {
+        assert_eq!(
+            call(&app, method, path, Some(&workflow_cookie), origin, body)
+                .await
+                .0,
+            StatusCode::FORBIDDEN,
+            "workflow manager unexpectedly accessed {method} {path}"
+        );
+    }
+    assert_eq!(
+        call(
+            &app,
+            "GET",
+            "/api/v1/care-pathways/definitions",
+            Some(&workflow_cookie),
+            None,
+            None,
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let change_path =
+        format!("/api/v1/care-pathways/definitions/{workflow_definition_id}/change-requests");
+    let (status, requested, _) = call(
+        &app,
+        "POST",
+        &change_path,
+        Some(&workflow_cookie),
+        Some(&audience),
+        Some(json!({
+            "base_version":1,
+            "proposal":{
+                "name":"Intake review revised",
+                "description":"Partner proposed; owner approval required",
+                "trigger_type":"appointment_created",
+                "definition":workflow_definition
+            },
+            "reason":"Add the clinic intake review step"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{requested}");
+    assert_eq!(requested["status"], "pending");
+    let request_id = requested["id"].as_str().unwrap();
+    let (_, _, owner_cookie) =
+        accept("synthetic-owner-review-code-abcdefghijklmnopqrstuvwxyz").await;
+    let owner_cookie = owner_cookie.unwrap();
+    let review_path = format!("/api/v1/care-pathways/change-requests/{request_id}/actions");
+    let (status, reviewed, _) = call(
+        &app,
+        "POST",
+        &review_path,
+        Some(&owner_cookie),
+        Some(&audience),
+        Some(json!({"action":"approve","reason":"Clinic owner approved the draft"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reviewed}");
+    assert_eq!(reviewed["status"], "approved");
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/care-pathways/sandbox",
+            Some(&workflow_cookie),
+            Some(&audience),
+            Some(json!({"definition":workflow_definition,"context":{}})),
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+
     let (_, _, revoked_cookie) = accept("synthetic-revoked-code-abcdefghijklmnopqrstuvwxyz").await;
     let revoked_cookie = revoked_cookie.unwrap();
     active.store(false, Ordering::SeqCst);
@@ -284,6 +404,7 @@ async fn delegated_support_is_tenant_admin_revalidated_and_audited() {
         vec![
             "partner_admin.session_created",
             "partner_admin.logout",
+            "partner_admin.session_created",
             "partner_admin.session_created",
             "partner_admin.revoked"
         ]

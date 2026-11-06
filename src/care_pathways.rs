@@ -540,6 +540,31 @@ struct RestoreDefinition {
     reason: String,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ChangeRequestProposal {
+    name: String,
+    #[serde(default)]
+    description: String,
+    trigger_type: String,
+    definition: Definition,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SubmitChangeRequest {
+    base_version: i64,
+    proposal: ChangeRequestProposal,
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewChangeRequest {
+    action: String,
+    reason: String,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Trigger {
@@ -627,6 +652,14 @@ pub fn routes() -> Router<State> {
             axum::routing::post(restore_definition),
         )
         .route(
+            "/api/v1/care-pathways/definitions/{id}/change-requests",
+            get(list_change_requests).post(submit_change_request),
+        )
+        .route(
+            "/api/v1/care-pathways/change-requests/{id}/actions",
+            axum::routing::post(review_change_request),
+        )
+        .route(
             "/api/v1/care-pathways/trigger",
             axum::routing::post(trigger),
         )
@@ -675,6 +708,7 @@ fn role_key(role: &Role) -> &'static str {
         Role::FrontDesk => "front_desk",
         Role::ReadOnly => "read_only",
         Role::PartnerSupport => "partner_support",
+        Role::WorkflowManager => "workflow_manager",
         Role::Patient => "patient",
     }
 }
@@ -952,6 +986,113 @@ async fn update_definition(
     audit(&mut tx, &actor, "practice.care_pathways.update", id).await?;
     tx.commit().await?;
     Ok(definition_response(row))
+}
+
+async fn submit_change_request(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(id): Path<Uuid>,
+    Json(input): Json<SubmitChangeRequest>,
+) -> Result<Json<Value>> {
+    if !matches!(actor.role, Role::WorkflowManager | Role::Owner) {
+        return Err(Error::Forbidden);
+    }
+    validate_definition_input(
+        &input.proposal.name,
+        &input.proposal.description,
+        &input.proposal.trigger_type,
+        &input.proposal.definition,
+        &input.reason,
+    )?;
+    let mut tx = db(&state)?.begin().await?;
+    let current = definition_row(&mut tx, &actor, id, false).await?;
+    if i64_value(&current, "version")? != input.base_version {
+        return Err(Error::Conflict("pathway definition changed"));
+    }
+    let request_id = Uuid::new_v4();
+    let row: Value = sqlx::query_scalar("INSERT INTO care_pathway_change_requests(tenant_id,id,definition_id,base_version,proposal,requested_by,request_reason) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING to_jsonb(care_pathway_change_requests)-'tenant_id'")
+        .bind(actor.tenant_id).bind(request_id).bind(id).bind(input.base_version)
+        .bind(json!(input.proposal)).bind(actor.sub).bind(input.reason.trim())
+        .fetch_one(&mut *tx).await?;
+    audit(
+        &mut tx,
+        &actor,
+        "practice.care_pathways.change_request.submit",
+        request_id,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(row))
+}
+
+async fn list_change_requests(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>> {
+    if !matches!(actor.role, Role::WorkflowManager | Role::Owner) {
+        return Err(Error::Forbidden);
+    }
+    let mut tx = db(&state)?.begin().await?;
+    definition_row(&mut tx, &actor, id, false).await?;
+    let items: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(r)-'tenant_id' FROM care_pathway_change_requests r WHERE tenant_id=$1 AND definition_id=$2 ORDER BY created_at DESC LIMIT 100")
+        .bind(actor.tenant_id).bind(id).fetch_all(&mut *tx).await?;
+    audit(
+        &mut tx,
+        &actor,
+        "practice.care_pathways.change_request.read",
+        id,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(json!({"items":items})))
+}
+
+async fn review_change_request(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(id): Path<Uuid>,
+    Json(input): Json<ReviewChangeRequest>,
+) -> Result<Json<Value>> {
+    owner(&actor)?;
+    text(&input.reason, 1000)?;
+    if !matches!(input.action.as_str(), "approve" | "reject") {
+        return Err(Error::Invalid("invalid change request action"));
+    }
+    let mut tx = db(&state)?.begin().await?;
+    let request: Option<(Uuid, i64, Value)> = sqlx::query_as("SELECT definition_id,base_version,proposal FROM care_pathway_change_requests WHERE tenant_id=$1 AND id=$2 AND status='pending' FOR UPDATE")
+        .bind(actor.tenant_id).bind(id).fetch_optional(&mut *tx).await?;
+    let (definition_id, base_version, proposal) = request.ok_or(Error::NotFound)?;
+    if input.action == "approve" {
+        let parsed: ChangeRequestProposal = serde_json::from_value(proposal.clone())
+            .map_err(|_| Error::Conflict("saved change request is invalid"))?;
+        let previous = definition_row(&mut tx, &actor, definition_id, true).await?;
+        if i64_value(&previous, "version")? != base_version {
+            return Err(Error::Conflict("pathway definition changed"));
+        }
+        let row: Value = sqlx::query_scalar("UPDATE care_pathway_definitions SET name=$3,description=$4,trigger_type=$5,definition=$6,version=version+1,status='draft',updated_by=$7,updated_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING to_jsonb(care_pathway_definitions)-'tenant_id'")
+            .bind(actor.tenant_id).bind(definition_id).bind(parsed.name.trim())
+            .bind(parsed.description.trim()).bind(parsed.trigger_type).bind(json!(parsed.definition))
+            .bind(actor.sub).fetch_one(&mut *tx).await?;
+        save_definition_revision(&mut tx, &actor, &row, &input.reason).await?;
+    }
+    let status = if input.action == "approve" {
+        "approved"
+    } else {
+        "rejected"
+    };
+    let row: Value = sqlx::query_scalar("UPDATE care_pathway_change_requests SET status=$3,reviewed_by=$4,review_reason=$5,reviewed_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING to_jsonb(care_pathway_change_requests)-'tenant_id'")
+        .bind(actor.tenant_id).bind(id).bind(status).bind(actor.sub).bind(input.reason.trim())
+        .fetch_one(&mut *tx).await?;
+    audit(
+        &mut tx,
+        &actor,
+        "practice.care_pathways.change_request.review",
+        id,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(row))
 }
 
 async fn definition_action(
