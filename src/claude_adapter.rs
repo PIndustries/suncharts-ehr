@@ -114,6 +114,15 @@ struct ClaudeConnection {
     credential: crate::provider_settings::Secret,
 }
 
+#[derive(sqlx::FromRow)]
+struct PathwayStepAccess {
+    patient_id: Option<Uuid>,
+    kind: String,
+    manual_approval: bool,
+    state: String,
+    assigned_role: Option<String>,
+}
+
 #[derive(Debug)]
 struct ClaudeResult {
     message_id: String,
@@ -416,7 +425,7 @@ async fn generate(
     let patient_id: Option<Uuid> = if let (Some(instance), Some(step)) =
         (input.pathway_instance_id, step_key.as_deref())
     {
-        let row: Option<(Option<Uuid>, String, bool, String, Option<String>)> = sqlx::query_as(
+        let row: Option<PathwayStepAccess> = sqlx::query_as(
             "SELECT i.patient_id,s.kind,s.manual_approval,s.state,s.assigned_role
              FROM care_pathway_instances i JOIN care_pathway_steps s
               ON s.tenant_id=i.tenant_id AND s.instance_id=i.id
@@ -427,23 +436,24 @@ async fn generate(
         .bind(step)
         .fetch_optional(&mut *tx)
         .await?;
-        let (patient, kind, manual, status, assigned_role) = row.ok_or(Error::NotFound)?;
-        if !["ai_extract_draft", "ai_response_draft"].contains(&kind.as_str())
-            || !manual
-            || !["ready", "in_progress"].contains(&status.as_str())
+        let row = row.ok_or(Error::NotFound)?;
+        if !["ai_extract_draft", "ai_response_draft"].contains(&row.kind.as_str())
+            || !row.manual_approval
+            || !["ready", "in_progress"].contains(&row.state.as_str())
         {
             return Err(Error::Conflict(
                 "pathway step is not ready for a reviewed AI draft",
             ));
         }
         if !matches!(actor.role, Role::Owner)
-            && assigned_role
+            && row
+                .assigned_role
                 .as_deref()
                 .is_some_and(|role| role != role_key(&actor.role))
         {
             return Err(Error::Forbidden);
         }
-        patient
+        row.patient_id
     } else {
         None
     };
