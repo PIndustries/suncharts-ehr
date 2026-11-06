@@ -808,20 +808,35 @@ async fn attempt(pool: &PgPool, e: &Envelope) -> Result<()> {
 pub async fn run(pool: PgPool) {
     let mut wait = Duration::from_secs(3);
     loop {
-        let result = match config() {
-            Ok(Some(e)) => match attempt(&pool, &e).await {
-                Ok(()) => match release_selection_config() {
-                    Ok(Some(selection)) => sync_release_selection(&pool, &selection).await,
-                    Ok(None) => Ok(()),
-                    Err(error) => Err(error),
-                },
-                Err(error) => Err(error),
-            },
-            Ok(None) => return,
+        let bootstrap = match config() {
+            Ok(value) => value,
             Err(_error) => {
                 eprintln!("managed Connect bootstrap configuration is invalid");
                 return;
             }
+        };
+        let selection = match release_selection_config() {
+            Ok(value) => value,
+            Err(_error) => {
+                eprintln!("managed release selection configuration is invalid");
+                return;
+            }
+        };
+        if bootstrap.is_none() && selection.is_none() {
+            return;
+        }
+        let result = match bootstrap.as_ref() {
+            Some(envelope) => match attempt(&pool, envelope).await {
+                Ok(()) => match selection.as_ref() {
+                    Some(selection) => sync_release_selection(&pool, selection).await,
+                    None => Ok(()),
+                },
+                Err(error) => Err(error),
+            },
+            None => match selection.as_ref() {
+                Some(selection) => sync_release_selection(&pool, selection).await,
+                None => Ok(()),
+            },
         };
         match result {
             Ok(()) => {
