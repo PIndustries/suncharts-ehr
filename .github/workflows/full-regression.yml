@@ -1,0 +1,67 @@
+name: Production release regression
+
+on:
+  workflow_call:
+  workflow_dispatch:
+    inputs:
+      promotion_target:
+        description: Production channel being validated
+        required: true
+        type: choice
+        options: [preview, stable]
+
+permissions:
+  contents: read
+
+jobs:
+  full-regression:
+    name: Full Rust, UI, and security regression
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: engine_test
+          POSTGRES_PASSWORD: synthetic-ci-only
+          POSTGRES_DB: engine_test
+        ports: ['55473:5432']
+        options: >-
+          --health-cmd "pg_isready -U engine_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://engine_test:synthetic-ci-only@127.0.0.1:55473/engine_test
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-release-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Format and lint every Rust target
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+      - name: Run focused authentication boundary first
+        run: cargo test --locked --test partner_support_sso
+      - name: Run full Rust and PostgreSQL regression
+        run: cargo test --locked
+      - name: Run all Python contracts
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+      - name: Run all browser fixture contracts
+        run: |
+          for test in scripts/test_*.cjs; do
+            node "$test"
+          done
+      - name: Check every browser JavaScript file
+        run: |
+          for file in web/*.js; do
+            node --check "$file"
+          done

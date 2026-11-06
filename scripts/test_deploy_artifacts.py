@@ -87,14 +87,28 @@ class DeploymentArtifactsTest(unittest.TestCase):
     def test_image_workflow_actions_are_commit_pinned(self):
         workflow = (ROOT / ".github" / "workflows" / "publish-image.yml").read_text()
         uses = [line.split("uses:", 1)[1].split("#", 1)[0].strip() for line in workflow.splitlines() if "uses:" in line]
-        self.assertGreaterEqual(len(uses), 7)
-        for action in uses:
+        local = [action for action in uses if action.startswith("./")]
+        external = [action for action in uses if not action.startswith("./")]
+        self.assertEqual(local, ["./.github/workflows/full-regression.yml"])
+        self.assertGreaterEqual(len(external), 7)
+        for action in external:
             self.assertRegex(action, r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
         self.assertIn("cache-from: type=gha,scope=suncharts-ehr-amd64", workflow)
         self.assertIn("cache-to: type=gha,mode=max,scope=suncharts-ehr-amd64", workflow)
         self.assertIn("timeout-minutes: 60", workflow)
         self.assertIn("cache-from: type=gha,scope=suncharts-ehr-arm64", workflow)
         self.assertIn("cache-to: type=gha,mode=max,scope=suncharts-ehr-arm64", workflow)
+
+    def test_release_publication_requires_full_regression(self):
+        workflow = (ROOT / ".github" / "workflows" / "publish-image.yml").read_text()
+        amd64 = workflow.split("  publish_amd64:", 1)[1].split("  publish_arm64:", 1)[0]
+        self.assertIn("needs: full_regression", amd64)
+        self.assertIn("needs.full_regression.result == 'success'", amd64)
+        full = (ROOT / ".github" / "workflows" / "full-regression.yml").read_text()
+        self.assertIn("cargo clippy --locked --all-targets -- -D warnings", full)
+        self.assertIn("cargo test --locked", full)
+        self.assertIn("--test partner_support_sso", full)
+        self.assertIn("test_*.cjs", full)
 
     def test_release_fast_path_does_not_wait_for_arm_emulation(self):
         workflow = (ROOT / ".github" / "workflows" / "publish-image.yml").read_text()

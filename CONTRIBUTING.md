@@ -25,6 +25,15 @@ The three optional SSH tests require a provisioned loopback fixture. See
 `scripts/verify_provider_sftp.py` for its prerequisites. Do not report skipped
 transport tests as successful provider validation.
 
+Hosted pull-request and `main` checks use the changed-path plan in
+`scripts/ci_change_plan.py`: Rust changes compile every target, apply every
+migration to a fresh schema and run the affected integration contracts; browser,
+Python and API changes run their affected fixtures and structural checks. Shared
+shell files deliberately select every browser fixture. The immutable image
+publication workflow separately requires the complete Rust, PostgreSQL, Python,
+browser and authentication regression. Changed-path checks shorten development
+feedback; they do not weaken or replace the production release gate.
+
 ## Changes
 
 Local development and test builds omit debug symbols and incremental caches to

@@ -33,10 +33,18 @@ env:
   DEBIAN_SNAPSHOT: 20250910T000000Z
 
 jobs:
-  publish_amd64:
+  full_regression:
     if: >-
       github.event_name == 'push' ||
       (github.event_name == 'workflow_dispatch' && inputs.lane == 'amd64-release')
+    uses: ./.github/workflows/full-regression.yml
+
+  publish_amd64:
+    needs: full_regression
+    if: >-
+      needs.full_regression.result == 'success' &&
+      (github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.lane == 'amd64-release'))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
