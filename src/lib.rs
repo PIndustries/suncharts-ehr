@@ -32,6 +32,7 @@ pub mod error;
 pub mod erx_setup;
 pub mod events;
 pub mod fhir;
+pub mod gmail_referral_adapter;
 pub mod health_history;
 pub mod immunizations;
 pub mod instance_integrations;
@@ -293,6 +294,7 @@ pub fn app(state: State) -> Router {
         .merge(health_history::routes())
         .merge(immunizations::routes())
         .merge(instance_integrations::router())
+        .merge(gmail_referral_adapter::router())
         .merge(documents::routes())
         .merge(referrals::routes())
         .merge(referral_delivery::routes())
