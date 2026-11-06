@@ -12,6 +12,7 @@ use crate::{
 use axum::{
     extract::{Path, Query, State as ExtractState},
     http::{header, HeaderMap},
+    response::Html,
     routing::{get, post, put},
     Json, Router,
 };
@@ -346,6 +347,7 @@ pub fn router() -> Router<State> {
         )
         .route("/api/v1/billing/claims/{id}/actions", post(claim_action))
         .route("/api/v1/billing/claims/{id}/packet", get(packet))
+        .route("/api/v1/billing/claims/{id}/cms1500", get(cms1500))
         .route("/api/v1/billing/claims/{id}/history", get(claim_history))
         .route(
             "/api/v1/billing/remittances",
@@ -610,6 +612,97 @@ async fn packet(
             json!({"format":"suncharts-professional-claim-preview-v1","not_x12_837":true,"claim":c,"original_payer_control_number":parent,"delivery":"not_transmitted"}),
         ),
     ))
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+fn json_text<'a>(value: &'a Value, key: &str) -> &'a str {
+    value.get(key).and_then(Value::as_str).unwrap_or("")
+}
+async fn cms1500(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(id): Path<Uuid>,
+) -> Result<Html<String>> {
+    a.staff()?;
+    let mut tx = db(&s)?.begin().await?;
+    let c = claim_row(&mut tx, &a, id).await?;
+    let content: ClaimContent = serde_json::from_value(c.content.clone())
+        .map_err(|_| Error::Invalid("invalid claim content"))?;
+    let account = &c.snapshot["account"];
+    let patient = &c.snapshot["patient"];
+    let coverage = &account["coverage_snapshot"];
+    let payer = &coverage["payer"]["content"];
+    let policy = &coverage["coverage"]["content"];
+    let line_rows = account["content"]["lines"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let pointers = content
+                .line_diagnosis_pointers
+                .get(index)
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=money>{}</td></tr>",
+                html_escape(json_text(&account["content"], "service_date")), html_escape(&content.place_of_service),
+                html_escape(json_text(line, "code")), html_escape(json_text(line, "description")), html_escape(&pointers),
+                line.get("amount_cents").and_then(Value::as_i64).unwrap_or(0))
+        }).collect::<String>();
+    let diagnoses = content
+        .diagnosis_codes
+        .iter()
+        .enumerate()
+        .map(|(i, value)| format!("{}: {}", i + 1, html_escape(value)))
+        .collect::<Vec<_>>()
+        .join(" &nbsp; ");
+    let patient_name = format!(
+        "{} {}",
+        html_escape(json_text(patient, "given_name")),
+        html_escape(json_text(patient, "family_name"))
+    );
+    let document = format!(
+        r#"<!doctype html><html><head><meta charset="utf-8"><title>CMS-1500 {control}</title><style>
+@page{{size:letter landscape;margin:.3in}}*{{box-sizing:border-box}}body{{font:11px Arial,sans-serif;color:#151515;margin:0}}header{{display:flex;justify-content:space-between;align-items:end;border-bottom:3px solid #d66;padding-bottom:8px;margin-bottom:8px}}h1{{font-size:22px;margin:0}}.note{{color:#555;max-width:520px;text-align:right}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);border-left:1px solid #b55;border-top:1px solid #b55}}.field{{min-height:48px;padding:5px;border-right:1px solid #b55;border-bottom:1px solid #b55}}.wide{{grid-column:span 2}}.full{{grid-column:1/-1}}label{{display:block;color:#7b2e2e;font-size:9px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}}table{{width:100%;border-collapse:collapse;margin-top:8px}}th,td{{border:1px solid #b55;padding:5px;text-align:left}}th{{color:#7b2e2e;font-size:9px;text-transform:uppercase}}.money{{text-align:right}}footer{{display:flex;justify-content:space-between;margin-top:8px;color:#555}}button{{padding:8px 12px}}@media print{{button{{display:none}}}}</style></head><body>
+<header><div><h1>CMS-1500 (HCFA) claim review</h1><b>Patient control number {control}</b></div><div class=note>SunCharts native printable review copy. Validate payer requirements and rendering against the official current CMS-1500 form before paper submission.</div></header>
+<div class=grid><div class="field wide"><label>1a Insured ID number</label>{member}</div><div class=field><label>Payer</label>{payer}</div><div class=field><label>Claim frequency</label>{frequency}</div><div class="field wide"><label>2 Patient name</label>{patient_name}</div><div class=field><label>3 Patient birth date</label>{patient_dob}</div><div class=field><label>Patient MRN</label>{mrn}</div><div class="field wide"><label>5 Patient address</label>{patient_address}</div><div class="field wide"><label>7 Insured address</label>{subscriber_address}</div><div class="field wide"><label>33 Billing provider</label>{provider}<br>{billing_address}</div><div class=field><label>33a Billing NPI</label>{billing_npi}</div><div class=field><label>25 Tax ID</label>{tax_id}</div><div class=field><label>24J Rendering NPI</label>{rendering_npi}</div><div class="field full"><label>21 Diagnosis codes</label>{diagnoses}</div></div>
+<table><thead><tr><th>24A Date of service</th><th>24B POS</th><th>24D Procedure</th><th>Description</th><th>24E Diagnosis pointers</th><th>24F Charge cents</th></tr></thead><tbody>{line_rows}</tbody></table><div class=grid><div class="field wide"><label>19 Additional information</label>{notes}</div><div class=field><label>28 Total charge cents</label>{total}</div><div class=field><label>Payer control</label>{payer_control}</div></div><footer><span>Generated from frozen SunCharts claim version {version}. Viewing does not submit or alter the claim.</span><button onclick="window.print()">Print / Save PDF</button></footer></body></html>"#,
+        control = html_escape(&c.control_number),
+        member = html_escape(json_text(policy, "member_id")),
+        payer = html_escape(json_text(payer, "name")),
+        frequency = html_escape(&c.frequency),
+        patient_name = patient_name,
+        patient_dob = html_escape(json_text(patient, "birth_date")),
+        mrn = html_escape(json_text(patient, "mrn")),
+        patient_address = html_escape(&content.patient_address),
+        subscriber_address = html_escape(&content.subscriber_address),
+        provider = html_escape(&content.billing_provider_name),
+        billing_address = html_escape(&content.billing_address),
+        billing_npi = html_escape(&content.billing_npi),
+        tax_id = html_escape(&content.tax_id),
+        rendering_npi = html_escape(&content.rendering_npi),
+        diagnoses = diagnoses,
+        line_rows = line_rows,
+        notes = html_escape(&content.notes),
+        total = account["total_cents"].as_i64().unwrap_or(0),
+        payer_control = html_escape(&c.payer_control_number),
+        version = c.version
+    );
+    crate::postgres::audit(&mut tx, &a, "claim.cms1500_view", id).await?;
+    tx.commit().await?;
+    Ok(Html(document))
 }
 async fn claim_history(
     a: Actor,
