@@ -58,6 +58,7 @@ pub mod referrals;
 pub mod reminders;
 pub mod remittance_automation;
 pub mod retrieval;
+pub mod ringcentral_adapter;
 pub mod rooming;
 pub mod scheduling;
 pub mod settlements;
@@ -295,6 +296,7 @@ pub fn app(state: State) -> Router {
         .merge(immunizations::routes())
         .merge(instance_integrations::router())
         .merge(gmail_referral_adapter::router())
+        .merge(ringcentral_adapter::router())
         .merge(documents::routes())
         .merge(referrals::routes())
         .merge(referral_delivery::routes())
