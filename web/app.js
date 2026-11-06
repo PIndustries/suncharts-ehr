@@ -4,14 +4,14 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 function organizeWorkspaceNavigation(){
- const navigation=$('workspace-navigation');if(!navigation||navigation.dataset.organized==='true')return;
+ const navigation=$('workspace-navigation');if(!navigation||typeof document.createElement!=='function'||navigation.dataset.organized==='true')return;
  const items={home:$('nav-practice'),schedule:$('nav-schedule'),queue:$('nav-followup'),messages:$('nav-portal'),patients:$('nav-clinical'),clinical:$('nav-labs'),specialty:$('nav-specialty'),referrals:$('nav-referrals'),billing:$('nav-billing'),claims:$('nav-claims'),clearinghouse:$('nav-edi'),workflows:$('nav-workflows'),admin:$('nav-admin'),apps:$('nav-apps'),migration:$('nav-migration')};
  const labels={home:'Home',schedule:'Schedule',queue:'Work queue',messages:'Messages',patients:'Patient directory',clinical:'Orders & results',specialty:'Specialty care',referrals:'Referrals',billing:'Billing & payments',claims:'Claims & remittances',clearinghouse:'Clearinghouse',workflows:'Workflow Studio',admin:'Practice settings',apps:'Connected apps',migration:'Data import'};
  for(const [key,item] of Object.entries(items)){const label=item?.querySelector('span');if(label)label.textContent=labels[key];}
- const forms=items.workflows.cloneNode(true);forms.id='nav-forms';forms.classList.add('nav-item-child');forms.querySelector('span').textContent='Forms';
+ const forms=typeof items.workflows?.cloneNode==='function'?items.workflows.cloneNode(true):null;if(forms){forms.id='nav-forms';forms.classList.add('nav-item-child');forms.querySelector('span').textContent='Forms';}
  const groups=[['Today',['home','schedule','queue','messages']],['Patients',['patients']],['Clinical',['clinical','specialty','referrals']],['Revenue',['billing','claims','clearinghouse']],['Operations',['workflows']],['Settings',['admin','apps','migration']]];
  navigation.replaceChildren();
- for(const [label,keys] of groups){const group=document.createElement('div');group.className=`nav-group${label==='Patients'?' nav-group-primary':''}`;group.setAttribute('role','group');const id=`nav-${label.toLowerCase()}-label`;group.setAttribute('aria-labelledby',id);const heading=document.createElement('p');heading.className='nav-group-label';heading.id=id;heading.textContent=label;group.append(heading,...keys.map(key=>items[key]).filter(Boolean));if(label==='Operations')group.append(forms);navigation.append(group);}
+ for(const [label,keys] of groups){const group=document.createElement('div');group.className=`nav-group${label==='Patients'?' nav-group-primary':''}`;group.setAttribute('role','group');const id=`nav-${label.toLowerCase()}-label`;group.setAttribute('aria-labelledby',id);const heading=document.createElement('p');heading.className='nav-group-label';heading.id=id;heading.textContent=label;group.append(heading,...keys.map(key=>items[key]).filter(Boolean));if(label==='Operations'&&forms)group.append(forms);navigation.append(group);}
  navigation.dataset.organized='true';
 }
 
