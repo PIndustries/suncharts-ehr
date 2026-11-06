@@ -58,6 +58,7 @@ pub mod rooming;
 pub mod scheduling;
 pub mod settlements;
 pub mod sftp_transport;
+pub mod specialty_workspace;
 pub mod stedi;
 pub mod visit_diagnoses;
 pub mod x12;
@@ -305,6 +306,7 @@ pub fn app(state: State) -> Router {
         .merge(practice::router())
         .merge(practice_admin::router())
         .merge(previsit::router())
+        .merge(specialty_workspace::router())
         .merge(rooming::routes())
         .merge(visit_diagnoses::routes())
         .merge(demographics::router())
@@ -474,6 +476,15 @@ pub fn app(state: State) -> Router {
                 (
                     [(header::CONTENT_TYPE, "application/javascript")],
                     include_str!("../web/practice-admin.js"),
+                )
+            }),
+        )
+        .route(
+            "/specialty-workspace.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/specialty-workspace.js"),
                 )
             }),
         )
