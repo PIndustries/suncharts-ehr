@@ -198,6 +198,8 @@ spec:
               value: __EXPECTED_VERSION_JSON__
             - name: ENGINE_MANAGED_CONNECT_BOOTSTRAP_FILE
               value: /run/secrets/managed-connect/managed_connect_bootstrap.json
+            - name: ENGINE_MANAGED_RELEASE_SELECTION_FILE
+              value: /run/secrets/managed-connect/managed_release_selection.json
             - name: ENGINE_BOOTSTRAP_EMAIL
               value: __OWNER_EMAIL_JSON__
             - name: ENGINE_BOOTSTRAP_PASSWORD_FILE

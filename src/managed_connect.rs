@@ -20,6 +20,35 @@ const BOOTSTRAP_PATH: &str = "/api/internal/v1/hosted-ehr/bootstrap/complete";
 const OWNER_SCOPE: &str = "clinical.read clinical.write billing.read billing.write events.read migration.manage offline_access";
 type ReadinessRow = (String, bool, bool, Option<String>, String, String, Uuid);
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct ReleaseSelection {
+    contract_version: u8,
+    selection_id: Uuid,
+    #[serde(default)]
+    supersedes_selection_id: Option<Uuid>,
+    release_id: Uuid,
+    tenant_id: Uuid,
+    installation_id: Uuid,
+    version: String,
+    image_reference: String,
+    reason: String,
+    authorization_source: String,
+    selected_at: String,
+}
+
+type StoredSelection = (
+    Uuid,
+    Option<Uuid>,
+    Uuid,
+    Uuid,
+    String,
+    String,
+    String,
+    String,
+    chrono::DateTime<chrono::Utc>,
+);
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Envelope {
@@ -169,7 +198,159 @@ fn config() -> Result<Option<Envelope>> {
     Ok(Some(envelope))
 }
 
+fn release_selection_config() -> Result<Option<ReleaseSelection>> {
+    let raw = file_env("ENGINE_MANAGED_RELEASE_SELECTION")?;
+    let Some(raw) = raw else { return Ok(None) };
+    let selection: ReleaseSelection = serde_json::from_str(&raw)
+        .map_err(|_| Error::Invalid("managed release selection is invalid"))?;
+    validate_release_selection(&selection)?;
+    Ok(Some(selection))
+}
+
+fn valid_version(value: &str) -> bool {
+    let parts: Vec<_> = value.split('.').collect();
+    parts.len() == 4
+        && parts[..3]
+            .iter()
+            .all(|part| part.len() == 2 && part.bytes().all(|byte| byte.is_ascii_digit()))
+        && !parts[3].starts_with('0')
+        && parts[3].bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn validate_release_selection(selection: &ReleaseSelection) -> Result<()> {
+    let selected_at = chrono::DateTime::parse_from_rfc3339(&selection.selected_at)
+        .map_err(|_| Error::Invalid("managed release selection timestamp is invalid"))?
+        .with_timezone(&chrono::Utc);
+    if selection.contract_version != 1
+        || selection.authorization_source != "connect_release_executor"
+        || !matches!(selection.reason.as_str(), "rollout" | "rollback")
+        || !valid_version(&selection.version)
+        || !valid_image_reference(&selection.image_reference)
+        || selected_at > chrono::Utc::now() + chrono::Duration::minutes(10)
+        || env::var("ENGINE_BOOTSTRAP_TENANT_ID")
+            .ok()
+            .and_then(|value| Uuid::parse_str(&value).ok())
+            != Some(selection.tenant_id)
+        || env::var("ENGINE_DEPLOYED_VERSION")
+            .map(|value| value != selection.version)
+            .unwrap_or(true)
+        || env::var("ENGINE_DEPLOYED_IMAGE_REFERENCE")
+            .map(|value| value != selection.image_reference)
+            .unwrap_or(true)
+    {
+        return Err(Error::Invalid(
+            "managed release selection does not match this deployment",
+        ));
+    }
+    Ok(())
+}
+
+async fn sync_release_selection(pool: &PgPool, selection: &ReleaseSelection) -> Result<()> {
+    let selected_at = chrono::DateTime::parse_from_rfc3339(&selection.selected_at)
+        .map_err(|_| Error::Invalid("managed release selection timestamp is invalid"))?
+        .with_timezone(&chrono::Utc);
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,1))")
+        .bind(format!("managed-release:{}", selection.tenant_id))
+        .execute(&mut *tx)
+        .await?;
+    let bootstrap: Option<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT provisioning_request_id,installation_id
+           FROM managed_connect_bootstrap
+          WHERE tenant_id=$1 AND completed_at IS NOT NULL",
+    )
+    .bind(selection.tenant_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((bootstrap_request_id, installation_id)) = bootstrap else {
+        return Err(Error::Invalid(
+            "managed release selection requires completed bootstrap",
+        ));
+    };
+    if installation_id != selection.installation_id {
+        return Err(Error::Invalid(
+            "managed release selection installation does not match bootstrap",
+        ));
+    }
+    let current: Option<StoredSelection> = sqlx::query_as(
+        "SELECT selection_id,supersedes_selection_id,release_id,installation_id,
+                selected_version,selected_image_reference,reason,authorization_source,selected_at
+           FROM managed_release_selections current_selection
+          WHERE current_selection.tenant_id=$1
+            AND NOT EXISTS (
+                SELECT 1 FROM managed_release_selections successor
+                 WHERE successor.tenant_id=current_selection.tenant_id
+                   AND successor.supersedes_selection_id=current_selection.selection_id)
+          FOR UPDATE",
+    )
+    .bind(selection.tenant_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some(current) = current.as_ref() {
+        if current.0 == selection.selection_id {
+            let exact = current.1 == selection.supersedes_selection_id
+                && current.2 == selection.release_id
+                && current.3 == selection.installation_id
+                && current.4 == selection.version
+                && current.5 == selection.image_reference
+                && current.6 == selection.reason
+                && current.7 == selection.authorization_source
+                && current.8 == selected_at;
+            if !exact {
+                return Err(Error::Conflict(
+                    "managed release selection identity was reused with different content",
+                ));
+            }
+            tx.commit().await?;
+            return Ok(());
+        }
+    }
+    if selection.supersedes_selection_id != current.as_ref().map(|row| row.0) {
+        return Err(Error::Conflict(
+            "managed release selection does not extend current history",
+        ));
+    }
+    sqlx::query(
+        "INSERT INTO managed_release_selections
+         (selection_id,tenant_id,bootstrap_request_id,installation_id,release_id,
+          supersedes_selection_id,selected_version,selected_image_reference,reason,
+          authorization_source,selected_at)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+    )
+    .bind(selection.selection_id)
+    .bind(selection.tenant_id)
+    .bind(bootstrap_request_id)
+    .bind(selection.installation_id)
+    .bind(selection.release_id)
+    .bind(selection.supersedes_selection_id)
+    .bind(&selection.version)
+    .bind(&selection.image_reference)
+    .bind(&selection.reason)
+    .bind(&selection.authorization_source)
+    .bind(selected_at)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+fn active_release_target(
+    bootstrap_version: Option<String>,
+    bootstrap_image: Option<String>,
+    current: Option<&(String, String, Uuid)>,
+) -> (Option<String>, Option<String>, Option<Uuid>) {
+    match current {
+        Some((version, image, selection_id)) => (
+            Some(version.clone()),
+            Some(image.clone()),
+            Some(*selection_id),
+        ),
+        None => (bootstrap_version, bootstrap_image, None),
+    }
+}
+
 fn validate_envelope(e: &Envelope) -> Result<()> {
+    let has_release_selection = release_selection_config()?.is_some();
     let origin = Url::parse(&e.instance_origin)
         .map_err(|_| Error::Invalid("managed EHR origin is invalid"))?;
     let expected_host = origin
@@ -230,9 +411,11 @@ fn validate_envelope(e: &Envelope) -> Result<()> {
         || !valid_image_reference(&e.expected_image_reference)
         || e.expected_version.trim().is_empty()
         || e.expected_version.len() > 80
-        || env::var("ENGINE_DEPLOYED_VERSION").is_ok_and(|v| v != e.expected_version)
-        || env::var("ENGINE_DEPLOYED_IMAGE_REFERENCE")
-            .is_ok_and(|v| v != e.expected_image_reference)
+        || (!has_release_selection
+            && env::var("ENGINE_DEPLOYED_VERSION").is_ok_and(|v| v != e.expected_version))
+        || (!has_release_selection
+            && env::var("ENGINE_DEPLOYED_IMAGE_REFERENCE")
+                .is_ok_and(|v| v != e.expected_image_reference))
     {
         return Err(Error::Invalid(
             "managed Connect bootstrap envelope does not match this HTTPS instance",
@@ -626,7 +809,14 @@ pub async fn run(pool: PgPool) {
     let mut wait = Duration::from_secs(3);
     loop {
         let result = match config() {
-            Ok(Some(e)) => attempt(&pool, &e).await,
+            Ok(Some(e)) => match attempt(&pool, &e).await {
+                Ok(()) => match release_selection_config() {
+                    Ok(Some(selection)) => sync_release_selection(&pool, &selection).await,
+                    Ok(None) => Ok(()),
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            },
             Ok(None) => return,
             Err(_error) => {
                 eprintln!("managed Connect bootstrap configuration is invalid");
@@ -652,34 +842,49 @@ pub async fn run(pool: PgPool) {
 }
 
 pub async fn readiness(pool: &PgPool) -> Value {
-    let selected = env::var("ENGINE_DEPLOYED_IMAGE_REFERENCE").ok();
+    let observed_image = env::var("ENGINE_DEPLOYED_IMAGE_REFERENCE").ok();
     let result: Option<ReadinessRow> = sqlx::query_as("SELECT connection_status,managed_email_ready,support_ready,authorization_source,expected_version,expected_image_reference,tenant_id FROM managed_connect_bootstrap ORDER BY created_at DESC LIMIT 1").fetch_optional(pool).await.ok().flatten();
     let (
         stored_status,
         managed_email_ready,
         support_ready,
         authorization_source,
-        expected_version,
-        expected_image_reference,
+        bootstrap_version,
+        bootstrap_image_reference,
         tenant_id,
     ) = result
         .map(|(s, m, sup, a, version, image, t)| {
             (s, m, sup, a, Some(version), Some(image), Some(t))
         })
         .unwrap_or_else(|| ("not_managed".into(), false, false, None, None, None, None));
+    let current_selection: Option<(String, String, Uuid)> = if let Some(tenant) = tenant_id {
+        sqlx::query_as("SELECT selected_version,selected_image_reference,selection_id FROM managed_release_selections current_selection WHERE current_selection.tenant_id=$1 AND NOT EXISTS (SELECT 1 FROM managed_release_selections successor WHERE successor.tenant_id=current_selection.tenant_id AND successor.supersedes_selection_id=current_selection.selection_id)")
+            .bind(tenant)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+    let (selected_version, selected_image_reference, selection_id) = active_release_target(
+        bootstrap_version.clone(),
+        bootstrap_image_reference.clone(),
+        current_selection.as_ref(),
+    );
     let connected = if let Some(tenant) = tenant_id {
         sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM managed_connect_bootstrap b JOIN connect_onboarding_intents i ON i.tenant_id=b.tenant_id AND i.id=b.provisioning_request_id AND i.connect_installation_id=b.installation_id JOIN connect_transport_health h ON h.tenant_id=i.tenant_id AND h.intent_id=i.id WHERE b.tenant_id=$1 AND i.transport='outbound_websocket' AND i.status='completed' AND h.state='connected' AND h.last_seen_at>clock_timestamp()-interval '45 seconds' AND h.updated_at>clock_timestamp()-interval '45 seconds')").bind(tenant).fetch_one(pool).await.unwrap_or(false)
     } else {
         false
     };
-    let selected_matches = match (&expected_image_reference, &selected) {
+    let selected_matches = match (&selected_image_reference, &observed_image) {
         (Some(expected), Some(actual)) => expected == actual,
         (None, _) => true,
         (Some(_), None) => false,
     };
     let observed_version =
         env::var("ENGINE_DEPLOYED_VERSION").unwrap_or_else(|_| env!("SUN_CHARTS_BUILD").to_owned());
-    let version_matches = expected_version
+    let version_matches = selected_version
         .as_deref()
         .is_none_or(|version| version == observed_version);
     let connection_status = if !selected_matches || !version_matches {
@@ -691,7 +896,7 @@ pub async fn readiness(pool: &PgPool) -> Value {
     } else {
         "pending"
     };
-    json!({"infrastructure_ready":true,"connection_status":connection_status,"connected":connected && selected_matches && version_matches,"authorization_source":authorization_source,"managed_email_ready":managed_email_ready && selected_matches && version_matches,"support_ready":support_ready && selected_matches && version_matches,"ready":connected && managed_email_ready && support_ready && selected_matches && version_matches,"selected_version":expected_version,"observed_version":observed_version,"selected_image_reference":expected_image_reference,"observed_image_reference":selected,"image_reference":selected,"build":env!("SUN_CHARTS_BUILD"),"version":observed_version})
+    json!({"infrastructure_ready":true,"connection_status":connection_status,"connected":connected && selected_matches && version_matches,"authorization_source":authorization_source,"managed_email_ready":managed_email_ready && selected_matches && version_matches,"support_ready":support_ready && selected_matches && version_matches,"ready":connected && managed_email_ready && support_ready && selected_matches && version_matches,"selection_id":selection_id,"selected_version":selected_version,"observed_version":observed_version,"selected_image_reference":selected_image_reference,"observed_image_reference":observed_image,"image_reference":observed_image,"bootstrap_version":bootstrap_version,"bootstrap_image_reference":bootstrap_image_reference,"build":env!("SUN_CHARTS_BUILD"),"version":observed_version})
 }
 
 #[cfg(test)]
@@ -714,5 +919,54 @@ mod tests {
         let mut changed = base.clone();
         changed["managed_email_from"] = Value::Null;
         assert!(validate_response(&changed, &e).is_err());
+    }
+
+    #[test]
+    fn managed_release_selection_keeps_bootstrap_compatibility() {
+        let bootstrap_version = Some("26.11.05.8".to_string());
+        let bootstrap_image = Some(format!(
+            "ghcr.io/pindustries/suncharts-ehr@sha256:{}",
+            "a".repeat(64)
+        ));
+        let fallback =
+            active_release_target(bootstrap_version.clone(), bootstrap_image.clone(), None);
+        assert_eq!(fallback, (bootstrap_version, bootstrap_image, None));
+
+        let selection_id = Uuid::new_v4();
+        let current = (
+            "26.11.06.2".to_string(),
+            format!(
+                "ghcr.io/pindustries/suncharts-ehr@sha256:{}",
+                "b".repeat(64)
+            ),
+            selection_id,
+        );
+        let selected = active_release_target(None, None, Some(&current));
+        assert_eq!(
+            selected,
+            (Some(current.0), Some(current.1), Some(selection_id))
+        );
+    }
+
+    #[test]
+    fn release_contract_rejects_nonstandard_versions_and_unknown_fields() {
+        assert!(valid_version("26.11.06.2"));
+        assert!(!valid_version("26.11.6-dev.f644eb6"));
+        assert!(!valid_version("26.11.06.02"));
+        let value = json!({
+            "contract_version":1,
+            "selection_id":Uuid::new_v4(),
+            "supersedes_selection_id":null,
+            "release_id":Uuid::new_v4(),
+            "tenant_id":Uuid::new_v4(),
+            "installation_id":Uuid::new_v4(),
+            "version":"26.11.06.2",
+            "image_reference":format!("ghcr.io/pindustries/suncharts-ehr@sha256:{}", "c".repeat(64)),
+            "reason":"rollout",
+            "authorization_source":"connect_release_executor",
+            "selected_at":"2026-11-06T12:00:00Z",
+            "unexpected":true
+        });
+        assert!(serde_json::from_value::<ReleaseSelection>(value).is_err());
     }
 }
