@@ -15,7 +15,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use chrono::{NaiveDate, Utc};
+use chrono::{Datelike, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{Postgres, Transaction};
@@ -325,6 +325,8 @@ fn validate_care(kind: &str, value: &Value) -> Result<()> {
                 || c.planned_units == 0
                 || c.administered_units + c.wasted_units > c.planned_units
                 || (c.fulfillment == "specialty_pharmacy" && c.specialty_pharmacy.trim().is_empty())
+                || c.task_due.is_some_and(|d| d.year() < 1900)
+                || c.follow_up_due.is_some_and(|d| d.year() < 1900)
             {
                 return Err(Error::Invalid("invalid neurotoxin workflow values"));
             }
@@ -358,6 +360,9 @@ fn validate_care(kind: &str, value: &Value) -> Result<()> {
             text(&c.concentration, 120)?;
             text(&c.reservoir_volume_ml, 40)?;
             optional_text(&c.notes, 10000)?;
+            if c.refill_due.year() < 1900 {
+                return Err(Error::Invalid("invalid pump refill due date"));
+            }
         }
         "stretching_program" => {
             let c: StretchingContent = serde_json::from_value(value.clone())
@@ -366,6 +371,9 @@ fn validate_care(kind: &str, value: &Value) -> Result<()> {
             text(&c.frequency, 200)?;
             text(&c.assigned_to, 200)?;
             optional_text(&c.notes, 10000)?;
+            if c.follow_up_due.is_some_and(|d| d.year() < 1900) {
+                return Err(Error::Invalid("invalid stretching follow-up date"));
+            }
         }
         "care_coordination" => {
             let c: CoordinationContent = serde_json::from_value(value.clone())
@@ -373,6 +381,9 @@ fn validate_care(kind: &str, value: &Value) -> Result<()> {
             text(&c.focus, 200)?;
             text(&c.next_step, 2000)?;
             optional_text(&c.notes, 10000)?;
+            if c.responsible_staff_id.is_nil() || c.due_date.year() < 1900 {
+                return Err(Error::Invalid("invalid care coordination assignment"));
+            }
         }
         _ => return Err(Error::Invalid("unsupported specialty care item kind")),
     }
@@ -601,7 +612,7 @@ async fn care_items(
     let mut tx = db(&s)?.begin().await?;
     context(&mut tx, &a, patient, None).await?;
     let q=format!("SELECT {CARE_ROW} FROM specialty_care_items WHERE tenant_id=$1 AND patient_id=$2 ORDER BY updated_at DESC,id DESC LIMIT 100");
-    let items: Vec<Value> = sqlx::query_scalar(&q)
+    let items: Vec<Value> = sqlx::query_scalar(q)
         .bind(a.tenant_id)
         .bind(patient)
         .fetch_all(&mut *tx)
