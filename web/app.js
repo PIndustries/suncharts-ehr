@@ -343,7 +343,7 @@ function setPage(title) {
   'Referral delivery settings':'Configure receiving partners and delivery credentials',
   'Referrals':'Coordinate referral handoffs, follow-up dates and outcomes',
   'Follow-up tasks':'Work assigned tasks by due date and completion status',
-  'Connected apps':'Review the EHR connection, managed services and authorized applications',
+  'Connected apps':'Review the SunCharts EHR connection, managed services and authorized applications',
   'Connect services':'Manage reminders and SunCharts support services',
   'Support tickets':'Track SunCharts service requests and replies',
   'Data import':'Stage source records and reconcile imported data'
@@ -372,7 +372,7 @@ async function showApps() {
   const onboarding=me.role==='owner'?await api('/api/v1/connect/onboarding'):null;
   const grants=await api('/api/v1/oauth/grants');const clients=me.role==='owner'?await api('/api/v1/oauth/clients'):{items:[]};showTool('Connected apps');
   $('tools').innerHTML=`<p class="eyebrow">YOUR INTEGRATIONS</p><h2>Connected apps</h2>${typeof connectStatusCard==='function'?connectStatusCard(connection):''}${me.role==='owner'?connectOnboardingCard(onboarding,connection):''}<p>Each person authorizes their own account. Revoking access also stops its live change feed.</p>${grants.items.map(g=>`<div class="timeline-row"><div><p><b>${esc(g.name)}</b></p><small>${g.revoked_at?'Access revoked':g.name==='SunCharts'?'SunCharts installation connection':esc(g.scope.split(' ').map(s=>scopeNames[s]||s).join(' · '))}</small></div>${g.revoked_at?'':`<button data-revoke="${esc(g.id)}">Revoke access</button>`}</div>`).join('')||'<p class="muted">No connected apps yet.</p>'}
-  <section class="billing-section"><div class="section-head"><div><h3>SunCharts Connect services</h3><p>Managed appointment email and support tickets for connected practices.</p></div><button type="button" data-connect-services>Open Connect services</button></div><p class="muted">Prefer your own branding? Configure your practice’s Resend account in Reminder settings. The self-hosted EHR works independently.</p></section>${me.role==='owner'?`<h3>Registered applications</h3>${clients.items.map(c=>`<p>${esc(c.name)} <small class="muted">${esc(new URL(c.redirect_uri).origin)}</small> ${c.disabled?'Disabled':`<button type="button" data-disable-client="${esc(c.id)}">Disable application</button>`}</p>`).join('')}` :''}`;
+  <section class="billing-section"><div class="section-head"><div><h3>SunCharts Connect services</h3><p>Managed appointment email and support tickets for connected practices.</p></div><button type="button" data-connect-services>Open Connect services</button></div><p class="muted">Prefer your own branding? Configure your practice’s Resend account in Reminder settings. The self-hosted SunCharts EHR works independently.</p></section>${me.role==='owner'?`<h3>Registered applications</h3>${clients.items.map(c=>`<p>${esc(c.name)} <small class="muted">${esc(new URL(c.redirect_uri).origin)}</small> ${c.disabled?'Disabled':`<button type="button" data-disable-client="${esc(c.id)}">Disable application</button>`}</p>`).join('')}` :''}`;
 }
 async function showMigrations() {
   const jobs=await api('/api/v1/migrations');showTool('Data import');
