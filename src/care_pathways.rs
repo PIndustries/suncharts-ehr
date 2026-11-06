@@ -427,6 +427,111 @@ fn validate_form_fields(fields: &[FormField]) -> Result<()> {
     Ok(())
 }
 
+fn validate_form_evidence(fields: &[FormField], evidence: &Value) -> Result<()> {
+    if fields.is_empty() {
+        return Ok(());
+    }
+    let values = evidence
+        .get("form")
+        .and_then(Value::as_object)
+        .ok_or(Error::Invalid("workflow form evidence is required"))?;
+    if values
+        .keys()
+        .any(|key| !fields.iter().any(|field| field.key == *key))
+    {
+        return Err(Error::Invalid(
+            "workflow form evidence contains an unknown field",
+        ));
+    }
+    for field in fields {
+        let value = values.get(&field.key);
+        let present = value.is_some_and(|value| match field.field_type.as_str() {
+            "checkbox" => value.as_bool().unwrap_or(false),
+            "number" => value.as_f64().is_some(),
+            _ => value.as_str().is_some_and(|value| !value.trim().is_empty()),
+        });
+        if field.required && !present {
+            return Err(Error::Invalid("workflow form evidence is incomplete"));
+        }
+        let Some(value) = value else { continue };
+        let valid = match field.field_type.as_str() {
+            "checkbox" => value.is_boolean(),
+            "number" => value.as_f64().is_some_and(|number| {
+                field.min.is_none_or(|min| number >= min as f64)
+                    && field.max.is_none_or(|max| number <= max as f64)
+            }),
+            "select" => value
+                .as_str()
+                .is_some_and(|selected| field.options.iter().any(|option| option == selected)),
+            "date" => value.as_str().is_some_and(|date| {
+                date.is_empty() || chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_ok()
+            }),
+            "email" => value
+                .as_str()
+                .is_some_and(|email| email.is_empty() || email.contains('@')),
+            "text" | "textarea" | "phone" => value.is_string(),
+            _ => false,
+        };
+        if !valid {
+            return Err(Error::Invalid("invalid workflow form evidence"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod workflow_form_evidence_tests {
+    use super::{validate_form_evidence, FormField};
+    use serde_json::json;
+
+    fn fields() -> Vec<FormField> {
+        vec![
+            FormField {
+                key: "patient_goal".into(),
+                label: "Patient goal".into(),
+                field_type: "textarea".into(),
+                required: true,
+                options: vec![],
+                min: None,
+                max: None,
+            },
+            FormField {
+                key: "priority".into(),
+                label: "Priority".into(),
+                field_type: "select".into(),
+                required: true,
+                options: vec!["Routine".into(), "Urgent".into()],
+                min: None,
+                max: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn required_typed_workflow_fields_are_validated() {
+        assert!(validate_form_evidence(
+            &fields(),
+            &json!({"form":{"patient_goal":"Improve mobility","priority":"Urgent"}})
+        )
+        .is_ok());
+        assert!(validate_form_evidence(
+            &fields(),
+            &json!({"form":{"patient_goal":"","priority":"Urgent"}})
+        )
+        .is_err());
+        assert!(validate_form_evidence(
+            &fields(),
+            &json!({"form":{"patient_goal":"Improve mobility","priority":"Unknown"}})
+        )
+        .is_err());
+        assert!(validate_form_evidence(
+            &fields(),
+            &json!({"form":{"patient_goal":"Improve mobility","priority":"Urgent","extra":true}})
+        )
+        .is_err());
+    }
+}
+
 fn visit_graph<'a>(
     node: &'a str,
     dependencies: &BTreeMap<&'a str, Vec<&'a str>>,
@@ -1383,8 +1488,26 @@ async fn instance_snapshot(
 ) -> Result<Value> {
     let mut value: Value = sqlx::query_scalar("SELECT (to_jsonb(i)-'tenant_id') || jsonb_build_object('definition_name',d.name,'definition_slug',d.slug) FROM care_pathway_instances i JOIN care_pathway_definitions d ON d.tenant_id=i.tenant_id AND d.id=i.definition_id WHERE i.tenant_id=$1 AND i.id=$2")
         .bind(actor.tenant_id).bind(id).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)?;
-    let steps: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(s)-'tenant_id'-'instance_id' FROM care_pathway_steps s WHERE tenant_id=$1 AND instance_id=$2 ORDER BY position,step_key")
+    let raw_definition: Value = sqlx::query_scalar("SELECT r.definition FROM care_pathway_instances i JOIN care_pathway_definition_revisions r ON r.tenant_id=i.tenant_id AND r.definition_id=i.definition_id AND r.version=i.definition_version WHERE i.tenant_id=$1 AND i.id=$2")
+        .bind(actor.tenant_id).bind(id).fetch_one(&mut **tx).await?;
+    let definition: Definition = serde_json::from_value(raw_definition)
+        .map_err(|_| Error::Conflict("saved pathway definition is invalid"))?;
+    let form_fields: BTreeMap<String, Vec<FormField>> = definition
+        .builder
+        .into_iter()
+        .flat_map(|builder| builder.nodes)
+        .filter_map(|node| node.step_key.map(|key| (key, node.form_fields)))
+        .collect();
+    let mut steps: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(s)-'tenant_id'-'instance_id' FROM care_pathway_steps s WHERE tenant_id=$1 AND instance_id=$2 ORDER BY position,step_key")
         .bind(actor.tenant_id).bind(id).fetch_all(&mut **tx).await?;
+    for step in &mut steps {
+        let fields = step["step_key"]
+            .as_str()
+            .and_then(|key| form_fields.get(key))
+            .cloned()
+            .unwrap_or_default();
+        step["form_fields"] = json!(fields);
+    }
     value["steps"] = json!(steps);
     Ok(value)
 }
@@ -1723,6 +1846,22 @@ async fn step_action(
     {
         return Err(Error::Conflict("pathway instance is not active"));
     }
+    let form_fields: Vec<FormField> = instance["steps"]
+        .as_array()
+        .and_then(|steps| {
+            steps
+                .iter()
+                .find(|item| item["step_key"].as_str() == Some(step.as_str()))
+        })
+        .and_then(|item| item.get("form_fields"))
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| Error::Conflict("saved workflow form is invalid"))?
+        .unwrap_or_default();
+    if input.action == "complete" {
+        validate_form_evidence(&form_fields, &input.evidence)?;
+    }
     let row:Value=sqlx::query_scalar("SELECT to_jsonb(s)-'tenant_id'-'instance_id' FROM care_pathway_steps s WHERE tenant_id=$1 AND instance_id=$2 AND step_key=$3 FOR UPDATE")
         .bind(actor.tenant_id).bind(id).bind(&step).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
     if i64_value(&row, "version")? != version {
@@ -1766,8 +1905,17 @@ async fn step_action(
         }
         _ => return Err(Error::Conflict("invalid pathway step transition")),
     };
+    let mut evidence = input.evidence.clone();
+    if input.action == "approve" {
+        if let (Some(saved), Some(review)) = (row["evidence"].as_object(), evidence.as_object_mut())
+        {
+            for (key, value) in saved {
+                review.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+        }
+    }
     sqlx::query("UPDATE care_pathway_steps SET state=$4,version=version+1,evidence=$5,updated_by=$6,updated_at=now() WHERE tenant_id=$1 AND instance_id=$2 AND step_key=$3")
-        .bind(actor.tenant_id).bind(id).bind(&step).bind(next).bind(&input.evidence).bind(actor.sub).execute(&mut *tx).await?;
+        .bind(actor.tenant_id).bind(id).bind(&step).bind(next).bind(&evidence).bind(actor.sub).execute(&mut *tx).await?;
     if input.action == "reopen" {
         sqlx::query("UPDATE care_pathway_instances SET status='active',version=version+1,completed_at=NULL,updated_at=now() WHERE tenant_id=$1 AND id=$2")
             .bind(actor.tenant_id).bind(id).execute(&mut *tx).await?;
@@ -1779,7 +1927,7 @@ async fn step_action(
         Some(&step),
         event,
         &input.reason,
-        input.evidence,
+        evidence,
     )
     .await?;
     refresh_ready_steps(&mut tx, &actor, id).await?;

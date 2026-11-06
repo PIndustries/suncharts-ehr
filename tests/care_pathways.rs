@@ -140,7 +140,18 @@ fn definition(request_id: Uuid) -> Value {
             {"key":"intake","title":"Complete intake","kind":"patient_form","required":true,"manual_approval":false,"depends_on":[],"completion_events":[{"event_type":"intake.reviewed"}]},
             {"key":"eligibility","title":"Review eligibility","kind":"eligibility_query","required":true,"manual_approval":true,"assigned_role":"front_desk","depends_on":["intake"],"completion_events":[{"event_type":"eligibility.returned","condition":{"field":"/reviewed","operator":"equals","value":true}}]},
             {"key":"estimate","title":"Review estimate","kind":"payment_request","required":false,"manual_approval":true,"assigned_role":"front_desk","depends_on":["eligibility"],"condition":{"field":"/insurance/present","operator":"equals","value":true}}
-        ]},
+        ],"builder":{"nodes":[
+            {"id":"start","node_type":"trigger","title":"Start","x":0,"y":0},
+            {"id":"intake","node_type":"form","title":"Complete intake","x":200,"y":0,"step_key":"intake","form_fields":[{"key":"patient_goal","label":"Patient goal","field_type":"textarea","required":true}]},
+            {"id":"eligibility","node_type":"integration","title":"Review eligibility","x":400,"y":0,"step_key":"eligibility"},
+            {"id":"estimate","node_type":"human_task","title":"Review estimate","x":600,"y":0,"step_key":"estimate"},
+            {"id":"complete","node_type":"end","title":"Complete","x":800,"y":0}
+        ],"edges":[
+            {"from_node":"start","from_port":"next","to_node":"intake","to_port":"in"},
+            {"from_node":"intake","from_port":"next","to_node":"eligibility","to_port":"in"},
+            {"from_node":"eligibility","from_port":"next","to_node":"estimate","to_port":"in"},
+            {"from_node":"estimate","from_port":"next","to_node":"complete","to_port":"in"}
+        ]}},
         "reason":"Synthetic pathway configuration"
     })
 }
@@ -223,9 +234,62 @@ async fn pathway_definition_trigger_and_manual_approval_are_versioned_and_tenant
     assert_eq!(status, StatusCode::OK, "{started}");
     let instance = &started["items"][0];
     assert_eq!(instance["steps"][0]["state"], "ready");
+    assert_eq!(
+        instance["steps"][0]["form_fields"][0]["key"],
+        "patient_goal"
+    );
     assert_eq!(instance["steps"][1]["state"], "blocked");
     assert_eq!(instance["steps"][2]["state"], "blocked");
     let instance_id = instance["id"].as_str().unwrap();
+
+    let (status, form_instance) = call(
+        &router,
+        &front_desk,
+        "POST",
+        "/api/v1/care-pathways/trigger",
+        json!({
+            "request_id":Uuid::new_v4(),
+            "trigger_type":"appointment_created",
+            "trigger_key":"synthetic-appointment-form-runtime",
+            "definition_id":definition_id,
+            "patient_id":patient,
+            "appointment_id":null,
+            "visit_id":null,
+            "context":{"insurance":{"present":true}},
+            "reason":"Synthetic custom form runtime"
+        }),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{form_instance}");
+    let form_instance_id = form_instance["items"][0]["id"].as_str().unwrap();
+    let (status, missing_form) = call(
+        &router,
+        &front_desk,
+        "POST",
+        &format!("/api/v1/care-pathways/instances/{form_instance_id}/steps/intake/actions"),
+        json!({"action":"complete","reason":"Missing required custom form","evidence":{}}),
+        Some(1),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{missing_form}");
+    let (status, completed_form) = call(
+        &router,
+        &front_desk,
+        "POST",
+        &format!(
+            "/api/v1/care-pathways/instances/{form_instance_id}/steps/intake/actions"
+        ),
+        json!({"action":"complete","reason":"Reviewed custom form","evidence":{"form":{"patient_goal":"Improve mobility"}}}),
+        Some(1),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{completed_form}");
+    assert_eq!(completed_form["steps"][0]["state"], "completed");
+    assert_eq!(
+        completed_form["steps"][0]["evidence"]["form"]["patient_goal"],
+        "Improve mobility"
+    );
 
     let (_, replayed) = call(
         &router,
