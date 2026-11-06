@@ -40,9 +40,11 @@ input is the digest-qualified reference written to the workflow's
 `image-reference.txt` artifact, never the tag alone. The Dockerfile pins both
 builder and runtime base images by multi-platform digest; `Cargo.lock`,
 `BUILD_VERSION`, the Git commit and those base digests are the immutable build
-inputs. The workflow publishes an SBOM, provenance and `build-inputs.sha256`. It
-also resolves build packages from the pinned Debian snapshot declared in the
-Dockerfile. It does not deploy an EHR.
+inputs. The workflow publishes an SBOM, provenance and `build-inputs.sha256`.
+The builder uses the compiler tools already present in the digest-pinned Rust
+image plus an official Kitware CMake archive pinned by version and SHA-256. It
+does not contact Debian package mirrors while publishing a release and does not
+deploy an EHR.
 
 Public community notifications are optional. Set the repository Actions secret
 `DISCORD_COMMUNITY_WEBHOOK_URL` to report tagged releases, explicitly dispatched
