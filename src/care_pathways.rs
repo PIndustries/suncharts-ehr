@@ -72,12 +72,70 @@ pub struct StepDefinition {
     pub depends_on: Vec<String>,
     #[serde(default)]
     pub condition: Option<Condition>,
+    #[serde(default)]
+    pub completion_events: Vec<EventRule>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventRule {
+    pub event_type: String,
+    #[serde(default)]
+    pub condition: Option<Condition>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Definition {
     pub steps: Vec<StepDefinition>,
+    #[serde(default)]
+    pub builder: Option<BuilderGraph>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuilderGraph {
+    pub nodes: Vec<BuilderNode>,
+    pub edges: Vec<BuilderEdge>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuilderNode {
+    pub id: String,
+    pub node_type: String,
+    pub title: String,
+    pub x: i32,
+    pub y: i32,
+    #[serde(default)]
+    pub step_key: Option<String>,
+    #[serde(default)]
+    pub form_fields: Vec<FormField>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormField {
+    pub key: String,
+    pub label: String,
+    pub field_type: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub options: Vec<String>,
+    #[serde(default)]
+    pub min: Option<i64>,
+    #[serde(default)]
+    pub max: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuilderEdge {
+    pub from_node: String,
+    pub from_port: String,
+    pub to_node: String,
+    pub to_port: String,
 }
 
 impl Definition {
@@ -126,12 +184,25 @@ impl Definition {
                 return Err(Error::Invalid("invalid pathway step due interval"));
             }
             if let Some(condition) = &step.condition {
-                if !condition.field.starts_with('/')
-                    || condition.field.len() > 200
-                    || !["equals", "not_equals", "present", "absent"]
-                        .contains(&condition.operator.as_str())
-                {
-                    return Err(Error::Invalid("invalid pathway condition"));
+                validate_condition(condition)?;
+            }
+            if step.completion_events.len() > 20
+                || step
+                    .completion_events
+                    .iter()
+                    .map(|rule| rule.event_type.as_str())
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    != step.completion_events.len()
+            {
+                return Err(Error::Invalid("invalid pathway completion events"));
+            }
+            for rule in &step.completion_events {
+                if !valid_event_type(&rule.event_type) {
+                    return Err(Error::Invalid("invalid pathway completion event"));
+                }
+                if let Some(condition) = &rule.condition {
+                    validate_condition(condition)?;
                 }
             }
         }
@@ -145,8 +216,245 @@ impl Definition {
             let mut visited = BTreeSet::new();
             visit_dependencies(key, &dependencies, &mut visiting, &mut visited)?;
         }
+        if let Some(builder) = &self.builder {
+            builder.validate(&keys)?;
+        }
         Ok(())
     }
+}
+
+impl BuilderGraph {
+    fn validate(&self, step_keys: &BTreeSet<&str>) -> Result<()> {
+        if self.nodes.len() < 2 || self.nodes.len() > 100 || self.edges.len() > 300 {
+            return Err(Error::Invalid("invalid workflow builder graph size"));
+        }
+        let nodes: BTreeMap<&str, &BuilderNode> = self
+            .nodes
+            .iter()
+            .map(|node| (node.id.as_str(), node))
+            .collect();
+        if nodes.len() != self.nodes.len() {
+            return Err(Error::Invalid("workflow builder node ids must be unique"));
+        }
+        let mut mapped_steps = BTreeSet::new();
+        for node in &self.nodes {
+            if !valid_key(&node.id)
+                || ![
+                    "trigger",
+                    "decision",
+                    "human_task",
+                    "form",
+                    "wait",
+                    "integration",
+                    "subflow",
+                    "end",
+                ]
+                .contains(&node.node_type.as_str())
+                || !(-100_000..=100_000).contains(&node.x)
+                || !(-100_000..=100_000).contains(&node.y)
+            {
+                return Err(Error::Invalid("invalid workflow builder node"));
+            }
+            text(&node.title, 200)?;
+            match node.node_type.as_str() {
+                "trigger" | "decision" | "end" if node.step_key.is_some() => {
+                    return Err(Error::Invalid("control nodes cannot map to pathway steps"));
+                }
+                "trigger" | "decision" | "end" => {}
+                _ => {
+                    let key = node
+                        .step_key
+                        .as_deref()
+                        .ok_or(Error::Invalid("work nodes require a pathway step"))?;
+                    if !step_keys.contains(key) || !mapped_steps.insert(key) {
+                        return Err(Error::Invalid("invalid or repeated workflow step mapping"));
+                    }
+                }
+            }
+            if node.node_type != "form" && !node.form_fields.is_empty() {
+                return Err(Error::Invalid("only form nodes can contain fields"));
+            }
+            validate_form_fields(&node.form_fields)?;
+        }
+        if mapped_steps.len() != step_keys.len()
+            || self
+                .nodes
+                .iter()
+                .filter(|node| node.node_type == "trigger")
+                .count()
+                != 1
+            || self
+                .nodes
+                .iter()
+                .filter(|node| node.node_type == "end")
+                .count()
+                != 1
+        {
+            return Err(Error::Invalid(
+                "workflow graph must map every step and have one trigger and end",
+            ));
+        }
+        let edge_keys: BTreeSet<_> = self
+            .edges
+            .iter()
+            .map(|edge| {
+                (
+                    &edge.from_node,
+                    &edge.from_port,
+                    &edge.to_node,
+                    &edge.to_port,
+                )
+            })
+            .collect();
+        if edge_keys.len() != self.edges.len() {
+            return Err(Error::Invalid("workflow builder edges must be unique"));
+        }
+        let mut dependencies: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for edge in &self.edges {
+            let from = nodes
+                .get(edge.from_node.as_str())
+                .ok_or(Error::Invalid("workflow edge references an unknown node"))?;
+            let to = nodes
+                .get(edge.to_node.as_str())
+                .ok_or(Error::Invalid("workflow edge references an unknown node"))?;
+            let valid_output = if from.node_type == "decision" {
+                ["true", "false"].contains(&edge.from_port.as_str())
+            } else {
+                edge.from_port == "next" && from.node_type != "end"
+            };
+            if !valid_output || edge.to_port != "in" || to.node_type == "trigger" {
+                return Err(Error::Invalid("workflow edge ports are incompatible"));
+            }
+            dependencies
+                .entry(edge.to_node.as_str())
+                .or_default()
+                .push(edge.from_node.as_str());
+        }
+        let mut visiting = BTreeSet::new();
+        let mut visited = BTreeSet::new();
+        for node in nodes.keys() {
+            visit_graph(node, &dependencies, &mut visiting, &mut visited)?;
+        }
+        let trigger = self
+            .nodes
+            .iter()
+            .find(|node| node.node_type == "trigger")
+            .map(|node| node.id.as_str())
+            .ok_or(Error::Invalid("workflow graph requires a trigger"))?;
+        let mut reachable = BTreeSet::from([trigger]);
+        let mut frontier = vec![trigger];
+        while let Some(current) = frontier.pop() {
+            for next in self
+                .edges
+                .iter()
+                .filter(|edge| edge.from_node == current)
+                .map(|edge| edge.to_node.as_str())
+            {
+                if reachable.insert(next) {
+                    frontier.push(next);
+                }
+            }
+        }
+        if reachable.len() != self.nodes.len() {
+            return Err(Error::Invalid(
+                "every workflow node must be reachable from the trigger",
+            ));
+        }
+        Ok(())
+    }
+
+    fn deterministic_order(&self) -> Vec<String> {
+        let mut indegree: BTreeMap<&str, usize> = self
+            .nodes
+            .iter()
+            .map(|node| (node.id.as_str(), 0))
+            .collect();
+        let mut outgoing: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for edge in &self.edges {
+            *indegree.entry(edge.to_node.as_str()).or_default() += 1;
+            outgoing
+                .entry(edge.from_node.as_str())
+                .or_default()
+                .push(edge.to_node.as_str());
+        }
+        let mut ready: BTreeSet<&str> = indegree
+            .iter()
+            .filter_map(|(node, degree)| (*degree == 0).then_some(*node))
+            .collect();
+        let mut order = Vec::with_capacity(self.nodes.len());
+        while let Some(node) = ready.pop_first() {
+            order.push(node.to_owned());
+            for next in outgoing.get(node).into_iter().flatten() {
+                if let Some(degree) = indegree.get_mut(*next) {
+                    *degree = degree.saturating_sub(1);
+                    if *degree == 0 {
+                        ready.insert(*next);
+                    }
+                }
+            }
+        }
+        order
+    }
+}
+
+fn validate_form_fields(fields: &[FormField]) -> Result<()> {
+    let mut keys = BTreeSet::new();
+    if fields.len() > 100 {
+        return Err(Error::Invalid("too many workflow form fields"));
+    }
+    for field in fields {
+        if !valid_key(&field.key)
+            || !keys.insert(field.key.as_str())
+            || ![
+                "text", "textarea", "date", "select", "checkbox", "number", "email", "phone",
+            ]
+            .contains(&field.field_type.as_str())
+            || field.options.len() > 100
+            || field.min.zip(field.max).is_some_and(|(min, max)| min > max)
+        {
+            return Err(Error::Invalid("invalid workflow form field"));
+        }
+        text(&field.label, 200)?;
+        if (field.field_type == "select") != !field.options.is_empty() {
+            return Err(Error::Invalid(
+                "select fields require options and other fields forbid them",
+            ));
+        }
+        for option in &field.options {
+            text(option, 200)?;
+        }
+    }
+    Ok(())
+}
+
+fn visit_graph<'a>(
+    node: &'a str,
+    dependencies: &BTreeMap<&'a str, Vec<&'a str>>,
+    visiting: &mut BTreeSet<&'a str>,
+    visited: &mut BTreeSet<&'a str>,
+) -> Result<()> {
+    if visited.contains(node) {
+        return Ok(());
+    }
+    if !visiting.insert(node) {
+        return Err(Error::Invalid("workflow builder graph must be acyclic"));
+    }
+    for prior in dependencies.get(node).into_iter().flatten() {
+        visit_graph(prior, dependencies, visiting, visited)?;
+    }
+    visiting.remove(node);
+    visited.insert(node);
+    Ok(())
+}
+
+fn validate_condition(condition: &Condition) -> Result<()> {
+    if !condition.field.starts_with('/')
+        || condition.field.len() > 200
+        || !["equals", "not_equals", "present", "absent"].contains(&condition.operator.as_str())
+    {
+        return Err(Error::Invalid("invalid pathway condition"));
+    }
+    Ok(())
 }
 
 fn visit_dependencies<'a>(
@@ -174,6 +482,10 @@ fn valid_key(value: &str) -> bool {
     matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
         && value.len() <= 63
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+fn valid_event_type(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 100 && value.split('.').all(valid_key)
 }
 
 fn condition_matches(condition: Option<&Condition>, context: &Value) -> bool {
@@ -223,6 +535,13 @@ struct DefinitionAction {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct RestoreDefinition {
+    version: i64,
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Trigger {
     request_id: Uuid,
     trigger_type: String,
@@ -250,6 +569,29 @@ struct StepAction {
 struct InstanceAction {
     action: String,
     reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ObservedWorkflowEvent {
+    request_id: Uuid,
+    event_type: String,
+    patient_id: Uuid,
+    appointment_id: Option<Uuid>,
+    visit_id: Option<Uuid>,
+    #[serde(default)]
+    context: Value,
+    #[serde(default)]
+    evidence: Value,
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SandboxDefinition {
+    definition: Definition,
+    #[serde(default)]
+    context: Value,
 }
 
 #[derive(sqlx::FromRow)]
@@ -281,8 +623,20 @@ pub fn routes() -> Router<State> {
             get(definition_revisions),
         )
         .route(
+            "/api/v1/care-pathways/definitions/{id}/restore",
+            axum::routing::post(restore_definition),
+        )
+        .route(
             "/api/v1/care-pathways/trigger",
             axum::routing::post(trigger),
+        )
+        .route(
+            "/api/v1/care-pathways/events",
+            axum::routing::post(observe_workflow_event),
+        )
+        .route(
+            "/api/v1/care-pathways/sandbox",
+            axum::routing::post(sandbox_definition),
         )
         .route("/api/v1/care-pathways/instances", get(list_instances))
         .route("/api/v1/care-pathways/instances/{id}", get(read_instance))
@@ -352,6 +706,62 @@ fn validate_definition_input(
     }
     definition.validate()?;
     text(reason, 1000)
+}
+
+async fn sandbox_definition(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Json(input): Json<SandboxDefinition>,
+) -> Result<Json<Value>> {
+    actor.staff()?;
+    if !input.context.is_object() {
+        return Err(Error::Invalid("sandbox context must be an object"));
+    }
+    input.definition.validate()?;
+    let steps: Vec<Value> = input
+        .definition
+        .steps
+        .iter()
+        .map(|step| {
+            json!({
+                "key":step.key,
+                "title":step.title,
+                "included":condition_matches(step.condition.as_ref(),&input.context),
+                "initial_state":if condition_matches(step.condition.as_ref(),&input.context) && step.depends_on.is_empty() {"ready"} else if condition_matches(step.condition.as_ref(),&input.context) {"blocked"} else {"skipped"},
+                "manual_approval":step.manual_approval,
+                "assigned_role":step.assigned_role,
+                "due_after_minutes":step.due_after_minutes
+            })
+        })
+        .collect();
+    let order = input
+        .definition
+        .builder
+        .as_ref()
+        .map(BuilderGraph::deterministic_order)
+        .unwrap_or_else(|| {
+            input
+                .definition
+                .steps
+                .iter()
+                .map(|step| step.key.clone())
+                .collect()
+        });
+    let mut tx = db(&state)?.begin().await?;
+    audit(
+        &mut tx,
+        &actor,
+        "practice.care_pathways.sandbox",
+        actor.tenant_id,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(json!({
+        "valid":true,
+        "deterministic_order":order,
+        "steps":steps,
+        "side_effects":false
+    })))
 }
 
 async fn definition_row(
@@ -578,6 +988,59 @@ async fn definition_action(
         .await?;
     save_definition_revision(&mut tx, &actor, &row, &input.reason).await?;
     audit(&mut tx, &actor, "practice.care_pathways.action", id).await?;
+    tx.commit().await?;
+    Ok(definition_response(row))
+}
+
+async fn restore_definition(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<RestoreDefinition>,
+) -> Result<Json<Value>> {
+    owner(&actor)?;
+    text(&input.reason, 1000)?;
+    if input.version < 1 {
+        return Err(Error::Invalid("invalid pathway revision"));
+    }
+    let expected_version = expected(&headers)?;
+    let mut tx = db(&state)?.begin().await?;
+    let previous = definition_row(&mut tx, &actor, id, true).await?;
+    if i64_value(&previous, "version")? != expected_version {
+        return Err(Error::Conflict("pathway definition changed"));
+    }
+    if string_value(&previous, "status")? == "archived" {
+        return Err(Error::Conflict(
+            "archived pathway definitions cannot be changed",
+        ));
+    }
+    let revision: Option<(String, String, String, Value)> = sqlx::query_as(
+        "SELECT name,description,trigger_type,definition FROM care_pathway_definition_revisions WHERE tenant_id=$1 AND definition_id=$2 AND version=$3",
+    )
+    .bind(actor.tenant_id)
+    .bind(id)
+    .bind(input.version)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((name, description, trigger_type, definition)) = revision else {
+        return Err(Error::NotFound);
+    };
+    let parsed: Definition = serde_json::from_value(definition.clone())
+        .map_err(|_| Error::Conflict("saved pathway revision is invalid"))?;
+    validate_definition_input(&name, &description, &trigger_type, &parsed, &input.reason)?;
+    let row: Value = sqlx::query_scalar("UPDATE care_pathway_definitions SET name=$3,description=$4,trigger_type=$5,definition=$6,version=version+1,status='draft',updated_by=$7,updated_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING to_jsonb(care_pathway_definitions)-'tenant_id'")
+        .bind(actor.tenant_id)
+        .bind(id)
+        .bind(name)
+        .bind(description)
+        .bind(trigger_type)
+        .bind(definition)
+        .bind(actor.sub)
+        .fetch_one(&mut *tx)
+        .await?;
+    save_definition_revision(&mut tx, &actor, &row, &input.reason).await?;
+    audit(&mut tx, &actor, "practice.care_pathways.restore", id).await?;
     tx.commit().await?;
     Ok(definition_response(row))
 }
@@ -907,6 +1370,32 @@ async fn refresh_ready_steps(
         if ready {
             sqlx::query("UPDATE care_pathway_steps SET state='ready',version=version+1,updated_by=$4,updated_at=now() WHERE tenant_id=$1 AND instance_id=$2 AND step_key=$3")
             .bind(actor.tenant_id).bind(id).bind(&step.key).bind(actor.sub).execute(&mut **tx).await?;
+            let pending: Option<Value> = sqlx::query_scalar("SELECT evidence->'_automation_pending' FROM care_pathway_steps WHERE tenant_id=$1 AND instance_id=$2 AND step_key=$3")
+                .bind(actor.tenant_id).bind(id).bind(&step.key).fetch_one(&mut **tx).await?;
+            if let Some(pending) = pending.filter(|value| value.is_object()) {
+                let next = if step.manual_approval {
+                    "awaiting_approval"
+                } else {
+                    "completed"
+                };
+                let evidence = json!({"automation":pending});
+                sqlx::query("UPDATE care_pathway_steps SET state=$4,version=version+1,evidence=$5,updated_by=$6,updated_at=now() WHERE tenant_id=$1 AND instance_id=$2 AND step_key=$3")
+                    .bind(actor.tenant_id).bind(id).bind(&step.key).bind(next).bind(&evidence).bind(actor.sub).execute(&mut **tx).await?;
+                insert_event(
+                    tx,
+                    actor,
+                    id,
+                    Some(&step.key),
+                    if step.manual_approval {
+                        "step.automation_submitted"
+                    } else {
+                        "step.automation_completed"
+                    },
+                    "Apply previously observed workflow event after dependencies resolved",
+                    evidence,
+                )
+                .await?;
+            }
         }
     }
     let done:bool=sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM care_pathway_steps WHERE tenant_id=$1 AND instance_id=$2 AND state NOT IN('completed','skipped'))")
@@ -916,6 +1405,145 @@ async fn refresh_ready_steps(
         .bind(actor.tenant_id).bind(id).execute(&mut **tx).await?;
     }
     Ok(())
+}
+
+/// Reconciles a durable native workflow event against active pathway templates.
+/// Templates opt in by event name; the runtime never branches on a clinic slug.
+pub async fn observe_event_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    actor: &Actor,
+    request_id: Uuid,
+    event_type: &str,
+    patient_id: Uuid,
+    appointment_id: Option<Uuid>,
+    visit_id: Option<Uuid>,
+    context: &Value,
+    source_evidence: &Value,
+    reason: &str,
+) -> Result<Vec<Uuid>> {
+    if !valid_event_type(event_type) {
+        return Err(Error::Invalid("invalid workflow event type"));
+    }
+    if !context.is_object() || !source_evidence.is_object() {
+        return Err(Error::Invalid(
+            "workflow event context and evidence must be objects",
+        ));
+    }
+    text(reason, 1000)?;
+    let instances: Vec<(Uuid, Value)> = sqlx::query_as("SELECT i.id,r.definition FROM care_pathway_instances i JOIN care_pathway_definition_revisions r ON r.tenant_id=i.tenant_id AND r.definition_id=i.definition_id AND r.version=i.definition_version WHERE i.tenant_id=$1 AND i.patient_id=$2 AND i.status='active' AND ($3::uuid IS NULL OR i.appointment_id IS NULL OR i.appointment_id=$3) AND ($4::uuid IS NULL OR i.visit_id IS NULL OR i.visit_id=$4) ORDER BY i.started_at,i.id")
+        .bind(actor.tenant_id).bind(patient_id).bind(appointment_id).bind(visit_id).fetch_all(&mut **tx).await?;
+    let mut changed = Vec::new();
+    for (instance_id, raw_definition) in instances {
+        let definition: Definition = serde_json::from_value(raw_definition)
+            .map_err(|_| Error::Conflict("saved pathway definition is invalid"))?;
+        let mut instance_changed = false;
+        for step in definition.steps {
+            if !step.completion_events.iter().any(|rule| {
+                rule.event_type == event_type && condition_matches(rule.condition.as_ref(), context)
+            }) {
+                continue;
+            }
+            let replayed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM care_pathway_events WHERE tenant_id=$1 AND instance_id=$2 AND step_key=$3 AND evidence#>>'{automation,request_id}'=$4)")
+                .bind(actor.tenant_id).bind(instance_id).bind(&step.key).bind(request_id.to_string()).fetch_one(&mut **tx).await?;
+            if replayed {
+                continue;
+            }
+            let row: Option<(String, bool)> = sqlx::query_as("SELECT state,manual_approval FROM care_pathway_steps WHERE tenant_id=$1 AND instance_id=$2 AND step_key=$3 FOR UPDATE")
+                .bind(actor.tenant_id).bind(instance_id).bind(&step.key).fetch_optional(&mut **tx).await?;
+            let Some((state, manual_approval)) = row else {
+                continue;
+            };
+            if ["completed", "skipped", "awaiting_approval"].contains(&state.as_str()) {
+                continue;
+            }
+            let automation = json!({
+                "request_id":request_id,
+                "event_type":event_type,
+                "appointment_id":appointment_id,
+                "visit_id":visit_id,
+                "observed_by":actor.sub,
+                "context":context,
+                "source":source_evidence
+            });
+            if state == "blocked" {
+                let evidence = json!({"_automation_pending":automation});
+                sqlx::query("UPDATE care_pathway_steps SET evidence=$4,version=version+1,updated_by=$5,updated_at=now() WHERE tenant_id=$1 AND instance_id=$2 AND step_key=$3")
+                    .bind(actor.tenant_id).bind(instance_id).bind(&step.key).bind(&evidence).bind(actor.sub).execute(&mut **tx).await?;
+                insert_event(
+                    tx,
+                    actor,
+                    instance_id,
+                    Some(&step.key),
+                    "step.automation_deferred",
+                    reason,
+                    json!({"automation":automation}),
+                )
+                .await?;
+            } else {
+                let next = if manual_approval {
+                    "awaiting_approval"
+                } else {
+                    "completed"
+                };
+                let evidence = json!({"automation":automation});
+                sqlx::query("UPDATE care_pathway_steps SET state=$4,evidence=$5,version=version+1,updated_by=$6,updated_at=now() WHERE tenant_id=$1 AND instance_id=$2 AND step_key=$3")
+                    .bind(actor.tenant_id).bind(instance_id).bind(&step.key).bind(next).bind(&evidence).bind(actor.sub).execute(&mut **tx).await?;
+                insert_event(
+                    tx,
+                    actor,
+                    instance_id,
+                    Some(&step.key),
+                    if manual_approval {
+                        "step.automation_submitted"
+                    } else {
+                        "step.automation_completed"
+                    },
+                    reason,
+                    evidence,
+                )
+                .await?;
+            }
+            instance_changed = true;
+        }
+        if instance_changed {
+            refresh_ready_steps(tx, actor, instance_id).await?;
+            changed.push(instance_id);
+        }
+    }
+    Ok(changed)
+}
+
+async fn observe_workflow_event(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Json(input): Json<ObservedWorkflowEvent>,
+) -> Result<Json<Value>> {
+    actor.staff()?;
+    let mut tx = db(&state)?.begin().await?;
+    let instances = observe_event_in_tx(
+        &mut tx,
+        &actor,
+        input.request_id,
+        &input.event_type,
+        input.patient_id,
+        input.appointment_id,
+        input.visit_id,
+        &input.context,
+        &input.evidence,
+        &input.reason,
+    )
+    .await?;
+    audit(
+        &mut tx,
+        &actor,
+        "practice.care_pathways.event.observe",
+        input.patient_id,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(
+        json!({"event_type":input.event_type,"pathway_instances":instances}),
+    ))
 }
 
 async fn step_action(
@@ -1021,21 +1649,40 @@ async fn instance_events(
     Ok(Json(json!({"items":items,"truncated":truncated})))
 }
 
-/// A specialty template supplied as data. Installers choose whether to create it;
+/// A generic starter supplied as data. Installers choose whether to create it;
 /// the runtime never branches on this slug or its step keys.
-pub fn spasticity_movement_template() -> Value {
+pub fn coordinated_care_starter() -> Value {
     json!({
-        "slug":"spasticity-movement-previsit",
-        "name":"Spasticity & movement pre-visit",
-        "description":"Collect intake, verify benefits, prepare payment and route the specialty visit.",
+        "slug":"coordinated-care-previsit",
+        "name":"Coordinated care pre-visit",
+        "description":"Collect intake, verify benefits, prepare payment and route a configurable clinical visit.",
         "trigger_type":"appointment_created",
         "definition":{"steps":[
-            {"key":"intake-packet","title":"Complete intake packet","kind":"patient_form","required":true,"manual_approval":false,"due_after_minutes":4320,"escalation_role":"front_desk","depends_on":[]},
-            {"key":"insurance-eligibility","title":"Verify insurance eligibility","kind":"eligibility_query","required":true,"manual_approval":true,"assigned_role":"front_desk","due_after_minutes":1440,"escalation_role":"owner","depends_on":[]},
-            {"key":"patient-estimate","title":"Review patient responsibility","kind":"payment_request","required":false,"manual_approval":true,"assigned_role":"front_desk","due_after_minutes":2880,"escalation_role":"owner","depends_on":["insurance-eligibility"],"condition":{"field":"/insurance/present","operator":"equals","value":true}},
-            {"key":"legal-consents","title":"Sign required legal documents","kind":"document_signature","required":true,"manual_approval":false,"due_after_minutes":4320,"escalation_role":"front_desk","depends_on":[]},
-            {"key":"functional-status","title":"Record functional status","kind":"clinical_template","required":true,"manual_approval":true,"assigned_role":"nurse","due_after_minutes":10080,"escalation_role":"clinician","depends_on":["intake-packet"]},
+            {"key":"intake-packet","title":"Complete intake packet","kind":"patient_form","required":true,"manual_approval":false,"due_after_minutes":4320,"escalation_role":"front_desk","depends_on":[],"completion_events":[{"event_type":"intake.reviewed"}]},
+            {"key":"insurance-eligibility","title":"Verify insurance eligibility","kind":"eligibility_query","required":true,"manual_approval":true,"assigned_role":"front_desk","due_after_minutes":1440,"escalation_role":"owner","depends_on":[],"completion_events":[{"event_type":"eligibility.returned","condition":{"field":"/reviewed","operator":"equals","value":true}}]},
+            {"key":"patient-estimate","title":"Review patient responsibility","kind":"payment_request","required":false,"manual_approval":true,"assigned_role":"front_desk","due_after_minutes":2880,"escalation_role":"owner","depends_on":["insurance-eligibility"],"condition":{"field":"/insurance/present","operator":"equals","value":true},"completion_events":[{"event_type":"payment.responsibility_reviewed"}]},
+            {"key":"legal-consents","title":"Sign required legal documents","kind":"document_signature","required":true,"manual_approval":false,"due_after_minutes":4320,"escalation_role":"front_desk","depends_on":[],"completion_events":[{"event_type":"consent.packet_signed"}]},
+            {"key":"functional-status","title":"Record functional status","kind":"clinical_template","required":true,"manual_approval":true,"assigned_role":"nurse","due_after_minutes":10080,"escalation_role":"clinician","depends_on":["intake-packet"],"completion_events":[{"event_type":"functional_status.recorded"}]},
             {"key":"visit-pathway","title":"Select specialty visit pathway","kind":"human_approval","required":true,"manual_approval":true,"assigned_role":"clinician","due_after_minutes":10080,"escalation_role":"owner","depends_on":["functional-status","legal-consents"]}
-        ]}
+        ],"builder":{"nodes":[
+            {"id":"start","node_type":"trigger","title":"Appointment created","x":0,"y":180},
+            {"id":"intake","node_type":"form","title":"Patient intake","x":240,"y":40,"step_key":"intake-packet","form_fields":[{"key":"contact_phone","label":"Phone","field_type":"phone","required":true},{"key":"patient_goal","label":"Patient goal","field_type":"textarea","required":true}]},
+            {"id":"eligibility","node_type":"integration","title":"Eligibility","x":240,"y":180,"step_key":"insurance-eligibility"},
+            {"id":"consents","node_type":"form","title":"Consent packet","x":240,"y":320,"step_key":"legal-consents","form_fields":[{"key":"treatment_consent","label":"Treatment consent","field_type":"checkbox","required":true}]},
+            {"id":"estimate","node_type":"human_task","title":"Patient responsibility","x":500,"y":180,"step_key":"patient-estimate"},
+            {"id":"functional","node_type":"form","title":"Functional status","x":500,"y":40,"step_key":"functional-status","form_fields":[{"key":"patient_goal","label":"Patient goal","field_type":"textarea","required":true}]},
+            {"id":"routing","node_type":"human_task","title":"Clinical routing","x":760,"y":120,"step_key":"visit-pathway"},
+            {"id":"complete","node_type":"end","title":"Pre-visit ready","x":1020,"y":180}
+        ],"edges":[
+            {"from_node":"start","from_port":"next","to_node":"intake","to_port":"in"},
+            {"from_node":"start","from_port":"next","to_node":"eligibility","to_port":"in"},
+            {"from_node":"start","from_port":"next","to_node":"consents","to_port":"in"},
+            {"from_node":"intake","from_port":"next","to_node":"functional","to_port":"in"},
+            {"from_node":"eligibility","from_port":"next","to_node":"estimate","to_port":"in"},
+            {"from_node":"functional","from_port":"next","to_node":"routing","to_port":"in"},
+            {"from_node":"consents","from_port":"next","to_node":"routing","to_port":"in"},
+            {"from_node":"estimate","from_port":"next","to_node":"complete","to_port":"in"},
+            {"from_node":"routing","from_port":"next","to_node":"complete","to_port":"in"}
+        ]}}
     })
 }

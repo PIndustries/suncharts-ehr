@@ -56,7 +56,13 @@ const CHART_TABS: [&str; 16] = [
     "billing",
     "source",
 ];
-const SPECIALTY_WORKSPACES: [&str; 1] = ["spasticity_movement"];
+const CLINICAL_MODULES: [&str; 5] = [
+    "functional_status",
+    "neurotoxin_therapy",
+    "intrathecal_pump",
+    "therapeutic_program",
+    "care_coordination",
+];
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -65,7 +71,7 @@ pub struct WorkspaceContent {
     #[serde(default)]
     pub hidden_modules: Vec<String>,
     #[serde(default)]
-    pub specialty_workspaces: Vec<String>,
+    pub enabled_clinical_modules: Vec<String>,
     pub chart_tabs: Vec<String>,
 }
 
@@ -74,7 +80,7 @@ impl Default for WorkspaceContent {
         Self {
             module_order: MODULES.iter().map(|s| (*s).to_owned()).collect(),
             hidden_modules: vec![],
-            specialty_workspaces: vec![],
+            enabled_clinical_modules: vec![],
             chart_tabs: CHART_TABS
                 .iter()
                 .filter(|s| !matches!(**s, "functional_status" | "specialty_care"))
@@ -85,6 +91,24 @@ impl Default for WorkspaceContent {
 }
 
 fn current_workspace_content(mut content: Value) -> Value {
+    if content.get("enabled_clinical_modules").is_none() {
+        let legacy_enabled = content
+            .get("specialty_workspaces")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.iter().any(|item| item == "spasticity_movement"));
+        let modules = if legacy_enabled {
+            CLINICAL_MODULES
+                .iter()
+                .map(|module| json!(module))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if let Some(object) = content.as_object_mut() {
+            object.remove("specialty_workspaces");
+            object.insert("enabled_clinical_modules".into(), Value::Array(modules));
+        }
+    }
     // Add newly introduced chart areas to legacy saved layouts once. Owners can
     // subsequently hide them through the normal versioned settings editor.
     if let Some(tabs) = content.get_mut("chart_tabs").and_then(Value::as_array_mut) {
@@ -141,9 +165,9 @@ impl WorkspaceContent {
             "invalid or repeated hidden module",
         )?;
         unique_allowed(
-            &self.specialty_workspaces,
-            &SPECIALTY_WORKSPACES,
-            "invalid or repeated specialty workspace",
+            &self.enabled_clinical_modules,
+            &CLINICAL_MODULES,
+            "invalid or repeated clinical module",
         )?;
         unique_allowed(
             &self.chart_tabs,
@@ -160,14 +184,28 @@ impl WorkspaceContent {
                 "module order must include every module once and chart tabs must include overview",
             ));
         }
-        if self.specialty_workspaces.is_empty()
-            && self
-                .chart_tabs
+        if self.chart_tabs.iter().any(|tab| tab == "functional_status")
+            && !self
+                .enabled_clinical_modules
                 .iter()
-                .any(|v| matches!(v.as_str(), "functional_status" | "specialty_care"))
+                .any(|module| module == "functional_status")
         {
             return Err(Error::Invalid(
-                "specialty chart tabs require an enabled specialty workspace",
+                "functional status tab requires its clinical module",
+            ));
+        }
+        let specialty_enabled = self.enabled_clinical_modules.iter().any(|module| {
+            matches!(
+                module.as_str(),
+                "neurotoxin_therapy"
+                    | "intrathecal_pump"
+                    | "therapeutic_program"
+                    | "care_coordination"
+            )
+        });
+        if self.chart_tabs.iter().any(|tab| tab == "specialty_care") && !specialty_enabled {
+            return Err(Error::Invalid(
+                "specialty care tab requires a treatment module",
             ));
         }
         Ok(())
@@ -631,6 +669,19 @@ async fn create_functional_status(
     let id = Uuid::new_v4();
     let row:Value=sqlx::query_scalar("INSERT INTO functional_status_assessments(tenant_id,patient_id,id,request_id,create_request,visit_id,supersedes_id,content,recorded_by,reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING jsonb_build_object('id',id,'patient_id',patient_id,'visit_id',visit_id,'supersedes_id',supersedes_id,'content',content,'recorded_by',recorded_by,'reason',reason,'recorded_at',recorded_at)")
         .bind(a.tenant_id).bind(patient).bind(id).bind(v.request_id).bind(request).bind(v.visit_id).bind(v.supersedes_id).bind(json!(v.content)).bind(a.sub).bind(v.reason.trim()).fetch_one(&mut *tx).await?;
+    crate::care_pathways::observe_event_in_tx(
+        &mut tx,
+        &a,
+        v.request_id,
+        "functional_status.recorded",
+        patient,
+        None,
+        v.visit_id,
+        &json!({"recorded":true,"supersedes_prior":v.supersedes_id.is_some()}),
+        &json!({"assessment_id":id}),
+        "Functional status assessment recorded",
+    )
+    .await?;
     audit(&mut tx, &a, "patient.functional_status.create", patient).await?;
     tx.commit().await?;
     Ok(Json(row))

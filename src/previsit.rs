@@ -670,6 +670,19 @@ async fn review_packet(
     let next = current + 1;
     sqlx::query("UPDATE previsit_intake_packets SET status='reviewed',reviewed_at=now(),reviewed_by=$3,version=$4,updated_at=now() WHERE tenant_id=$1 AND id=$2").bind(actor.tenant_id).bind(packet).bind(actor.sub).bind(next).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO previsit_events(tenant_id,packet_id,appointment_id,patient_id,actor_id,actor_kind,action) VALUES($1,$2,$3,$4,$5,'staff','intake_reviewed')").bind(actor.tenant_id).bind(packet).bind(appointment).bind(patient).bind(actor.sub).execute(&mut *tx).await?;
+    crate::care_pathways::observe_event_in_tx(
+        &mut tx,
+        &actor,
+        packet,
+        "intake.reviewed",
+        patient,
+        Some(appointment),
+        None,
+        &json!({"reviewed":true}),
+        &json!({"packet_id":packet,"packet_version":next}),
+        "Reviewed intake packet",
+    )
+    .await?;
     crate::postgres::audit(&mut tx, &actor, "previsit.packet_review", packet).await?;
     tx.commit().await?;
     Ok(Json(

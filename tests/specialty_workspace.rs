@@ -121,7 +121,7 @@ async fn owner_configuration_and_specialty_records_are_versioned_and_tenant_scop
     .await;
     assert_eq!(settings_status, StatusCode::OK);
     assert_eq!(settings["version"], 0);
-    let content = json!({"module_order":["practice","clinical","schedule","labs","referrals","followup","portal","specialty","billing","claims","edi","apps","migration","admin"],"hidden_modules":["labs"],"specialty_workspaces":["spasticity_movement"],"chart_tabs":["overview","profile","functional_status","specialty_care","visits"]});
+    let content = json!({"module_order":["practice","clinical","schedule","labs","referrals","followup","portal","specialty","billing","claims","edi","apps","migration","admin"],"hidden_modules":["labs"],"enabled_clinical_modules":["functional_status","neurotoxin_therapy","intrathecal_pump","therapeutic_program","care_coordination"],"chart_tabs":["overview","profile","functional_status","specialty_care","visits"]});
     let (status, saved) = call(
         &r,
         &owner,

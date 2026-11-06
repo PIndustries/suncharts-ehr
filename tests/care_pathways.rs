@@ -137,8 +137,8 @@ fn definition(request_id: Uuid) -> Value {
         "description":"Synthetic records only",
         "trigger_type":"appointment_created",
         "definition":{"steps":[
-            {"key":"intake","title":"Complete intake","kind":"patient_form","required":true,"manual_approval":false,"depends_on":[]},
-            {"key":"eligibility","title":"Review eligibility","kind":"eligibility_query","required":true,"manual_approval":true,"assigned_role":"front_desk","depends_on":["intake"]},
+            {"key":"intake","title":"Complete intake","kind":"patient_form","required":true,"manual_approval":false,"depends_on":[],"completion_events":[{"event_type":"intake.reviewed"}]},
+            {"key":"eligibility","title":"Review eligibility","kind":"eligibility_query","required":true,"manual_approval":true,"assigned_role":"front_desk","depends_on":["intake"],"completion_events":[{"event_type":"eligibility.returned","condition":{"field":"/reviewed","operator":"equals","value":true}}]},
             {"key":"estimate","title":"Review estimate","kind":"payment_request","required":false,"manual_approval":true,"assigned_role":"front_desk","depends_on":["eligibility"],"condition":{"field":"/insurance/present","operator":"equals","value":true}}
         ]},
         "reason":"Synthetic pathway configuration"
@@ -172,6 +172,19 @@ async fn pathway_definition_trigger_and_manual_approval_are_versioned_and_tenant
     )
     .await;
     assert_eq!(replay["id"], created["id"]);
+
+    let (status, sandbox) = call(
+        &router,
+        &owner,
+        "POST",
+        "/api/v1/care-pathways/sandbox",
+        json!({"definition":created["definition"],"context":{"insurance":{"present":true}}}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{sandbox}");
+    assert_eq!(sandbox["valid"], true);
+    assert_eq!(sandbox["side_effects"], false);
 
     let definition_id = created["id"].as_str().unwrap();
     let (status, active) = call(
@@ -225,16 +238,45 @@ async fn pathway_definition_trigger_and_manual_approval_are_versioned_and_tenant
     .await;
     assert_eq!(replayed["items"][0]["id"], instance["id"]);
 
-    let (_, intake_complete) = call(
+    let event_request = Uuid::new_v4();
+    let (status, observed) = call(
         &router,
         &front_desk,
         "POST",
-        &format!("/api/v1/care-pathways/instances/{instance_id}/steps/intake/actions"),
-        json!({"action":"complete","reason":"Synthetic form received","evidence":{"form_revision":"synthetic"}}),
-        Some(1),
+        "/api/v1/care-pathways/events",
+        json!({"request_id":event_request,"event_type":"intake.reviewed","patient_id":patient,"appointment_id":null,"visit_id":null,"context":{},"evidence":{"form_revision":"synthetic"},"reason":"Synthetic intake reviewed"}),
+        None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK, "{observed}");
+    assert_eq!(observed["pathway_instances"][0], instance["id"]);
+    let (_, intake_complete) = call(
+        &router,
+        &front_desk,
+        "GET",
+        &format!("/api/v1/care-pathways/instances/{instance_id}"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(intake_complete["steps"][0]["state"], "completed");
     assert_eq!(intake_complete["steps"][1]["state"], "ready");
+    let (_, replayed_event) = call(
+        &router,
+        &front_desk,
+        "POST",
+        "/api/v1/care-pathways/events",
+        json!({"request_id":event_request,"event_type":"intake.reviewed","patient_id":patient,"appointment_id":null,"visit_id":null,"context":{},"evidence":{"form_revision":"synthetic"},"reason":"Synthetic intake replay"}),
+        None,
+    )
+    .await;
+    assert_eq!(
+        replayed_event["pathway_instances"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
     let (_, submitted) = call(
         &router,
         &front_desk,
@@ -282,6 +324,19 @@ async fn pathway_definition_trigger_and_manual_approval_are_versioned_and_tenant
     assert_eq!(completed["steps"][2]["state"], "skipped");
     assert_eq!(completed["status"], "completed");
 
+    let (status, restored) = call(
+        &router,
+        &owner,
+        "POST",
+        &format!("/api/v1/care-pathways/definitions/{definition_id}/restore"),
+        json!({"version":1,"reason":"Restore reviewed synthetic revision"}),
+        Some(2),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{restored}");
+    assert_eq!(restored["status"], "draft");
+    assert_eq!(restored["version"], 3);
+
     let foreign = actor(Uuid::new_v4(), Role::Owner);
     assert_eq!(
         call(
@@ -307,8 +362,8 @@ async fn pathway_definition_trigger_and_manual_approval_are_versioned_and_tenant
 }
 
 #[test]
-fn spasticity_template_is_configuration_not_runtime_branching() {
-    let template = suncharts_engine::care_pathways::spasticity_movement_template();
+fn coordinated_care_starter_is_configuration_not_runtime_branching() {
+    let template = suncharts_engine::care_pathways::coordinated_care_starter();
     assert_eq!(template["trigger_type"], "appointment_created");
     assert_eq!(template["definition"]["steps"].as_array().unwrap().len(), 6);
     assert!(template["definition"]["steps"]
@@ -316,4 +371,17 @@ fn spasticity_template_is_configuration_not_runtime_branching() {
         .unwrap()
         .iter()
         .any(|step| step["key"] == "functional-status"));
+    assert_eq!(
+        template["definition"]["builder"]["nodes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        8
+    );
+    assert!(template["definition"]["builder"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|node| node["node_type"] == "form"
+            && !node["form_fields"].as_array().unwrap().is_empty()));
 }
