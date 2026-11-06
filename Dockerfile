@@ -1,19 +1,39 @@
 # syntax=docker/dockerfile:1.7
 ARG RUST_IMAGE="rust:1.89-bookworm@sha256:948f9b08a66e7fe01b03a98ef1c7568292e07ec2e4fe90d88c07bb14563c84ff"
 ARG RUNTIME_IMAGE="debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3"
-ARG DEBIAN_SNAPSHOT="20250910T000000Z"
+ARG CMAKE_VERSION="3.31.8"
+ARG CMAKE_X86_64_SHA256="630615d8e98ac33eba7fbe472626dff5c899c85af3c024585ae109166a6909d0"
+ARG CMAKE_AARCH64_SHA256="609735983e3bdf24b6ab379d918458d64196fe72b98226f62dd5e9fe7b2997cc"
 FROM ${RUST_IMAGE} AS builder
-ARG DEBIAN_SNAPSHOT
+ARG TARGETARCH
+ARG CMAKE_VERSION
+ARG CMAKE_X86_64_SHA256
+ARG CMAKE_AARCH64_SHA256
 WORKDIR /src
-RUN printf '%s\n' \
-      "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} bookworm main" \
-      "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} bookworm-updates main" \
-      "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT} bookworm-security main" \
-      > /etc/apt/sources.list \
-    && rm -f /etc/apt/sources.list.d/debian.sources \
-    && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update \
-    && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 install -y --no-install-recommends clang cmake perl pkg-config \
-    && rm -rf /var/lib/apt/lists/*
+# The pinned Rust image already provides the C compiler, Perl and pkg-config.
+# AWS-LC additionally needs CMake. Fetch Kitware's immutable binary archive and
+# verify it before extraction instead of depending on Debian snapshot mirrors at
+# release time. Network failures are bounded and can never install partial tools.
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) cmake_arch=x86_64; cmake_sha="${CMAKE_X86_64_SHA256}" ;; \
+      arm64) cmake_arch=aarch64; cmake_sha="${CMAKE_AARCH64_SHA256}" ;; \
+      *) echo "unsupported target architecture: ${TARGETARCH}" >&2; exit 2 ;; \
+    esac; \
+    archive="cmake-${CMAKE_VERSION}-linux-${cmake_arch}.tar.gz"; \
+    curl --fail --location --retry 4 --retry-all-errors \
+      --connect-timeout 20 --max-time 300 \
+      --output "/tmp/${archive}" \
+      "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/${archive}"; \
+    printf '%s  %s\n' "${cmake_sha}" "/tmp/${archive}" | sha256sum --check --strict; \
+    tar --extract --gzip --file "/tmp/${archive}" --directory /opt; \
+    mv "/opt/cmake-${CMAKE_VERSION}-linux-${cmake_arch}" /opt/cmake; \
+    rm "/tmp/${archive}"; \
+    command -v cc; \
+    command -v perl; \
+    command -v pkg-config; \
+    /opt/cmake/bin/cmake --version
+ENV PATH="/opt/cmake/bin:${PATH}"
 
 # Compile the locked dependency graph in a source-independent layer. The real
 # crate is rebuilt below, but web-only and application-source changes retain the

@@ -12,7 +12,8 @@ IMAGE = re.compile(r"^ghcr\.io/pindustries/suncharts-ehr@sha256:[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 RUST_IMAGE = re.compile(r"^rust:1\.89-bookworm@sha256:[0-9a-f]{64}$")
 RUNTIME_IMAGE = re.compile(r"^debian:bookworm-slim@sha256:[0-9a-f]{64}$")
-SNAPSHOT = re.compile(r"^[0-9]{8}T[0-9]{6}Z$")
+CMAKE_VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def main() -> int:
@@ -23,7 +24,9 @@ def main() -> int:
     parser.add_argument("--workflow-ref", required=True)
     parser.add_argument("--rust-image", required=True)
     parser.add_argument("--runtime-image", required=True)
-    parser.add_argument("--debian-snapshot", required=True)
+    parser.add_argument("--cmake-version", required=True)
+    parser.add_argument("--cmake-x86-64-sha256", required=True)
+    parser.add_argument("--cmake-aarch64-sha256", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
@@ -36,8 +39,10 @@ def main() -> int:
         raise ValueError("source commit must be a full Git SHA")
     if not RUST_IMAGE.fullmatch(args.rust_image) or not RUNTIME_IMAGE.fullmatch(args.runtime_image):
         raise ValueError("release base images must use the approved repositories by digest")
-    if not SNAPSHOT.fullmatch(args.debian_snapshot):
-        raise ValueError("Debian snapshot must be an immutable UTC timestamp")
+    if not CMAKE_VERSION.fullmatch(args.cmake_version):
+        raise ValueError("CMake version must be an exact numeric release")
+    if not SHA256.fullmatch(args.cmake_x86_64_sha256) or not SHA256.fullmatch(args.cmake_aarch64_sha256):
+        raise ValueError("CMake archives must use exact SHA-256 checksums")
     metadata = json.loads((ROOT / "deploy" / "release-metadata.json").read_text())
     revisions = [int(path.name.split("_", 1)[0]) for path in (ROOT / "migrations").glob("[0-9][0-9][0-9][0-9]_*.sql")]
     current_revision = max(revisions, default=0)
@@ -55,7 +60,15 @@ def main() -> int:
         "image_reference": args.image_reference,
         "channel_eligibility": metadata["channel_eligibility"],
         "source": {"repository": "PIndustries/suncharts-ehr", "commit": args.source_commit, "tag": args.source_tag},
-        "build": {"rust_image": args.rust_image, "runtime_image": args.runtime_image, "debian_snapshot": args.debian_snapshot},
+        "build": {
+            "rust_image": args.rust_image,
+            "runtime_image": args.runtime_image,
+            "cmake": {
+                "version": args.cmake_version,
+                "x86_64_sha256": args.cmake_x86_64_sha256,
+                "aarch64_sha256": args.cmake_aarch64_sha256,
+            },
+        },
         "database": {
             "schema_revision": current_revision,
             "minimum_upgrade_schema_revision": metadata["minimum_upgrade_schema_revision"],

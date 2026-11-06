@@ -88,8 +88,14 @@ class DeploymentArtifactsTest(unittest.TestCase):
         dockerfile = (ROOT / "Dockerfile").read_text()
         self.assertRegex(dockerfile, r"rust:1\.89-bookworm@sha256:[0-9a-f]{64}")
         self.assertRegex(dockerfile, r"debian:bookworm-slim@sha256:[0-9a-f]{64}")
-        self.assertIn('ARG DEBIAN_SNAPSHOT="20250910T000000Z"', dockerfile)
-        self.assertIn("https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}", dockerfile)
+        self.assertIn('ARG CMAKE_VERSION="3.31.8"', dockerfile)
+        self.assertRegex(dockerfile, r'ARG CMAKE_X86_64_SHA256="[0-9a-f]{64}"')
+        self.assertRegex(dockerfile, r'ARG CMAKE_AARCH64_SHA256="[0-9a-f]{64}"')
+        self.assertIn("https://github.com/Kitware/CMake/releases/download/", dockerfile)
+        self.assertIn("sha256sum --check --strict", dockerfile)
+        self.assertIn("--connect-timeout 20 --max-time 300", dockerfile)
+        self.assertNotIn("apt-get", dockerfile)
+        self.assertNotIn("snapshot.debian.org", dockerfile)
         self.assertIn(
             "COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt",
             dockerfile,
@@ -101,9 +107,6 @@ class DeploymentArtifactsTest(unittest.TestCase):
         self.assertIn(
             'CMD ["/usr/local/bin/suncharts-engine", "--healthcheck"]', runtime
         )
-        self.assertGreaterEqual(dockerfile.count("Acquire::http::Timeout=60"), 2)
-        self.assertGreaterEqual(dockerfile.count("Acquire::https::Timeout=60"), 2)
-        self.assertGreaterEqual(dockerfile.count("Acquire::Retries=5"), 2)
 
     def test_dependency_layer_precedes_application_source(self):
         dockerfile = (ROOT / "Dockerfile").read_text()
@@ -177,7 +180,9 @@ class DeploymentArtifactsTest(unittest.TestCase):
                     "--workflow-ref", "PIndustries/suncharts-ehr/.github/workflows/publish-image.yml@refs/tags/v" + version,
                     "--rust-image", "rust:1.89-bookworm@sha256:" + "d" * 64,
                     "--runtime-image", "debian:bookworm-slim@sha256:" + "e" * 64,
-                    "--debian-snapshot", "20250910T000000Z",
+                    "--cmake-version", "3.31.8",
+                    "--cmake-x86-64-sha256", "f" * 64,
+                    "--cmake-aarch64-sha256", "a" * 64,
                     "--output", str(output),
                 ],
                 capture_output=True,
@@ -189,6 +194,8 @@ class DeploymentArtifactsTest(unittest.TestCase):
             self.assertEqual(manifest["database"]["schema_revision"], 61)
             self.assertEqual(manifest["database"]["rollback_mode"], "restore_pre_update_backup")
             self.assertTrue(manifest["image_reference"].endswith("b" * 64))
+            self.assertEqual(manifest["build"]["cmake"]["version"], "3.31.8")
+            self.assertEqual(manifest["build"]["cmake"]["x86_64_sha256"], "f" * 64)
 
     def test_release_tag_must_match_build_version(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -201,7 +208,9 @@ class DeploymentArtifactsTest(unittest.TestCase):
                     "--workflow-ref", "workflow",
                     "--rust-image", "rust:1.89-bookworm@sha256:" + "d" * 64,
                     "--runtime-image", "debian:bookworm-slim@sha256:" + "e" * 64,
-                    "--debian-snapshot", "20250910T000000Z",
+                    "--cmake-version", "3.31.8",
+                    "--cmake-x86-64-sha256", "f" * 64,
+                    "--cmake-aarch64-sha256", "a" * 64,
                     "--output", str(Path(directory) / "release.json"),
                 ],
                 capture_output=True,

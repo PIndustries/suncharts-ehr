@@ -30,7 +30,9 @@ env:
   IMAGE_NAME: ghcr.io/pindustries/suncharts-ehr
   RUST_IMAGE: rust:1.89-bookworm@sha256:948f9b08a66e7fe01b03a98ef1c7568292e07ec2e4fe90d88c07bb14563c84ff
   RUNTIME_IMAGE: debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
-  DEBIAN_SNAPSHOT: 20250910T000000Z
+  CMAKE_VERSION: 3.31.8
+  CMAKE_X86_64_SHA256: 630615d8e98ac33eba7fbe472626dff5c899c85af3c024585ae109166a6909d0
+  CMAKE_AARCH64_SHA256: 609735983e3bdf24b6ab379d918458d64196fe72b98226f62dd5e9fe7b2997cc
 
 jobs:
   full_regression:
@@ -66,7 +68,9 @@ jobs:
           build-args: |
             RUST_IMAGE=${{ env.RUST_IMAGE }}
             RUNTIME_IMAGE=${{ env.RUNTIME_IMAGE }}
-            DEBIAN_SNAPSHOT=${{ env.DEBIAN_SNAPSHOT }}
+            CMAKE_VERSION=${{ env.CMAKE_VERSION }}
+            CMAKE_X86_64_SHA256=${{ env.CMAKE_X86_64_SHA256 }}
+            CMAKE_AARCH64_SHA256=${{ env.CMAKE_AARCH64_SHA256 }}
           cache-from: type=gha,scope=suncharts-ehr-amd64
           cache-to: type=gha,mode=max,scope=suncharts-ehr-amd64
           provenance: mode=max
@@ -78,8 +82,9 @@ jobs:
           test -n "$IMAGE_DIGEST"
           printf '%s@%s\n' "$IMAGE_NAME" "$IMAGE_DIGEST" > image-reference.txt
           sha256sum Dockerfile Cargo.lock BUILD_VERSION > build-inputs.sha256
-          printf 'GIT_SHA=%s\nRUST_IMAGE=%s\nRUNTIME_IMAGE=%s\nDEBIAN_SNAPSHOT=%s\n' \
-            "$GITHUB_SHA" "$RUST_IMAGE" "$RUNTIME_IMAGE" "$DEBIAN_SNAPSHOT" > build-inputs.env
+          printf 'GIT_SHA=%s\nRUST_IMAGE=%s\nRUNTIME_IMAGE=%s\nCMAKE_VERSION=%s\nCMAKE_X86_64_SHA256=%s\nCMAKE_AARCH64_SHA256=%s\n' \
+            "$GITHUB_SHA" "$RUST_IMAGE" "$RUNTIME_IMAGE" "$CMAKE_VERSION" \
+            "$CMAKE_X86_64_SHA256" "$CMAKE_AARCH64_SHA256" > build-inputs.env
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: suncharts-ehr-image-${{ github.sha }}
@@ -106,7 +111,9 @@ jobs:
             --workflow-ref "$GITHUB_WORKFLOW_REF" \
             --rust-image "$RUST_IMAGE" \
             --runtime-image "$RUNTIME_IMAGE" \
-            --debian-snapshot "$DEBIAN_SNAPSHOT" \
+            --cmake-version "$CMAKE_VERSION" \
+            --cmake-x86-64-sha256 "$CMAKE_X86_64_SHA256" \
+            --cmake-aarch64-sha256 "$CMAKE_AARCH64_SHA256" \
             --output release-manifest.json
       - name: Attest release control manifest
         id: manifest-attestation
@@ -162,7 +169,9 @@ jobs:
           build-args: |
             RUST_IMAGE=${{ env.RUST_IMAGE }}
             RUNTIME_IMAGE=${{ env.RUNTIME_IMAGE }}
-            DEBIAN_SNAPSHOT=${{ env.DEBIAN_SNAPSHOT }}
+            CMAKE_VERSION=${{ env.CMAKE_VERSION }}
+            CMAKE_X86_64_SHA256=${{ env.CMAKE_X86_64_SHA256 }}
+            CMAKE_AARCH64_SHA256=${{ env.CMAKE_AARCH64_SHA256 }}
           cache-from: type=gha,scope=suncharts-ehr-arm64
           cache-to: type=gha,mode=max,scope=suncharts-ehr-arm64
           provenance: mode=max
@@ -174,8 +183,9 @@ jobs:
           test -n "$IMAGE_DIGEST"
           printf '%s@%s\n' "$IMAGE_NAME" "$IMAGE_DIGEST" > arm64-image-reference.txt
           sha256sum Dockerfile Cargo.lock BUILD_VERSION > arm64-build-inputs.sha256
-          printf 'GIT_SHA=%s\nPLATFORM=linux/arm64\nRUST_IMAGE=%s\nRUNTIME_IMAGE=%s\nDEBIAN_SNAPSHOT=%s\n' \
-            "$GITHUB_SHA" "$RUST_IMAGE" "$RUNTIME_IMAGE" "$DEBIAN_SNAPSHOT" > arm64-build-inputs.env
+          printf 'GIT_SHA=%s\nPLATFORM=linux/arm64\nRUST_IMAGE=%s\nRUNTIME_IMAGE=%s\nCMAKE_VERSION=%s\nCMAKE_X86_64_SHA256=%s\nCMAKE_AARCH64_SHA256=%s\n' \
+            "$GITHUB_SHA" "$RUST_IMAGE" "$RUNTIME_IMAGE" "$CMAKE_VERSION" \
+            "$CMAKE_X86_64_SHA256" "$CMAKE_AARCH64_SHA256" > arm64-build-inputs.env
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: suncharts-ehr-arm64-image-${{ github.sha }}
