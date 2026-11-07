@@ -6,13 +6,15 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&
 function organizeWorkspaceNavigation(){
  const navigation=$('workspace-navigation');if(!navigation||typeof document.createElement!=='function'||navigation.dataset.organized==='true')return;
  const items={home:$('nav-practice'),schedule:$('nav-schedule'),queue:$('nav-followup'),messages:$('nav-portal'),communications:$('nav-communications'),patients:$('nav-clinical'),clinical:$('nav-labs'),specialty:$('nav-specialty'),referrals:$('nav-referrals'),billing:$('nav-billing'),claims:$('nav-claims'),clearinghouse:$('nav-edi'),workflows:$('nav-workflows'),automation:$('nav-automation'),aiReview:$('nav-ai-review'),admin:$('nav-admin'),apps:$('nav-apps'),migration:$('nav-migration')};
- const labels={home:'Home',schedule:'Schedule',queue:'Work queue',messages:'Messages',communications:'Intake inbox',patients:'Patient directory',clinical:'Orders & results',specialty:'Specialty care',referrals:'Referrals',billing:'Billing & payments',claims:'Claims & remittances',clearinghouse:'Clearinghouse',workflows:'Workflow Studio',automation:'Automation Center',aiReview:'AI review',admin:'Practice settings',apps:'Integrations',migration:'Data import'};
+ const labels={home:'Home',schedule:'Schedule',queue:'Work queue',messages:'Messages',communications:'Intake inbox',patients:'Patients',clinical:'Orders & results',specialty:'Specialty care',referrals:'Referrals',billing:'Patient billing',claims:'Insurance claims',clearinghouse:'Claim connections',workflows:'Workflow Studio',automation:'Automation Center',aiReview:'AI review',admin:'Practice administration',apps:'Integrations',migration:'Data import'};
  for(const [key,item] of Object.entries(items)){const label=item?.querySelector('span');if(label)label.textContent=labels[key];}
- const forms=typeof items.workflows?.cloneNode==='function'?items.workflows.cloneNode(true):null;if(forms){forms.id='nav-forms';forms.classList.add('nav-item-child');forms.querySelector('span').textContent='Forms';}
- const groups=[['Today',['home','schedule','queue','messages']],['Patients',['patients']],['Clinical',['communications','clinical','specialty','referrals']],['Revenue',['billing','claims','clearinghouse']],['Operations',['workflows','automation','aiReview']],['Settings',['admin','apps','migration']]];
+ const groups=[['Today',['home','schedule','queue','messages']],['Care',['patients','clinical','specialty','referrals']],['Revenue',['billing','claims','clearinghouse']],['Manage',['workflows','admin','apps']]];
  navigation.replaceChildren();
- for(const [label,keys] of groups){const group=document.createElement('div');group.className=`nav-group${label==='Patients'?' nav-group-primary':''}`;group.setAttribute('role','group');const id=`nav-${label.toLowerCase()}-label`;group.setAttribute('aria-labelledby',id);const heading=document.createElement('p');heading.className='nav-group-label';heading.id=id;heading.textContent=label;group.append(heading,...keys.map(key=>items[key]).filter(Boolean));if(label==='Operations'&&forms)group.append(forms);navigation.append(group);}
+ for(const [label,keys] of groups){const group=document.createElement('div');group.className=`nav-group${label==='Care'?' nav-group-primary':''}`;group.setAttribute('role','group');const id=`nav-${label.toLowerCase()}-label`;group.setAttribute('aria-labelledby',id);const heading=document.createElement('p');heading.className='nav-group-label';heading.id=id;heading.textContent=label;group.append(heading,...keys.map(key=>items[key]).filter(Boolean));if(label==='Manage')group.append(navigationMoreTools(items));navigation.append(group);}
  navigation.dataset.organized='true';
+}
+function navigationMoreTools(items){
+ const details=document.createElement('details');details.className='nav-more';const summary=document.createElement('summary');summary.textContent='More tools';const body=document.createElement('div');body.append(...['automation','communications','aiReview','migration'].map(key=>items[key]).filter(Boolean));details.append(summary,body);return details;
 }
 
 // Connect delivers delegated support codes in the fragment so they never reach an HTTP log.
@@ -236,7 +238,7 @@ function renderChart() {
   const preferred=workspace.demographics?.content?.preferred_name;
   const birth=new Date(p.birth_date+'T12:00:00'),now=new Date();let age=now.getFullYear()-birth.getFullYear();if(now.getMonth()<birth.getMonth()||(now.getMonth()===birth.getMonth()&&now.getDate()<birth.getDate()))age--;
   const encounter=activeVisit?workspace.appointments.find(a=>a.id===activeVisit.appointment_id):null;
-  $('chart').innerHTML=`<div class="chart-context"><div class="chart-header"><div class="avatar">${esc(p.given_name[0])}${esc(p.family_name[0])}</div><div class="patient-heading"><p class="chart-record-label">PATIENT CHART${preferred?' · Preferred name '+esc(preferred):''}</p><h2>${esc(p.family_name)}, ${esc(p.given_name)} <span class="chart-age">${age>=0?esc(age)+' years':''}</span></h2><p><span>MRN <b>${esc(p.mrn)}</b></span><span>DOB <b>${esc(p.birth_date)}</b></span></p></div><div class="chart-header-context">${activeVisit?`<span class="status-badge ${activeVisit.status==='signed'?'completed':'in_progress'}">${activeVisit.status==='signed'?'Signed encounter':'Active encounter'}</span><small>${esc(encounterDateLabel(activeVisit))}</small>`:'<span class="muted">Longitudinal record</span>'}</div><button class="quiet" data-action="reload" aria-label="Reload patient chart">↻ Refresh</button>${['owner','clinician','front_desk'].includes(me?.role)?`<button type="button" data-portal-access="${esc(selected)}">Patient portal</button>`:''}</div><div class="patient-safety ${allergies.length?'has-allergies':''}"><b>Allergies</b><span>${esc(allergyText)}</span></div><nav class="chart-tabs" aria-label="Patient chart sections">${tabs.map(([key,label])=>`<button type="button" data-chart-section="${key}" aria-pressed="${key===chartSection}">${label}</button>`).join('')}</nav></div>
+  $('chart').innerHTML=`<div class="chart-context"><div class="chart-header"><div class="avatar">${esc(p.given_name[0])}${esc(p.family_name[0])}</div><div class="patient-heading"><p class="chart-record-label">PATIENT CHART${preferred?' · Preferred name '+esc(preferred):''}</p><h2>${esc(p.family_name)}, ${esc(p.given_name)} <span class="chart-age">${age>=0?esc(age)+' years':''}</span></h2><p><span>MRN <b>${esc(p.mrn)}</b></span><span>DOB <b>${esc(p.birth_date)}</b></span></p></div><div class="chart-header-context">${activeVisit?`<span class="status-badge ${activeVisit.status==='signed'?'completed':'in_progress'}">${activeVisit.status==='signed'?'Signed encounter':'Active encounter'}</span><small>${esc(encounterDateLabel(activeVisit))}</small>`:'<span class="muted">Longitudinal record</span>'}</div><button class="quiet" data-action="reload" aria-label="Reload patient chart">↻ Refresh</button>${['owner','clinician','front_desk'].includes(me?.role)?`<button type="button" data-portal-access="${esc(selected)}">Patient portal</button>`:''}</div><div class="patient-safety ${allergies.length?'has-allergies':''}"><b>Allergies</b><span>${esc(allergyText)}</span></div>${chartNavigation(tabs)}</div>
   <div id="encounter-progress">${encounterWorkflow()}</div>
   ${chartOverview()}
   <section id="patient-demographics"></section>
@@ -332,6 +334,12 @@ function applyChartSection(){
  const groups={overview:['chart-overview'],profile:['patient-identity-panel','patient-demographics'],clinical:['clinical-lists'],care_pathways:['care-pathways-panel'],prescribing:['prescribing-panel'],immunizations:['immunizations-panel'],functional_status:['functional-status-panel'],specialty_care:['specialty-care-panel'],history:['health-history-panel'],documents:['documents-panel'],referrals:['referrals-panel'],orders:['lab-workspace'],visits:['appointments-panel','visits-panel','visit-editor'],billing:['billing-workspace'],checkout:['visit-checkout'],source:['source-history']};
  for(const [key,ids] of Object.entries(groups))for(const id of ids)if($(id))$(id).hidden=key!==chartSection;
  document.querySelectorAll('.chart-tabs button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.chartSection===chartSection)));
+ const more=$('chart-more-sections');if(more)more.value=[...more.options].some(option=>option.value===chartSection)?chartSection:'';
+ if($('encounter-progress'))$('encounter-progress').hidden=!['overview','visits','checkout'].includes(chartSection);
+}
+function chartNavigation(tabs){
+ const primaryKeys=['overview','visits','clinical','orders','documents','billing'],labels=new Map(tabs),primary=primaryKeys.filter(key=>labels.has(key)).map(key=>[key,labels.get(key)]),secondary=tabs.filter(([key])=>!primaryKeys.includes(key));
+ return `<nav class="chart-tabs" aria-label="Patient chart sections"><div class="chart-primary-tabs">${primary.map(([key,label])=>`<button type="button" data-chart-section="${key}" aria-pressed="${key===chartSection}">${esc(key==='overview'?'Summary':key==='visits'?'Encounters':key==='clinical'?'Clinical':key==='orders'?'Orders & results':key==='billing'?'Billing':label)}</button>`).join('')}</div>${secondary.length?`<label class="chart-more-label"><span>More chart sections</span><select id="chart-more-sections" aria-label="More chart sections"><option value="">More</option>${secondary.map(([key,label])=>`<option value="${esc(key)}" ${key===chartSection?'selected':''}>${esc(label)}</option>`).join('')}</select></label>`:''}</nav>`;
 }
 function showChartSection(key){
  if(typeof capturePrescribingDraft==='function')capturePrescribingDraft();
@@ -376,16 +384,15 @@ function setPage(title) {
   'Data import':'Stage source records and reconcile imported data'
  };
  const today=['Practice home','Practice overview','Schedule','Pre-visit readiness','Appointment reminders','Reminder settings','Follow-up tasks','Patient portal inbox'];
- const patients=['Patients & encounters'];
- const clinical=['Labs & results','Specialty care','Referrals','Referral delivery settings','Intake inbox'];
+ const care=['Patients & encounters','Labs & results','Specialty care','Referrals','Referral delivery settings'];
  const revenue=['Billing & insurance','Payment settings','Payment review','Claims & remittances','Clearinghouse'];
- const operations=['Workflow Studio','Automation Center','AI review'];
- const settings=['Practice administration','Integrations','Connect services','Support tickets','Data import'];
+ const manage=['Workflow Studio','Automation Center','AI review','Intake inbox','Practice administration','Integrations','Connect services','Support tickets','Data import'];
  $('page-title').textContent=title;
  $('page-description').textContent=descriptions[title]||'Practice workspace';
- $('workspace-section').textContent=(today.includes(title)||title.startsWith('Patient portal'))?'TODAY':patients.includes(title)?'PATIENTS':clinical.includes(title)?'CLINICAL':revenue.includes(title)?'REVENUE':operations.includes(title)?'OPERATIONS':settings.includes(title)?'SETTINGS':'PRACTICE';
- const active=['Practice home','Practice overview'].includes(title)?'nav-practice':title==='Workflow Studio'&&typeof studioView!=='undefined'&&studioView==='forms'?'nav-forms':title==='Workflow Studio'?'nav-workflows':title==='Automation Center'?'nav-automation':title==='AI review'?'nav-ai-review':title==='Intake inbox'?'nav-communications':title==='Patients & encounters'?'nav-clinical':title==='Pre-visit readiness'?'nav-previsit':['Schedule','Appointment reminders','Reminder settings'].includes(title)?'nav-schedule':title==='Labs & results'?'nav-labs':title==='Specialty care'?'nav-specialty':['Billing & insurance','Payment settings','Payment review'].includes(title)?'nav-billing':title==='Clearinghouse'?'nav-edi':title==='Claims & remittances'?'nav-claims':['Referrals','Referral delivery settings'].includes(title)?'nav-referrals':title.startsWith('Patient portal')?'nav-portal':title==='Follow-up tasks'?'nav-followup':['Integrations','Connect services','Support tickets'].includes(title)?'nav-apps':title==='Data import'?'nav-migration':title==='Practice administration'?'nav-admin':null;
- for(const id of ['nav-practice','nav-workflows','nav-forms','nav-automation','nav-ai-review','nav-communications','nav-clinical','nav-schedule','nav-previsit','nav-labs','nav-specialty','nav-referrals','nav-followup','nav-portal','nav-billing','nav-claims','nav-edi','nav-apps','nav-migration','nav-admin']){if(!$(id))continue;if(id===active)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}
+ $('workspace-section').textContent=(today.includes(title)||title.startsWith('Patient portal'))?'TODAY':care.includes(title)?'CARE':revenue.includes(title)?'REVENUE':manage.includes(title)?'MANAGE':'PRACTICE';
+ const active=['Practice home','Practice overview'].includes(title)?'nav-practice':title==='Workflow Studio'?'nav-workflows':title==='Automation Center'?'nav-automation':title==='AI review'?'nav-ai-review':title==='Intake inbox'?'nav-communications':title==='Patients & encounters'?'nav-clinical':title==='Pre-visit readiness'?'nav-previsit':['Schedule','Appointment reminders','Reminder settings'].includes(title)?'nav-schedule':title==='Labs & results'?'nav-labs':title==='Specialty care'?'nav-specialty':['Billing & insurance','Payment settings','Payment review'].includes(title)?'nav-billing':title==='Clearinghouse'?'nav-edi':title==='Claims & remittances'?'nav-claims':['Referrals','Referral delivery settings'].includes(title)?'nav-referrals':title.startsWith('Patient portal')?'nav-portal':title==='Follow-up tasks'?'nav-followup':['Integrations','Connect services','Support tickets'].includes(title)?'nav-apps':title==='Data import'?'nav-migration':title==='Practice administration'?'nav-admin':null;
+ for(const id of ['nav-practice','nav-workflows','nav-automation','nav-ai-review','nav-communications','nav-clinical','nav-schedule','nav-previsit','nav-labs','nav-specialty','nav-referrals','nav-followup','nav-portal','nav-billing','nav-claims','nav-edi','nav-apps','nav-migration','nav-admin']){if(!$(id))continue;if(id===active)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}
+ const activeItem=active?$(active):null,more=activeItem?.closest?.('.nav-more');if(more)more.open=true;
  closeNavigation();window.scrollTo(0,0);
 }
 function showTool(title) {if(typeof captureSupportDrafts==='function')captureSupportDrafts();setPage(title);$('clinical-workspace').hidden=true;$('patient-form').hidden=true;$('tools').hidden=false;$('new-patient').hidden=true;$('toggle-directory').hidden=true;}
@@ -439,6 +446,9 @@ document.addEventListener('submit',e=>{
     if(form.id==='amendment-form'){const v=await api(`/api/v1/visits/${activeVisit.id}/amendments`,'POST',data,activeVisit.version);await selectPatient(selected,v.id);notice('Amendment signed and appended.');}
   });
 });
+document.addEventListener('change',e=>{
+ if(e.target.id==='chart-more-sections'&&e.target.value)showChartSection(e.target.value);
+});
 document.addEventListener('click',e=>{
   const button=e.target.closest('button');if(!button||(button.type==='submit' && button.form))return;
   if(button.id==='toggle-directory'){const collapsed=$('clinical-workspace').classList.toggle('directory-collapsed');button.setAttribute('aria-expanded',String(!collapsed));button.title=collapsed?'Show patient directory':'Hide patient directory';return;}
@@ -456,7 +466,6 @@ document.addEventListener('click',e=>{
   run(async()=>{
     if(button.id==='nav-schedule'||button.hasAttribute('data-open-schedule')){await showSchedule();return;}
     if(button.id==='nav-workflows'){studioView='overview';await showWorkflowStudio();return;}
-    if(button.id==='nav-forms'){studioView='forms';await showWorkflowStudio();return;}
     if(button.id==='nav-automation'){await showAutomationCenter();return;}
     if(button.id==='nav-communications'){await showIntegrationInbox();return;}
     if(button.id==='nav-ai-review'){await showAiReviewWorkspace();return;}

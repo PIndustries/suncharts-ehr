@@ -20,7 +20,7 @@ function applyPracticeWorkspaceSettings(){
   node.hidden=hidden||(key==='admin'&&me?.role!=='owner')||(key==='portal'&&!['owner','clinician','front_desk'].includes(me?.role));
  }
  for(const group of document.querySelectorAll('.nav-group')){
-  const buttons=[...group.querySelectorAll('.nav-item')];
+  const buttons=[...group.querySelectorAll(':scope > .nav-item')];
   buttons.sort((a,b)=>content.module_order.indexOf(Object.keys(workspaceModuleIds).find(k=>workspaceModuleIds[k]===a.id))-content.module_order.indexOf(Object.keys(workspaceModuleIds).find(k=>workspaceModuleIds[k]===b.id)));
   buttons.forEach(button=>group.append(button));
  }
