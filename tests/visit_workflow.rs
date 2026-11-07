@@ -56,10 +56,7 @@ async fn database() -> PgPool {
         .expect("TEST_DATABASE_URL must point at a disposable PostgreSQL database");
     let setup = PgPool::connect(&url).await.unwrap();
     let schema = format!("engine_test_{}", Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
-        .execute(&setup)
-        .await
-        .unwrap();
+    suncharts_engine::test_db::create_schema(&setup, &schema).await;
     setup.close().await;
     let pool = PgPoolOptions::new()
         .max_connections(6)

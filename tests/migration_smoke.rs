@@ -12,10 +12,7 @@ async fn all_migrations_apply_to_a_fresh_database_schema() {
         .connect(&url)
         .await
         .unwrap();
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
-        .execute(&base)
-        .await
-        .unwrap();
+    suncharts_engine::test_db::create_schema(&base, &schema).await;
     base.close().await;
 
     let pool = PgPoolOptions::new()
@@ -57,10 +54,7 @@ async fn deployed_schema_61_upgrades_without_checksum_drift() {
         .connect(&url)
         .await
         .unwrap();
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
-        .execute(&base)
-        .await
-        .unwrap();
+    suncharts_engine::test_db::create_schema(&base, &schema).await;
     base.close().await;
 
     let pool = PgPoolOptions::new()

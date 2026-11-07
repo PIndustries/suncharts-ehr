@@ -83,10 +83,7 @@ impl Fixture {
             std::env::var("TEST_DATABASE_URL").expect("disposable TEST_DATABASE_URL required");
         let schema = format!("reminder_recovery_{}", Uuid::new_v4().simple());
         let initial = PgPool::connect(&url).await.unwrap();
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
-            .execute(&initial)
-            .await
-            .unwrap();
+        suncharts_engine::test_db::create_schema(&initial, &schema).await;
         initial.close().await;
         let pool = PgPoolOptions::new()
             .max_connections(8)

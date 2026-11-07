@@ -35,10 +35,7 @@ async fn setup() -> (PgPool, Actor, Actor, Uuid) {
     let url = std::env::var("TEST_DATABASE_URL").expect("disposable TEST_DATABASE_URL required");
     let schema = format!("referrals_test_{}", Uuid::new_v4().simple());
     let base = PgPool::connect(&url).await.unwrap();
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
-        .execute(&base)
-        .await
-        .unwrap();
+    suncharts_engine::test_db::create_schema(&base, &schema).await;
     base.close().await;
     let db = PgPoolOptions::new()
         .max_connections(5)
