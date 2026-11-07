@@ -477,6 +477,50 @@ pub struct LeasedInvocation {
     pub retry_class: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExpiredLeaseDisposition {
+    Retry,
+    Failed,
+    Reconcile,
+}
+
+fn expired_lease_disposition(
+    operation_class: &str,
+    retry_class: &str,
+    attempt_count: i32,
+    max_attempts: i32,
+) -> ExpiredLeaseDisposition {
+    if matches!(
+        operation_class,
+        "clinical_write" | "communication" | "charge"
+    ) {
+        ExpiredLeaseDisposition::Reconcile
+    } else if retry_class == "bounded_safe" && attempt_count < max_attempts {
+        ExpiredLeaseDisposition::Retry
+    } else {
+        ExpiredLeaseDisposition::Failed
+    }
+}
+
+async fn worker_audit(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    worker: Uuid,
+    action: &str,
+    resource: Uuid,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO audit_events(tenant_id,actor_id,action,resource_id) VALUES($1,$2,$3,$4)",
+    )
+    .bind(tenant)
+    .bind(worker)
+    .bind(action)
+    .bind(resource)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 /// Claims one ready action for a trusted instance-local worker.
 pub async fn lease_ready(
     pool: &PgPool,
@@ -484,6 +528,63 @@ pub async fn lease_ready(
     worker: Uuid,
 ) -> Result<Option<LeasedInvocation>> {
     let mut tx = pool.begin().await?;
+    type ExpiredLease = (Uuid, String, String, i32, i32);
+    let expired: Vec<ExpiredLease> = sqlx::query_as(
+        "SELECT id,operation_class,retry_class,attempt_count,max_attempts \
+         FROM connector_action_invocations \
+         WHERE tenant_id=$1 AND status='executing' AND lease_expires_at<=now() \
+         ORDER BY lease_expires_at,id FOR UPDATE SKIP LOCKED LIMIT 100",
+    )
+    .bind(tenant)
+    .fetch_all(&mut *tx)
+    .await?;
+    for (id, operation_class, retry_class, attempt_count, max_attempts) in expired {
+        let disposition =
+            expired_lease_disposition(&operation_class, &retry_class, attempt_count, max_attempts);
+        let (status, action, failure_code, retry_at) = match disposition {
+            ExpiredLeaseDisposition::Retry => (
+                "retry_wait",
+                "expired_lease_retry_scheduled",
+                "worker_lease_expired",
+                Some(Utc::now()),
+            ),
+            ExpiredLeaseDisposition::Failed => (
+                "failed",
+                "expired_lease_failed",
+                "worker_lease_expired",
+                None,
+            ),
+            ExpiredLeaseDisposition::Reconcile => (
+                "needs_reconciliation",
+                "expired_lease_requires_reconciliation",
+                "ambiguous_worker_lease_expiry",
+                None,
+            ),
+        };
+        sqlx::query(
+            "UPDATE connector_action_invocations \
+             SET status=$3,failure_code=$4,next_attempt_at=$5,lease_owner=NULL,lease_expires_at=NULL,\
+                 version=version+1,updated_at=now() \
+             WHERE tenant_id=$1 AND id=$2 AND status='executing'",
+        )
+        .bind(tenant)
+        .bind(id)
+        .bind(status)
+        .bind(failure_code)
+        .bind(retry_at)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("INSERT INTO connector_action_events(tenant_id,invocation_id,actor_id,action,evidence) VALUES($1,$2,$3,$4,jsonb_build_object('attempt',$5,'status',$6))")
+            .bind(tenant).bind(id).bind(worker).bind(action).bind(attempt_count).bind(status).execute(&mut *tx).await?;
+        worker_audit(
+            &mut tx,
+            tenant,
+            worker,
+            "automation.connector_action.lease_expired",
+            id,
+        )
+        .await?;
+    }
     let row:Option<LeasedInvocation>=sqlx::query_as("WITH candidate AS (SELECT id FROM connector_action_invocations WHERE tenant_id=$1 AND sandbox=false AND (status='ready' OR (status='retry_wait' AND next_attempt_at<=now())) ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE connector_action_invocations i SET status='executing',attempt_count=attempt_count+1,lease_owner=$2,lease_expires_at=now()+interval '2 minutes',next_attempt_at=NULL,version=version+1,updated_at=now() FROM candidate WHERE i.tenant_id=$1 AND i.id=candidate.id RETURNING i.id,i.connector_key,i.action_key,i.action_version,i.input,i.attempt_count,i.max_attempts,i.retry_class")
         .bind(tenant).bind(worker).fetch_optional(&mut *tx).await?;
     if let Some(ref item) = row {
@@ -689,5 +790,31 @@ mod tests {
         )
         .validate()
         .is_ok());
+    }
+
+    #[test]
+    fn expired_side_effects_require_manual_reconciliation() {
+        for class in ["clinical_write", "communication", "charge"] {
+            assert_eq!(
+                expired_lease_disposition(class, "never", 1, 1),
+                ExpiredLeaseDisposition::Reconcile
+            );
+        }
+    }
+
+    #[test]
+    fn expired_safe_actions_retry_only_with_attempts_remaining() {
+        assert_eq!(
+            expired_lease_disposition("read", "bounded_safe", 1, 3),
+            ExpiredLeaseDisposition::Retry
+        );
+        assert_eq!(
+            expired_lease_disposition("idempotent_update", "bounded_safe", 3, 3),
+            ExpiredLeaseDisposition::Failed
+        );
+        assert_eq!(
+            expired_lease_disposition("read", "never", 1, 1),
+            ExpiredLeaseDisposition::Failed
+        );
     }
 }
