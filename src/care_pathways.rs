@@ -1196,24 +1196,76 @@ async fn instance_events(
 /// the runtime never branches on this slug or its step keys.
 pub fn spasticity_movement_template() -> Value {
     json!({
-        "slug":"spasticity-movement-previsit",
-        "name":"Spasticity & movement pre-visit",
-        "description":"Collect intake, verify benefits, prepare payment and route the specialty visit.",
+        "slug":"specialty-care-journey",
+        "name":"Specialty care journey",
+        "description":"A configurable inquiry-to-follow-up workflow for specialty practices. Clinics can rename, reorder, hide or extend every stage and node.",
         "trigger_type":"appointment_created",
-        "definition":{"steps":[
-            {"key":"intake-packet","title":"Complete intake packet","kind":"patient_form","required":true,"manual_approval":false,"due_after_minutes":4320,"escalation_role":"front_desk","depends_on":[]},
-            {"key":"insurance-eligibility","title":"Verify insurance eligibility","kind":"eligibility_query","required":true,"manual_approval":true,"assigned_role":"front_desk","due_after_minutes":1440,"escalation_role":"owner","depends_on":[]},
-            {"key":"patient-estimate","title":"Review patient responsibility","kind":"payment_request","required":false,"manual_approval":true,"assigned_role":"front_desk","due_after_minutes":2880,"escalation_role":"owner","depends_on":["insurance-eligibility"],"condition":{"field":"/insurance/present","operator":"equals","value":true}},
-            {"key":"legal-consents","title":"Sign required legal documents","kind":"document_signature","required":true,"manual_approval":false,"due_after_minutes":4320,"escalation_role":"front_desk","depends_on":[]},
-            {"key":"functional-status","title":"Record functional status","kind":"clinical_template","required":true,"manual_approval":true,"assigned_role":"nurse","due_after_minutes":10080,"escalation_role":"clinician","depends_on":["intake-packet"]},
-            {"key":"visit-pathway","title":"Select specialty visit pathway","kind":"human_approval","required":true,"manual_approval":true,"assigned_role":"clinician","due_after_minutes":10080,"escalation_role":"owner","depends_on":["functional-status","legal-consents"]}
-        ]}
+        "definition":{
+            "columns":[
+                {"key":"intake","title":"Inquiry & intake","description":"Capture calls, online requests and outside referrals"},
+                {"key":"pre_visit","title":"Before the visit","description":"Schedule, collect forms and verify coverage"},
+                {"key":"visit","title":"Day of visit","description":"Check in, collect payment and complete clinical work"},
+                {"key":"follow_up","title":"After the visit","description":"Coordinate treatment, claims, referrals and recall"}
+            ],
+            "steps":[
+                {"key":"inquiry-review","title":"Review patient inquiry or referral","kind":"staff_task","phase":"intake","required":true,"manual_approval":true,"assigned_role":"front_desk","due_after_minutes":240,"escalation_role":"owner","depends_on":[]},
+                {"key":"insurance-fit","title":"Confirm accepted insurance and referral fit","kind":"human_approval","phase":"intake","required":true,"manual_approval":true,"assigned_role":"front_desk","due_after_minutes":480,"escalation_role":"owner","depends_on":["inquiry-review"]},
+                {"key":"schedule-visit","title":"Offer availability and schedule visit","kind":"appointment_booking","phase":"intake","required":true,"manual_approval":true,"assigned_role":"front_desk","due_after_minutes":1440,"escalation_role":"owner","depends_on":["insurance-fit"]},
+                {"key":"intake-packet","title":"Complete demographics and clinical intake","kind":"patient_form","phase":"pre_visit","required":true,"manual_approval":false,"due_after_minutes":4320,"escalation_role":"front_desk","depends_on":["schedule-visit"],"form_fields":[
+                    {"key":"chief_concern","label":"Reason for visit","field_type":"long_text","required":true},
+                    {"key":"functional_status","label":"Current functional status","field_type":"long_text","required":true},
+                    {"key":"past_medical_history","label":"Past medical history","field_type":"long_text","required":false},
+                    {"key":"past_surgical_history","label":"Past surgical history","field_type":"long_text","required":false},
+                    {"key":"medications","label":"Current medications","field_type":"long_text","required":false}
+                ]},
+                {"key":"insurance-eligibility","title":"Verify insurance benefits and eligibility","kind":"eligibility_query","phase":"pre_visit","required":true,"manual_approval":true,"assigned_role":"front_desk","due_after_minutes":1440,"escalation_role":"owner","depends_on":["schedule-visit"]},
+                {"key":"patient-estimate","title":"Review copay and patient responsibility","kind":"payment_request","phase":"pre_visit","required":false,"manual_approval":true,"assigned_role":"front_desk","due_after_minutes":2880,"escalation_role":"owner","depends_on":["insurance-eligibility"],"condition":{"field":"/insurance/present","operator":"equals","value":true}},
+                {"key":"visit-reminder","title":"Send appointment and intake reminder","kind":"communication_send","phase":"pre_visit","required":true,"manual_approval":false,"assigned_role":"front_desk","due_after_minutes":2880,"escalation_role":"owner","depends_on":["schedule-visit"]},
+                {"key":"check-in","title":"Check in patient and confirm outstanding items","kind":"staff_task","phase":"visit","required":true,"manual_approval":true,"assigned_role":"front_desk","due_after_minutes":60,"escalation_role":"owner","depends_on":["intake-packet","insurance-eligibility"]},
+                {"key":"legal-consents","title":"Complete required legal documents","kind":"document_signature","phase":"visit","required":true,"manual_approval":false,"due_after_minutes":60,"escalation_role":"front_desk","depends_on":["check-in"]},
+                {"key":"collect-copay","title":"Collect copay or record payment plan","kind":"payment_request","phase":"visit","required":false,"manual_approval":true,"assigned_role":"front_desk","due_after_minutes":60,"escalation_role":"owner","depends_on":["check-in"]},
+                {"key":"functional-status","title":"Record structured functional status","kind":"clinical_template","phase":"visit","required":true,"manual_approval":true,"assigned_role":"clinician","due_after_minutes":240,"escalation_role":"owner","depends_on":["legal-consents"]},
+                {"key":"visit-documentation","title":"Complete and sign visit documentation","kind":"clinical_template","phase":"visit","required":true,"manual_approval":true,"assigned_role":"clinician","due_after_minutes":1440,"escalation_role":"owner","depends_on":["functional-status"]},
+                {"key":"treatment-pathway","title":"Select treatment and care-coordination pathway","kind":"human_approval","phase":"follow_up","required":true,"manual_approval":true,"assigned_role":"clinician","due_after_minutes":1440,"escalation_role":"owner","depends_on":["visit-documentation"]},
+                {"key":"neurotoxin-order","title":"Coordinate neurotoxin order or buy-and-bill","kind":"order","phase":"follow_up","required":false,"manual_approval":true,"assigned_role":"clinician","due_after_minutes":4320,"escalation_role":"owner","depends_on":["treatment-pathway"]},
+                {"key":"pump-refill","title":"Schedule and prepare pump refill","kind":"order","phase":"follow_up","required":false,"manual_approval":true,"assigned_role":"clinician","due_after_minutes":4320,"escalation_role":"owner","depends_on":["treatment-pathway"]},
+                {"key":"therapy-program","title":"Coordinate therapy or neuromuscular program","kind":"referral","phase":"follow_up","required":false,"manual_approval":true,"assigned_role":"clinician","due_after_minutes":4320,"escalation_role":"owner","depends_on":["treatment-pathway"]},
+                {"key":"external-referral","title":"Send and track external referral","kind":"referral","phase":"follow_up","required":false,"manual_approval":true,"assigned_role":"front_desk","due_after_minutes":4320,"escalation_role":"clinician","depends_on":["treatment-pathway"]},
+                {"key":"claim-review","title":"Review and submit claim","kind":"staff_task","phase":"follow_up","required":true,"manual_approval":true,"assigned_role":"front_desk","due_after_minutes":4320,"escalation_role":"owner","depends_on":["visit-documentation"]},
+                {"key":"follow-up-message","title":"Send follow-up instructions and recall","kind":"communication_send","phase":"follow_up","required":true,"manual_approval":false,"assigned_role":"front_desk","due_after_minutes":4320,"escalation_role":"owner","depends_on":["visit-documentation"]}
+            ]
+        }
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn specialty_template_covers_the_complete_patient_journey() {
+        let template = spasticity_movement_template();
+        let definition: Definition = serde_json::from_value(template["definition"].clone())
+            .expect("specialty template parses");
+        definition.validate().expect("specialty template is valid");
+        let phases: BTreeSet<&str> = definition
+            .steps
+            .iter()
+            .filter_map(|step| step.phase.as_deref())
+            .collect();
+        assert_eq!(
+            phases,
+            BTreeSet::from(["follow_up", "intake", "pre_visit", "visit"])
+        );
+        assert!(definition
+            .steps
+            .iter()
+            .any(|step| step.key == "claim-review"));
+        assert!(definition
+            .steps
+            .iter()
+            .any(|step| step.key == "follow-up-message"));
+    }
 
     #[test]
     fn communications_scheduling_and_ai_modules_are_valid_definition_data() {

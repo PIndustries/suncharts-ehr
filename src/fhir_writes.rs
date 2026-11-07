@@ -181,7 +181,7 @@ pub(super) async fn create(
         .create_patient(
             &a,
             NewPatient {
-                mrn: c.mrn,
+                mrn: Some(c.mrn),
                 given_name: c.given_name,
                 family_name: c.family_name,
                 birth_date: c.birth_date,

@@ -6,10 +6,19 @@ const ediField=(name,label,value='',max=200,required=true)=>billingField(name,la
 function ediPane(html){$('edi-detail').innerHTML=html;$('edi-detail').scrollIntoView({block:'start'});}
 function ediWorkspaceCurrent(generation){return generation===ediWorkspaceGeneration&&!!$('edi-tool')&&!!$('edi-automation');}
 function ediWorkspaceWarning(generation,message){if(ediWorkspaceCurrent(generation))$('edi-automation').insertAdjacentHTML('beforeend',`<div class="notice error">${esc(message)}</div>`);}
+function collapseClaimAdvancedPanels(){
+ const provider=$('provider-operations');
+ if(provider&&!provider.closest('details.claim-advanced')){
+  const details=document.createElement('details');details.className='amendment claim-advanced';
+  const summary=document.createElement('summary');summary.textContent='Advanced clearinghouse connections and retrieved files';
+  provider.before(details);details.append(summary,provider);
+ }
+}
 async function loadEdiOptionalPanels(generation){
  try{await showDeliveryPanels();}catch{ediWorkspaceWarning(generation,'Delivery and acknowledgment panels are temporarily unavailable. Claim.MD account setup remains available.');}
  if(!ediWorkspaceCurrent(generation))return;
  if(typeof showClaimMdExtended==='function')try{await showClaimMdExtended();}catch{ediWorkspaceWarning(generation,'Additional Claim.MD account activity is temporarily unavailable. Core account setup remains available.');}
+ collapseClaimAdvancedPanels();
  if(ediWorkspaceCurrent(generation))$('edi-optional-loading')?.remove();
 }
 async function showEdiWorkspace(after){
@@ -32,13 +41,19 @@ async function showEdiWorkspace(after){
  const workspaceSubtitle=$('edi-tool').querySelector?.('.section-head .muted');if(workspaceSubtitle)workspaceSubtitle.textContent='Coverage verification · Claim review · Submission and status · ERA reconciliation';
  const queueSection=$('edi-tool').querySelectorAll?.('.billing-section')?.[0];if(queueSection)queueSection.id='edi-submission-queue';
  const partnerHeading=[...$('edi-tool').querySelectorAll('h3')].find(v=>v.textContent==='Trading partners');
- if(partnerHeading){partnerHeading.textContent='Manual X12 profiles';partnerHeading.closest('.billing-section').insertAdjacentHTML('afterbegin','<p class="muted">Advanced profiles for manual file exchange and non-native clearinghouses. Claim.MD accounts are managed in the native connection below.</p>');}
+ if(partnerHeading){
+  partnerHeading.textContent='Manual X12 profiles';
+  const section=partnerHeading.closest('.billing-section');
+  section.insertAdjacentHTML('afterbegin','<p class="muted">Advanced profiles for manual file exchange and non-native clearinghouses. Claim.MD accounts are managed in the native connection below.</p>');
+  const advanced=document.createElement('details');advanced.className='amendment claim-advanced';
+  const summary=document.createElement('summary');summary.textContent='Advanced manual X12 profiles';
+  section.before(advanced);advanced.append(summary,section);
+ }
  const notice=$('edi-tool').querySelector('.mapping-notice');if(notice)notice.outerHTML=claimMdConnectionCard();
  if(claimMdStatusError){
   const card=$('edi-tool').querySelector('.mapping-notice');if(card)card.insertAdjacentHTML('beforeend','<p class="notice error">Connection status could not be refreshed. Owners can still review or update the saved Claim.MD AccountKey below.</p>');
  }
  if(claimMdConnectionState?.connected){
-  if(partnerHeading)partnerHeading.closest('.billing-section').hidden=true;
   const empty=[...$('edi-tool').querySelectorAll('.table-empty')].find(v=>v.textContent.includes('Generate X12 837P'));if(empty)empty.textContent='No Claim.MD submissions yet. Open a ready claim and choose Submit to Claim.MD.';
  }
  try{await showProviderSettingsPanel();}catch{if(ediWorkspaceCurrent(generation))$('edi-automation').insertAdjacentHTML('afterbegin','<div class="notice error">Saved Claim.MD connections could not be loaded. You can still use Connect Claim.MD above to enter this clinic’s AccountKey.</div>');}

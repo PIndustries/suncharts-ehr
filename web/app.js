@@ -441,7 +441,13 @@ document.addEventListener('submit',e=>{
     const data=formData(form);
     if(form.id==='login-form'){await api('/auth/login','POST',data);form.reset();await enter();return;}
     if(form.id==='migration-form'){await uploadMigration(form);return;}
-    if(form.id==='patient-form'){const p=await api('/api/v1/patients','POST',data);patients.unshift(p);form.reset();form.hidden=true;await selectPatient(p.id);notice('Patient registered.');return;}
+    if(form.id==='patient-form'){
+      const contactKeys=['administrative_gender','email','phone','address_line1','address_line2','city','region','postal_code','country'];
+      const contact=Object.fromEntries(contactKeys.map(key=>[key,data[key]||null]));contactKeys.forEach(key=>delete data[key]);
+      const p=await api('/api/v1/patients','POST',data);patients.unshift(p);let contactError=null;
+      if(Object.values(contact).some(Boolean))try{await api(`/api/v1/patients/${p.id}/demographics`,'PUT',{content:{preferred_name:null,pronouns:null,language:null,administrative_gender:contact.administrative_gender,phone:contact.phone,email:contact.email,address:{line1:contact.address_line1,line2:contact.address_line2,city:contact.city,region:contact.region,postal_code:contact.postal_code,country:contact.country},emergency_contact:null},reason:'Contact details recorded during patient registration'},0);}catch(error){contactError=error;}
+      form.reset();form.hidden=true;await selectPatient(p.id);notice(contactError?`Patient ${p.mrn} was created, but contact details need review: ${contactError.message}`:`Patient registered with MRN ${p.mrn}.`,Boolean(contactError));return;
+    }
     if(form.id==='vitals-form'){Object.keys(data).forEach(k=>{data[k]=Number(data[k]);});rememberVisit(await api(`/api/v1/visits/${activeVisit.id}/vitals`,'PUT',data,Number(form.dataset.version)),'vitals');notice('Vitals saved.');return;}
     if(form.id==='note-form'){rememberVisit(await api(`/api/v1/visits/${activeVisit.id}/note`,'PUT',data,Number(form.dataset.version)),'note');notice('Note saved.');return;}
     if(form.id==='amendment-form'){const v=await api(`/api/v1/visits/${activeVisit.id}/amendments`,'POST',data,activeVisit.version);await selectPatient(selected,v.id);notice('Amendment signed and appended.');}
@@ -462,7 +468,7 @@ document.addEventListener('click',e=>{
   if(button.closest('#schedule-workspace')||button.dataset.mapAppointment)return;
   if(button.closest('#patient-demographics'))return;
   if(button.closest('#clinical-lists')||button.closest('#lab-workspace')||button.dataset.mapLab||button.dataset.openLabPatient||button.dataset.mapClinical)return;
-  if(button.id==='new-patient'){ if(!canRegisterPatient())return; $('patient-form').hidden=false;$('patient-form').elements.mrn.focus();return; }
+  if(button.id==='new-patient'){ if(!canRegisterPatient())return; $('patient-form').hidden=false;$('patient-form').elements.given_name.focus();return; }
   if(button.id==='cancel-patient'){ $('patient-form').hidden=true;return; }
   run(async()=>{
     if(button.id==='nav-schedule'||button.hasAttribute('data-open-schedule')){await showSchedule();return;}

@@ -190,7 +190,7 @@ async fn snapshot(
         0,
         serde_json::to_value(Content::default()).expect("serializable contact details"),
     ));
-    let history: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('version',version,'content',content,'author_id',author_id,'reason',reason,'created_at',created_at) FROM patient_demographics_history WHERE tenant_id=$1 AND patient_id=$2 ORDER BY version DESC LIMIT 50").bind(a.tenant_id).bind(p).fetch_all(&mut **tx).await?;
+    let history: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('version',version,'content',content,'author_id',author_id,'author_label',(SELECT coalesce(nullif(u.display_name,''),u.email) FROM browser_users u WHERE u.tenant_id=h.tenant_id AND u.id=h.author_id),'reason',reason,'created_at',created_at) FROM patient_demographics_history h WHERE tenant_id=$1 AND patient_id=$2 ORDER BY version DESC LIMIT 50").bind(a.tenant_id).bind(p).fetch_all(&mut **tx).await?;
     let history_truncated = version > 50;
     Ok((
         version,

@@ -12,23 +12,26 @@ async function showPracticeWorkspace(){
  const start=new Date();start.setHours(0,0,0,0);const end=new Date(start);end.setDate(end.getDate()+1);
  const results=await Promise.allSettled([
   api(`/api/v1/schedule?${new URLSearchParams({start:start.toISOString(),end:end.toISOString()})}`),
-  api('/api/v1/labs/inbox'),api('/api/v1/practice/worklist')
+  api('/api/v1/labs/inbox'),api('/api/v1/practice/worklist'),
+  api('/api/v1/previsit/readiness'),api('/api/v1/follow-up/tasks?status=open'),
+  api('/api/v1/referrals/worklist?_count=100'),api('/api/v1/billing/claims')
  ]);
  if(generation!==practiceLoad||!$('practice-home')||!me)return;
  const value=i=>results[i].status==='fulfilled'?results[i].value:null;
- const schedule=value(0),inbox=value(1),unfinished=value(2);
- practiceData={start,loadedAt:new Date(),results,schedule,inbox,unfinished,
+ const schedule=value(0),inbox=value(1),unfinished=value(2),previsit=value(3),followup=value(4),referrals=value(5),claims=value(6);
+ practiceData={start,loadedAt:new Date(),results,schedule,inbox,unfinished,previsit,followup,referrals,claims,
   appointments:(schedule?.appointments||[]).filter(a=>!['cancelled','no_show'].includes(a.status)).sort((a,b)=>a.starts_at.localeCompare(b.starts_at)),
   reports:inbox?[...inbox.items].sort((a,b)=>Number(b.critical)-Number(a.critical)):[]};
  renderPracticeWorkspace();
 }
 function practiceTab(mode,label,count){return `<button type="button" data-practice-board="${mode}" aria-pressed="${practiceBoardMode===mode}">${label}<span>${count===null?'—':esc(count)}</span></button>`;}
 function renderPracticeWorkspace(){
- const {start,loadedAt,schedule,inbox,unfinished,appointments}=practiceData;
+ const {start,loadedAt,schedule,inbox,unfinished,previsit,followup,referrals,claims,appointments}=practiceData;
  const dateLabel=start.toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric',year:'numeric'});
  const tz=Intl.DateTimeFormat().resolvedOptions().timeZone;
  $('practice-home').outerHTML=`<section id="practice-home" class="practice-home">
  <div class="practice-commandbar"><div><p class="eyebrow">CLINICAL OPERATIONS</p><h2>${esc(dateLabel)}</h2><p class="muted">All providers · ${esc(tz)} <span aria-hidden="true">/</span> Updated ${esc(practiceTime(loadedAt))}</p></div><div class="actions">${practiceAction('refresh','Refresh')}${practiceAction('patients','Find patient')}${practiceAction('schedule','Open schedule',true)}</div></div>
+ <nav class="practice-journey" aria-label="Patient journey"><button type="button" data-practice-action="intake"><span>1</span><b>Inquiry & intake</b><small>${Array.isArray(previsit?.items)?`${previsit.items.length} intake item${previsit.items.length===1?'':'s'} to review`:'Open intake and readiness'}</small></button><button type="button" data-practice-action="schedule"><span>2</span><b>Before the visit</b><small>${schedule?`${appointments.length} active appointment${appointments.length===1?'':'s'} today`:'Schedule, reminders and preparation'}</small></button><button type="button" data-practice-action="patients"><span>3</span><b>Day of visit</b><small>${unfinished?`${unfinished.total} unfinished encounter${unfinished.total===1?'':'s'}`:'Arrival, encounter and checkout'}</small></button><button type="button" data-practice-action="followup"><span>4</span><b>After the visit</b><small>${[followup?.items,referrals?.items,claims?.items].every(Array.isArray)?`${followup.items.length} tasks · ${referrals.items.length} referrals · ${claims.items.length} claims`:'Orders, referrals, claims and follow-up'}</small></button></nav>
  <div class="practice-board-layout"><section class="practice-board" aria-label="Patient and encounter worklist"><header class="practice-board-header"><nav class="practice-board-tabs" aria-label="Clinical worklists">${practiceTab('agenda','Today’s patients',schedule?appointments.length:null)}${practiceTab('unfinished','Unfinished encounters',unfinished?unfinished.total:null)}</nav><span class="practice-board-scope">${practiceBoardMode==='agenda'?'Today · all providers':'All dates · oldest first'}</span></header>
  <div class="practice-board-toolbar"><label class="practice-search"><span class="sr-only">Search loaded patients or MRN</span><input id="practice-search" type="search" value="${esc(practiceQuery)}" placeholder="Search loaded patients or MRN" autocomplete="off"></label><div class="practice-status-strip" aria-label="Filter today’s appointments" ${practiceBoardMode==='agenda'?'':'hidden'}>${[['all','All'],['arrivals','Arrived'],['in_progress','In progress'],['completed','Completed']].map(([key,label])=>`<button type="button" data-practice-flow="${key}" aria-pressed="${practiceFlowFilter===key}">${label}<span>${schedule?appointments.filter(a=>practiceMatchesFlow(a,key)).length:'—'}</span></button>`).join('')}</div></div>
  <div id="practice-worklist" class="practice-worklist"></div><footer class="practice-board-footer"><span id="practice-row-summary" role="status" aria-live="polite"></span>${practiceAction('schedule','Manage schedule →')}</footer></section>
@@ -81,7 +84,7 @@ document.addEventListener('click',event=>{
   if(button.dataset.practicePatient){await showClinical();await selectPatient(button.dataset.practicePatient);return;}
   if(button.dataset.practiceAppointment){scheduleDate=localTime(new Date().toISOString()).slice(0,10);scheduleMode='day';scheduleProvider='';await showSchedule();await appointmentDetail(button.dataset.practiceAppointment);return;}
   if(button.dataset.practiceResult){await showClinical();await selectPatient(button.dataset.practiceResultPatient);await showOrder(button.dataset.practiceResult);return;}
-  const routes={patients:showClinical,schedule:async()=>{scheduleDate=localTime(new Date().toISOString()).slice(0,10);scheduleMode='day';scheduleProvider='';await showSchedule();},results:showLabInbox,billing:showBillingQueue,claims:showClaimsWorkspace,clearinghouse:showEdiWorkspace,apps:showApps,migration:showMigrations};
+  const routes={patients:showClinical,intake:showPrevisitReadiness,followup:showFollowupWorkspace,schedule:async()=>{scheduleDate=localTime(new Date().toISOString()).slice(0,10);scheduleMode='day';scheduleProvider='';await showSchedule();},results:showLabInbox,billing:showBillingQueue,claims:showClaimsWorkspace,clearinghouse:showEdiWorkspace,apps:showApps,migration:showMigrations};
   await routes[button.dataset.practiceAction]?.();
  });
 },true);

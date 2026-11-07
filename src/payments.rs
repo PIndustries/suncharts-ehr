@@ -48,7 +48,7 @@ fn valid_broker_token(v: &str) -> bool {
 }
 fn broker_base() -> Result<String> {
     let v = std::env::var(BROKER_ENV).map_err(|_| {
-        Error::Invalid("SunCharts Payments is not enabled for this installation; contact your SunCharts administrator or use your own Stripe account")
+        Error::Invalid("SunCharts Payments is not enabled for this installation; connect this practice to SunCharts Connect and finish Stripe onboarding")
     })?;
     let u = url::Url::parse(&v)
         .map_err(|_| Error::Invalid("invalid SunCharts Payments service configuration"))?;
