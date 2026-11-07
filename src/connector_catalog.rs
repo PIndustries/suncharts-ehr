@@ -364,13 +364,15 @@ impl ConnectorManifest {
         let mut components = HashSet::new();
         for trigger in &self.triggers {
             validate_component(
-                &trigger.id,
-                &trigger.title,
-                &trigger.description,
-                trigger.auth_scheme.as_deref(),
-                &trigger.required_roles,
-                &trigger.required_scopes,
-                &trigger.output,
+                ComponentDescriptor {
+                    id: &trigger.id,
+                    title: &trigger.title,
+                    description: &trigger.description,
+                    auth_scheme: trigger.auth_scheme.as_deref(),
+                    roles: &trigger.required_roles,
+                    scopes: &trigger.required_scopes,
+                    schema: &trigger.output,
+                },
                 &auth,
                 &mut components,
             )?;
@@ -380,13 +382,15 @@ impl ConnectorManifest {
         }
         for action in &self.actions {
             validate_component(
-                &action.id,
-                &action.title,
-                &action.description,
-                action.auth_scheme.as_deref(),
-                &action.required_roles,
-                &action.required_scopes,
-                &action.input,
+                ComponentDescriptor {
+                    id: &action.id,
+                    title: &action.title,
+                    description: &action.description,
+                    auth_scheme: action.auth_scheme.as_deref(),
+                    roles: &action.required_roles,
+                    scopes: &action.required_scopes,
+                    schema: &action.input,
+                },
                 &auth,
                 &mut components,
             )?;
@@ -434,30 +438,40 @@ fn unique_bounded(values: &[String], min: usize, max: usize) -> bool {
         && values.iter().all(|value| bounded(value, min, max))
         && values.iter().collect::<HashSet<_>>().len() == values.len()
 }
-fn validate_component<'a>(
+
+struct ComponentDescriptor<'a> {
     id: &'a str,
-    title: &str,
-    description: &str,
-    auth_scheme: Option<&str>,
-    roles: &[String],
-    scopes: &[String],
-    schema: &ObjectSchema,
+    title: &'a str,
+    description: &'a str,
+    auth_scheme: Option<&'a str>,
+    roles: &'a [String],
+    scopes: &'a [String],
+    schema: &'a ObjectSchema,
+}
+
+fn validate_component<'a>(
+    component: ComponentDescriptor<'a>,
     auth: &HashSet<&str>,
     components: &mut HashSet<&'a str>,
 ) -> Result<()> {
-    if !identifier(id, 3, 120)
-        || !components.insert(id)
-        || !bounded(title, 2, 120)
-        || !bounded(description, 0, 1000)
-        || auth_scheme.is_some_and(|scheme| !auth.contains(scheme))
-        || roles.len() > ROLES.len()
-        || roles.iter().any(|role| !ROLES.contains(&role.as_str()))
-        || roles.iter().collect::<HashSet<_>>().len() != roles.len()
-        || !unique_bounded(scopes, 1, 240)
+    if !identifier(component.id, 3, 120)
+        || !components.insert(component.id)
+        || !bounded(component.title, 2, 120)
+        || !bounded(component.description, 0, 1000)
+        || component
+            .auth_scheme
+            .is_some_and(|scheme| !auth.contains(scheme))
+        || component.roles.len() > ROLES.len()
+        || component
+            .roles
+            .iter()
+            .any(|role| !ROLES.contains(&role.as_str()))
+        || component.roles.iter().collect::<HashSet<_>>().len() != component.roles.len()
+        || !unique_bounded(component.scopes, 1, 240)
     {
         return Err(Error::Invalid("invalid connector component"));
     }
-    validate_schema(schema, 0)
+    validate_schema(component.schema, 0)
 }
 fn validate_schema(schema: &ObjectSchema, depth: usize) -> Result<()> {
     if depth > 4 || schema.fields.len() > 50 {
@@ -657,13 +671,15 @@ async fn install(
     insert_revision(
         &mut tx,
         &actor,
-        id,
-        1,
-        &manifest,
-        &digest,
-        "community",
-        &input.provenance,
-        reason,
+        RevisionRecord {
+            installation_id: id,
+            revision: 1,
+            manifest: &manifest,
+            manifest_digest: &digest,
+            provenance: "community",
+            source: &input.provenance,
+            reason,
+        },
     )
     .await?;
     audit(&mut tx, &actor, "connector.catalog.install", id).await?;
@@ -706,13 +722,15 @@ async fn revise(
     insert_revision(
         &mut tx,
         &actor,
-        id,
-        next,
-        &manifest,
-        &digest,
-        "community",
-        &input.provenance,
-        reason,
+        RevisionRecord {
+            installation_id: id,
+            revision: next,
+            manifest: &manifest,
+            manifest_digest: &digest,
+            provenance: "community",
+            source: &input.provenance,
+            reason,
+        },
     )
     .await?;
     sqlx::query("UPDATE connector_installations SET current_revision=$3,version=version+1,updated_at=clock_timestamp() WHERE tenant_id=$1 AND id=$2")
@@ -756,20 +774,35 @@ async fn action(
     Ok(reply(value))
 }
 
+struct RevisionRecord<'a> {
+    installation_id: Uuid,
+    revision: i64,
+    manifest: &'a Value,
+    manifest_digest: &'a str,
+    provenance: &'a str,
+    source: &'a Provenance,
+    reason: &'a str,
+}
+
 async fn insert_revision(
     tx: &mut Transaction<'_, Postgres>,
     actor: &Actor,
-    id: Uuid,
-    revision: i64,
-    manifest: &Value,
-    digest: &str,
-    provenance: &str,
-    source: &Provenance,
-    reason: &str,
+    record: RevisionRecord<'_>,
 ) -> Result<()> {
     sqlx::query("INSERT INTO connector_installation_revisions(tenant_id,installation_id,revision,manifest,manifest_digest,provenance,repository_url,source_revision,source_digest,created_by,reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
-        .bind(actor.tenant_id).bind(id).bind(revision).bind(manifest).bind(digest).bind(provenance)
-        .bind(&source.repository_url).bind(&source.source_revision).bind(&source.source_digest).bind(actor.sub).bind(reason).execute(&mut **tx).await?;
+        .bind(actor.tenant_id)
+        .bind(record.installation_id)
+        .bind(record.revision)
+        .bind(record.manifest)
+        .bind(record.manifest_digest)
+        .bind(record.provenance)
+        .bind(&record.source.repository_url)
+        .bind(&record.source.source_revision)
+        .bind(&record.source.source_digest)
+        .bind(actor.sub)
+        .bind(record.reason)
+        .execute(&mut **tx)
+        .await?;
     Ok(())
 }
 async fn current(tx: &mut Transaction<'_, Postgres>, actor: &Actor, id: Uuid) -> Result<Value> {
