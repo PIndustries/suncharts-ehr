@@ -25534,7 +25534,7 @@
           "reason": {"type": "string", "minLength": 1, "maxLength": 1000}
         }
       },
-      "CarePathwayTriggerType": {"enum": ["inquiry_received", "referral_received", "call_received", "sms_received", "fax_received", "email_received", "external_booking_received", "appointment_created", "appointment_rescheduled", "appointment_cancelled", "eligibility_returned", "patient_checked_in", "visit_signed", "order_placed"]},
+      "CarePathwayTriggerType": {"enum": ["inquiry_received", "referral_received", "referral_status_changed", "call_received", "sms_received", "fax_received", "email_received", "external_booking_received", "appointment_created", "appointment_rescheduled", "appointment_cancelled", "eligibility_returned", "patient_checked_in", "visit_signed", "order_placed"]},
       "TriggerCarePathway": {
         "type": "object",
         "additionalProperties": false,

@@ -35,6 +35,7 @@ vm.runInContext(source,context);
  vm.runInContext("studioDraft.definition.steps.find(step=>step.key==='intake').depends_on=['verify']",context);assert.match(vm.runInContext('studioValidation().join(" ")',context),/cycle/);vm.runInContext("studioDraft.definition.steps.find(step=>step.key==='intake').depends_on=[]",context);
  for(const label of ['Check appointment availability','Hold an appointment slot','Book an appointment','Reschedule an appointment','Cancel an appointment','Send intake request','Send communication','Draft structured extraction','Draft a response'])assert.match(source,new RegExp(label));
  for(const trigger of ['inbound call','inbound SMS','inbound fax','referral email','external booking'])assert.match(source,new RegExp(trigger,'i'));
+ assert.match(source,/referral_status_changed:'A referral status changes'/);
  vm.runInContext("studioAdd('pre_visit','ai_extract_draft')",context);assert.equal(vm.runInContext("studioStep().manual_approval",context),true);assert.match(host.innerHTML,/Integration-aware node/);
  vm.runInContext("studioView='forms';studioRender()",context);assert.match(host.innerHTML,/FORM BUILDER/);assert.match(host.innerHTML,/Form fields/);
  vm.runInContext("studioView='test';studioRender()",context);assert.match(host.innerHTML,/SAFE TEST SANDBOX/);assert.match(host.innerHTML,/does not create a patient/);
