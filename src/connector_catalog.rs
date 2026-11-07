@@ -67,6 +67,17 @@ fn identifier(value: &str, min: usize, max: usize) -> bool {
         })
         && !value.ends_with(['.', '_', '-'])
 }
+fn automation_event_type(value: &str) -> bool {
+    value.len() <= 180
+        && value.split('.').count() >= 3
+        && value.split('.').all(|segment| {
+            identifier(segment, 1, 80)
+                && !matches!(
+                    segment,
+                    "all" | "any" | "generic" | "everything" | "wildcard" | "*"
+                )
+        })
+}
 fn semver(value: &str) -> bool {
     fn identifiers(value: &str, forbid_numeric_leading_zero: bool) -> bool {
         !value.is_empty()
@@ -376,7 +387,7 @@ impl ConnectorManifest {
                 &auth,
                 &mut components,
             )?;
-            if !identifier(&trigger.event_type, 3, 120) {
+            if !automation_event_type(&trigger.event_type) {
                 return Err(Error::Invalid("invalid connector trigger event"));
             }
         }
@@ -412,6 +423,26 @@ impl ConnectorManifest {
                 )
             {
                 return Err(Error::Invalid("clinical write requires clinical approval"));
+            }
+            if matches!(action.effect, ActionEffect::BillingWrite)
+                && (action.approval != ApprovalPolicy::Owner || action.retry != RetryClass::Never)
+            {
+                return Err(Error::Invalid(
+                    "billing write requires owner approval and no automatic retry",
+                ));
+            }
+            if action.effect != ActionEffect::Read
+                && action.required_roles.iter().any(|role| role == "read_only")
+            {
+                return Err(Error::Invalid(
+                    "read-only roles cannot invoke connector writes",
+                ));
+            }
+            if action.effect == ActionEffect::Write && action.idempotency == IdempotencyClass::None
+            {
+                return Err(Error::Invalid(
+                    "generic connector writes require declared idempotency",
+                ));
             }
             if action.retry == RetryClass::ReadOnly && action.effect != ActionEffect::Read {
                 return Err(Error::Invalid("read-only retry requires a read action"));
@@ -766,6 +797,35 @@ async fn action(
     };
     sqlx::query("UPDATE connector_installations SET status=$3,version=version+1,updated_at=clock_timestamp() WHERE tenant_id=$1 AND id=$2")
         .bind(actor.tenant_id).bind(id).bind(next).execute(&mut *tx).await?;
+    if next != "enabled" {
+        let subscriptions:Vec<Uuid>=sqlx::query_scalar("UPDATE automation_trigger_subscriptions SET status='inactive',version=version+1,deactivated_at=now(),updated_at=now() WHERE tenant_id=$1 AND installation_id=$2 AND status IN ('active','error') RETURNING id")
+            .bind(actor.tenant_id).bind(id).fetch_all(&mut *tx).await?;
+        let reason_digest = crate::oauth::hash(reason);
+        for subscription in subscriptions {
+            sqlx::query("INSERT INTO automation_trigger_subscription_history(tenant_id,subscription_id,actor_id,action,reason_digest) VALUES($1,$2,$3,'deactivated',$4)")
+                .bind(actor.tenant_id).bind(subscription).bind(actor.sub).bind(&reason_digest).execute(&mut *tx).await?;
+            audit(
+                &mut tx,
+                &actor,
+                "automation.subscription.connector_disabled",
+                subscription,
+            )
+            .await?;
+        }
+        let deliveries:Vec<Uuid>=sqlx::query_scalar("UPDATE automation_event_deliveries d SET status='cancelled',lease_token=NULL,lease_owner=NULL,lease_expires_at=NULL,last_error_code='connector_disabled',updated_at=now() FROM automation_trigger_subscriptions s WHERE d.tenant_id=$1 AND s.tenant_id=d.tenant_id AND s.id=d.subscription_id AND s.installation_id=$2 AND d.status IN ('pending','leased') RETURNING d.id")
+            .bind(actor.tenant_id).bind(id).fetch_all(&mut *tx).await?;
+        for delivery in deliveries {
+            sqlx::query("INSERT INTO automation_event_delivery_history(tenant_id,delivery_id,actor_id,action,evidence) VALUES($1,$2,$3,'cancelled',jsonb_build_object('reason_code','connector_disabled'))")
+                .bind(actor.tenant_id).bind(delivery).bind(actor.sub).execute(&mut *tx).await?;
+            audit(
+                &mut tx,
+                &actor,
+                "automation.delivery.connector_disabled",
+                delivery,
+            )
+            .await?;
+        }
+    }
     sqlx::query("INSERT INTO connector_installation_events(tenant_id,installation_id,actor_id,action,reason) VALUES($1,$2,$3,$4,$5)")
         .bind(actor.tenant_id).bind(id).bind(actor.sub).bind(&input.action).bind(reason).execute(&mut *tx).await?;
     audit(&mut tx, &actor, "connector.catalog.action", id).await?;
@@ -950,5 +1010,13 @@ mod tests {
         assert!(!semver("1.2"));
         assert!(digest(&"a".repeat(64)));
         assert!(!digest(&"z".repeat(64)));
+    }
+
+    #[test]
+    fn automation_event_types_are_exact_and_namespaced() {
+        assert!(automation_event_type("suncharts.appointment.created"));
+        assert!(!automation_event_type("appointment.created"));
+        assert!(!automation_event_type("suncharts.appointment.all"));
+        assert!(!automation_event_type("suncharts..created"));
     }
 }

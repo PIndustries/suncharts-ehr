@@ -2,12 +2,13 @@
 CREATE TABLE automation_trigger_subscriptions (
  tenant_id uuid NOT NULL,
  id uuid NOT NULL,
- connector_key text NOT NULL CHECK (connector_key ~ '^[a-z][a-z0-9]*(\.[a-z0-9][a-z0-9_-]*)+$' AND length(connector_key)<=160),
- trigger_key text NOT NULL CHECK (trigger_key ~ '^[a-z][a-z0-9]*(\.[a-z0-9][a-z0-9_-]*)+$' AND length(trigger_key)<=160),
+ installation_id uuid NOT NULL,
+ connector_key text NOT NULL CHECK (connector_key ~ '^[a-z][a-z0-9_.-]{1,159}$'),
+ trigger_key text NOT NULL CHECK (trigger_key ~ '^[a-z][a-z0-9_.-]{1,159}$'),
  event_type text NOT NULL CHECK (event_type ~ '^[a-z][a-z0-9]*(\.[a-z0-9][a-z0-9_-]*){2,}$' AND length(event_type)<=180),
  transport text NOT NULL CHECK (transport IN ('internal','webhook','websocket','polling')),
  status text NOT NULL DEFAULT 'configured' CHECK (status IN ('configured','active','inactive','error')),
- configuration jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(configuration)='object' AND pg_column_size(configuration)<=32768),
+ configuration jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (configuration='{}'::jsonb),
  version bigint NOT NULL DEFAULT 1 CHECK (version>0),
  created_by uuid NOT NULL,
  configured_at timestamptz NOT NULL DEFAULT now(),
@@ -15,7 +16,8 @@ CREATE TABLE automation_trigger_subscriptions (
  deactivated_at timestamptz,
  updated_at timestamptz NOT NULL DEFAULT now(),
  PRIMARY KEY (tenant_id,id),
- UNIQUE (tenant_id,connector_key,trigger_key)
+ UNIQUE (tenant_id,connector_key,trigger_key),
+ FOREIGN KEY (tenant_id,installation_id) REFERENCES connector_installations(tenant_id,id)
 );
 CREATE INDEX automation_trigger_subscriptions_active
  ON automation_trigger_subscriptions(tenant_id,event_type,id) WHERE status='active';
@@ -35,6 +37,24 @@ CREATE TRIGGER automation_trigger_subscription_history_immutable
  BEFORE UPDATE OR DELETE ON automation_trigger_subscription_history
  FOR EACH ROW EXECUTE FUNCTION reject_history_mutation();
 
+CREATE FUNCTION preserve_automation_subscription_identity() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id OR NEW.id IS DISTINCT FROM OLD.id OR
+    NEW.installation_id IS DISTINCT FROM OLD.installation_id OR
+    NEW.connector_key IS DISTINCT FROM OLD.connector_key OR NEW.trigger_key IS DISTINCT FROM OLD.trigger_key OR
+    NEW.event_type IS DISTINCT FROM OLD.event_type OR NEW.transport IS DISTINCT FROM OLD.transport OR
+    NEW.configuration IS DISTINCT FROM OLD.configuration OR NEW.created_by IS DISTINCT FROM OLD.created_by OR
+    NEW.configured_at IS DISTINCT FROM OLD.configured_at OR NEW.version<>OLD.version+1 OR
+    NEW.updated_at<OLD.updated_at THEN
+   RAISE EXCEPTION 'invalid automation subscription revision' USING ERRCODE='23514';
+ END IF;
+ RETURN NEW;
+END $$;
+CREATE TRIGGER automation_subscription_identity_immutable BEFORE UPDATE ON automation_trigger_subscriptions
+ FOR EACH ROW EXECUTE FUNCTION preserve_automation_subscription_identity();
+CREATE TRIGGER automation_subscriptions_no_delete BEFORE DELETE ON automation_trigger_subscriptions
+ FOR EACH ROW EXECUTE FUNCTION reject_history_mutation();
+
 CREATE TABLE automation_events (
  tenant_id uuid NOT NULL,
  id uuid NOT NULL,
@@ -47,15 +67,34 @@ CREATE TABLE automation_events (
  classification text NOT NULL CHECK (classification IN ('non_phi','phi')),
  occurred_at timestamptz NOT NULL,
  retained_until timestamptz NOT NULL,
+ payload_erased_at timestamptz,
  created_by uuid NOT NULL,
  created_at timestamptz NOT NULL DEFAULT now(),
  PRIMARY KEY (tenant_id,id),
  UNIQUE (tenant_id,dedup_key),
- CHECK (retained_until>created_at)
+ CHECK (retained_until>created_at),
+ CHECK (payload_erased_at IS NULL OR (classification='phi' AND payload='{}'::jsonb AND payload_erased_at>=retained_until))
 );
 CREATE INDEX automation_events_retention ON automation_events(tenant_id,retained_until,id);
+CREATE FUNCTION preserve_automation_event_identity() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF TG_OP='DELETE' THEN
+   RAISE EXCEPTION 'automation events cannot be deleted' USING ERRCODE='23514';
+ END IF;
+ IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id OR NEW.id IS DISTINCT FROM OLD.id OR
+    NEW.event_type IS DISTINCT FROM OLD.event_type OR NEW.source IS DISTINCT FROM OLD.source OR
+    NEW.source_event_id IS DISTINCT FROM OLD.source_event_id OR NEW.dedup_key IS DISTINCT FROM OLD.dedup_key OR
+    NEW.payload_digest IS DISTINCT FROM OLD.payload_digest OR NEW.classification IS DISTINCT FROM OLD.classification OR
+    NEW.occurred_at IS DISTINCT FROM OLD.occurred_at OR NEW.retained_until IS DISTINCT FROM OLD.retained_until OR
+    NEW.created_by IS DISTINCT FROM OLD.created_by OR NEW.created_at IS DISTINCT FROM OLD.created_at OR
+    OLD.payload_erased_at IS NOT NULL OR NEW.payload_erased_at IS NULL OR
+    OLD.classification<>'phi' OR NEW.payload<>'{}'::jsonb OR NEW.payload_erased_at<OLD.retained_until THEN
+   RAISE EXCEPTION 'automation event identity and retained payload are immutable' USING ERRCODE='23514';
+ END IF;
+ RETURN NEW;
+END $$;
 CREATE TRIGGER automation_events_immutable BEFORE UPDATE OR DELETE ON automation_events
- FOR EACH ROW EXECUTE FUNCTION reject_history_mutation();
+ FOR EACH ROW EXECUTE FUNCTION preserve_automation_event_identity();
 
 CREATE TABLE automation_event_deliveries (
  tenant_id uuid NOT NULL,

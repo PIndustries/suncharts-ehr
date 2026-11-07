@@ -36,7 +36,6 @@ use uuid::Uuid;
     reason = "used by native event producers as they are integrated"
 )]
 const MAX_EVENT_BYTES: usize = 262_144;
-const MAX_CONFIGURATION_BYTES: usize = 32_768;
 const MAX_EVIDENCE_BYTES: usize = 32_768;
 
 fn db(state: &State) -> Result<&PgPool> {
@@ -84,6 +83,17 @@ fn component_key(value: &str) -> bool {
             .all(|segment| valid_segment(segment, false))
 }
 
+fn catalog_key(value: &str) -> bool {
+    value.len() >= 2
+        && value.len() <= 160
+        && value.bytes().enumerate().all(|(index, byte)| match byte {
+            b'a'..=b'z' | b'0'..=b'9' => true,
+            b'.' | b'_' | b'-' => index > 0,
+            _ => false,
+        })
+        && !value.ends_with(['.', '_', '-'])
+}
+
 fn event_type(value: &str) -> bool {
     if value.len() > 180 || !component_key(value) || value.split('.').count() < 3 {
         return false;
@@ -104,28 +114,6 @@ fn bounded_object(value: &Value, limit: usize, message: &'static str) -> Result<
     Ok(())
 }
 
-fn configuration_has_secret(value: &Value) -> bool {
-    match value {
-        Value::Object(map) => map.iter().any(|(key, value)| {
-            let normalized = key.to_ascii_lowercase().replace('-', "_");
-            [
-                "secret",
-                "password",
-                "token",
-                "api_key",
-                "credential",
-                "authorization",
-                "private_key",
-            ]
-            .iter()
-            .any(|fragment| normalized.contains(fragment))
-                || configuration_has_secret(value)
-        }),
-        Value::Array(items) => items.iter().any(configuration_has_secret),
-        _ => false,
-    }
-}
-
 #[cfg_attr(
     not(test),
     expect(dead_code, reason = "used by the isolated delivery worker API")
@@ -143,10 +131,6 @@ fn error_code(value: &str) -> bool {
 struct CreateSubscription {
     connector_key: String,
     trigger_key: String,
-    event_type: String,
-    transport: String,
-    #[serde(default)]
-    configuration: Value,
     reason: String,
 }
 
@@ -205,8 +189,10 @@ pub(crate) struct LeasedDelivery {
     pub idempotency_key: String,
 }
 
-fn delivery_idempotency_key(tenant: Uuid, delivery: Uuid) -> String {
-    crate::oauth::hash(&format!("automation-delivery\n{tenant}\n{delivery}"))
+fn delivery_idempotency_key(tenant: Uuid, event: Uuid, subscription: Uuid) -> String {
+    crate::oauth::hash(&format!(
+        "automation-delivery\n{tenant}\n{event}\n{subscription}"
+    ))
 }
 
 pub fn router() -> Router<State> {
@@ -235,33 +221,26 @@ async fn create_subscription(
 ) -> Result<Response> {
     owner(&actor)?;
     text(&input.reason, 1_000)?;
-    if !component_key(&input.connector_key)
-        || !component_key(&input.trigger_key)
-        || !event_type(&input.event_type)
-    {
+    if !catalog_key(&input.connector_key) || !catalog_key(&input.trigger_key) {
         return Err(Error::Invalid("invalid exact trigger identity"));
     }
-    if !matches!(
-        input.transport.as_str(),
-        "internal" | "webhook" | "websocket" | "polling"
-    ) {
-        return Err(Error::Invalid("invalid trigger transport"));
-    }
-    bounded_object(
-        &input.configuration,
-        MAX_CONFIGURATION_BYTES,
-        "invalid trigger configuration",
-    )?;
-    if configuration_has_secret(&input.configuration) {
-        return Err(Error::Invalid(
-            "trigger configuration cannot contain credentials",
-        ));
+    let mut tx = db(&state)?.begin().await?;
+    let resolved:Option<(Uuid,String,String)>=sqlx::query_as("SELECT i.id,t->>'event_type',CASE t->>'transport' WHEN 'internal_event' THEN 'internal' ELSE t->>'transport' END FROM connector_installations i JOIN connector_installation_revisions r ON r.tenant_id=i.tenant_id AND r.installation_id=i.id AND r.revision=i.current_revision CROSS JOIN LATERAL jsonb_array_elements(r.manifest->'triggers') t WHERE i.tenant_id=$1 AND i.connector_id=$2 AND i.status='enabled' AND t->>'id'=$3")
+        .bind(actor.tenant_id).bind(input.connector_key.trim()).bind(input.trigger_key.trim()).fetch_optional(&mut *tx).await?;
+    let (installation_id, resolved_event_type, resolved_transport) =
+        resolved.ok_or(Error::Conflict("enabled connector trigger was not found"))?;
+    if !event_type(&resolved_event_type)
+        || !matches!(
+            resolved_transport.as_str(),
+            "internal" | "webhook" | "websocket" | "polling"
+        )
+    {
+        return Err(Error::Conflict("enabled connector trigger is invalid"));
     }
     let id = Uuid::new_v4();
-    let mut tx = db(&state)?.begin().await?;
-    sqlx::query("INSERT INTO automation_trigger_subscriptions(tenant_id,id,connector_key,trigger_key,event_type,transport,configuration,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
-        .bind(actor.tenant_id).bind(id).bind(input.connector_key.trim()).bind(input.trigger_key.trim())
-        .bind(input.event_type.trim()).bind(input.transport).bind(input.configuration).bind(actor.sub)
+    sqlx::query("INSERT INTO automation_trigger_subscriptions(tenant_id,id,installation_id,connector_key,trigger_key,event_type,transport,configuration,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,'{}'::jsonb,$8)")
+        .bind(actor.tenant_id).bind(id).bind(installation_id).bind(input.connector_key.trim()).bind(input.trigger_key.trim())
+        .bind(resolved_event_type).bind(resolved_transport).bind(actor.sub)
         .execute(&mut *tx).await?;
     subscription_history(&mut tx, &actor, id, "configured", &input.reason).await?;
     audit(&mut tx, &actor, "automation.subscription.create", id).await?;
@@ -284,7 +263,7 @@ async fn list_subscriptions(
         return Err(Error::Invalid("invalid subscription status"));
     }
     let mut tx = db(&state)?.begin().await?;
-    let items:Vec<Value>=sqlx::query_scalar("SELECT to_jsonb(s)-'tenant_id' FROM automation_trigger_subscriptions s WHERE tenant_id=$1 AND ($2::text IS NULL OR status=$2) ORDER BY configured_at DESC,id DESC LIMIT 100")
+    let items:Vec<Value>=sqlx::query_scalar("SELECT to_jsonb(s)-'tenant_id'-'configuration' FROM automation_trigger_subscriptions s WHERE tenant_id=$1 AND ($2::text IS NULL OR status=$2) ORDER BY configured_at DESC,id DESC LIMIT 100")
         .bind(actor.tenant_id).bind(query.status).fetch_all(&mut *tx).await?;
     audit(
         &mut tx,
@@ -302,7 +281,7 @@ async fn subscription_snapshot(
     actor: &Actor,
     id: Uuid,
 ) -> Result<Value> {
-    sqlx::query_scalar("SELECT to_jsonb(s)-'tenant_id' FROM automation_trigger_subscriptions s WHERE tenant_id=$1 AND id=$2")
+    sqlx::query_scalar("SELECT to_jsonb(s)-'tenant_id'-'configuration' FROM automation_trigger_subscriptions s WHERE tenant_id=$1 AND id=$2")
         .bind(actor.tenant_id).bind(id).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)
 }
 
@@ -317,14 +296,19 @@ async fn subscription_action(
     text(&input.reason, 1_000)?;
     let expected = crate::expected(&headers)?;
     let mut tx = db(&state)?.begin().await?;
-    let current:Option<(String,i64)>=sqlx::query_as("SELECT status,version FROM automation_trigger_subscriptions WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
+    let current:Option<(String,i64,String)>=sqlx::query_as("SELECT s.status,s.version,i.status FROM automation_trigger_subscriptions s JOIN connector_installations i ON i.tenant_id=s.tenant_id AND i.id=s.installation_id WHERE s.tenant_id=$1 AND s.id=$2 FOR UPDATE OF s")
         .bind(actor.tenant_id).bind(id).fetch_optional(&mut *tx).await?;
-    let (status, version) = current.ok_or(Error::NotFound)?;
+    let (status, version, installation_status) = current.ok_or(Error::NotFound)?;
     if version != expected {
         return Err(Error::Conflict("trigger subscription changed; reload"));
     }
     let next = match input.action.as_str() {
-        "activate" if matches!(status.as_str(), "configured" | "inactive" | "error") => "active",
+        "activate"
+            if installation_status == "enabled"
+                && matches!(status.as_str(), "configured" | "inactive" | "error") =>
+        {
+            "active"
+        }
         "deactivate" if status == "active" => "inactive",
         _ => return Err(Error::Conflict("invalid trigger subscription action")),
     };
@@ -492,9 +476,9 @@ async fn delivery_action(
     owner(&actor)?;
     text(&input.reason, 1_000)?;
     let mut tx = db(&state)?.begin().await?;
-    let row:Option<(Uuid,Uuid,String,DateTime<Utc>,String)>=sqlx::query_as("SELECT d.event_id,d.subscription_id,d.status,e.retained_until,s.status FROM automation_event_deliveries d JOIN automation_events e ON e.tenant_id=d.tenant_id AND e.id=d.event_id JOIN automation_trigger_subscriptions s ON s.tenant_id=d.tenant_id AND s.id=d.subscription_id WHERE d.tenant_id=$1 AND d.id=$2 FOR UPDATE OF d")
+    let row:Option<(Uuid,Uuid,String,DateTime<Utc>,String,String)>=sqlx::query_as("SELECT d.event_id,d.subscription_id,d.status,e.retained_until,s.status,i.status FROM automation_event_deliveries d JOIN automation_events e ON e.tenant_id=d.tenant_id AND e.id=d.event_id JOIN automation_trigger_subscriptions s ON s.tenant_id=d.tenant_id AND s.id=d.subscription_id JOIN connector_installations i ON i.tenant_id=s.tenant_id AND i.id=s.installation_id WHERE d.tenant_id=$1 AND d.id=$2 FOR UPDATE OF d")
         .bind(actor.tenant_id).bind(id).fetch_optional(&mut *tx).await?;
-    let (event, subscription, status, retained_until, subscription_status) =
+    let (event, subscription, status, retained_until, subscription_status, installation_status) =
         row.ok_or(Error::NotFound)?;
     let result = match input.action.as_str() {
         "cancel" if matches!(status.as_str(), "pending" | "dead_letter") => {
@@ -511,8 +495,11 @@ async fn delivery_action(
             .await?;
             json!({"id":id,"status":"cancelled"})
         }
-        "replay" if matches!(status.as_str(), "dead_letter" | "cancelled" | "delivered") => {
-            if retained_until <= Utc::now() || subscription_status != "active" {
+        "replay" if matches!(status.as_str(), "dead_letter" | "cancelled") => {
+            if retained_until <= Utc::now()
+                || subscription_status != "active"
+                || installation_status != "enabled"
+            {
                 return Err(Error::Conflict(
                     "retained evidence or active subscription is required for replay",
                 ));
@@ -594,6 +581,47 @@ async fn worker_audit(
     Ok(())
 }
 
+/// Erases expired PHI payloads while retaining their digest and immutable audit metadata.
+/// Events with pending delivery work are skipped until delivery reaches a terminal state.
+#[expect(dead_code, reason = "retention worker integration is a separate lane")]
+pub(crate) async fn erase_expired_phi_payloads(
+    pool: &PgPool,
+    worker_id: Uuid,
+    limit: i64,
+) -> Result<u64> {
+    if !(1..=1_000).contains(&limit) {
+        return Err(Error::Invalid("invalid automation retention batch"));
+    }
+    let mut tx = pool.begin().await?;
+    let expired: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT e.tenant_id,e.id FROM automation_events e \
+         WHERE e.classification='phi' AND e.payload_erased_at IS NULL \
+           AND e.retained_until<=now() \
+           AND NOT EXISTS (SELECT 1 FROM automation_event_deliveries d \
+             WHERE d.tenant_id=e.tenant_id AND d.event_id=e.id \
+               AND d.status IN ('pending','leased')) \
+         ORDER BY e.retained_until,e.tenant_id,e.id \
+         FOR UPDATE OF e SKIP LOCKED LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(&mut *tx)
+    .await?;
+    for (tenant, event_id) in &expired {
+        sqlx::query("UPDATE automation_events SET payload='{}'::jsonb,payload_erased_at=now() WHERE tenant_id=$1 AND id=$2 AND payload_erased_at IS NULL")
+            .bind(tenant).bind(event_id).execute(&mut *tx).await?;
+        worker_audit(
+            &mut tx,
+            *tenant,
+            worker_id,
+            "automation.event.payload_erased",
+            *event_id,
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(expired.len() as u64)
+}
+
 /// Claims due deliveries without holding a database transaction during execution.
 ///
 /// An expired lease is intentionally eligible again, so consumers must assume
@@ -640,7 +668,7 @@ pub(crate) async fn lease_deliveries(
         .await?;
     }
     type DeliveryCandidate = (Uuid, Uuid, Uuid, Uuid, String, Value, String, i32);
-    let candidates:Vec<DeliveryCandidate>=sqlx::query_as("SELECT d.tenant_id,d.id,d.event_id,d.subscription_id,e.event_type,e.payload,e.classification,d.attempt_count FROM automation_event_deliveries d JOIN automation_events e ON e.tenant_id=d.tenant_id AND e.id=d.event_id JOIN automation_trigger_subscriptions s ON s.tenant_id=d.tenant_id AND s.id=d.subscription_id WHERE s.status='active' AND d.attempt_count<d.max_attempts AND ((d.status='pending' AND d.next_attempt_at<=now()) OR (d.status='leased' AND d.lease_expires_at<=now())) ORDER BY d.next_attempt_at,d.tenant_id,d.id FOR UPDATE OF d SKIP LOCKED LIMIT $1")
+    let candidates:Vec<DeliveryCandidate>=sqlx::query_as("SELECT d.tenant_id,d.id,d.event_id,d.subscription_id,e.event_type,e.payload,e.classification,d.attempt_count FROM automation_event_deliveries d JOIN automation_events e ON e.tenant_id=d.tenant_id AND e.id=d.event_id JOIN automation_trigger_subscriptions s ON s.tenant_id=d.tenant_id AND s.id=d.subscription_id JOIN connector_installations i ON i.tenant_id=s.tenant_id AND i.id=s.installation_id WHERE i.status='enabled' AND s.status='active' AND d.attempt_count<d.max_attempts AND ((d.status='pending' AND d.next_attempt_at<=now()) OR (d.status='leased' AND d.lease_expires_at<=now())) ORDER BY d.next_attempt_at,d.tenant_id,d.id FOR UPDATE OF d SKIP LOCKED LIMIT $1")
         .bind(limit).fetch_all(&mut *tx).await?;
     let mut leased = Vec::with_capacity(candidates.len());
     for (
@@ -685,7 +713,7 @@ pub(crate) async fn lease_deliveries(
             classification,
             attempt,
             lease_token: token,
-            idempotency_key: delivery_idempotency_key(tenant, delivery),
+            idempotency_key: delivery_idempotency_key(tenant, event, subscription),
         });
     }
     tx.commit().await?;
@@ -799,16 +827,11 @@ mod tests {
     }
 
     #[test]
-    fn configuration_rejects_secret_like_fields_recursively() {
-        assert!(!configuration_has_secret(&json!({
-            "labels":["INBOX"],
-            "poll_seconds":300,
-            "callback_url":"https://example.test/events"
-        })));
-        assert!(configuration_has_secret(
-            &json!({"oauth":{"refresh_token":"hidden"}})
-        ));
-        assert!(configuration_has_secret(&json!({"api-key":"hidden"})));
+    fn catalog_keys_are_bounded_and_non_executable() {
+        assert!(catalog_key("org.example.messaging"));
+        assert!(catalog_key("message_received"));
+        assert!(!catalog_key("https://example.test/hook"));
+        assert!(!catalog_key("../script"));
     }
 
     #[test]
@@ -821,13 +844,24 @@ mod tests {
     }
 
     #[test]
-    fn retry_idempotency_is_stable_and_delivery_scoped() {
+    fn retry_idempotency_is_stable_for_event_subscription_pair() {
         let tenant = Uuid::from_u128(1);
-        let delivery = Uuid::from_u128(2);
-        let key = delivery_idempotency_key(tenant, delivery);
-        assert_eq!(key, delivery_idempotency_key(tenant, delivery));
-        assert_ne!(key, delivery_idempotency_key(tenant, Uuid::from_u128(3)));
-        assert_ne!(key, delivery_idempotency_key(Uuid::from_u128(4), delivery));
+        let event = Uuid::from_u128(2);
+        let subscription = Uuid::from_u128(3);
+        let key = delivery_idempotency_key(tenant, event, subscription);
+        assert_eq!(key, delivery_idempotency_key(tenant, event, subscription));
+        assert_ne!(
+            key,
+            delivery_idempotency_key(tenant, Uuid::from_u128(4), subscription)
+        );
+        assert_ne!(
+            key,
+            delivery_idempotency_key(tenant, event, Uuid::from_u128(5))
+        );
+        assert_ne!(
+            key,
+            delivery_idempotency_key(Uuid::from_u128(6), event, subscription)
+        );
         assert_eq!(key.len(), 64);
     }
 }

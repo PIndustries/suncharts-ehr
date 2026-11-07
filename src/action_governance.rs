@@ -5,6 +5,11 @@
 //! load scripts or execute arbitrary HTTP. Native adapters implement [`ConnectorActionExecutor`].
 use crate::{
     auth::{Actor, Role},
+    connector_catalog::{
+        ActionDefinition as CatalogAction, ActionEffect as CatalogEffect,
+        ApprovalPolicy as CatalogApproval, IdempotencyClass as CatalogIdempotency,
+        RetryClass as CatalogRetry,
+    },
     error::{Error, Result},
     postgres::audit,
     State,
@@ -62,7 +67,7 @@ pub enum RetryClass {
     BoundedSafe,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GovernedActionSpec {
     pub connector_key: String,
     pub action_key: String,
@@ -73,6 +78,114 @@ pub struct GovernedActionSpec {
     pub retry_class: RetryClass,
     pub separation_of_duties: bool,
     pub max_attempts: u8,
+}
+
+fn manifest_authority(roles: &[String]) -> Result<ActionAuthority> {
+    if roles.is_empty() || roles.iter().any(|role| role == "read_only") {
+        return Ok(ActionAuthority::Owner);
+    }
+    if roles.iter().all(|role| matches!(role.as_str(), "owner")) {
+        Ok(ActionAuthority::Owner)
+    } else if roles
+        .iter()
+        .all(|role| matches!(role.as_str(), "owner" | "clinician"))
+    {
+        Ok(ActionAuthority::Clinical)
+    } else if roles.iter().all(|role| {
+        matches!(
+            role.as_str(),
+            "owner" | "clinician" | "nurse" | "medical_assistant"
+        )
+    }) {
+        Ok(ActionAuthority::Rooming)
+    } else if roles
+        .iter()
+        .all(|role| matches!(role.as_str(), "owner" | "clinician" | "front_desk"))
+    {
+        Ok(ActionAuthority::Scheduling)
+    } else if roles.iter().all(|role| {
+        matches!(
+            role.as_str(),
+            "owner" | "clinician" | "nurse" | "medical_assistant" | "front_desk"
+        )
+    }) {
+        Ok(ActionAuthority::Staff)
+    } else {
+        Err(Error::Invalid("connector action roles cannot be governed"))
+    }
+}
+
+async fn enabled_manifest_spec(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    connector_key: &str,
+    action_key: &str,
+) -> Result<GovernedActionSpec> {
+    let row: Option<(String, Value)> = sqlx::query_as(
+        "SELECT r.manifest->>'version',a FROM connector_installations i \
+         JOIN connector_installation_revisions r ON r.tenant_id=i.tenant_id \
+           AND r.installation_id=i.id AND r.revision=i.current_revision \
+         CROSS JOIN LATERAL jsonb_array_elements(r.manifest->'actions') a \
+         WHERE i.tenant_id=$1 AND i.connector_id=$2 AND i.status='enabled' \
+           AND a->>'id'=$3",
+    )
+    .bind(tenant)
+    .bind(connector_key)
+    .bind(action_key)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let (version, action) = row.ok_or(Error::Conflict("enabled connector action was not found"))?;
+    let action: CatalogAction = serde_json::from_value(action)
+        .map_err(|_| Error::Invalid("enabled connector action is invalid"))?;
+    let operation_class = match action.effect {
+        CatalogEffect::Read => OperationClass::Read,
+        CatalogEffect::ExternalSend => OperationClass::Communication,
+        CatalogEffect::ClinicalWrite => OperationClass::ClinicalWrite,
+        CatalogEffect::BillingWrite => OperationClass::Charge,
+        CatalogEffect::Write => {
+            if action.idempotency == CatalogIdempotency::None {
+                return Err(Error::Invalid(
+                    "generic connector writes require declared idempotency",
+                ));
+            }
+            OperationClass::IdempotentUpdate
+        }
+    };
+    let approval_policy = match action.approval {
+        CatalogApproval::None => ApprovalPolicy::None,
+        CatalogApproval::Owner => ApprovalPolicy::Owner,
+        CatalogApproval::Clinical => ApprovalPolicy::Clinician,
+        CatalogApproval::Staff => ApprovalPolicy::OwnerOrClinician,
+    };
+    if operation_class == OperationClass::Charge && approval_policy != ApprovalPolicy::Owner {
+        return Err(Error::Invalid(
+            "billing connector actions require owner approval",
+        ));
+    }
+    let retry_class = match action.retry {
+        CatalogRetry::Never => RetryClass::Never,
+        CatalogRetry::ReadOnly | CatalogRetry::SafeIdempotent => RetryClass::BoundedSafe,
+    };
+    let spec = GovernedActionSpec {
+        connector_key: connector_key.to_owned(),
+        action_key: action_key.to_owned(),
+        action_version: version,
+        operation_class,
+        authority: manifest_authority(&action.required_roles)?,
+        approval_policy,
+        retry_class,
+        separation_of_duties: matches!(
+            operation_class,
+            OperationClass::ClinicalWrite | OperationClass::Communication | OperationClass::Charge
+        ),
+        max_attempts: if retry_class == RetryClass::Never {
+            1
+        } else {
+            3
+        },
+    };
+    spec.validate()?;
+    Ok(spec)
 }
 
 impl GovernedActionSpec {
@@ -264,6 +377,20 @@ pub async fn create_invocation(
     request: CreateInvocation,
 ) -> Result<Value> {
     spec.validate()?;
+    let mut tx = pool.begin().await?;
+    let resolved = enabled_manifest_spec(
+        &mut tx,
+        actor.tenant_id,
+        &spec.connector_key,
+        &spec.action_key,
+    )
+    .await?;
+    if spec != &resolved {
+        return Err(Error::Conflict(
+            "connector action policy differs from its enabled manifest",
+        ));
+    }
+    let spec = &resolved;
     authorize(actor, spec.authority)?;
     bounded_object(
         &request.input,
@@ -284,7 +411,6 @@ pub async fn create_invocation(
         }))
         .map_err(|_| Error::Invalid("invalid connector action input"))?,
     );
-    let mut tx = pool.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
         .bind(format!(
             "{}:connector-action:{}",
