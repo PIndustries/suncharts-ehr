@@ -4,6 +4,12 @@
 //! This module does not execute provider actions. It records an immutable event once,
 //! fans it out to exact active subscriptions, and leases delivery work to a bounded
 //! internal dispatcher. External communication continues through reviewed adapters.
+//!
+//! Delivery is deliberately at-least-once: an expired lease is reclaimed on the same
+//! delivery row with a new lease token. The stable `idempotency_key` never changes.
+//! Dispatchers must not perform clinical writes, communications, or charges directly;
+//! they submit any effectful action to `action_governance` using that key. This keeps a
+//! worker crash after submission from silently duplicating the effect on lease recovery.
 
 use crate::{
     auth::{Actor, Role},
@@ -25,6 +31,10 @@ use serde_json::{json, Value};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
+#[expect(
+    dead_code,
+    reason = "used by native event producers as they are integrated"
+)]
 const MAX_EVENT_BYTES: usize = 262_144;
 const MAX_CONFIGURATION_BYTES: usize = 32_768;
 const MAX_EVIDENCE_BYTES: usize = 32_768;
@@ -116,6 +126,10 @@ fn configuration_has_secret(value: &Value) -> bool {
     }
 }
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "used by the isolated delivery worker API")
+)]
 fn error_code(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 80
@@ -156,6 +170,7 @@ struct PageQuery {
 }
 
 /// Input used by native EHR modules while their own mutation transaction is open.
+#[expect(dead_code, reason = "native event producers integrate incrementally")]
 pub(crate) struct NewAutomationEvent {
     pub event_type: String,
     pub source: String,
@@ -167,6 +182,7 @@ pub(crate) struct NewAutomationEvent {
 }
 
 #[derive(Debug, Serialize)]
+#[expect(dead_code, reason = "native event producers integrate incrementally")]
 pub(crate) struct EmitResult {
     pub id: Uuid,
     pub created: bool,
@@ -174,6 +190,7 @@ pub(crate) struct EmitResult {
 }
 
 #[derive(Debug, Serialize)]
+#[expect(dead_code, reason = "delivery worker integration is a separate lane")]
 pub(crate) struct LeasedDelivery {
     pub tenant_id: Uuid,
     pub delivery_id: Uuid,
@@ -184,6 +201,12 @@ pub(crate) struct LeasedDelivery {
     pub classification: String,
     pub attempt: i32,
     pub lease_token: Uuid,
+    /// Stable across lease expiry and retry. Never substitute the rotating lease token.
+    pub idempotency_key: String,
+}
+
+fn delivery_idempotency_key(tenant: Uuid, delivery: Uuid) -> String {
+    crate::oauth::hash(&format!("automation-delivery\n{tenant}\n{delivery}"))
 }
 
 pub fn router() -> Router<State> {
@@ -337,6 +360,7 @@ async fn subscription_action(
 
 /// Atomically stores one immutable event and its deliveries. Call this inside the
 /// native mutation transaction that produced the event so state and event commit together.
+#[expect(dead_code, reason = "native event producers integrate incrementally")]
 pub(crate) async fn emit_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     actor: &Actor,
@@ -550,6 +574,7 @@ async fn delivery_history(
     Ok(())
 }
 
+#[expect(dead_code, reason = "delivery worker integration is a separate lane")]
 async fn worker_audit(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
@@ -570,6 +595,12 @@ async fn worker_audit(
 }
 
 /// Claims due deliveries without holding a database transaction during execution.
+///
+/// An expired lease is intentionally eligible again, so consumers must assume
+/// at-least-once delivery. Effectful consumers must submit through `action_governance`
+/// with [`LeasedDelivery::idempotency_key`]; direct provider calls are outside this
+/// runtime's contract.
+#[expect(dead_code, reason = "delivery worker integration is a separate lane")]
 pub(crate) async fn lease_deliveries(
     pool: &PgPool,
     worker_id: Uuid,
@@ -608,7 +639,8 @@ pub(crate) async fn lease_deliveries(
         )
         .await?;
     }
-    let candidates:Vec<(Uuid,Uuid,Uuid,Uuid,String,Value,String,i32)>=sqlx::query_as("SELECT d.tenant_id,d.id,d.event_id,d.subscription_id,e.event_type,e.payload,e.classification,d.attempt_count FROM automation_event_deliveries d JOIN automation_events e ON e.tenant_id=d.tenant_id AND e.id=d.event_id JOIN automation_trigger_subscriptions s ON s.tenant_id=d.tenant_id AND s.id=d.subscription_id WHERE s.status='active' AND d.attempt_count<d.max_attempts AND ((d.status='pending' AND d.next_attempt_at<=now()) OR (d.status='leased' AND d.lease_expires_at<=now())) ORDER BY d.next_attempt_at,d.tenant_id,d.id FOR UPDATE OF d SKIP LOCKED LIMIT $1")
+    type DeliveryCandidate = (Uuid, Uuid, Uuid, Uuid, String, Value, String, i32);
+    let candidates:Vec<DeliveryCandidate>=sqlx::query_as("SELECT d.tenant_id,d.id,d.event_id,d.subscription_id,e.event_type,e.payload,e.classification,d.attempt_count FROM automation_event_deliveries d JOIN automation_events e ON e.tenant_id=d.tenant_id AND e.id=d.event_id JOIN automation_trigger_subscriptions s ON s.tenant_id=d.tenant_id AND s.id=d.subscription_id WHERE s.status='active' AND d.attempt_count<d.max_attempts AND ((d.status='pending' AND d.next_attempt_at<=now()) OR (d.status='leased' AND d.lease_expires_at<=now())) ORDER BY d.next_attempt_at,d.tenant_id,d.id FOR UPDATE OF d SKIP LOCKED LIMIT $1")
         .bind(limit).fetch_all(&mut *tx).await?;
     let mut leased = Vec::with_capacity(candidates.len());
     for (
@@ -653,12 +685,14 @@ pub(crate) async fn lease_deliveries(
             classification,
             attempt,
             lease_token: token,
+            idempotency_key: delivery_idempotency_key(tenant, delivery),
         });
     }
     tx.commit().await?;
     Ok(leased)
 }
 
+#[expect(dead_code, reason = "delivery worker integration is a separate lane")]
 pub(crate) async fn complete_delivery(
     pool: &PgPool,
     tenant: Uuid,
@@ -697,6 +731,7 @@ pub(crate) async fn complete_delivery(
     Ok(())
 }
 
+#[expect(dead_code, reason = "delivery worker integration is a separate lane")]
 pub(crate) async fn fail_delivery(
     pool: &PgPool,
     tenant: Uuid,
@@ -783,5 +818,16 @@ mod tests {
         assert!(!error_code(""));
         assert!(bounded_object(&json!({"status":"synthetic"}), 128, "invalid").is_ok());
         assert!(bounded_object(&json!(["not an object"]), 128, "invalid").is_err());
+    }
+
+    #[test]
+    fn retry_idempotency_is_stable_and_delivery_scoped() {
+        let tenant = Uuid::from_u128(1);
+        let delivery = Uuid::from_u128(2);
+        let key = delivery_idempotency_key(tenant, delivery);
+        assert_eq!(key, delivery_idempotency_key(tenant, delivery));
+        assert_ne!(key, delivery_idempotency_key(tenant, Uuid::from_u128(3)));
+        assert_ne!(key, delivery_idempotency_key(Uuid::from_u128(4), delivery));
+        assert_eq!(key.len(), 64);
     }
 }
