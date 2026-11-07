@@ -1,0 +1,921 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//! Declarative, instance-local connector catalog.
+//!
+//! Manifests describe compiled connector capabilities. They cannot contain
+//! executable code, HTTP targets, headers, templates, or arbitrary scripts.
+use crate::{
+    auth::{Actor, Role},
+    error::{Error, Result},
+    postgres::audit,
+    State,
+};
+use axum::{
+    extract::{Path, State as ExtractState},
+    http::{header, HeaderMap},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sqlx::{PgPool, Postgres, Transaction};
+use std::collections::HashSet;
+use url::Url;
+use uuid::Uuid;
+
+const API_VERSION: &str = "suncharts.dev/connector/v1";
+const OPEN_LICENSES: &[&str] = &[
+    "AGPL-3.0-only",
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "MPL-2.0",
+];
+const ROLES: &[&str] = &[
+    "owner",
+    "clinician",
+    "nurse",
+    "medical_assistant",
+    "front_desk",
+    "read_only",
+];
+
+fn db(state: &State) -> Result<&PgPool> {
+    Ok(&state.browser.as_ref().ok_or(Error::NotFound)?.db)
+}
+fn owner(actor: &Actor) -> Result<()> {
+    if matches!(actor.role, Role::Owner) {
+        Ok(())
+    } else {
+        Err(Error::Forbidden)
+    }
+}
+fn reply(value: Value) -> Response {
+    ([(header::CACHE_CONTROL, "no-store")], Json(value)).into_response()
+}
+fn bounded(value: &str, min: usize, max: usize) -> bool {
+    let count = value.chars().count();
+    count >= min && count <= max && !value.chars().any(char::is_control)
+}
+fn identifier(value: &str, min: usize, max: usize) -> bool {
+    bounded(value, min, max)
+        && value.bytes().enumerate().all(|(index, byte)| match byte {
+            b'a'..=b'z' | b'0'..=b'9' => true,
+            b'.' | b'_' | b'-' => index > 0,
+            _ => false,
+        })
+        && !value.ends_with(['.', '_', '-'])
+}
+fn semver(value: &str) -> bool {
+    fn identifiers(value: &str, forbid_numeric_leading_zero: bool) -> bool {
+        !value.is_empty()
+            && value.split('.').all(|part| {
+                !part.is_empty()
+                    && part
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                    && (!forbid_numeric_leading_zero
+                        || !part.bytes().all(|byte| byte.is_ascii_digit())
+                        || part == "0"
+                        || !part.starts_with('0'))
+            })
+    }
+    let (without_build, build) = value
+        .split_once('+')
+        .map_or((value, None), |(base, build)| (base, Some(build)));
+    let (base, prerelease) = without_build
+        .split_once('-')
+        .map_or((without_build, None), |(base, pre)| (base, Some(pre)));
+    let mut segments = base.split('.');
+    let valid = (0..3).all(|_| {
+        segments.next().is_some_and(|segment| {
+            !segment.is_empty()
+                && segment.bytes().all(|byte| byte.is_ascii_digit())
+                && (segment == "0" || !segment.starts_with('0'))
+        })
+    });
+    valid
+        && segments.next().is_none()
+        && prerelease.is_none_or(|part| identifiers(part, true))
+        && build.is_none_or(|part| identifiers(part, false))
+        && bounded(value, 5, 80)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
+}
+fn https_url(value: &str) -> bool {
+    Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.fragment().is_none()
+            && bounded(value, 12, 2000)
+    })
+}
+fn digest(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectorManifest {
+    pub api_version: String,
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub license: String,
+    pub homepage: String,
+    pub repository: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub auth_schemes: Vec<AuthScheme>,
+    #[serde(default)]
+    pub triggers: Vec<TriggerDefinition>,
+    #[serde(default)]
+    pub actions: Vec<ActionDefinition>,
+    pub lifecycle: Lifecycle,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthScheme {
+    pub id: String,
+    pub kind: AuthKind,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default)]
+    pub credential_fields: Vec<CredentialField>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthKind {
+    None,
+    ApiKey,
+    Oauth2,
+    Oauth2Client,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialField {
+    pub id: String,
+    pub title: String,
+    pub secret: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TriggerDefinition {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    pub event_type: String,
+    pub transport: TriggerTransport,
+    pub auth_scheme: Option<String>,
+    #[serde(default)]
+    pub required_roles: Vec<String>,
+    #[serde(default)]
+    pub required_scopes: Vec<String>,
+    pub phi: PhiClass,
+    pub output: ObjectSchema,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerTransport {
+    InternalEvent,
+    Webhook,
+    Websocket,
+    Polling,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionDefinition {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    /// Resolves only to a connector implementation compiled into the EHR.
+    pub implementation: String,
+    pub transport: ActionTransport,
+    pub auth_scheme: Option<String>,
+    #[serde(default)]
+    pub required_roles: Vec<String>,
+    #[serde(default)]
+    pub required_scopes: Vec<String>,
+    pub phi: PhiClass,
+    pub effect: ActionEffect,
+    pub approval: ApprovalPolicy,
+    pub idempotency: IdempotencyClass,
+    pub retry: RetryClass,
+    pub input: ObjectSchema,
+    pub output: ObjectSchema,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionTransport {
+    Native,
+    ProviderApi,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionEffect {
+    Read,
+    Write,
+    ExternalSend,
+    ClinicalWrite,
+    BillingWrite,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalPolicy {
+    None,
+    Staff,
+    Clinical,
+    Owner,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IdempotencyClass {
+    None,
+    RequestKey,
+    NaturalKey,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RetryClass {
+    Never,
+    ReadOnly,
+    SafeIdempotent,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PhiClass {
+    None,
+    Identifiers,
+    Limited,
+    Clinical,
+    Billing,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObjectSchema {
+    #[serde(default)]
+    pub fields: Vec<FieldSchema>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FieldSchema {
+    pub id: String,
+    pub title: String,
+    pub field_type: FieldType,
+    pub required: bool,
+    pub phi: PhiClass,
+    #[serde(default)]
+    pub enum_values: Vec<String>,
+    #[serde(default)]
+    pub fields: Vec<FieldSchema>,
+    #[serde(default)]
+    pub items: Vec<FieldSchema>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldType {
+    String,
+    Integer,
+    Number,
+    Boolean,
+    Uuid,
+    DateTime,
+    Object,
+    Array,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Lifecycle {
+    pub setup: bool,
+    pub deactivate: bool,
+    pub sample_events: bool,
+}
+
+impl ConnectorManifest {
+    pub fn validate(&self) -> Result<()> {
+        if self.api_version != API_VERSION
+            || !identifier(&self.id, 3, 120)
+            || !bounded(&self.name, 2, 120)
+            || !semver(&self.version)
+            || !OPEN_LICENSES.contains(&self.license.as_str())
+            || !https_url(&self.homepage)
+            || !https_url(&self.repository)
+            || !bounded(&self.description, 0, 1000)
+            || self.auth_schemes.len() > 8
+            || self.triggers.len() > 64
+            || self.actions.len() > 128
+            || self.triggers.is_empty() && self.actions.is_empty()
+        {
+            return Err(Error::Invalid("invalid connector manifest metadata"));
+        }
+        let mut auth = HashSet::new();
+        for scheme in &self.auth_schemes {
+            if !identifier(&scheme.id, 2, 80)
+                || !auth.insert(scheme.id.as_str())
+                || scheme.scopes.len() > 64
+                || scheme.credential_fields.len() > 16
+                || !unique_bounded(&scheme.scopes, 1, 240)
+            {
+                return Err(Error::Invalid("invalid connector authentication scheme"));
+            }
+            let mut fields = HashSet::new();
+            for field in &scheme.credential_fields {
+                if !identifier(&field.id, 2, 80)
+                    || !bounded(&field.title, 1, 120)
+                    || !fields.insert(field.id.as_str())
+                {
+                    return Err(Error::Invalid("invalid connector credential field"));
+                }
+            }
+            if matches!(scheme.kind, AuthKind::None)
+                && (!scheme.scopes.is_empty() || !scheme.credential_fields.is_empty())
+            {
+                return Err(Error::Invalid(
+                    "unauthenticated connector scheme has credentials",
+                ));
+            }
+            if matches!(scheme.kind, AuthKind::ApiKey)
+                && (scheme.credential_fields.is_empty()
+                    || scheme.credential_fields.iter().any(|field| !field.secret))
+            {
+                return Err(Error::Invalid(
+                    "API key connector scheme requires secret credential fields",
+                ));
+            }
+        }
+        let mut components = HashSet::new();
+        for trigger in &self.triggers {
+            validate_component(
+                &trigger.id,
+                &trigger.title,
+                &trigger.description,
+                trigger.auth_scheme.as_deref(),
+                &trigger.required_roles,
+                &trigger.required_scopes,
+                &trigger.output,
+                &auth,
+                &mut components,
+            )?;
+            if !identifier(&trigger.event_type, 3, 120) {
+                return Err(Error::Invalid("invalid connector trigger event"));
+            }
+        }
+        for action in &self.actions {
+            validate_component(
+                &action.id,
+                &action.title,
+                &action.description,
+                action.auth_scheme.as_deref(),
+                &action.required_roles,
+                &action.required_scopes,
+                &action.input,
+                &auth,
+                &mut components,
+            )?;
+            validate_schema(&action.output, 0)?;
+            if !identifier(&action.implementation, 3, 160) {
+                return Err(Error::Invalid("invalid compiled connector implementation"));
+            }
+            if matches!(action.effect, ActionEffect::ExternalSend)
+                && (action.approval == ApprovalPolicy::None || action.retry != RetryClass::Never)
+            {
+                return Err(Error::Invalid(
+                    "external send must be reviewed and never retried",
+                ));
+            }
+            if matches!(action.effect, ActionEffect::ClinicalWrite)
+                && !matches!(
+                    action.approval,
+                    ApprovalPolicy::Clinical | ApprovalPolicy::Owner
+                )
+            {
+                return Err(Error::Invalid("clinical write requires clinical approval"));
+            }
+            if action.retry == RetryClass::ReadOnly && action.effect != ActionEffect::Read {
+                return Err(Error::Invalid("read-only retry requires a read action"));
+            }
+            if action.retry == RetryClass::SafeIdempotent
+                && action.idempotency == IdempotencyClass::None
+            {
+                return Err(Error::Invalid(
+                    "safe retry requires a declared idempotency key",
+                ));
+            }
+        }
+        let encoded =
+            serde_json::to_vec(self).map_err(|_| Error::Invalid("invalid connector manifest"))?;
+        if encoded.len() > 262_144 {
+            return Err(Error::Invalid("connector manifest exceeds its limit"));
+        }
+        Ok(())
+    }
+}
+
+fn unique_bounded(values: &[String], min: usize, max: usize) -> bool {
+    values.len() <= 64
+        && values.iter().all(|value| bounded(value, min, max))
+        && values.iter().collect::<HashSet<_>>().len() == values.len()
+}
+fn validate_component<'a>(
+    id: &'a str,
+    title: &str,
+    description: &str,
+    auth_scheme: Option<&str>,
+    roles: &[String],
+    scopes: &[String],
+    schema: &ObjectSchema,
+    auth: &HashSet<&str>,
+    components: &mut HashSet<&'a str>,
+) -> Result<()> {
+    if !identifier(id, 3, 120)
+        || !components.insert(id)
+        || !bounded(title, 2, 120)
+        || !bounded(description, 0, 1000)
+        || auth_scheme.is_some_and(|scheme| !auth.contains(scheme))
+        || roles.len() > ROLES.len()
+        || roles.iter().any(|role| !ROLES.contains(&role.as_str()))
+        || roles.iter().collect::<HashSet<_>>().len() != roles.len()
+        || !unique_bounded(scopes, 1, 240)
+    {
+        return Err(Error::Invalid("invalid connector component"));
+    }
+    validate_schema(schema, 0)
+}
+fn validate_schema(schema: &ObjectSchema, depth: usize) -> Result<()> {
+    if depth > 4 || schema.fields.len() > 50 {
+        return Err(Error::Invalid("connector schema exceeds its limit"));
+    }
+    let mut ids = HashSet::new();
+    for field in &schema.fields {
+        if !identifier(&field.id, 1, 80)
+            || !bounded(&field.title, 1, 120)
+            || !ids.insert(field.id.as_str())
+            || field.enum_values.len() > 100
+            || !unique_bounded(&field.enum_values, 1, 240)
+            || field.fields.len() > 50
+            || field.items.len() > 1
+            || (!field.enum_values.is_empty() && field.field_type != FieldType::String)
+        {
+            return Err(Error::Invalid("invalid connector schema field"));
+        }
+        if field.field_type == FieldType::Object {
+            if field.fields.is_empty() || !field.items.is_empty() {
+                return Err(Error::Invalid("invalid object connector field"));
+            }
+            validate_schema(
+                &ObjectSchema {
+                    fields: field.fields.clone(),
+                },
+                depth + 1,
+            )?;
+        } else if field.field_type == FieldType::Array {
+            if field.items.len() != 1 || !field.fields.is_empty() {
+                return Err(Error::Invalid("invalid array connector field"));
+            }
+            validate_schema(
+                &ObjectSchema {
+                    fields: field.items.clone(),
+                },
+                depth + 1,
+            )?;
+        } else if !field.fields.is_empty() || !field.items.is_empty() {
+            return Err(Error::Invalid("scalar connector field has nested schema"));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstallRequest {
+    request_id: Uuid,
+    manifest: ConnectorManifest,
+    provenance: Provenance,
+    reason: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviseRequest {
+    manifest: ConnectorManifest,
+    provenance: Provenance,
+    reason: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Provenance {
+    repository_url: String,
+    source_revision: String,
+    source_digest: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CatalogAction {
+    action: String,
+    reason: String,
+}
+
+impl Provenance {
+    fn validate(&self, manifest: &ConnectorManifest) -> Result<()> {
+        if !https_url(&self.repository_url)
+            || self.repository_url != manifest.repository
+            || !bounded(&self.source_revision, 7, 200)
+            || !digest(&self.source_digest)
+        {
+            Err(Error::Invalid("invalid connector source provenance"))
+        } else {
+            Ok(())
+        }
+    }
+}
+fn reason(value: &str) -> Result<&str> {
+    let value = value.trim();
+    if bounded(value, 1, 1000) {
+        Ok(value)
+    } else {
+        Err(Error::Invalid("connector change reason is required"))
+    }
+}
+fn manifest_value(manifest: &ConnectorManifest) -> Result<(Value, String)> {
+    manifest.validate()?;
+    let value =
+        serde_json::to_value(manifest).map_err(|_| Error::Invalid("invalid connector manifest"))?;
+    let canonical =
+        serde_json::to_string(&value).map_err(|_| Error::Invalid("invalid connector manifest"))?;
+    Ok((value, crate::oauth::hash(&canonical)))
+}
+
+pub fn router() -> Router<State> {
+    Router::new()
+        .route(
+            "/api/v1/connector-catalog/installations",
+            get(list).post(install),
+        )
+        .route(
+            "/api/v1/connector-catalog/installations/{id}",
+            get(detail).put(revise),
+        )
+        .route(
+            "/api/v1/connector-catalog/installations/{id}/actions",
+            post(action),
+        )
+}
+
+async fn list(actor: Actor, ExtractState(state): ExtractState<State>) -> Result<Response> {
+    actor.staff()?;
+    let mut tx = db(&state)?.begin().await?;
+    let items:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',i.id,'connector_id',i.connector_id,'status',i.status,'revision',i.current_revision,'version',i.version,'manifest_version',r.manifest->>'version','name',r.manifest->>'name','license',r.manifest->>'license','provenance',r.provenance,'repository_url',r.repository_url,'source_revision',r.source_revision,'created_at',i.created_at,'updated_at',i.updated_at) FROM connector_installations i JOIN connector_installation_revisions r ON r.tenant_id=i.tenant_id AND r.installation_id=i.id AND r.revision=i.current_revision WHERE i.tenant_id=$1 ORDER BY i.connector_id LIMIT 200")
+        .bind(actor.tenant_id).fetch_all(&mut *tx).await?;
+    audit(&mut tx, &actor, "connector.catalog.list", actor.tenant_id).await?;
+    tx.commit().await?;
+    Ok(reply(json!({"items":items})))
+}
+
+async fn detail(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(id): Path<Uuid>,
+) -> Result<Response> {
+    actor.staff()?;
+    let mut tx = db(&state)?.begin().await?;
+    let installation:Value=sqlx::query_scalar("SELECT jsonb_build_object('id',i.id,'connector_id',i.connector_id,'status',i.status,'revision',i.current_revision,'version',i.version,'manifest',r.manifest,'manifest_digest',r.manifest_digest,'provenance',r.provenance,'repository_url',r.repository_url,'source_revision',r.source_revision,'source_digest',r.source_digest,'created_at',i.created_at,'updated_at',i.updated_at) FROM connector_installations i JOIN connector_installation_revisions r ON r.tenant_id=i.tenant_id AND r.installation_id=i.id AND r.revision=i.current_revision WHERE i.tenant_id=$1 AND i.id=$2")
+        .bind(actor.tenant_id).bind(id).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
+    let revisions:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('revision',revision,'manifest_version',manifest->>'version','manifest_digest',manifest_digest,'provenance',provenance,'repository_url',repository_url,'source_revision',source_revision,'source_digest',source_digest,'created_by',created_by,'reason',reason,'created_at',created_at) FROM connector_installation_revisions WHERE tenant_id=$1 AND installation_id=$2 ORDER BY revision DESC LIMIT 100")
+        .bind(actor.tenant_id).bind(id).fetch_all(&mut *tx).await?;
+    let events:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('sequence',sequence,'actor_id',actor_id,'action',action,'reason',reason,'created_at',created_at) FROM connector_installation_events WHERE tenant_id=$1 AND installation_id=$2 ORDER BY sequence DESC LIMIT 100")
+        .bind(actor.tenant_id).bind(id).fetch_all(&mut *tx).await?;
+    audit(&mut tx, &actor, "connector.catalog.read", id).await?;
+    tx.commit().await?;
+    Ok(reply(
+        json!({"installation":installation,"revisions":revisions,"events":events}),
+    ))
+}
+
+async fn install(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Json(input): Json<InstallRequest>,
+) -> Result<Response> {
+    owner(&actor)?;
+    let reason = reason(&input.reason)?;
+    input.provenance.validate(&input.manifest)?;
+    let (manifest, digest) = manifest_value(&input.manifest)?;
+    let request_digest = crate::oauth::hash(&format!(
+        "{}:{}:{}",
+        input.manifest.id, digest, input.provenance.source_digest
+    ));
+    let mut tx = db(&state)?.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!(
+            "{}:connector-install:{}",
+            actor.tenant_id, input.request_id
+        ))
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!(
+            "{}:connector-id:{}",
+            actor.tenant_id, input.manifest.id
+        ))
+        .execute(&mut *tx)
+        .await?;
+    if let Some((id,old_digest))=sqlx::query_as::<_,(Uuid,String)>("SELECT id,request_digest FROM connector_installations WHERE tenant_id=$1 AND request_id=$2")
+        .bind(actor.tenant_id).bind(input.request_id).fetch_optional(&mut *tx).await? {
+        if old_digest!=request_digest{return Err(Error::Conflict("request ID was reused for a different connector"));}
+        let value=current(&mut tx,&actor,id).await?;tx.commit().await?;return Ok(reply(value));
+    }
+    if sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM connector_installations WHERE tenant_id=$1 AND connector_id=$2)",
+    )
+    .bind(actor.tenant_id)
+    .bind(&input.manifest.id)
+    .fetch_one(&mut *tx)
+    .await?
+    {
+        return Err(Error::Conflict("connector is already installed"));
+    }
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO connector_installations(tenant_id,id,connector_id,request_id,request_digest,created_by) VALUES($1,$2,$3,$4,$5,$6)")
+        .bind(actor.tenant_id).bind(id).bind(&input.manifest.id).bind(input.request_id).bind(request_digest).bind(actor.sub).execute(&mut *tx).await?;
+    insert_revision(
+        &mut tx,
+        &actor,
+        id,
+        1,
+        &manifest,
+        &digest,
+        "community",
+        &input.provenance,
+        reason,
+    )
+    .await?;
+    audit(&mut tx, &actor, "connector.catalog.install", id).await?;
+    let value = current(&mut tx, &actor, id).await?;
+    tx.commit().await?;
+    Ok(reply(value))
+}
+
+async fn revise(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<ReviseRequest>,
+) -> Result<Response> {
+    owner(&actor)?;
+    let expected = crate::expected(&headers)?;
+    let reason = reason(&input.reason)?;
+    input.provenance.validate(&input.manifest)?;
+    let (manifest, digest) = manifest_value(&input.manifest)?;
+    let mut tx = db(&state)?.begin().await?;
+    let row:Option<(String,String,i64,i64)>=sqlx::query_as("SELECT connector_id,status,current_revision,version FROM connector_installations WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
+        .bind(actor.tenant_id).bind(id).fetch_optional(&mut *tx).await?;
+    let (connector, status, revision, version) = row.ok_or(Error::NotFound)?;
+    if version != expected {
+        return Err(Error::Conflict("connector installation changed; reload"));
+    }
+    if status == "deactivated" {
+        return Err(Error::Conflict("deactivated connector cannot be revised"));
+    }
+    if connector != input.manifest.id {
+        return Err(Error::Conflict("connector identity cannot change"));
+    }
+    let current_version:String=sqlx::query_scalar("SELECT manifest->>'version' FROM connector_installation_revisions WHERE tenant_id=$1 AND installation_id=$2 AND revision=$3")
+        .bind(actor.tenant_id).bind(id).bind(revision).fetch_one(&mut *tx).await?;
+    if current_version == input.manifest.version {
+        return Err(Error::Conflict("connector manifest version must change"));
+    }
+    let next = revision + 1;
+    insert_revision(
+        &mut tx,
+        &actor,
+        id,
+        next,
+        &manifest,
+        &digest,
+        "community",
+        &input.provenance,
+        reason,
+    )
+    .await?;
+    sqlx::query("UPDATE connector_installations SET current_revision=$3,version=version+1,updated_at=clock_timestamp() WHERE tenant_id=$1 AND id=$2")
+        .bind(actor.tenant_id).bind(id).bind(next).execute(&mut *tx).await?;
+    audit(&mut tx, &actor, "connector.catalog.revise", id).await?;
+    let value = current(&mut tx, &actor, id).await?;
+    tx.commit().await?;
+    Ok(reply(value))
+}
+
+async fn action(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<CatalogAction>,
+) -> Result<Response> {
+    owner(&actor)?;
+    let expected = crate::expected(&headers)?;
+    let reason = reason(&input.reason)?;
+    let mut tx = db(&state)?.begin().await?;
+    let row:Option<(String,i64)>=sqlx::query_as("SELECT status,version FROM connector_installations WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
+        .bind(actor.tenant_id).bind(id).fetch_optional(&mut *tx).await?;
+    let (old, version) = row.ok_or(Error::NotFound)?;
+    if version != expected {
+        return Err(Error::Conflict("connector installation changed; reload"));
+    }
+    let next = match (old.as_str(), input.action.as_str()) {
+        ("disabled", "enable") => "enabled",
+        ("enabled", "disable") => "disabled",
+        ("disabled" | "enabled", "deactivate") => "deactivated",
+        _ => return Err(Error::Conflict("invalid connector installation action")),
+    };
+    sqlx::query("UPDATE connector_installations SET status=$3,version=version+1,updated_at=clock_timestamp() WHERE tenant_id=$1 AND id=$2")
+        .bind(actor.tenant_id).bind(id).bind(next).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO connector_installation_events(tenant_id,installation_id,actor_id,action,reason) VALUES($1,$2,$3,$4,$5)")
+        .bind(actor.tenant_id).bind(id).bind(actor.sub).bind(&input.action).bind(reason).execute(&mut *tx).await?;
+    audit(&mut tx, &actor, "connector.catalog.action", id).await?;
+    let value = current(&mut tx, &actor, id).await?;
+    tx.commit().await?;
+    Ok(reply(value))
+}
+
+async fn insert_revision(
+    tx: &mut Transaction<'_, Postgres>,
+    actor: &Actor,
+    id: Uuid,
+    revision: i64,
+    manifest: &Value,
+    digest: &str,
+    provenance: &str,
+    source: &Provenance,
+    reason: &str,
+) -> Result<()> {
+    sqlx::query("INSERT INTO connector_installation_revisions(tenant_id,installation_id,revision,manifest,manifest_digest,provenance,repository_url,source_revision,source_digest,created_by,reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
+        .bind(actor.tenant_id).bind(id).bind(revision).bind(manifest).bind(digest).bind(provenance)
+        .bind(&source.repository_url).bind(&source.source_revision).bind(&source.source_digest).bind(actor.sub).bind(reason).execute(&mut **tx).await?;
+    Ok(())
+}
+async fn current(tx: &mut Transaction<'_, Postgres>, actor: &Actor, id: Uuid) -> Result<Value> {
+    sqlx::query_scalar("SELECT jsonb_build_object('id',i.id,'connector_id',i.connector_id,'status',i.status,'revision',i.current_revision,'version',i.version,'manifest',r.manifest,'manifest_digest',r.manifest_digest,'provenance',r.provenance,'repository_url',r.repository_url,'source_revision',r.source_revision,'source_digest',r.source_digest,'created_at',i.created_at,'updated_at',i.updated_at) FROM connector_installations i JOIN connector_installation_revisions r ON r.tenant_id=i.tenant_id AND r.installation_id=i.id AND r.revision=i.current_revision WHERE i.tenant_id=$1 AND i.id=$2")
+        .bind(actor.tenant_id).bind(id).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest() -> ConnectorManifest {
+        ConnectorManifest {
+            api_version: API_VERSION.into(),
+            id: "org.example.messaging".into(),
+            name: "Synthetic messaging".into(),
+            version: "1.2.3".into(),
+            license: "Apache-2.0".into(),
+            homepage: "https://example.test/connectors/messaging".into(),
+            repository: "https://example.test/source/messaging".into(),
+            description: "Synthetic connector fixture".into(),
+            auth_schemes: vec![AuthScheme {
+                id: "oauth".into(),
+                kind: AuthKind::Oauth2,
+                scopes: vec!["messages.send".into()],
+                credential_fields: vec![],
+            }],
+            triggers: vec![],
+            actions: vec![ActionDefinition {
+                id: "send_message".into(),
+                title: "Send message".into(),
+                description: "Synthetic reviewed send".into(),
+                implementation: "messaging.send".into(),
+                transport: ActionTransport::ProviderApi,
+                auth_scheme: Some("oauth".into()),
+                required_roles: vec!["owner".into()],
+                required_scopes: vec!["messages.send".into()],
+                phi: PhiClass::Identifiers,
+                effect: ActionEffect::ExternalSend,
+                approval: ApprovalPolicy::Staff,
+                idempotency: IdempotencyClass::RequestKey,
+                retry: RetryClass::Never,
+                input: ObjectSchema {
+                    fields: vec![FieldSchema {
+                        id: "recipient".into(),
+                        title: "Recipient".into(),
+                        field_type: FieldType::String,
+                        required: true,
+                        phi: PhiClass::Identifiers,
+                        enum_values: vec![],
+                        fields: vec![],
+                        items: vec![],
+                    }],
+                },
+                output: ObjectSchema { fields: vec![] },
+            }],
+            lifecycle: Lifecycle {
+                setup: true,
+                deactivate: true,
+                sample_events: true,
+            },
+        }
+    }
+
+    #[test]
+    fn accepts_bounded_reviewed_manifest() {
+        assert!(manifest().validate().is_ok());
+    }
+    #[test]
+    fn rejects_external_send_without_review_or_with_retry() {
+        let mut value = manifest();
+        value.actions[0].approval = ApprovalPolicy::None;
+        assert!(value.validate().is_err());
+        let mut value = manifest();
+        value.actions[0].retry = RetryClass::SafeIdempotent;
+        assert!(value.validate().is_err());
+    }
+    #[test]
+    fn rejects_unknown_fields_and_executable_payloads() {
+        let mut value = serde_json::to_value(manifest()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("script".into(), json!("fetch('https://example.test')"));
+        assert!(serde_json::from_value::<ConnectorManifest>(value).is_err());
+    }
+    #[test]
+    fn rejects_non_open_license_and_untrusted_url() {
+        let mut value = manifest();
+        value.license = "Proprietary".into();
+        assert!(value.validate().is_err());
+        let mut value = manifest();
+        value.repository = "http://example.test/source".into();
+        assert!(value.validate().is_err());
+    }
+    #[test]
+    fn rejects_schema_depth_and_unknown_auth() {
+        let mut value = manifest();
+        value.actions[0].auth_scheme = Some("missing".into());
+        assert!(value.validate().is_err());
+        let mut value = manifest();
+        let mut field = value.actions[0].input.fields[0].clone();
+        field.field_type = FieldType::Object;
+        for _ in 0..6 {
+            field = FieldSchema {
+                id: "nested".into(),
+                title: "Nested".into(),
+                field_type: FieldType::Object,
+                required: true,
+                phi: PhiClass::None,
+                enum_values: vec![],
+                fields: vec![field],
+                items: vec![],
+            };
+        }
+        value.actions[0].input.fields = vec![field];
+        assert!(value.validate().is_err());
+    }
+    #[test]
+    fn requires_secret_api_keys_and_idempotency_for_safe_retry() {
+        let mut value = manifest();
+        value.auth_schemes = vec![AuthScheme {
+            id: "key".into(),
+            kind: AuthKind::ApiKey,
+            scopes: vec![],
+            credential_fields: vec![CredentialField {
+                id: "account_key".into(),
+                title: "Account key".into(),
+                secret: false,
+            }],
+        }];
+        value.actions[0].auth_scheme = Some("key".into());
+        assert!(value.validate().is_err());
+
+        let mut value = manifest();
+        value.actions[0].effect = ActionEffect::Write;
+        value.actions[0].retry = RetryClass::SafeIdempotent;
+        value.actions[0].idempotency = IdempotencyClass::None;
+        assert!(value.validate().is_err());
+    }
+    #[test]
+    fn semantic_version_and_digest_are_strict() {
+        assert!(semver("1.2.3-alpha+1"));
+        assert!(!semver("01.2.3"));
+        assert!(!semver("1.2"));
+        assert!(digest(&"a".repeat(64)));
+        assert!(!digest(&"z".repeat(64)));
+    }
+}
