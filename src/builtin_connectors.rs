@@ -8,6 +8,8 @@ const NATIVE_CONNECTOR_ID: &str = "suncharts.native";
 
 fn native_manifest() -> ConnectorManifest {
     let envelope = json!({"fields":[
+        {"id":"event_type","title":"Event type","field_type":"string","required":true,"phi":"none"},
+        {"id":"event_id","title":"Event identifier","field_type":"uuid","required":true,"phi":"none"},
         {"id":"patient_id","title":"Patient identifier","field_type":"uuid","required":true,"phi":"identifiers"},
         {"id":"status","title":"Record status","field_type":"string","required":true,"phi":"none"},
         {"id":"version","title":"Record version","field_type":"integer","required":true,"phi":"none"},
