@@ -561,7 +561,6 @@ async fn delivery_history(
     Ok(())
 }
 
-#[expect(dead_code, reason = "delivery worker integration is a separate lane")]
 async fn worker_audit(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
@@ -583,7 +582,6 @@ async fn worker_audit(
 
 /// Erases expired PHI payloads while retaining their digest and immutable audit metadata.
 /// Events with pending delivery work are skipped until delivery reaches a terminal state.
-#[expect(dead_code, reason = "retention worker integration is a separate lane")]
 pub(crate) async fn erase_expired_phi_payloads(
     pool: &PgPool,
     worker_id: Uuid,
@@ -620,6 +618,19 @@ pub(crate) async fn erase_expired_phi_payloads(
     }
     tx.commit().await?;
     Ok(expired.len() as u64)
+}
+
+/// Runs the bounded retention pass independently from connector execution.
+///
+/// Failures are retried on the next interval; the worker never logs payloads or
+/// other event data.
+pub async fn run_retention(pool: PgPool) {
+    const RETENTION_WORKER: Uuid = Uuid::from_u128(0x53c40000000040008000000000000031);
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+    loop {
+        tick.tick().await;
+        let _ = erase_expired_phi_payloads(&pool, RETENTION_WORKER, 250).await;
+    }
 }
 
 /// Claims due deliveries without holding a database transaction during execution.
