@@ -525,6 +525,15 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/automation-center.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/javascript")],
+                    include_str!("../web/automation-center.js"),
+                )
+            }),
+        )
+        .route(
             "/integrations.js",
             get(|| async {
                 (

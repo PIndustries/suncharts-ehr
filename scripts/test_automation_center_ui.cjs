@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-const source=fs.readFileSync('web/automation-center.js','utf8'),app=fs.readFileSync('web/app.js','utf8'),index=fs.readFileSync('web/index.html','utf8'),style=fs.readFileSync('web/style.css','utf8');
+const source=fs.readFileSync('web/automation-center.js','utf8'),app=fs.readFileSync('web/app.js','utf8'),index=fs.readFileSync('web/index.html','utf8'),style=fs.readFileSync('web/style.css','utf8'),lib=fs.readFileSync('src/lib.rs','utf8');
 const host={innerHTML:''},handlers={};
 const responses={
  '/api/v1/connector-catalog/installations':{items:[{id:'connector-1',connector_id:'org.example.messaging',name:'Synthetic messaging',status:'enabled',manifest_version:'1.2.3',revision:2,version:3,license:'Apache-2.0',repository_url:'https://example.test/source'}]},
@@ -18,7 +18,7 @@ vm.runInContext(source,context);
  vm.runInContext("automationView='triggers';automationRender()",context);assert.match(host.innerHTML,/Exact tenant-scoped events/);assert.match(host.innerHTML,/derived by the server/);assert.doesNotMatch(host.innerHTML,/name="event_type"|name="transport"|configuration/);
  vm.runInContext("automationView='approvals';automationRender()",context);assert.match(host.innerHTML,/Human review|human review/i);assert.match(host.innerHTML,/Approve/);assert.match(host.innerHTML,/Reject/);
  vm.runInContext("automationView='reconciliation';automationRender()",context);assert.match(host.innerHTML,/Ambiguous external effects stop here/);assert.match(host.innerHTML,/Replay event/);assert.match(host.innerHTML,/Cancel/);
- assert.match(index,/id="nav-automation"/);assert.match(index,/src="\/automation-center.js"/);assert.match(app,/showAutomationCenter/);assert.match(style,/Automation Center/);
+ assert.match(index,/id="nav-automation"/);assert.match(index,/src="\/automation-center.js"/);assert.match(app,/showAutomationCenter/);assert.match(style,/Automation Center/);assert.match(lib,/"\/automation-center.js"/);
  for(const path of ['/api/v1/connector-catalog/installations','/api/v1/automation/subscriptions','/api/v1/automation/deliveries','/api/v1/automation/action-invocations'])assert.ok(source.includes(path),path);
  console.log('PASS Automation Center navigation, safe manifest setup, derived triggers, approvals and reconciliation');
 })().catch(error=>{console.error(error);process.exitCode=1;});
