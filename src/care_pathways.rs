@@ -2,20 +2,20 @@
 //! Configurable, versioned care pathways. Definitions are tenant configuration;
 //! instances and events are durable clinical operations with attributed history.
 use crate::{
+    State,
     auth::{Actor, Role},
     error::{Error, Result},
     model::text,
     postgres::audit,
-    State,
 };
 use axum::{
-    extract::{Path, RawQuery, State as ExtractState},
-    http::{header, HeaderMap},
-    routing::get,
     Json, Router,
+    extract::{Path, RawQuery, State as ExtractState},
+    http::{HeaderMap, header},
+    routing::get,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
@@ -57,7 +57,46 @@ const KINDS: [&str; 19] = [
     "ai_extract_draft",
     "ai_response_draft",
 ];
-const PHASES: [&str; 4] = ["intake", "pre_visit", "visit", "follow_up"];
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ColumnDefinition {
+    pub key: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub hidden: bool,
+}
+
+fn default_columns() -> Vec<ColumnDefinition> {
+    [
+        (
+            "intake",
+            "Inquiry & intake",
+            "Capture the request and patient information",
+        ),
+        (
+            "pre_visit",
+            "Before the visit",
+            "Prepare coverage, forms and reminders",
+        ),
+        ("visit", "Day of visit", "Guide arrival and clinical work"),
+        (
+            "follow_up",
+            "After the visit",
+            "Coordinate orders, referrals and follow-up",
+        ),
+    ]
+    .into_iter()
+    .map(|(key, title, description)| ColumnDefinition {
+        key: key.into(),
+        title: title.into(),
+        description: description.into(),
+        hidden: false,
+    })
+    .collect()
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -109,6 +148,8 @@ pub struct StepDefinition {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Definition {
+    #[serde(default = "default_columns")]
+    pub columns: Vec<ColumnDefinition>,
     pub steps: Vec<StepDefinition>,
 }
 
@@ -116,6 +157,26 @@ impl Definition {
     fn validate(&self) -> Result<()> {
         if self.steps.is_empty() || self.steps.len() > 100 {
             return Err(Error::Invalid("a pathway requires 1 to 100 steps"));
+        }
+        if self.columns.is_empty() || self.columns.len() > 12 {
+            return Err(Error::Invalid("a pathway requires 1 to 12 columns"));
+        }
+        let columns: BTreeSet<&str> = self
+            .columns
+            .iter()
+            .map(|column| column.key.as_str())
+            .collect();
+        if columns.len() != self.columns.len() || self.columns.iter().all(|column| column.hidden) {
+            return Err(Error::Invalid(
+                "pathway column keys must be unique and one column must remain visible",
+            ));
+        }
+        for column in &self.columns {
+            if !valid_key(&column.key) {
+                return Err(Error::Invalid("invalid pathway column key"));
+            }
+            text(&column.title, 120)?;
+            text(&column.description, 500)?;
         }
         let keys: BTreeSet<&str> = self.steps.iter().map(|s| s.key.as_str()).collect();
         if keys.len() != self.steps.len() {
@@ -129,9 +190,9 @@ impl Definition {
             if step
                 .phase
                 .as_deref()
-                .is_some_and(|phase| !PHASES.contains(&phase))
+                .is_some_and(|phase| !columns.contains(phase))
             {
-                return Err(Error::Invalid("invalid pathway phase"));
+                return Err(Error::Invalid("pathway step references a missing column"));
             }
             if step.form_fields.len() > 30
                 || (step.kind != "patient_form" && !step.form_fields.is_empty())
@@ -1154,6 +1215,7 @@ mod tests {
             "ai_response_draft",
         ] {
             let definition = Definition {
+                columns: default_columns(),
                 steps: vec![StepDefinition {
                     key: format!("{kind}-step"),
                     title: format!("Reviewed {kind}"),
@@ -1171,6 +1233,79 @@ mod tests {
             };
             definition.validate().expect("new module is valid");
         }
+    }
+
+    #[test]
+    fn custom_columns_are_versioned_definition_data() {
+        let definition: Definition = serde_json::from_value(json!({
+            "columns":[
+                {"key":"referral_intake","title":"Referral intake","description":"Qualify the request"},
+                {"key":"prior_auth","title":"Prior authorization","hidden":false},
+                {"key":"care_coordination","title":"Care coordination","hidden":true}
+            ],
+            "steps":[
+                {"key":"qualify","title":"Qualify referral","kind":"staff_task","phase":"referral_intake","depends_on":[]},
+                {"key":"authorize","title":"Obtain authorization","kind":"human_approval","phase":"prior_auth","depends_on":["qualify"]}
+            ]
+        }))
+        .expect("custom workflow definition parses");
+        definition.validate().expect("custom columns are valid");
+    }
+
+    #[test]
+    fn legacy_definitions_receive_default_columns() {
+        let definition: Definition = serde_json::from_value(json!({
+            "steps":[{"key":"visit","title":"Visit","kind":"staff_task","phase":"visit","depends_on":[]}]
+        }))
+        .expect("legacy workflow definition parses");
+        assert_eq!(definition.columns.len(), 4);
+        definition
+            .validate()
+            .expect("legacy workflow remains valid");
+    }
+
+    #[test]
+    fn missing_columns_duplicate_nodes_and_cycles_are_rejected() {
+        let mut definition = Definition {
+            columns: default_columns(),
+            steps: vec![
+                StepDefinition {
+                    key: "one".into(),
+                    title: "One".into(),
+                    kind: "staff_task".into(),
+                    phase: Some("intake".into()),
+                    required: true,
+                    manual_approval: false,
+                    assigned_role: None,
+                    escalation_role: None,
+                    due_after_minutes: None,
+                    depends_on: vec!["two".into()],
+                    condition: None,
+                    form_fields: vec![],
+                },
+                StepDefinition {
+                    key: "two".into(),
+                    title: "Two".into(),
+                    kind: "staff_task".into(),
+                    phase: Some("pre_visit".into()),
+                    required: true,
+                    manual_approval: false,
+                    assigned_role: None,
+                    escalation_role: None,
+                    due_after_minutes: None,
+                    depends_on: vec!["one".into()],
+                    condition: None,
+                    form_fields: vec![],
+                },
+            ],
+        };
+        assert!(definition.validate().is_err());
+        definition.steps[1].depends_on.clear();
+        definition.steps[0].phase = Some("missing".into());
+        assert!(definition.validate().is_err());
+        definition.steps[0].phase = Some("intake".into());
+        definition.steps[1].key = "one".into();
+        assert!(definition.validate().is_err());
     }
 
     #[test]
