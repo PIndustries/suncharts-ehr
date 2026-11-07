@@ -16,9 +16,12 @@ const context=vm.createContext({console,Map,Set,Object,Number,Date,JSON,crypto:{
 vm.runInContext(source,context);
 (async()=>{
  await vm.runInContext('showWorkflowStudio()',context);
- assert.match(host.innerHTML,/Drafts/);assert.match(host.innerHTML,/Published/);assert.match(host.innerHTML,/Open runs/);assert.match(host.innerHTML,/Blocked/);
- for(const tab of ['Overview','Builder','Forms','Test sandbox','Runs','Version history'])assert.match(host.innerHTML,new RegExp(tab));
- assert.match(host.innerHTML,/Partner-managed workspace/);assert.match(host.innerHTML,/Continue building/);
+ assert.match(host.innerHTML,/Draft only/);assert.match(host.innerHTML,/Open runs/);assert.match(host.innerHTML,/Need attention/);assert.match(host.innerHTML,/PATHWAY MAP/);
+ for(const tab of ['Summary','Design','Validate','Monitor','Forms','History'])assert.match(host.innerHTML,new RegExp(tab));
+ assert.match(host.innerHTML,/Partner-managed workspace/);assert.match(host.innerHTML,/Continue designing/);
+ assert.doesNotMatch(host.innerHTML,/Ready this workflow|Choose a starting point/);
+ vm.runInContext("studioDraft.status='active';studioDirty=false;studioRender()",context);assert.match(host.innerHTML,/Live and listening/);assert.match(host.innerHTML,/Monitor live work/);assert.match(host.innerHTML,/Edit as a new draft/);assert.doesNotMatch(host.innerHTML,/Finish this draft|setup rail/i);
+ vm.runInContext("studioDraft.status='draft';studioRender()",context);
  vm.runInContext("studioView='builder';studioDraft._selectedStep='intake';studioRender()",context);
  assert.match(host.innerHTML,/Inquiry &amp; intake|Inquiry & intake/);assert.match(host.innerHTML,/Before the visit/);assert.match(host.innerHTML,/Day of visit/);assert.match(host.innerHTML,/After the visit/);
  assert.match(host.innerHTML,/Rules and timing/);assert.match(host.innerHTML,/Connections/);assert.match(host.innerHTML,/Edit this form in Forms/);
