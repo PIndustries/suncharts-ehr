@@ -2,27 +2,28 @@
 //! Configurable, versioned care pathways. Definitions are tenant configuration;
 //! instances and events are durable clinical operations with attributed history.
 use crate::{
-    State,
     auth::{Actor, Role},
     error::{Error, Result},
     model::text,
     postgres::audit,
+    State,
 };
 use axum::{
-    Json, Router,
     extract::{Path, RawQuery, State as ExtractState},
-    http::{HeaderMap, header},
+    http::{header, HeaderMap},
     routing::get,
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sqlx::{PgPool, Postgres, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
-const TRIGGERS: [&str; 14] = [
+const TRIGGERS: [&str; 15] = [
     "inquiry_received",
     "referral_received",
+    "referral_status_changed",
     "call_received",
     "sms_received",
     "fax_received",
@@ -353,19 +354,19 @@ struct DefinitionAction {
     revision_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Trigger {
-    request_id: Uuid,
-    trigger_type: String,
-    trigger_key: String,
-    definition_id: Option<Uuid>,
-    patient_id: Option<Uuid>,
-    appointment_id: Option<Uuid>,
-    visit_id: Option<Uuid>,
+pub(crate) struct NativeTriggerInput {
+    pub request_id: Uuid,
+    pub trigger_type: String,
+    pub trigger_key: String,
+    pub definition_id: Option<Uuid>,
+    pub patient_id: Option<Uuid>,
+    pub appointment_id: Option<Uuid>,
+    pub visit_id: Option<Uuid>,
     #[serde(default)]
-    context: Value,
-    reason: String,
+    pub context: Value,
+    pub reason: String,
 }
 
 #[derive(Deserialize)]
@@ -800,8 +801,19 @@ async fn validate_context(
 async fn trigger(
     actor: Actor,
     ExtractState(state): ExtractState<State>,
-    Json(input): Json<Trigger>,
+    Json(input): Json<NativeTriggerInput>,
 ) -> Result<Json<Value>> {
+    Ok(Json(trigger_native(db(&state)?, &actor, input).await?))
+}
+
+/// Starts matching published pathway revisions without loopback HTTP. The same
+/// validation, idempotency lock, immutable definition revision, and audit trail
+/// are shared by the HTTP route and compiled instance-local action executors.
+pub(crate) async fn trigger_native(
+    pool: &PgPool,
+    actor: &Actor,
+    input: NativeTriggerInput,
+) -> Result<Value> {
     actor.staff()?;
     if !TRIGGERS.contains(&input.trigger_type.as_str())
         || input.trigger_key.trim().is_empty()
@@ -811,7 +823,7 @@ async fn trigger(
         return Err(Error::Invalid("invalid care pathway trigger"));
     }
     text(&input.reason, 1000)?;
-    let mut tx = db(&state)?.begin().await?;
+    let mut tx = pool.begin().await?;
     validate_context(
         &mut tx,
         &actor,
@@ -913,7 +925,7 @@ async fn trigger(
     )
     .await?;
     tx.commit().await?;
-    Ok(Json(json!({"items":instances})))
+    Ok(json!({"items":instances}))
 }
 
 async fn insert_event(
@@ -1319,6 +1331,7 @@ mod tests {
             "email_received",
             "external_booking_received",
             "appointment_cancelled",
+            "referral_status_changed",
         ] {
             assert!(TRIGGERS.contains(&trigger));
         }

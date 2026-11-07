@@ -98,6 +98,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(suncharts_engine::automation_event_runtime::run_retention(
         db.clone(),
     ));
+    tokio::spawn(suncharts_engine::automation_event_runtime::run_dispatcher(
+        db.clone(),
+    ));
+    tokio::spawn(suncharts_engine::automation_event_runtime::run_action_executor(db.clone()));
     tokio::spawn(suncharts_engine::partner_scheduling::run_webhooks(
         db.clone(),
     ));

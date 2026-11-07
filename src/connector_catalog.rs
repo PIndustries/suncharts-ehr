@@ -195,7 +195,7 @@ pub struct TriggerDefinition {
     pub phi: PhiClass,
     pub output: ObjectSchema,
     /// Optional compiled action staged when this exact trigger is delivered.
-    /// The action input schema must exactly match this trigger output schema.
+    /// Every action input field must be an exact typed projection of this trigger output.
     #[serde(default)]
     pub dispatch_action: Option<String>,
 }
@@ -472,9 +472,14 @@ impl ConnectorManifest {
                     "connector trigger dispatch action was not found",
                 ));
             };
-            if trigger.output != action.input {
+            if !action
+                .input
+                .fields
+                .iter()
+                .all(|input| trigger.output.fields.iter().any(|output| output == input))
+            {
                 return Err(Error::Invalid(
-                    "connector trigger and dispatch action schemas differ",
+                    "connector dispatch action is not a typed trigger projection",
                 ));
             }
         }

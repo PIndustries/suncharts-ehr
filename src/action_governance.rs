@@ -188,6 +188,21 @@ async fn enabled_manifest_spec(
     Ok(spec)
 }
 
+/// Resolves the current enabled manifest policy for an instance-local dispatcher.
+/// `create_invocation` resolves it again inside its write transaction so a concurrent
+/// connector revision cannot silently change policy between resolution and staging.
+pub(crate) async fn resolve_enabled_manifest_spec(
+    pool: &PgPool,
+    tenant: Uuid,
+    connector_key: &str,
+    action_key: &str,
+) -> Result<GovernedActionSpec> {
+    let mut tx = pool.begin().await?;
+    let spec = enabled_manifest_spec(&mut tx, tenant, connector_key, action_key).await?;
+    tx.commit().await?;
+    Ok(spec)
+}
+
 impl GovernedActionSpec {
     pub fn validate(&self) -> Result<()> {
         identifier(&self.connector_key)?;
@@ -653,15 +668,43 @@ pub async fn lease_ready(
     tenant: Uuid,
     worker: Uuid,
 ) -> Result<Option<LeasedInvocation>> {
+    lease_ready_filtered(pool, tenant, worker, None, None).await
+}
+
+/// Claims work only for one reviewed, compiled action executor. This prevents an
+/// instance-local worker from consuming invocations owned by a different adapter.
+pub(crate) async fn lease_ready_for(
+    pool: &PgPool,
+    tenant: Uuid,
+    worker: Uuid,
+    connector_key: &str,
+    action_key: &str,
+) -> Result<Option<LeasedInvocation>> {
+    identifier(connector_key)?;
+    identifier(action_key)?;
+    lease_ready_filtered(pool, tenant, worker, Some(connector_key), Some(action_key)).await
+}
+
+async fn lease_ready_filtered(
+    pool: &PgPool,
+    tenant: Uuid,
+    worker: Uuid,
+    connector_key: Option<&str>,
+    action_key: Option<&str>,
+) -> Result<Option<LeasedInvocation>> {
     let mut tx = pool.begin().await?;
     type ExpiredLease = (Uuid, String, String, i32, i32);
     let expired: Vec<ExpiredLease> = sqlx::query_as(
         "SELECT id,operation_class,retry_class,attempt_count,max_attempts \
          FROM connector_action_invocations \
          WHERE tenant_id=$1 AND status='executing' AND lease_expires_at<=now() \
+           AND ($2::text IS NULL OR connector_key=$2) \
+           AND ($3::text IS NULL OR action_key=$3) \
          ORDER BY lease_expires_at,id FOR UPDATE SKIP LOCKED LIMIT 100",
     )
     .bind(tenant)
+    .bind(connector_key)
+    .bind(action_key)
     .fetch_all(&mut *tx)
     .await?;
     for (id, operation_class, retry_class, attempt_count, max_attempts) in expired {
@@ -711,8 +754,8 @@ pub async fn lease_ready(
         )
         .await?;
     }
-    let row:Option<LeasedInvocation>=sqlx::query_as("WITH candidate AS (SELECT id FROM connector_action_invocations WHERE tenant_id=$1 AND sandbox=false AND (status='ready' OR (status='retry_wait' AND next_attempt_at<=now())) ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE connector_action_invocations i SET status='executing',attempt_count=attempt_count+1,lease_owner=$2,lease_expires_at=now()+interval '2 minutes',next_attempt_at=NULL,version=version+1,updated_at=now() FROM candidate WHERE i.tenant_id=$1 AND i.id=candidate.id RETURNING i.id,i.connector_key,i.action_key,i.action_version,i.input,i.attempt_count,i.max_attempts,i.retry_class")
-        .bind(tenant).bind(worker).fetch_optional(&mut *tx).await?;
+    let row:Option<LeasedInvocation>=sqlx::query_as("WITH candidate AS (SELECT id FROM connector_action_invocations WHERE tenant_id=$1 AND sandbox=false AND ($3::text IS NULL OR connector_key=$3) AND ($4::text IS NULL OR action_key=$4) AND (status='ready' OR (status='retry_wait' AND next_attempt_at<=now())) ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE connector_action_invocations i SET status='executing',attempt_count=attempt_count+1,lease_owner=$2,lease_expires_at=now()+interval '2 minutes',next_attempt_at=NULL,version=version+1,updated_at=now() FROM candidate WHERE i.tenant_id=$1 AND i.id=candidate.id RETURNING i.id,i.connector_key,i.action_key,i.action_version,i.input,i.attempt_count,i.max_attempts,i.retry_class")
+        .bind(tenant).bind(worker).bind(connector_key).bind(action_key).fetch_optional(&mut *tx).await?;
     if let Some(ref item) = row {
         sqlx::query("INSERT INTO connector_action_events(tenant_id,invocation_id,actor_id,action,evidence) VALUES($1,$2,$3,'execution_leased',jsonb_build_object('attempt',$4))")
             .bind(tenant).bind(item.id).bind(worker).bind(item.attempt_count).execute(&mut *tx).await?;

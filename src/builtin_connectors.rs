@@ -7,9 +7,13 @@ use serde_json::json;
 const NATIVE_CONNECTOR_ID: &str = "suncharts.native";
 
 fn native_manifest() -> ConnectorManifest {
+    let event_reference = json!({"fields":[
+        {"id":"event_type","title":"Event type","field_type":"string","required":true,"phi":"none"},
+        {"id":"event_id","title":"Event identifier","field_type":"uuid","required":true,"phi":"identifiers"}
+    ]});
     let envelope = json!({"fields":[
         {"id":"event_type","title":"Event type","field_type":"string","required":true,"phi":"none"},
-        {"id":"event_id","title":"Event identifier","field_type":"uuid","required":true,"phi":"none"},
+        {"id":"event_id","title":"Event identifier","field_type":"uuid","required":true,"phi":"identifiers"},
         {"id":"patient_id","title":"Patient identifier","field_type":"uuid","required":true,"phi":"identifiers"},
         {"id":"status","title":"Record status","field_type":"string","required":true,"phi":"none"},
         {"id":"version","title":"Record version","field_type":"integer","required":true,"phi":"none"},
@@ -19,6 +23,12 @@ fn native_manifest() -> ConnectorManifest {
         {"id":"visit_id","title":"Visit identifier","field_type":"uuid","required":false,"phi":"identifiers"},
         {"id":"starts_at","title":"Starts at","field_type":"date_time","required":false,"phi":"limited"},
         {"id":"ends_at","title":"Ends at","field_type":"date_time","required":false,"phi":"limited"}
+    ]});
+    let workflow_result = json!({"fields":[
+        {"id":"instance_count","title":"Started pathway count","field_type":"integer","required":true,"phi":"none"},
+        {"id":"instance_ids","title":"Started pathway identifiers","field_type":"array","required":true,"phi":"identifiers","items":[
+            {"id":"value","title":"Pathway identifier","field_type":"uuid","required":true,"phi":"identifiers"}
+        ]}
     ]});
     let trigger = |id: &str, title: &str, event_type: &str| {
         json!({
@@ -66,10 +76,8 @@ fn native_manifest() -> ConnectorManifest {
             "approval":"none",
             "idempotency":"natural_key",
             "retry":"safe_idempotent",
-            "input":envelope,
-            "output":{"fields":[
-                {"id":"workflow_instance_id","title":"Workflow instance identifier","field_type":"uuid","required":true,"phi":"identifiers"}
-            ]}
+            "input":event_reference,
+            "output":workflow_result
         }],
         "lifecycle":{"setup":false,"deactivate":true,"sample_events":true}
     }))

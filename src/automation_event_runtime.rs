@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Durable, instance-local event delivery for exact automation triggers.
 //!
-//! This module does not execute provider actions. It records an immutable event once,
-//! fans it out to exact active subscriptions, and leases delivery work to a bounded
-//! internal dispatcher. External communication continues through reviewed adapters.
+//! This module records an immutable event once, fans it out to exact active
+//! subscriptions, and leases delivery work to a bounded internal dispatcher. The only
+//! compiled executor here starts a published instance-local care pathway. External
+//! communication continues through reviewed adapters.
 //!
 //! Delivery is deliberately at-least-once: an expired lease is reclaimed on the same
 //! delivery row with a new lease token. The stable `idempotency_key` never changes.
@@ -31,10 +32,6 @@ use serde_json::{json, Value};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
-#[expect(
-    dead_code,
-    reason = "used by native event producers as they are integrated"
-)]
 const MAX_EVENT_BYTES: usize = 262_144;
 const MAX_EVIDENCE_BYTES: usize = 32_768;
 
@@ -114,10 +111,6 @@ fn bounded_object(value: &Value, limit: usize, message: &'static str) -> Result<
     Ok(())
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by the isolated delivery worker API")
-)]
 fn error_code(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 80
@@ -645,7 +638,6 @@ pub async fn run_retention(pool: PgPool) {
 /// at-least-once delivery. Effectful consumers must submit through `action_governance`
 /// with [`LeasedDelivery::idempotency_key`]; direct provider calls are outside this
 /// runtime's contract.
-#[expect(dead_code, reason = "delivery worker integration is a separate lane")]
 pub(crate) async fn lease_deliveries(
     pool: &PgPool,
     worker_id: Uuid,
@@ -684,8 +676,19 @@ pub(crate) async fn lease_deliveries(
         )
         .await?;
     }
-    type DeliveryCandidate = (Uuid, Uuid, Uuid, Uuid, String, Value, String, i32);
-    let candidates:Vec<DeliveryCandidate>=sqlx::query_as("SELECT d.tenant_id,d.id,d.event_id,d.subscription_id,e.event_type,e.payload,e.classification,d.attempt_count FROM automation_event_deliveries d JOIN automation_events e ON e.tenant_id=d.tenant_id AND e.id=d.event_id JOIN automation_trigger_subscriptions s ON s.tenant_id=d.tenant_id AND s.id=d.subscription_id JOIN connector_installations i ON i.tenant_id=s.tenant_id AND i.id=s.installation_id WHERE i.status='enabled' AND s.status='active' AND d.attempt_count<d.max_attempts AND ((d.status='pending' AND d.next_attempt_at<=now()) OR (d.status='leased' AND d.lease_expires_at<=now())) ORDER BY d.next_attempt_at,d.tenant_id,d.id FOR UPDATE OF d SKIP LOCKED LIMIT $1")
+    type DeliveryCandidate = (
+        Uuid,
+        Uuid,
+        Uuid,
+        Uuid,
+        String,
+        Option<String>,
+        String,
+        Value,
+        String,
+        i32,
+    );
+    let candidates:Vec<DeliveryCandidate>=sqlx::query_as("SELECT d.tenant_id,d.id,d.event_id,d.subscription_id,s.connector_key,s.action_key,e.event_type,e.payload,e.classification,d.attempt_count FROM automation_event_deliveries d JOIN automation_events e ON e.tenant_id=d.tenant_id AND e.id=d.event_id JOIN automation_trigger_subscriptions s ON s.tenant_id=d.tenant_id AND s.id=d.subscription_id JOIN connector_installations i ON i.tenant_id=s.tenant_id AND i.id=s.installation_id WHERE i.status='enabled' AND s.status='active' AND d.attempt_count<d.max_attempts AND ((d.status='pending' AND d.next_attempt_at<=now()) OR (d.status='leased' AND d.lease_expires_at<=now())) ORDER BY d.next_attempt_at,d.tenant_id,d.id FOR UPDATE OF d SKIP LOCKED LIMIT $1")
         .bind(limit).fetch_all(&mut *tx).await?;
     let mut leased = Vec::with_capacity(candidates.len());
     for (
@@ -693,6 +696,8 @@ pub(crate) async fn lease_deliveries(
         delivery,
         event,
         subscription,
+        connector_key,
+        action_key,
         event_type,
         payload,
         classification,
@@ -725,6 +730,8 @@ pub(crate) async fn lease_deliveries(
             delivery_id: delivery,
             event_id: event,
             subscription_id: subscription,
+            connector_key,
+            action_key,
             event_type,
             payload,
             classification,
@@ -737,7 +744,6 @@ pub(crate) async fn lease_deliveries(
     Ok(leased)
 }
 
-#[expect(dead_code, reason = "delivery worker integration is a separate lane")]
 pub(crate) async fn complete_delivery(
     pool: &PgPool,
     tenant: Uuid,
@@ -776,7 +782,6 @@ pub(crate) async fn complete_delivery(
     Ok(())
 }
 
-#[expect(dead_code, reason = "delivery worker integration is a separate lane")]
 pub(crate) async fn fail_delivery(
     pool: &PgPool,
     tenant: Uuid,
@@ -827,6 +832,326 @@ pub(crate) async fn fail_delivery(
     .await?;
     tx.commit().await?;
     Ok(status.into())
+}
+
+fn invocation_request_id(idempotency_key: &str) -> Result<Uuid> {
+    if idempotency_key.len() != 64 || !idempotency_key.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(Error::Invalid("invalid automation idempotency key"));
+    }
+    let mut bytes = [0_u8; 16];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&idempotency_key[index * 2..index * 2 + 2], 16)
+            .map_err(|_| Error::Invalid("invalid automation idempotency key"))?;
+    }
+    // Mark the deterministic identifier as an RFC 4122 variant/version-5 UUID.
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Ok(Uuid::from_bytes(bytes))
+}
+
+fn dispatcher_actor(tenant: Uuid, worker: Uuid) -> Actor {
+    let now = Utc::now().timestamp();
+    Actor {
+        sub: worker,
+        tenant_id: tenant,
+        role: Role::Owner,
+        patient_id: None,
+        iss: "suncharts-automation-dispatcher".into(),
+        aud: "suncharts-engine".into(),
+        iat: now,
+        exp: now + 120,
+    }
+}
+
+async fn stage_delivery(pool: &PgPool, worker: Uuid, delivery: LeasedDelivery) {
+    let Some(action_key) = delivery.action_key.as_deref() else {
+        let _ = complete_delivery(
+            pool,
+            delivery.tenant_id,
+            delivery.delivery_id,
+            delivery.lease_token,
+            worker,
+            "event_observed",
+        )
+        .await;
+        return;
+    };
+    let Ok(request_id) = invocation_request_id(&delivery.idempotency_key) else {
+        let _ = fail_delivery(
+            pool,
+            delivery.tenant_id,
+            delivery.delivery_id,
+            delivery.lease_token,
+            worker,
+            "invalid_idempotency_key",
+            60,
+        )
+        .await;
+        return;
+    };
+    let Ok(spec) = crate::action_governance::resolve_enabled_manifest_spec(
+        pool,
+        delivery.tenant_id,
+        &delivery.connector_key,
+        action_key,
+    )
+    .await
+    else {
+        let _ = fail_delivery(
+            pool,
+            delivery.tenant_id,
+            delivery.delivery_id,
+            delivery.lease_token,
+            worker,
+            "manifest_action_unavailable",
+            60,
+        )
+        .await;
+        return;
+    };
+    if delivery.connector_key != "suncharts.native" || action_key != "workflow.start" {
+        let _ = fail_delivery(
+            pool,
+            delivery.tenant_id,
+            delivery.delivery_id,
+            delivery.lease_token,
+            worker,
+            "unsupported_dispatch_action",
+            60,
+        )
+        .await;
+        return;
+    }
+    let actor = dispatcher_actor(delivery.tenant_id, worker);
+    let request = crate::action_governance::CreateInvocation {
+        request_id,
+        // Immutable invocation history retains only the event reference. The PHI
+        // payload remains in automation_events under its bounded retention policy.
+        input: json!({
+            "event_id":delivery.event_id,
+            "event_type":delivery.event_type,
+        }),
+        sandbox_sample_id: None,
+    };
+    let result = crate::action_governance::create_invocation(pool, &actor, &spec, request).await;
+    if result.is_ok() {
+        let _ = complete_delivery(
+            pool,
+            delivery.tenant_id,
+            delivery.delivery_id,
+            delivery.lease_token,
+            worker,
+            "invocation_staged",
+        )
+        .await;
+    } else {
+        let _ = fail_delivery(
+            pool,
+            delivery.tenant_id,
+            delivery.delivery_id,
+            delivery.lease_token,
+            worker,
+            "invocation_staging_failed",
+            30,
+        )
+        .await;
+    }
+}
+
+/// Continuously converts exact event deliveries into idempotent governed action intent.
+/// Provider calls and clinical mutations are executed only by compiled action executors
+/// after the action governance boundary has applied authority and approval policy.
+pub async fn run_dispatcher(pool: PgPool) {
+    const WORKER: Uuid = Uuid::from_u128(0x53c40000000040008000000000000032);
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+    loop {
+        tick.tick().await;
+        let Ok(deliveries) = lease_deliveries(&pool, WORKER, "automation-dispatcher", 25, 60).await
+        else {
+            continue;
+        };
+        for delivery in deliveries {
+            stage_delivery(&pool, WORKER, delivery).await;
+        }
+    }
+}
+
+fn input_uuid(input: &Value, key: &'static str, required: bool) -> Result<Option<Uuid>> {
+    let Some(value) = input.get(key) else {
+        return if required {
+            Err(Error::Invalid(
+                "native workflow input is missing an identifier",
+            ))
+        } else {
+            Ok(None)
+        };
+    };
+    if value.is_null() && !required {
+        return Ok(None);
+    }
+    let value = value
+        .as_str()
+        .ok_or(Error::Invalid("native workflow identifier is invalid"))?;
+    Uuid::parse_str(value)
+        .map(Some)
+        .map_err(|_| Error::Invalid("native workflow identifier is invalid"))
+}
+
+fn native_pathway_trigger(
+    invocation_id: Uuid,
+    event_id: Uuid,
+    event_type: &str,
+    payload: Value,
+) -> Result<crate::care_pathways::NativeTriggerInput> {
+    let trigger_type = match event_type {
+        "suncharts.appointment.created" => "appointment_created",
+        "suncharts.appointment.rescheduled" => "appointment_rescheduled",
+        "suncharts.appointment.cancelled" => "appointment_cancelled",
+        "suncharts.referral.created" => "referral_received",
+        "suncharts.referral.status_changed" => "referral_status_changed",
+        _ => return Err(Error::Invalid("unsupported native workflow event type")),
+    };
+    Ok(crate::care_pathways::NativeTriggerInput {
+        request_id: invocation_id,
+        trigger_type: trigger_type.into(),
+        trigger_key: format!("automation-event:{event_id}"),
+        definition_id: None,
+        patient_id: input_uuid(&payload, "patient_id", true)?,
+        appointment_id: input_uuid(&payload, "appointment_id", false)?,
+        visit_id: input_uuid(&payload, "visit_id", false)?,
+        context: payload,
+        reason: "Started by a reviewed SunCharts native automation event".into(),
+    })
+}
+
+async fn load_native_pathway_trigger(
+    pool: &PgPool,
+    tenant: Uuid,
+    invocation: &crate::action_governance::LeasedInvocation,
+) -> Result<crate::care_pathways::NativeTriggerInput> {
+    let event_id = input_uuid(&invocation.input, "event_id", true)?.ok_or(Error::Invalid(
+        "native workflow event identifier is missing",
+    ))?;
+    let declared_type = invocation
+        .input
+        .get("event_type")
+        .and_then(Value::as_str)
+        .ok_or(Error::Invalid("native workflow event type is missing"))?;
+    let row: Option<(String, Value, Option<DateTime<Utc>>)> = sqlx::query_as(
+        "SELECT event_type,payload,payload_erased_at FROM automation_events \
+         WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(tenant)
+    .bind(event_id)
+    .fetch_optional(pool)
+    .await?;
+    let (event_type, payload, erased_at) = row.ok_or(Error::NotFound)?;
+    if erased_at.is_some() || payload == json!({}) {
+        return Err(Error::Conflict(
+            "automation event payload is no longer available",
+        ));
+    }
+    if event_type != declared_type {
+        return Err(Error::Conflict(
+            "automation event type does not match invocation",
+        ));
+    }
+    native_pathway_trigger(invocation.id, event_id, &event_type, payload)
+}
+
+fn pathway_evidence(value: &Value) -> Value {
+    let instance_ids: Vec<&str> = value
+        .get("items")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("id").and_then(Value::as_str))
+        .take(100)
+        .collect();
+    json!({
+        "outcome":"pathway_started",
+        "instance_count":instance_ids.len(),
+        "instance_ids":instance_ids,
+    })
+}
+
+async fn execute_native_workflow_start(
+    pool: &PgPool,
+    worker: Uuid,
+    tenant: Uuid,
+    invocation: crate::action_governance::LeasedInvocation,
+) {
+    let actor = dispatcher_actor(tenant, worker);
+    let outcome = match load_native_pathway_trigger(pool, tenant, &invocation).await {
+        Ok(input) => match crate::care_pathways::trigger_native(pool, &actor, input).await {
+            Ok(value) => crate::action_governance::ExecutionOutcome::Succeeded {
+                evidence: pathway_evidence(&value),
+            },
+            Err(Error::Database(_)) => {
+                crate::action_governance::ExecutionOutcome::RetryableFailure {
+                    code: "pathway_database_unavailable".into(),
+                }
+            }
+            Err(_) => crate::action_governance::ExecutionOutcome::PermanentFailure {
+                code: "pathway_trigger_rejected".into(),
+            },
+        },
+        Err(Error::Database(_)) => crate::action_governance::ExecutionOutcome::RetryableFailure {
+            code: "event_database_unavailable".into(),
+        },
+        Err(_) => crate::action_governance::ExecutionOutcome::PermanentFailure {
+            code: "invalid_native_workflow_input".into(),
+        },
+    };
+    let _ = crate::action_governance::record_outcome(pool, &actor, worker, invocation.id, outcome)
+        .await;
+}
+
+/// Runs the sole compiled native workflow action. It leases only the exact bundled
+/// connector/action pair and cannot dispatch arbitrary connector implementations.
+pub async fn run_action_executor(pool: PgPool) {
+    const WORKER: Uuid = Uuid::from_u128(0x53c40000000040008000000000000033);
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+    let mut tenant_cursor = Uuid::nil();
+    loop {
+        tick.tick().await;
+        let tenants: Vec<Uuid> = match sqlx::query_scalar(
+            "SELECT DISTINCT tenant_id FROM connector_action_invocations \
+             WHERE connector_key='suncharts.native' AND action_key='workflow.start' \
+               AND tenant_id>$1 \
+               AND sandbox=false AND (status='ready' OR \
+                 (status='retry_wait' AND next_attempt_at<=now()) OR \
+                 (status='executing' AND lease_expires_at<=now())) \
+             ORDER BY tenant_id LIMIT 100",
+        )
+        .bind(tenant_cursor)
+        .fetch_all(&pool)
+        .await
+        {
+            Ok(tenants) => tenants,
+            Err(_) => continue,
+        };
+        if tenants.is_empty() {
+            tenant_cursor = Uuid::nil();
+            continue;
+        }
+        tenant_cursor = *tenants.last().expect("non-empty tenant page");
+        for tenant in tenants {
+            let Ok(Some(invocation)) = crate::action_governance::lease_ready_for(
+                &pool,
+                tenant,
+                WORKER,
+                "suncharts.native",
+                "workflow.start",
+            )
+            .await
+            else {
+                continue;
+            };
+            execute_native_workflow_start(&pool, WORKER, tenant, invocation).await;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -880,5 +1205,50 @@ mod tests {
             delivery_idempotency_key(Uuid::from_u128(6), event, subscription)
         );
         assert_eq!(key.len(), 64);
+    }
+
+    #[test]
+    fn invocation_request_ids_are_stable_and_uuid_shaped() {
+        let key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let first = invocation_request_id(key).unwrap();
+        assert_eq!(first, invocation_request_id(key).unwrap());
+        assert_eq!(first.get_version_num(), 5);
+        assert!(invocation_request_id("not-a-digest").is_err());
+    }
+
+    #[test]
+    fn native_events_map_to_stable_pathway_triggers() {
+        for (event_type, trigger_type) in [
+            ("suncharts.appointment.created", "appointment_created"),
+            (
+                "suncharts.appointment.rescheduled",
+                "appointment_rescheduled",
+            ),
+            ("suncharts.appointment.cancelled", "appointment_cancelled"),
+            ("suncharts.referral.created", "referral_received"),
+            (
+                "suncharts.referral.status_changed",
+                "referral_status_changed",
+            ),
+        ] {
+            let input = native_pathway_trigger(
+                Uuid::from_u128(10),
+                Uuid::from_u128(11),
+                event_type,
+                json!({
+                    "patient_id":Uuid::from_u128(12),
+                    "appointment_id":Uuid::from_u128(13),
+                    "status":"booked",
+                    "version":1
+                }),
+            )
+            .unwrap();
+            assert_eq!(input.trigger_type, trigger_type);
+            assert_eq!(
+                input.trigger_key,
+                format!("automation-event:{}", Uuid::from_u128(11))
+            );
+            assert_eq!(input.request_id, Uuid::from_u128(10));
+        }
     }
 }
