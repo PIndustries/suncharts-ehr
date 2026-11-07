@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "SunCharts EHR Clinical API",
-    "version": "0.32.0",
+    "version": "0.33.0",
     "license": {
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
@@ -25281,6 +25281,45 @@
     },
     "/api/v1/integrations/oauth/callback": {
       "get":{"operationId":"captureInstanceIntegrationOAuthCallback","summary":"Capture a one-time provider authorization response","description":"Accepts exactly one of code or error. Callback material is encrypted. A successful capture remains pending_exchange because no vendor token exchange is claimed by this boundary.","parameters":[{"name":"state","in":"query","required":true,"schema":{"type":"string","minLength":32,"maxLength":512}},{"name":"code","in":"query","schema":{"type":"string","maxLength":8192}},{"name":"error","in":"query","schema":{"type":"string","maxLength":240}}],"responses":{"200":{"description":"Response securely captured; pending_exchange or needs_attention"},"400":{"description":"Invalid callback shape"},"404":{"description":"State not found"},"409":{"description":"Intent expired or already used"}}}
+    },
+    "/api/v1/connector-catalog/installations": {
+      "get":{"operationId":"listConnectorInstallations","summary":"List installed open connector manifests","description":"Staff-only, tenant-scoped catalog. Returns at most 200 installations and public source provenance; it never returns credentials.","responses":{"200":{"description":"Installed connector metadata"},"403":{"description":"Staff role required"}}},
+      "post":{"operationId":"installConnectorManifest","summary":"Install a declarative open connector manifest","description":"Owner-only and idempotent by request_id. The manifest is data, not executable code: arbitrary scripts, HTTP targets, headers and templates are not accepted. Source repository, revision and digest are retained as public provenance.","requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":["request_id","manifest","provenance","reason"],"properties":{"request_id":{"type":"string","format":"uuid"},"manifest":{"$ref":"#/components/schemas/ConnectorManifest"},"provenance":{"$ref":"#/components/schemas/ConnectorProvenance"},"reason":{"type":"string","minLength":1,"maxLength":1000}}}}}},"responses":{"200":{"description":"Installed connector or the same idempotent result"},"400":{"description":"Manifest, provenance or reason is invalid"},"403":{"description":"Owner role required"},"409":{"description":"Request ID reused or connector already installed"}}}
+    },
+    "/api/v1/connector-catalog/installations/{id}": {
+      "get":{"operationId":"getConnectorInstallation","summary":"Read one connector installation and its immutable history","description":"Staff-only and tenant-scoped. Reading is audited. No connector credential material is stored in this catalog.","parameters":[{"$ref":"#/components/parameters/AutomationId"}],"responses":{"200":{"description":"Installation, current manifest, revisions and events"},"403":{"description":"Staff role required"},"404":{"description":"Installation not found in tenant"}}},
+      "put":{"operationId":"reviseConnectorInstallation","summary":"Install a new immutable manifest revision","description":"Owner-only. Requires the current quoted installation version. Connector identity cannot change, and deactivated connectors cannot be revised.","parameters":[{"$ref":"#/components/parameters/AutomationId"},{"$ref":"#/components/parameters/AutomationIfMatch"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":["manifest","provenance","reason"],"properties":{"manifest":{"$ref":"#/components/schemas/ConnectorManifest"},"provenance":{"$ref":"#/components/schemas/ConnectorProvenance"},"reason":{"type":"string","minLength":1,"maxLength":1000}}}}}},"responses":{"200":{"description":"Updated installation with new current revision"},"403":{"description":"Owner role required"},"409":{"description":"Stale version, deactivated installation, unchanged version or identity mismatch"},"428":{"description":"Current If-Match required"}}}
+    },
+    "/api/v1/connector-catalog/installations/{id}/actions": {
+      "post":{"operationId":"changeConnectorInstallationState","summary":"Enable, disable or permanently deactivate a connector","description":"Owner-only and versioned. Disabling or deactivating a connector stops its trigger subscriptions; deactivated connectors cannot be enabled again.","parameters":[{"$ref":"#/components/parameters/AutomationId"},{"$ref":"#/components/parameters/AutomationIfMatch"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":["action","reason"],"properties":{"action":{"enum":["enable","disable","deactivate"]},"reason":{"type":"string","minLength":1,"maxLength":1000}}}}}},"responses":{"200":{"description":"Updated installation state"},"403":{"description":"Owner role required"},"409":{"description":"Stale version or invalid transition"},"428":{"description":"Current If-Match required"}}}
+    },
+    "/api/v1/automation/subscriptions": {
+      "get":{"operationId":"listAutomationTriggerSubscriptions","summary":"List exact automation trigger subscriptions","description":"Staff-only, tenant-scoped list of at most 100 subscriptions. Configuration and secrets are never returned.","parameters":[{"name":"status","in":"query","schema":{"enum":["configured","active","inactive","error"]}}],"responses":{"200":{"description":"Subscription metadata"},"403":{"description":"Staff role required"}}},
+      "post":{"operationId":"createAutomationTriggerSubscription","summary":"Subscribe to an enabled connector trigger","description":"Owner-only. event_type and transport are derived from the enabled current connector manifest; callers cannot supply arbitrary transport, configuration or credentials.","requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CreateAutomationSubscription"}}}},"responses":{"200":{"description":"Configured subscription"},"400":{"description":"Invalid exact connector or trigger identity"},"403":{"description":"Owner role required"},"409":{"description":"Enabled connector trigger not found or invalid"}}}
+    },
+    "/api/v1/automation/subscriptions/{id}/actions": {
+      "post":{"operationId":"changeAutomationTriggerSubscriptionState","summary":"Activate or deactivate an exact trigger subscription","description":"Owner-only and versioned. Activation requires the referenced connector installation to remain enabled.","parameters":[{"$ref":"#/components/parameters/AutomationId"},{"$ref":"#/components/parameters/AutomationIfMatch"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/AutomationLifecycleAction"}}}},"responses":{"200":{"description":"Updated subscription"},"403":{"description":"Owner role required"},"409":{"description":"Stale version, disabled connector or invalid transition"},"428":{"description":"Current If-Match required"}}}
+    },
+    "/api/v1/automation/events": {
+      "get":{"operationId":"listAutomationEvents","summary":"List durable automation event metadata","description":"Staff-only, tenant-scoped list of at most 100 events. List responses omit event payload, tenant ID and deduplication key. PHI payloads are erased after their bounded retention period while digest and audit metadata remain.","responses":{"200":{"description":"Event metadata ordered newest first"},"403":{"description":"Staff role required"}}}
+    },
+    "/api/v1/automation/events/{id}": {
+      "get":{"operationId":"getAutomationEvent","summary":"Open one automation event and its deliveries","description":"Staff-only, tenant-scoped and audited. Returns retained payload plus delivery metadata; erased PHI payloads are represented without recoverable content.","parameters":[{"$ref":"#/components/parameters/AutomationId"}],"responses":{"200":{"description":"Event detail and related deliveries"},"403":{"description":"Staff role required"},"404":{"description":"Event not found in tenant"}}}
+    },
+    "/api/v1/automation/deliveries": {
+      "get":{"operationId":"listAutomationDeliveries","summary":"List durable automation deliveries","description":"Staff-only tenant worklist of at most 100 deliveries. Delivery is at-least-once with a stable event-and-subscription idempotency key; effectful work must enter the governed action boundary.","parameters":[{"name":"status","in":"query","schema":{"enum":["pending","leased","delivered","dead_letter","cancelled"]}}],"responses":{"200":{"description":"Delivery metadata without lease tokens or worker identities"},"403":{"description":"Staff role required"}}}
+    },
+    "/api/v1/automation/deliveries/{id}/actions": {
+      "post":{"operationId":"actOnAutomationDelivery","summary":"Cancel or safely replay an automation delivery","description":"Owner-only. Cancel applies to pending or dead-letter deliveries. Replay applies only to cancelled or dead-letter deliveries while evidence is retained and the subscription is active. Replay preserves the original event-and-subscription idempotency identity; repeating an intended effect requires a new source event.","parameters":[{"$ref":"#/components/parameters/AutomationId"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":["action","reason"],"properties":{"action":{"enum":["cancel","replay"]},"reason":{"type":"string","minLength":1,"maxLength":1000}}}}}},"responses":{"200":{"description":"Cancelled delivery or new pending replay record"},"403":{"description":"Owner role required"},"409":{"description":"Invalid state, expired evidence or inactive subscription"}}}
+    },
+    "/api/v1/automation/action-invocations": {
+      "get":{"operationId":"listConnectorActionInvocations","summary":"List governed connector action invocations","description":"Staff-only tenant worklist of at most 100 invocations. List responses omit action input and its digest. Sensitive clinical writes, communications and charges never auto-retry.","parameters":[{"name":"status","in":"query","schema":{"enum":["pending_review","ready","executing","retry_wait","succeeded","failed","needs_reconciliation","rejected","cancelled","sandboxed"]}}],"responses":{"200":{"description":"Governed invocation metadata"},"403":{"description":"Staff role required"}}}
+    },
+    "/api/v1/automation/action-invocations/{id}": {
+      "get":{"operationId":"getConnectorActionInvocation","summary":"Open one governed connector action invocation","description":"Staff-only, tenant-scoped and audited. Returns invocation metadata, result evidence and immutable execution/review history; action input and its digest are not returned by this boundary.","parameters":[{"$ref":"#/components/parameters/AutomationId"}],"responses":{"200":{"description":"Invocation detail and immutable events"},"403":{"description":"Staff role required"},"404":{"description":"Invocation not found in tenant"}}}
+    },
+    "/api/v1/automation/action-invocations/{id}/actions": {
+      "post":{"operationId":"reviewConnectorActionInvocation","summary":"Approve, reject or cancel a governed connector action","description":"Versioned human-review gate. Approval follows the action policy and optional separation of duties. Owner authorization is required to cancel. Expired leases for clinical writes, communications and charges stop for reconciliation instead of retrying.","parameters":[{"$ref":"#/components/parameters/AutomationId"},{"$ref":"#/components/parameters/AutomationIfMatch"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":["action","reason"],"properties":{"action":{"enum":["approve","reject","cancel"]},"reason":{"type":"string","minLength":1,"maxLength":1000}}}}}},"responses":{"200":{"description":"Updated invocation and review state"},"403":{"description":"Approval policy, separation-of-duties or owner gate denied"},"409":{"description":"Stale version or invalid transition"},"428":{"description":"Current If-Match required"}}}
     }
   },
   "components": {
@@ -25330,7 +25369,137 @@
         "description": "Separate patient portal session; HttpOnly, SameSite=Strict, Secure over HTTPS; Path=/api/v1/patient-portal. Not a staff browser session or OAuth credential. All mutations require configured Origin. 20-minute inactivity timeout and bounded absolute expiry; account/version revocation enforced."
       }
     },
+    "parameters": {
+      "AutomationId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": {"type": "string", "format": "uuid"}
+      },
+      "AutomationIfMatch": {
+        "name": "If-Match",
+        "in": "header",
+        "required": true,
+        "description": "Quoted current resource version.",
+        "schema": {"type": "string", "pattern": "^\"[1-9][0-9]*\"$"}
+      }
+    },
     "schemas": {
+      "ConnectorProvenance": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["repository_url", "source_revision", "source_digest"],
+        "properties": {
+          "repository_url": {"type": "string", "format": "uri", "pattern": "^https://"},
+          "source_revision": {"type": "string", "minLength": 7, "maxLength": 200},
+          "source_digest": {"type": "string", "pattern": "^[A-Fa-f0-9]{64}$"}
+        }
+      },
+      "ConnectorLifecycle": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["setup", "deactivate", "sample_events"],
+        "properties": {
+          "setup": {"type": "boolean"},
+          "deactivate": {"type": "boolean"},
+          "sample_events": {"type": "boolean"}
+        }
+      },
+      "ConnectorObjectSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fields"],
+        "properties": {
+          "fields": {"type": "array", "maxItems": 50, "items": {"$ref": "#/components/schemas/ConnectorFieldSchema"}}
+        }
+      },
+      "ConnectorFieldSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "field_type", "required", "phi", "enum_values", "fields", "items"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1, "maxLength": 80},
+          "title": {"type": "string", "minLength": 1, "maxLength": 120},
+          "field_type": {"enum": ["string", "integer", "number", "boolean", "uuid", "date_time", "object", "array"]},
+          "required": {"type": "boolean"},
+          "phi": {"$ref": "#/components/schemas/ConnectorPhiClass"},
+          "enum_values": {"type": "array", "maxItems": 100, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 240}},
+          "fields": {"type": "array", "maxItems": 50, "items": {"$ref": "#/components/schemas/ConnectorFieldSchema"}},
+          "items": {"type": "array", "maxItems": 1, "items": {"$ref": "#/components/schemas/ConnectorFieldSchema"}}
+        }
+      },
+      "ConnectorPhiClass": {"enum": ["none", "identifiers", "limited", "clinical", "billing"]},
+      "ConnectorAuthScheme": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "scopes", "credential_fields"],
+        "properties": {
+          "id": {"type": "string"},
+          "kind": {"enum": ["none", "api_key", "oauth2", "oauth2_client"]},
+          "scopes": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"type": "string"}},
+          "credential_fields": {"type": "array", "maxItems": 16, "items": {"type": "object", "additionalProperties": false, "required": ["id", "title", "secret"], "properties": {"id": {"type": "string"}, "title": {"type": "string"}, "secret": {"type": "boolean"}}}}
+        }
+      },
+      "ConnectorTriggerDefinition": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "description", "event_type", "transport", "auth_scheme", "required_roles", "required_scopes", "phi", "output"],
+        "properties": {
+          "id": {"type": "string"}, "title": {"type": "string"}, "description": {"type": "string"},
+          "event_type": {"type": "string"}, "transport": {"enum": ["internal_event", "webhook", "websocket", "polling"]},
+          "auth_scheme": {"type": ["string", "null"]},
+          "required_roles": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+          "required_scopes": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+          "phi": {"$ref": "#/components/schemas/ConnectorPhiClass"}, "output": {"$ref": "#/components/schemas/ConnectorObjectSchema"}
+        }
+      },
+      "ConnectorActionDefinition": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "description", "implementation", "transport", "auth_scheme", "required_roles", "required_scopes", "phi", "effect", "approval", "idempotency", "retry", "input", "output"],
+        "properties": {
+          "id": {"type": "string"}, "title": {"type": "string"}, "description": {"type": "string"}, "implementation": {"type": "string", "description": "Identifier of an adapter compiled into the EHR; never a URL or script."},
+          "transport": {"enum": ["native", "provider_api"]}, "auth_scheme": {"type": ["string", "null"]},
+          "required_roles": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}, "required_scopes": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+          "phi": {"$ref": "#/components/schemas/ConnectorPhiClass"}, "effect": {"enum": ["read", "write", "external_send", "clinical_write", "billing_write"]},
+          "approval": {"enum": ["none", "staff", "clinical", "owner"]}, "idempotency": {"enum": ["none", "request_key", "natural_key"]}, "retry": {"enum": ["never", "read_only", "safe_idempotent"]},
+          "input": {"$ref": "#/components/schemas/ConnectorObjectSchema"}, "output": {"$ref": "#/components/schemas/ConnectorObjectSchema"}
+        }
+      },
+      "ConnectorManifest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["api_version", "id", "name", "version", "license", "homepage", "repository", "description", "auth_schemes", "triggers", "actions", "lifecycle"],
+        "properties": {
+          "api_version": {"const": "suncharts.dev/connector/v1"}, "id": {"type": "string", "minLength": 3, "maxLength": 120}, "name": {"type": "string", "minLength": 2, "maxLength": 120},
+          "version": {"type": "string", "description": "Semantic version."}, "license": {"enum": ["AGPL-3.0-only", "Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "MPL-2.0"]},
+          "homepage": {"type": "string", "format": "uri", "pattern": "^https://"}, "repository": {"type": "string", "format": "uri", "pattern": "^https://"}, "description": {"type": "string", "maxLength": 1000},
+          "auth_schemes": {"type": "array", "maxItems": 8, "items": {"$ref": "#/components/schemas/ConnectorAuthScheme"}},
+          "triggers": {"type": "array", "maxItems": 64, "items": {"$ref": "#/components/schemas/ConnectorTriggerDefinition"}},
+          "actions": {"type": "array", "maxItems": 128, "items": {"$ref": "#/components/schemas/ConnectorActionDefinition"}},
+          "lifecycle": {"$ref": "#/components/schemas/ConnectorLifecycle"}
+        },
+        "description": "Declarative open-source connector contract. At least one trigger or action is required. Executable code, arbitrary HTTP targets, headers and templates are not part of this manifest."
+      },
+      "CreateAutomationSubscription": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["connector_key", "trigger_key", "reason"],
+        "properties": {
+          "connector_key": {"type": "string", "minLength": 2, "maxLength": 160},
+          "trigger_key": {"type": "string", "minLength": 2, "maxLength": 160},
+          "reason": {"type": "string", "minLength": 1, "maxLength": 1000}
+        }
+      },
+      "AutomationLifecycleAction": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action", "reason"],
+        "properties": {
+          "action": {"enum": ["activate", "deactivate"]},
+          "reason": {"type": "string", "minLength": 1, "maxLength": 1000}
+        }
+      },
       "Patient": {
         "type": "object",
         "additionalProperties": false,
