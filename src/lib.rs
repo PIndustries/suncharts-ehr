@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026 P Industries
+pub mod action_governance;
 pub mod auth;
+pub mod automation_event_runtime;
 pub mod backend;
 pub mod billing;
 mod branding;
@@ -21,6 +23,7 @@ pub mod connect_onboarding;
 pub mod connect_services;
 pub mod connect_transport;
 pub mod connect_updates;
+pub mod connector_catalog;
 pub mod delivery;
 pub mod demographics;
 pub mod documents;
@@ -291,6 +294,8 @@ mod login_presentation_tests {
 
 pub fn app(state: State) -> Router {
     Router::new()
+        .merge(action_governance::router())
+        .merge(automation_event_runtime::router())
         .merge(oauth::router())
         .merge(clinical::router())
         .merge(health_history::routes())
@@ -312,6 +317,7 @@ pub fn app(state: State) -> Router {
         .merge(connect_services::router())
         .merge(connect_updates::router())
         .merge(connect_onboarding::router())
+        .merge(connector_catalog::router())
         .merge(practice::router())
         .merge(practice_admin::router())
         .merge(previsit::router())
