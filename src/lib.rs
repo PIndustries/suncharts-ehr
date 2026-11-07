@@ -7,6 +7,7 @@ pub mod backend;
 pub mod billing;
 mod branding;
 pub mod browser;
+pub mod builtin_connectors;
 pub mod ca277;
 pub mod care_pathways;
 pub mod checkout;

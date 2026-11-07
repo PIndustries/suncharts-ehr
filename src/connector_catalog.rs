@@ -194,6 +194,10 @@ pub struct TriggerDefinition {
     pub required_scopes: Vec<String>,
     pub phi: PhiClass,
     pub output: ObjectSchema,
+    /// Optional compiled action staged when this exact trigger is delivered.
+    /// The action input schema must exactly match this trigger output schema.
+    #[serde(default)]
+    pub dispatch_action: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -266,7 +270,7 @@ pub enum RetryClass {
     ReadOnly,
     SafeIdempotent,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PhiClass {
     None,
@@ -276,14 +280,14 @@ pub enum PhiClass {
     Billing,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ObjectSchema {
     #[serde(default)]
     pub fields: Vec<FieldSchema>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct FieldSchema {
     pub id: String,
@@ -455,6 +459,25 @@ impl ConnectorManifest {
                 ));
             }
         }
+        for trigger in &self.triggers {
+            let Some(dispatch_action) = trigger.dispatch_action.as_deref() else {
+                continue;
+            };
+            let Some(action) = self
+                .actions
+                .iter()
+                .find(|action| action.id == dispatch_action)
+            else {
+                return Err(Error::Invalid(
+                    "connector trigger dispatch action was not found",
+                ));
+            };
+            if trigger.output != action.input {
+                return Err(Error::Invalid(
+                    "connector trigger and dispatch action schemas differ",
+                ));
+            }
+        }
         let encoded =
             serde_json::to_vec(self).map_err(|_| Error::Invalid("invalid connector manifest"))?;
         if encoded.len() > 262_144 {
@@ -558,6 +581,12 @@ struct InstallRequest {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct BuiltinInstallRequest {
+    request_id: Uuid,
+    reason: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ReviseRequest {
     manifest: ConnectorManifest,
     provenance: Provenance,
@@ -609,6 +638,11 @@ fn manifest_value(manifest: &ConnectorManifest) -> Result<(Value, String)> {
 
 pub fn router() -> Router<State> {
     Router::new()
+        .route("/api/v1/connector-catalog/builtins", get(list_builtins))
+        .route(
+            "/api/v1/connector-catalog/builtins/{connector_id}/install",
+            post(install_builtin),
+        )
         .route(
             "/api/v1/connector-catalog/installations",
             get(list).post(install),
@@ -621,6 +655,64 @@ pub fn router() -> Router<State> {
             "/api/v1/connector-catalog/installations/{id}/actions",
             post(action),
         )
+}
+
+async fn list_builtins(actor: Actor, ExtractState(state): ExtractState<State>) -> Result<Response> {
+    actor.staff()?;
+    let mut tx = db(&state)?.begin().await?;
+    let installed: HashSet<String> =
+        sqlx::query_scalar("SELECT connector_id FROM connector_installations WHERE tenant_id=$1")
+            .bind(actor.tenant_id)
+            .fetch_all(&mut *tx)
+            .await?
+            .into_iter()
+            .collect();
+    let items: Vec<Value> = crate::builtin_connectors::manifests()
+        .into_iter()
+        .map(|manifest| {
+            json!({
+                "installed": installed.contains(&manifest.id),
+                "manifest": manifest,
+                "provenance": "builtin"
+            })
+        })
+        .collect();
+    audit(
+        &mut tx,
+        &actor,
+        "connector.catalog.builtins.list",
+        actor.tenant_id,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(reply(json!({"items":items})))
+}
+
+async fn install_builtin(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(connector_id): Path<String>,
+    Json(input): Json<BuiltinInstallRequest>,
+) -> Result<Response> {
+    owner(&actor)?;
+    let change_reason = reason(&input.reason)?.to_owned();
+    let manifest = crate::builtin_connectors::manifest(&connector_id).ok_or(Error::NotFound)?;
+    let (_, source_digest) = manifest_value(&manifest)?;
+    let provenance = Provenance {
+        repository_url: manifest.repository.clone(),
+        source_revision: format!("suncharts-engine-{}", env!("CARGO_PKG_VERSION")),
+        source_digest,
+    };
+    install_manifest(
+        actor,
+        state,
+        input.request_id,
+        manifest,
+        provenance,
+        "builtin",
+        &change_reason,
+    )
+    .await
 }
 
 async fn list(actor: Actor, ExtractState(state): ExtractState<State>) -> Result<Response> {
@@ -659,30 +751,50 @@ async fn install(
     Json(input): Json<InstallRequest>,
 ) -> Result<Response> {
     owner(&actor)?;
-    let reason = reason(&input.reason)?;
+    let change_reason = reason(&input.reason)?.to_owned();
     input.provenance.validate(&input.manifest)?;
-    let (manifest, digest) = manifest_value(&input.manifest)?;
+    install_manifest(
+        actor,
+        state,
+        input.request_id,
+        input.manifest,
+        input.provenance,
+        "community",
+        &change_reason,
+    )
+    .await
+}
+
+async fn install_manifest(
+    actor: Actor,
+    state: State,
+    request_id: Uuid,
+    connector: ConnectorManifest,
+    provenance: Provenance,
+    provenance_kind: &str,
+    change_reason: &str,
+) -> Result<Response> {
+    debug_assert!(matches!(provenance_kind, "builtin" | "community"));
+    provenance.validate(&connector)?;
+    let (manifest, digest) = manifest_value(&connector)?;
     let request_digest = crate::oauth::hash(&format!(
         "{}:{}:{}",
-        input.manifest.id, digest, input.provenance.source_digest
+        connector.id, digest, provenance.source_digest
     ));
     let mut tx = db(&state)?.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
         .bind(format!(
             "{}:connector-install:{}",
-            actor.tenant_id, input.request_id
+            actor.tenant_id, request_id
         ))
         .execute(&mut *tx)
         .await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
-        .bind(format!(
-            "{}:connector-id:{}",
-            actor.tenant_id, input.manifest.id
-        ))
+        .bind(format!("{}:connector-id:{}", actor.tenant_id, connector.id))
         .execute(&mut *tx)
         .await?;
     if let Some((id,old_digest))=sqlx::query_as::<_,(Uuid,String)>("SELECT id,request_digest FROM connector_installations WHERE tenant_id=$1 AND request_id=$2")
-        .bind(actor.tenant_id).bind(input.request_id).fetch_optional(&mut *tx).await? {
+        .bind(actor.tenant_id).bind(request_id).fetch_optional(&mut *tx).await? {
         if old_digest!=request_digest{return Err(Error::Conflict("request ID was reused for a different connector"));}
         let value=current(&mut tx,&actor,id).await?;tx.commit().await?;return Ok(reply(value));
     }
@@ -690,7 +802,7 @@ async fn install(
         "SELECT EXISTS(SELECT 1 FROM connector_installations WHERE tenant_id=$1 AND connector_id=$2)",
     )
     .bind(actor.tenant_id)
-    .bind(&input.manifest.id)
+    .bind(&connector.id)
     .fetch_one(&mut *tx)
     .await?
     {
@@ -698,7 +810,7 @@ async fn install(
     }
     let id = Uuid::new_v4();
     sqlx::query("INSERT INTO connector_installations(tenant_id,id,connector_id,request_id,request_digest,created_by) VALUES($1,$2,$3,$4,$5,$6)")
-        .bind(actor.tenant_id).bind(id).bind(&input.manifest.id).bind(input.request_id).bind(request_digest).bind(actor.sub).execute(&mut *tx).await?;
+        .bind(actor.tenant_id).bind(id).bind(&connector.id).bind(request_id).bind(request_digest).bind(actor.sub).execute(&mut *tx).await?;
     insert_revision(
         &mut tx,
         &actor,
@@ -707,9 +819,9 @@ async fn install(
             revision: 1,
             manifest: &manifest,
             manifest_digest: &digest,
-            provenance: "community",
-            source: &input.provenance,
-            reason,
+            provenance: provenance_kind,
+            source: &provenance,
+            reason: change_reason,
         },
     )
     .await?;
