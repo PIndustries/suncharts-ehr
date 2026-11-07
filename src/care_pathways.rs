@@ -176,7 +176,9 @@ impl Definition {
                 return Err(Error::Invalid("invalid pathway column key"));
             }
             text(&column.title, 120)?;
-            text(&column.description, 500)?;
+            if !column.description.is_empty() {
+                text(&column.description, 500)?;
+            }
         }
         let keys: BTreeSet<&str> = self.steps.iter().map(|s| s.key.as_str()).collect();
         if keys.len() != self.steps.len() {
