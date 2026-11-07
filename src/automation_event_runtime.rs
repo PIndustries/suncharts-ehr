@@ -154,7 +154,6 @@ struct PageQuery {
 }
 
 /// Input used by native EHR modules while their own mutation transaction is open.
-#[expect(dead_code, reason = "native event producers integrate incrementally")]
 pub(crate) struct NewAutomationEvent {
     pub event_type: String,
     pub source: String,
@@ -166,7 +165,6 @@ pub(crate) struct NewAutomationEvent {
 }
 
 #[derive(Debug, Serialize)]
-#[expect(dead_code, reason = "native event producers integrate incrementally")]
 pub(crate) struct EmitResult {
     pub id: Uuid,
     pub created: bool,
@@ -174,12 +172,13 @@ pub(crate) struct EmitResult {
 }
 
 #[derive(Debug, Serialize)]
-#[expect(dead_code, reason = "delivery worker integration is a separate lane")]
 pub(crate) struct LeasedDelivery {
     pub tenant_id: Uuid,
     pub delivery_id: Uuid,
     pub event_id: Uuid,
     pub subscription_id: Uuid,
+    pub connector_key: String,
+    pub action_key: Option<String>,
     pub event_type: String,
     pub payload: Value,
     pub classification: String,
@@ -225,9 +224,9 @@ async fn create_subscription(
         return Err(Error::Invalid("invalid exact trigger identity"));
     }
     let mut tx = db(&state)?.begin().await?;
-    let resolved:Option<(Uuid,String,String)>=sqlx::query_as("SELECT i.id,t->>'event_type',CASE t->>'transport' WHEN 'internal_event' THEN 'internal' ELSE t->>'transport' END FROM connector_installations i JOIN connector_installation_revisions r ON r.tenant_id=i.tenant_id AND r.installation_id=i.id AND r.revision=i.current_revision CROSS JOIN LATERAL jsonb_array_elements(r.manifest->'triggers') t WHERE i.tenant_id=$1 AND i.connector_id=$2 AND i.status='enabled' AND t->>'id'=$3")
+    let resolved:Option<(Uuid,String,String,Option<String>)>=sqlx::query_as("SELECT i.id,t->>'event_type',CASE t->>'transport' WHEN 'internal_event' THEN 'internal' ELSE t->>'transport' END,t->>'dispatch_action' FROM connector_installations i JOIN connector_installation_revisions r ON r.tenant_id=i.tenant_id AND r.installation_id=i.id AND r.revision=i.current_revision CROSS JOIN LATERAL jsonb_array_elements(r.manifest->'triggers') t WHERE i.tenant_id=$1 AND i.connector_id=$2 AND i.status='enabled' AND t->>'id'=$3")
         .bind(actor.tenant_id).bind(input.connector_key.trim()).bind(input.trigger_key.trim()).fetch_optional(&mut *tx).await?;
-    let (installation_id, resolved_event_type, resolved_transport) =
+    let (installation_id, resolved_event_type, resolved_transport, dispatch_action) =
         resolved.ok_or(Error::Conflict("enabled connector trigger was not found"))?;
     if !event_type(&resolved_event_type)
         || !matches!(
@@ -237,10 +236,18 @@ async fn create_subscription(
     {
         return Err(Error::Conflict("enabled connector trigger is invalid"));
     }
+    if dispatch_action
+        .as_deref()
+        .is_some_and(|action| !catalog_key(action))
+    {
+        return Err(Error::Conflict(
+            "enabled connector trigger dispatch action is invalid",
+        ));
+    }
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO automation_trigger_subscriptions(tenant_id,id,installation_id,connector_key,trigger_key,event_type,transport,configuration,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,'{}'::jsonb,$8)")
+    sqlx::query("INSERT INTO automation_trigger_subscriptions(tenant_id,id,installation_id,connector_key,trigger_key,action_key,event_type,transport,configuration,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'{}'::jsonb,$9)")
         .bind(actor.tenant_id).bind(id).bind(installation_id).bind(input.connector_key.trim()).bind(input.trigger_key.trim())
-        .bind(resolved_event_type).bind(resolved_transport).bind(actor.sub)
+        .bind(dispatch_action).bind(resolved_event_type).bind(resolved_transport).bind(actor.sub)
         .execute(&mut *tx).await?;
     subscription_history(&mut tx, &actor, id, "configured", &input.reason).await?;
     audit(&mut tx, &actor, "automation.subscription.create", id).await?;
@@ -344,7 +351,6 @@ async fn subscription_action(
 
 /// Atomically stores one immutable event and its deliveries. Call this inside the
 /// native mutation transaction that produced the event so state and event commit together.
-#[expect(dead_code, reason = "native event producers integrate incrementally")]
 pub(crate) async fn emit_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     actor: &Actor,

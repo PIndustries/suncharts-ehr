@@ -220,6 +220,13 @@ impl ClinicalBackend for PostgresBackend {
         let result = sqlx::query_as("INSERT INTO appointments (tenant_id,id,patient_id,clinician_id,starts_at,ends_at,title,category,facility,room,notes,source_history_id,request_id,request_digest) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *")
             .bind(a.tenant_id).bind(id).bind(p.patient_id).bind(p.clinician_id).bind(p.starts_at).bind(p.ends_at).bind(p.title).bind(p.category).bind(p.facility).bind(p.room).bind(p.notes).bind(p.source_history_id).bind(p.request_id).bind(digest).fetch_one(&mut *tx).await?;
         crate::scheduling::revision(&mut tx, a, id, &p.reason).await?;
+        crate::scheduling::emit_appointment_event(
+            &mut tx,
+            a,
+            &result,
+            "suncharts.appointment.created",
+        )
+        .await?;
         audit(&mut tx, a, "appointment.book", id).await?;
         tx.commit().await?;
         Ok(result)
