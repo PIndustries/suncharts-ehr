@@ -369,7 +369,8 @@ function setPage(title) {
   'Workflow Studio':'Design intake, visit and follow-up pathways with reusable modules',
   'Automation Center':'Operate reviewed connectors, exact triggers and governed actions',
   'Billing & insurance':'Manage coverage, charges, balances and patient payments',
-  'Clearinghouse':'Prepare 837P files, deliver claims and review acknowledgments',
+  'Clearinghouse':'Verify coverage, submit reviewed claims and reconcile payer responses',
+  'Claim connections':'Verify coverage, submit reviewed claims and reconcile payer responses',
   'Claims & remittances':'Prepare claims, post remittances and resolve corrections',
   'Payment settings':'Configure Stripe or SunCharts Payments for this practice',
   'Payment review':'Review checkout status and verified payment history',
@@ -385,12 +386,12 @@ function setPage(title) {
  };
  const today=['Practice home','Practice overview','Schedule','Pre-visit readiness','Appointment reminders','Reminder settings','Follow-up tasks','Patient portal inbox'];
  const care=['Patients & encounters','Labs & results','Specialty care','Referrals','Referral delivery settings'];
- const revenue=['Billing & insurance','Payment settings','Payment review','Claims & remittances','Clearinghouse'];
+ const revenue=['Billing & insurance','Payment settings','Payment review','Claims & remittances','Clearinghouse','Claim connections'];
  const manage=['Workflow Studio','Automation Center','AI review','Intake inbox','Practice administration','Integrations','Connect services','Support tickets','Data import'];
  $('page-title').textContent=title;
  $('page-description').textContent=descriptions[title]||'Practice workspace';
  $('workspace-section').textContent=(today.includes(title)||title.startsWith('Patient portal'))?'TODAY':care.includes(title)?'CARE':revenue.includes(title)?'REVENUE':manage.includes(title)?'MANAGE':'PRACTICE';
- const active=['Practice home','Practice overview'].includes(title)?'nav-practice':title==='Workflow Studio'?'nav-workflows':title==='Automation Center'?'nav-automation':title==='AI review'?'nav-ai-review':title==='Intake inbox'?'nav-communications':title==='Patients & encounters'?'nav-clinical':title==='Pre-visit readiness'?'nav-previsit':['Schedule','Appointment reminders','Reminder settings'].includes(title)?'nav-schedule':title==='Labs & results'?'nav-labs':title==='Specialty care'?'nav-specialty':['Billing & insurance','Payment settings','Payment review'].includes(title)?'nav-billing':title==='Clearinghouse'?'nav-edi':title==='Claims & remittances'?'nav-claims':['Referrals','Referral delivery settings'].includes(title)?'nav-referrals':title.startsWith('Patient portal')?'nav-portal':title==='Follow-up tasks'?'nav-followup':['Integrations','Connect services','Support tickets'].includes(title)?'nav-apps':title==='Data import'?'nav-migration':title==='Practice administration'?'nav-admin':null;
+ const active=['Practice home','Practice overview'].includes(title)?'nav-practice':title==='Workflow Studio'?'nav-workflows':title==='Automation Center'?'nav-automation':title==='AI review'?'nav-ai-review':title==='Intake inbox'?'nav-communications':title==='Patients & encounters'?'nav-clinical':title==='Pre-visit readiness'?'nav-previsit':['Schedule','Appointment reminders','Reminder settings'].includes(title)?'nav-schedule':title==='Labs & results'?'nav-labs':title==='Specialty care'?'nav-specialty':['Billing & insurance','Payment settings','Payment review'].includes(title)?'nav-billing':['Clearinghouse','Claim connections'].includes(title)?'nav-edi':title==='Claims & remittances'?'nav-claims':['Referrals','Referral delivery settings'].includes(title)?'nav-referrals':title.startsWith('Patient portal')?'nav-portal':title==='Follow-up tasks'?'nav-followup':['Integrations','Connect services','Support tickets'].includes(title)?'nav-apps':title==='Data import'?'nav-migration':title==='Practice administration'?'nav-admin':null;
  for(const id of ['nav-practice','nav-workflows','nav-automation','nav-ai-review','nav-communications','nav-clinical','nav-schedule','nav-previsit','nav-labs','nav-specialty','nav-referrals','nav-followup','nav-portal','nav-billing','nav-claims','nav-edi','nav-apps','nav-migration','nav-admin']){if(!$(id))continue;if(id===active)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}
  const activeItem=active?$(active):null,more=activeItem?.closest?.('.nav-more');if(more)more.open=true;
  closeNavigation();window.scrollTo(0,0);

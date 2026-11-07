@@ -14,6 +14,8 @@ const partnerHeading={textContent:'Trading partners',closest:()=>manualSection};
 const emptyRow={textContent:'No generated submissions. Release a reviewed claim packet, then choose Generate X12 837P.'};
 const connectionNotice={outerHTML:'',insertAdjacentHTML(){}};
 const ediTool={
+ inserted:'',
+ insertAdjacentHTML(_position,html){this.inserted+=html;},
  querySelectorAll(selector){return selector==='h3'?[partnerHeading]:selector==='.table-empty'?[emptyRow]:[];},
  querySelector(selector){return selector==='.mapping-notice'?connectionNotice:null;},
 };
@@ -36,6 +38,8 @@ const context={
   if(path==='/api/v1/billing/clearinghouses')return {items:[]};
   if(path==='/api/v1/billing/submissions')return {items:[],next_cursor:null};
   if(path==='/api/v1/billing/clearinghouse-sources')return {items:[]};
+  if(path==='/api/v1/billing/claims')return {items:[]};
+  if(path==='/api/v1/billing/remittances')return {items:[]};
   if(path==='/api/v1/billing/provider-settings')return {items:[],credential_storage_ready:true};
   throw new Error(`Unexpected API ${path}`);
  },
@@ -54,7 +58,9 @@ for(const file of ['web/claimmd-native.js','web/provider-settings.js','web/clear
  assert.doesNotMatch(deliverySource,/\$\('edi-automation'\)\.innerHTML=/);
  await vm.runInContext('showEdiWorkspace()',context);
  await settle();
- assert.equal(order[0],'show:Clearinghouse','workspace must become visible before any API work');
+ assert.equal(order[0],'show:Claim connections','workspace must become visible before any API work');
+ assert.match(ediTool.inserted,/NATIVE REVENUE CYCLE/);
+ assert.match(ediTool.inserted,/Insurance &amp; eligibility|Insurance & eligibility/);
  assert.match(connectionNotice.outerHTML,/Claim\.MD is not connected/);
  assert.match(connectionNotice.outerHTML,/data-provider-new/);
  assert.match(connectionNotice.outerHTML,/No trading-partner profile is required/);
