@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "SunCharts EHR Clinical API",
-    "version": "0.33.0",
+    "version": "0.34.0",
     "license": {
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
@@ -25055,12 +25055,12 @@
     },
     "/api/v1/care-pathways/definitions": {
       "get": {"operationId": "listCarePathwayDefinitions", "responses": {"200": {"description": "Tenant care-pathway definitions"}}},
-      "post": {"operationId": "createCarePathwayDefinition", "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object"}}}}, "responses": {"200": {"description": "Created draft definition"}, "409": {"description": "Slug or request identity conflict"}}}
+      "post": {"operationId": "createCarePathwayDefinition", "summary": "Create a configurable visual care-pathway draft", "description": "Owner-only. Columns are ordered display lanes rather than fixed clinical phases; node dependencies and conditions remain the executable graph. request_id provides idempotency.", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateCarePathwayDefinition"}}}}, "responses": {"200": {"description": "Created draft definition"}, "400": {"description": "Invalid columns, nodes, dependency graph or trigger"}, "403": {"description": "Owner role required"}, "409": {"description": "Slug or request identity conflict"}}}
     },
     "/api/v1/care-pathways/definitions/{id}": {
       "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
       "get": {"operationId": "readCarePathwayDefinition", "responses": {"200": {"description": "Definition"}}},
-      "put": {"operationId": "updateCarePathwayDefinition", "parameters": [{"name": "If-Match", "in": "header", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "Updated draft definition"}, "428": {"description": "Current If-Match required"}}}
+      "put": {"operationId": "updateCarePathwayDefinition", "summary": "Replace a care-pathway draft", "description": "Owner-only and versioned. Published revisions remain immutable. Empty columns may be removed after their nodes are reassigned; at least one visible column is required.", "parameters": [{"name": "If-Match", "in": "header", "required": true, "schema": {"type": "string"}}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateCarePathwayDefinition"}}}}, "responses": {"200": {"description": "Updated draft definition"}, "400": {"description": "Invalid columns, nodes or dependency graph"}, "403": {"description": "Owner role required"}, "428": {"description": "Current If-Match required"}}}
     },
     "/api/v1/care-pathways/definitions/{id}/actions": {
       "post": {"operationId": "actOnCarePathwayDefinition", "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}, {"name": "If-Match", "in": "header", "required": true, "schema": {"type": "string"}}], "responses": {"200": {"description": "Definition activated or archived"}}}
@@ -25069,7 +25069,7 @@
       "get": {"operationId": "listCarePathwayDefinitionRevisions", "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}], "responses": {"200": {"description": "Immutable definition revisions"}}}
     },
     "/api/v1/care-pathways/trigger": {
-      "post": {"operationId": "triggerCarePathways", "summary": "Idempotently instantiate active definitions for a tenant event", "responses": {"200": {"description": "Matching pathway instances"}}}
+      "post": {"operationId": "triggerCarePathways", "summary": "Idempotently instantiate active definitions for a tenant event", "description": "Staff-only. Starts matching published revisions and evaluates graph conditions; display-column placement does not alter dependency execution.", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TriggerCarePathway"}}}}, "responses": {"200": {"description": "Matching pathway instances"}, "400": {"description": "Invalid trigger identity or context"}, "403": {"description": "Staff role required"}}}
     },
     "/api/v1/care-pathways/instances": {
       "get": {"operationId": "listCarePathwayInstances", "parameters": [{"name": "patient_id", "in": "query", "schema": {"type": "string", "format": "uuid"}}, {"name": "status", "in": "query", "schema": {"type": "string", "enum": ["active","completed","cancelled"]}}], "responses": {"200": {"description": "Tenant pathway worklist"}}}
@@ -25286,6 +25286,12 @@
       "get":{"operationId":"listConnectorInstallations","summary":"List installed open connector manifests","description":"Staff-only, tenant-scoped catalog. Returns at most 200 installations and public source provenance; it never returns credentials.","responses":{"200":{"description":"Installed connector metadata"},"403":{"description":"Staff role required"}}},
       "post":{"operationId":"installConnectorManifest","summary":"Install a declarative open connector manifest","description":"Owner-only and idempotent by request_id. The manifest is data, not executable code: arbitrary scripts, HTTP targets, headers and templates are not accepted. Source repository, revision and digest are retained as public provenance.","requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":["request_id","manifest","provenance","reason"],"properties":{"request_id":{"type":"string","format":"uuid"},"manifest":{"$ref":"#/components/schemas/ConnectorManifest"},"provenance":{"$ref":"#/components/schemas/ConnectorProvenance"},"reason":{"type":"string","minLength":1,"maxLength":1000}}}}}},"responses":{"200":{"description":"Installed connector or the same idempotent result"},"400":{"description":"Manifest, provenance or reason is invalid"},"403":{"description":"Owner role required"},"409":{"description":"Request ID reused or connector already installed"}}}
     },
+    "/api/v1/connector-catalog/builtins": {
+      "get":{"operationId":"listBuiltinConnectorManifests","summary":"List reviewed connectors bundled with this EHR build","description":"Staff-only and tenant-scoped. Each result includes the declarative manifest, whether that connector is already installed for the tenant, and builtin provenance. This endpoint exposes no secrets and loads no remote code.","responses":{"200":{"description":"Bundled manifests and tenant installation state"},"403":{"description":"Staff role required"}}}
+    },
+    "/api/v1/connector-catalog/builtins/{connector_id}/install": {
+      "post":{"operationId":"installBuiltinConnectorManifest","summary":"Install one reviewed bundled connector","description":"Owner-only and idempotent by request_id. The selected manifest and its compiled action identifiers ship with the EHR; callers cannot provide executable code, arbitrary URLs or provider credentials.","parameters":[{"name":"connector_id","in":"path","required":true,"schema":{"type":"string","minLength":3,"maxLength":120}}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":["request_id","reason"],"properties":{"request_id":{"type":"string","format":"uuid"},"reason":{"type":"string","minLength":1,"maxLength":1000}}}}}},"responses":{"200":{"description":"Installed connector or the same idempotent result"},"403":{"description":"Owner role required"},"404":{"description":"Bundled connector not found"},"409":{"description":"Request identity conflict or connector already installed"}}}
+    },
     "/api/v1/connector-catalog/installations/{id}": {
       "get":{"operationId":"getConnectorInstallation","summary":"Read one connector installation and its immutable history","description":"Staff-only and tenant-scoped. Reading is audited. No connector credential material is stored in this catalog.","parameters":[{"$ref":"#/components/parameters/AutomationId"}],"responses":{"200":{"description":"Installation, current manifest, revisions and events"},"403":{"description":"Staff role required"},"404":{"description":"Installation not found in tenant"}}},
       "put":{"operationId":"reviseConnectorInstallation","summary":"Install a new immutable manifest revision","description":"Owner-only. Requires the current quoted installation version. Connector identity cannot change, and deactivated connectors cannot be revised.","parameters":[{"$ref":"#/components/parameters/AutomationId"},{"$ref":"#/components/parameters/AutomationIfMatch"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":["manifest","provenance","reason"],"properties":{"manifest":{"$ref":"#/components/schemas/ConnectorManifest"},"provenance":{"$ref":"#/components/schemas/ConnectorProvenance"},"reason":{"type":"string","minLength":1,"maxLength":1000}}}}}},"responses":{"200":{"description":"Updated installation with new current revision"},"403":{"description":"Owner role required"},"409":{"description":"Stale version, deactivated installation, unchanged version or identity mismatch"},"428":{"description":"Current If-Match required"}}}
@@ -25440,6 +25446,111 @@
           "credential_fields": {"type": "array", "maxItems": 16, "items": {"type": "object", "additionalProperties": false, "required": ["id", "title", "secret"], "properties": {"id": {"type": "string"}, "title": {"type": "string"}, "secret": {"type": "boolean"}}}}
         }
       },
+      "CarePathwayColumnDefinition": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "title"],
+        "properties": {
+          "key": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$", "description": "Stable lane identity retained when its title or order changes."},
+          "title": {"type": "string", "minLength": 1, "maxLength": 120},
+          "description": {"type": "string", "maxLength": 500, "default": ""},
+          "hidden": {"type": "boolean", "default": false, "description": "Hides the visual lane without changing node or dependency execution."}
+        }
+      },
+      "CarePathwayCondition": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "operator"],
+        "properties": {
+          "field": {"type": "string", "pattern": "^/", "maxLength": 200, "description": "JSON Pointer into the immutable trigger context."},
+          "operator": {"enum": ["equals", "not_equals", "present", "absent"]},
+          "value": {"description": "Comparison value for equals or not_equals; ignored by presence operators."}
+        }
+      },
+      "CarePathwayFormField": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "label", "field_type"],
+        "properties": {
+          "key": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$"},
+          "label": {"type": "string", "minLength": 1, "maxLength": 120},
+          "field_type": {"enum": ["short_text", "long_text", "date", "choice", "checkbox", "number"]},
+          "required": {"type": "boolean", "default": false},
+          "options": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1, "maxLength": 120}, "description": "Allowed only for choice fields."}
+        }
+      },
+      "CarePathwayStepDefinition": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "title", "kind"],
+        "properties": {
+          "key": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$", "description": "Stable node identity used by dependency edges."},
+          "title": {"type": "string", "minLength": 1, "maxLength": 200},
+          "kind": {"enum": ["patient_form", "staff_task", "eligibility_query", "payment_request", "document_signature", "notification", "clinical_template", "order", "referral", "human_approval", "availability_query", "slot_hold", "appointment_booking", "appointment_reschedule", "appointment_cancel", "intake_request", "communication_send", "ai_extract_draft", "ai_response_draft"]},
+          "phase": {"type": ["string", "null"], "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$", "description": "Column key used for visual placement; legacy definitions may omit it."},
+          "required": {"type": "boolean", "default": false},
+          "manual_approval": {"type": "boolean", "default": false},
+          "assigned_role": {"type": ["string", "null"], "enum": ["owner", "clinician", "nurse", "medical_assistant", "front_desk", null]},
+          "escalation_role": {"type": ["string", "null"], "enum": ["owner", "clinician", "nurse", "medical_assistant", "front_desk", null]},
+          "due_after_minutes": {"type": ["integer", "null"], "minimum": 1, "maximum": 525600},
+          "depends_on": {"type": "array", "maxItems": 20, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$"}, "description": "Directed incoming edges. The complete definition must remain acyclic."},
+          "condition": {"oneOf": [{"$ref": "#/components/schemas/CarePathwayCondition"}, {"type": "null"}]},
+          "form_fields": {"type": "array", "maxItems": 30, "items": {"$ref": "#/components/schemas/CarePathwayFormField"}, "description": "Allowed only for patient_form nodes."}
+        }
+      },
+      "CarePathwayDefinition": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["steps"],
+        "properties": {
+          "columns": {"type": "array", "minItems": 1, "maxItems": 12, "items": {"$ref": "#/components/schemas/CarePathwayColumnDefinition"}, "description": "Ordered, clinic-configurable visual lanes. Omission on a legacy definition applies the four standard journey columns."},
+          "steps": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"$ref": "#/components/schemas/CarePathwayStepDefinition"}}
+        },
+        "description": "A versioned directed acyclic workflow graph. Column order changes presentation; depends_on, condition and manual_approval control execution. Column keys and step keys must be unique, and at least one column must remain visible."
+      },
+      "CreateCarePathwayDefinition": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["request_id", "slug", "name", "trigger_type", "definition", "reason"],
+        "properties": {
+          "request_id": {"type": "string", "format": "uuid"},
+          "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$"},
+          "name": {"type": "string", "minLength": 1, "maxLength": 200},
+          "description": {"type": "string", "maxLength": 2000, "default": ""},
+          "trigger_type": {"$ref": "#/components/schemas/CarePathwayTriggerType"},
+          "definition": {"$ref": "#/components/schemas/CarePathwayDefinition"},
+          "reason": {"type": "string", "minLength": 1, "maxLength": 1000}
+        }
+      },
+      "UpdateCarePathwayDefinition": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "trigger_type", "definition", "reason"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 200},
+          "description": {"type": "string", "maxLength": 2000, "default": ""},
+          "trigger_type": {"$ref": "#/components/schemas/CarePathwayTriggerType"},
+          "definition": {"$ref": "#/components/schemas/CarePathwayDefinition"},
+          "reason": {"type": "string", "minLength": 1, "maxLength": 1000}
+        }
+      },
+      "CarePathwayTriggerType": {"enum": ["inquiry_received", "referral_received", "call_received", "sms_received", "fax_received", "email_received", "external_booking_received", "appointment_created", "appointment_rescheduled", "appointment_cancelled", "eligibility_returned", "patient_checked_in", "visit_signed", "order_placed"]},
+      "TriggerCarePathway": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["request_id", "trigger_type", "trigger_key", "reason"],
+        "properties": {
+          "request_id": {"type": "string", "format": "uuid"},
+          "trigger_type": {"$ref": "#/components/schemas/CarePathwayTriggerType"},
+          "trigger_key": {"type": "string", "minLength": 1, "maxLength": 300},
+          "definition_id": {"type": ["string", "null"], "format": "uuid"},
+          "patient_id": {"type": ["string", "null"], "format": "uuid"},
+          "appointment_id": {"type": ["string", "null"], "format": "uuid"},
+          "visit_id": {"type": ["string", "null"], "format": "uuid"},
+          "context": {"type": "object", "default": {}, "description": "Bounded event context evaluated by node conditions and retained with the pathway instance."},
+          "reason": {"type": "string", "minLength": 1, "maxLength": 1000}
+        }
+      },
       "ConnectorTriggerDefinition": {
         "type": "object",
         "additionalProperties": false,
@@ -25450,7 +25561,8 @@
           "auth_scheme": {"type": ["string", "null"]},
           "required_roles": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
           "required_scopes": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
-          "phi": {"$ref": "#/components/schemas/ConnectorPhiClass"}, "output": {"$ref": "#/components/schemas/ConnectorObjectSchema"}
+          "phi": {"$ref": "#/components/schemas/ConnectorPhiClass"}, "output": {"$ref": "#/components/schemas/ConnectorObjectSchema"},
+          "dispatch_action": {"type": ["string", "null"], "description": "Optional action ID in the same manifest staged by the durable runtime when this exact trigger is delivered. Trigger output and action input schemas must match exactly."}
         }
       },
       "ConnectorActionDefinition": {
