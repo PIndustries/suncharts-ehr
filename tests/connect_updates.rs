@@ -191,8 +191,8 @@ async fn user_session(
 ) -> HeaderMap {
     sqlx::query("INSERT INTO browser_users(id,tenant_id,email,password_hash,role) VALUES($1,$2,$3,'synthetic-not-a-login',$4) ON CONFLICT(id) DO NOTHING").bind(user).bind(tenant).bind(format!("{}@example.test",user.simple())).bind(role).execute(db).await.unwrap();
     let token = format!("synthetic-session-{}", Uuid::new_v4());
-    sqlx::query("INSERT INTO connect_identity_sessions(token_hash,tenant_id,user_id,grant_id,issuer,audience,expires_at) VALUES($1,$2,$3,$4,$5,$6,now()+interval '1 hour')")
-        .bind(suncharts_engine::oauth::hash(&token)).bind(tenant).bind(user).bind(Uuid::new_v4())
+    sqlx::query("INSERT INTO connect_identity_sessions(token_hash,tenant_id,issuer_tenant_id,user_id,grant_id,issuer,audience,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,now()+interval '1 hour')")
+        .bind(suncharts_engine::oauth::hash(&token)).bind(tenant).bind(tenant).bind(user).bind(Uuid::new_v4())
         .bind(issuer).bind(ORIGIN).execute(db).await.unwrap();
     let mut h = HeaderMap::new();
     h.insert("origin", HeaderValue::from_static(ORIGIN));
