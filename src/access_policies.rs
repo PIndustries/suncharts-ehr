@@ -523,6 +523,12 @@ pub async fn enforce(
     if !(path.starts_with("/api/v1/") || path.starts_with("/fhir/")) || public_callback(path) {
         return next.run(request).await;
     }
+    // The browser event feed is deliberately cookie-only. Reject an injected
+    // bearer credential before the generic actor extractor can prioritize it
+    // over an otherwise valid browser session.
+    if path == "/api/v1/browser/events" && request.headers().contains_key(header::AUTHORIZATION) {
+        return Error::Forbidden.into_response();
+    }
     let bearer = request
         .headers()
         .get(header::AUTHORIZATION)
