@@ -217,6 +217,18 @@ fn valid_version(value: &str) -> bool {
         && parts[3].bytes().all(|byte| byte.is_ascii_digit())
 }
 
+/// The version observed by readiness must describe the binary that is actually
+/// serving the request. `ENGINE_DEPLOYED_VERSION` is controller-owned desired
+/// state and can remain on a newer release after Kubernetes rolls the workload
+/// back, so it is never runtime proof.
+fn running_build_version() -> &'static str {
+    env!("SUN_CHARTS_BUILD")
+}
+
+fn running_version_matches(selected_version: Option<&str>) -> bool {
+    selected_version.is_none_or(|version| version == running_build_version())
+}
+
 fn validate_release_selection(selection: &ReleaseSelection) -> Result<()> {
     let selected_at = chrono::DateTime::parse_from_rfc3339(&selection.selected_at)
         .map_err(|_| Error::Invalid("managed release selection timestamp is invalid"))?
@@ -231,9 +243,7 @@ fn validate_release_selection(selection: &ReleaseSelection) -> Result<()> {
             .ok()
             .and_then(|value| Uuid::parse_str(&value).ok())
             != Some(selection.tenant_id)
-        || env::var("ENGINE_DEPLOYED_VERSION")
-            .map(|value| value != selection.version)
-            .unwrap_or(true)
+        || selection.version != running_build_version()
         || env::var("ENGINE_DEPLOYED_IMAGE_REFERENCE")
             .map(|value| value != selection.image_reference)
             .unwrap_or(true)
@@ -411,8 +421,7 @@ fn validate_envelope(e: &Envelope) -> Result<()> {
         || !valid_image_reference(&e.expected_image_reference)
         || e.expected_version.trim().is_empty()
         || e.expected_version.len() > 80
-        || (!has_release_selection
-            && env::var("ENGINE_DEPLOYED_VERSION").is_ok_and(|v| v != e.expected_version))
+        || (!has_release_selection && e.expected_version != running_build_version())
         || (!has_release_selection
             && env::var("ENGINE_DEPLOYED_IMAGE_REFERENCE")
                 .is_ok_and(|v| v != e.expected_image_reference))
@@ -897,11 +906,8 @@ pub async fn readiness(pool: &PgPool) -> Value {
         (None, _) => true,
         (Some(_), None) => false,
     };
-    let observed_version =
-        env::var("ENGINE_DEPLOYED_VERSION").unwrap_or_else(|_| env!("SUN_CHARTS_BUILD").to_owned());
-    let version_matches = selected_version
-        .as_deref()
-        .is_none_or(|version| version == observed_version);
+    let observed_version = running_build_version().to_owned();
+    let version_matches = running_version_matches(selected_version.as_deref());
     let connection_status = if !selected_matches || !version_matches {
         "image_reference_mismatch"
     } else if connected {
@@ -983,5 +989,14 @@ mod tests {
             "unexpected":true
         });
         assert!(serde_json::from_value::<ReleaseSelection>(value).is_err());
+    }
+
+    #[test]
+    fn readiness_observes_the_compiled_binary_version() {
+        assert_eq!(running_build_version(), env!("SUN_CHARTS_BUILD"));
+        assert!(valid_version(running_build_version()));
+        assert!(running_version_matches(None));
+        assert!(running_version_matches(Some(running_build_version())));
+        assert!(!running_version_matches(Some("99.12.31.1")));
     }
 }
