@@ -37,6 +37,8 @@ pub const SCOPES: &[&str] = &[
     "billing.write",
     "events.read",
     "migration.manage",
+    "scheduling.read",
+    "scheduling.write",
     "offline_access",
 ];
 pub fn random(prefix: &str) -> String {
@@ -469,7 +471,13 @@ pub async fn authenticate(s: &State, raw: &str, method: &Method, path: &str) -> 
         .bind(hash(raw)).fetch_optional(&browser(s)?.db).await?;
     let g = g.ok_or(Error::Unauthorized)?;
     let read = matches!(*method, Method::GET | Method::HEAD);
-    let needed = if path.starts_with("/api/v1/migrations") {
+    let needed = if path.starts_with("/api/v1/scheduling") {
+        if read {
+            "scheduling.read"
+        } else {
+            "scheduling.write"
+        }
+    } else if path.starts_with("/api/v1/migrations") {
         "migration.manage"
     } else if path.starts_with("/api/v1/events") {
         "events.read"

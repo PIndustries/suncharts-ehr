@@ -75,6 +75,11 @@ impl Actor {
 impl FromRequestParts<State> for Actor {
     type Rejection = Error;
     async fn from_request_parts(parts: &mut Parts, state: &State) -> Result<Self> {
+        // Inserted only by the custom-policy middleware after authentication and
+        // restriction checks; native handlers still apply their own role rules.
+        if let Some(actor) = parts.extensions.get::<Actor>() {
+            return Ok(actor.clone());
+        }
         if !parts.headers.contains_key(header::AUTHORIZATION) {
             let browser = state.browser.as_ref().ok_or(Error::Unauthorized)?;
             let write = !matches!(

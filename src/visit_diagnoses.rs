@@ -27,6 +27,7 @@ pub fn routes() -> Router<State> {
 struct Diagnosis {
     code: String,
     display: String,
+    catalog_release_id: Option<Uuid>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -46,12 +47,12 @@ impl Input {
         for d in &mut self.diagnoses {
             d.code = d.code.trim().to_ascii_uppercase();
             d.display = d.display.trim().to_string();
-            crate::model::text(&d.display, 500)?;
+            crate::model::text(&d.display, 2000)?;
             let b = d.code.as_bytes();
             // Format checking only; this does not validate a code against an edition.
             if !(3..=8).contains(&b.len())
                 || !b[0].is_ascii_uppercase()
-                || !b[1].is_ascii_digit()
+                || !b[1].is_ascii_alphanumeric()
                 || !b[2].is_ascii_alphanumeric()
                 || (b.len() > 3
                     && (b[3] != b'.'
@@ -102,12 +103,29 @@ async fn diagnoses(tx: &mut Transaction<'_, Postgres>, a: &Actor, id: Uuid) -> R
 }
 async fn payload(tx: &mut Transaction<'_, Postgres>, a: &Actor, v: &Visit) -> Result<Value> {
     let items = diagnoses(tx, a, v.id).await?;
+    let service_date = diagnosis_service_date(tx, a, v).await?;
     let mut history = sqlx::query_scalar::<_, Value>("SELECT jsonb_build_object('id',id,'visit_version',visit_version,'actor_id',actor_id,'actor_label',(SELECT coalesce(nullif(u.display_name,''),u.email) FROM browser_users u WHERE u.tenant_id=visit_diagnosis_revisions.tenant_id AND u.id=visit_diagnosis_revisions.actor_id),'reason',reason,'snapshot',snapshot,'created_at',created_at) FROM visit_diagnosis_revisions WHERE tenant_id=$1 AND visit_id=$2 ORDER BY visit_version DESC LIMIT 101").bind(a.tenant_id).bind(v.id).fetch_all(&mut **tx).await?;
     let truncated = history.len() > 100;
     history.truncate(100);
     Ok(
-        json!({"visit":v,"version":v.version,"can_edit":v.status=="in_progress" && a.clinical().is_ok() && a.sub==v.clinician_id,"diagnoses":items,"history":history,"history_truncated":truncated,"code_system":"http://hl7.org/fhir/sid/icd-10-cm"}),
+        json!({"visit":v,"service_date":service_date,"version":v.version,"can_edit":v.status=="in_progress" && a.clinical().is_ok() && a.sub==v.clinician_id,"diagnoses":items,"history":history,"history_truncated":truncated,"code_system":"http://hl7.org/fhir/sid/icd-10-cm"}),
     )
+}
+async fn diagnosis_service_date(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    v: &Visit,
+) -> Result<chrono::NaiveDate> {
+    // The earliest catalog selection freezes the date against which this
+    // encounter was coded. Revision history preserves it even after diagnoses
+    // are cleared or current scheduling/timezone settings change.
+    let prior: Option<chrono::NaiveDate> = sqlx::query_scalar("SELECT (d.entry->'catalog_snapshot'->>'service_date')::date FROM visit_diagnosis_revisions r CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(r.snapshot)='array' THEN r.snapshot ELSE '[]'::jsonb END) WITH ORDINALITY AS d(entry,position) WHERE r.tenant_id=$1 AND r.visit_id=$2 AND jsonb_typeof(d.entry->'catalog_snapshot'->'service_date')='string' ORDER BY r.visit_version,d.position LIMIT 1")
+        .bind(a.tenant_id).bind(v.id).fetch_optional(&mut **tx).await?;
+    if let Some(date) = prior {
+        return Ok(date);
+    }
+    Ok(sqlx::query_scalar("SELECT (ap.starts_at AT TIME ZONE coalesce(bp.booking_timezone,'UTC'))::date FROM appointments ap LEFT JOIN previsit_booking_profiles bp ON bp.tenant_id=ap.tenant_id WHERE ap.tenant_id=$1 AND ap.id=$2")
+        .bind(a.tenant_id).bind(v.appointment_id).fetch_one(&mut **tx).await?)
 }
 async fn read(
     ExtractState(s): ExtractState<State>,
@@ -149,20 +167,38 @@ async fn save(
         ));
     }
     let old = diagnoses(&mut tx, &a, id).await?;
-    let items: Vec<Value> = input
-        .diagnoses
-        .iter()
-        .enumerate()
-        .map(|(i, d)| {
-            let existing = old
-                .as_array()
-                .and_then(|items| items.iter().find(|item| item["code"] == d.code))
-                .and_then(|item| item["id"].as_str())
-                .and_then(|id| Uuid::parse_str(id).ok())
-                .unwrap_or_else(Uuid::new_v4);
-            json!({"id":existing,"code":d.code,"display":d.display,"rank":i+1})
-        })
-        .collect();
+    let service_date = diagnosis_service_date(&mut tx, &a, &v).await?;
+    let mut items = Vec::new();
+    for (i, d) in input.diagnoses.iter().enumerate() {
+        let existing = old
+            .as_array()
+            .and_then(|items| items.iter().find(|item| item["code"] == d.code))
+            .and_then(|item| item["id"].as_str())
+            .and_then(|id| Uuid::parse_str(id).ok())
+            .unwrap_or_else(Uuid::new_v4);
+        let mut item = json!({"id":existing,"code":d.code,"display":d.display,"rank":i+1});
+        if let Some(release_id) = d.catalog_release_id {
+            let snapshot = crate::terminology::resolve_code(
+                &mut tx,
+                &a,
+                release_id,
+                &d.code,
+                service_date,
+                true,
+            )
+            .await?;
+            if snapshot["system"] != "ICD-10-CM" {
+                return Err(Error::Invalid(
+                    "encounter diagnoses require an ICD-10-CM catalog",
+                ));
+            }
+            item["code"] = snapshot["code"].clone();
+            item["display"] = snapshot["display"].clone();
+            item["catalog_release_id"] = json!(release_id);
+            item["catalog_snapshot"] = snapshot;
+        }
+        items.push(item);
+    }
     let items = json!(items);
     sqlx::query("INSERT INTO visit_diagnoses(tenant_id,visit_id,diagnoses,updated_by) VALUES($1,$2,$3,$4) ON CONFLICT(tenant_id,visit_id) DO UPDATE SET diagnoses=excluded.diagnoses,updated_by=excluded.updated_by,updated_at=now()")
         .bind(a.tenant_id).bind(id).bind(&items).bind(a.sub).execute(&mut *tx).await?;

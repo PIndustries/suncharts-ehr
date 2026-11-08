@@ -102,7 +102,12 @@ async fn deployed_schema_61_upgrades_without_checksum_drift() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(version, 62);
+    let expected_version = suncharts_engine::MIGRATOR
+        .iter()
+        .map(|migration| migration.version)
+        .max()
+        .unwrap();
+    assert_eq!(version, expected_version);
 
     sqlx::query(
         "INSERT INTO partner_support_sessions

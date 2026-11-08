@@ -326,6 +326,35 @@ async fn revision(
     sqlx::query("INSERT INTO referral_revisions(tenant_id,referral_id,version,status,visit_id,content,attachment_snapshot,author_id,reason,evidence) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)").bind(a.tenant_id).bind(e.id).bind(e.version).bind(&e.status).bind(e.visit_id).bind(&e.content).bind(&e.attachment_snapshot).bind(a.sub).bind(reason.trim()).bind(evidence.trim()).execute(&mut **tx).await?;
     Ok(())
 }
+
+async fn emit_referral_event(
+    tx: &mut Transaction<'_, Postgres>,
+    actor: &Actor,
+    referral: &Entry,
+    event_type: &str,
+) -> Result<()> {
+    crate::automation_event_runtime::emit_in_tx(
+        tx,
+        actor,
+        crate::automation_event_runtime::NewAutomationEvent {
+            event_type: event_type.to_owned(),
+            source: "suncharts.referrals".to_owned(),
+            source_event_id: format!("{}:{}", referral.id, referral.version),
+            payload: json!({
+                "referral_id": referral.id,
+                "patient_id": referral.patient_id,
+                "visit_id": referral.visit_id,
+                "status": referral.status,
+                "version": referral.version
+            }),
+            classification: "phi".to_owned(),
+            occurred_at: Utc::now(),
+            retention_days: 30,
+        },
+    )
+    .await?;
+    Ok(())
+}
 async fn create(
     a: Actor,
     ExtractState(s): ExtractState<State>,
@@ -375,6 +404,7 @@ async fn create(
         .fetch_one(&mut *tx)
         .await?;
     revision(&mut tx, &a, &e, &v.reason, "").await?;
+    emit_referral_event(&mut tx, &a, &e, "suncharts.referral.created").await?;
     audit(&mut tx, &a, "patient.referrals.create", p).await?;
     tx.commit().await?;
     Ok(response(e))
@@ -476,6 +506,7 @@ async fn action(
         .fetch_one(&mut *tx)
         .await?;
     revision(&mut tx, &a, &e, &v.reason, &v.evidence).await?;
+    emit_referral_event(&mut tx, &a, &e, "suncharts.referral.status_changed").await?;
     audit(&mut tx, &a, "patient.referrals.action", p).await?;
     tx.commit().await?;
     Ok(response(e))

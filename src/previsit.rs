@@ -8,7 +8,7 @@ use crate::{
 };
 use axum::{
     extract::{Path, State as ExtractState},
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, Method, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -95,28 +95,46 @@ pub fn router() -> Router<State> {
             post(issue_packet),
         )
         .route("/api/v1/previsit/packets/{id}/review", post(review_packet))
+        .route("/api/v1/previsit/packets/{id}", get(packet_detail))
+        .route(
+            "/api/v1/previsit/packets/{id}/demographics",
+            post(promote_demographics),
+        )
+        .route(
+            "/api/v1/care-pathways/instances/{id}/steps/{step}/intake-packet",
+            post(issue_workflow_packet),
+        )
 }
-async fn public_booking_page() -> Html<&'static str> {
-    Html(include_str!("../web/previsit-booking.html"))
+async fn public_booking_page() -> Html<String> {
+    Html(crate::web_content(
+        "previsit-booking.html",
+        include_str!("../web/previsit-booking.html"),
+    ))
 }
-async fn public_intake_page() -> Html<&'static str> {
-    Html(include_str!("../web/previsit-intake.html"))
+async fn public_intake_page() -> Html<String> {
+    Html(crate::web_content(
+        "previsit-intake.html",
+        include_str!("../web/previsit-intake.html"),
+    ))
 }
 async fn public_script() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+    crate::web_asset(
+        "previsit-public.js",
+        "text/javascript; charset=utf-8",
         include_str!("../web/previsit-public.js"),
     )
 }
 async fn public_style() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+    crate::web_asset(
+        "previsit.css",
+        "text/css; charset=utf-8",
         include_str!("../web/previsit.css"),
     )
 }
 async fn staff_script() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+    crate::web_asset(
+        "previsit.js",
+        "text/javascript; charset=utf-8",
         include_str!("../web/previsit.js"),
     )
 }
@@ -248,7 +266,12 @@ fn validate_schema(schema: &Value) -> Result<()> {
         for field in list {
             fields += 1;
             let key = clean(field.get("key").and_then(Value::as_str).unwrap_or(""), 80)?;
-            if !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || !keys.insert(key) {
+            if !key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                || ["attested", "attested_name", "submit"].contains(&key.as_str())
+                || !keys.insert(key)
+            {
                 return Err(Error::Invalid(
                     "intake field keys must be unique identifiers",
                 ));
@@ -259,7 +282,7 @@ fn validate_schema(schema: &Value) -> Result<()> {
             )?;
             let kind = field.get("type").and_then(Value::as_str).unwrap_or("");
             if ![
-                "text", "textarea", "date", "phone", "email", "select", "checkbox",
+                "text", "textarea", "date", "phone", "email", "select", "checkbox", "number",
             ]
             .contains(&kind)
             {
@@ -272,6 +295,11 @@ fn validate_schema(schema: &Value) -> Result<()> {
                     .is_none_or(|v| v.is_empty() || v.len() > 100)
             {
                 return Err(Error::Invalid("select fields require bounded options"));
+            }
+            if let Some(options) = field.get("options").and_then(Value::as_array) {
+                for option in options {
+                    clean(option.as_str().unwrap_or(""), 160)?;
+                }
             }
         }
     }
@@ -456,6 +484,31 @@ async fn public_book(
     sqlx::query("INSERT INTO appointments(tenant_id,id,patient_id,clinician_id,starts_at,ends_at,status,title,category,notes,request_id,request_digest) VALUES($1,$2,$3,$4,$5,$6,'booked',$7,$8,'Public booking; identity and contact require staff verification',$9,$10)")
         .bind(tenant).bind(appointment).bind(patient).bind(clinician).bind(input.starts_at).bind(ends).bind(&title).bind(&category).bind(input.request_id).bind(&request_digest).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO appointment_revisions(tenant_id,appointment_id,version,snapshot,actor_id,reason) SELECT tenant_id,id,version,to_jsonb(a)-'tenant_id'-'request_digest'-'request_id',$3,'Patient requested appointment through public booking' FROM appointments a WHERE tenant_id=$1 AND id=$2").bind(tenant).bind(appointment).bind(patient).execute(&mut *tx).await?;
+    let booked: crate::model::Appointment =
+        sqlx::query_as("SELECT * FROM appointments WHERE tenant_id=$1 AND id=$2")
+            .bind(tenant)
+            .bind(appointment)
+            .fetch_one(&mut *tx)
+            .await?;
+    // This actor records the public patient's provenance only. Enqueuing work
+    // grants no staff authority and does not execute any pathway actions.
+    let patient_actor = Actor {
+        sub: patient,
+        tenant_id: tenant,
+        role: Role::Patient,
+        patient_id: Some(patient),
+        iss: "suncharts-public-booking".into(),
+        aud: "suncharts-engine".into(),
+        iat: now.timestamp(),
+        exp: now.timestamp() + 60,
+    };
+    crate::scheduling::emit_appointment_event(
+        &mut tx,
+        &patient_actor,
+        &booked,
+        "suncharts.appointment.created",
+    )
+    .await?;
     sqlx::query("INSERT INTO previsit_public_requests(tenant_id,request_id,digest,contact_hash,appointment_id,patient_id) VALUES($1,$2,$3,$4,$5,$6)").bind(tenant).bind(input.request_id).bind(&request_digest).bind(contact_hash).bind(appointment).bind(patient).execute(&mut *tx).await?;
     let intake = issue_for_appointment(
         &mut tx,
@@ -478,7 +531,7 @@ async fn public_book(
     ))
 }
 
-async fn issue_for_appointment(
+pub(crate) async fn issue_for_appointment(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
     appointment: Uuid,
@@ -500,6 +553,218 @@ async fn issue_for_appointment(
     Ok(Some((packet, plain)))
 }
 
+#[derive(sqlx::FromRow)]
+struct WorkflowForm {
+    definition_version: i64,
+    patient_id: Option<Uuid>,
+    appointment_id: Option<Uuid>,
+    status: String,
+    kind: String,
+    state: String,
+    version: i64,
+    assigned_role: Option<String>,
+    definition: Value,
+}
+
+fn workflow_schema(definition: &Value, step: &str) -> Result<Value> {
+    let node = definition["steps"]
+        .as_array()
+        .and_then(|steps| steps.iter().find(|node| node["key"] == step))
+        .filter(|node| node["kind"] == "patient_form")
+        .ok_or(Error::Invalid(
+            "choose a patient form from this workflow revision",
+        ))?;
+    let fields = node["form_fields"]
+        .as_array()
+        .filter(|fields| !fields.is_empty() && fields.len() <= 30)
+        .ok_or(Error::Invalid("this workflow patient form has no fields"))?;
+    let fields = fields.iter().map(|field| {
+        let kind = match field["field_type"].as_str().unwrap_or("") {
+            "short_text" => "text", "long_text" => "textarea", "choice" => "select",
+            "date" => "date", "checkbox" => "checkbox", "number" => "number",
+            _ => return Err(Error::Invalid("unsupported workflow form field")),
+        };
+        Ok(json!({"key":field["key"],"label":field["label"],"type":kind,"required":field["required"],"options":field["options"],"chart_target":field["chart_target"]}))
+    }).collect::<Result<Vec<_>>>()?;
+    let schema = json!({"attestation":"I confirm these answers are accurate to the best of my knowledge. I understand the practice will review them before adding selected information to my chart.","sections":[{"label":node["title"],"fields":fields}]});
+    validate_schema(&schema)?;
+    Ok(schema)
+}
+
+async fn downstream_scope(
+    state: &State,
+    actor: &Actor,
+    headers: &HeaderMap,
+    route: &str,
+) -> Result<()> {
+    if let Some(token) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .filter(|v| v.starts_with("sce_at_"))
+    {
+        let checked = crate::oauth::authenticate(state, token, &Method::POST, route).await?;
+        if checked.tenant_id != actor.tenant_id || checked.sub != actor.sub {
+            return Err(Error::Forbidden);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) async fn issue_for_workflow(
+    tx: &mut Transaction<'_, Postgres>,
+    actor: &Actor,
+    instance: Uuid,
+    step: &str,
+    expected: Option<i64>,
+    requested_appointment: Option<Uuid>,
+    reason: &str,
+) -> Result<(Uuid, Option<String>)> {
+    staff_write(actor)?;
+    let row: WorkflowForm = sqlx::query_as(
+        "SELECT i.definition_version,i.patient_id,i.appointment_id,i.status,s.kind,s.state,s.version,s.assigned_role,r.definition
+         FROM care_pathway_instances i JOIN care_pathway_steps s ON s.tenant_id=i.tenant_id AND s.instance_id=i.id
+         JOIN care_pathway_definition_revisions r ON r.tenant_id=i.tenant_id AND r.definition_id=i.definition_id AND r.version=i.definition_version
+         WHERE i.tenant_id=$1 AND i.id=$2 AND s.step_key=$3 FOR UPDATE OF i,s",
+    ).bind(actor.tenant_id).bind(instance).bind(step).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)?;
+    if row.status != "active" || row.kind != "patient_form" {
+        return Err(Error::Conflict("the workflow patient form is not active"));
+    }
+    let actor_role = serde_json::to_value(&actor.role).map_err(|_| Error::Forbidden)?;
+    if !matches!(actor.role, Role::Owner)
+        && row
+            .assigned_role
+            .as_deref()
+            .is_some_and(|role| Some(role) != actor_role.as_str())
+    {
+        return Err(Error::Forbidden);
+    }
+    let appointment = if let Some(appointment) = row.appointment_id {
+        appointment
+    } else {
+        let booked: Vec<Uuid> = sqlx::query_scalar("SELECT a.id FROM workflow_dispatches d JOIN appointments a ON a.tenant_id=d.tenant_id AND a.id::text=d.result->>'appointment_id' WHERE d.tenant_id=$1 AND d.pathway_instance_id=$2 AND d.kind='appointment_booking' AND d.status='completed' AND a.patient_id=$3 ORDER BY d.created_at LIMIT 2 FOR SHARE OF a")
+            .bind(actor.tenant_id).bind(instance).bind(row.patient_id).fetch_all(&mut **tx).await?;
+        if booked.len() != 1 {
+            return Err(Error::Invalid("link an appointment or complete one unambiguous booking in this workflow before issuing forms"));
+        }
+        booked[0]
+    };
+    if requested_appointment.is_some_and(|id| id != appointment) {
+        return Err(Error::Invalid(
+            "the appointment does not match this workflow",
+        ));
+    }
+    let patient = row.patient_id.ok_or(Error::Invalid(
+        "link a patient to the workflow before issuing forms",
+    ))?;
+    let due: Option<DateTime<Utc>> = sqlx::query_scalar("SELECT starts_at FROM appointments WHERE tenant_id=$1 AND id=$2 AND patient_id=$3 AND status IN('booked','checked_in') FOR SHARE")
+        .bind(actor.tenant_id).bind(appointment).bind(patient).fetch_optional(&mut **tx).await?;
+    let due = due.ok_or(Error::Conflict(
+        "the workflow appointment is unavailable or belongs to another patient",
+    ))?;
+    // An issued link is shown once. A retry returns the same bound packet, never
+    // a second packet or a recoverable copy of its bearer secret.
+    let existing: Option<Uuid> = sqlx::query_scalar("SELECT id FROM previsit_intake_packets WHERE tenant_id=$1 AND workflow_instance_id=$2 AND workflow_step_key=$3")
+        .bind(actor.tenant_id).bind(instance).bind(step).fetch_optional(&mut **tx).await?;
+    if let Some(packet) = existing {
+        return Ok((packet, None));
+    }
+    if expected.is_some_and(|version| version != row.version)
+        || !["ready", "in_progress"].contains(&row.state.as_str())
+    {
+        return Err(Error::Conflict("the workflow form changed or is not ready"));
+    }
+    let schema = workflow_schema(&row.definition, step)?;
+    let packet = Uuid::new_v4();
+    let plain = token();
+    sqlx::query("INSERT INTO previsit_intake_packets(tenant_id,id,appointment_id,patient_id,template_id,template_version,template_snapshot,access_token_hash,due_at,issued_by,workflow_instance_id,workflow_step_key,workflow_definition_version) VALUES($1,$2,$3,$4,NULL,$5,$6,$7,$8,$9,$10,$11,$5)")
+        .bind(actor.tenant_id).bind(packet).bind(appointment).bind(patient).bind(row.definition_version).bind(schema).bind(hash(&plain)).bind(due).bind(actor.sub).bind(instance).bind(step).execute(&mut **tx).await?;
+    sqlx::query("UPDATE care_pathway_steps SET state='in_progress',version=version+1,updated_at=now(),updated_by=$4 WHERE tenant_id=$1 AND instance_id=$2 AND step_key=$3")
+        .bind(actor.tenant_id).bind(instance).bind(step).bind(actor.sub).execute(&mut **tx).await?;
+    workflow_packet_evidence(tx, actor.tenant_id, packet, actor.sub, "sent", 1, reason).await?;
+    sqlx::query("INSERT INTO previsit_events(tenant_id,packet_id,appointment_id,patient_id,actor_id,actor_kind,action,details) VALUES($1,$2,$3,$4,$5,'staff','workflow_intake_packet_issued',$6)")
+        .bind(actor.tenant_id).bind(packet).bind(appointment).bind(patient).bind(actor.sub).bind(json!({"workflow_instance_id":instance,"workflow_step_key":step,"workflow_definition_version":row.definition_version})).execute(&mut **tx).await?;
+    crate::postgres::audit(tx, actor, "previsit.workflow_packet_issue", packet).await?;
+    Ok((packet, Some(plain)))
+}
+
+// Always lock the run and step before the packet so review and completion use
+// the same lock order. Cancelled or completed workflow forms cannot be changed.
+async fn lock_packet_workflow(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    packet: Uuid,
+) -> Result<()> {
+    let binding: Option<(Uuid, String, i64)> = sqlx::query_as("SELECT workflow_instance_id,workflow_step_key,workflow_definition_version FROM previsit_intake_packets WHERE tenant_id=$1 AND id=$2 AND workflow_instance_id IS NOT NULL")
+        .bind(tenant).bind(packet).fetch_optional(&mut **tx).await?;
+    if let Some((instance, step, revision)) = binding {
+        let valid: Option<(String,String)> = sqlx::query_as("SELECT i.status,s.state FROM care_pathway_instances i JOIN care_pathway_steps s ON s.tenant_id=i.tenant_id AND s.instance_id=i.id JOIN previsit_intake_packets p ON p.tenant_id=i.tenant_id AND p.workflow_instance_id=i.id AND p.workflow_step_key=s.step_key WHERE i.tenant_id=$1 AND i.id=$2 AND s.step_key=$3 AND p.id=$4 AND i.definition_version=$5 AND i.patient_id=p.patient_id AND (i.appointment_id=p.appointment_id OR (i.appointment_id IS NULL AND EXISTS(SELECT 1 FROM workflow_dispatches d WHERE d.tenant_id=i.tenant_id AND d.pathway_instance_id=i.id AND d.kind='appointment_booking' AND d.status='completed' AND d.result->>'appointment_id'=p.appointment_id::text))) FOR UPDATE OF i,s")
+            .bind(tenant).bind(instance).bind(step).bind(packet).bind(revision).fetch_optional(&mut **tx).await?;
+        if !valid.is_some_and(|(status, state)| {
+            status == "active"
+                && ["ready", "in_progress", "awaiting_approval"].contains(&state.as_str())
+        }) {
+            return Err(Error::Conflict("this workflow form is no longer active"));
+        }
+    }
+    Ok(())
+}
+
+async fn workflow_packet_evidence(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    packet: Uuid,
+    actor: Uuid,
+    status: &str,
+    response_version: i64,
+    reason: &str,
+) -> Result<()> {
+    let binding: Option<(Uuid,String,i64)> = sqlx::query_as("SELECT workflow_instance_id,workflow_step_key,workflow_definition_version FROM previsit_intake_packets WHERE tenant_id=$1 AND id=$2 AND workflow_instance_id IS NOT NULL")
+        .bind(tenant).bind(packet).fetch_optional(&mut **tx).await?;
+    if let Some((instance, step, revision)) = binding {
+        let evidence = json!({"packet_id":packet,"packet_status":status,"response_version":response_version,"workflow_definition_version":revision});
+        sqlx::query("UPDATE care_pathway_steps SET evidence=evidence||$4::jsonb,version=version+1,updated_by=$5,updated_at=now() WHERE tenant_id=$1 AND instance_id=$2 AND step_key=$3")
+            .bind(tenant).bind(instance).bind(&step).bind(&evidence).bind(actor).execute(&mut **tx).await?;
+        sqlx::query("INSERT INTO care_pathway_events(tenant_id,instance_id,step_key,event_type,actor_id,reason,evidence) VALUES($1,$2,$3,$4,$5,$6,$7)")
+            .bind(tenant).bind(instance).bind(step).bind(format!("intake.{status}")).bind(actor).bind(reason).bind(evidence).execute(&mut **tx).await?;
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkflowIssue {
+    reason: String,
+}
+async fn issue_workflow_packet(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path((instance, step)): Path<(Uuid, String)>,
+    headers: HeaderMap,
+    Json(input): Json<WorkflowIssue>,
+) -> Result<Response> {
+    staff_write(&actor)?;
+    let reason = clean(&input.reason, 1000)?;
+    let expected = version(&headers)?;
+    crate::access_policies::require_native(&state, &actor, "workflows", "edit").await?;
+    crate::access_policies::require_native(&state, &actor, "scheduling", "create").await?;
+    downstream_scope(&state, &actor, &headers, "/api/v1/scheduling/appointments").await?;
+    let mut tx = db(&state)?.begin().await?;
+    let (packet, plain) = issue_for_workflow(
+        &mut tx,
+        &actor,
+        instance,
+        &step,
+        Some(expected),
+        None,
+        &reason,
+    )
+    .await?;
+    let binding: i64 = sqlx::query_scalar("SELECT workflow_definition_version FROM previsit_intake_packets WHERE tenant_id=$1 AND id=$2").bind(actor.tenant_id).bind(packet).fetch_one(&mut *tx).await?;
+    tx.commit().await?;
+    Ok((if plain.is_some(){StatusCode::CREATED}else{StatusCode::OK},[(header::CACHE_CONTROL,"no-store")],Json(json!({"packet_id":packet,"intake_url":plain.as_ref().map(|plain|format!("/intake#token={plain}")),"secret_shown_once":plain.is_some(),"workflow_instance_id":instance,"workflow_step_key":step,"workflow_definition_version":binding}))).into_response())
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IntakeToken {
@@ -514,6 +779,7 @@ async fn public_packet(
     let row:Option<(Uuid,Uuid,Uuid,Uuid,Value)>=sqlx::query_as("SELECT p.tenant_id,p.id,p.appointment_id,p.patient_id,jsonb_build_object('packet_id',p.id,'status',p.status,'due_at',p.due_at,'template',p.template_snapshot,'patient',jsonb_build_object('given_name',pt.given_name),'appointment',jsonb_build_object('starts_at',a.starts_at,'title',a.title)) FROM previsit_intake_packets p JOIN patients pt ON pt.tenant_id=p.tenant_id AND pt.id=p.patient_id JOIN appointments a ON a.tenant_id=p.tenant_id AND a.id=p.appointment_id WHERE p.access_token_hash=$1 AND p.status NOT IN('void','reviewed')")
         .bind(hash(&token)).fetch_optional(&mut *tx).await?;
     let (tenant, packet, appointment, patient, payload) = row.ok_or(Error::NotFound)?;
+    lock_packet_workflow(&mut tx, tenant, packet).await?;
     sqlx::query("INSERT INTO previsit_events(tenant_id,packet_id,appointment_id,patient_id,actor_id,actor_kind,action) VALUES($1,$2,$3,$4,$4,'patient_guest','intake_opened')").bind(tenant).bind(packet).bind(appointment).bind(patient).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(payload))
@@ -541,6 +807,45 @@ fn validate_response(schema: &Value, response: &Value) -> Result<()> {
             allowed.insert(key);
             if field.get("required").and_then(Value::as_bool) == Some(true) {
                 required.insert(key);
+            }
+            if let Some(value) = object.get(key).filter(|value| !value.is_null()) {
+                let kind = field["type"]
+                    .as_str()
+                    .ok_or(Error::Invalid("invalid intake field type"))?;
+                if kind == "checkbox" {
+                    if !value.is_boolean() {
+                        return Err(Error::Invalid("checkbox answers must be true or false"));
+                    }
+                } else {
+                    let text = value.as_str().ok_or(Error::Invalid(
+                        "intake answers must match their field types",
+                    ))?;
+                    let max = if kind == "textarea" { 10_000 } else { 1000 };
+                    if text.chars().count() > max
+                        || text.chars().any(|c| {
+                            c.is_control()
+                                && !(kind == "textarea" && ['\n', '\r', '\t'].contains(&c))
+                        })
+                    {
+                        return Err(Error::Invalid("intake answer exceeds its field limit"));
+                    }
+                    if !text.is_empty() {
+                        let valid = match kind {
+                            "date" => NaiveDate::parse_from_str(text, "%Y-%m-%d").is_ok(),
+                            "number" => text.parse::<f64>().is_ok_and(f64::is_finite),
+                            "select" => field["options"].as_array().is_some_and(|options| {
+                                options.iter().any(|option| option.as_str() == Some(text))
+                            }),
+                            "text" | "textarea" | "phone" | "email" => true,
+                            _ => false,
+                        };
+                        if !valid {
+                            return Err(Error::Invalid(
+                                "intake answer is not valid for this field",
+                            ));
+                        }
+                    }
+                }
             }
         }
     }
@@ -582,6 +887,14 @@ async fn public_submit(
         return Err(Error::Invalid("the patient attestation is required"));
     }
     let mut tx = db(&state)?.begin().await?;
+    let identity: Option<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT tenant_id,id FROM previsit_intake_packets WHERE access_token_hash=$1",
+    )
+    .bind(hash(&input.token))
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (tenant_id, packet_id) = identity.ok_or(Error::NotFound)?;
+    lock_packet_workflow(&mut tx, tenant_id, packet_id).await?;
     let row:Option<(Uuid,Uuid,Uuid,Uuid,String,i64,Value)>=sqlx::query_as("SELECT tenant_id,id,appointment_id,patient_id,status,version,template_snapshot FROM previsit_intake_packets WHERE access_token_hash=$1 FOR UPDATE").bind(hash(&input.token)).fetch_optional(&mut *tx).await?;
     let (tenant, packet, appointment, patient, status, current, schema) =
         row.ok_or(Error::NotFound)?;
@@ -593,6 +906,16 @@ async fn public_submit(
     sqlx::query("INSERT INTO previsit_intake_responses(tenant_id,packet_id,version,response,attested_name,attested) VALUES($1,$2,$3,$4,$5,true)").bind(tenant).bind(packet).bind(next).bind(&input.response).bind(&input.attested_name).execute(&mut *tx).await?;
     sqlx::query("UPDATE previsit_intake_packets SET status='submitted',submitted_at=now(),version=$3,updated_at=now() WHERE tenant_id=$1 AND id=$2").bind(tenant).bind(packet).bind(next).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO previsit_events(tenant_id,packet_id,appointment_id,patient_id,actor_id,actor_kind,action,details) VALUES($1,$2,$3,$4,$4,'patient_guest','intake_submitted',$5)").bind(tenant).bind(packet).bind(appointment).bind(patient).bind(json!({"response_version":next,"attested":true})).execute(&mut *tx).await?;
+    workflow_packet_evidence(
+        &mut tx,
+        tenant,
+        packet,
+        patient,
+        "submitted",
+        next,
+        "Patient submitted the version-pinned intake packet",
+    )
+    .await?;
     tx.commit().await?;
     Ok(Json(
         json!({"packet_id":packet,"status":"submitted","version":next,"message":"Your information was received and is awaiting practice review."}),
@@ -614,7 +937,7 @@ async fn issue_packet(
     .fetch_optional(&mut *tx)
     .await?;
     let patient = patient.ok_or(Error::NotFound)?;
-    if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM previsit_intake_packets WHERE tenant_id=$1 AND appointment_id=$2)").bind(actor.tenant_id).bind(appointment).fetch_one(&mut *tx).await?{return Err(Error::Conflict("an intake packet already exists for this appointment"));}
+    if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM previsit_intake_packets WHERE tenant_id=$1 AND appointment_id=$2 AND workflow_instance_id IS NULL)").bind(actor.tenant_id).bind(appointment).fetch_one(&mut *tx).await?{return Err(Error::Conflict("an intake packet already exists for this appointment"));}
     let due: DateTime<Utc> =
         sqlx::query_scalar("SELECT starts_at FROM appointments WHERE tenant_id=$1 AND id=$2")
             .bind(actor.tenant_id)
@@ -643,10 +966,155 @@ async fn issue_packet(
 async fn readiness(actor: Actor, ExtractState(state): ExtractState<State>) -> Result<Json<Value>> {
     actor.staff()?;
     let mut tx = db(&state)?.begin().await?;
-    let rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('packet_id',p.id,'packet_version',p.version,'status',coalesce(p.status,'not_issued'),'due_at',coalesce(p.due_at,a.starts_at),'submitted_at',p.submitted_at,'reviewed_at',p.reviewed_at,'appointment_id',a.id,'starts_at',a.starts_at,'patient_id',pt.id,'patient_name',pt.family_name||', '||pt.given_name,'mrn',pt.mrn,'response',(SELECT response FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1),'attested_name',(SELECT attested_name FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1)) FROM appointments a JOIN patients pt ON pt.tenant_id=a.tenant_id AND pt.id=a.patient_id LEFT JOIN previsit_intake_packets p ON p.tenant_id=a.tenant_id AND p.appointment_id=a.id WHERE a.tenant_id=$1 AND a.status='booked' AND a.starts_at>now()-interval '1 day' ORDER BY a.starts_at LIMIT 200").bind(actor.tenant_id).fetch_all(&mut *tx).await?;
+    let rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('packet_id',p.id,'packet_version',p.version,'status',coalesce(p.status,'not_issued'),'due_at',coalesce(p.due_at,a.starts_at),'submitted_at',p.submitted_at,'reviewed_at',p.reviewed_at,'appointment_id',a.id,'starts_at',a.starts_at,'patient_id',pt.id,'patient_name',pt.family_name||', '||pt.given_name,'mrn',pt.mrn,'template_snapshot',p.template_snapshot,'workflow_instance_id',p.workflow_instance_id,'workflow_step_key',p.workflow_step_key,'workflow_definition_version',p.workflow_definition_version,'response',(SELECT response FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1),'attested_name',(SELECT attested_name FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1)) FROM appointments a JOIN patients pt ON pt.tenant_id=a.tenant_id AND pt.id=a.patient_id LEFT JOIN previsit_intake_packets p ON p.tenant_id=a.tenant_id AND p.appointment_id=a.id WHERE a.tenant_id=$1 AND a.status='booked' AND a.starts_at>now()-interval '1 day' ORDER BY a.starts_at LIMIT 200").bind(actor.tenant_id).fetch_all(&mut *tx).await?;
     crate::postgres::audit(&mut tx, &actor, "previsit.readiness_read", actor.tenant_id).await?;
     tx.commit().await?;
     Ok(Json(json!({"items":rows})))
+}
+
+async fn packet_detail(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(packet): Path<Uuid>,
+) -> Result<Response> {
+    actor.staff()?;
+    crate::access_policies::require_native(&state, &actor, "clinical", "view").await?;
+    let mut tx = db(&state)?.begin().await?;
+    let value: Value = sqlx::query_scalar("SELECT jsonb_build_object('packet_id',p.id,'packet_version',p.version,'status',p.status,'due_at',p.due_at,'submitted_at',p.submitted_at,'reviewed_at',p.reviewed_at,'appointment_id',p.appointment_id,'starts_at',a.starts_at,'patient_id',p.patient_id,'patient_name',pt.family_name||', '||pt.given_name,'mrn',pt.mrn,'template_snapshot',p.template_snapshot,'workflow_instance_id',p.workflow_instance_id,'workflow_step_key',p.workflow_step_key,'workflow_definition_version',p.workflow_definition_version,'response',(SELECT response FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1),'attested_name',(SELECT attested_name FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1)) FROM previsit_intake_packets p JOIN appointments a ON a.tenant_id=p.tenant_id AND a.id=p.appointment_id JOIN patients pt ON pt.tenant_id=p.tenant_id AND pt.id=p.patient_id WHERE p.tenant_id=$1 AND p.id=$2")
+        .bind(actor.tenant_id).bind(packet).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
+    crate::postgres::audit(&mut tx, &actor, "previsit.packet_read", packet).await?;
+    tx.commit().await?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(value)).into_response())
+}
+
+const DEMOGRAPHIC_TARGETS: &[&str] = &[
+    "preferred_name",
+    "pronouns",
+    "language",
+    "administrative_gender",
+    "phone",
+    "email",
+];
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DemographicPromotion {
+    fields: Vec<String>,
+    demographics_version: i64,
+    reason: String,
+}
+async fn promote_demographics(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(packet): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<DemographicPromotion>,
+) -> Result<Response> {
+    actor.scheduling()?;
+    let expected = version(&headers)?;
+    let reason = clean(&input.reason, 800)?;
+    if input.fields.is_empty()
+        || input.fields.len() > DEMOGRAPHIC_TARGETS.len()
+        || input.fields.iter().collect::<HashSet<_>>().len() != input.fields.len()
+        || input.demographics_version < 0
+    {
+        return Err(Error::Invalid(
+            "select distinct mapped fields and the current demographics version",
+        ));
+    }
+    crate::access_policies::require_native(&state, &actor, "clinical", "edit").await?;
+    downstream_scope(
+        &state,
+        &actor,
+        &headers,
+        "/api/v1/patients/{id}/demographics",
+    )
+    .await?;
+    let mut tx = db(&state)?.begin().await?;
+    crate::scheduling::tenant_lock(&mut tx, &actor).await?;
+    let row: Option<(Uuid,Uuid,String,i64,Value,Option<Value>)> = sqlx::query_as("SELECT patient_id,appointment_id,status,version,template_snapshot,(SELECT response FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1) FROM previsit_intake_packets p WHERE tenant_id=$1 AND id=$2 FOR SHARE")
+        .bind(actor.tenant_id).bind(packet).fetch_optional(&mut *tx).await?;
+    let (patient, appointment, status, packet_version, schema, response) =
+        row.ok_or(Error::NotFound)?;
+    if status != "reviewed" || packet_version != expected {
+        return Err(Error::Conflict(
+            "review the current submitted packet before applying mapped answers",
+        ));
+    }
+    let response = response.ok_or(Error::Conflict(
+        "this intake packet has no submitted answers",
+    ))?;
+    sqlx::query("SELECT id FROM patients WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
+        .bind(actor.tenant_id)
+        .bind(patient)
+        .fetch_one(&mut *tx)
+        .await?;
+    let prior: Option<(i64, Value)> = sqlx::query_as(
+        "SELECT version,content FROM patient_demographics WHERE tenant_id=$1 AND patient_id=$2",
+    )
+    .bind(actor.tenant_id)
+    .bind(patient)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (current, mut content) = prior.unwrap_or((0, json!({})));
+    if current != input.demographics_version {
+        return Err(Error::Conflict(
+            "contact details changed; reload before applying intake answers",
+        ));
+    }
+    let fields = schema["sections"]
+        .as_array()
+        .ok_or(Error::Invalid("invalid intake template"))?
+        .iter()
+        .flat_map(|section| section["fields"].as_array().into_iter().flatten())
+        .collect::<Vec<_>>();
+    let mut targets = HashSet::new();
+    for key in &input.fields {
+        let field = fields
+            .iter()
+            .find(|field| field["key"].as_str() == Some(key))
+            .ok_or(Error::Invalid("selected field is not in this packet"))?;
+        let target = field["chart_target"]
+            .as_str()
+            .and_then(|value| value.strip_prefix("demographics."))
+            .filter(|target| DEMOGRAPHIC_TARGETS.contains(target))
+            .ok_or(Error::Invalid(
+                "selected field has no supported chart mapping",
+            ))?;
+        if !targets.insert(target) {
+            return Err(Error::Invalid(
+                "multiple answers cannot replace the same chart field",
+            ));
+        }
+        let answer = response[key]
+            .as_str()
+            .filter(|answer| !answer.trim().is_empty())
+            .ok_or(Error::Invalid(
+                "select a nonempty text answer for this chart field",
+            ))?;
+        content[target] = json!(answer);
+    }
+    let mut normalized: crate::demographics::Content = serde_json::from_value(content)
+        .map_err(|_| Error::Invalid("invalid chart contact fields"))?;
+    normalized.normalize()?;
+    let content = serde_json::to_value(normalized)
+        .map_err(|_| Error::Invalid("invalid chart contact fields"))?;
+    let next = current
+        .checked_add(1)
+        .ok_or(Error::Conflict("contact version exhausted"))?;
+    sqlx::query("INSERT INTO patient_demographics(tenant_id,patient_id,version,content) VALUES($1,$2,$3,$4) ON CONFLICT(tenant_id,patient_id) DO UPDATE SET version=EXCLUDED.version,content=EXCLUDED.content").bind(actor.tenant_id).bind(patient).bind(next).bind(&content).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO patient_demographics_history(tenant_id,patient_id,version,content,author_id,reason) VALUES($1,$2,$3,$4,$5,$6)").bind(actor.tenant_id).bind(patient).bind(next).bind(&content).bind(actor.sub).bind(format!("Reviewed intake packet {packet} v{packet_version}: {reason}")).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO previsit_events(tenant_id,packet_id,appointment_id,patient_id,actor_id,actor_kind,action,details) VALUES($1,$2,$3,$4,$5,'staff','intake_demographics_promoted',$6)").bind(actor.tenant_id).bind(packet).bind(appointment).bind(patient).bind(actor.sub).bind(json!({"packet_version":packet_version,"demographics_version":next,"fields":input.fields})).execute(&mut *tx).await?;
+    crate::postgres::audit(&mut tx, &actor, "patient.demographics_update", patient).await?;
+    crate::postgres::audit(&mut tx, &actor, "previsit.demographics_promoted", packet).await?;
+    tx.commit().await?;
+    Ok((
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::ETAG, &format!("\"{next}\"")),
+        ],
+        Json(json!({"packet_id":packet,"patient_id":patient,"version":next,"content":content})),
+    )
+        .into_response())
 }
 async fn review_packet(
     actor: Actor,
@@ -657,6 +1125,7 @@ async fn review_packet(
     staff_write(&actor)?;
     let expected = version(&headers)?;
     let mut tx = db(&state)?.begin().await?;
+    lock_packet_workflow(&mut tx, actor.tenant_id, packet).await?;
     let row:Option<(Uuid,Uuid,String,i64)>=sqlx::query_as("SELECT appointment_id,patient_id,status,version FROM previsit_intake_packets WHERE tenant_id=$1 AND id=$2 FOR UPDATE").bind(actor.tenant_id).bind(packet).fetch_optional(&mut *tx).await?;
     let (appointment, patient, status, current) = row.ok_or(Error::NotFound)?;
     if current != expected {
@@ -670,6 +1139,16 @@ async fn review_packet(
     let next = current + 1;
     sqlx::query("UPDATE previsit_intake_packets SET status='reviewed',reviewed_at=now(),reviewed_by=$3,version=$4,updated_at=now() WHERE tenant_id=$1 AND id=$2").bind(actor.tenant_id).bind(packet).bind(actor.sub).bind(next).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO previsit_events(tenant_id,packet_id,appointment_id,patient_id,actor_id,actor_kind,action) VALUES($1,$2,$3,$4,$5,'staff','intake_reviewed')").bind(actor.tenant_id).bind(packet).bind(appointment).bind(patient).bind(actor.sub).execute(&mut *tx).await?;
+    workflow_packet_evidence(
+        &mut tx,
+        actor.tenant_id,
+        packet,
+        actor.sub,
+        "reviewed",
+        current,
+        "Staff reviewed the patient-submitted intake packet",
+    )
+    .await?;
     crate::postgres::audit(&mut tx, &actor, "previsit.packet_review", packet).await?;
     tx.commit().await?;
     Ok(Json(

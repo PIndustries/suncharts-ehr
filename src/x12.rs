@@ -114,6 +114,10 @@ pub struct Details {
     pub benefits_assigned: bool,
     pub release_authorized: bool,
     pub routine_professional_reviewed: bool,
+    /// Required when a development instance deliberately submits a synthetic
+    /// claim through a production clearinghouse account.
+    #[serde(default)]
+    pub synthetic_test_reviewed: bool,
 }
 fn field<'a>(v: &'a Value, k: &str) -> Result<&'a str> {
     v[k].as_str()
@@ -121,6 +125,17 @@ fn field<'a>(v: &'a Value, k: &str) -> Result<&'a str> {
 }
 fn decimal(n: i64) -> String {
     format!("{}.{:02}", n / 100, n % 100)
+}
+/// CPT wire syntax only: Category I is numeric; Category II/III, PLA and
+/// administrative MAAA use four digits followed by F/T/U/M respectively.
+/// This does not establish assignment, effective date, coverage, or validity
+/// against a licensed CPT catalog. Source: AHRQ HCUP code-set formats:
+/// https://hcup-ts.ahrq.gov/tech_assist/software/508course.jsp
+fn cpt_service_code_syntax(code: &str) -> bool {
+    let bytes = code.as_bytes();
+    bytes.len() == 5
+        && bytes[..4].iter().all(u8::is_ascii_digit)
+        && (bytes[4].is_ascii_digit() || matches!(bytes[4], b'F' | b'T' | b'U' | b'M'))
 }
 fn seg(parts: &[&str]) -> String {
     format!("{}~", parts.join("*").trim_end_matches('*'))
@@ -472,7 +487,7 @@ pub(crate) fn generate(
     for (i, l) in lines.iter().enumerate() {
         let system = field(l, "code_system")?;
         let code = element(field(l, "code")?, 5, 5)?.to_ascii_uppercase();
-        if !((system == "CPT" && code.bytes().all(|b| b.is_ascii_digit()))
+        if !((system == "CPT" && cpt_service_code_syntax(&code))
             || (system == "HCPCS"
                 && code.as_bytes()[0].is_ascii_alphabetic()
                 && code.as_bytes()[1..].iter().all(u8::is_ascii_digit)))
@@ -823,6 +838,69 @@ mod tests {
         assert!(g
             .payload
             .contains("11:B:7*Y*A*Y*Y~REF*F8*SYN-ORIGINAL-PCN~"));
+    }
+    #[test]
+    fn cpt_syntax_accepts_only_documented_numeric_and_suffix_families() {
+        // Synthetic lexical fixtures; no assertion that these codes are assigned
+        // or valid in any edition of the licensed CPT catalog.
+        for code in ["12345", "1234F", "1234T", "1234U", "1234M"] {
+            assert!(cpt_service_code_syntax(code), "{code}");
+        }
+        for code in [
+            "",
+            "1234",
+            "123456",
+            "1234A",
+            "1234Z",
+            "A1234",
+            "123F4",
+            "12T34",
+            "1234f",
+            "1234*",
+            "1234~",
+            "123 4",
+            "１２３４T",
+            "123é",
+        ] {
+            assert!(!cpt_service_code_syntax(code), "{code}");
+        }
+    }
+    #[test]
+    fn professional_export_preserves_supported_cpt_suffixes_and_hcpcs_separation() {
+        let partner = partner();
+        let details = details();
+        let now = "2026-10-23T12:34:00Z".parse().unwrap();
+        for code in ["12345", "1234f", "1234t", "1234u", "1234m"] {
+            let mut claim = claim();
+            claim.snapshot["account"]["content"]["lines"][0]["code"] = json!(code);
+            let result = generate(&claim, &partner, &details, None, 42, now).unwrap();
+            assert!(result.payload.contains(&format!(
+                "SV1*HC:{}:25:95*125.50*UN*2*11**1:2~",
+                code.to_ascii_uppercase()
+            )));
+        }
+        for code in ["1234A", "A1234", "123F4", "1234*", "1234~"] {
+            let mut claim = claim();
+            claim.snapshot["account"]["content"]["lines"][0]["code"] = json!(code);
+            assert!(generate(&claim, &partner, &details, None, 42, now).is_err());
+        }
+        let mut claim = claim();
+        claim.snapshot["account"]["content"]["lines"][0]["code_system"] = json!("HCPCS");
+        claim.snapshot["account"]["content"]["lines"][0]["code"] = json!("1234F");
+        assert!(generate(&claim, &partner, &details, None, 42, now).is_err());
+        claim.snapshot["account"]["content"]["lines"][0]["code"] = json!("J1234");
+        assert!(generate(&claim, &partner, &details, None, 42, now).is_ok());
+    }
+    #[test]
+    fn fy2027_second_character_alpha_diagnosis_survives_claim_preflight_and_export() {
+        // CDC FY2027 order file includes QA00101. Format/export must not assume
+        // that the second ICD-10-CM character is always numeric.
+        let mut claim = claim();
+        claim.content["diagnosis_codes"] = json!(["QA0.0101", "Z00.00"]);
+        assert!(crate::claims::preflight(&claim).unwrap().is_empty());
+        let now = "2026-10-23T12:34:00Z".parse().unwrap();
+        let result = generate(&claim, &partner(), &details(), None, 42, now).unwrap();
+        assert!(result.payload.contains("HI*ABK:QA00101*ABF:Z0000~"));
     }
     #[test]
     fn technical_acknowledgment_controls_errors_and_versions_are_separate_from_payer_acceptance() {

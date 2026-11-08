@@ -19,7 +19,7 @@ use axum::{
 use chrono::{NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sqlx::{Acquire, Postgres, Transaction};
+use sqlx::{Acquire, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 fn db(s: &State) -> Result<&sqlx::PgPool> {
     Ok(&s.browser.as_ref().ok_or(Error::NotFound)?.db)
@@ -52,6 +52,11 @@ pub struct ClaimContent {
     pub line_diagnosis_pointers: Vec<Vec<usize>>,
     pub external_control_number: String,
     pub notes: String,
+    /// Marks a deliberately synthetic claim used to validate an external
+    /// clearinghouse lifecycle. This never makes real patient data synthetic;
+    /// callers must use a synthetic patient and reviewed test evidence.
+    #[serde(default)]
+    pub synthetic_test: bool,
 }
 impl ClaimContent {
     fn validate(&self) -> Result<()> {
@@ -379,7 +384,7 @@ async fn claims(
 ) -> Result<Json<Value>> {
     a.staff()?;
     let mut tx = db(&s)?.begin().await?;
-    let mut rows:Vec<Value>=sqlx::query_scalar("SELECT (to_jsonb(c)-'tenant_id'-'creation_hash'-'request_id'-'content'-'snapshot')||jsonb_build_object('patient_name',p.family_name||', '||p.given_name,'total_cents',c.snapshot->'account'->'total_cents','payer_name',c.snapshot->'account'->'coverage_snapshot'->'payer'->'content'->>'name') FROM ehr_claims c JOIN patients p ON p.tenant_id=c.tenant_id AND p.id=c.patient_id WHERE c.tenant_id=$1 AND ($2::uuid IS NULL OR c.id>$2) ORDER BY c.id LIMIT 101").bind(a.tenant_id).bind(q.after).fetch_all(&mut *tx).await?;
+    let mut rows:Vec<Value>=sqlx::query_scalar("SELECT (to_jsonb(c)-'tenant_id'-'creation_hash'-'request_id'-'content'-'snapshot')||jsonb_build_object('patient_name',p.family_name||', '||p.given_name,'total_cents',c.snapshot->'account'->'total_cents','payer_name',c.snapshot->'account'->'coverage_snapshot'->'payer'->'content'->>'name','synthetic_test',coalesce((c.content->>'synthetic_test')::boolean,false)) FROM ehr_claims c JOIN patients p ON p.tenant_id=c.tenant_id AND p.id=c.patient_id WHERE c.tenant_id=$1 AND ($2::uuid IS NULL OR c.id>$2) ORDER BY c.id LIMIT 101").bind(a.tenant_id).bind(q.after).fetch_all(&mut *tx).await?;
     let next = if rows.len() > 100 {
         rows.truncate(100);
         rows.last().map(|r| r["id"].clone())
@@ -476,8 +481,31 @@ async fn create_claim(
     .bind(p)
     .fetch_one(&mut *tx)
     .await?;
+    let ledger: Value = sqlx::query_scalar(
+        "SELECT jsonb_build_object(\
+            'patient_payments_cents',coalesce(-sum(effect_cents) FILTER (WHERE kind='payment' AND content->>'party'='patient'),0),\
+            'insurer_payments_cents',coalesce(-sum(effect_cents) FILTER (WHERE kind='payment' AND content->>'party'='insurer'),0),\
+            'other_payments_cents',coalesce(-sum(effect_cents) FILTER (WHERE kind='payment' AND content->>'party'='other'),0),\
+            'credits_cents',coalesce(-sum(effect_cents) FILTER (WHERE kind='adjustment_credit'),0),\
+            'debits_cents',coalesce(sum(effect_cents) FILTER (WHERE kind='adjustment_debit'),0),\
+            'net_ledger_effect_cents',coalesce(sum(effect_cents),0),\
+            'open_balance_cents',$3+coalesce(sum(effect_cents),0),\
+            'claim_charge_cents',$3,\
+            'scope','frozen_at_claim_creation'\
+         ) FROM billing_entries WHERE tenant_id=$1 AND account_id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(id)
+    .bind(b.total_cents)
+    .fetch_one(&mut *tx)
+    .await?;
     let claim = Uuid::new_v4();
-    sqlx::query("INSERT INTO ehr_claims (tenant_id,id,patient_id,account_id,payer_id,control_number,frequency,parent_id,content,snapshot,request_id,creation_hash,source_history_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)").bind(a.tenant_id).bind(claim).bind(p).bind(id).bind(payer_id).bind(format!("SC{}",claim.simple())).bind(v.frequency).bind(v.parent_id).bind(json!(v.content)).bind(json!({"account":b,"patient":patient})).bind(v.request_id).bind(digest).bind(v.source_history_id).execute(&mut *tx).await?;
+    let control_number = if v.content.synthetic_test {
+        format!("SCTEST{}", claim.simple())
+    } else {
+        format!("SC{}", claim.simple())
+    };
+    sqlx::query("INSERT INTO ehr_claims (tenant_id,id,patient_id,account_id,payer_id,control_number,frequency,parent_id,content,snapshot,request_id,creation_hash,source_history_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)").bind(a.tenant_id).bind(claim).bind(p).bind(id).bind(payer_id).bind(control_number).bind(v.frequency).bind(v.parent_id).bind(json!(v.content)).bind(json!({"account":b,"patient":patient,"financial_summary":ledger})).bind(v.request_id).bind(digest).bind(v.source_history_id).execute(&mut *tx).await?;
     let c = revision(&mut tx, &a, claim, &v.reason, json!({"transport":"none"})).await?;
     tx.commit().await?;
     Ok(Json(c))
@@ -491,11 +519,62 @@ async fn claim_detail(
     let mut tx = db(&s)?.begin().await?;
     let c = claim_row(&mut tx, &a, id).await?;
     let issues = preflight(&c)?;
+    let artifact_generated: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM edi_submissions WHERE tenant_id=$1 AND claim_id=$2)",
+    )
+    .bind(a.tenant_id)
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
     crate::postgres::audit(&mut tx, &a, "claim.read", id).await?;
     tx.commit().await?;
+    let transport = clearinghouse_transport(db(&s)?, a.tenant_id, artifact_generated).await?;
     Ok(Json(
-        json!({"claim":c,"preflight_issues":issues,"transport":"No clearinghouse connection; packet exports and external-event records only"}),
+        json!({"claim":c,"preflight_issues":issues,"transport":transport}),
     ))
+}
+
+async fn clearinghouse_transport(
+    pool: &PgPool,
+    tenant: Uuid,
+    artifact_generated: bool,
+) -> Result<Value> {
+    let config = crate::provider_settings::load_for_tenant(pool, tenant).await?;
+    let routes = config
+        .routes
+        .iter()
+        .filter(|route| route.tenant_id == tenant)
+        .map(|route| {
+            json!({
+                "route_key": route.key,
+                "provider": route.adapter,
+                "usage": route.usage,
+                "delivery_configured": route.credential_value.is_some()
+                    || route.credential_env.as_ref().is_none_or(|name| {
+                        std::env::var(name).is_ok_and(|value| !value.trim().is_empty())
+                    }),
+                "retrieval_configured": route.retrieval.is_some(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let retrieval_health: Vec<Value> = sqlx::query_scalar(
+        "SELECT jsonb_build_object('route_key',route_key,'paused',paused,'last_result',last_result,'last_poll_at',last_poll_at,'last_success_at',last_success_at) FROM edi_connections WHERE tenant_id=$1 ORDER BY route_key",
+    )
+    .bind(tenant)
+    .fetch_all(pool)
+    .await?;
+    let claimmd_connected = routes
+        .iter()
+        .any(|route| route["provider"] == "claim_md" && route["delivery_configured"] == true);
+    Ok(json!({
+        "scope": "clearinghouse",
+        "configured": !routes.is_empty(),
+        "claimmd_connected": claimmd_connected,
+        "routes": routes,
+        "artifact": if artifact_generated { "generated" } else { "not_generated" },
+        "retrieval_health": retrieval_health,
+        "connect_wss_related": false,
+    }))
 }
 async fn edit_claim(
     a: Actor,
@@ -640,7 +719,7 @@ async fn cms1500(
     let coverage = &account["coverage_snapshot"];
     let payer = &coverage["payer"]["content"];
     let policy = &coverage["coverage"]["content"];
-    let line_rows = account["content"]["lines"]
+    let mut line_rows = account["content"]["lines"]
         .as_array()
         .cloned()
         .unwrap_or_default()
@@ -656,29 +735,70 @@ async fn cms1500(
                 .map(usize::to_string)
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=money>{}</td></tr>",
+            let cents = line.get("amount_cents").and_then(Value::as_i64).unwrap_or(0);
+            format!("<tr><td>{0}</td><td>{0}</td><td>{1}</td><td></td><td class=procedure>{2}<small>{3}</small></td><td>{4}</td><td class=charge>${5}.{6:02}</td><td>1</td><td></td><td>{7}</td></tr>",
                 html_escape(json_text(&account["content"], "service_date")), html_escape(&content.place_of_service),
                 html_escape(json_text(line, "code")), html_escape(json_text(line, "description")), html_escape(&pointers),
-                line.get("amount_cents").and_then(Value::as_i64).unwrap_or(0))
+                cents / 100, cents.abs() % 100, html_escape(&content.rendering_npi))
         }).collect::<String>();
+    for _ in account["content"]["lines"].as_array().map_or(0, Vec::len)..6 {
+        line_rows.push_str("<tr><td>&nbsp;</td><td></td><td></td><td></td><td><small></small></td><td></td><td></td><td></td><td></td><td></td></tr>");
+    }
     let diagnoses = content
         .diagnosis_codes
         .iter()
         .enumerate()
-        .map(|(i, value)| format!("{}: {}", i + 1, html_escape(value)))
+        .map(|(i, value)| {
+            format!(
+                "<span>{}: {}</span>",
+                (b'A' + i as u8) as char,
+                html_escape(value)
+            )
+        })
         .collect::<Vec<_>>()
-        .join(" &nbsp; ");
+        .join("");
     let patient_name = format!(
         "{} {}",
         html_escape(json_text(patient, "given_name")),
         html_escape(json_text(patient, "family_name"))
     );
+    let total_cents = account["total_cents"].as_i64().unwrap_or(0);
+    let paid_cents = c.snapshot["financial_summary"]["patient_payments_cents"]
+        .as_i64()
+        .unwrap_or(0)
+        + c.snapshot["financial_summary"]["insurer_payments_cents"]
+            .as_i64()
+            .unwrap_or(0)
+        + c.snapshot["financial_summary"]["other_payments_cents"]
+            .as_i64()
+            .unwrap_or(0);
+    let open_balance_cents = c.snapshot["financial_summary"]["open_balance_cents"]
+        .as_i64()
+        .unwrap_or(total_cents);
     let document = format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><title>CMS-1500 {control}</title><style>
-@page{{size:letter landscape;margin:.3in}}*{{box-sizing:border-box}}body{{font:11px Arial,sans-serif;color:#151515;margin:0}}header{{display:flex;justify-content:space-between;align-items:end;border-bottom:3px solid #d66;padding-bottom:8px;margin-bottom:8px}}h1{{font-size:22px;margin:0}}.note{{color:#555;max-width:520px;text-align:right}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);border-left:1px solid #b55;border-top:1px solid #b55}}.field{{min-height:48px;padding:5px;border-right:1px solid #b55;border-bottom:1px solid #b55}}.wide{{grid-column:span 2}}.full{{grid-column:1/-1}}label{{display:block;color:#7b2e2e;font-size:9px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px}}table{{width:100%;border-collapse:collapse;margin-top:8px}}th,td{{border:1px solid #b55;padding:5px;text-align:left}}th{{color:#7b2e2e;font-size:9px;text-transform:uppercase}}.money{{text-align:right}}footer{{display:flex;justify-content:space-between;margin-top:8px;color:#555}}button{{padding:8px 12px}}@media print{{button{{display:none}}}}</style></head><body>
-<header><div><h1>CMS-1500 (HCFA) claim review</h1><b>Patient control number {control}</b></div><div class=note>SunCharts native printable review copy. Validate payer requirements and rendering against the official current CMS-1500 form before paper submission.</div></header>
-<div class=grid><div class="field wide"><label>1a Insured ID number</label>{member}</div><div class=field><label>Payer</label>{payer}</div><div class=field><label>Claim frequency</label>{frequency}</div><div class="field wide"><label>2 Patient name</label>{patient_name}</div><div class=field><label>3 Patient birth date</label>{patient_dob}</div><div class=field><label>Patient MRN</label>{mrn}</div><div class="field wide"><label>5 Patient address</label>{patient_address}</div><div class="field wide"><label>7 Insured address</label>{subscriber_address}</div><div class="field wide"><label>33 Billing provider</label>{provider}<br>{billing_address}</div><div class=field><label>33a Billing NPI</label>{billing_npi}</div><div class=field><label>25 Tax ID</label>{tax_id}</div><div class=field><label>24J Rendering NPI</label>{rendering_npi}</div><div class="field full"><label>21 Diagnosis codes</label>{diagnoses}</div></div>
-<table><thead><tr><th>24A Date of service</th><th>24B POS</th><th>24D Procedure</th><th>Description</th><th>24E Diagnosis pointers</th><th>24F Charge cents</th></tr></thead><tbody>{line_rows}</tbody></table><div class=grid><div class="field wide"><label>19 Additional information</label>{notes}</div><div class=field><label>28 Total charge cents</label>{total}</div><div class=field><label>Payer control</label>{payer_control}</div></div><footer><span>Generated from frozen SunCharts claim version {version}. Viewing does not submit or alter the claim.</span><button onclick="window.print()">Print / Save PDF</button></footer></body></html>"#,
+        r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>CMS-1500 {control}</title><style>
+@page{{size:letter landscape;margin:.18in}}*{{box-sizing:border-box}}:root{{--red:#c52e52;--ink:#15232d;--rule:1.15px solid var(--red)}}body{{margin:0;background:#e8edf0;color:var(--ink);font:9px Arial,sans-serif}}.toolbar{{width:10.6in;margin:14px auto 9px;padding:11px 15px;border-radius:8px;background:#123038;color:#fff;display:flex;justify-content:space-between;align-items:center;box-shadow:0 4px 18px #0002}}.toolbar strong{{font-size:14px;display:block}}.toolbar span{{color:#cfe0e3}}button{{border:0;border-radius:5px;padding:9px 13px;background:#7bd9d3;font-weight:700;cursor:pointer}}.sheet{{position:relative;width:10.6in;min-height:8.05in;margin:0 auto 22px;padding:.1in .15in;background:#fffdfd;box-shadow:0 5px 24px #25374655;overflow:hidden}}.watermark{{position:absolute;left:1.45in;top:3.45in;transform:rotate(-20deg);font:bold 38px Arial;color:#d3264518;letter-spacing:.09em;pointer-events:none}}.form{{position:relative;color:var(--red)}}.mast{{height:.55in;display:grid;grid-template-columns:2.7in 1fr 2.25in;align-items:end;gap:8px}}.mast .title{{text-align:center;font:bold 18px Arial}}.mast .approval{{text-align:right;font-weight:700;font-size:8px}}.payer{{height:.5in;border:var(--rule);display:grid;grid-template-columns:7.25in 1fr}}.programs{{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;padding:5px 7px;align-items:center}}.box{{display:inline-block;width:11px;height:11px;border:1px solid var(--red);margin-right:3px;vertical-align:-2px;line-height:9px;text-align:center;color:var(--ink)}}.payername{{border-left:var(--rule);padding:4px 7px;color:var(--ink)}}.rows{{border-left:var(--rule);border-top:var(--rule)}}.row{{display:grid}}.cell{{position:relative;min-height:.37in;padding:14px 5px 3px;border-right:var(--rule);border-bottom:var(--rule);color:var(--ink);font-weight:600;line-height:1.15}}.cell label{{position:absolute;left:4px;right:3px;top:2px;color:var(--red);font-size:7px;font-weight:700;line-height:1.03}}.r1{{grid-template-columns:2.15in 2.4in 1.55in 2.2in 1.97in}}.r2{{grid-template-columns:3.05in 1.5in 2.45in 1.3in 1.97in}}.r3{{grid-template-columns:4.55in 2.45in 3.27in}}.r4{{grid-template-columns:2.35in 2.2in 2.1in 1.65in 1.97in}}.r5{{grid-template-columns:4.55in 3.75in 1.97in}}.choices{{font-weight:400;color:var(--red);word-spacing:6px}}.sig{{font-family:"Segoe Script","Bradley Hand",cursive;color:#46515a;font-size:10px}}.diagnosis{{min-height:.55in}}.codes{{display:grid;grid-template-columns:repeat(4,1fr);gap:2px}}.codes span{{border-bottom:1px dotted #d18494;padding:2px}}table{{width:100%;border-collapse:collapse;table-layout:fixed;border-left:var(--rule);color:var(--ink)}}th,td{{border-right:var(--rule);border-bottom:var(--rule);padding:2px;text-align:center;vertical-align:top}}thead th{{border-top:var(--rule);height:.3in;color:var(--red);font-size:6.5px;line-height:1.05}}tbody td{{height:.29in;font-size:8px}}th:nth-child(1),th:nth-child(2){{width:.8in}}th:nth-child(3){{width:.35in}}th:nth-child(4){{width:.25in}}th:nth-child(5){{width:2.2in}}th:nth-child(6){{width:.5in}}th:nth-child(7){{width:.7in}}th:nth-child(8){{width:.35in}}th:nth-child(9){{width:.4in}}th:nth-child(10){{width:1.65in}}.procedure{{font-weight:700}}.procedure small{{display:block;font-weight:400;font-size:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}.charge{{font-weight:700}}.bottom{{display:grid;grid-template-columns:1.45in 2.1in 1.1in 1.2in 2.3in 2.12in;border-left:var(--rule)}}.bottom .cell{{min-height:.45in}}.footer{{display:flex;justify-content:space-between;align-items:end;padding-top:4px;color:var(--red);font-size:7px;font-weight:700}}.version{{border:1px solid var(--red);padding:3px 6px}}@media print{{body{{background:#fff}}.toolbar{{display:none}}.sheet{{margin:0;box-shadow:none}}}}@media(max-width:900px){{.toolbar{{margin:8px}}}}
+</style><link rel="stylesheet" href="/cms1500.css"><script src="/cms1500.js" defer></script></head><body>
+<div class=toolbar><div><strong>CMS-1500 claim review · {control}</strong><span>Synthetic review copy. Printing does not submit this claim.</span></div><div class=preview-actions aria-label="Form preview controls"><button type=button id=cms-zoom-out aria-label="Zoom out">−</button><output id=cms-zoom-label aria-live=polite>125%</output><button type=button id=cms-zoom-in aria-label="Zoom in">+</button><button type=button id=cms-fit-page>Fit page</button><button type=button id=cms-print>Print / Save PDF</button></div></div>
+<main class=sheet aria-label="CMS-1500 health insurance claim form review"><div class=watermark>SYNTHETIC TEST · NOT FOR SUBMISSION</div><div class=form>
+<div class=mast><div><b>1500&nbsp;&nbsp; HEALTH INSURANCE CLAIM FORM</b><br><small>APPROVED BY NATIONAL UNIFORM CLAIM COMMITTEE (NUCC) 02/12</small></div><div class=title>HEALTH INSURANCE CLAIM FORM</div><div class=approval>CARRIER<br>APPROVED OMB-0938-1197<br>FORM CMS-1500 (02/12)</div></div>
+<section class=payer><div class=programs><span><i class=box></i>MEDICARE</span><span><i class=box></i>MEDICAID</span><span><i class=box></i>TRICARE</span><span><i class=box></i>CHAMPVA</span><span><i class=box>×</i>OTHER</span></div><div class=payername><b>{payer}</b><br><small>INSURANCE PLAN NAME OR PROGRAM NAME</small></div></section>
+<section class=rows>
+<div class="row r1"><div class=cell><label>1. TYPE OF HEALTH INSURANCE</label>OTHER</div><div class=cell><label>1a. INSURED'S I.D. NUMBER</label>{member}</div><div class=cell><label>2. PATIENT'S NAME (Last, First, Middle)</label>{patient_name}</div><div class=cell><label>3. PATIENT'S BIRTH DATE &nbsp; SEX</label>{patient_dob} &nbsp; <span class=choices>☐M ☐F</span></div><div class=cell><label>4. INSURED'S NAME</label>{patient_name}</div></div>
+<div class="row r2"><div class=cell><label>5. PATIENT'S ADDRESS (No., Street)</label>{patient_address}</div><div class=cell><label>6. PATIENT RELATIONSHIP TO INSURED</label><span class=choices>☒Self ☐Spouse ☐Child</span></div><div class=cell><label>7. INSURED'S ADDRESS (No., Street)</label>{subscriber_address}</div><div class=cell><label>8. RESERVED FOR NUCC USE</label></div><div class=cell><label>9. OTHER INSURED'S NAME</label></div></div>
+<div class="row r3"><div class=cell><label>9a. OTHER INSURED'S POLICY OR GROUP NUMBER</label></div><div class=cell><label>9b–9c. RESERVED FOR NUCC USE</label></div><div class=cell><label>9d. INSURANCE PLAN NAME OR PROGRAM NAME</label></div></div>
+<div class="row r4"><div class=cell><label>10a. CONDITION RELATED TO EMPLOYMENT?</label><span class=choices>☐YES ☒NO</span></div><div class=cell><label>10b. AUTO ACCIDENT? &nbsp; PLACE</label><span class=choices>☐YES ☒NO</span></div><div class=cell><label>10c. OTHER ACCIDENT?</label><span class=choices>☐YES ☒NO</span></div><div class=cell><label>10d. CLAIM CODES</label></div><div class=cell><label>11. INSURED'S POLICY GROUP OR FECA NUMBER</label></div></div>
+<div class="row r2"><div class=cell><label>11a. INSURED'S DATE OF BIRTH &nbsp; SEX</label>{patient_dob}</div><div class=cell><label>11b. OTHER CLAIM ID</label>{payer_control}</div><div class=cell><label>11c. INSURANCE PLAN NAME</label>{payer}</div><div class=cell><label>11d. ANOTHER HEALTH BENEFIT PLAN?</label><span class=choices>☐YES ☒NO</span></div><div class=cell><label>CLAIM FREQUENCY</label>{frequency}</div></div>
+<div class="row r5"><div class=cell><label>12. PATIENT'S OR AUTHORIZED PERSON'S SIGNATURE</label><span class=sig>Signature on file</span></div><div class=cell><label>13. INSURED'S OR AUTHORIZED PERSON'S SIGNATURE</label><span class=sig>Signature on file</span></div><div class=cell><label>PATIENT ACCOUNT NO.</label>{control}</div></div>
+<div class="row r3"><div class=cell><label>14. DATE OF CURRENT ILLNESS, INJURY, OR PREGNANCY</label></div><div class=cell><label>15. OTHER DATE</label></div><div class=cell><label>16. DATES PATIENT UNABLE TO WORK</label></div></div>
+<div class="row r5"><div class=cell><label>17. NAME OF REFERRING PROVIDER OR OTHER SOURCE</label></div><div class=cell><label>17b. NPI</label></div><div class=cell><label>18. HOSPITALIZATION DATES</label></div></div>
+<div class="row r3"><div class=cell><label>19. ADDITIONAL CLAIM INFORMATION</label>{notes}</div><div class=cell><label>20. OUTSIDE LAB? &nbsp; $ CHARGES</label><span class=choices>☐YES ☒NO</span></div><div class="cell diagnosis"><label>21. DIAGNOSIS OR NATURE OF ILLNESS OR INJURY</label><div class=codes>{diagnoses}</div></div></div>
+<div class="row r5"><div class=cell><label>22. RESUBMISSION CODE &nbsp; ORIGINAL REF. NO.</label>{frequency}</div><div class=cell><label>23. PRIOR AUTHORIZATION NUMBER</label></div><div class=cell><label>INTERNAL MRN — REVIEW ONLY</label>{mrn}</div></div>
+</section>
+<table aria-label="CMS-1500 service lines"><thead><tr><th>24A. DATE(S) OF SERVICE<br>FROM</th><th>TO</th><th>24B.<br>POS</th><th>24C.<br>EMG</th><th>24D. PROCEDURES, SERVICES, OR SUPPLIES<br>CPT/HCPCS · MODIFIER</th><th>24E.<br>DIAGNOSIS POINTER</th><th>24F.<br>$ CHARGES</th><th>24G.<br>DAYS/UNITS</th><th>24H.<br>EPSDT</th><th>24J. RENDERING<br>PROVIDER ID. #</th></tr></thead><tbody>{line_rows}</tbody></table>
+<section class=bottom><div class=cell><label>25. FEDERAL TAX I.D. NUMBER</label>{tax_id}</div><div class=cell><label>26. PATIENT'S ACCOUNT NO.</label>{control}</div><div class=cell><label>27. ACCEPT ASSIGNMENT?</label><span class=choices>☒YES</span></div><div class=cell><label>28. TOTAL CHARGE</label>${total_dollars}.{total_pennies:02}</div><div class=cell><label>29. AMOUNT PAID</label>${paid_dollars}.{paid_pennies:02}</div><div class=cell><label>30. RESERVED FOR NUCC USE</label></div><div class="cell sig" style="grid-column:span 4"><label>31. SIGNATURE OF PHYSICIAN OR SUPPLIER</label>{provider} · Signature on file</div><div class=cell><label>32. SERVICE FACILITY LOCATION</label>{billing_address}</div><div class=cell><label>32a. NPI</label>{rendering_npi}</div><div class=cell style="grid-column:span 4"><label>33. BILLING PROVIDER INFO &amp; PH #</label>{provider}<br>{billing_address}</div><div class=cell><label>33a. NPI</label>{billing_npi}</div><div class=cell><label>33b. OTHER ID #</label></div></section>
+<div class=footer><span>Generated from frozen SunCharts claim version {version}. Gross claim ${total_dollars}.{total_pennies:02}; recorded paid ${paid_dollars}.{paid_pennies:02}; local open balance ${open_dollars}.{open_pennies:02}. Viewing or printing does not submit or alter the claim.</span><span class=version>NUCC 02/12 REVIEW LAYOUT · SYNTHETIC DATA</span></div>
+</div></main></body></html>"#,
         control = html_escape(&c.control_number),
         member = html_escape(json_text(policy, "member_id")),
         payer = html_escape(json_text(payer, "name")),
@@ -696,7 +816,12 @@ async fn cms1500(
         diagnoses = diagnoses,
         line_rows = line_rows,
         notes = html_escape(&content.notes),
-        total = account["total_cents"].as_i64().unwrap_or(0),
+        total_dollars = total_cents / 100,
+        total_pennies = total_cents.abs() % 100,
+        paid_dollars = paid_cents / 100,
+        paid_pennies = paid_cents.abs() % 100,
+        open_dollars = open_balance_cents / 100,
+        open_pennies = open_balance_cents.abs() % 100,
         payer_control = html_escape(&c.payer_control_number),
         version = c.version
     );

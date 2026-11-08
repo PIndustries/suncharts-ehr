@@ -9,7 +9,8 @@ use uuid::Uuid;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NewPatient {
-    pub mrn: String,
+    #[serde(default)]
+    pub mrn: Option<String>,
     pub given_name: String,
     pub family_name: String,
     pub birth_date: NaiveDate,

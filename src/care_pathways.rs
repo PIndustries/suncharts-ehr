@@ -20,17 +20,24 @@ use sqlx::{PgPool, Postgres, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
-const TRIGGERS: [&str; 8] = [
+const TRIGGERS: [&str; 15] = [
     "inquiry_received",
     "referral_received",
+    "referral_status_changed",
+    "call_received",
+    "sms_received",
+    "fax_received",
+    "email_received",
+    "external_booking_received",
     "appointment_created",
     "appointment_rescheduled",
+    "appointment_cancelled",
     "eligibility_returned",
     "patient_checked_in",
     "visit_signed",
     "order_placed",
 ];
-const KINDS: [&str; 10] = [
+const KINDS: [&str; 19] = [
     "patient_form",
     "staff_task",
     "eligibility_query",
@@ -41,8 +48,56 @@ const KINDS: [&str; 10] = [
     "order",
     "referral",
     "human_approval",
+    "availability_query",
+    "slot_hold",
+    "appointment_booking",
+    "appointment_reschedule",
+    "appointment_cancel",
+    "intake_request",
+    "communication_send",
+    "ai_extract_draft",
+    "ai_response_draft",
 ];
-const PHASES: [&str; 4] = ["intake", "pre_visit", "visit", "follow_up"];
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ColumnDefinition {
+    pub key: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub hidden: bool,
+}
+
+fn default_columns() -> Vec<ColumnDefinition> {
+    [
+        (
+            "intake",
+            "Inquiry & intake",
+            "Capture the request and patient information",
+        ),
+        (
+            "pre_visit",
+            "Before the visit",
+            "Prepare coverage, forms and reminders",
+        ),
+        ("visit", "Day of visit", "Guide arrival and clinical work"),
+        (
+            "follow_up",
+            "After the visit",
+            "Coordinate orders, referrals and follow-up",
+        ),
+    ]
+    .into_iter()
+    .map(|(key, title, description)| ColumnDefinition {
+        key: key.into(),
+        title: title.into(),
+        description: description.into(),
+        hidden: false,
+    })
+    .collect()
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -54,6 +109,8 @@ pub struct FormField {
     pub required: bool,
     #[serde(default)]
     pub options: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chart_target: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -67,12 +124,127 @@ pub struct Condition {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct AiPrivacyPolicy {
+    pub mode: String,
+    pub preview_required: bool,
+    pub restore_locally: bool,
+    pub retain_clinical_codes: bool,
+}
+
+impl Default for AiPrivacyPolicy {
+    fn default() -> Self {
+        Self {
+            mode: "pseudonymize".into(),
+            preview_required: true,
+            restore_locally: true,
+            retain_clinical_codes: true,
+        }
+    }
+}
+
+impl AiPrivacyPolicy {
+    fn validate(&self) -> Result<()> {
+        if self.mode != "pseudonymize"
+            || !self.preview_required
+            || !self.restore_locally
+            || !self.retain_clinical_codes
+        {
+            return Err(Error::Invalid(
+                "Sun privacy preview, clinical-code retention and local restoration are required",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AiNodeConfiguration {
+    pub integration_id: Uuid,
+    pub instruction: String,
+    pub source_field: String,
+    #[serde(default)]
+    pub privacy: AiPrivacyPolicy,
+}
+
+impl AiNodeConfiguration {
+    pub(crate) fn validate(&self) -> Result<()> {
+        self.privacy.validate()?;
+        if self.integration_id.is_nil()
+            || self.instruction.trim().is_empty()
+            || self.instruction.len() > 4000
+            || self.instruction.contains('\0')
+        {
+            return Err(Error::Invalid(
+                "Sun requires an AI connection and a bounded instruction",
+            ));
+        }
+        // An empty JSON pointer denotes the entire context; only an explicitly
+        // selected field may become source material. Reject malformed escapes.
+        let mut chars = self.source_field.chars();
+        if chars.next() != Some('/') || self.source_field.len() > 200 {
+            return Err(Error::Invalid(
+                "Sun source field must be a JSON pointer beginning with /",
+            ));
+        }
+        while let Some(character) = chars.next() {
+            if character.is_control()
+                || (character == '~' && !matches!(chars.next(), Some('0' | '1')))
+            {
+                return Err(Error::Invalid(
+                    "Sun source field contains an invalid JSON pointer escape",
+                ));
+            }
+        }
+        if self.source_field.split('/').skip(1).any(|segment| {
+            let segment = segment
+                .replace("~1", "/")
+                .replace("~0", "~")
+                .replace('-', "_")
+                .to_ascii_lowercase();
+            [
+                "config",
+                "credential",
+                "credentials",
+                "secret",
+                "secrets",
+                "api_key",
+                "access_token",
+                "refresh_token",
+                "token",
+                "client_secret",
+                "authorization",
+                "password",
+                "private_key",
+                "encrypted_secret",
+            ]
+            .contains(&segment.as_str())
+        }) {
+            return Err(Error::Invalid(
+                "Sun cannot use configuration or credential fields as source material",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EditorPosition {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct StepDefinition {
     pub key: String,
     pub title: String,
     pub kind: String,
     #[serde(default)]
     pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editor_position: Option<EditorPosition>,
     #[serde(default)]
     pub required: bool,
     #[serde(default)]
@@ -89,11 +261,17 @@ pub struct StepDefinition {
     pub condition: Option<Condition>,
     #[serde(default)]
     pub form_fields: Vec<FormField>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai: Option<AiNodeConfiguration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<crate::workflow_evidence::NativeBinding>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Definition {
+    #[serde(default = "default_columns")]
+    pub columns: Vec<ColumnDefinition>,
     pub steps: Vec<StepDefinition>,
 }
 
@@ -101,6 +279,28 @@ impl Definition {
     fn validate(&self) -> Result<()> {
         if self.steps.is_empty() || self.steps.len() > 100 {
             return Err(Error::Invalid("a pathway requires 1 to 100 steps"));
+        }
+        if self.columns.is_empty() || self.columns.len() > 12 {
+            return Err(Error::Invalid("a pathway requires 1 to 12 columns"));
+        }
+        let columns: BTreeSet<&str> = self
+            .columns
+            .iter()
+            .map(|column| column.key.as_str())
+            .collect();
+        if columns.len() != self.columns.len() || self.columns.iter().all(|column| column.hidden) {
+            return Err(Error::Invalid(
+                "pathway column keys must be unique and one column must remain visible",
+            ));
+        }
+        for column in &self.columns {
+            if !valid_key(&column.key) {
+                return Err(Error::Invalid("invalid pathway column key"));
+            }
+            text(&column.title, 120)?;
+            if !column.description.is_empty() {
+                text(&column.description, 500)?;
+            }
         }
         let keys: BTreeSet<&str> = self.steps.iter().map(|s| s.key.as_str()).collect();
         if keys.len() != self.steps.len() {
@@ -111,20 +311,70 @@ impl Definition {
                 return Err(Error::Invalid("invalid pathway step key or kind"));
             }
             text(&step.title, 200)?;
+            if step.editor_position.as_ref().is_some_and(|position| {
+                !position.x.is_finite()
+                    || !position.y.is_finite()
+                    || position.x.abs() > 100_000.0
+                    || position.y.abs() > 100_000.0
+            }) {
+                return Err(Error::Invalid(
+                    "workflow editor position must be finite and within 100000 canvas units",
+                ));
+            }
+            let ai_kind = matches!(step.kind.as_str(), "ai_extract_draft" | "ai_response_draft");
+            if (ai_kind || step.kind == "human_approval") && !step.manual_approval {
+                return Err(Error::Invalid(
+                    "human approval and Sun workflow nodes require manual approval",
+                ));
+            }
+            if let Some(ai) = &step.ai {
+                if !ai_kind {
+                    return Err(Error::Invalid(
+                        "AI configuration is supported only on Sun draft nodes",
+                    ));
+                }
+                ai.validate()?;
+            }
+            if let Some(native) = &step.native {
+                crate::workflow_evidence::validate_binding(&step.kind, native)?;
+            }
             if step
                 .phase
                 .as_deref()
-                .is_some_and(|phase| !PHASES.contains(&phase))
+                .is_some_and(|phase| !columns.contains(phase))
             {
-                return Err(Error::Invalid("invalid pathway phase"));
+                return Err(Error::Invalid("pathway step references a missing column"));
             }
             if step.form_fields.len() > 30
-                || (step.kind != "patient_form" && !step.form_fields.is_empty())
+                || (!matches!(step.kind.as_str(), "patient_form" | "clinical_template")
+                    && !step.form_fields.is_empty())
             {
                 return Err(Error::Invalid("invalid pathway form fields"));
             }
             let mut form_keys = BTreeSet::new();
+            let mut chart_targets = BTreeSet::new();
             for field in &step.form_fields {
+                if let Some(target) = &field.chart_target {
+                    if ![
+                        "demographics.preferred_name",
+                        "demographics.pronouns",
+                        "demographics.language",
+                        "demographics.administrative_gender",
+                        "demographics.phone",
+                        "demographics.email",
+                    ]
+                    .contains(&target.as_str())
+                        || !matches!(
+                            field.field_type.as_str(),
+                            "short_text" | "long_text" | "choice"
+                        )
+                        || !chart_targets.insert(target.as_str())
+                    {
+                        return Err(Error::Invalid(
+                            "invalid or duplicate reviewed demographic mapping target",
+                        ));
+                    }
+                }
                 if !valid_key(&field.key)
                     || !form_keys.insert(field.key.as_str())
                     || ![
@@ -196,6 +446,24 @@ impl Definition {
             let mut visiting = BTreeSet::new();
             let mut visited = BTreeSet::new();
             visit_dependencies(key, &dependencies, &mut visiting, &mut visited)?;
+        }
+        Ok(())
+    }
+
+    /// Publishing is stricter than saving a draft: every clinical template must
+    /// identify the native record that proves completion. Drafts may remain
+    /// incomplete while they are being designed, but an active workflow must
+    /// never fall back to the runtime `unconfigured` evidence state.
+    fn validate_for_activation(&self) -> Result<()> {
+        self.validate()?;
+        if self
+            .steps
+            .iter()
+            .any(|step| step.kind == "clinical_template" && step.native.is_none())
+        {
+            return Err(Error::Invalid(
+                "clinical workflow nodes require a native completion resource before publication",
+            ));
         }
         Ok(())
     }
@@ -275,19 +543,21 @@ struct DefinitionAction {
     revision_version: Option<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Trigger {
-    request_id: Uuid,
-    trigger_type: String,
-    trigger_key: String,
-    definition_id: Option<Uuid>,
-    patient_id: Option<Uuid>,
-    appointment_id: Option<Uuid>,
-    visit_id: Option<Uuid>,
+pub(crate) struct NativeTriggerInput {
+    pub request_id: Uuid,
+    pub trigger_type: String,
+    pub trigger_key: String,
+    pub definition_id: Option<Uuid>,
     #[serde(default)]
-    context: Value,
-    reason: String,
+    pub expected_definition_version: Option<i64>,
+    pub patient_id: Option<Uuid>,
+    pub appointment_id: Option<Uuid>,
+    pub visit_id: Option<Uuid>,
+    #[serde(default)]
+    pub context: Value,
+    pub reason: String,
 }
 
 #[derive(Deserialize)]
@@ -391,7 +661,7 @@ fn definition_response(value: Value) -> Json<Value> {
     Json(value)
 }
 
-fn validate_definition_input(
+pub(crate) fn validate_definition_input(
     name: &str,
     description: &str,
     trigger_type: &str,
@@ -618,6 +888,11 @@ async fn definition_action(
             "archived pathway definitions cannot be changed",
         ));
     }
+    if input.action == "activate" {
+        let definition: Definition = serde_json::from_value(previous["definition"].clone())
+            .map_err(|_| Error::Conflict("saved pathway definition is invalid"))?;
+        definition.validate_for_activation()?;
+    }
     let row: Value = if input.action == "rollback" {
         let revision_version = input
             .revision_version
@@ -722,21 +997,35 @@ async fn validate_context(
 async fn trigger(
     actor: Actor,
     ExtractState(state): ExtractState<State>,
-    Json(input): Json<Trigger>,
+    Json(input): Json<NativeTriggerInput>,
 ) -> Result<Json<Value>> {
+    Ok(Json(trigger_native(db(&state)?, &actor, input).await?))
+}
+
+/// Starts matching published pathway revisions without loopback HTTP. The same
+/// validation, idempotency lock, immutable definition revision, and audit trail
+/// are shared by the HTTP route and compiled instance-local action executors.
+pub(crate) async fn trigger_native(
+    pool: &PgPool,
+    actor: &Actor,
+    input: NativeTriggerInput,
+) -> Result<Value> {
     actor.staff()?;
     if !TRIGGERS.contains(&input.trigger_type.as_str())
         || input.trigger_key.trim().is_empty()
         || input.trigger_key.chars().count() > 300
         || !input.context.is_object()
+        || input
+            .expected_definition_version
+            .is_some_and(|version| version < 1)
     {
         return Err(Error::Invalid("invalid care pathway trigger"));
     }
     text(&input.reason, 1000)?;
-    let mut tx = db(&state)?.begin().await?;
+    let mut tx = pool.begin().await?;
     validate_context(
         &mut tx,
-        &actor,
+        actor,
         input.patient_id,
         input.appointment_id,
         input.visit_id,
@@ -749,17 +1038,24 @@ async fn trigger(
         ))
         .execute(&mut *tx)
         .await?;
-    let definitions: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(d)-'tenant_id'-'request_id'-'create_request' FROM care_pathway_definitions d WHERE tenant_id=$1 AND status='active' AND trigger_type=$2 AND ($3::uuid IS NULL OR id=$3) ORDER BY id")
-        .bind(actor.tenant_id).bind(&input.trigger_type).bind(input.definition_id)
+    let definitions: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(d)-'tenant_id'-'request_id'-'create_request' FROM care_pathway_definitions d WHERE tenant_id=$1 AND status='active' AND trigger_type=$2 AND ($3::uuid IS NULL OR id=$3) AND ($4::bigint IS NULL OR version=$4) ORDER BY id")
+        .bind(actor.tenant_id).bind(&input.trigger_type).bind(input.definition_id).bind(input.expected_definition_version)
         .fetch_all(&mut *tx).await?;
     if input.definition_id.is_some() && definitions.is_empty() {
         return Err(Error::NotFound);
     }
     let mut instances = Vec::new();
     for definition_row in definitions {
-        let definition: Definition =
+        let mut definition: Definition =
             serde_json::from_value(definition_row["definition"].clone())
                 .map_err(|_| Error::Conflict("saved pathway definition is invalid"))?;
+        // Existing immutable revisions may predate the mandatory review flag.
+        // The human_approval kind remains a gate when creating a new run.
+        for step in &mut definition.steps {
+            if step.kind == "human_approval" {
+                step.manual_approval = true;
+            }
+        }
         definition.validate()?;
         let definition_id = uuid_value(&definition_row, "id")?;
         let definition_version = i64_value(&definition_row, "version")?;
@@ -802,7 +1098,7 @@ async fn trigger(
                 if !matches {
                     insert_event(
                         &mut tx,
-                        &actor,
+                        actor,
                         id,
                         Some(&step.key),
                         "step.condition_skipped",
@@ -814,7 +1110,7 @@ async fn trigger(
             }
             insert_event(
                 &mut tx,
-                &actor,
+                actor,
                 id,
                 None,
                 "pathway.started",
@@ -822,20 +1118,20 @@ async fn trigger(
                 json!({"request_id":input.request_id}),
             )
             .await?;
-            refresh_ready_steps(&mut tx, &actor, id).await?;
+            refresh_ready_steps(&mut tx, actor, id).await?;
             id
         };
-        instances.push(instance_snapshot(&mut tx, &actor, instance_id).await?);
+        instances.push(instance_snapshot(&mut tx, actor, instance_id).await?);
     }
     audit(
         &mut tx,
-        &actor,
+        actor,
         "practice.care_pathways.trigger",
         actor.tenant_id,
     )
     .await?;
     tx.commit().await?;
-    Ok(Json(json!({"items":instances})))
+    Ok(json!({"items":instances}))
 }
 
 async fn insert_event(
@@ -858,7 +1154,7 @@ async fn instance_snapshot(
     actor: &Actor,
     id: Uuid,
 ) -> Result<Value> {
-    let mut value: Value = sqlx::query_scalar("SELECT (to_jsonb(i)-'tenant_id') || jsonb_build_object('definition_name',d.name,'definition_slug',d.slug) FROM care_pathway_instances i JOIN care_pathway_definitions d ON d.tenant_id=i.tenant_id AND d.id=i.definition_id WHERE i.tenant_id=$1 AND i.id=$2")
+    let mut value: Value = sqlx::query_scalar("SELECT (to_jsonb(i)-'tenant_id') || jsonb_build_object('definition_name',r.name,'definition_slug',d.slug,'definition',r.definition) FROM care_pathway_instances i JOIN care_pathway_definitions d ON d.tenant_id=i.tenant_id AND d.id=i.definition_id JOIN care_pathway_definition_revisions r ON r.tenant_id=i.tenant_id AND r.definition_id=i.definition_id AND r.version=i.definition_version WHERE i.tenant_id=$1 AND i.id=$2")
         .bind(actor.tenant_id).bind(id).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)?;
     let steps: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(s)-'tenant_id'-'instance_id' FROM care_pathway_steps s WHERE tenant_id=$1 AND instance_id=$2 ORDER BY position,step_key")
         .bind(actor.tenant_id).bind(id).fetch_all(&mut **tx).await?;
@@ -968,7 +1264,7 @@ async fn instance_action(
     Ok(Json(value))
 }
 
-async fn refresh_ready_steps(
+pub(crate) async fn refresh_ready_steps(
     tx: &mut Transaction<'_, Postgres>,
     actor: &Actor,
     id: Uuid,
@@ -999,6 +1295,19 @@ async fn refresh_ready_steps(
     Ok(())
 }
 
+fn completion_transition(kind: &str, manual_approval: bool) -> (&'static str, &'static str) {
+    if manual_approval
+        || matches!(
+            kind,
+            "human_approval" | "ai_extract_draft" | "ai_response_draft"
+        )
+    {
+        ("awaiting_approval", "step.submitted")
+    } else {
+        ("completed", "step.completed")
+    }
+}
+
 async fn step_action(
     actor: Actor,
     ExtractState(state): ExtractState<State>,
@@ -1013,6 +1322,12 @@ async fn step_action(
     }
     let version = expected(&headers)?;
     let mut tx = db(&state)?.begin().await?;
+    sqlx::query("SELECT id FROM care_pathway_instances WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
+        .bind(actor.tenant_id)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(Error::NotFound)?;
     let instance = instance_snapshot(&mut tx, &actor, id).await?;
     if instance["status"] == "cancelled"
         || (instance["status"] == "completed" && input.action != "reopen")
@@ -1025,6 +1340,7 @@ async fn step_action(
         return Err(Error::Conflict("pathway step changed"));
     }
     let current = string_value(&row, "state")?;
+    let kind = string_value(&row, "kind")?;
     let manual = row["manual_approval"].as_bool().unwrap_or(false);
     if ["start", "complete", "skip"].contains(&input.action.as_str())
         && !matches!(actor.role, Role::Owner)
@@ -1036,11 +1352,8 @@ async fn step_action(
     }
     let (next, event) = match input.action.as_str() {
         "start" if current == "ready" => ("in_progress", "step.started"),
-        "complete" if ["ready", "in_progress"].contains(&current) && manual => {
-            ("awaiting_approval", "step.submitted")
-        }
         "complete" if ["ready", "in_progress"].contains(&current) => {
-            ("completed", "step.completed")
+            completion_transition(kind, manual)
         }
         "approve"
             if current == "awaiting_approval"
@@ -1055,15 +1368,48 @@ async fn step_action(
             ("skipped", "step.skipped")
         }
         "reopen"
-            if ["completed", "skipped"].contains(&current)
+            if (["completed", "skipped"].contains(&current)
+                || (current == "awaiting_approval"
+                    && row.pointer("/evidence/native/resource_id").is_some()))
                 && matches!(actor.role, Role::Owner | Role::Clinician) =>
         {
             ("ready", "step.reopened")
         }
         _ => return Err(Error::Conflict("invalid pathway step transition")),
     };
+    if input.action == "approve" {
+        if let (Some(submitted), Some(selected)) = (
+            row.pointer("/evidence/native/resource_id"),
+            input.evidence.get("native_resource_id"),
+        ) {
+            let submitted: Uuid = serde_json::from_value(submitted.clone())
+                .map_err(|_| Error::Conflict("saved native evidence is invalid"))?;
+            let selected: Uuid = serde_json::from_value(selected.clone())
+                .map_err(|_| Error::Invalid("invalid native evidence selection"))?;
+            if submitted != selected {
+                return Err(Error::Conflict(
+                    "native record selection changed; reopen the step before selecting another record",
+                ));
+            }
+        }
+    }
+    let evidence = if matches!(input.action.as_str(), "complete" | "approve") {
+        crate::workflow_evidence::verify_completion(
+            &state,
+            &actor,
+            &headers,
+            &mut tx,
+            id,
+            &step,
+            &input.evidence,
+            &row["evidence"],
+        )
+        .await?
+    } else {
+        input.evidence
+    };
     sqlx::query("UPDATE care_pathway_steps SET state=$4,version=version+1,evidence=$5,updated_by=$6,updated_at=now() WHERE tenant_id=$1 AND instance_id=$2 AND step_key=$3")
-        .bind(actor.tenant_id).bind(id).bind(&step).bind(next).bind(&input.evidence).bind(actor.sub).execute(&mut *tx).await?;
+        .bind(actor.tenant_id).bind(id).bind(&step).bind(next).bind(&evidence).bind(actor.sub).execute(&mut *tx).await?;
     if input.action == "reopen" {
         sqlx::query("UPDATE care_pathway_instances SET status='active',version=version+1,completed_at=NULL,updated_at=now() WHERE tenant_id=$1 AND id=$2")
             .bind(actor.tenant_id).bind(id).execute(&mut *tx).await?;
@@ -1075,7 +1421,7 @@ async fn step_action(
         Some(&step),
         event,
         &input.reason,
-        input.evidence,
+        evidence,
     )
     .await?;
     refresh_ready_steps(&mut tx, &actor, id).await?;
@@ -1104,19 +1450,688 @@ async fn instance_events(
 
 /// A specialty template supplied as data. Installers choose whether to create it;
 /// the runtime never branches on this slug or its step keys.
-pub fn spasticity_movement_template() -> Value {
+pub fn specialty_care_template() -> Value {
     json!({
-        "slug":"spasticity-movement-previsit",
-        "name":"Spasticity & movement pre-visit",
-        "description":"Collect intake, verify benefits, prepare payment and route the specialty visit.",
-        "trigger_type":"appointment_created",
-        "definition":{"steps":[
-            {"key":"intake-packet","title":"Complete intake packet","kind":"patient_form","required":true,"manual_approval":false,"due_after_minutes":4320,"escalation_role":"front_desk","depends_on":[]},
-            {"key":"insurance-eligibility","title":"Verify insurance eligibility","kind":"eligibility_query","required":true,"manual_approval":true,"assigned_role":"front_desk","due_after_minutes":1440,"escalation_role":"owner","depends_on":[]},
-            {"key":"patient-estimate","title":"Review patient responsibility","kind":"payment_request","required":false,"manual_approval":true,"assigned_role":"front_desk","due_after_minutes":2880,"escalation_role":"owner","depends_on":["insurance-eligibility"],"condition":{"field":"/insurance/present","operator":"equals","value":true}},
-            {"key":"legal-consents","title":"Sign required legal documents","kind":"document_signature","required":true,"manual_approval":false,"due_after_minutes":4320,"escalation_role":"front_desk","depends_on":[]},
-            {"key":"functional-status","title":"Record functional status","kind":"clinical_template","required":true,"manual_approval":true,"assigned_role":"nurse","due_after_minutes":10080,"escalation_role":"clinician","depends_on":["intake-packet"]},
-            {"key":"visit-pathway","title":"Select specialty visit pathway","kind":"human_approval","required":true,"manual_approval":true,"assigned_role":"clinician","due_after_minutes":10080,"escalation_role":"owner","depends_on":["functional-status","legal-consents"]}
-        ]}
+        "slug": "specialty-care-journey",
+        "name": "Specialty care journey",
+        "description": "A configurable booked-visit workflow with optional specialty modules. Inquiry and booking use a separate pathway; each visit keeps its own saved clinical evidence.",
+        "trigger_type": "appointment_created",
+        "definition": {
+            "columns": [
+                {
+                    "key": "pre_visit",
+                    "title": "Before the visit",
+                    "description": "Schedule, collect forms and verify coverage"
+                },
+                {
+                    "key": "visit",
+                    "title": "Day of visit",
+                    "description": "Check in, collect payment and complete clinical work"
+                },
+                {
+                    "key": "follow_up",
+                    "title": "After the visit",
+                    "description": "Coordinate treatment, claims, referrals and recall"
+                }
+            ],
+            "steps": [
+                {
+                    "key": "intake-packet",
+                    "title": "Complete demographics and clinical intake",
+                    "kind": "patient_form",
+                    "phase": "pre_visit",
+                    "required": true,
+                    "manual_approval": false,
+                    "due_after_minutes": 4320,
+                    "escalation_role": "front_desk",
+                    "depends_on": [],
+                    "form_fields": [
+                        {
+                            "key": "preferred_name",
+                            "label": "Preferred name",
+                            "field_type": "short_text",
+                            "required": false,
+                            "chart_target": "demographics.preferred_name"
+                        },
+                        {
+                            "key": "phone",
+                            "label": "Phone",
+                            "field_type": "short_text",
+                            "required": false,
+                            "chart_target": "demographics.phone"
+                        },
+                        {
+                            "key": "email",
+                            "label": "Email",
+                            "field_type": "short_text",
+                            "required": false,
+                            "chart_target": "demographics.email"
+                        },
+                        {
+                            "key": "chief_concern",
+                            "label": "Reason for visit",
+                            "field_type": "long_text",
+                            "required": true
+                        },
+                        {
+                            "key": "functional_status",
+                            "label": "Current functional status",
+                            "field_type": "long_text",
+                            "required": true
+                        },
+                        {
+                            "key": "past_medical_history",
+                            "label": "Past medical history",
+                            "field_type": "long_text",
+                            "required": false
+                        },
+                        {
+                            "key": "past_surgical_history",
+                            "label": "Past surgical history",
+                            "field_type": "long_text",
+                            "required": false
+                        },
+                        {
+                            "key": "medications",
+                            "label": "Current medications",
+                            "field_type": "long_text",
+                            "required": false
+                        }
+                    ],
+                    "native": {
+                        "resource": "intake_reviewed"
+                    }
+                },
+                {
+                    "key": "insurance-eligibility",
+                    "title": "Verify insurance benefits and eligibility",
+                    "kind": "eligibility_query",
+                    "phase": "pre_visit",
+                    "required": false,
+                    "manual_approval": true,
+                    "assigned_role": "front_desk",
+                    "due_after_minutes": 1440,
+                    "escalation_role": "owner",
+                    "depends_on": [],
+                    "native": {
+                        "resource": "eligibility"
+                    }
+                },
+                {
+                    "key": "patient-estimate",
+                    "title": "Review accepted payer, benefits and patient estimate",
+                    "kind": "human_approval",
+                    "phase": "pre_visit",
+                    "required": true,
+                    "manual_approval": true,
+                    "assigned_role": "front_desk",
+                    "due_after_minutes": 2880,
+                    "escalation_role": "owner",
+                    "depends_on": [
+                        "insurance-eligibility"
+                    ]
+                },
+                {
+                    "key": "visit-reminder",
+                    "title": "Send appointment and intake reminder",
+                    "kind": "communication_send",
+                    "phase": "pre_visit",
+                    "required": true,
+                    "manual_approval": true,
+                    "assigned_role": "front_desk",
+                    "due_after_minutes": 2880,
+                    "escalation_role": "owner",
+                    "depends_on": []
+                },
+                {
+                    "key": "check-in",
+                    "title": "Check in patient and confirm outstanding items",
+                    "kind": "staff_task",
+                    "phase": "visit",
+                    "required": true,
+                    "manual_approval": true,
+                    "assigned_role": "front_desk",
+                    "due_after_minutes": 60,
+                    "escalation_role": "owner",
+                    "depends_on": [
+                        "intake-packet",
+                        "patient-estimate",
+                        "legal-consents"
+                    ],
+                    "native": {
+                        "resource": "check_in"
+                    }
+                },
+                {
+                    "key": "legal-consents",
+                    "title": "Review patient acknowledgments",
+                    "kind": "patient_form",
+                    "phase": "pre_visit",
+                    "required": true,
+                    "manual_approval": false,
+                    "due_after_minutes": 60,
+                    "escalation_role": "front_desk",
+                    "depends_on": [],
+                    "native": {
+                        "resource": "intake_reviewed"
+                    },
+                    "form_fields": [
+                        {
+                            "key": "consent_acknowledgment",
+                            "label": "Practice information and consent acknowledgment (configure your practice wording before publication)",
+                            "field_type": "checkbox",
+                            "required": true
+                        }
+                    ]
+                },
+                {
+                    "key": "collect-copay",
+                    "title": "Collect approved patient payment",
+                    "kind": "payment_request",
+                    "phase": "visit",
+                    "required": false,
+                    "manual_approval": true,
+                    "assigned_role": "front_desk",
+                    "due_after_minutes": 60,
+                    "escalation_role": "owner",
+                    "depends_on": [
+                        "check-in"
+                    ],
+                    "native": {
+                        "resource": "payment"
+                    }
+                },
+                {
+                    "key": "functional-status",
+                    "title": "Record structured functional status",
+                    "kind": "clinical_template",
+                    "phase": "visit",
+                    "required": true,
+                    "manual_approval": true,
+                    "assigned_role": "clinician",
+                    "due_after_minutes": 240,
+                    "escalation_role": "owner",
+                    "depends_on": [
+                        "check-in"
+                    ],
+                    "native": {
+                        "resource": "functional_status"
+                    }
+                },
+                {
+                    "key": "visit-documentation",
+                    "title": "Complete and sign visit documentation",
+                    "kind": "clinical_template",
+                    "phase": "visit",
+                    "required": true,
+                    "manual_approval": true,
+                    "assigned_role": "clinician",
+                    "due_after_minutes": 1440,
+                    "escalation_role": "owner",
+                    "depends_on": [
+                        "functional-status"
+                    ],
+                    "native": {
+                        "resource": "signed_visit"
+                    }
+                },
+                {
+                    "key": "treatment-pathway",
+                    "title": "Select treatment and care-coordination pathway",
+                    "kind": "human_approval",
+                    "phase": "follow_up",
+                    "required": true,
+                    "manual_approval": true,
+                    "assigned_role": "clinician",
+                    "due_after_minutes": 1440,
+                    "escalation_role": "owner",
+                    "depends_on": [
+                        "visit-documentation"
+                    ]
+                },
+                {
+                    "key": "neurotoxin-order",
+                    "title": "Coordinate neurotoxin order or buy-and-bill",
+                    "kind": "order",
+                    "phase": "follow_up",
+                    "required": false,
+                    "manual_approval": true,
+                    "assigned_role": "clinician",
+                    "due_after_minutes": 4320,
+                    "escalation_role": "owner",
+                    "depends_on": [
+                        "treatment-pathway"
+                    ],
+                    "native": {
+                        "resource": "neurotoxin"
+                    }
+                },
+                {
+                    "key": "pump-refill",
+                    "title": "Schedule and prepare pump refill",
+                    "kind": "order",
+                    "phase": "follow_up",
+                    "required": false,
+                    "manual_approval": true,
+                    "assigned_role": "clinician",
+                    "due_after_minutes": 4320,
+                    "escalation_role": "owner",
+                    "depends_on": [
+                        "treatment-pathway"
+                    ],
+                    "native": {
+                        "resource": "baclofen_pump_refill"
+                    }
+                },
+                {
+                    "key": "therapy-program",
+                    "title": "Coordinate therapy or neuromuscular program",
+                    "kind": "order",
+                    "phase": "follow_up",
+                    "required": false,
+                    "manual_approval": true,
+                    "assigned_role": "clinician",
+                    "due_after_minutes": 4320,
+                    "escalation_role": "owner",
+                    "depends_on": [
+                        "treatment-pathway"
+                    ],
+                    "native": {
+                        "resource": "stretching_program"
+                    }
+                },
+                {
+                    "key": "external-referral",
+                    "title": "Send and track external referral",
+                    "kind": "referral",
+                    "phase": "follow_up",
+                    "required": false,
+                    "manual_approval": true,
+                    "assigned_role": "front_desk",
+                    "due_after_minutes": 4320,
+                    "escalation_role": "clinician",
+                    "depends_on": [
+                        "treatment-pathway"
+                    ],
+                    "native": {
+                        "resource": "referral"
+                    }
+                },
+                {
+                    "key": "claim-review",
+                    "title": "Review native claim readiness",
+                    "kind": "staff_task",
+                    "phase": "follow_up",
+                    "required": true,
+                    "manual_approval": true,
+                    "assigned_role": "front_desk",
+                    "due_after_minutes": 4320,
+                    "escalation_role": "owner",
+                    "depends_on": [
+                        "visit-documentation"
+                    ],
+                    "native": {
+                        "resource": "claim_review"
+                    }
+                },
+                {
+                    "key": "follow-up-message",
+                    "title": "Send follow-up instructions and recall",
+                    "kind": "communication_send",
+                    "phase": "follow_up",
+                    "required": true,
+                    "manual_approval": true,
+                    "assigned_role": "front_desk",
+                    "due_after_minutes": 4320,
+                    "escalation_role": "owner",
+                    "depends_on": [
+                        "visit-documentation"
+                    ]
+                },
+                {
+                    "key": "follow-up-completed",
+                    "title": "Complete follow-up and care coordination",
+                    "kind": "staff_task",
+                    "phase": "follow_up",
+                    "required": true,
+                    "manual_approval": true,
+                    "assigned_role": "clinician",
+                    "depends_on": [
+                        "visit-documentation"
+                    ],
+                    "native": {
+                        "resource": "follow_up"
+                    }
+                }
+            ]
+        }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn specialty_template_starts_after_booking_and_requires_native_visit_records() {
+        let template = specialty_care_template();
+        let definition: Definition = serde_json::from_value(template["definition"].clone())
+            .expect("specialty template parses");
+        definition.validate().expect("specialty template is valid");
+        let phases: BTreeSet<&str> = definition
+            .steps
+            .iter()
+            .filter_map(|step| step.phase.as_deref())
+            .collect();
+        assert_eq!(phases, BTreeSet::from(["follow_up", "pre_visit", "visit"]));
+        assert!(definition
+            .steps
+            .iter()
+            .any(|step| step.key == "claim-review"));
+        assert!(definition
+            .steps
+            .iter()
+            .any(|step| step.key == "follow-up-message"));
+    }
+
+    #[test]
+    fn clinical_documentation_accepts_configured_forms_but_other_actions_do_not() {
+        let mut value = json!({"steps":[{
+            "key":"function-assessment", "title":"Functional assessment",
+            "kind":"clinical_template", "depends_on":[],
+            "form_fields":[{"key":"goal", "label":"Patient goal",
+                "field_type":"long_text", "required":true, "options":[]}]
+        }]});
+        let definition: Definition = serde_json::from_value(value.clone()).unwrap();
+        definition
+            .validate()
+            .expect("clinical documentation supports custom fields");
+        value["steps"][0]["kind"] = json!("payment_request");
+        let definition: Definition = serde_json::from_value(value).unwrap();
+        assert!(definition.validate().is_err());
+    }
+
+    #[test]
+    fn activation_requires_native_completion_for_clinical_documentation() {
+        let value = json!({"steps":[{
+            "key":"visit", "title":"Complete visit",
+            "kind":"clinical_template", "depends_on":[],
+            "manual_approval":true
+        }]});
+        let mut definition: Definition = serde_json::from_value(value).unwrap();
+        definition
+            .validate()
+            .expect("an incomplete clinical node remains a valid draft");
+        assert!(matches!(
+            definition.validate_for_activation(),
+            Err(Error::Invalid(
+                "clinical workflow nodes require a native completion resource before publication"
+            ))
+        ));
+
+        definition.steps[0].native = Some(crate::workflow_evidence::NativeBinding {
+            resource: "signed_visit".into(),
+        });
+        definition
+            .validate_for_activation()
+            .expect("a signed-visit completion source is publishable");
+    }
+
+    #[test]
+    fn communications_scheduling_and_ai_modules_are_valid_definition_data() {
+        for kind in [
+            "availability_query",
+            "slot_hold",
+            "appointment_booking",
+            "appointment_reschedule",
+            "appointment_cancel",
+            "intake_request",
+            "communication_send",
+            "ai_extract_draft",
+            "ai_response_draft",
+        ] {
+            let definition = Definition {
+                columns: default_columns(),
+                steps: vec![StepDefinition {
+                    key: format!("{kind}-step"),
+                    title: format!("Reviewed {kind}"),
+                    kind: kind.into(),
+                    phase: Some("pre_visit".into()),
+                    editor_position: None,
+                    required: true,
+                    manual_approval: true,
+                    assigned_role: Some("front_desk".into()),
+                    escalation_role: None,
+                    due_after_minutes: Some(60),
+                    depends_on: vec![],
+                    condition: None,
+                    form_fields: vec![],
+                    ai: None,
+                    native: None,
+                }],
+            };
+            definition.validate().expect("new module is valid");
+        }
+    }
+
+    #[test]
+    fn sun_nodes_require_bounded_source_configuration_and_manual_review() {
+        let value = json!({"steps":[{
+            "key":"extract", "title":"Review extraction", "kind":"ai_extract_draft", "manual_approval":true,
+            "ai":{"integration_id":Uuid::new_v4(),"instruction":"Extract explicit synthetic facts.","source_field":"/referral/body"}
+        }]});
+        let definition: Definition = serde_json::from_value(value.clone()).unwrap();
+        definition.validate().unwrap();
+        assert_eq!(
+            json!(definition)["steps"][0]["ai"]["source_field"],
+            "/referral/body"
+        );
+        assert_eq!(
+            json!(definition)["steps"][0]["ai"]["privacy"],
+            json!({"mode":"pseudonymize","preview_required":true,"restore_locally":true,"retain_clinical_codes":true})
+        );
+        for field in [
+            "preview_required",
+            "restore_locally",
+            "retain_clinical_codes",
+            "mode",
+        ] {
+            let mut invalid = json!(definition);
+            invalid["steps"][0]["ai"]["privacy"][field] = if field == "mode" {
+                json!("disabled")
+            } else {
+                json!(false)
+            };
+            assert!(serde_json::from_value::<Definition>(invalid)
+                .unwrap()
+                .validate()
+                .is_err());
+        }
+        for pointer in [
+            "",
+            "referral/body",
+            "/referral/~2",
+            "/credentials/api_key",
+            "/Config/source",
+            "/access-token",
+        ] {
+            let mut invalid = value.clone();
+            invalid["steps"][0]["ai"]["source_field"] = json!(pointer);
+            let definition: Definition = serde_json::from_value(invalid).unwrap();
+            assert!(definition.validate().is_err(), "{pointer}");
+        }
+        let mut invalid = value.clone();
+        invalid["steps"][0]["manual_approval"] = json!(false);
+        assert!(serde_json::from_value::<Definition>(invalid)
+            .unwrap()
+            .validate()
+            .is_err());
+        let mut invalid = value;
+        invalid["steps"][0]["kind"] = json!("staff_task");
+        assert!(serde_json::from_value::<Definition>(invalid)
+            .unwrap()
+            .validate()
+            .is_err());
+    }
+
+    #[test]
+    fn human_approval_requires_review_even_for_legacy_runtime_flags() {
+        let mut value = json!({"steps":[{
+            "key":"review","title":"Review synthetic work","kind":"human_approval"
+        }]});
+        for flag in [Value::Null, json!(false)] {
+            if flag.is_null() {
+                value["steps"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("manual_approval");
+            } else {
+                value["steps"][0]["manual_approval"] = flag;
+            }
+            assert!(serde_json::from_value::<Definition>(value.clone())
+                .unwrap()
+                .validate()
+                .is_err());
+        }
+        value["steps"][0]["manual_approval"] = json!(true);
+        serde_json::from_value::<Definition>(value)
+            .unwrap()
+            .validate()
+            .unwrap();
+        assert_eq!(
+            completion_transition("human_approval", false),
+            ("awaiting_approval", "step.submitted")
+        );
+        assert_eq!(
+            completion_transition("human_approval", true),
+            ("awaiting_approval", "step.submitted")
+        );
+        assert_eq!(
+            completion_transition("staff_task", true),
+            ("awaiting_approval", "step.submitted")
+        );
+        assert_eq!(
+            completion_transition("staff_task", false),
+            ("completed", "step.completed")
+        );
+    }
+
+    #[test]
+    fn custom_columns_are_versioned_definition_data() {
+        let definition: Definition = serde_json::from_value(json!({
+            "columns":[
+                {"key":"referral_intake","title":"Referral intake","description":"Qualify the request"},
+                {"key":"prior_auth","title":"Prior authorization","hidden":false},
+                {"key":"care_coordination","title":"Care coordination","hidden":true}
+            ],
+            "steps":[
+                {"key":"qualify","title":"Qualify referral","kind":"staff_task","phase":"referral_intake","depends_on":[]},
+                {"key":"authorize","title":"Obtain authorization","kind":"human_approval","manual_approval":true,"phase":"prior_auth","depends_on":["qualify"]}
+            ]
+        }))
+        .expect("custom workflow definition parses");
+        definition.validate().expect("custom columns are valid");
+    }
+
+    #[test]
+    fn legacy_definitions_receive_default_columns() {
+        let definition: Definition = serde_json::from_value(json!({
+            "steps":[{"key":"visit","title":"Visit","kind":"staff_task","phase":"visit","depends_on":[]}]
+        }))
+        .expect("legacy workflow definition parses");
+        assert_eq!(definition.columns.len(), 4);
+        definition
+            .validate()
+            .expect("legacy workflow remains valid");
+    }
+
+    #[test]
+    fn missing_columns_duplicate_nodes_and_cycles_are_rejected() {
+        let mut definition = Definition {
+            columns: default_columns(),
+            steps: vec![
+                StepDefinition {
+                    key: "one".into(),
+                    title: "One".into(),
+                    kind: "staff_task".into(),
+                    phase: Some("intake".into()),
+                    editor_position: None,
+                    required: true,
+                    manual_approval: false,
+                    assigned_role: None,
+                    escalation_role: None,
+                    due_after_minutes: None,
+                    depends_on: vec!["two".into()],
+                    condition: None,
+                    form_fields: vec![],
+                    ai: None,
+                    native: None,
+                },
+                StepDefinition {
+                    key: "two".into(),
+                    title: "Two".into(),
+                    kind: "staff_task".into(),
+                    phase: Some("pre_visit".into()),
+                    editor_position: None,
+                    required: true,
+                    manual_approval: false,
+                    assigned_role: None,
+                    escalation_role: None,
+                    due_after_minutes: None,
+                    depends_on: vec!["one".into()],
+                    condition: None,
+                    form_fields: vec![],
+                    ai: None,
+                    native: None,
+                },
+            ],
+        };
+        assert!(definition.validate().is_err());
+        definition.steps[1].depends_on.clear();
+        definition.steps[0].phase = Some("missing".into());
+        assert!(definition.validate().is_err());
+        definition.steps[0].phase = Some("intake".into());
+        definition.steps[1].key = "one".into();
+        assert!(definition.validate().is_err());
+    }
+
+    #[test]
+    fn canvas_positions_are_bounded_definition_metadata() {
+        let mut definition: Definition = serde_json::from_value(json!({"steps":[{
+            "key":"one","title":"Synthetic task","kind":"staff_task","phase":"intake",
+            "editor_position":{"x":125.5,"y":-100000.0}
+        }]}))
+        .unwrap();
+        definition.validate().unwrap();
+        let saved = json!(definition);
+        assert_eq!(saved["steps"][0]["editor_position"]["x"], 125.5);
+        assert_eq!(definition.steps[0].phase.as_deref(), Some("intake"));
+        assert!(definition.steps[0].depends_on.is_empty());
+        for invalid in [100_000.01, -100_000.01, f64::INFINITY, f64::NAN] {
+            definition.steps[0].editor_position = Some(EditorPosition { x: invalid, y: 0.0 });
+            assert!(definition.validate().is_err());
+            definition.steps[0].editor_position = Some(EditorPosition { x: 0.0, y: invalid });
+            assert!(definition.validate().is_err());
+        }
+        definition.steps[0].editor_position = None;
+        definition.validate().unwrap();
+        assert!(json!(definition)["steps"][0]
+            .get("editor_position")
+            .is_none());
+    }
+
+    #[test]
+    fn communications_and_external_booking_triggers_are_registered() {
+        for trigger in [
+            "call_received",
+            "sms_received",
+            "fax_received",
+            "email_received",
+            "external_booking_received",
+            "appointment_cancelled",
+            "referral_status_changed",
+        ] {
+            assert!(TRIGGERS.contains(&trigger));
+        }
+    }
 }

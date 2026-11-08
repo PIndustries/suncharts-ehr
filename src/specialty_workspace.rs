@@ -19,10 +19,10 @@ use chrono::{Datelike, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{Postgres, Transaction};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use uuid::Uuid;
 
-const MODULES: [&str; 14] = [
+const MODULES: [&str; 18] = [
     "practice",
     "clinical",
     "schedule",
@@ -37,6 +37,10 @@ const MODULES: [&str; 14] = [
     "apps",
     "migration",
     "admin",
+    "workflows",
+    "automation",
+    "communications",
+    "ai_review",
 ];
 const CHART_TABS: [&str; 16] = [
     "overview",
@@ -56,7 +60,7 @@ const CHART_TABS: [&str; 16] = [
     "billing",
     "source",
 ];
-const SPECIALTY_WORKSPACES: [&str; 1] = ["spasticity_movement"];
+const LEGACY_SPECIALTY_WORKSPACES: [&str; 1] = ["spasticity_movement"];
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -64,56 +68,31 @@ pub struct WorkspaceContent {
     pub module_order: Vec<String>,
     #[serde(default)]
     pub hidden_modules: Vec<String>,
-    #[serde(default)]
-    pub specialty_workspaces: Vec<String>,
+    // Accepted only to preserve the presentation of older saved configurations.
+    // New configurations control navigation and chart tabs independently.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub specialty_workspaces: Option<Vec<String>>,
     pub chart_tabs: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub module_labels: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub module_groups: BTreeMap<String, String>,
 }
 
 impl Default for WorkspaceContent {
     fn default() -> Self {
         Self {
             module_order: MODULES.iter().map(|s| (*s).to_owned()).collect(),
-            hidden_modules: vec![],
-            specialty_workspaces: vec![],
+            hidden_modules: vec!["specialty".into()],
+            specialty_workspaces: None,
             chart_tabs: CHART_TABS
                 .iter()
                 .filter(|s| !matches!(**s, "functional_status" | "specialty_care"))
                 .map(|s| (*s).to_owned())
                 .collect(),
+            module_labels: BTreeMap::new(),
+            module_groups: BTreeMap::new(),
         }
-    }
-}
-
-fn current_workspace_content(mut content: Value) -> Value {
-    // Add newly introduced chart areas to legacy saved layouts once. Owners can
-    // subsequently hide them through the normal versioned settings editor.
-    if let Some(tabs) = content.get_mut("chart_tabs").and_then(Value::as_array_mut) {
-        if !tabs.iter().any(|tab| tab == "care_pathways") {
-            let position = tabs
-                .iter()
-                .position(|tab| tab == "clinical")
-                .map_or(tabs.len(), |index| index + 1);
-            tabs.insert(position, json!("care_pathways"));
-        }
-    }
-    content
-}
-
-#[cfg(test)]
-mod workspace_content_tests {
-    use super::current_workspace_content;
-    use serde_json::json;
-
-    #[test]
-    fn legacy_layout_gains_versioned_care_pathway_tab() {
-        let content = current_workspace_content(json!({
-            "chart_tabs": ["overview", "profile", "clinical", "visits"]
-        }));
-        assert_eq!(
-            content["chart_tabs"],
-            json!(["overview", "profile", "clinical", "care_pathways", "visits"])
-        );
-        assert_eq!(current_workspace_content(content.clone()), content);
     }
 }
 
@@ -129,7 +108,52 @@ fn unique_allowed(values: &[String], allowed: &[&str], field: &'static str) -> R
 }
 
 impl WorkspaceContent {
+    fn normalize_legacy_specialty(&mut self) -> Result<()> {
+        if let Some(legacy) = &self.specialty_workspaces {
+            unique_allowed(
+                legacy,
+                &LEGACY_SPECIALTY_WORKSPACES,
+                "invalid or repeated specialty workspace",
+            )?;
+            // An empty legacy bundle previously hid this navigation entry.
+            // Translate once, so a later ordinary visibility change can unhide it.
+            if legacy.is_empty() && !self.hidden_modules.iter().any(|key| key == "specialty") {
+                self.hidden_modules.push("specialty".into());
+            }
+            self.specialty_workspaces = None;
+        }
+        Ok(())
+    }
+
+    fn include_existing_tools(&mut self) {
+        for module in ["workflows", "automation", "communications", "ai_review"] {
+            if !self.module_order.iter().any(|key| key == module) {
+                self.module_order.push(module.into());
+            }
+        }
+    }
     fn validate(&self) -> Result<()> {
+        for (module, label) in &self.module_labels {
+            if !MODULES.contains(&module.as_str())
+                || label.trim().is_empty()
+                || label != label.trim()
+                || label.chars().count() > 60
+                || label.chars().any(char::is_control)
+            {
+                return Err(Error::Invalid(
+                    "navigation labels require a known module and 1 to 60 visible characters",
+                ));
+            }
+        }
+        for (module, group) in &self.module_groups {
+            if !MODULES.contains(&module.as_str())
+                || !["today", "care", "revenue", "manage"].contains(&group.as_str())
+            {
+                return Err(Error::Invalid(
+                    "navigation groups must be today, care, revenue or manage for a known module",
+                ));
+            }
+        }
         unique_allowed(
             &self.module_order,
             &MODULES,
@@ -139,11 +163,6 @@ impl WorkspaceContent {
             &self.hidden_modules,
             &MODULES,
             "invalid or repeated hidden module",
-        )?;
-        unique_allowed(
-            &self.specialty_workspaces,
-            &SPECIALTY_WORKSPACES,
-            "invalid or repeated specialty workspace",
         )?;
         unique_allowed(
             &self.chart_tabs,
@@ -158,16 +177,6 @@ impl WorkspaceContent {
         {
             return Err(Error::Invalid(
                 "module order must include every module once and chart tabs must include overview",
-            ));
-        }
-        if self.specialty_workspaces.is_empty()
-            && self
-                .chart_tabs
-                .iter()
-                .any(|v| matches!(v.as_str(), "functional_status" | "specialty_care"))
-        {
-            return Err(Error::Invalid(
-                "specialty chart tabs require an enabled specialty workspace",
             ));
         }
         Ok(())
@@ -530,7 +539,13 @@ async fn settings(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json
     tx.commit().await?;
     Ok(Json(match saved {
         Some((version, content, updated_by, updated_at)) => {
-            json!({"version":version,"content":current_workspace_content(content),"updated_by":updated_by,"updated_at":updated_at})
+            // These already-visible tools become configurable. Preserve every
+            // saved visibility choice and never restore omitted chart areas.
+            let mut content: WorkspaceContent = serde_json::from_value(content)
+                .map_err(|_| Error::Invalid("saved workspace configuration is invalid"))?;
+            content.normalize_legacy_specialty()?;
+            content.include_existing_tools();
+            json!({"version":version,"content":content,"updated_by":updated_by,"updated_at":updated_at})
         }
         None => {
             json!({"version":0,"content":WorkspaceContent::default(),"updated_by":Value::Null,"updated_at":Value::Null})
@@ -542,11 +557,13 @@ async fn save_settings(
     a: Actor,
     ExtractState(s): ExtractState<State>,
     h: HeaderMap,
-    Json(v): Json<WorkspaceChange>,
+    Json(mut v): Json<WorkspaceChange>,
 ) -> Result<Response> {
     if !matches!(a.role, Role::Owner) {
         return Err(Error::Forbidden);
     }
+    v.content.normalize_legacy_specialty()?;
+    v.content.include_existing_tools();
     v.content.validate()?;
     text(&v.reason, 1000)?;
     let version = expected(&h, true)?;

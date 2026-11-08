@@ -38,7 +38,7 @@ function fixture({search = '', practice = false} = {}) {
       }
     },
     fetch() { throw new Error('Unexpected network request during fixture bootstrap'); },
-    billingWrite: () => true, canDocument: () => true,
+    billingWrite: () => true, billingCan: () => true, canDocument: () => true,
     calls: []
   });
   const evaluate = code => vm.runInContext(code, context);
@@ -64,13 +64,11 @@ async function testEncounterStates() {
   assert.doesNotMatch(f.evaluate('encounterDateLabel(activeVisit)'), /Invalid Date/);
   assert.equal(f.evaluate("encounterDateLabel({appointment_id:'missing'})"),'Encounter date not recorded');
   f.evaluate('renderVisit(false)');
-  assert.match(f.node('encounter-progress').innerHTML, /Note incomplete/);
-  assert.match(f.node('encounter-progress').innerHTML, /1\/3 lists confirmed/);
+  assert.match(f.node('encounter-progress').innerHTML, /No patient journey is attached/);
   assert.match(f.node('visit-editor').innerHTML, /data-action="sign"/);
   assert.doesNotMatch(f.node('visit-editor').innerHTML, /id="amendment-form"/);
   f.evaluate(`activeVisit.note={subjective:'S',objective:'O',assessment:'A',plan:'P'}; activeVisit.vitals={heart_rate_bpm:70}; renderVisit(false)`);
-  assert.match(f.node('encounter-progress').innerHTML, /Draft saved/);
-  assert.match(f.node('encounter-progress').innerHTML, /Vitals saved/);
+  assert.match(f.node('encounter-progress').innerHTML, /Encounter in progress/);
   // A saved unsigned note must retain its sign action, not become a signed record.
   assert.match(f.node('visit-editor').innerHTML, /data-action="sign"/);
   f.evaluate(`activeVisit.status='signed';activeVisit.signed_at='2026-10-25T14:30:00Z';renderVisit(false)`);
@@ -92,7 +90,7 @@ async function testDelegatedRoomingControls(){
   f.evaluate(`me.role=${JSON.stringify(role)};activeVisit.clinician_id='another-clinician';activeVisit.status='in_progress';renderVisit(false)`);
   assert.match(f.node('visit-editor').innerHTML,/>Save vitals</,role);
   assert.doesNotMatch(f.node('visit-editor').innerHTML,/data-action="sign"|>Save note<|id="amendment-form"/,role);
-  assert.match(f.node('encounter-progress').innerHTML,/Room patient/,role);
+  assert.match(f.node('encounter-progress').innerHTML,/No patient journey is attached/,role);
   f.evaluate(`activeVisit.status='signed';renderVisit(false)`);
   assert.doesNotMatch(f.node('visit-editor').innerHTML,/>Save vitals<|>Save note<|data-action="sign"|id="amendment-form"/,role);
  }
@@ -135,7 +133,7 @@ async function testVisitDrafts(){
 async function testEncounterSelectionRefresh(){
  const f=clinicalFixture();f.context.pending=[];
  f.evaluate(`api=async()=>({...activeVisit,id:'signed-visit',status:'signed'});run=action=>pending.push(Promise.resolve().then(action));renderChart=()=>calls.push(['chart',activeVisit.id]);renderVisit=()=>calls.push(['editor-only']);`);
- const button={id:'',type:'button',dataset:{visit:'signed-visit'},closest(){return null;},hasAttribute(){return false;}};
+ const button={id:'',type:'button',dataset:{visit:'signed-visit'},closest(){return null;},hasAttribute(name){return name==='data-visit';}};
  f.listeners.get('click')[0].callback({target:{closest:()=>button}});
  await Promise.all(f.context.pending);
  assert.deepEqual(JSON.parse(JSON.stringify(f.context.calls)),[['chart','signed-visit']]);

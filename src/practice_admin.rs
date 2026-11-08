@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Owner-only local practice administration. Credentials never leave the write path.
+//! Owner-only practice administration. Credentials never leave the write path.
 use crate::{
     auth::Actor,
     error::{Error, Result},
@@ -51,8 +51,8 @@ pub fn router() -> Router<State> {
         )
         .route("/api/v1/practice/admin-history/{kind}/{id}", get(history))
 }
-// Deliberately require a real local owner browser session. Clinical integration
-// scopes must never implicitly become identity-administration privileges.
+// Require an owner browser session, including a live-verified delegated owner.
+// Clinical integration scopes never become identity-administration privileges.
 async fn owner(s: &State, h: &HeaderMap, write: bool) -> Result<Actor> {
     let a = s
         .browser
@@ -65,7 +65,7 @@ async fn owner(s: &State, h: &HeaderMap, write: bool) -> Result<Actor> {
     }
     Ok(a)
 }
-async fn locked<'a>(s: &'a State, a: &Actor) -> Result<Transaction<'a, Postgres>> {
+async fn locked<'a>(s: &'a State, a: &Actor, h: &HeaderMap) -> Result<Transaction<'a, Postgres>> {
     let mut tx = s
         .browser
         .as_ref()
@@ -80,10 +80,7 @@ async fn locked<'a>(s: &'a State, a: &Actor) -> Result<Transaction<'a, Postgres>
         .execute(&mut *tx)
         .await?;
     crate::scheduling::tenant_lock(&mut tx, a).await?;
-    let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM browser_users WHERE tenant_id=$1 AND id=$2 AND role='owner' AND NOT disabled)").bind(a.tenant_id).bind(a.sub).fetch_one(&mut *tx).await?;
-    if !valid {
-        return Err(Error::Forbidden);
-    }
+    crate::partner_support::verify_owner_in_tx(&mut tx, a, h).await?;
     Ok(tx)
 }
 fn version(h: &HeaderMap) -> Result<i64> {
@@ -149,7 +146,7 @@ async fn staff_snapshot(tx: &mut Transaction<'_, Postgres>, a: &Actor, id: Uuid)
 }
 async fn staff(ExtractState(s): ExtractState<State>, h: HeaderMap) -> Result<Json<Value>> {
     let a = owner(&s, &h, false).await?;
-    let mut tx = locked(&s, &a).await?;
+    let mut tx = locked(&s, &a, &h).await?;
     let items:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',id,'email',email,'display_name',display_name,'role',role,'disabled',disabled,'version',version) FROM browser_users WHERE tenant_id=$1 ORDER BY lower(display_name),email LIMIT 1001").bind(a.tenant_id).fetch_all(&mut *tx).await?;
     crate::postgres::audit(&mut tx, &a, "practice.staff.read", a.tenant_id).await?;
     tx.commit().await?;
@@ -187,7 +184,7 @@ async fn create_staff(
         ));
     }
     let hash = password_hash(p.password).await?;
-    let mut tx = locked(&s, &a).await?;
+    let mut tx = locked(&s, &a, &h).await?;
     let id = Uuid::new_v4();
     sqlx::query("INSERT INTO browser_users(tenant_id,id,email,password_hash,display_name,role) VALUES($1,$2,$3,$4,$5,$6)").bind(a.tenant_id).bind(id).bind(email).bind(hash).bind(p.display_name.trim()).bind(p.role).execute(&mut *tx).await?;
     let item = staff_snapshot(&mut tx, &a, id).await?;
@@ -222,7 +219,7 @@ async fn update_staff(
         Some(p) => Some(password_hash(p).await?),
         None => None,
     };
-    let mut tx = locked(&s, &a).await?;
+    let mut tx = locked(&s, &a, &h).await?;
     let old: Option<(String, bool, i64)> = sqlx::query_as(
         "SELECT role,disabled,version FROM browser_users WHERE tenant_id=$1 AND id=$2 FOR UPDATE",
     )
@@ -252,6 +249,7 @@ async fn update_staff(
             .bind(id)
             .execute(&mut *tx)
             .await?;
+        sqlx::query("UPDATE connect_identity_sessions SET revoked_at=coalesce(revoked_at,now()) WHERE tenant_id=$1 AND user_id=$2").bind(a.tenant_id).bind(id).execute(&mut *tx).await?;
         sqlx::query("UPDATE oauth_grants SET revoked_at=coalesce(revoked_at,now()) WHERE tenant_id=$1 AND user_id=$2").bind(a.tenant_id).bind(id).execute(&mut *tx).await?;
     }
     if p.disabled || !matches!(p.role.as_str(), "owner" | "clinician") {
@@ -340,7 +338,7 @@ async fn rooms(ExtractState(s): ExtractState<State>, h: HeaderMap) -> Result<Jso
 }
 async fn directory_list(s: State, h: HeaderMap, kind: &str) -> Result<Json<Value>> {
     let a = owner(&s, &h, false).await?;
-    let mut tx = locked(&s, &a).await?;
+    let mut tx = locked(&s, &a, &h).await?;
     let query=match kind {
  "provider"=>"SELECT to_jsonb(p)-'tenant_id' FROM practice_providers p WHERE tenant_id=$1 ORDER BY lower(display_name),id LIMIT 1001",
  "facility"=>"SELECT to_jsonb(p)-'tenant_id' FROM practice_facilities p WHERE tenant_id=$1 ORDER BY lower(name),id LIMIT 1001",
@@ -386,7 +384,7 @@ async fn save_provider(
     if id.is_some_and(|id| id != p.staff_id) {
         return Err(Error::Invalid("provider staff identity cannot be changed"));
     }
-    let mut tx = locked(&s, &a).await?;
+    let mut tx = locked(&s, &a, &h).await?;
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM browser_users WHERE tenant_id=$1 AND id=$2)",
     )
@@ -477,7 +475,7 @@ async fn save_facility(
         None
     };
     let id = id.unwrap_or_else(Uuid::new_v4);
-    let mut tx = locked(&s, &a).await?;
+    let mut tx = locked(&s, &a, &h).await?;
     if v.is_some() {
         let old: Option<String> =
             sqlx::query_scalar("SELECT name FROM practice_facilities WHERE tenant_id=$1 AND id=$2")
@@ -571,7 +569,7 @@ async fn save_room(s: State, h: HeaderMap, id: Option<Uuid>, p: Room) -> Result<
         None
     };
     let id = id.unwrap_or_else(Uuid::new_v4);
-    let mut tx = locked(&s, &a).await?;
+    let mut tx = locked(&s, &a, &h).await?;
     if v.is_some() {
         let old: Option<(Uuid,String,String)> = sqlx::query_as("SELECT r.facility_id,r.name,f.name FROM practice_rooms r JOIN practice_facilities f ON f.tenant_id=r.tenant_id AND f.id=r.facility_id WHERE r.tenant_id=$1 AND r.id=$2").bind(a.tenant_id).bind(id).fetch_optional(&mut *tx).await?;
         if let Some((_, name, facility_name)) = old
@@ -638,7 +636,7 @@ async fn history(
     if !matches!(kind.as_str(), "staff" | "provider" | "facility" | "room") {
         return Err(Error::NotFound);
     }
-    let mut tx = locked(&s, &a).await?;
+    let mut tx = locked(&s, &a, &h).await?;
     let items:Vec<Value>=sqlx::query_scalar("SELECT to_jsonb(h)-'tenant_id' FROM practice_admin_history h WHERE tenant_id=$1 AND kind=$2 AND resource_id=$3 ORDER BY version DESC LIMIT 101").bind(a.tenant_id).bind(kind).bind(id).fetch_all(&mut *tx).await?;
     crate::postgres::audit(&mut tx, &a, "practice.admin.history", id).await?;
     tx.commit().await?;

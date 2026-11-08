@@ -12,28 +12,43 @@ async function showPracticeWorkspace(){
  const start=new Date();start.setHours(0,0,0,0);const end=new Date(start);end.setDate(end.getDate()+1);
  const results=await Promise.allSettled([
   api(`/api/v1/schedule?${new URLSearchParams({start:start.toISOString(),end:end.toISOString()})}`),
-  api('/api/v1/labs/inbox'),api('/api/v1/practice/worklist')
+  api('/api/v1/labs/inbox'),api('/api/v1/practice/worklist'),
+  api('/api/v1/previsit/readiness'),api('/api/v1/follow-up/tasks?status=open'),
+  api('/api/v1/referrals/worklist?_count=100'),api('/api/v1/billing/claims')
  ]);
  if(generation!==practiceLoad||!$('practice-home')||!me)return;
  const value=i=>results[i].status==='fulfilled'?results[i].value:null;
- const schedule=value(0),inbox=value(1),unfinished=value(2);
- practiceData={start,loadedAt:new Date(),results,schedule,inbox,unfinished,
+ const schedule=value(0),inbox=value(1),unfinished=value(2),previsit=value(3),followup=value(4),referrals=value(5),claims=value(6);
+ practiceData={start,loadedAt:new Date(),results,schedule,inbox,unfinished,previsit,followup,referrals,claims,
   appointments:(schedule?.appointments||[]).filter(a=>!['cancelled','no_show'].includes(a.status)).sort((a,b)=>a.starts_at.localeCompare(b.starts_at)),
   reports:inbox?[...inbox.items].sort((a,b)=>Number(b.critical)-Number(a.critical)):[]};
  renderPracticeWorkspace();
 }
 function practiceTab(mode,label,count){return `<button type="button" data-practice-board="${mode}" aria-pressed="${practiceBoardMode===mode}">${label}<span>${count===null?'—':esc(count)}</span></button>`;}
+function practiceJourneyStep(index,action,label,description,count,tone=''){
+ const amount=Number.isFinite(count)?count:null;
+ const state=amount===null?'unavailable':amount>0?(tone||'attention'):'clear';
+ return `<button type="button" class="${state}" data-practice-action="${action}"><span>${index}</span><b>${label}</b><small>${esc(description)}</small>${amount===null?'':`<em>${amount}</em>`}</button>`;
+}
 function renderPracticeWorkspace(){
- const {start,loadedAt,schedule,inbox,unfinished,appointments}=practiceData;
+ const {start,loadedAt,schedule,inbox,unfinished,previsit,followup,referrals,claims,appointments}=practiceData;
  const dateLabel=start.toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric',year:'numeric'});
  const tz=Intl.DateTimeFormat().resolvedOptions().timeZone;
  $('practice-home').outerHTML=`<section id="practice-home" class="practice-home">
  <div class="practice-commandbar"><div><p class="eyebrow">CLINICAL OPERATIONS</p><h2>${esc(dateLabel)}</h2><p class="muted">All providers · ${esc(tz)} <span aria-hidden="true">/</span> Updated ${esc(practiceTime(loadedAt))}</p></div><div class="actions">${practiceAction('refresh','Refresh')}${practiceAction('patients','Find patient')}${practiceAction('schedule','Open schedule',true)}</div></div>
+ <section class="practice-journey-shell" aria-labelledby="practice-journey-heading"><div class="practice-journey-heading"><div><p class="eyebrow">PATIENT JOURNEY</p><h3 id="practice-journey-heading">Move work forward</h3></div><p>Choose a stage to open the people and tasks waiting there.</p></div><nav class="practice-journey" aria-label="Patient journey">
+ ${practiceJourneyStep(1,'intake','Intake','New requests and forms',Array.isArray(previsit?.items)?previsit.items.length:null)}
+ ${practiceJourneyStep(2,'schedule','Ready','Scheduled and preparing',schedule?appointments.length:null,'active')}
+ ${practiceJourneyStep(3,'patients','Visit','Arrivals and open encounters',unfinished?unfinished.total:null)}
+ ${practiceJourneyStep(4,'patients','Checkout','Instructions, charges and handoff',unfinished?unfinished.items.filter(item=>item.note_saved).length:null)}
+ ${practiceJourneyStep(5,'claims','Claim','Coding, submission and payer response',Array.isArray(claims?.items)?claims.items.length:null)}
+ ${practiceJourneyStep(6,'followup','Follow-up','Tasks, referrals and recall',[followup?.items,referrals?.items].every(Array.isArray)?followup.items.length+referrals.items.length:null)}
+ </nav></section>
  <div class="practice-board-layout"><section class="practice-board" aria-label="Patient and encounter worklist"><header class="practice-board-header"><nav class="practice-board-tabs" aria-label="Clinical worklists">${practiceTab('agenda','Today’s patients',schedule?appointments.length:null)}${practiceTab('unfinished','Unfinished encounters',unfinished?unfinished.total:null)}</nav><span class="practice-board-scope">${practiceBoardMode==='agenda'?'Today · all providers':'All dates · oldest first'}</span></header>
  <div class="practice-board-toolbar"><label class="practice-search"><span class="sr-only">Search loaded patients or MRN</span><input id="practice-search" type="search" value="${esc(practiceQuery)}" placeholder="Search loaded patients or MRN" autocomplete="off"></label><div class="practice-status-strip" aria-label="Filter today’s appointments" ${practiceBoardMode==='agenda'?'':'hidden'}>${[['all','All'],['arrivals','Arrived'],['in_progress','In progress'],['completed','Completed']].map(([key,label])=>`<button type="button" data-practice-flow="${key}" aria-pressed="${practiceFlowFilter===key}">${label}<span>${schedule?appointments.filter(a=>practiceMatchesFlow(a,key)).length:'—'}</span></button>`).join('')}</div></div>
  <div id="practice-worklist" class="practice-worklist"></div><footer class="practice-board-footer"><span id="practice-row-summary" role="status" aria-live="polite"></span>${practiceAction('schedule','Manage schedule →')}</footer></section>
- <aside class="practice-queue-sidebar" aria-label="Clinical result review"><header class="practice-board-header"><div><h3>Results to review</h3><p class="muted">Unacknowledged revisions</p></div><span class="pill">${inbox?`${inbox.items.length}${inbox.items.length>=inbox.limit?'+':''}`:'—'}</span></header><div class="practice-result-filters" aria-label="Filter result review queue"><button type="button" data-practice-result-filter="all" aria-pressed="${practiceResultFilter==='all'}">All results</button><button type="button" data-practice-result-filter="critical" aria-pressed="${practiceResultFilter==='critical'}">Critical <span>${inbox?practiceData.reports.filter(r=>r.critical).length:'—'}</span></button></div><div id="practice-results"></div><footer class="practice-board-footer">${practiceAction('results','Open results worklist →')}</footer></aside></div>
- <nav class="practice-workspace-links" aria-label="Practice workspaces"><span>Continue work</span>${practiceAction('billing','Billing & insurance')}${practiceAction('claims','Claims & remittances')}${practiceAction('clearinghouse','Clearinghouse')}${practiceAction('apps','Connections')}${me.role==='owner'?practiceAction('migration','Data import'):''}</nav></section>`;
+ <aside class="practice-queue-sidebar" aria-label="Work needing attention"><header class="practice-board-header"><div><p class="eyebrow">MY WORK</p><h3>Needs attention</h3><p class="muted">Results requiring clinical review</p></div><span class="pill">${inbox?`${inbox.items.length}${inbox.items.length>=inbox.limit?'+':''}`:'—'}</span></header><div class="practice-result-filters" aria-label="Filter result review queue"><button type="button" data-practice-result-filter="all" aria-pressed="${practiceResultFilter==='all'}">All results</button><button type="button" data-practice-result-filter="critical" aria-pressed="${practiceResultFilter==='critical'}">Critical <span>${inbox?practiceData.reports.filter(r=>r.critical).length:'—'}</span></button></div><div id="practice-results"></div><footer class="practice-board-footer">${practiceAction('results','Review all results →')}</footer></aside></div>
+ <nav class="practice-workspace-links" aria-label="Practice workspaces"><span>Continue work</span>${practiceAction('billing','Patient billing')}${practiceAction('claims','Insurance claims')}${practiceAction('clearinghouse','Claim connections')}${practiceAction('apps','Integrations')}${me.role==='owner'?practiceAction('migration','Data import'):''}</nav></section>`;
  renderPracticeRows();renderPracticeResults();
 }
 function practiceMatchesFlow(a,filter){return filter==='all'||(filter==='arrivals'?['checked_in','in_progress'].includes(a.status):a.status===filter);}
@@ -81,7 +96,7 @@ document.addEventListener('click',event=>{
   if(button.dataset.practicePatient){await showClinical();await selectPatient(button.dataset.practicePatient);return;}
   if(button.dataset.practiceAppointment){scheduleDate=localTime(new Date().toISOString()).slice(0,10);scheduleMode='day';scheduleProvider='';await showSchedule();await appointmentDetail(button.dataset.practiceAppointment);return;}
   if(button.dataset.practiceResult){await showClinical();await selectPatient(button.dataset.practiceResultPatient);await showOrder(button.dataset.practiceResult);return;}
-  const routes={patients:showClinical,schedule:async()=>{scheduleDate=localTime(new Date().toISOString()).slice(0,10);scheduleMode='day';scheduleProvider='';await showSchedule();},results:showLabInbox,billing:showBillingQueue,claims:showClaimsWorkspace,clearinghouse:showEdiWorkspace,apps:showApps,migration:showMigrations};
+  const routes={patients:showClinical,intake:showPrevisit,followup:showFollowupWorkspace,schedule:async()=>{scheduleDate=localTime(new Date().toISOString()).slice(0,10);scheduleProvider='';await showSchedule();},results:showLabInbox,billing:showBillingQueue,claims:showClaimsWorkspace,clearinghouse:showEdiWorkspace,apps:showApps,migration:showMigrations};
   await routes[button.dataset.practiceAction]?.();
  });
 },true);

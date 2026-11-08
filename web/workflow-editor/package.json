@@ -1,0 +1,17 @@
+{
+  "name": "suncharts-workflow-editor",
+  "private": true,
+  "version": "0.1.0",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": { "build": "node build.mjs" },
+  "dependencies": {
+    "rete": "2.0.6",
+    "rete-area-plugin": "2.3.2",
+    "rete-connection-plugin": "2.0.5",
+    "@retejs/lit-plugin": "2.0.8",
+    "rete-render-utils": "2.0.3",
+    "lit": "3.3.3"
+  },
+  "devDependencies": { "esbuild": "0.28.2" }
+}

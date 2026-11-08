@@ -48,7 +48,7 @@ fn valid_broker_token(v: &str) -> bool {
 }
 fn broker_base() -> Result<String> {
     let v = std::env::var(BROKER_ENV).map_err(|_| {
-        Error::Invalid("SunCharts Payments is not enabled for this installation; contact your SunCharts administrator or use your own Stripe account")
+        Error::Invalid("SunCharts Payments is not enabled for this installation; connect this practice to SunCharts Connect and finish Stripe onboarding")
     })?;
     let u = url::Url::parse(&v)
         .map_err(|_| Error::Invalid("invalid SunCharts Payments service configuration"))?;
@@ -120,11 +120,16 @@ struct Settings {
     last_test_at: Option<DateTime<Utc>>,
     last_test_result: Option<String>,
     onboarding_url: Option<String>,
+    charges_enabled: bool,
+    payouts_enabled: bool,
+    details_submitted: bool,
+    requirements_currently_due: Value,
+    requirements_past_due: Value,
     version: i64,
 }
 impl Settings {
     fn public(&self) -> Value {
-        json!({"id":self.id,"mode":self.mode,"enabled":self.enabled,"verified":self.verified,"provider_account_id":self.provider_account_id,"last_test_at":self.last_test_at,"last_test_result":self.last_test_result,"version":self.version,"test_mode":true,"credentials_configured":true,"onboarding_url":self.onboarding_url.as_deref().and_then(safe_onboarding_url)})
+        json!({"id":self.id,"mode":self.mode,"enabled":self.enabled,"verified":self.verified,"provider_account_id":self.provider_account_id,"last_test_at":self.last_test_at,"last_test_result":self.last_test_result,"version":self.version,"test_mode":true,"credentials_configured":true,"onboarding_url":self.onboarding_url.as_deref().and_then(safe_onboarding_url),"charges_enabled":self.charges_enabled,"payouts_enabled":self.payouts_enabled,"details_submitted":self.details_submitted,"requirements_currently_due":self.requirements_currently_due,"requirements_past_due":self.requirements_past_due})
     }
 }
 #[derive(Clone, Serialize, sqlx::FromRow)]
@@ -240,9 +245,15 @@ async fn read_settings(a: Actor, ExtractState(s): ExtractState<State>) -> Result
     } else {
         true
     };
-    Ok(Json(
-        json!({"setting":row.map(|r|r.public()),"test_mode_only":true,"connect_available":broker_base().is_ok(),"credential_storage_ready":storage_ready,"webhook_base":format!("{}/api/v1/payments/webhooks/",origin(&s)?)}),
-    ))
+    let broker = broker_base().ok();
+    Ok(Json(json!({
+        "setting":row.map(|r|r.public()),
+        "test_mode_only":true,
+        "connect_available":broker.is_some(),
+        "connect_portal_url":broker.map(|base|format!("{base}/clinic/native-ehr/payments")),
+        "credential_storage_ready":storage_ready,
+        "webhook_base":format!("{}/api/v1/payments/webhooks/",origin(&s)?)
+    })))
 }
 async fn save_settings(
     a: Actor,
@@ -321,7 +332,7 @@ async fn save_settings(
     );
     let encrypted =
         crate::provider_settings::seal_secret(db(&s)?, a.tenant_id, id, "payments", &raw).await?;
-    sqlx::query("INSERT INTO payment_settings(tenant_id,id,mode) VALUES($1,$2,$3) ON CONFLICT(tenant_id) DO UPDATE SET mode=$3,credential_revision=payment_settings.credential_revision+1,enabled=false,verified=false,provider_account_id=NULL,last_test_at=NULL,last_test_result=NULL,onboarding_url=NULL,version=payment_settings.version+1,updated_at=now()").bind(a.tenant_id).bind(id).bind(v.mode).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO payment_settings(tenant_id,id,mode) VALUES($1,$2,$3) ON CONFLICT(tenant_id) DO UPDATE SET mode=$3,credential_revision=payment_settings.credential_revision+1,enabled=false,verified=false,provider_account_id=NULL,last_test_at=NULL,last_test_result=NULL,onboarding_url=NULL,charges_enabled=false,payouts_enabled=false,details_submitted=false,requirements_currently_due='[]'::jsonb,requirements_past_due='[]'::jsonb,version=payment_settings.version+1,updated_at=now()").bind(a.tenant_id).bind(id).bind(v.mode).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO payment_credentials(tenant_id,setting_id,revision,encrypted_config) VALUES($1,$2,$3,$4)").bind(a.tenant_id).bind(id).bind(revision).bind(encrypted).execute(&mut *tx).await?;
     setting_event(&mut tx, &a, id, "credentials_saved_disabled").await?;
     let result = setting(&mut tx, a.tenant_id).await?;
@@ -478,7 +489,19 @@ async fn test_settings(
     } else {
         None
     };
-    sqlx::query("UPDATE payment_settings SET verified=$2,enabled=false,provider_account_id=$3,last_test_at=now(),last_test_result=$4,onboarding_url=$5,version=version+1,updated_at=now() WHERE tenant_id=$1").bind(a.tenant_id).bind(verified.is_some()).bind(&verified).bind(if verified.is_some(){"test_account_verified"}else if onboarding.is_some(){"owner_setup_required"}else{"connection_not_verified"}).bind(&onboarding).execute(&mut *tx).await?;
+    let connect_status = result.as_ref().ok().filter(|_| bound_installation);
+    let charges_enabled = connect_status.is_some_and(|v| v["charges_enabled"] == true);
+    let payouts_enabled = connect_status.is_some_and(|v| v["payouts_enabled"] == true);
+    let details_submitted = connect_status.is_some_and(|v| v["details_submitted"] == true);
+    let currently_due = connect_status
+        .and_then(|v| v.get("requirements_currently_due").cloned())
+        .filter(Value::is_array)
+        .unwrap_or_else(|| json!([]));
+    let past_due = connect_status
+        .and_then(|v| v.get("requirements_past_due").cloned())
+        .filter(Value::is_array)
+        .unwrap_or_else(|| json!([]));
+    sqlx::query("UPDATE payment_settings SET verified=$2,enabled=false,provider_account_id=$3,last_test_at=now(),last_test_result=$4,onboarding_url=$5,charges_enabled=$6,payouts_enabled=$7,details_submitted=$8,requirements_currently_due=$9,requirements_past_due=$10,version=version+1,updated_at=now() WHERE tenant_id=$1").bind(a.tenant_id).bind(verified.is_some()).bind(&verified).bind(if verified.is_some(){"test_account_verified"}else if onboarding.is_some(){"owner_setup_required"}else{"connection_not_verified"}).bind(&onboarding).bind(charges_enabled).bind(payouts_enabled).bind(details_submitted).bind(currently_due).bind(past_due).execute(&mut *tx).await?;
     setting_event(
         &mut tx,
         &a,
@@ -563,9 +586,9 @@ async fn list(
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct NewPayment {
-    request_id: Uuid,
-    amount_cents: i64,
+pub(crate) struct NewPayment {
+    pub(crate) request_id: Uuid,
+    pub(crate) amount_cents: i64,
 }
 async fn create(
     a: Actor,
@@ -574,16 +597,26 @@ async fn create(
     h: HeaderMap,
     Json(v): Json<NewPayment>,
 ) -> Result<Json<Value>> {
+    let version = crate::expected(&h)?;
+    Ok(Json(create_native(&s, &a, id, version, v).await?))
+}
+
+pub(crate) async fn create_native(
+    s: &State,
+    a: &Actor,
+    id: Uuid,
+    version: i64,
+    v: NewPayment,
+) -> Result<Value> {
     a.scheduling()?;
     if !(50..=100000000).contains(&v.amount_cents) {
         return Err(Error::Invalid(
             "enter an amount from 50 cents through the supported test-payment limit",
         ));
     }
-    let version = crate::expected(&h)?;
     let hash = crate::oauth::hash(&json!({"account":id,"amount":v.amount_cents}).to_string());
-    let mut tx = db(&s)?.begin().await?;
-    billing::tenant_lock(&mut tx, &a).await?;
+    let mut tx = db(s)?.begin().await?;
+    billing::tenant_lock(&mut tx, a).await?;
     let prior: Option<Payment> = sqlx::query_as(
         "SELECT * FROM payment_attempts WHERE tenant_id=$1 AND request_id=$2 FOR UPDATE",
     )
@@ -630,26 +663,20 @@ async fn create(
             .ok_or(Error::Invalid("payment account has not been verified"))?;
         let payment_id = Uuid::new_v4();
         sqlx::query("INSERT INTO payment_attempts(tenant_id,id,account_id,setting_id,credential_revision,request_id,creation_hash,requested_by,amount_cents,status,provider_account_id,provider_mode) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'creating',$10,$11)").bind(a.tenant_id).bind(payment_id).bind(id).bind(settings.id).bind(settings.credential_revision).bind(v.request_id).bind(hash).bind(a.sub).bind(v.amount_cents).bind(provider_account).bind(settings.mode).execute(&mut *tx).await?;
-        payment_event(&mut tx, &a, payment_id, "checkout_request_reserved").await?;
+        payment_event(&mut tx, a, payment_id, "checkout_request_reserved").await?;
         payment(&mut tx, a.tenant_id, payment_id).await?
     };
     tx.commit().await?;
     if row.provider_session_id.is_some() || row.status != "creating" {
-        return Ok(Json(json!({"payment":row.public()})));
+        return Ok(json!({"payment":row.public()}));
     }
     if row.created_at < Utc::now() - chrono::Duration::hours(23) {
         return Err(Error::Conflict("uncertain checkout request is too old to retry safely; provider reconciliation is required"));
     }
-    let config = credentials(
-        db(&s)?,
-        a.tenant_id,
-        row.setting_id,
-        row.credential_revision,
-    )
-    .await?;
-    let session = create_session(&config, &row, origin(&s)?).await?;
-    let out = apply_session(db(&s)?, &a, row.id, &session).await?;
-    Ok(Json(json!({"payment":out.public()})))
+    let config = credentials(db(s)?, a.tenant_id, row.setting_id, row.credential_revision).await?;
+    let session = create_session(&config, &row, origin(s)?).await?;
+    let out = apply_session(db(s)?, a, row.id, &session).await?;
+    Ok(json!({"payment":out.public()}))
 }
 fn session_fields(p: &Payment, base: &str) -> Vec<(String, String)> {
     vec![

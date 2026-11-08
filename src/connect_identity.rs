@@ -19,7 +19,9 @@ use serde_json::{json, Value};
 use std::time::Duration;
 use uuid::Uuid;
 
-const MAX_SESSION_SECONDS: i64 = 8 * 60 * 60;
+// Must match the maximum Connect grant lifetime. The session remains revocable and is
+// introspected against Connect on authenticated requests.
+const MAX_SESSION_SECONDS: i64 = 30 * 24 * 60 * 60;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -116,6 +118,18 @@ pub(crate) async fn connected(db: &sqlx::PgPool) -> Result<bool> {
         .fetch_one(db).await?)
 }
 
+async fn connected_local_tenant(db: &sqlx::PgPool) -> Result<Uuid> {
+    let tenants: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT tenant_id FROM connect_service_settings WHERE enabled AND verified AND NOT revoked ORDER BY tenant_id LIMIT 2",
+    )
+    .fetch_all(db)
+    .await?;
+    match tenants.as_slice() {
+        [tenant] => Ok(*tenant),
+        _ => Err(Error::Unauthorized),
+    }
+}
+
 pub async fn mode(ExtractState(s): ExtractState<State>) -> Result<Json<Value>> {
     let auth = s.browser.as_ref().ok_or(Error::NotFound)?;
     let connected = connected(&auth.db).await?;
@@ -138,7 +152,17 @@ pub async fn accept(
     Json(input): Json<AcceptRequest>,
 ) -> Result<(HeaderMap, Json<Value>)> {
     let auth = s.browser.as_ref().ok_or(Error::NotFound)?;
-    auth.check_origin(&h)?;
+    // Embedded user agents may omit Origin on a same-origin POST. The custom
+    // handoff header is an equivalent CSRF boundary: cross-origin forms cannot
+    // set it, and cross-origin scripts cannot pass the CORS preflight. Existing
+    // clients presenting the exact configured Origin remain supported.
+    if auth.check_origin(&h).is_err()
+        && h.get("x-suncharts-identity-handoff")
+            .and_then(|value| value.to_str().ok())
+            != Some("1")
+    {
+        return Err(Error::Forbidden);
+    }
     let iss = issuer()?;
     if input.issuer != iss || input.code.len() < 32 || input.code.len() > 256 {
         return Err(Error::Unauthorized);
@@ -158,22 +182,27 @@ pub async fn accept(
     let c: Claims = response.json().await.map_err(|_| Error::Unauthorized)?;
     let now = Utc::now().timestamp();
     validate(&c, &iss, auth.origin(), now)?;
+    // Connect clinic UUIDs and self-hosted EHR tenant UUIDs are independent
+    // namespaces. The exchange endpoint has already bound this grant to this
+    // installation audience; resolve the single verified local installation
+    // tenant and retain the Connect tenant separately for introspection.
+    let local_tenant = connected_local_tenant(&auth.db).await?;
     let token = secret();
     let mut tx = auth.db.begin().await?;
     let body = if c.kind == "staff" {
         let (id, role): (Uuid, String) = sqlx::query_as(
             "SELECT id,role FROM browser_users WHERE tenant_id=$1 AND email=$2 AND NOT disabled",
         )
-        .bind(c.tenant_id)
+        .bind(local_tenant)
         .bind(c.email.as_deref())
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(Error::Unauthorized)?;
-        sqlx::query("INSERT INTO connect_identity_sessions(token_hash,tenant_id,user_id,grant_id,issuer,audience,expires_at) VALUES($1,$2,$3,$4,$5,$6,to_timestamp($7))")
-            .bind(crate::browser::hash(&token)).bind(c.tenant_id).bind(id).bind(c.jti).bind(&iss)
+        sqlx::query("INSERT INTO connect_identity_sessions(token_hash,tenant_id,issuer_tenant_id,user_id,grant_id,issuer,audience,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,to_timestamp($8))")
+            .bind(crate::browser::hash(&token)).bind(local_tenant).bind(c.tenant_id).bind(id).bind(c.jti).bind(&iss)
             .bind(auth.origin()).bind(c.exp as f64).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO audit_events(tenant_id,actor_id,action,resource_id) VALUES($1,$2,'connect_identity.staff_login',$3)")
-            .bind(c.tenant_id).bind(c.jti).bind(id).execute(&mut *tx).await?;
+            .bind(local_tenant).bind(c.jti).bind(id).execute(&mut *tx).await?;
         json!({"authenticated":true,"kind":"staff","role":role})
     } else {
         let patient = Uuid::parse_str(c.patient_ehr_puuid.as_deref().ok_or(Error::Unauthorized)?)
@@ -187,12 +216,12 @@ pub async fn accept(
              UNION ALL SELECT id,version FROM patient_portal_accounts
               WHERE tenant_id=$1 AND patient_id=$2 AND status='active' AND identity_mode='connect'
              LIMIT 1")
-            .bind(c.tenant_id).bind(patient).fetch_optional(&mut *tx).await?.ok_or(Error::Unauthorized)?;
-        sqlx::query("INSERT INTO patient_connect_sessions(token_hash,tenant_id,account_id,account_version,grant_id,issuer,audience,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,to_timestamp($8))")
-            .bind(crate::browser::hash(&token)).bind(c.tenant_id).bind(account).bind(version).bind(c.jti)
+            .bind(local_tenant).bind(patient).fetch_optional(&mut *tx).await?.ok_or(Error::Unauthorized)?;
+        sqlx::query("INSERT INTO patient_connect_sessions(token_hash,tenant_id,issuer_tenant_id,account_id,account_version,grant_id,issuer,audience,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,to_timestamp($9))")
+            .bind(crate::browser::hash(&token)).bind(local_tenant).bind(c.tenant_id).bind(account).bind(version).bind(c.jti)
             .bind(&iss).bind(auth.origin()).bind(c.exp as f64).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO patient_portal_events(tenant_id,patient_id,actor_id,actor_kind,action,resource_id,version,details) VALUES($1,$2,$3,'patient','connect_identity_login',$4,$5,$6)")
-            .bind(c.tenant_id).bind(patient).bind(account).bind(account).bind(version)
+            .bind(local_tenant).bind(patient).bind(account).bind(account).bind(version)
             .bind(json!({"grant_id":c.jti})).execute(&mut *tx).await?;
         json!({"authenticated":true,"kind":"patient","account_id":account})
     };
@@ -231,6 +260,7 @@ async fn introspect(iss: &str, grant: Uuid, audience: &str) -> Result<Introspect
 #[derive(sqlx::FromRow)]
 struct StaffSession {
     tenant_id: Uuid,
+    issuer_tenant_id: Uuid,
     user_id: Uuid,
     grant_id: Uuid,
     issuer: String,
@@ -240,7 +270,7 @@ struct StaffSession {
     email: String,
 }
 pub(crate) async fn authenticate_staff(auth: &BrowserAuth, token: &str) -> Result<Option<Actor>> {
-    let s: Option<StaffSession> = sqlx::query_as("SELECT s.tenant_id,s.user_id,s.grant_id,s.issuer,s.audience,s.expires_at,u.role,u.email FROM connect_identity_sessions s JOIN browser_users u ON u.tenant_id=s.tenant_id AND u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND s.revoked_at IS NULL AND NOT u.disabled")
+    let s: Option<StaffSession> = sqlx::query_as("SELECT s.tenant_id,s.issuer_tenant_id,s.user_id,s.grant_id,s.issuer,s.audience,s.expires_at,u.role,u.email FROM connect_identity_sessions s JOIN browser_users u ON u.tenant_id=s.tenant_id AND u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND s.revoked_at IS NULL AND NOT u.disabled")
         .bind(crate::browser::hash(token)).fetch_optional(&auth.db).await?;
     let Some(s) = s else {
         return Ok(None);
@@ -251,7 +281,7 @@ pub(crate) async fn authenticate_staff(auth: &BrowserAuth, token: &str) -> Resul
         && i.jti == Some(s.grant_id)
         && i.aud.as_deref() == Some(auth.origin())
         && i.kind.as_deref() == Some("staff")
-        && i.tenant_id == Some(s.tenant_id)
+        && i.tenant_id == Some(s.issuer_tenant_id)
         && i.email.as_deref() == Some(&s.email)
         && i.exp
             .is_some_and(|v| v > now && v <= s.expires_at.timestamp());
@@ -283,7 +313,7 @@ pub(crate) async fn patient_session(
     db: &sqlx::PgPool,
     token: &str,
 ) -> Result<Option<(Uuid, Uuid, Uuid)>> {
-    let row: Option<PatientSession> = sqlx::query_as("SELECT s.tenant_id,s.account_id,s.grant_id,s.issuer,s.audience,s.expires_at,a.patient_id FROM patient_connect_sessions s JOIN patient_portal_accounts a ON a.tenant_id=s.tenant_id AND a.id=s.account_id AND a.version=s.account_version WHERE s.token_hash=$1 AND s.expires_at>now() AND s.revoked_at IS NULL AND a.status='active'")
+    let row: Option<PatientSession> = sqlx::query_as("SELECT s.tenant_id,s.issuer_tenant_id,s.account_id,s.grant_id,s.issuer,s.audience,s.expires_at,a.patient_id FROM patient_connect_sessions s JOIN patient_portal_accounts a ON a.tenant_id=s.tenant_id AND a.id=s.account_id AND a.version=s.account_version WHERE s.token_hash=$1 AND s.expires_at>now() AND s.revoked_at IS NULL AND a.status='active'")
         .bind(crate::browser::hash(token)).fetch_optional(db).await?;
     let Some(session) = row else {
         return Ok(None);
@@ -293,7 +323,7 @@ pub(crate) async fn patient_session(
     let valid = i.active
         && i.jti == Some(session.grant_id)
         && i.kind.as_deref() == Some("patient")
-        && i.tenant_id == Some(session.tenant_id)
+        && i.tenant_id == Some(session.issuer_tenant_id)
         && i.patient_ehr_puuid.as_deref() == Some(&session.patient_id.to_string())
         && i.exp
             .is_some_and(|v| v > now && v <= session.expires_at.timestamp());
@@ -318,6 +348,7 @@ pub(crate) async fn patient_session(
 #[derive(sqlx::FromRow)]
 struct PatientSession {
     tenant_id: Uuid,
+    issuer_tenant_id: Uuid,
     account_id: Uuid,
     grant_id: Uuid,
     issuer: String,

@@ -1,0 +1,241 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/* Load after style.css and sun.css. Explicit surfaces preserve semantic color;
+   photographs, clinic logos, clinical documents and charts are never inverted. */
+:root{
+ --surface:#fff;--surface-soft:#f5f8fa;--surface-raised:#edf3f6;
+ --text:var(--ink);--border:var(--line);--focus:#167e91;
+ --success-bg:#eaf6ef;--success-text:#246a45;--success-line:#a6cdb5;
+ --warning-bg:#fff6df;--warning-text:#785407;--warning-line:#d9bc76;
+ --error-bg:#fff0ed;--error-text:#a43f35;--error-line:#ddb0a8;
+ --approval-bg:#f1eafa;--approval-text:#694586;
+ --theme-shadow:0 14px 44px #18384718;
+}
+:root[data-theme=light]{color-scheme:light}
+:root[data-theme=dark]{
+ color-scheme:dark;--ink:#e4edf2;--muted:#a6b8c5;--line:#344955;
+ --blue:#7cd6d0;--paper:#0c171e;--accent:#193e45;--nav:#101f28;
+ --surface:#142630;--surface-soft:#10212b;--surface-raised:#1b323e;--panel:var(--surface);
+ --focus:#86e1da;--success-bg:#15392c;--success-text:#a1e1b6;--success-line:#376c50;
+ --warning-bg:#3b301b;--warning-text:#efd08a;--warning-line:#786236;
+ --error-bg:#432a2c;--error-text:#ffb9af;--error-line:#85504d;
+ --approval-bg:#342d4b;--approval-text:#d2b8ef;
+ --theme-shadow:0 14px 44px #0005;
+ background:var(--paper);
+}
+.theme-control{display:inline-flex;flex-direction:row;align-items:center;gap:6px;flex:none;margin:0;color:var(--muted);font-size:10px;font-weight:500;white-space:nowrap}
+.theme-control select{width:92px;min-height:30px;padding:4px 6px;border-color:var(--line);border-radius:6px;background:var(--surface);color:var(--ink);font-size:11px;cursor:pointer}
+.theme-control select:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.login-intro-footer{flex-wrap:wrap}
+.theme-control--login{margin-left:auto}
+.sun-open{color:var(--blue)}
+.sun-panel{background:var(--surface);color:var(--ink);border-color:var(--line);box-shadow:var(--theme-shadow)}
+/* Wrap by available space, including when a sidebar or longer status is shown.
+   Keep the header at the top once the variable-height bar has scrolled away. */
+.shell-topbar{position:static;height:auto;min-height:var(--shell-topbar);flex-wrap:wrap;padding-block:8px;row-gap:8px}
+.shell-location{flex:1 1 160px;max-width:100%}
+.shell-topbar-actions{flex:0 1 auto;flex-wrap:wrap;justify-content:flex-end;max-width:100%;row-gap:8px}
+.shell-topbar-actions>*{max-width:100%}
+.shell-patient-search{min-width:0}
+.workspace-header{top:0}
+@media(max-width:1250px){
+ .shell-location{flex:1 1 100%;max-width:100%}
+ .shell-topbar-actions{flex:1 1 100%;flex-wrap:wrap;justify-content:flex-start;gap:8px;max-width:100%}
+ .theme-control--workspace>span{display:none}
+ .theme-control--workspace select{width:82px}
+}
+@media(max-width:650px){.theme-control--login{margin-left:0}.theme-control--workspace select{min-height:30px}}
+
+/* Light login uses the same green product identity on a daylight surface. */
+:root[data-theme=light] .login-screen{background:#eaf3ed;color:#203d31}
+:root[data-theme=light] .login-screen::before{background:radial-gradient(circle at 15% 15%,#c6e6d173,transparent 38%),radial-gradient(circle at 88% 78%,#d7eadb8c,transparent 34%),linear-gradient(135deg,#f5faf6,#e8f2ed 65%,#f2f7f3)}
+:root[data-theme=light] .login-screen::after{border-color:#4b9c7130;box-shadow:0 0 0 86px #4b9c710b,0 0 0 172px #4b9c7108}
+:root[data-theme=light] .login-screen .intro .wordmark,:root[data-theme=light] .login-screen .intro h1{color:#203d31}
+:root[data-theme=light] .login-screen .intro .wordmark .sun{color:#26824a;text-shadow:none}
+:root[data-theme=light] .login-screen .intro .wordmark b{color:#416d54;border-color:#aac6b5;background:#ffffff80}
+:root[data-theme=light] .login-screen .intro .eyebrow,:root[data-theme=light] .login-screen .intro h1 span{color:#267c43}
+:root[data-theme=light] .login-screen .intro .lede{color:#526e5e}
+:root[data-theme=light] .login-capabilities span{color:#385f4b;border-color:#b7d0c1;background:#ffffff75}
+:root[data-theme=light] .login-capabilities span::before{background:#338f50;box-shadow:none}
+:root[data-theme=light] .login-screen .source-link,:root[data-theme=light] .login-screen .login-build{color:#54705f}
+:root[data-theme=light] .login-screen .login-build{border-color:#bdd3c6}
+:root[data-theme=light] .login-screen .login-card{background:#fff;box-shadow:0 24px 70px #244c3420;border-color:#d4e1d9}
+
+/* Form controls and shared working surfaces. */
+:root[data-theme=dark] body{background:var(--paper);color:var(--ink)}
+:root[data-theme=dark] :is(button,input,textarea,select){background:var(--surface);color:var(--ink);border-color:var(--line)}
+:root[data-theme=dark] button:hover{background:var(--surface-raised);border-color:#64818e}
+:root[data-theme=dark] :is(input,textarea)::placeholder{color:#93a9b7;opacity:1}
+:root[data-theme=dark] :is(button,a,input,textarea,select):focus-visible{outline-color:var(--focus)}
+:root[data-theme=dark] :is(input,textarea,select):focus{outline-color:var(--focus)}
+:root[data-theme=dark] :is(input,textarea,select):disabled,:root[data-theme=dark] input[readonly]{background:var(--surface-soft);color:var(--muted)}
+:root[data-theme=dark] input[type=checkbox],:root[data-theme=dark] input[type=radio]{accent-color:#7cd6d0}
+:root[data-theme=dark] :is(.primary,button.primary){background:#81d9d1;border-color:#81d9d1;color:#10282d}
+:root[data-theme=dark] :is(.primary:hover,button.primary:hover){background:#a3e9e2;border-color:#a3e9e2;color:#10282d}
+:root[data-theme=dark] :is(.quiet,.text-button){background:transparent}
+:root[data-theme=dark] .text-button{color:var(--blue)}
+:root[data-theme=dark] :is(.panel,.workspace-header,.chart-context,.schedule-panel,.schedule-controls,.schedule-day,.schedule-detail,.schedule-header,.schedule-sidebar,.schedule-agenda,.practice-card,.practice-metric,.practice-section,.work-queue,.task-workspace-head,.integration-card,.integration-review-panel,.integration-queue-list,.integration-empty,.integration-adapter-panel,.ai-compose,.automation-hero,.automation-card,.automation-metric,.automation-editor,.automation-row,.automation-action-card,.service-notification-panel,.service-notification-toast,.app-dialog){background:var(--surface);color:var(--ink);border-color:var(--line)}
+:root[data-theme=dark] :is(.shell-topbar,.sidebar,.sidebar-bottom,.chart-tabs,.patient-safety,.schedule-table th,.schedule-footnote,.workspace-tabs,.automation-tabs){background:var(--surface-soft);color:var(--muted);border-color:var(--line)}
+:root[data-theme=dark] :is(.sidebar-brand,.sidebar-account,.sidebar-bottom,.summary-line,.timeline-row,.patient-row,.schedule-table td,.service-notification-item){border-color:var(--line)}
+:root[data-theme=dark] :is(.sidebar .wordmark,.sidebar-account strong,.chart-header p b,.schedule-patient-link,.automation-empty h3,.practice-journey button){color:var(--ink)}
+:root[data-theme=dark] :is(.sidebar-subtitle,.sidebar-source .preview,.sidebar-source a,.account-label,.sidebar-signout,.nav-group-label,.shell-topbar time,.shell-location,.shell-location strong,.provider-label,.schedule-table td small,.schedule-day>h3 small,.schedule-footnote,.chart-tabs button,.note-text,footer){color:var(--muted)}
+:root[data-theme=dark] :is(.sidebar .wordmark b,.shell-patient-search,.shell-patient-search kbd,.account-avatar,.avatar,.pill,.status-badge,.workspace-tabs span,.app-dialog-detail){background:var(--surface-raised);border-color:var(--line);color:var(--ink)}
+:root[data-theme=dark] :is(.sidebar .sun,.shell-patient-search,.schedule-patient-link,.sidebar-source a){color:var(--blue)}
+:root[data-theme=dark] .nav-item{background:transparent;color:#bed0dc}
+:root[data-theme=dark] :is(.nav-item:hover,.sidebar-signout:hover,.patient-row:hover,.chart-tabs button:hover,.schedule-table tr:hover td,.integration-queue-row:hover){background:var(--surface-raised);color:var(--ink)}
+:root[data-theme=dark] :is(.nav-item[aria-current=page],.patient-row.selected,.chart-tabs button[aria-pressed=true],.workspace-tabs button.active,.automation-tabs button[aria-pressed=true],.schedule-table tr.is-selected td){background:var(--accent);color:#b9f2ec;border-color:#529e9e}
+:root[data-theme=dark] .nav-item[aria-current=page]::before{background:#86ded5}
+:root[data-theme=dark] :is(.schedule-day>h3,.schedule-table .schedule-block td,.integration-review-panel pre,.outbound-review-summary div,.service-notification-item button,.integration-adapter-panel details form){background:var(--surface-soft);color:var(--ink);border-color:var(--line)}
+:root[data-theme=dark] :is(.automation-flow li:before,.automation-empty>span,.app-dialog-mark,.integration-kind,.practice-journey button>span){background:var(--accent);color:var(--blue)}
+:root[data-theme=dark] :is(.integration-queue-row,.practice-journey button){border-color:var(--line)}
+:root[data-theme=dark] :is(.practice-journey button,.automation-loading){background:var(--surface);color:var(--ink)}
+:root[data-theme=dark] :is(.practice-journey button:hover,.service-notifications-button[aria-expanded=true]){background:var(--accent);border-color:#529e9e}
+:root[data-theme=dark] :is(.service-notification-panel,.service-notification-toast,.app-dialog){box-shadow:var(--theme-shadow)}
+:root[data-theme=dark] .app-dialog-backdrop{background:#030a10b8}
+
+/* The home board has its own surfaces, filters and counts, separate from panels. */
+:root[data-theme=dark] :is(.practice-board,.practice-queue-sidebar,.practice-workspace-links,.practice-status-strip){background:var(--surface);color:var(--ink);border-color:var(--line)}
+:root[data-theme=dark] :is(.practice-board-toolbar,.practice-board-footer,.practice-result-filters,.practice-footnote,.practice-empty,.practice-flow article){background:var(--surface-soft);color:var(--muted);border-color:var(--line)}
+:root[data-theme=dark] :is(.practice-board-header,.practice-board-tabs,.practice-queue-item,.practice-result-list,.practice-result-list article,.practice-tools>button){border-color:var(--line)}
+:root[data-theme=dark] .practice-queue-sidebar .practice-result-list article{border-color:var(--line)}
+:root[data-theme=dark] :is(.practice-board-tabs button,.practice-result-filters button,.practice-status-strip>div,.practice-status-strip>span,.practice-status-strip>button){color:var(--muted);border-color:var(--line)}
+:root[data-theme=dark] .practice-board-toolbar .practice-status-strip{background:var(--surface);border-color:var(--line)}
+:root[data-theme=dark] .practice-board-toolbar .practice-status-strip>button{background:var(--surface);color:var(--muted);border-color:var(--line)}
+:root[data-theme=dark] :is(.practice-board-tabs button span,.practice-status-strip strong,.practice-status-strip b){background:var(--surface-raised);color:var(--ink);border-color:var(--line)}
+:root[data-theme=dark] :is(.practice-board-tabs button[aria-selected=true],.practice-board-tabs button[aria-pressed=true],.practice-board-tabs button.active,.practice-result-filters button[aria-pressed=true],.practice-board-tabs button[aria-pressed=true] span){background:var(--accent);color:var(--blue);border-color:#529e9e}
+:root[data-theme=dark] .practice-board-toolbar .practice-status-strip>button[aria-pressed=true]{background:var(--accent);color:var(--blue)}
+:root[data-theme=dark] :is(.practice-board-tabs button:hover,.practice-result-filters button:hover,.practice-board-toolbar .practice-status-strip>button:hover){background:var(--surface-raised);color:var(--ink)}
+:root[data-theme=dark] :is(.practice-empty b,.practice-metric>span,.practice-identity strong){color:var(--ink)}
+:root[data-theme=dark] :is(.practice-board-scope,.practice-result-status,.practice-workspace-links>span,.practice-identity>div>span){color:var(--muted)}
+:root[data-theme=dark] :is(.practice-workspace-links>button,.practice-workspace-links>button:hover,.practice-board-footer button){color:var(--blue)}
+:root[data-theme=dark] .practice-identity-mark{background:var(--accent);color:var(--blue);border-color:var(--line)}
+:root[data-theme=dark] :is(.practice-unavailable,.identity-preview){background:var(--warning-bg);color:var(--warning-text);border-color:var(--warning-line)}
+:root[data-theme=dark] :is(.practice-critical,.practice-queue-item.practice-critical){border-left-color:var(--error-line)}
+
+/* Identity and navigation text includes local foregrounds in the light sheet. */
+:root[data-theme=dark] .header-actions #identity{background:var(--surface-soft);color:var(--ink);border-color:var(--line)}
+:root[data-theme=dark] .user-context strong{color:var(--ink)}
+:root[data-theme=dark] :is(.user-context span,.account-role,.nav-more summary,.page-heading>p,.workspace-header .eyebrow,.shell-loading){color:var(--muted)}
+:root[data-theme=dark] :is(.nav-group-primary,.nav-more){border-color:var(--line)}
+:root[data-theme=dark] .nav-item svg{color:inherit}
+:root[data-theme=dark] .nav-item[aria-current=page] svg{color:var(--blue)}
+:root[data-theme=dark] .shell-loading>span{border-color:var(--line);border-top-color:var(--blue)}
+
+/* Chart, encounter and checkout surfaces are also used inside dynamic drawers. */
+:root[data-theme=dark] :is(.encounter-workbench,.encounter-step,.encounter-step-strip .encounter-step-link){background:var(--surface);color:var(--ink);border-color:var(--line)}
+:root[data-theme=dark] :is(.encounter-workbench-heading,.encounter-status-note,.chart-summary-section>.section-head,.chart-summary-footer,.followup-action-form,.result-table th,.chart-results-table th){background:var(--surface-soft);color:var(--muted);border-color:var(--line)}
+:root[data-theme=dark] :is(.encounter-state,.encounter-step-number){background:var(--surface-raised);color:var(--muted);border-color:var(--line)}
+:root[data-theme=dark] :is(.encounter-next,.encounter-step.current,.encounter-step[data-state=current]){background:var(--accent);color:var(--ink);border-color:#529e9e}
+:root[data-theme=dark] .encounter-step-strip .encounter-step-link:hover{background:var(--surface-raised);border-bottom-color:var(--blue)}
+:root[data-theme=dark] :is(.encounter-workbench-heading strong,.encounter-step-link strong,.patient-heading>p:last-child b,.chart-summary-section>.section-head h2,.chart-data-row strong,.chart-results-table strong,.chart-vital-list dd,.chart-history-row strong){color:var(--ink)}
+:root[data-theme=dark] :is(.encounter-metrics,.encounter-status-note p,.chart-header .quiet){color:var(--muted)}
+:root[data-theme=dark] :is(.clinical-editor,.chart-summary-section,.clinical-summary-columns>section,.chart-data-row,.chart-results-table td,.chart-vital-list>div,.chart-history-row,.encounter-workbench-heading>div:first-child>span){border-color:var(--line)}
+:root[data-theme=dark] .chart-header .avatar{background:var(--surface-raised);color:var(--ink);border-color:var(--line)}
+:root[data-theme=dark] :is(.encounter-step.complete,.encounter-step[data-state=complete],.encounter-step-link.has-saved-state .encounter-step-number){background:var(--success-bg);color:var(--success-text);border-color:var(--success-line)}
+:root[data-theme=dark] .encounter-step-link.has-saved-state small{color:var(--success-text)}
+:root[data-theme=dark] :is(.critical-result,.chart-results-table .critical-label){background:var(--error-bg);color:var(--error-text)}
+:root[data-theme=dark] .review-needed{color:var(--error-text)}
+:root[data-theme=dark] #visit-diagnoses [data-diagnosis-row]{background:var(--surface-soft);border-color:var(--line)}
+:root[data-theme=dark] :is(#visit-rooming .badge,#visit-diagnoses .badge){background:var(--accent);color:var(--blue);border-color:var(--line)}
+
+/* Day, week and month calendars keep status colors on a dark working surface. */
+:root[data-theme=dark] :is(.calendar-title,.calendar-scroll,.week-calendar-scroll,.week-slot,.reminder-card){background:var(--surface);color:var(--ink);border-color:var(--line)}
+:root[data-theme=dark] :is(.schedule-toolbar,.month-calendar th,.calendar-day.outside-month,.week-slot-table thead,.week-slot-table tbody th,.week-slot.slot-occupied,.series-review){background:var(--surface-soft);color:var(--muted);border-color:var(--line)}
+:root[data-theme=dark] :is(.week-slot-table th,.week-slot-table td){border-color:var(--line)}
+:root[data-theme=dark] :is(.schedule-statusbar,.schedule-status-hint,.calendar-date-row>button){color:var(--muted)}
+:root[data-theme=dark] .schedule-statusbar b{color:var(--ink)}
+:root[data-theme=dark] :is(.calendar-date-row>.calendar-add,.calendar-events .calendar-more,.week-slot-book){color:var(--blue)}
+:root[data-theme=dark] :is(.calendar-day.calendar-today,.week-slot-book:hover){background:var(--accent)}
+:root[data-theme=dark] .calendar-date-row>button[aria-current=date]{background:#81d9d1;color:#10282d}
+:root[data-theme=dark] :is(.calendar-events .calendar-event,.week-appointment){background:var(--accent);color:var(--ink);border-color:#4e858b}
+:root[data-theme=dark] :is(.calendar-event.checked_in,.week-appointment.checked_in){background:var(--success-bg);color:var(--success-text);border-color:var(--success-line)}
+:root[data-theme=dark] :is(.calendar-event.in_progress,.week-appointment.in_progress){background:#18364e;color:#c2e2ff;border-color:#547f9e}
+:root[data-theme=dark] :is(.calendar-event.completed,.week-appointment.completed,.calendar-event.cancelled,.calendar-event.no_show,.week-appointment.cancelled,.week-appointment.no_show){background:var(--surface-raised);color:var(--muted);border-color:var(--line)}
+:root[data-theme=dark] :is(.calendar-event.calendar-block,.week-appointment.calendar-block){background:var(--warning-bg);color:var(--warning-text);border-color:var(--warning-line)}
+:root[data-theme=dark] :is(.schedule-table .cancelled .schedule-patient-link,.schedule-table .no_show .schedule-patient-link){color:var(--muted)}
+
+/* Billing evidence, connection setup and patient pathway views. */
+:root[data-theme=dark] :is(a.button,.pathway-instance-card,.pathway-step){background:var(--surface);color:var(--ink);border-color:var(--line)}
+:root[data-theme=dark] :is(.era-row .review-ack,.era-match-evidence,.ca-match,.connection-summary,.pathway-progress-track,.pathway-step-meta span,.pathway-action-form,.pathway-empty){background:var(--surface-soft);color:var(--ink);border-color:var(--line)}
+:root[data-theme=dark] :is(.era-row small,.connection-summary small){color:var(--muted)}
+:root[data-theme=dark] :is(.edi-address,.ca-row,#billing-editor:not(:empty)){border-color:var(--line)}
+:root[data-theme=dark] .claim-clear{background:var(--success-bg);color:var(--success-text);border-color:var(--success-line)}
+:root[data-theme=dark] .pathway-instance-card.selected{background:var(--accent);border-color:var(--blue)}
+:root[data-theme=dark] .pathway-alert{color:var(--error-text)}
+:root[data-theme=dark] .pathway-step.overdue{border-color:var(--error-line)}
+
+/* Dynamic integration drawers, catalog management and billing/admin details. */
+:root[data-theme=dark] :is(.integration-drawer,.integration-hero,.integration-section,.billing-account-detail){background:var(--surface);color:var(--ink);border-color:var(--line)}
+:root[data-theme=dark] .integration-drawer{box-shadow:var(--theme-shadow)}
+:root[data-theme=dark] .integration-drawer-backdrop{background:#030a10b8}
+:root[data-theme=dark] :is(.detail-titlebar,.integration-detail-status,.billing-totals,.billing-source,.billing-filter){background:var(--surface-soft);color:var(--ink);border-color:var(--line)}
+:root[data-theme=dark] .detail-titlebar>span{color:var(--muted)}
+:root[data-theme=dark] .integration-mark{background:var(--accent);color:var(--blue);border-color:var(--line)}
+:root[data-theme=dark] .integration-capabilities span{background:var(--surface-raised);color:var(--muted)}
+:root[data-theme=dark] .integration-card.ready{border-color:var(--success-line)}
+:root[data-theme=dark] .integration-card.blocked{border-color:var(--error-line)}
+:root[data-theme=dark] :is(.billing-table th,.practice-table th){background:var(--surface-soft);color:var(--muted);border-color:var(--line)}
+:root[data-theme=dark] :is(.billing-table td,.practice-table td){border-color:var(--line)}
+:root[data-theme=dark] .practice-table tr:hover td{background:var(--surface-raised);color:var(--ink)}
+
+/* Status colors retain their meaning and readable foreground contrast. */
+:root[data-theme=dark] :is(.notice,.signed-notice,.signed,.status-badge.checked_in,.automation-safety,.automation-metric.success){background:var(--success-bg);color:var(--success-text);border-color:var(--success-line)}
+:root[data-theme=dark] :is(.notice.warning,.mapping-notice,.allergy-alert,.patient-safety.has-allergies,.workspace-environment,.shell-environment,.status-badge.in_progress,.status-badge.blocked,.automation-metric.warning,.shell-connect-status[data-state=reconnecting],.shell-connect-status[data-state=offline],.shell-connect-status[data-state=needs_attention],.automation-center .status-badge.pending_review,.automation-center .status-badge.needs_reconciliation,.automation-center .status-badge.dead_letter){background:var(--warning-bg);color:var(--warning-text);border-color:var(--warning-line)}
+:root[data-theme=dark] :is(.notice.error,.critical-label,.summary-line.critical-summary,.status-badge.cancelled,.status-badge.no_show,.status-badge.failed,.app-dialog.danger .app-dialog-mark){background:var(--error-bg);color:var(--error-text);border-color:var(--error-line)}
+:root[data-theme=dark] .error{color:var(--error-text)}
+:root[data-theme=dark] .status-badge.completed{background:var(--surface-raised);color:var(--muted);border-color:var(--line)}
+:root[data-theme=dark] .app-dialog .primary.danger{background:#a83f3f;border-color:#d56e68;color:#fff}
+:root[data-theme=dark] .shell-connect-status{background:var(--surface);color:var(--muted);border-color:var(--line)}
+:root[data-theme=dark] .shell-connect-status[data-state=connected]{background:var(--success-bg);color:var(--success-text);border-color:var(--success-line)}
+
+/* Workflow Studio: separate canvas, columns, nodes and inspector layers. */
+:root[data-theme=dark] :is(.studio-toolbar,.studio-definition,.studio-library,.studio-builder,.studio-inspector,.studio-workflow-row,.studio-node,.studio-hero,.studio-subnav,.studio-operational-summary,.studio-summary-card,.studio-next-card,.studio-section,.studio-onboarding,.studio-picker,.studio-form-row,.studio-runtime-grid>section,.studio-column-chip,.studio-workspace-map,.studio-workspace-panels>section,.studio-workspace>form){background:var(--surface);color:var(--ink);border-color:var(--line)}
+:root[data-theme=dark] :is(.studio-phase,.studio-graph-board .studio-phase,.studio-column-manager,.studio-form-field,.studio-palette button,.studio-path-preview button,.studio-check-results,.studio-workspace-node,.studio-workspace-tabs label,.studio-module-card,.studio-condition-editor,.studio-next-card>button){background:var(--surface-soft);color:var(--ink);border-color:var(--line)}
+:root[data-theme=dark] .studio-condition-editor{border-color:var(--line)!important}
+:root[data-theme=dark] :is(.studio-phase>header,.studio-inspector details,.studio-inspector fieldset,.studio-forms-layout>aside,.studio-history,.studio-run-row,.studio-version-row,.studio-runtime-detail details p){border-color:var(--line)}
+:root[data-theme=dark] :is(.studio-node-number,.studio-stage-nav button span,.studio-phase>header>span,.studio-workspace-node.hidden,.studio-column-chip.hidden){background:var(--surface-raised);color:var(--muted)}
+:root[data-theme=dark] :is(.studio-subnav button,.studio-add-node,.studio-version-row>span:first-child){color:var(--muted)}
+:root[data-theme=dark] :is(.studio-template,.studio-form-link,.studio-empty-icon,.studio-workspace-heading>span,.studio-workspace-node>span,.studio-agent-card,.studio-path-preview button>span){background:var(--accent);color:var(--blue);border-color:#4e858b}
+:root[data-theme=dark] :is(.studio-subnav button.selected,.studio-workflow-row.selected,.studio-node.selected,.studio-form-row.selected,.studio-runtime-grid .studio-run-row.selected){background:var(--accent);color:var(--ink);border-color:#78d1ca;box-shadow:inset 0 0 0 1px #78d1ca}
+:root[data-theme=dark] .studio-subnav button.selected span{background:#81d9d1;color:#10282d}
+:root[data-theme=dark] .studio-runtime b,:root[data-theme=dark] .studio-add-column{color:var(--blue)}
+:root[data-theme=dark] .studio-add-column{background:var(--surface)}
+:root[data-theme=dark] :is(.studio-access-note,.studio-clear-state,.studio-check-results.success,.studio-node[data-runtime-state=completed]){background:var(--success-bg);color:var(--success-text);border-color:var(--success-line)}
+:root[data-theme=dark] :is(.studio-access-note b,.studio-access-note span){color:var(--success-text)}
+:root[data-theme=dark] .studio-readiness{background:var(--surface-raised);color:var(--ink)}
+:root[data-theme=dark] :is(.studio-operational-summary.warning,.studio-check-results.warning,.studio-condition-summary,.studio-hidden-count,.studio-node-flags em.condition,.studio-node-flags em:first-child){background:var(--warning-bg);color:var(--warning-text);border-color:var(--warning-line)}
+:root[data-theme=dark] .studio-hidden-warning{color:var(--warning-text)}
+:root[data-theme=dark] .studio-node-flags em{background:var(--surface-raised);color:var(--muted)}
+:root[data-theme=dark] .studio-node-flags em.approval{background:var(--approval-bg);color:var(--approval-text)}
+:root[data-theme=dark] :is(.studio-node[data-runtime-state=blocked],.studio-node[data-runtime-state=failed]){background:var(--error-bg);border-color:var(--error-line)}
+:root[data-theme=dark] .studio-node[data-runtime-state=ready]{border-left-color:#8bd2aa}
+:root[data-theme=dark] :is(.studio-node[data-runtime-state=executing],.studio-node[data-runtime-state=in_progress]){border-left-color:#85c9ec;box-shadow:0 0 0 2px #85c9ec30}
+:root[data-theme=dark] .studio-graph-edge{stroke:#8fcbd0}
+:root[data-theme=dark] .studio-graph-edge.conditional{stroke:#dfbe75}
+:root[data-theme=dark] .studio-graph-edges marker path{fill:#8fcbd0}
+
+/* Sun assistant uses the working-surface palette, including the transcript. */
+:root[data-theme=dark] .sun-answer{background:var(--accent);border-color:#4e858b;color:var(--ink)}
+:root[data-theme=dark] #sun-interim{color:var(--muted)}
+:root[data-theme=dark] .sun-panel button[aria-pressed=true]{background:#9f3646;border-color:#d67887;color:#fff}
+
+/* Dark login keeps the green identity without a glaring white form. */
+:root[data-theme=dark] .login-screen{background:#081811;color:#e7f2ea}
+:root[data-theme=dark] .login-screen .login-card{background:#13281f;color:#e7f2ea;border-color:#355345;box-shadow:0 28px 80px #0006}
+:root[data-theme=dark] :is(.login-screen .login-card h2,.login-screen .login-card label,.clinic-login-brand strong){color:#e7f2ea}
+:root[data-theme=dark] :is(.login-screen .login-card-heading p,.login-connection,.login-secondary,.login-meta,.login-screen .login-card .preview){color:#b2cabc}
+:root[data-theme=dark] .login-screen .login-card-heading .eyebrow,:root[data-theme=dark] .login-secondary a{color:#9ddeae}
+:root[data-theme=dark] :is(.login-screen .login-card input,.login-screen .login-card select){background:#0d1f17;color:#edf7f0;border-color:#4e6c5a}
+:root[data-theme=dark] :is(.login-screen .login-card .clinic-login-brand,.login-secondary){border-color:#355345}
+:root[data-theme=dark] .login-screen .login-card .primary{background:#91dda3;color:#102b1a;border-color:#91dda3;box-shadow:none}
+:root[data-theme=dark] .login-screen .login-card .primary:hover{background:#b0ecc0;color:#102b1a;border-color:#b0ecc0;box-shadow:none}
+:root[data-theme=dark] .login-screen .login-card .error{background:var(--error-bg);color:var(--error-text);border-color:var(--error-line)}
+:root[data-theme=dark] .theme-control--login{color:#b2cabc}
+:root[data-theme=dark] .theme-control--login select{background:#13281f;color:#e7f2ea;border-color:#4e6c5a}
+:root[data-theme=dark] .clinic-brand-fallback{background:#234737;color:#b0ecc0!important}
+:root[data-theme=dark] .practice-identity-logo{background:#e8eeeb}
+
+@media(prefers-reduced-motion:reduce){.theme-control,.theme-control select{transition:none}}
+@media print{
+ .theme-control{display:none!important}
+ :root[data-theme=dark]{color-scheme:light;--ink:#233541;--muted:#607482;--line:#d8e1e6;--blue:#126d77;--paper:#fff;--surface:#fff;--surface-soft:#f5f8fa;--surface-raised:#edf3f6;--accent:#e6f2f2}
+}

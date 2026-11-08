@@ -142,7 +142,9 @@ impl ClinicalBackend for PostgresBackend {
     }
     async fn create_patient(&self, a: &Actor, p: NewPatient) -> Result<Patient> {
         a.scheduling()?;
-        text(&p.mrn, 64)?;
+        if let Some(mrn) = p.mrn.as_deref() {
+            text(mrn, 64)?;
+        }
         text(&p.given_name, 100)?;
         text(&p.family_name, 100)?;
         if p.birth_date > Utc::now().date_naive() || p.birth_date.year() < 1800 {
@@ -150,8 +152,21 @@ impl ClinicalBackend for PostgresBackend {
         }
         let mut tx = self.0.begin().await?;
         let id = Uuid::new_v4();
+        // Staff should not have to invent identifiers during registration. The
+        // UUID-derived value is tenant-unique, opaque, and remains editable via
+        // the attributed identity-correction workflow when a practice imports
+        // an established MRN.
+        let mrn = p
+            .mrn
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                format!("SC-{}", id.simple().to_string()[..12].to_ascii_uppercase())
+            });
         let p = sqlx::query_as("INSERT INTO patients (tenant_id,id,mrn,given_name,family_name,birth_date) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id,mrn,given_name,family_name,birth_date")
-            .bind(a.tenant_id).bind(id).bind(p.mrn.trim()).bind(p.given_name.trim()).bind(p.family_name.trim()).bind(p.birth_date)
+            .bind(a.tenant_id).bind(id).bind(mrn).bind(p.given_name.trim()).bind(p.family_name.trim()).bind(p.birth_date)
             .fetch_one(&mut *tx).await?;
         crate::patient_identity::record_initial(&mut tx, a, &p, "Patient registered").await?;
         audit(&mut tx, a, "patient.create", id).await?;
@@ -220,6 +235,13 @@ impl ClinicalBackend for PostgresBackend {
         let result = sqlx::query_as("INSERT INTO appointments (tenant_id,id,patient_id,clinician_id,starts_at,ends_at,title,category,facility,room,notes,source_history_id,request_id,request_digest) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *")
             .bind(a.tenant_id).bind(id).bind(p.patient_id).bind(p.clinician_id).bind(p.starts_at).bind(p.ends_at).bind(p.title).bind(p.category).bind(p.facility).bind(p.room).bind(p.notes).bind(p.source_history_id).bind(p.request_id).bind(digest).fetch_one(&mut *tx).await?;
         crate::scheduling::revision(&mut tx, a, id, &p.reason).await?;
+        crate::scheduling::emit_appointment_event(
+            &mut tx,
+            a,
+            &result,
+            "suncharts.appointment.created",
+        )
+        .await?;
         audit(&mut tx, a, "appointment.book", id).await?;
         tx.commit().await?;
         Ok(result)
@@ -246,6 +268,13 @@ impl ClinicalBackend for PostgresBackend {
         .fetch_one(&mut *tx)
         .await?;
         crate::scheduling::revision(&mut tx, a, id, "Patient checked in").await?;
+        crate::scheduling::emit_appointment_event(
+            &mut tx,
+            a,
+            &row,
+            "suncharts.appointment.checked_in",
+        )
+        .await?;
         audit(&mut tx, a, "appointment.check_in", id).await?;
         tx.commit().await?;
         Ok(row)
@@ -361,6 +390,14 @@ impl ClinicalBackend for PostgresBackend {
         let v = visit_row(&mut tx, a, id).await?;
         crate::scheduling::revision(&mut tx, a, v.appointment_id, "Visit signed and completed")
             .await?;
+        crate::automation_event_runtime::emit_in_tx(&mut tx, a,
+            crate::automation_event_runtime::NewAutomationEvent {
+                event_type: "suncharts.visit.signed".into(),
+                source: "suncharts.visits".into(),
+                source_event_id: format!("{}:{}", v.id, v.version),
+                payload: serde_json::json!({"patient_id":v.patient_id,"appointment_id":v.appointment_id,"visit_id":v.id,"version":v.version}),
+                classification: "phi".into(), occurred_at: chrono::Utc::now(), retention_days: 30,
+            }).await?;
         audit(&mut tx, a, "visit.sign", id).await?;
         tx.commit().await?;
         Ok(v)

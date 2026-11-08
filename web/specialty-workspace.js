@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
-let practiceWorkspaceSettings,specialtyCareById=new Map();
-const workspaceModuleLabels={practice:'Overview',clinical:'Patients & encounters',schedule:'Schedule',labs:'Labs & results',specialty:'Specialty care',referrals:'Referrals',followup:'Follow-up tasks',portal:'Patient messages',billing:'Billing & insurance',claims:'Claims & remittances',edi:'Clearinghouse',apps:'Connected apps',migration:'Data import',admin:'Practice administration'};
-const workspaceModuleIds={practice:'nav-practice',clinical:'nav-clinical',schedule:'nav-schedule',labs:'nav-labs',specialty:'nav-specialty',referrals:'nav-referrals',followup:'nav-followup',portal:'nav-portal',billing:'nav-billing',claims:'nav-claims',edi:'nav-edi',apps:'nav-apps',migration:'nav-migration',admin:'nav-admin'};
+let practiceWorkspaceSettings,practiceAccessPolicy,specialtyCareById=new Map();
+const workspaceNativeParents=new Map();
+const workspaceModuleLabels={practice:'Home',clinical:'Patients',schedule:'Schedule',labs:'Orders & results',specialty:'Specialty care',referrals:'Referrals',followup:'Work queue',portal:'Inbox',billing:'Patient billing',claims:'Insurance claims',edi:'Claim connections',apps:'Integrations',migration:'Data import',admin:'Practice administration',workflows:'Workflow Studio',automation:'Automation Center',communications:'Communications',ai_review:'Sun review'};
+const workspaceModuleIds={practice:'nav-practice',clinical:'nav-clinical',schedule:'nav-schedule',labs:'nav-labs',specialty:'nav-specialty',referrals:'nav-referrals',followup:'nav-followup',portal:'nav-portal',billing:'nav-billing',claims:'nav-claims',edi:'nav-edi',apps:'nav-apps',migration:'nav-migration',admin:'nav-admin',workflows:'nav-workflows',automation:'nav-automation',communications:'nav-communications',ai_review:'nav-ai-review'};
 const chartTabLabels={overview:'Summary',profile:'Patient details',clinical:'Clinical lists',care_pathways:'Care pathways',prescribing:'Prescribing',immunizations:'Immunizations',functional_status:'Functional status',specialty_care:'Specialty care',history:'Surgical & dental history',documents:'Documents',referrals:'Referrals',orders:'Orders & results',visits:'Encounters',checkout:'Checkout & AVS',billing:'Financials',source:'Source records'};
 const functionLevels=[['independent','Independent'],['modified_independent','Modified independent'],['supervision','Supervision'],['assistance','Needs assistance'],['dependent','Dependent'],['not_assessed','Not assessed']];
 
 async function loadPracticeWorkspaceSettings(){
- practiceWorkspaceSettings=await api('/api/v1/practice/workspace-settings');
+ const account=me;
+ const [settings,access]=await Promise.all([api('/api/v1/practice/workspace-settings'),me?.access_policy_supported?api('/api/v1/practice/access-policy/current'):Promise.resolve(null)]);
+ if(me!==account)return;
+ practiceWorkspaceSettings=settings;practiceAccessPolicy=access;
  applyPracticeWorkspaceSettings();
  return practiceWorkspaceSettings;
 }
@@ -15,38 +19,80 @@ function applyPracticeWorkspaceSettings(){
  const content=practiceWorkspaceSettings?.content;if(!content)return;
  for(const [key,id] of Object.entries(workspaceModuleIds)){
   const node=$(id);if(!node)continue;
-  const hidden=content.hidden_modules.includes(key)||(key==='specialty'&&!content.specialty_workspaces.includes('spasticity_movement'));
+  if(!workspaceNativeParents.has(id)&&node.parentNode)workspaceNativeParents.set(id,node.parentNode);
+  const group=content.module_groups?.[key];
+  const destination=group?document.querySelector(`.nav-group[aria-labelledby="nav-${group}-label"]`):workspaceNativeParents.get(id);
+  if(destination&&node.parentNode!==destination)destination.append(node);
+  const label=node.querySelector?.('span');if(label)label.textContent=content.module_labels?.[key]||workspaceModuleLabels[key];
+  const hidden=content.hidden_modules.includes(key)&&!(['admin','workflows'].includes(key)&&me?.role==='owner');
   node.dataset.workspaceHidden=String(hidden);
-  node.hidden=hidden||(key==='admin'&&me?.role!=='owner')||(key==='portal'&&!['owner','clinician','front_desk'].includes(me?.role));
+  node.hidden=hidden||(key==='admin'&&me?.role!=='owner')||(key==='portal'&&!['owner','clinician','front_desk'].includes(me?.role))||!workspaceModuleAllowed(key);
  }
  for(const group of document.querySelectorAll('.nav-group')){
-  const buttons=[...group.querySelectorAll('.nav-item')];
+  const buttons=[...group.querySelectorAll(':scope > .nav-item')];
   buttons.sort((a,b)=>content.module_order.indexOf(Object.keys(workspaceModuleIds).find(k=>workspaceModuleIds[k]===a.id))-content.module_order.indexOf(Object.keys(workspaceModuleIds).find(k=>workspaceModuleIds[k]===b.id)));
   buttons.forEach(button=>group.append(button));
  }
+ applyWorkspaceAccessVisibility();
+}
+function workspaceModuleAllowed(key){
+ if(!practiceAccessPolicy?.restricted)return true;
+ return practiceAccessPolicy.module_permissions?.[key]?.view===true;
+}
+function workspaceResourceAllowed(resource,action='view'){
+ return !practiceAccessPolicy?.restricted||practiceAccessPolicy.permissions?.[resource]?.[action]===true;
+}
+function clearWorkspaceAccessSession(){practiceWorkspaceSettings=undefined;practiceAccessPolicy=undefined;}
+async function showAllowedWorkspaceLanding(){
+ const entries=[['schedule',()=>showSchedule()],['clinical',()=>showClinical()],['followup',()=>showFollowupWorkspace()],['billing',()=>showBillingQueue()],['claims',()=>showClaimsWorkspace()],['workflows',()=>showWorkflowStudio()],['apps',()=>showApps()]];
+ for(const [key,open] of entries){
+  const id=key==='workflows'?'nav-workflows':workspaceModuleIds[key];
+  if(workspaceModuleAllowed(key)&&$(id)&&!$(id).hidden){await open();return;}
+ }
+ showTool('Your workspace');
+ $('tools').innerHTML='<h2>No workspaces are available for this role</h2><p>Your account is signed in. Ask a practice owner to review your assigned role and workspace access.</p>';
+}
+function applyWorkspaceAccessVisibility(){
+ const extra={workflows:'nav-workflows',automation:'nav-automation',communications:'nav-communications',ai_review:'nav-ai-review'};
+ for(const [key,id] of Object.entries({...workspaceModuleIds,...extra})){
+  const node=$(id);if(!node)continue;
+  node.dataset.accessDenied=String(!workspaceModuleAllowed(key));
+  if(['workflows','automation'].includes(key))node.hidden=node.dataset.workspaceHidden==='true'||!workspaceModuleAllowed(key);
+  else if(!workspaceModuleAllowed(key))node.hidden=true;
+ }
+ const canFind=workspaceModuleAllowed('clinical');
+ if($('shell-find-patient'))$('shell-find-patient').hidden=!canFind;
+ if(!canFind&&$('new-patient'))$('new-patient').hidden=true;
+}
+function workspaceChartTabEnabled(key){
+ const tabs=practiceWorkspaceSettings?.content?.chart_tabs;
+ return !Array.isArray(tabs)||tabs.includes(key);
 }
 function configuredChartTabs(all){
  const order=practiceWorkspaceSettings?.content?.chart_tabs;if(!order)return all;
- const map=new Map(all);const tabs=order.filter(key=>map.has(key)).map(key=>[key,map.get(key)]);
+ const allowed=key=>key==='billing'?workspaceResourceAllowed('billing'):key==='source'?['clinical','billing','claims','migration'].every(r=>workspaceResourceAllowed(r)):key==='care_pathways'?workspaceResourceAllowed('workflows'):true;
+ const map=new Map(all);const tabs=order.filter(key=>map.has(key)&&allowed(key)).map(key=>[key,map.get(key)]);
  if(!tabs.some(([key])=>key===chartSection))chartSection='overview';
  return tabs;
 }
 
 function adminTabs(active){
- return `<nav class="chart-tabs" aria-label="Practice administration">${practiceAdminKinds.map(([key,label])=>`<button type="button" data-admin-tab="${key}" aria-pressed="false">${esc(label)}</button>`).join('')}<button type="button" data-admin-tab="workspace" aria-pressed="${active==='workspace'}">Workspace</button></nav>`;
+ return `<nav class="chart-tabs" aria-label="Practice administration">${practiceAdminKinds.map(([key,label])=>`<button type="button" data-admin-tab="${key}" aria-pressed="false">${esc(label)}</button>`).join('')}<button type="button" data-admin-tab="workspace" aria-pressed="${active==='workspace'}">Workspace</button>${typeof renderTerminologyAdminEntry==='function'?renderTerminologyAdminEntry():''}</nav>`;
 }
 function renderWorkspaceSettingsAdmin(target){
  const c=practiceWorkspaceSettings.content;
- target.innerHTML=`<div class="section-head"><div><h2>Practice administration</h2><p class="muted">Choose the modules and specialty chart areas shown by default. Hidden modules keep their data, permissions and APIs.</p></div><button type="button" data-workspace-refresh>Refresh settings</button></div>${adminTabs('workspace')}<form id="workspace-settings-form" data-version="${practiceWorkspaceSettings.version}"><section class="panel"><h3>Practice navigation</h3><p class="muted">Set visibility and order. Practice administration remains available to owners even if hidden for other roles.</p><div class="practice-table-wrap"><table class="practice-table"><thead><tr><th>Module</th><th>Visible</th><th>Order</th></tr></thead><tbody>${c.module_order.map((key,index)=>`<tr><td>${esc(workspaceModuleLabels[key])}</td><td><label class="review-ack"><input type="checkbox" name="visible_${key}" ${c.hidden_modules.includes(key)?'':'checked'}>Shown</label></td><td><input name="order_${key}" type="number" min="1" max="${c.module_order.length}" value="${index+1}" required></td></tr>`).join('')}</tbody></table></div></section><section class="panel"><h3>Specialty workspace</h3><label class="review-ack"><input type="checkbox" name="spasticity_movement" ${c.specialty_workspaces.includes('spasticity_movement')?'checked':''}>Enable Spasticity & Movement workspace</label><p class="muted">This adds structured functional-status, neurotoxin, baclofen-pump, stretching-program and care-coordination work. It does not hide general clinical data or authorize automated clinical decisions.</p><h4>Patient chart tabs</h4><div class="chart-summary-grid">${Object.entries(chartTabLabels).map(([key,label])=>`<label class="review-ack"><input type="checkbox" name="tab_${key}" ${c.chart_tabs.includes(key)?'checked':''} ${key==='overview'?'disabled checked':''}>${esc(label)}</label>`).join('')}</div></section><label>Reason for workspace change<input name="reason" required maxlength="1000"></label><button type="submit" class="primary">Save workspace configuration</button></form>`;
+ const groupOptions=(selected='')=>[['','Keep current section'],['today','Today'],['care','Care'],['revenue','Revenue'],['manage','Manage']].map(([key,label])=>`<option value="${key}" ${selected===key?'selected':''}>${label}</option>`).join('');
+ target.innerHTML=`<div class="section-head"><div><h2>Customize workspace</h2><p class="muted">Choose what appears in the sidebar, what each destination is called and where staff find it. Hidden modules keep their data, permissions and APIs.</p></div><button type="button" data-workspace-refresh>Refresh settings</button></div>${adminTabs('workspace')}<form id="workspace-settings-form" data-version="${practiceWorkspaceSettings.version}"><section class="panel"><h3>Sidebar navigation</h3><p class="muted">Set the label, section, visibility and order. Role permissions are still enforced. Practice administration remains available to owners.</p><div class="practice-table-wrap"><table class="practice-table workspace-navigation-table"><thead><tr><th>Destination</th><th>Sidebar label</th><th>Section</th><th>Shown</th><th>Order</th></tr></thead><tbody>${c.module_order.map((key,index)=>`<tr><td><strong>${esc(workspaceModuleLabels[key])}</strong></td><td><input name="label_${key}" value="${esc(c.module_labels?.[key]||workspaceModuleLabels[key])}" maxlength="80" aria-label="Sidebar label for ${esc(workspaceModuleLabels[key])}" required></td><td><select name="group_${key}" aria-label="Sidebar section for ${esc(workspaceModuleLabels[key])}">${groupOptions(c.module_groups?.[key]||'')}</select></td><td><label class="review-ack"><input type="checkbox" name="visible_${key}" ${c.hidden_modules.includes(key)?'':'checked'}>Shown</label></td><td><input name="order_${key}" type="number" min="1" max="${c.module_order.length}" value="${index+1}" aria-label="Sidebar order for ${esc(workspaceModuleLabels[key])}" required></td></tr>`).join('')}</tbody></table></div></section><section class="panel"><h3>Patient chart areas</h3><p class="muted">Select each built-in chart area independently. Chart visibility does not change clinical permissions or stored records.</p><div class="chart-summary-grid">${Object.entries(chartTabLabels).map(([key,label])=>`<label class="review-ack"><input type="checkbox" name="tab_${key}" ${c.chart_tabs.includes(key)?'checked':''} ${key==='overview'?'disabled checked':''}>${esc(label)}</label>`).join('')}</div></section><label>Reason for workspace change<input name="reason" required maxlength="1000"></label><button type="submit" class="primary">Save workspace configuration</button></form>`;
 }
 async function saveWorkspaceSettings(form){
  const values=new FormData(form),keys=Object.keys(workspaceModuleIds);
  const module_order=keys.map(key=>[key,Number(values.get(`order_${key}`))]).sort((a,b)=>a[1]-b[1]).map(([key])=>key);
  const hidden_modules=keys.filter(key=>!values.get(`visible_${key}`));
- const specialty_workspaces=values.get('spasticity_movement')?['spasticity_movement']:[];
- const chart_tabs=Object.keys(chartTabLabels).filter(key=>key==='overview'||values.get(`tab_${key}`));
- if(!specialty_workspaces.length&&(chart_tabs.includes('functional_status')||chart_tabs.includes('specialty_care')))throw new Error('Enable the specialty workspace before showing its patient chart tabs.');
- practiceWorkspaceSettings=await api('/api/v1/practice/workspace-settings','PUT',{content:{module_order,hidden_modules,specialty_workspaces,chart_tabs},reason:values.get('reason')},Number(form.dataset.version));
+ const selectedTabs=new Set(Object.keys(chartTabLabels).filter(key=>key==='overview'||values.get(`tab_${key}`))),previousTabs=practiceWorkspaceSettings.content.chart_tabs;
+ const chart_tabs=[...previousTabs.filter(key=>selectedTabs.has(key)),...Object.keys(chartTabLabels).filter(key=>selectedTabs.has(key)&&!previousTabs.includes(key))];
+ const module_labels=Object.fromEntries(keys.map(key=>[key,String(values.get(`label_${key}`)||workspaceModuleLabels[key]).trim()||workspaceModuleLabels[key]]));
+ const module_groups=Object.fromEntries(keys.map(key=>[key,String(values.get(`group_${key}`)||'')]).filter(([,group])=>group));
+ practiceWorkspaceSettings=await api('/api/v1/practice/workspace-settings','PUT',{content:{module_order,hidden_modules,chart_tabs,module_labels,module_groups},reason:values.get('reason')},Number(form.dataset.version));
  applyPracticeWorkspaceSettings();renderWorkspaceSettingsAdmin($('practice-admin-panel'));notice('Workspace configuration saved.');
 }
 
@@ -58,17 +104,30 @@ function careKindLabel(kind){return ({neurotoxin:'Neurotoxin treatment',baclofen
 function careSummary(item){const c=item.content;let detail='';if(item.kind==='neurotoxin')detail=`${esc(c.medication)} · ${esc(human(c.fulfillment))} · authorization ${esc(human(c.prior_authorization))}<br>${esc(c.administered_units)} administered / ${esc(c.wasted_units)} wasted / ${esc(c.planned_units)} planned units${c.hcpcs_j_code?' · '+esc(c.hcpcs_j_code):''}${c.ndc?' · NDC '+esc(c.ndc):''}${c.next_task?`<br>Next task: ${esc(c.next_task)}${c.task_due?' · due '+esc(c.task_due):''}`:''}`;if(item.kind==='baclofen_pump_refill')detail=`${esc(c.medication)} · ${esc(c.concentration)} · refill due ${esc(c.refill_due)}`;if(item.kind==='stretching_program')detail=`${esc(c.program_name)} · ${esc(c.frequency)} · ${esc(c.assigned_to)}`;if(item.kind==='care_coordination')detail=`${esc(c.focus)} · ${esc(c.next_step)} · due ${esc(c.due_date)}`;const editable=['owner','clinician','nurse'].includes(me?.role)&&['planned','in_progress','on_hold'].includes(item.status);return `<article class="clinical-entry" data-care-item="${esc(item.id)}"><div class="section-head"><h3>${esc(careKindLabel(item.kind))}</h3><span class="pill">${esc(human(item.status))}</span></div><p>${detail}</p>${c.notes?`<p class="note-text">${esc(c.notes)}</p>`:''}<small>Revision ${item.version} · Updated ${esc(date(item.updated_at))}</small>${editable?`<button type="button" data-care-edit="${esc(item.id)}">Edit reviewed details</button><div data-care-edit-host></div>`:''}${['owner','clinician','nurse'].includes(me?.role)&&['planned','in_progress','on_hold','completed'].includes(item.status)?`<form class="specialty-action-form" data-id="${esc(item.id)}" data-version="${item.version}"><label>Next action<select name="action">${careActions(item.status).map(([key,label])=>`<option value="${key}">${label}</option>`).join('')}</select></label><label>Reason<input name="reason" required maxlength="1000"></label><button type="submit">Record status</button></form>`:''}<button type="button" data-care-history="${esc(item.id)}">History</button><div data-care-history-host></div></article>`;}
 function careActions(status){return ({planned:[['start','Start'],['cancel','Cancel']],in_progress:[['complete','Complete'],['hold','Place on hold'],['cancel','Cancel']],on_hold:[['resume','Resume'],['cancel','Cancel']],completed:[['entered_in_error','Mark entered in error']]})[status]||[];}
 function careFields(kind,c={}){const val=(key,fallback='')=>esc(c[key]??fallback),selected=(key,value)=>(c[key]??'')===value?'selected':'';if(kind==='neurotoxin')return `<div class="form-grid"><label>Medication<input name="medication" value="${val('medication')}" required maxlength="200"></label><label>Fulfillment<select name="fulfillment"><option value="specialty_pharmacy" ${selected('fulfillment','specialty_pharmacy')}>Specialty pharmacy</option><option value="buy_and_bill" ${selected('fulfillment','buy_and_bill')}>Buy and bill</option></select></label><label>Specialty pharmacy<input name="specialty_pharmacy" value="${val('specialty_pharmacy')}" maxlength="200" placeholder="Accredo"></label><label>Prior authorization<select name="prior_authorization">${['not_started','submitted','approved','denied','not_required'].map(value=>`<option value="${value}" ${selected('prior_authorization',value)}>${human(value)}</option>`).join('')}</select></label><label>Authorization reference<input name="authorization_reference" value="${val('authorization_reference')}" maxlength="120"></label><label>Next authorization / inventory task<input name="next_task" value="${val('next_task')}" maxlength="500" required></label><label>Task due<input name="task_due" value="${val('task_due')}" type="date"></label><label>NDC<input name="ndc" value="${val('ndc')}" maxlength="30"></label><label>HCPCS J-code<input name="hcpcs_j_code" value="${val('hcpcs_j_code')}" maxlength="20"></label><label>Planned units<input name="planned_units" type="number" min="1" value="${val('planned_units',100)}" required></label><label>Administered units<input name="administered_units" type="number" min="0" value="${val('administered_units',0)}" required></label><label>Wasted units<input name="wasted_units" type="number" min="0" value="${val('wasted_units',0)}" required></label><label>Lot number<input name="lot_number" value="${val('lot_number')}" maxlength="100"></label><label>Expiration date<input name="expiration_date" value="${val('expiration_date')}" type="date"></label><label>Follow-up due<input name="follow_up_due" value="${val('follow_up_due')}" type="date"></label></div>`;if(kind==='baclofen_pump_refill')return `<div class="form-grid"><label>Pump model<input name="pump_model" value="${val('pump_model')}" maxlength="200" required></label><label>Medication<input name="medication" value="${val('medication')}" maxlength="200" required></label><label>Concentration<input name="concentration" value="${val('concentration')}" maxlength="120" required></label><label>Refill due<input name="refill_due" value="${val('refill_due')}" type="date" required></label><label>Reservoir volume (mL)<input name="reservoir_volume_ml" value="${val('reservoir_volume_ml')}" maxlength="40" required></label></div>`;if(kind==='stretching_program')return `<div class="form-grid"><label>Program name<input name="program_name" value="${val('program_name')}" maxlength="200" required></label><label>Frequency<input name="frequency" value="${val('frequency')}" maxlength="200" required></label><label>Assigned to<input name="assigned_to" value="${val('assigned_to')}" maxlength="200" required></label><label>Follow-up due<input name="follow_up_due" value="${val('follow_up_due')}" type="date"></label></div>`;return `<div class="form-grid"><label>Coordination focus<input name="focus" value="${val('focus')}" maxlength="200" required></label><label>Responsible staff ID<input name="responsible_staff_id" value="${val('responsible_staff_id')}" required></label><label>Due date<input name="due_date" value="${val('due_date')}" type="date" required></label></div><label>Next step<textarea name="next_step" maxlength="2000" required>${val('next_step')}</textarea></label>`;}
-function careEditor(item=null){const kind=item?.kind||'neurotoxin',c=item?.content||{};return `<form class="specialty-care-form" data-request="${crypto.randomUUID()}" ${item?`data-id="${esc(item.id)}" data-version="${item.version}"`:''}><label>Workflow type${item?`<input type="hidden" name="kind" value="${esc(kind)}"><strong>${esc(careKindLabel(kind))}</strong>`:`<select name="kind">${['neurotoxin','baclofen_pump_refill','stretching_program','care_coordination'].map(key=>`<option value="${key}" ${key===kind?'selected':''}>${esc(careKindLabel(key))}</option>`).join('')}</select>`}</label><div data-specialty-care-fields>${careFields(kind,c)}</div><label>Notes<textarea name="notes" maxlength="10000">${esc(c.notes||'')}</textarea></label><label>Reason / source<input name="reason" maxlength="1000" required></label><button type="submit" class="primary">${item?'Save reviewed details':'Create reviewed workflow'}</button></form>`;}
+function careEditor(item=null,initialKind='neurotoxin'){const kind=item?.kind||initialKind,c=item?.content||{};return `<form class="specialty-care-form" data-request="${crypto.randomUUID()}" ${item?`data-id="${esc(item.id)}" data-version="${item.version}"`:''}><label>Workflow type${item?`<input type="hidden" name="kind" value="${esc(kind)}"><strong>${esc(careKindLabel(kind))}</strong>`:`<select name="kind">${['neurotoxin','baclofen_pump_refill','stretching_program','care_coordination'].map(key=>`<option value="${key}" ${key===kind?'selected':''}>${esc(careKindLabel(key))}</option>`).join('')}</select>`}</label><div data-specialty-care-fields>${careFields(kind,c)}</div><label>Notes<textarea name="notes" maxlength="10000">${esc(c.notes||'')}</textarea></label><label>Reason / source<input name="reason" maxlength="1000" required></label><button type="submit" class="primary">${item?'Save reviewed details':'Create reviewed workflow'}</button></form>`;}
 
-async function renderSpecialtyPatientWorkspace(){
- if(!selected||!practiceWorkspaceSettings?.content?.specialty_workspaces.includes('spasticity_movement'))return;
- const patient=selected,identity=me,[functional,care]=await Promise.all([api(`/api/v1/patients/${patient}/functional-status`),api(`/api/v1/patients/${patient}/specialty-care`)]);if(patient!==selected||identity!==me)return;
- $('functional-status-panel').innerHTML=`<div class="section-head"><div><h2>Functional status</h2><p class="muted">Structured longitudinal assessments. Corrections append a new attributed assessment.</p></div><span class="pill">${functional.items.length}</span></div>${['owner','clinician','nurse','medical_assistant'].includes(me.role)?functionalStatusForm(functional.items):''}${functional.items.map(functionalStatusSummary).join('')||'<p>No functional status assessment recorded.</p>'}`;
- specialtyCareById=new Map(care.items.map(item=>[item.id,item]));
- $('specialty-care-panel').innerHTML=`<div class="section-head"><div><h2>Spasticity & Movement</h2><p class="muted">Human-reviewed specialty work. Orders, authorization evidence, inventory, claims and follow-up retain independent status.</p></div><span class="pill">${care.items.length}</span></div>${['owner','clinician','nurse'].includes(me.role)?`<details class="clinical-editor"><summary>Create specialty workflow</summary>${careEditor()}</details>`:''}${care.items.map(careSummary).join('')||'<p>No specialty workflows recorded.</p>'}`;
+let specialtyPatientRenderEpoch=0;
+async function renderSpecialtyPatientWorkspace(options={}){
+ if(!selected||!workspaceResourceAllowed('clinical'))return;
+ const tabs=practiceWorkspaceSettings?.content?.chart_tabs||[],showFunctional=tabs.includes('functional_status'),showCare=tabs.includes('specialty_care');if(!showFunctional&&!showCare)return;
+ const patient=selected,identity=me,functionalPanel=$('functional-status-panel'),carePanel=$('specialty-care-panel'),epoch=++specialtyPatientRenderEpoch,target=options.target;
+ const current=()=>patient===selected&&identity===me&&epoch===specialtyPatientRenderEpoch&&(!options.isCurrent||options.isCurrent())&&(!target||target.patient_id===patient&&target.visit_id===activeVisit?.id);
+ if(!current())return;
+ const [functional,care]=await Promise.all([showFunctional?api(`/api/v1/patients/${patient}/functional-status`):Promise.resolve(null),showCare?api(`/api/v1/patients/${patient}/specialty-care`):Promise.resolve(null)]);if(!current())return;
+ const currentTabs=practiceWorkspaceSettings?.content?.chart_tabs||[];
+ let careItems=care?.items||[];
+ if(target){
+  if(!['neurotoxin','baclofen_pump_refill','stretching_program','care_coordination'].includes(target.kind))throw new Error('Choose a supported specialty treatment type.');
+  careItems=careItems.filter(item=>item.patient_id===patient&&item.visit_id===target.visit_id&&item.kind===target.kind&&(!target.resource_id||item.id===target.resource_id));
+  if(target.resource_id&&careItems.length!==1)throw new Error('The linked specialty record no longer matches this patient, encounter and treatment type. Refresh the journey.');
+ }
+ if(functional&&functionalPanel&&functionalPanel===$('functional-status-panel')&&currentTabs.includes('functional_status'))functionalPanel.innerHTML=`<div class="section-head"><div><h2>Functional status</h2><p class="muted">Structured longitudinal assessments. Corrections append a new attributed assessment.</p></div><span class="pill">${functional.items.length}</span></div>${['owner','clinician','nurse','medical_assistant'].includes(me.role)?functionalStatusForm(functional.items):''}${functional.items.map(functionalStatusSummary).join('')||'<p>No functional status assessment recorded.</p>'}`;
+ if(care&&carePanel&&carePanel===$('specialty-care-panel')&&currentTabs.includes('specialty_care')){
+  specialtyCareById=new Map(careItems.map(item=>[item.id,item]));
+  carePanel.innerHTML=`<div class="section-head"><div><h2>${target?esc(careKindLabel(target.kind)):'Specialty care'}</h2><p class="muted">${target?'Linked encounter work. Review the matching record before recording changes.':'Human-reviewed specialty work. Orders, authorization evidence, inventory, claims and follow-up retain independent status.'}</p></div><span class="pill">${careItems.length}</span></div>${['owner','clinician','nurse'].includes(me.role)&&(!target||!careItems.length)?`<details class="clinical-editor" ${target?'open':''}><summary>Create specialty workflow</summary>${careEditor(null,target?.kind||'neurotoxin')}</details>`:''}${target&&careItems.length>1?'<p>More than one matching record exists. Choose the record you intend to review.</p>':''}${careItems.map(careSummary).join('')||'<p>No specialty workflows recorded for this selection.</p>'}`;
+ }
  applyChartSection();
 }
-function careFormContent(form){const v=Object.fromEntries(new FormData(form)),kind=v.kind,notes=v.notes||'';if(kind==='neurotoxin')return {medication:v.medication,fulfillment:v.fulfillment,specialty_pharmacy:v.specialty_pharmacy,prior_authorization:v.prior_authorization,authorization_reference:v.authorization_reference,next_task:v.next_task,task_due:v.task_due||null,ndc:v.ndc,hcpcs_j_code:v.hcpcs_j_code,planned_units:Number(v.planned_units),administered_units:Number(v.administered_units),wasted_units:Number(v.wasted_units),lot_number:v.lot_number,expiration_date:v.expiration_date||null,follow_up_due:v.follow_up_due||null,notes};if(kind==='baclofen_pump_refill')return {pump_model:v.pump_model,medication:v.medication,concentration:v.concentration,refill_due:v.refill_due,reservoir_volume_ml:v.reservoir_volume_ml,notes};if(kind==='stretching_program')return {program_name:v.program_name,frequency:v.frequency,assigned_to:v.assigned_to,follow_up_due:v.follow_up_due||null,notes};return {focus:v.focus,responsible_staff_id:v.responsible_staff_id,next_step:v.next_step,due_date:v.due_date,notes};}
 
 async function showSpecialtyWorklist(){
  const [care,referrals]=await Promise.all([api('/api/v1/specialty-care/worklist'),api('/api/v1/referrals/worklist?_count=100')]);showTool('Specialty care');

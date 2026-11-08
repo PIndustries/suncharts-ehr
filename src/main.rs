@@ -83,16 +83,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .max_connections(10)
         .connect(&env_or_file("ENGINE_DATABASE_URL")?)
         .await
-        .map_err(|_| "engine database connection failed")?;
+        .map_err(|error| format!("engine database connection failed: {error}"))?;
     suncharts_engine::MIGRATOR
         .run(&db)
         .await
         .map_err(|_| "engine database migration failed")?;
     suncharts_engine::browser::bootstrap(&db).await?;
     tokio::spawn(suncharts_engine::managed_connect::run(db.clone()));
+    tokio::spawn(suncharts_engine::workflow_triggers::run(db.clone()));
     tokio::spawn(suncharts_engine::reminders::run(db.clone()));
     tokio::spawn(suncharts_engine::connect_updates::run(db.clone()));
     tokio::spawn(suncharts_engine::referral_delivery::run(db.clone()));
+    tokio::spawn(suncharts_engine::gmail_referral_adapter::run(db.clone()));
+    tokio::spawn(suncharts_engine::ringcentral_adapter::run(db.clone()));
+    tokio::spawn(suncharts_engine::automation_event_runtime::run_retention(
+        db.clone(),
+    ));
+    tokio::spawn(suncharts_engine::automation_event_runtime::run_dispatcher(
+        db.clone(),
+    ));
+    tokio::spawn(suncharts_engine::automation_event_runtime::run_action_executor(db.clone()));
+    tokio::spawn(suncharts_engine::partner_scheduling::run_webhooks(
+        db.clone(),
+    ));
     let delivery_config = suncharts_engine::delivery::Config::from_env()
         .map_err(|_| "invalid clearinghouse configuration")?;
     {

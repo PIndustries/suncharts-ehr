@@ -24,8 +24,8 @@ use uuid::Uuid;
 const MAX_JSON: usize = 4 * 1024 * 1024;
 const MAX_X12: usize = 16 * 1024 * 1024;
 
-fn owner(actor: &Actor) -> Result<()> {
-    if matches!(actor.role, Role::Owner) {
+fn billing_operator(actor: &Actor) -> Result<()> {
+    if matches!(actor.role, Role::Owner | Role::Clinician | Role::FrontDesk) {
         Ok(())
     } else {
         Err(Error::Forbidden)
@@ -159,7 +159,7 @@ async fn sync_uploaded(
     Path(setting): Path<Uuid>,
     Json(input): Json<UploadedRequest>,
 ) -> Result<Json<Value>> {
-    owner(&actor)?;
+    billing_operator(&actor)?;
     if !(1..=10_000).contains(&input.page) {
         return Err(Error::Invalid("Claim.MD upload page is invalid"));
     }
@@ -212,7 +212,7 @@ async fn sync_modifications(
     Path(setting): Path<Uuid>,
     Json(input): Json<CursorRequest>,
 ) -> Result<Json<Value>> {
-    owner(&actor)?;
+    billing_operator(&actor)?;
     let claimmd_id = valid_claimmd_id(input.claimmd_id)?;
     let cursor = load_cursor(db(&state)?, actor.tenant_id, setting, true).await?;
     let route = route(&state, &actor, setting).await?;
@@ -280,7 +280,7 @@ async fn sync_notes(
     Path(setting): Path<Uuid>,
     Json(input): Json<CursorRequest>,
 ) -> Result<Json<Value>> {
-    owner(&actor)?;
+    billing_operator(&actor)?;
     let claimmd_id = valid_claimmd_id(input.claimmd_id)?;
     let cursor = load_cursor(db(&state)?, actor.tenant_id, setting, false).await?;
     let route = route(&state, &actor, setting).await?;
@@ -358,7 +358,7 @@ async fn claim_data(
     Path(setting): Path<Uuid>,
     Json(input): Json<ClaimDataRequest>,
 ) -> Result<Json<Value>> {
-    owner(&actor)?;
+    billing_operator(&actor)?;
     if !["1500", "ub", "dental"].contains(&input.claim_form.as_str())
         || input.page > 10_000
         || input.reason.trim().is_empty()
@@ -440,7 +440,7 @@ async fn archive(
     Path(setting): Path<Uuid>,
     Json(mut input): Json<ArchiveRequest>,
 ) -> Result<Json<Value>> {
-    owner(&actor)?;
+    billing_operator(&actor)?;
     if !input.reviewed
         || input.claim_ids.is_empty()
         || input.claim_ids.len() > 100
@@ -516,7 +516,7 @@ async fn list(
     ExtractState(state): ExtractState<State>,
     Path(setting): Path<Uuid>,
 ) -> Result<Json<Value>> {
-    owner(&actor)?;
+    billing_operator(&actor)?;
     route(&state, &actor, setting).await?;
     let records:Vec<Value>=sqlx::query_scalar("SELECT to_jsonb(r)-'tenant_id'-'setting_id' FROM claimmd_operation_records r WHERE tenant_id=$1 AND setting_id=$2 ORDER BY recorded_at DESC LIMIT 500").bind(actor.tenant_id).bind(setting).fetch_all(db(&state)?).await?;
     let files:Vec<Value>=sqlx::query_scalar("SELECT to_jsonb(f)-'tenant_id'-'original_x12' FROM claimmd_transmitted_claim_files f WHERE tenant_id=$1 AND setting_id=$2 ORDER BY created_at DESC LIMIT 100").bind(actor.tenant_id).bind(setting).fetch_all(db(&state)?).await?;
@@ -527,7 +527,7 @@ async fn file(
     ExtractState(state): ExtractState<State>,
     Path(id): Path<Uuid>,
 ) -> Result<Response> {
-    owner(&actor)?;
+    billing_operator(&actor)?;
     let(payload,hash):(String,String)=sqlx::query_as("SELECT original_x12,payload_hash FROM claimmd_transmitted_claim_files WHERE tenant_id=$1 AND id=$2").bind(actor.tenant_id).bind(id).fetch_optional(db(&state)?).await?.ok_or(Error::NotFound)?;
     let mut response = (StatusCode::OK, Body::from(payload)).into_response();
     response.headers_mut().insert(
@@ -581,6 +581,28 @@ pub fn router() -> Router<State> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn actor(role: Role) -> Actor {
+        Actor {
+            sub: Uuid::nil(),
+            tenant_id: Uuid::nil(),
+            role,
+            patient_id: None,
+            iss: "synthetic".into(),
+            aud: "synthetic".into(),
+            iat: 0,
+            exp: 1,
+        }
+    }
+
+    #[test]
+    fn native_claimmd_work_is_available_to_existing_billing_roles() {
+        assert!(billing_operator(&actor(Role::Owner)).is_ok());
+        assert!(billing_operator(&actor(Role::Clinician)).is_ok());
+        assert!(billing_operator(&actor(Role::FrontDesk)).is_ok());
+        assert!(billing_operator(&actor(Role::ReadOnly)).is_err());
+        assert!(billing_operator(&actor(Role::Patient)).is_err());
+    }
+
     #[test]
     fn collections_accept_documented_single_or_array_shapes() {
         assert_eq!(

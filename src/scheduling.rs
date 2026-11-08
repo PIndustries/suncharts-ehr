@@ -82,6 +82,40 @@ pub async fn tenant_lock(tx: &mut Transaction<'_, Postgres>, a: &Actor) -> Resul
         .await?;
     Ok(())
 }
+
+/// Publishes a minimal, tenant-scoped scheduling event in the same transaction
+/// as the appointment mutation. Appointment and patient identifiers are PHI;
+/// descriptive fields and notes are deliberately excluded.
+pub(crate) async fn emit_appointment_event(
+    tx: &mut Transaction<'_, Postgres>,
+    actor: &Actor,
+    appointment: &Appointment,
+    event_type: &str,
+) -> Result<()> {
+    crate::automation_event_runtime::emit_in_tx(
+        tx,
+        actor,
+        crate::automation_event_runtime::NewAutomationEvent {
+            event_type: event_type.to_owned(),
+            source: "suncharts.scheduling".to_owned(),
+            source_event_id: format!("{}:{}", appointment.id, appointment.version),
+            payload: json!({
+                "appointment_id": appointment.id,
+                "patient_id": appointment.patient_id,
+                "clinician_id": appointment.clinician_id,
+                "starts_at": appointment.starts_at,
+                "ends_at": appointment.ends_at,
+                "status": appointment.status,
+                "version": appointment.version
+            }),
+            classification: "phi".to_owned(),
+            occurred_at: Utc::now(),
+            retention_days: 30,
+        },
+    )
+    .await?;
+    Ok(())
+}
 #[allow(clippy::too_many_arguments)]
 pub async fn available(
     tx: &mut Transaction<'_, Postgres>,
@@ -245,6 +279,11 @@ async fn edit(
             "only booked appointments can be edited or rescheduled",
         ));
     }
+    let rescheduled = old.clinician_id != p.clinician_id
+        || old.starts_at != p.starts_at
+        || old.ends_at != p.ends_at
+        || old.facility != p.facility
+        || old.room != p.room;
     validate_booking(&NewAppointment {
         patient_id: old.patient_id,
         clinician_id: p.clinician_id,
@@ -275,6 +314,9 @@ async fn edit(
     revision(&mut tx, &a, id, &p.reason).await?;
     crate::postgres::audit(&mut tx, &a, "appointment.edit", id).await?;
     let r = row(&mut tx, &a, id).await?;
+    if rescheduled {
+        emit_appointment_event(&mut tx, &a, &r, "suncharts.appointment.rescheduled").await?;
+    }
     tx.commit().await?;
     Ok(Json(r))
 }
@@ -321,6 +363,9 @@ async fn action(
     revision(&mut tx, &a, id, &p.reason).await?;
     crate::postgres::audit(&mut tx, &a, "appointment.action", id).await?;
     let r = row(&mut tx, &a, id).await?;
+    if status == "cancelled" {
+        emit_appointment_event(&mut tx, &a, &r, "suncharts.appointment.cancelled").await?;
+    }
     tx.commit().await?;
     Ok(Json(r))
 }

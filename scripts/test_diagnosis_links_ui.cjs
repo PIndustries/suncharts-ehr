@@ -8,7 +8,7 @@ function fixture(kind){
  const dx={version:7,diagnoses:[{id:'d1',code:'Z00.00',display:'<script>unsafe</script>',rank:1},{id:'d2',code:'R51.9',display:'Synthetic headache',rank:2}]};
  const order={id:'o1',visit_id:'v1',status:'draft',version:3,diagnosis_snapshot:{visit_id:'v1',visit_version:5,diagnoses:[dx.diagnoses[1]]}};
  const account={id:'a1',status:'draft',version:4,content:{visit_id:'v1',lines:[{code:'99213',description:'Synthetic <b>visit</b>',diagnosis_codes:['Z99.9']}]},diagnosis_snapshot:{visit_id:'v1',visit_version:5,lines:[{line_index:0,diagnoses:[dx.diagnoses[1]]}]}};
- const context=vm.createContext({console,Map,Set,selected:'p1',me:{user_id:'u1',role:'clinician'},workspace:{labs:{orders:[order]},billing:{accounts:[account]}},activeVisit:{id:'v1'},document:{addEventListener:(name,fn)=>(handlers[name]??=[]).push(fn)},$:(id)=>['lab-editor','billing-editor'].includes(id)?host:context.currentForm?.id===id?context.currentForm:null,esc,human:s=>s,api:async(path)=>path.endsWith('/orders')?{orders:[order]}:path.endsWith('/billing')?{accounts:[account]}:dx,canDocument:()=>true,FormData:class{constructor(form){this.form=form;}get(key){return this.form.values[key];}},run:fn=>context.pending=fn(),notice:()=>{},window:{confirm:()=>true},selectPatient:async()=>{},showChartSection:()=>{}});
+ const context=vm.createContext({console,Map,Set,selected:'p1',me:{user_id:'u1',role:'clinician'},workspace:{labs:{orders:[order]},billing:{accounts:[account]}},activeVisit:{id:'v1'},document:{addEventListener:(name,fn)=>(handlers[name]??=[]).push(fn)},$:(id)=>['lab-editor','billing-editor'].includes(id)?host:context.currentForm?.id===id?context.currentForm:null,esc,human:s=>s,api:async(path)=>path.endsWith('/orders')?{orders:[order]}:path.endsWith('/billing')?{accounts:[account]}:dx,canDocument:()=>true,FormData:class{constructor(form){this.form=form;}get(key){return this.form.values[key];}},run:fn=>context.pending=fn(),notice:()=>{},window:{confirm:()=>true},confirmAction:async()=>true,selectPatient:async()=>{},showChartSection:()=>{}});
  vm.runInContext(sources[kind],context);
  if(kind==='order')vm.runInContext("labSelected='o1'",context);else vm.runInContext("billingSelected='a1'",context);
  context.openBillingEditor=html=>{host.innerHTML=html;};
@@ -48,7 +48,7 @@ function fixture(kind){
   const html=f.run(kind==='order'?'orderDiagnosisDraftRecovery(workspace.labs.orders[0])':'accountDiagnosisDraftRecovery(workspace.billing.accounts[0])');assert.match(html,/not part of this finalized/);assert.match(html,/<textarea readonly>/);assert.match(html,/Retained &lt;draft/);assert.match(html,/Discard unapplied/);
   f.context.showOrder=()=>{};f.context.showBillingAccount=()=>{};
   const button={dataset:kind==='order'?{discardOrderLinkDraft:'o1'}:{discardAccountLinkDraft:'a1'}};
-  for(const handler of f.handlers.click)handler({target:{closest:selector=>selector===(kind==='order'?'[data-discard-order-link-draft]':'[data-discard-account-link-draft]')?button:null},preventDefault(){}});
+  for(const handler of f.handlers.click)await handler({target:{closest:selector=>selector===(kind==='order'?'[data-discard-order-link-draft]':'[data-discard-account-link-draft]')?button:null},preventDefault(){}});
   assert.equal(f.run(kind==='order'?'orderDiagnosisLinkDrafts.size':'accountDiagnosisLinkDrafts.size'),0);assert.equal(JSON.stringify(entity.diagnosis_snapshot),snapshot);
  }console.log('PASS remotely finalized records expose copy/discard recovery without changing saved links');
  for(const kind of ['order','account']){
