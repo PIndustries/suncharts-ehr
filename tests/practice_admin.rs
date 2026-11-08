@@ -27,10 +27,7 @@ async fn setup() -> Fixture {
     let schema = format!("practice_admin_{}", Uuid::new_v4().simple());
     let schema_clone = schema.clone();
     let base = PgPool::connect(&url).await.unwrap();
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
-        .execute(&base)
-        .await
-        .unwrap();
+    suncharts_engine::test_db::create_schema(&base, &schema).await;
     base.close().await;
     let db = PgPoolOptions::new()
         .max_connections(8)

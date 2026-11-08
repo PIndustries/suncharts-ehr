@@ -74,6 +74,8 @@ pub mod specialty_workspace;
 pub mod stedi;
 pub mod sun_tools;
 pub mod terminology;
+#[doc(hidden)]
+pub mod test_db;
 pub mod visit_diagnoses;
 pub mod workflow_dispatcher;
 pub mod workflow_evidence;

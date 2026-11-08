@@ -1380,10 +1380,7 @@ mod tests {
             std::env::var("TEST_DATABASE_URL").expect("disposable TEST_DATABASE_URL required");
         let schema = format!("payments_test_{}", Uuid::new_v4().simple());
         let admin = PgPool::connect(&url).await.unwrap();
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
-            .execute(&admin)
-            .await
-            .unwrap();
+        crate::test_db::create_schema(&admin, &schema).await;
         admin.close().await;
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(8)

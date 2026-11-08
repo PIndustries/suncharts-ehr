@@ -22,10 +22,7 @@ async fn setup() -> (PgPool, Router, Actor) {
     let url = std::env::var("TEST_DATABASE_URL").expect("disposable database required");
     let schema = format!("fhir_clinical_write_test_{}", Uuid::new_v4().simple());
     let base = PgPool::connect(&url).await.unwrap();
-    sqlx::query(&format!("CREATE SCHEMA {schema}"))
-        .execute(&base)
-        .await
-        .unwrap();
+    suncharts_engine::test_db::create_schema(&base, &schema).await;
     base.close().await;
     let db = PgPoolOptions::new()
         .max_connections(5)

@@ -55,10 +55,7 @@ impl Fixture {
             std::env::var("TEST_DATABASE_URL").expect("disposable TEST_DATABASE_URL required");
         let schema = format!("connect_updates_{}", Uuid::new_v4().simple());
         let initial = PgPool::connect(&url).await.unwrap();
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
-            .execute(&initial)
-            .await
-            .unwrap();
+        suncharts_engine::test_db::create_schema(&initial, &schema).await;
         initial.close().await;
         let db = PgPoolOptions::new()
             .max_connections(5)
