@@ -60,6 +60,8 @@ pub mod settlements;
 pub mod sftp_transport;
 pub mod specialty_workspace;
 pub mod stedi;
+#[doc(hidden)]
+pub mod test_db;
 pub mod visit_diagnoses;
 pub mod x12;
 
