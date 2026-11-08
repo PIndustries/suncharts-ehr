@@ -560,7 +560,7 @@ async fn policy_changes_terminate_streams_and_audit_failure_rolls_back_permissio
             .is_some()
     );
     let connect_token = Uuid::new_v4().to_string();
-    sqlx::query("INSERT INTO connect_identity_sessions(token_hash,tenant_id,user_id,grant_id,issuer,audience,expires_at) VALUES($1,$2,$3,$4,'https://connect.example.test',$5,now()+interval '1 hour')").bind(hash(&connect_token)).bind(f.tenant).bind(staff).bind(Uuid::new_v4()).bind(ORIGIN).execute(&f.db).await.unwrap();
+    sqlx::query("INSERT INTO connect_identity_sessions(token_hash,tenant_id,issuer_tenant_id,user_id,grant_id,issuer,audience,expires_at) VALUES($1,$2,$3,$4,$5,'https://connect.example.test',$6,now()+interval '1 hour')").bind(hash(&connect_token)).bind(f.tenant).bind(f.tenant).bind(staff).bind(Uuid::new_v4()).bind(ORIGIN).execute(&f.db).await.unwrap();
     let mut flags = catalog["defaults"].clone();
     flags["billing"] = json!({"view":false,"create":false,"edit":false,"delete":false});
     assert_eq!(
