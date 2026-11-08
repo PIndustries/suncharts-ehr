@@ -10,7 +10,7 @@ use crate::{
 };
 use axum::{
     extract::{Path, Query, State as ExtractState},
-    http::{header, HeaderMap},
+    http::{header, HeaderMap, Method},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -23,6 +23,8 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 const KINDS: &[&str] = &[
+    "eligibility_query",
+    "payment_request",
     "availability_query",
     "slot_hold",
     "appointment_booking",
@@ -75,6 +77,10 @@ struct CreateDispatch {
 struct DispatchAction {
     action: String,
     reason: String,
+    #[serde(default)]
+    privacy_preview_id: Option<Uuid>,
+    #[serde(default)]
+    privacy_approved: bool,
 }
 #[derive(Deserialize)]
 struct DispatchQuery {
@@ -130,14 +136,63 @@ struct AppointmentActionInput {
 struct IntakeInput {
     #[serde(default)]
     appointment_id: Option<Uuid>,
+    #[serde(default)]
+    form_step_key: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ClaudeInput {
+struct EligibilityInput {
+    coverage_id: Uuid,
+    request: Value,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PaymentInput {
+    account_id: Uuid,
+    expected_version: i64,
+    amount_cents: i64,
+}
+fn eligibility_request(
+    input: &Value,
+    request_id: Uuid,
+) -> Result<crate::claimmd_eligibility::EligibilityRequest> {
+    let mut value = input.clone();
+    let object = value
+        .as_object_mut()
+        .ok_or(Error::Invalid("eligibility request must be an object"))?;
+    object.insert("request_id".into(), json!(request_id));
+    serde_json::from_value(value)
+        .map_err(|_| Error::Invalid("invalid structured eligibility request"))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AiDraftInput {
     #[serde(default)]
     integration_id: Option<Uuid>,
     instruction: String,
     source_text: String,
+}
+impl AiDraftInput {
+    fn validate(&self) -> Result<()> {
+        if self.instruction.trim().is_empty()
+            || self.instruction.len() > 4000
+            || self.instruction.contains('\0')
+        {
+            return Err(Error::Invalid(
+                "Sun instruction is missing or exceeds 4000 UTF-8 bytes",
+            ));
+        }
+        if self.source_text.trim().is_empty()
+            || self.source_text.len() > 65_536
+            || self.source_text.contains('\0')
+        {
+            return Err(Error::Invalid(
+                "Sun source must be nonempty text of at most 65536 UTF-8 bytes",
+            ));
+        }
+        Ok(())
+    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -191,6 +246,46 @@ struct StoredDispatch {
     downstream_id: Option<Uuid>,
 }
 
+#[derive(sqlx::FromRow)]
+struct DispatchStep {
+    instance_status: String,
+    kind: String,
+    manual_approval: bool,
+    assigned_role: Option<String>,
+    state: String,
+    context: Value,
+    definition: Value,
+}
+
+#[derive(sqlx::FromRow)]
+struct ReviewBinding {
+    instance_status: String,
+    patient_id: Option<Uuid>,
+    definition_version: i64,
+    kind: String,
+    manual_approval: bool,
+    step_state: String,
+    dispatch_id: Option<String>,
+}
+
+struct AiPrivacyApproval {
+    preview_id: Uuid,
+    patient_id: Option<Uuid>,
+    revision: Value,
+}
+
+fn is_ai(kind: &str) -> bool {
+    matches!(kind, "ai_extract_draft" | "ai_response_draft")
+}
+
+fn ai_purpose(kind: &str) -> Result<&'static str> {
+    match kind {
+        "ai_extract_draft" => Ok("structured_extraction"),
+        "ai_response_draft" => Ok("draft_response"),
+        _ => Err(Error::Invalid("privacy preview requires a Sun draft node")),
+    }
+}
+
 enum Outcome {
     Completed {
         result: Value,
@@ -217,14 +312,31 @@ async fn event(
 }
 
 async fn snapshot(tx: &mut Transaction<'_, Postgres>, actor: &Actor, id: Uuid) -> Result<Value> {
-    sqlx::query_scalar("SELECT to_jsonb(d)-'tenant_id'-'input_digest' FROM workflow_dispatches d WHERE tenant_id=$1 AND id=$2")
-        .bind(actor.tenant_id).bind(id).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)
+    let value = sqlx::query_scalar("SELECT to_jsonb(d)-'tenant_id'-'input_digest' FROM workflow_dispatches d WHERE tenant_id=$1 AND id=$2")
+        .bind(actor.tenant_id).bind(id).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)?;
+    Ok(public_dispatch(value))
+}
+
+fn public_dispatch(mut value: Value) -> Value {
+    if value["kind"].as_str().is_some_and(is_ai) {
+        // Original source remains local clinical data. Reviewers obtain the
+        // exact sanitized request through the actor-bound privacy preview route.
+        if let Some(object) = value.as_object_mut() {
+            object.remove("input");
+            object.insert("privacy_review_required".into(), json!(true));
+        }
+    }
+    value
 }
 
 pub fn router() -> Router<State> {
     Router::new()
         .route("/api/v1/workflow-dispatches", get(list))
         .route("/api/v1/workflow-dispatches/{id}", get(detail))
+        .route(
+            "/api/v1/workflow-dispatches/{id}/privacy-preview",
+            post(privacy_preview),
+        )
         .route("/api/v1/workflow-dispatches/{id}/actions", post(action))
         .route(
             "/api/v1/care-pathways/instances/{instance}/steps/{step}/dispatch",
@@ -279,9 +391,10 @@ async fn create(
         tx.commit().await?;
         return Ok(reply(value));
     }
-    let row: Option<(String, String, bool, Option<String>, String)> = sqlx::query_as(
-        "SELECT i.status,s.kind,s.manual_approval,s.assigned_role,s.state
+    let row: Option<DispatchStep> = sqlx::query_as(
+        "SELECT i.status AS instance_status,s.kind,s.manual_approval,s.assigned_role,s.state,i.context,r.definition
          FROM care_pathway_instances i JOIN care_pathway_steps s ON s.tenant_id=i.tenant_id AND s.instance_id=i.id
+         JOIN care_pathway_definition_revisions r ON r.tenant_id=i.tenant_id AND r.definition_id=i.definition_id AND r.version=i.definition_version
          WHERE i.tenant_id=$1 AND i.id=$2 AND s.step_key=$3 FOR UPDATE OF s",
     )
     .bind(actor.tenant_id)
@@ -289,28 +402,40 @@ async fn create(
     .bind(&step)
     .fetch_optional(&mut *tx)
     .await?;
-    let (instance_status, kind, manual, assigned, step_status) = row.ok_or(Error::NotFound)?;
-    if instance_status != "active"
+    let row = row.ok_or(Error::NotFound)?;
+    let kind = &row.kind;
+    if row.instance_status != "active"
         || !KINDS.contains(&kind.as_str())
-        || !manual
-        || !["ready", "in_progress"].contains(&step_status.as_str())
+        || !row.manual_approval
+        || !["ready", "in_progress"].contains(&row.state.as_str())
     {
         return Err(Error::Conflict(
             "workflow step is not ready for reviewed dispatch",
         ));
     }
     if !matches!(actor.role, Role::Owner | Role::PartnerSupport)
-        && assigned
+        && row
+            .assigned_role
             .as_deref()
             .is_some_and(|value| value != role_key(&actor.role))
     {
         return Err(Error::Forbidden);
     }
-    validate_input(&kind, &input.input)?;
+    let prepared_input = if matches!(kind.as_str(), "ai_extract_draft" | "ai_response_draft")
+        && input
+            .input
+            .as_object()
+            .is_some_and(|object| object.is_empty())
+    {
+        prepare_ai_input(kind, &step, &row.definition, &row.context)?
+    } else {
+        input.input
+    };
+    validate_input(kind, &prepared_input)?;
     let id = Uuid::new_v4();
     sqlx::query("INSERT INTO workflow_dispatches(tenant_id,id,request_id,pathway_instance_id,step_key,kind,input,input_digest,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)")
-        .bind(actor.tenant_id).bind(id).bind(input.request_id).bind(instance).bind(&step).bind(&kind)
-        .bind(&input.input).bind(&digest).bind(actor.sub).execute(&mut *tx).await?;
+        .bind(actor.tenant_id).bind(id).bind(input.request_id).bind(instance).bind(&step).bind(kind)
+        .bind(&prepared_input).bind(&digest).bind(actor.sub).execute(&mut *tx).await?;
     sqlx::query("UPDATE care_pathway_steps SET state='awaiting_approval',version=version+1,evidence=jsonb_build_object('workflow_dispatch_id',$4::uuid,'status','pending_review','human_review_required',true),updated_by=$5,updated_at=now() WHERE tenant_id=$1 AND instance_id=$2 AND step_key=$3")
         .bind(actor.tenant_id).bind(instance).bind(&step).bind(id).bind(actor.sub).execute(&mut *tx).await?;
     event(
@@ -330,8 +455,72 @@ async fn create(
     Ok(reply(value))
 }
 
+fn prepare_ai_input(
+    kind: &str,
+    step_key: &str,
+    definition: &Value,
+    context: &Value,
+) -> Result<Value> {
+    let step = definition
+        .get("steps")
+        .and_then(Value::as_array)
+        .and_then(|steps| {
+            steps
+                .iter()
+                .find(|step| step.get("key").and_then(Value::as_str) == Some(step_key))
+        })
+        .ok_or(Error::Conflict(
+            "Sun step is absent from the instance definition revision",
+        ))?;
+    let step: crate::care_pathways::StepDefinition = serde_json::from_value(step.clone())
+        .map_err(|_| Error::Conflict("saved Sun step configuration is invalid"))?;
+    if step.kind != kind || !step.manual_approval {
+        return Err(Error::Conflict(
+            "saved Sun step must match the reviewed instance step",
+        ));
+    }
+    let config = step.ai.ok_or(Error::Invalid(
+        "configure the Sun connection, instruction and source field before preparing this node",
+    ))?;
+    config.validate()?;
+    let source = context
+        .pointer(&config.source_field)
+        .ok_or(Error::Invalid(
+            "configured Sun source field is absent from this workflow instance context",
+        ))?
+        .as_str()
+        .ok_or(Error::Invalid(
+            "configured Sun source field must contain text, not an object, list or other value",
+        ))?;
+    let prepared = AiDraftInput {
+        integration_id: Some(config.integration_id),
+        instruction: config.instruction.trim().to_owned(),
+        source_text: source.to_owned(),
+    };
+    prepared.validate()?;
+    Ok(
+        json!({"integration_id":prepared.integration_id,"instruction":prepared.instruction,"source_text":prepared.source_text}),
+    )
+}
+
 fn validate_input(kind: &str, input: &Value) -> Result<()> {
     match kind {
+        "eligibility_query" => {
+            let value: EligibilityInput = serde_json::from_value(input.clone())
+                .map_err(|_| Error::Invalid("invalid eligibility input"))?;
+            eligibility_request(&value.request, Uuid::nil())?;
+            return Ok(());
+        }
+        "payment_request" => {
+            let value: PaymentInput = serde_json::from_value(input.clone())
+                .map_err(|_| Error::Invalid("invalid payment input"))?;
+            if value.expected_version < 1 || !(50..=100000000).contains(&value.amount_cents) {
+                return Err(Error::Invalid(
+                    "payment amount or account version is invalid",
+                ));
+            }
+            return Ok(());
+        }
         "availability_query" => {
             serde_json::from_value::<AvailabilityInput>(input.clone()).map(|_| ())
         }
@@ -360,7 +549,9 @@ fn validate_input(kind: &str, input: &Value) -> Result<()> {
             Ok(())
         }
         "ai_extract_draft" | "ai_response_draft" => {
-            serde_json::from_value::<ClaudeInput>(input.clone()).map(|_| ())
+            let input: AiDraftInput = serde_json::from_value(input.clone())
+                .map_err(|_| Error::Invalid("invalid Sun draft input"))?;
+            return input.validate();
         }
         _ => return Err(Error::Invalid("unsupported workflow dispatch kind")),
     }
@@ -397,7 +588,9 @@ async fn list(
     )
     .await?;
     tx.commit().await?;
-    Ok(reply(json!({"items":items})))
+    Ok(reply(
+        json!({"items":items.into_iter().map(public_dispatch).collect::<Vec<_>>()}),
+    ))
 }
 
 async fn detail(
@@ -436,6 +629,114 @@ async fn locked(
     .ok_or(Error::NotFound)
 }
 
+fn bound_revision(row: &DispatchRow, binding: &ReviewBinding) -> Result<Value> {
+    let dispatch_id = row.id.to_string();
+    if binding.instance_status != "active"
+        || binding.kind != row.kind
+        || !binding.manual_approval
+        || binding.step_state != "awaiting_approval"
+        || binding.dispatch_id.as_deref() != Some(dispatch_id.as_str())
+    {
+        return Err(Error::Conflict(
+            "workflow run or reviewed step changed; prepare the current step again",
+        ));
+    }
+    Ok(json!({
+        "dispatch_id":row.id,
+        "dispatch_version":row.version,
+        "pathway_instance_id":row.instance,
+        "definition_version":binding.definition_version,
+        "step_key":row.step,
+        "kind":row.kind,
+    }))
+}
+
+async fn review_binding(
+    tx: &mut Transaction<'_, Postgres>,
+    actor: &Actor,
+    row: &DispatchRow,
+) -> Result<ReviewBinding> {
+    let binding: Option<ReviewBinding> = sqlx::query_as(
+        "SELECT i.status AS instance_status,i.patient_id,i.definition_version,s.kind,s.manual_approval,
+         s.state AS step_state,s.evidence->>'workflow_dispatch_id' AS dispatch_id
+         FROM care_pathway_instances i JOIN care_pathway_steps s ON s.tenant_id=i.tenant_id AND s.instance_id=i.id
+         WHERE i.tenant_id=$1 AND i.id=$2 AND s.step_key=$3 FOR SHARE OF i,s",
+    )
+    .bind(actor.tenant_id)
+    .bind(row.instance)
+    .bind(&row.step)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let binding = binding.ok_or(Error::NotFound)?;
+    bound_revision(row, &binding)?;
+    Ok(binding)
+}
+
+fn approved_privacy_id(input: &DispatchAction) -> Result<Uuid> {
+    input
+        .privacy_preview_id
+        .filter(|id| !id.is_nil() && input.privacy_approved)
+        .ok_or(Error::Invalid(
+            "review and approve the exact Sun privacy preview before execution",
+        ))
+}
+
+async fn privacy_preview(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    reviewer(&actor)?;
+    let expected = crate::expected(&headers)?;
+    let mut tx = db(&state)?.begin().await?;
+    let row = locked(&mut tx, &actor, id).await?;
+    if row.status != "pending_review" || row.version != expected {
+        return Err(Error::Conflict(
+            "workflow dispatch changed or is no longer awaiting review",
+        ));
+    }
+    dispatch_permission(&state, &actor, &row.kind).await?;
+    dispatch_oauth_scope(&state, &actor, &headers, &row).await?;
+    let purpose = ai_purpose(&row.kind)?;
+    let binding = review_binding(&mut tx, &actor, &row).await?;
+    let revision = bound_revision(&row, &binding)?;
+    let value: AiDraftInput = serde_json::from_value(row.input.clone())
+        .map_err(|_| Error::Invalid("invalid Sun draft input"))?;
+    value.validate()?;
+    let preview = crate::claude_adapter::preview_for_workflow(
+        &state,
+        &actor,
+        row.id,
+        value.integration_id,
+        purpose,
+        value.instruction,
+        value.source_text,
+        binding.patient_id,
+        revision,
+    )
+    .await?;
+    // Only references enter events: source, sanitized text and local replacement
+    // mappings are never event evidence or audit payloads.
+    event(
+        &mut tx,
+        &actor,
+        id,
+        "privacy_preview_prepared",
+        json!({"privacy_preview_id":preview["id"]}),
+    )
+    .await?;
+    audit(
+        &mut tx,
+        &actor,
+        "practice.workflow_dispatch.privacy_preview",
+        id,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(reply(preview))
+}
+
 async fn action(
     actor: Actor,
     ExtractState(state): ExtractState<State>,
@@ -451,7 +752,15 @@ async fn action(
     if row.version != expected {
         return Err(Error::Conflict("workflow dispatch changed; reload"));
     }
+    if input.action == "approve" {
+        dispatch_permission(&state, &actor, &row.kind).await?;
+        dispatch_oauth_scope(&state, &actor, &headers, &row).await?;
+        review_binding(&mut tx, &actor, &row).await?;
+    }
     if input.action == "confirm" && row.status == "downstream_review" {
+        dispatch_permission(&state, &actor, &row.kind).await?;
+        dispatch_oauth_scope(&state, &actor, &headers, &row).await?;
+        review_binding(&mut tx, &actor, &row).await?;
         let kind = row
             .downstream_kind
             .as_deref()
@@ -499,6 +808,33 @@ async fn action(
     if input.action != "approve" || row.status != "pending_review" {
         return Err(Error::Conflict("invalid workflow dispatch action"));
     }
+    let privacy = if is_ai(&row.kind) {
+        let preview_id = approved_privacy_id(&input)?;
+        let binding = review_binding(&mut tx, &actor, &row).await?;
+        let revision = bound_revision(&row, &binding)?;
+        let value: AiDraftInput = serde_json::from_value(row.input.clone())
+            .map_err(|_| Error::Invalid("invalid Sun draft input"))?;
+        crate::claude_adapter::validate_workflow_preview(
+            &state,
+            &actor,
+            row.id,
+            preview_id,
+            value.integration_id,
+            ai_purpose(&row.kind)?,
+            &value.instruction,
+            &value.source_text,
+            binding.patient_id,
+            &revision,
+        )
+        .await?;
+        Some(AiPrivacyApproval {
+            preview_id,
+            patient_id: binding.patient_id,
+            revision,
+        })
+    } else {
+        None
+    };
     sqlx::query("UPDATE workflow_dispatches SET status='executing',reviewed_by=$3,review_reason=$4,reviewed_at=now(),version=version+1,updated_at=now() WHERE tenant_id=$1 AND id=$2")
         .bind(actor.tenant_id).bind(id).bind(actor.sub).bind(input.reason.trim()).execute(&mut *tx).await?;
     event(
@@ -512,7 +848,7 @@ async fn action(
     audit(&mut tx, &actor, "practice.workflow_dispatch.approved", id).await?;
     tx.commit().await?;
 
-    let outcome = execute(state.clone(), &actor, &row).await;
+    let outcome = execute(state.clone(), &actor, &row, privacy).await;
     finish(state, &actor, row, outcome).await
 }
 
@@ -523,7 +859,8 @@ async fn verify_downstream(
     id: Uuid,
 ) -> Result<()> {
     let accepted=match kind {
-        "claude_draft"=>sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM claude_drafts WHERE tenant_id=$1 AND id=$2 AND status='approved')").bind(actor.tenant_id).bind(id).fetch_one(&mut **tx).await?,
+        "payment"=>sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM payment_attempts WHERE tenant_id=$1 AND id=$2 AND status='paid' AND paid_entry_id IS NOT NULL AND refunded_cents=0)").bind(actor.tenant_id).bind(id).fetch_one(&mut **tx).await?,
+        "ai_draft" | "claude_draft"=>sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM claude_drafts WHERE tenant_id=$1 AND id=$2 AND status='approved')").bind(actor.tenant_id).bind(id).fetch_one(&mut **tx).await?,
         "gmail_draft"=>sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM gmail_outbound_drafts WHERE tenant_id=$1 AND id=$2 AND status='sent')").bind(actor.tenant_id).bind(id).fetch_one(&mut **tx).await?,
         "ringcentral_draft"=>sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM ringcentral_outbound_drafts WHERE tenant_id=$1 AND id=$2 AND status='accepted')").bind(actor.tenant_id).bind(id).fetch_one(&mut **tx).await?,
         _=>false,
@@ -537,8 +874,87 @@ async fn verify_downstream(
     }
 }
 
-async fn execute(state: State, actor: &Actor, row: &DispatchRow) -> Result<Outcome> {
+async fn dispatch_permission(state: &State, actor: &Actor, kind: &str) -> Result<()> {
+    let (resource, operation) = match kind {
+        "eligibility_query" | "payment_request" => ("billing", "create"),
+        "availability_query" => ("scheduling", "view"),
+        "slot_hold" | "appointment_booking" | "intake_request" => ("scheduling", "create"),
+        "appointment_reschedule" => ("scheduling", "edit"),
+        "appointment_cancel" => ("scheduling", "delete"),
+        "communication_send" => ("communications", "create"),
+        "ai_extract_draft" | "ai_response_draft" => ("ai", "create"),
+        _ => return Err(Error::Invalid("unsupported workflow dispatch kind")),
+    };
+    crate::access_policies::require_native(state, actor, resource, operation).await
+}
+
+async fn dispatch_oauth_scope(
+    state: &State,
+    actor: &Actor,
+    headers: &HeaderMap,
+    row: &DispatchRow,
+) -> Result<()> {
+    let Some(token) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|value| value.starts_with("sce_at_"))
+    else {
+        return Ok(());
+    };
+    // Internal native helpers do not pass through HTTP authentication again.
+    // Check the downstream scope before approving or creating a privacy row;
+    // permission to edit a workflow alone never grants scheduling access.
+    let (method, route) = match row.kind.as_str() {
+        "eligibility_query" => (
+            Method::POST,
+            "/api/v1/patients/{patient}/coverages/{coverage}/claimmd-eligibility",
+        ),
+        "payment_request" => (Method::POST, "/api/v1/billing/accounts/{id}/payments"),
+        "availability_query" => (Method::GET, "/api/v1/scheduling/availability"),
+        "slot_hold" => (Method::POST, "/api/v1/scheduling/holds"),
+        // Intake is a new appointment-linked scheduling artifact, so it shares
+        // the scheduling write boundary even though its UI route is nested.
+        "appointment_booking" | "intake_request" => {
+            (Method::POST, "/api/v1/scheduling/appointments")
+        }
+        "appointment_reschedule" => (
+            Method::POST,
+            "/api/v1/scheduling/appointments/{id}/reschedule",
+        ),
+        "appointment_cancel" => (Method::POST, "/api/v1/scheduling/appointments/{id}/cancel"),
+        "communication_send" if row.input["provider"] == "ringcentral" => (
+            Method::POST,
+            "/api/v1/integrations/ringcentral/{id}/outbound",
+        ),
+        "communication_send" => (
+            Method::POST,
+            "/api/v1/integrations/{id}/gmail/outbound-drafts",
+        ),
+        "ai_extract_draft" | "ai_response_draft" => (Method::POST, "/api/v1/ai/drafts"),
+        _ => return Err(Error::Invalid("unsupported workflow dispatch kind")),
+    };
+    let checked = crate::oauth::authenticate(state, token, &method, route).await?;
+    if checked.tenant_id != actor.tenant_id
+        || checked.sub != actor.sub
+        || role_key(&checked.role) != role_key(&actor.role)
+    {
+        return Err(Error::Forbidden);
+    }
+    Ok(())
+}
+
+async fn execute(
+    state: State,
+    actor: &Actor,
+    row: &DispatchRow,
+    privacy: Option<AiPrivacyApproval>,
+) -> Result<Outcome> {
+    dispatch_permission(&state, actor, &row.kind).await?;
+    execution_binding(&state, actor, row).await?;
     match row.kind.as_str() {
+        "eligibility_query" => eligibility(&state, actor, row).await,
+        "payment_request" => payment_request(&state, actor, row).await,
         "availability_query" => availability(&state, actor, row.instance, &row.input).await,
         "slot_hold" => hold(&state, actor, row.id, row.instance, &row.input).await,
         "appointment_booking" => book(&state, actor, row.id, row.instance, &row.input).await,
@@ -546,9 +962,35 @@ async fn execute(state: State, actor: &Actor, row: &DispatchRow) -> Result<Outco
         "appointment_cancel" => cancel(&state, actor, row.instance, &row.input).await,
         "intake_request" => intake(&state, actor, row.instance, &row.input).await,
         "communication_send" => communication_draft(&state, actor, row).await,
-        "ai_extract_draft" | "ai_response_draft" => claude_draft(&state, actor, row).await,
+        "ai_extract_draft" | "ai_response_draft" => {
+            let privacy = privacy.ok_or(Error::Invalid("Sun privacy approval is required"))?;
+            ai_draft(&state, actor, row, privacy).await
+        }
         _ => Err(Error::Invalid("unsupported workflow dispatch kind")),
     }
+}
+
+async fn execution_binding(state: &State, actor: &Actor, row: &DispatchRow) -> Result<()> {
+    let mut tx = db(state)?.begin().await?;
+    let current: Option<(String, i64)> = sqlx::query_as(
+        "SELECT status,version FROM workflow_dispatches WHERE tenant_id=$1 AND id=$2 FOR SHARE",
+    )
+    .bind(actor.tenant_id)
+    .bind(row.id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if !current.is_some_and(|(status, version)| {
+        status == "executing" && row.version.checked_add(1) == Some(version)
+    }) {
+        return Err(Error::Conflict(
+            "workflow dispatch is no longer executing this approval",
+        ));
+    }
+    review_binding(&mut tx, actor, row).await?;
+    // Native operations retain their own record/version checks. Do not hold a
+    // database transaction across an external provider request.
+    tx.commit().await?;
+    Ok(())
 }
 
 async fn finish(
@@ -589,8 +1031,8 @@ async fn finish(
         Ok(Outcome::Downstream { kind, id, result }) => {
             sqlx::query("UPDATE workflow_dispatches SET status='downstream_review',downstream_kind=$3,downstream_id=$4,result=$5,version=version+1,updated_at=now() WHERE tenant_id=$1 AND id=$2 AND status='executing'")
                 .bind(actor.tenant_id).bind(row.id).bind(kind).bind(id).bind(&result).execute(&mut *tx).await?;
-            sqlx::query("UPDATE care_pathway_steps SET evidence=evidence||jsonb_build_object('status','downstream_review','downstream_kind',$4::text,'downstream_id',$5::uuid),version=version+1,updated_by=$6,updated_at=now() WHERE tenant_id=$1 AND instance_id=$2 AND step_key=$3")
-                .bind(actor.tenant_id).bind(row.instance).bind(&row.step).bind(kind).bind(id).bind(actor.sub).execute(&mut *tx).await?;
+            sqlx::query("UPDATE care_pathway_steps SET evidence=evidence||jsonb_build_object('status','downstream_review','downstream_kind',$4::text,'downstream_id',$5::uuid),version=version+1,updated_by=$6,updated_at=now() WHERE tenant_id=$1 AND instance_id=$2 AND step_key=$3 AND state='awaiting_approval' AND evidence->>'workflow_dispatch_id'=$7 AND EXISTS(SELECT 1 FROM care_pathway_instances i WHERE i.tenant_id=$1 AND i.id=$2 AND i.status='active')")
+                .bind(actor.tenant_id).bind(row.instance).bind(&row.step).bind(kind).bind(id).bind(actor.sub).bind(row.id.to_string()).execute(&mut *tx).await?;
             event(
                 &mut tx,
                 actor,
@@ -603,8 +1045,8 @@ async fn finish(
         Err(_) => {
             sqlx::query("UPDATE workflow_dispatches SET status='failed',failure_code='native_operation_failed',version=version+1,updated_at=now() WHERE tenant_id=$1 AND id=$2 AND status='executing'")
                 .bind(actor.tenant_id).bind(row.id).execute(&mut *tx).await?;
-            sqlx::query("UPDATE care_pathway_steps SET state='in_progress',evidence=evidence||jsonb_build_object('status','failed','failure_code','native_operation_failed'),version=version+1,updated_by=$4,updated_at=now() WHERE tenant_id=$1 AND instance_id=$2 AND step_key=$3")
-                .bind(actor.tenant_id).bind(row.instance).bind(&row.step).bind(actor.sub).execute(&mut *tx).await?;
+            sqlx::query("UPDATE care_pathway_steps SET state='in_progress',evidence=evidence||jsonb_build_object('status','failed','failure_code','native_operation_failed'),version=version+1,updated_by=$4,updated_at=now() WHERE tenant_id=$1 AND instance_id=$2 AND step_key=$3 AND state='awaiting_approval' AND evidence->>'workflow_dispatch_id'=$5 AND EXISTS(SELECT 1 FROM care_pathway_instances i WHERE i.tenant_id=$1 AND i.id=$2 AND i.status='active')")
+                .bind(actor.tenant_id).bind(row.instance).bind(&row.step).bind(actor.sub).bind(row.id.to_string()).execute(&mut *tx).await?;
             event(
                 &mut tx,
                 actor,
@@ -633,7 +1075,7 @@ async fn complete_step(
     row: &DispatchRow,
     result: Value,
 ) -> Result<()> {
-    let changed=sqlx::query("UPDATE care_pathway_steps SET state='completed',evidence=evidence||jsonb_build_object('status','completed','result',$4::jsonb),version=version+1,updated_by=$5,updated_at=now() WHERE tenant_id=$1 AND instance_id=$2 AND step_key=$3 AND evidence->>'workflow_dispatch_id'=$6")
+    let changed=sqlx::query("UPDATE care_pathway_steps SET state='completed',evidence=evidence||jsonb_build_object('status','completed','result',$4::jsonb),version=version+1,updated_by=$5,updated_at=now() WHERE tenant_id=$1 AND instance_id=$2 AND step_key=$3 AND state='awaiting_approval' AND evidence->>'workflow_dispatch_id'=$6 AND EXISTS(SELECT 1 FROM care_pathway_instances i WHERE i.tenant_id=$1 AND i.id=$2 AND i.status='active')")
         .bind(actor.tenant_id).bind(row.instance).bind(&row.step).bind(result).bind(actor.sub).bind(row.id.to_string()).execute(&mut **tx).await?;
     if changed.rows_affected() == 1 {
         sqlx::query("INSERT INTO care_pathway_events(tenant_id,instance_id,step_key,event_type,actor_id,reason,evidence) VALUES($1,$2,$3,'step.dispatch_completed',$4,'Reviewed native workflow operation completed',$5)")
@@ -673,6 +1115,97 @@ async fn pathway_patient(
         (None, Some(provided)) => Ok(provided),
         (None, None) => Err(Error::Invalid("workflow requires a patient")),
     }
+}
+
+async fn eligibility(state: &State, actor: &Actor, row: &DispatchRow) -> Result<Outcome> {
+    let value: EligibilityInput = serde_json::from_value(row.input.clone())
+        .map_err(|_| Error::Invalid("invalid eligibility input"))?;
+    let mut tx = db(state)?.begin().await?;
+    let patient = pathway_patient(&mut tx, actor, row.instance, None).await?;
+    tx.commit().await?;
+    let request = eligibility_request(&value.request, row.id)?;
+    execution_binding(state, actor, row).await?;
+    let result = crate::claimmd_eligibility::run_eligibility(
+        state,
+        actor,
+        patient,
+        value.coverage_id,
+        request,
+    )
+    .await?;
+    // A returned response is evidence for staff review, never a coverage or
+    // provider-participation approval. Keep benefit contents in their native record.
+    Ok(Outcome::Completed {
+        result: json!({"eligibility_id":result["id"],"status":result["status"],"coverage_id":value.coverage_id,"requires_benefit_review":true}),
+        one_time: None,
+    })
+}
+
+async fn payment_request(state: &State, actor: &Actor, row: &DispatchRow) -> Result<Outcome> {
+    let value: PaymentInput = serde_json::from_value(row.input.clone())
+        .map_err(|_| Error::Invalid("invalid payment input"))?;
+    let mut tx = db(state)?.begin().await?;
+    let (patient,visit,appointment): (Uuid,Option<Uuid>,Option<Uuid>) = sqlx::query_as(
+        "SELECT b.patient_id,b.visit_id,v.appointment_id FROM billing_accounts b LEFT JOIN visits v ON v.tenant_id=b.tenant_id AND v.id=b.visit_id AND v.patient_id=b.patient_id WHERE b.tenant_id=$1 AND b.id=$2 FOR SHARE OF b",
+    )
+    .bind(actor.tenant_id)
+    .bind(value.account_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(Error::NotFound)?;
+    let (run_patient,run_visit,run_appointment): (Option<Uuid>,Option<Uuid>,Option<Uuid>) = sqlx::query_as(
+        "SELECT patient_id,visit_id,appointment_id FROM care_pathway_instances WHERE tenant_id=$1 AND id=$2 AND status='active' FOR SHARE",
+    ).bind(actor.tenant_id).bind(row.instance).fetch_optional(&mut *tx).await?.ok_or(Error::Conflict("workflow run is no longer active"))?;
+    payment_context(
+        run_patient,
+        run_visit,
+        run_appointment,
+        patient,
+        visit,
+        appointment,
+    )?;
+    tx.commit().await?;
+    execution_binding(state, actor, row).await?;
+    let result = crate::payments::create_native(
+        state,
+        actor,
+        value.account_id,
+        value.expected_version,
+        crate::payments::NewPayment {
+            request_id: row.id,
+            amount_cents: value.amount_cents,
+        },
+    )
+    .await?;
+    let payment = &result["payment"];
+    let id = payment["id"]
+        .as_str()
+        .and_then(|v| Uuid::parse_str(v).ok())
+        .ok_or(Error::Invalid("native payment response missing identifier"))?;
+    Ok(Outcome::Downstream {
+        kind: "payment",
+        id,
+        result: json!({"payment_id":id,"account_id":value.account_id,"status":payment["status"],"checkout_url":payment["checkout_url"],"test_mode":payment["test_mode"]}),
+    })
+}
+
+fn payment_context(
+    run_patient: Option<Uuid>,
+    run_visit: Option<Uuid>,
+    run_appointment: Option<Uuid>,
+    account_patient: Uuid,
+    account_visit: Option<Uuid>,
+    account_appointment: Option<Uuid>,
+) -> Result<()> {
+    if run_patient != Some(account_patient)
+        || run_visit.is_some_and(|visit| account_visit != Some(visit))
+        || run_appointment.is_some_and(|appointment| account_appointment != Some(appointment))
+    {
+        return Err(Error::Conflict(
+            "payment account does not match the workflow patient and linked encounter",
+        ));
+    }
+    Ok(())
 }
 
 async fn availability(
@@ -840,6 +1373,19 @@ async fn reschedule(
             .bind(value.appointment_id)
             .fetch_one(&mut *tx)
             .await?;
+    let appointment: Appointment =
+        sqlx::query_as("SELECT * FROM appointments WHERE tenant_id=$1 AND id=$2")
+            .bind(actor.tenant_id)
+            .bind(value.appointment_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    crate::scheduling::emit_appointment_event(
+        &mut tx,
+        actor,
+        &appointment,
+        "suncharts.appointment.rescheduled",
+    )
+    .await?;
     tx.commit().await?;
     Ok(Outcome::Completed {
         result: json!({"appointment_id":value.appointment_id,"version":version,"status":"booked"}),
@@ -888,6 +1434,19 @@ async fn cancel(state: &State, actor: &Actor, instance: Uuid, input: &Value) -> 
         value.appointment_id,
     )
     .await?;
+    let appointment: Appointment =
+        sqlx::query_as("SELECT * FROM appointments WHERE tenant_id=$1 AND id=$2")
+            .bind(actor.tenant_id)
+            .bind(value.appointment_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    crate::scheduling::emit_appointment_event(
+        &mut tx,
+        actor,
+        &appointment,
+        "suncharts.appointment.cancelled",
+    )
+    .await?;
     tx.commit().await?;
     Ok(Outcome::Completed {
         result: json!({"appointment_id":value.appointment_id,"version":old.version+1,"status":"cancelled"}),
@@ -899,6 +1458,24 @@ async fn intake(state: &State, actor: &Actor, instance: Uuid, input: &Value) -> 
     let value: IntakeInput = serde_json::from_value(input.clone())
         .map_err(|_| Error::Invalid("invalid intake input"))?;
     let mut tx = db(state)?.begin().await?;
+    if let Some(step) = value.form_step_key.as_deref() {
+        crate::access_policies::require_native(state, actor, "workflows", "edit").await?;
+        let (packet, plain) = crate::previsit::issue_for_workflow(
+            &mut tx,
+            actor,
+            instance,
+            step,
+            None,
+            value.appointment_id,
+            "Approved workflow intake request",
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok(Outcome::Completed {
+            result: json!({"packet_id":packet,"form_step_key":step,"awaiting_patient_submission_and_review":true,"secret_shown_once":plain.is_some()}),
+            one_time: plain.map(|token| json!({"intake_url":format!("/intake#token={token}")})),
+        });
+    }
     let appointment: Option<Uuid> = if value.appointment_id.is_some() {
         value.appointment_id
     } else {
@@ -921,7 +1498,7 @@ async fn intake(state: &State, actor: &Actor, instance: Uuid, input: &Value) -> 
     .await?;
     let (patient, due) = row.ok_or(Error::NotFound)?;
     pathway_patient(&mut tx, actor, instance, Some(patient)).await?;
-    if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM previsit_intake_packets WHERE tenant_id=$1 AND appointment_id=$2)").bind(actor.tenant_id).bind(appointment).fetch_one(&mut *tx).await?{return Err(Error::Conflict("an intake packet already exists"));}
+    if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM previsit_intake_packets WHERE tenant_id=$1 AND appointment_id=$2 AND workflow_instance_id IS NULL)").bind(actor.tenant_id).bind(appointment).fetch_one(&mut *tx).await?{return Err(Error::Conflict("an intake packet already exists"));}
     let (packet, token) = crate::previsit::issue_for_appointment(
         &mut tx,
         actor.tenant_id,
@@ -1008,14 +1585,15 @@ async fn communication_draft(state: &State, actor: &Actor, row: &DispatchRow) ->
     })
 }
 
-async fn claude_draft(state: &State, actor: &Actor, row: &DispatchRow) -> Result<Outcome> {
-    let value: ClaudeInput = serde_json::from_value(row.input.clone())
-        .map_err(|_| Error::Invalid("invalid Claude draft input"))?;
-    let purpose = if row.kind == "ai_extract_draft" {
-        "structured_extraction"
-    } else {
-        "draft_response"
-    };
+async fn ai_draft(
+    state: &State,
+    actor: &Actor,
+    row: &DispatchRow,
+    privacy: AiPrivacyApproval,
+) -> Result<Outcome> {
+    let value: AiDraftInput = serde_json::from_value(row.input.clone())
+        .map_err(|_| Error::Invalid("invalid AI draft input"))?;
+    let purpose = ai_purpose(&row.kind)?;
     let id = crate::claude_adapter::generate_for_workflow(
         state,
         actor,
@@ -1024,10 +1602,14 @@ async fn claude_draft(state: &State, actor: &Actor, row: &DispatchRow) -> Result
         purpose,
         value.instruction,
         value.source_text,
+        privacy.preview_id,
+        true,
+        privacy.patient_id,
+        privacy.revision,
     )
     .await?;
     Ok(Outcome::Downstream {
-        kind: "claude_draft",
+        kind: "ai_draft",
         id,
         result: json!({"human_review_required":true}),
     })
@@ -1037,9 +1619,175 @@ async fn claude_draft(state: &State, actor: &Actor, row: &DispatchRow) -> Result
 mod tests {
     use super::*;
     #[test]
+    fn payment_account_must_match_the_run_patient_and_any_linked_encounter() {
+        let (patient, visit, appointment) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        assert!(payment_context(
+            Some(patient),
+            Some(visit),
+            Some(appointment),
+            patient,
+            Some(visit),
+            Some(appointment)
+        )
+        .is_ok());
+        // A patient-level run may intentionally collect an account without a
+        // linked visit, but an unbound run cannot choose an arbitrary patient.
+        assert!(payment_context(Some(patient), None, None, patient, None, None).is_ok());
+        assert!(
+            payment_context(None, None, None, patient, Some(visit), Some(appointment)).is_err()
+        );
+        assert!(payment_context(
+            Some(Uuid::new_v4()),
+            None,
+            None,
+            patient,
+            Some(visit),
+            Some(appointment)
+        )
+        .is_err());
+        assert!(payment_context(
+            Some(patient),
+            Some(Uuid::new_v4()),
+            None,
+            patient,
+            Some(visit),
+            Some(appointment)
+        )
+        .is_err());
+        assert!(payment_context(
+            Some(patient),
+            None,
+            Some(Uuid::new_v4()),
+            patient,
+            Some(visit),
+            Some(appointment)
+        )
+        .is_err());
+        assert!(payment_context(Some(patient), Some(visit), None, patient, None, None).is_err());
+        assert!(payment_context(
+            Some(patient),
+            None,
+            Some(appointment),
+            patient,
+            Some(visit),
+            None
+        )
+        .is_err());
+    }
+    #[test]
     fn dispatch_kinds_are_bounded() {
         assert!(KINDS.contains(&"appointment_booking"));
         assert!(!KINDS.contains(&"arbitrary_sql"));
+    }
+    #[test]
+    fn public_ai_dispatch_omits_original_source_but_native_input_remains_reviewable() {
+        let original = json!({"id":Uuid::new_v4(),"kind":"ai_extract_draft","input":{"instruction":"For Taylor Synthetic","source_text":"Synthetic MRN SYN-123"},"status":"pending_review"});
+        let public = public_dispatch(original.clone());
+        assert!(public.get("input").is_none());
+        assert_eq!(public["privacy_review_required"], true);
+        assert!(!public.to_string().contains("Taylor Synthetic"));
+        assert!(!public.to_string().contains("SYN-123"));
+        let mut scheduling = original;
+        scheduling["kind"] = json!("appointment_booking");
+        assert_eq!(public_dispatch(scheduling.clone()), scheduling);
+    }
+
+    #[test]
+    fn ai_execution_requires_an_explicit_non_nil_preview_approval() {
+        for value in [
+            json!({"action":"approve","reason":"Reviewed"}),
+            json!({"action":"approve","reason":"Reviewed","privacy_preview_id":Uuid::new_v4()}),
+            json!({"action":"approve","reason":"Reviewed","privacy_approved":true}),
+            json!({"action":"approve","reason":"Reviewed","privacy_preview_id":Uuid::nil(),"privacy_approved":true}),
+        ] {
+            let action: DispatchAction = serde_json::from_value(value).unwrap();
+            assert!(approved_privacy_id(&action).is_err());
+        }
+        let id = Uuid::new_v4();
+        let action: DispatchAction = serde_json::from_value(json!({"action":"approve","reason":"Reviewed","privacy_preview_id":id,"privacy_approved":true})).unwrap();
+        assert_eq!(approved_privacy_id(&action).unwrap(), id);
+    }
+
+    #[test]
+    fn preview_revision_binds_the_active_run_and_exact_awaiting_dispatch() {
+        let row = DispatchRow {
+            id: Uuid::new_v4(),
+            instance: Uuid::new_v4(),
+            step: "extract".into(),
+            kind: "ai_extract_draft".into(),
+            status: "pending_review".into(),
+            input: json!({}),
+            version: 3,
+            downstream_kind: None,
+            downstream_id: None,
+        };
+        let mut binding = ReviewBinding {
+            instance_status: "active".into(),
+            patient_id: Some(Uuid::new_v4()),
+            definition_version: 7,
+            kind: row.kind.clone(),
+            manual_approval: true,
+            step_state: "awaiting_approval".into(),
+            dispatch_id: Some(row.id.to_string()),
+        };
+        let revision = bound_revision(&row, &binding).unwrap();
+        assert_eq!(revision["dispatch_version"], 3);
+        assert_eq!(revision["definition_version"], 7);
+        assert_eq!(revision["pathway_instance_id"], row.instance.to_string());
+        assert!(revision.get("patient_id").is_none());
+        binding.instance_status = "cancelled".into();
+        assert!(bound_revision(&row, &binding).is_err());
+        binding.instance_status = "active".into();
+        for state in ["completed", "skipped", "ready", "in_progress"] {
+            binding.step_state = state.into();
+            assert!(bound_revision(&row, &binding).is_err());
+        }
+        binding.step_state = "awaiting_approval".into();
+        binding.dispatch_id = Some(Uuid::new_v4().to_string());
+        assert!(bound_revision(&row, &binding).is_err());
+        binding.dispatch_id = Some(row.id.to_string());
+        binding.kind = "ai_response_draft".into();
+        assert!(bound_revision(&row, &binding).is_err());
+        binding.kind = row.kind.clone();
+        binding.manual_approval = false;
+        assert!(bound_revision(&row, &binding).is_err());
+    }
+    #[test]
+    fn sun_prepares_only_the_explicit_text_field_from_the_instance_revision() {
+        let integration = Uuid::new_v4();
+        let definition = json!({"steps":[{
+            "key":"extract", "title":"Extract", "kind":"ai_extract_draft", "manual_approval":true,
+            "ai":{"integration_id":integration,"instruction":"Extract the explicit appointment day.","source_field":"/referral/body"}
+        }]});
+        let context = json!({"referral":{"body":"Synthetic appointment Monday."},"unrelated":"Must stay local"});
+        let input = prepare_ai_input("ai_extract_draft", "extract", &definition, &context).unwrap();
+        assert_eq!(
+            input,
+            json!({"integration_id":integration,"instruction":"Extract the explicit appointment day.","source_text":"Synthetic appointment Monday."})
+        );
+        assert!(prepare_ai_input("ai_response_draft", "extract", &definition, &context).is_err());
+        for context in [
+            json!({}),
+            json!({"referral":{"body":{"nested":"not text"}}}),
+            json!({"referral":{"body":""}}),
+            json!({"referral":{"body":"x".repeat(65_537)}}),
+        ] {
+            assert!(
+                prepare_ai_input("ai_extract_draft", "extract", &definition, &context).is_err()
+            );
+        }
+        let mut escaped = definition;
+        escaped["steps"][0]["ai"]["source_field"] = json!("/referral~1message/body~0text");
+        assert_eq!(
+            prepare_ai_input(
+                "ai_extract_draft",
+                "extract",
+                &escaped,
+                &json!({"referral/message":{"body~text":"Explicit source"}})
+            )
+            .unwrap()["source_text"],
+            "Explicit source"
+        );
     }
     #[test]
     fn communication_requires_supported_provider() {

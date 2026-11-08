@@ -121,7 +121,37 @@ async fn owner_configuration_and_specialty_records_are_versioned_and_tenant_scop
     .await;
     assert_eq!(settings_status, StatusCode::OK);
     assert_eq!(settings["version"], 0);
-    let content = json!({"module_order":["practice","clinical","schedule","labs","referrals","followup","portal","specialty","billing","claims","edi","apps","migration","admin"],"hidden_modules":["labs"],"specialty_workspaces":["spasticity_movement"],"chart_tabs":["overview","profile","functional_status","specialty_care","visits"]});
+    assert_eq!(settings["content"]["hidden_modules"], json!(["specialty"]));
+    assert!(settings["content"].get("specialty_workspaces").is_none());
+    for tab in ["functional_status", "specialty_care"] {
+        assert!(!settings["content"]["chart_tabs"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(tab)));
+    }
+    let mut content = json!({"module_order":["practice","clinical","schedule","labs","referrals","followup","portal","specialty","billing","claims","edi","apps","migration","admin"],"hidden_modules":["labs"],"chart_tabs":["overview","profile","functional_status","specialty_care","visits"],"module_labels":{"clinical":"People & visits"},"module_groups":{"schedule":"care"}});
+    for (field, invalid) in [
+        ("module_labels", json!({"unknown_module":"Unexpected"})),
+        ("module_labels", json!({"clinical":"  "})),
+        ("module_labels", json!({"clinical":"Name\nwith control"})),
+        ("module_groups", json!({"schedule":"arbitrary-script"})),
+    ] {
+        let mut invalid_content = content.clone();
+        invalid_content[field] = invalid;
+        assert_eq!(
+            call(
+                &r,
+                &owner,
+                "PUT",
+                "/api/v1/practice/workspace-settings",
+                json!({"content":invalid_content,"reason":"Synthetic rejected navigation"}),
+                Some(0)
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
     let (status, saved) = call(
         &r,
         &owner,
@@ -133,6 +163,26 @@ async fn owner_configuration_and_specialty_records_are_versioned_and_tenant_scop
     .await;
     assert_eq!(status, StatusCode::OK, "{saved}");
     assert_eq!(saved["version"], 1);
+    content["module_order"].as_array_mut().unwrap().extend(
+        ["workflows", "automation", "communications", "ai_review"]
+            .into_iter()
+            .map(|key| json!(key)),
+    );
+    assert_eq!(saved["content"], content);
+    let (read_status, reloaded) = call(
+        &r,
+        &owner,
+        "GET",
+        "/api/v1/practice/workspace-settings",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(read_status, StatusCode::OK);
+    assert_eq!(
+        reloaded["content"], content,
+        "hidden chart tabs must stay hidden after reload"
+    );
     assert_eq!(
         call(
             &r,
@@ -224,5 +274,182 @@ async fn owner_configuration_and_specialty_records_are_versioned_and_tenant_scop
         .execute(&db)
         .await
         .is_err());
+    db.close().await;
+}
+
+#[tokio::test]
+async fn legacy_workspace_reads_preserve_storage_and_native_tabs_save_independently() {
+    let (db, owner, _, _) = setup().await;
+    let r = app(db.clone());
+    let legacy = json!({
+        "module_order": ["practice", "clinical", "schedule", "labs", "referrals", "followup", "portal", "specialty", "billing", "claims", "edi", "apps", "migration", "admin"],
+        "hidden_modules": ["labs"],
+        "specialty_workspaces": [],
+        "chart_tabs": ["overview", "profile", "visits"]
+    });
+    sqlx::query("INSERT INTO practice_workspace_settings(tenant_id,version,content,updated_by) VALUES($1,7,$2,$3)")
+        .bind(owner.tenant_id)
+        .bind(&legacy)
+        .bind(owner.sub)
+        .execute(&db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO practice_workspace_setting_revisions(tenant_id,version,content,actor_id,reason) VALUES($1,7,$2,$3,'Synthetic legacy workspace')")
+        .bind(owner.tenant_id)
+        .bind(&legacy)
+        .bind(owner.sub)
+        .execute(&db)
+        .await
+        .unwrap();
+    let before: (i64, Value, Uuid, chrono::DateTime<Utc>) = sqlx::query_as(
+        "SELECT version,content,updated_by,updated_at FROM practice_workspace_settings WHERE tenant_id=$1",
+    )
+    .bind(owner.tenant_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let (status, settings) = call(
+        &r,
+        &owner,
+        "GET",
+        "/api/v1/practice/workspace-settings",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{settings}");
+    assert_eq!(settings["version"], 7);
+    assert_eq!(
+        settings["content"]["hidden_modules"],
+        json!(["labs", "specialty"])
+    );
+    assert_eq!(settings["content"]["chart_tabs"], legacy["chart_tabs"]);
+    assert!(settings["content"].get("specialty_workspaces").is_none());
+    let after: (i64, Value, Uuid, chrono::DateTime<Utc>) = sqlx::query_as(
+        "SELECT version,content,updated_by,updated_at FROM practice_workspace_settings WHERE tenant_id=$1",
+    )
+    .bind(owner.tenant_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(after, before, "reading a legacy layout must not rewrite it");
+    let revision_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM practice_workspace_setting_revisions WHERE tenant_id=$1",
+    )
+    .bind(owner.tenant_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(revision_count, 1);
+
+    let mut content = settings["content"].clone();
+    content["hidden_modules"] = json!(["labs"]);
+    for (version, tab) in [(7, "functional_status"), (8, "specialty_care")] {
+        content["chart_tabs"] = json!(["overview", tab]);
+        let (status, saved) = call(
+            &r,
+            &owner,
+            "PUT",
+            "/api/v1/practice/workspace-settings",
+            json!({"content":content,"reason":"Synthetic independent chart configuration"}),
+            Some(version),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{saved}");
+        assert_eq!(saved["version"], version + 1);
+        assert_eq!(saved["content"], content);
+        let (status, reloaded) = call(
+            &r,
+            &owner,
+            "GET",
+            "/api/v1/practice/workspace-settings",
+            Value::Null,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{reloaded}");
+        assert_eq!(reloaded["version"], version + 1);
+        assert_eq!(
+            reloaded["content"], content,
+            "the unhidden navigation and selected chart area must survive reload"
+        );
+    }
+
+    let mut stale = content.clone();
+    stale["chart_tabs"] = json!(["overview"]);
+    assert_eq!(
+        call(
+            &r,
+            &owner,
+            "PUT",
+            "/api/v1/practice/workspace-settings",
+            json!({"content":stale,"reason":"Synthetic stale configuration"}),
+            Some(8),
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let stored: (i64, Value) = sqlx::query_as(
+        "SELECT version,content FROM practice_workspace_settings WHERE tenant_id=$1",
+    )
+    .bind(owner.tenant_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(stored, (9, content));
+    let revision_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM practice_workspace_setting_revisions WHERE tenant_id=$1",
+    )
+    .bind(owner.tenant_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(revision_count, 3, "a stale save must not append a revision");
+    db.close().await;
+}
+
+#[tokio::test]
+async fn legacy_enabled_workspace_saves_preserve_explicit_navigation_choices() {
+    let (db, owner, _, _) = setup().await;
+    let r = app(db.clone());
+    let (_, settings) = call(
+        &r,
+        &owner,
+        "GET",
+        "/api/v1/practice/workspace-settings",
+        Value::Null,
+        None,
+    )
+    .await;
+    let mut content = settings["content"].clone();
+    for (version, hidden_modules) in [(0, json!(["labs"])), (1, json!(["labs", "specialty"]))] {
+        content["hidden_modules"] = hidden_modules;
+        content["specialty_workspaces"] = json!(["spasticity_movement"]);
+        let (status, saved) = call(
+            &r,
+            &owner,
+            "PUT",
+            "/api/v1/practice/workspace-settings",
+            json!({"content":content,"reason":"Synthetic legacy enabled workspace"}),
+            Some(version),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{saved}");
+        content
+            .as_object_mut()
+            .unwrap()
+            .remove("specialty_workspaces");
+        assert_eq!(saved["content"], content);
+        assert_eq!(saved["version"], version + 1);
+        let stored: Value = sqlx::query_scalar(
+            "SELECT content FROM practice_workspace_settings WHERE tenant_id=$1",
+        )
+        .bind(owner.tenant_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(stored, content);
+    }
     db.close().await;
 }

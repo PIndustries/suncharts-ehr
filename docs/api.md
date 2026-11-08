@@ -9,6 +9,36 @@ local workspace and ask for sign-in when the shared browser account changes.
 [api/openapi.json](../api/openapi.json) is the request/response contract. A running
 server exposes the same specification at `/openapi.json`.
 
+## Capability and service boundary
+
+The OpenAPI contract describes the API served by each SunCharts EHR installation.
+Unless an endpoint explicitly says otherwise, records, authorization, audit history
+and encrypted provider credentials remain in that installation. The open-source EHR
+does not need SunCharts Connect for its native chart, scheduling, FHIR, billing,
+clearinghouse or practice-owned integration APIs.
+
+| Surface | Runs in the EHR installation | Optional SunCharts Connect role |
+|---|---|---|
+| Native REST | Patient, encounter, scheduling, document, referral, order, billing, claim, remittance, administration and integration workflows | May call a permitted subset over an approved OAuth grant; it is not the source of truth |
+| FHIR R4 | Bounded resources, searches and writes documented below | No FHIR proxy or Connect enrollment is required |
+| Scheduling | Staff calendars plus delegated availability, hold, booking, reschedule, cancellation and signed scheduling-webhook APIs | Managed reminder email is an optional sender |
+| Billing and EDI | Coverage, charges, claims, 837P, acknowledgments, 835/ERA review and configured clearinghouse adapters | SunCharts Payments is an optional Stripe Connect broker; local accounting and clearinghouse APIs remain instance-local |
+| Webhooks and events | Tenant event feed/SSE, outbound signed scheduling webhooks, and verified provider callbacks such as payment, Claim.MD, RingCentral and Gmail events | Connect service updates can arrive over the optional outbound channel |
+| Practice integrations | Clinic-owned RingCentral, Gmail, Claim.MD, Resend, Claude/Erebine and other configured credentials are encrypted locally | Connect provides only the specifically enabled managed service; it does not receive a clinic-owned provider key |
+| HL7 standards | FHIR R4 and X12 transaction workflows have the bounded support described here and in the billing guides | A general HL7 v2 interface engine, interface feed or conformance claim is not currently provided |
+
+`/api/v1/schedule/*` is the authenticated staff scheduling surface.
+`/api/v1/scheduling/*` is the separately scoped delegated scheduling surface for
+registered clients and uses `scheduling.read`/`scheduling.write`. Webhook receiver
+routes authenticate provider callbacks using their documented signature or token;
+they are not general unauthenticated write APIs.
+
+Connect-specific routes are grouped under the **SunCharts Connect services** tag.
+They cover optional onboarding, managed-service status and related service events.
+See [Integrations and optional connected services](integrations.md) for the exact
+boundary. Availability in OpenAPI does not mean a provider account is enrolled,
+configured or production-validated.
+
 ## Authentication
 
 The browser signs in through `/auth/login` and uses an opaque HttpOnly,

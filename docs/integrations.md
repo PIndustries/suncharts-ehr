@@ -1,7 +1,27 @@
-# Connected services
+# Integrations and optional connected services
 
-The self-hosted EHR works independently. Connecting a practice to SunCharts adds
-available managed services and access from SunCharts clients.
+The self-hosted EHR works independently. Practice-owned integrations run in the
+EHR installation and store their encrypted credentials there. Connecting a
+practice to SunCharts adds only the managed services and client access that the
+practice explicitly enables.
+
+## What runs where
+
+| Capability | Instance-local EHR | SunCharts Connect |
+|---|---|---|
+| Clinical and administrative REST API | Yes; the installation is authoritative | Optional OAuth client access within the user's local permissions |
+| FHIR R4 | Yes; bounded reads and writes at the installation's `/fhir` base | Not required and not a replacement FHIR server |
+| Calendars and delegated scheduling API | Yes; includes availability, holds, bookings, changes and signed outbound scheduling webhooks | Optional managed appointment email |
+| Billing, claims and clearinghouses | Yes; local ledgers, X12 workflows and clinic-configured adapters | Optional SunCharts Payments broker for supported Stripe Connect workflows |
+| RingCentral, Gmail, Claim.MD, own Resend and AI providers | Clinic-owned credentials are encrypted in the installation; provider callbacks return to the installation | Does not store or supply those clinic-owned credentials |
+| Support, managed reminders, native-client ecosystem and hosted-installation operations | Not part of the independent core service | Optional connected services |
+
+FHIR is the implemented HL7-family API boundary. A general HL7 v2 interface engine
+is not currently included. Provider webhooks and scheduling webhooks are narrow,
+signed interfaces; they do not turn the EHR into a general-purpose relay or allow
+an integration to bypass tenant, role, consent or review checks. See the
+[API capability boundary](api.md#capability-and-service-boundary) and exact
+[OpenAPI contract](../api/openapi.json).
 
 ## Connect to SunCharts
 
@@ -92,3 +112,84 @@ client does not itself authorize a user or start a change feed.
 
 Preserve the installation's encrypted credential key during recovery; see
 [operations](operations.md#credentials-and-backups).
+
+## Sun assistance
+
+Sun prepares drafts using a practice-owned Claude or Erebine connection. Configure
+the provider in **Integrations**, then select it in **Sun review**. Credentials
+are encrypted in this EHR instance; SunCharts Connect is not required.
+
+For Erebine, enter the project ID, optional workspace and endpoint, and API key.
+Load the account's model catalog and choose a model. The EHR uses the pinned
+P.Industries Erebine Rust SDK against `https://api.erebine.ai`. Testing the catalog
+checks access and model visibility; generate a synthetic draft to verify inference.
+Claude remains a separate provider with its own credential and model selection.
+
+Each draft records its provider, model, author, status and review history. Staff
+can prepare summaries, response drafts, classification and structured extraction
+using the enabled capabilities. A draft does not change the patient chart, send a
+message, sign a note, prescribe medication or collect payment. Approved drafts
+still require the corresponding authorized clinical or administrative action.
+
+Provider errors are reported without credentials or raw provider error bodies.
+An interrupted request is not automatically resubmitted. Before retrying, review
+the existing request and its outcome to avoid duplicate generation.
+
+The movable **Sun** orb opens a floating chat over the current workspace; a full
+page is also available. Patient-count and daily-workload questions use permitted
+local database aggregates, with their scope and retrieval time shown. Broader text
+requests use the selected practice provider after an outgoing preview; they do not
+automatically read an entire chart. Navigation commands open supported workspaces and preserve
+unsaved changes. Workflow Studio's Sun nodes save the provider, task and exact
+source field with the workflow version. Dispatch and generated output have
+separate staff review steps. Draft and workflow changes refresh open views while
+preserving edits.
+
+Enable **Workflow design proposals** on an AI connection to use **Design with Sun**
+in Workflow Studio. Sun receives the current definition and supported node catalog,
+without patient records or workflow runs. A server-validated proposal shows changes
+to stages, nodes, forms and dependencies for review. Approval updates only the
+unsaved editor draft; saving, validation and publication remain separate actions.
+Editing or replacing the underlying draft invalidates an older proposal. Source
+mappings cover run conditions and AI source fields, not arbitrary integration
+payloads or chart-field writes. Proposed payment and communication nodes retain
+their existing runtime capabilities and required reviews.
+
+Voice is independent of the text provider. Dictation requires a browser with
+verified on-device speech recognition and an installed language pack. Unsupported
+browsers keep text input available rather than silently sending audio to a browser
+vendor. Dictation does not submit a request automatically. Optional spoken replies
+use a local device voice. Closing Sun, hiding the page or signing out stops voice
+activity. This is a browser capability, not a bundled server transcription service.
+
+## Diagnosis and procedure catalogs
+
+Owners manage catalogs in **Practice administration → Code catalogs**. Catalogs
+are stored in this EHR, scoped to the practice, and retain their source checksum,
+edition and effective dates. Diagnosis and charge forms search the applicable
+release for the service date. Selecting a code saves trusted source information
+alongside the record; manual entry remains available without a catalog claim.
+Diagnosis-to-charge links are chosen explicitly. A code match does not establish
+medical necessity, payer coverage or reimbursement.
+
+Prepare the official public US datasets with:
+
+```sh
+python3 scripts/prepare_terminology.py icd10cm-2027 --output /private/path/icd10cm.json
+python3 scripts/prepare_terminology.py hcpcs-2026-10 --output /private/path/hcpcs.json
+```
+
+Import the resulting JSON through Code catalogs. The preparation tool checks the
+official fixed-width files and retains the downloaded archive checksum. Reimporting
+the same request is idempotent; editions are immutable. Add a new edition for an
+update. Review future releases before importing them; imports do not run on a timer.
+
+CPT content is not bundled. Import it only under a license permitting its use in
+the practice's EHR, using the normalized catalog format and a license reference.
+The catalog API also accepts ICD-10-PCS releases; the supplied download tool covers
+ICD-10-CM and HCPCS Level II only. Expired licensed releases cannot be searched or
+used for new selections. Previously saved clinical provenance is retained.
+
+Appearance follows the device's light or dark setting by default. The **Color
+theme** control selects System, Light or Dark; the preference is saved locally
+and updates other tabs on the same browser origin.

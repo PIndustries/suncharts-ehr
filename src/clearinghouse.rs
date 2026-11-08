@@ -279,6 +279,18 @@ async fn edit_partner(
     tx.commit().await?;
     Ok(Json(p))
 }
+fn development_live_claim_allowed(
+    environment: Option<&str>,
+    usage: &str,
+    synthetic_test: bool,
+    control_number: &str,
+    reviewed: bool,
+) -> bool {
+    environment == Some("production")
+        || usage != "P"
+        || (synthetic_test && control_number.starts_with("SCTEST") && reviewed)
+}
+
 async fn generate(
     a: Actor,
     ExtractState(s): ExtractState<State>,
@@ -318,6 +330,18 @@ async fn generate(
         serde_json::from_value(p.content.clone()).map_err(|_| Error::Invalid("invalid partner"))?;
     if p.version != v.partner_version || !pc.active {
         return Err(Error::Conflict("review the current active trading partner"));
+    }
+    let synthetic_test = c.content["synthetic_test"].as_bool().unwrap_or(false);
+    if !development_live_claim_allowed(
+        std::env::var("ENGINE_ENVIRONMENT").ok().as_deref(),
+        &pc.usage,
+        synthetic_test,
+        &c.control_number,
+        v.details.synthetic_test_reviewed,
+    ) {
+        return Err(Error::Invalid(
+            "a development instance may use a production clearinghouse account only for an explicitly reviewed synthetic test claim",
+        ));
     }
     let parent = if let Some(pid) = c.parent_id {
         Some(
@@ -603,4 +627,59 @@ async fn transport(pool: &PgPool, tenant: Uuid) -> Result<(&'static str, bool)> 
         },
         configured,
     ))
+}
+
+#[cfg(test)]
+mod synthetic_test_guard_tests {
+    use super::development_live_claim_allowed;
+
+    #[test]
+    fn development_production_route_requires_labeled_reviewed_synthetic_claim() {
+        assert!(!development_live_claim_allowed(
+            Some("development"),
+            "P",
+            false,
+            "SC123",
+            false
+        ));
+        assert!(!development_live_claim_allowed(
+            Some("development"),
+            "P",
+            true,
+            "SC123",
+            true
+        ));
+        assert!(!development_live_claim_allowed(
+            Some("development"),
+            "P",
+            true,
+            "SCTEST123",
+            false
+        ));
+        assert!(development_live_claim_allowed(
+            Some("development"),
+            "P",
+            true,
+            "SCTEST123",
+            true
+        ));
+    }
+
+    #[test]
+    fn production_and_test_routes_keep_their_existing_behavior() {
+        assert!(development_live_claim_allowed(
+            Some("production"),
+            "P",
+            false,
+            "SC123",
+            false
+        ));
+        assert!(development_live_claim_allowed(
+            Some("development"),
+            "T",
+            false,
+            "SC123",
+            false
+        ));
+    }
 }

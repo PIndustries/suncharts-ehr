@@ -383,6 +383,19 @@ async fn create_appointment(
         start,
     )
     .await?;
+    let booked: crate::model::Appointment =
+        sqlx::query_as("SELECT * FROM appointments WHERE tenant_id=$1 AND id=$2")
+            .bind(a.tenant_id)
+            .bind(appointment)
+            .fetch_one(&mut *tx)
+            .await?;
+    crate::scheduling::emit_appointment_event(
+        &mut tx,
+        &a,
+        &booked,
+        "suncharts.appointment.created",
+    )
+    .await?;
     emit(&mut tx,&a,"appointment.created",appointment,json!({"appointment_id":appointment,"external_reference":v.external_reference,"source_system":v.source_system,"starts_at":start,"ends_at":end})).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED,Json(json!({"appointment_id":appointment,"patient_id":patient,"starts_at":start,"ends_at":end,"version":1,"intake_url":intake.map(|(_,token)|format!("/intake#token={token}"))}))).into_response())

@@ -63,6 +63,14 @@ fn owner(actor: &Actor) -> Result<()> {
     }
 }
 
+fn billing_operator(actor: &Actor) -> Result<()> {
+    if matches!(actor.role, Role::Owner | Role::Clinician | Role::FrontDesk) {
+        Ok(())
+    } else {
+        Err(Error::Forbidden)
+    }
+}
+
 fn clean(value: &str, max: usize, required: bool) -> Result<String> {
     let value = value.trim();
     if value.len() > max || (required && value.is_empty()) || value.contains('\0') {
@@ -270,7 +278,7 @@ async fn start_appeal(
     ExtractState(state): ExtractState<State>,
     Json(input): Json<AppealRequest>,
 ) -> Result<Json<Value>> {
-    owner(&actor)?;
+    billing_operator(&actor)?;
     let reason = clean(&input.reason, 1000, true)?;
     let claimid = input.claimid.as_deref().unwrap_or("").trim();
     let mut remote = input
@@ -362,7 +370,7 @@ async fn fetch_era_pdf(
     Path(eraid): Path<String>,
     Json(input): Json<EraRequest>,
 ) -> Result<Json<Value>> {
-    owner(&actor)?;
+    billing_operator(&actor)?;
     let eraid = clean(&eraid, 20, true)?;
     if !eraid.bytes().all(|b| b.is_ascii_digit()) {
         return Err(Error::Invalid("invalid Claim.MD ERA ID"));
@@ -407,7 +415,7 @@ async fn fetch_era_structured(
     Path(eraid): Path<String>,
     Json(input): Json<EraRequest>,
 ) -> Result<Json<Value>> {
-    owner(&actor)?;
+    billing_operator(&actor)?;
     let eraid = clean(&eraid, 20, true)?;
     if !eraid.bytes().all(|b| b.is_ascii_digit()) {
         return Err(Error::Invalid("invalid Claim.MD ERA ID"));
@@ -452,7 +460,7 @@ async fn list_operations(
     actor: Actor,
     ExtractState(state): ExtractState<State>,
 ) -> Result<Json<Value>> {
-    owner(&actor)?;
+    billing_operator(&actor)?;
     let mut tx = db(&state)?.begin().await?;
     let operations: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(o)-'tenant_id'-'request' FROM claimmd_operations o WHERE tenant_id=$1 ORDER BY created_at DESC,id LIMIT 100")
         .bind(actor.tenant_id).fetch_all(&mut *tx).await?;
@@ -472,7 +480,7 @@ async fn download_era_document(
     ExtractState(state): ExtractState<State>,
     Path(id): Path<Uuid>,
 ) -> Result<Response> {
-    owner(&actor)?;
+    billing_operator(&actor)?;
     let mut tx = db(&state)?.begin().await?;
     let row: (String, Option<Vec<u8>>, Option<Value>) = sqlx::query_as(
         "SELECT kind,content,structured FROM claimmd_era_documents WHERE tenant_id=$1 AND id=$2",
@@ -628,6 +636,28 @@ async fn webhook(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn actor(role: Role) -> Actor {
+        Actor {
+            sub: Uuid::nil(),
+            tenant_id: Uuid::nil(),
+            role,
+            patient_id: None,
+            iss: "synthetic".into(),
+            aud: "synthetic".into(),
+            iat: 0,
+            exp: 1,
+        }
+    }
+
+    #[test]
+    fn claim_follow_up_is_available_to_existing_billing_roles() {
+        assert!(billing_operator(&actor(Role::Owner)).is_ok());
+        assert!(billing_operator(&actor(Role::Clinician)).is_ok());
+        assert!(billing_operator(&actor(Role::FrontDesk)).is_ok());
+        assert!(billing_operator(&actor(Role::ReadOnly)).is_err());
+        assert!(billing_operator(&actor(Role::Patient)).is_err());
+    }
 
     #[test]
     fn provider_links_are_claimmd_https_only() {

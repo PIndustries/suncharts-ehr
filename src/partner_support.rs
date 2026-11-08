@@ -19,6 +19,7 @@ use chrono::{DateTime, Utc};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sqlx::{Postgres, Transaction};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -291,6 +292,48 @@ pub(crate) async fn authenticate(auth: &BrowserAuth, token: &str) -> Result<Opti
         iat: now,
         exp: session.expires_at.timestamp(),
     }))
+}
+
+/// Recheck an owner authenticated by BrowserAuth after taking the tenant admin
+/// lock. Delegated owners retain their grant attribution rather than becoming
+/// local staff; their exact browser session must still be current and must have
+/// passed live Connect introspection for this authenticated request.
+pub(crate) async fn verify_owner_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    actor: &Actor,
+    headers: &HeaderMap,
+) -> Result<()> {
+    if !matches!(actor.role, Role::Owner) {
+        return Err(Error::Forbidden);
+    }
+    let local: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM browser_users WHERE tenant_id=$1 AND id=$2 AND role='owner' AND NOT disabled)",
+    )
+    .bind(actor.tenant_id)
+    .bind(actor.sub)
+    .fetch_one(&mut **tx)
+    .await?;
+    if local {
+        return Ok(());
+    }
+    let token = crate::browser::cookie(headers).ok_or(Error::Unauthorized)?;
+    let delegated: Option<Uuid> = sqlx::query_scalar(
+        "SELECT grant_id FROM partner_support_sessions
+         WHERE token_hash=$1 AND tenant_id=$2 AND grant_id=$3 AND issuer=$4 AND audience=$5
+           AND expires_at>clock_timestamp() AND revoked_at IS NULL
+           AND last_introspected_at>=to_timestamp($6)
+           AND delegated_role IN ('partner_support','partner_admin','workflow_manager')
+         FOR SHARE",
+    )
+    .bind(crate::browser::hash(&token))
+    .bind(actor.tenant_id)
+    .bind(actor.sub)
+    .bind(&actor.iss)
+    .bind(&actor.aud)
+    .bind(actor.iat as f64)
+    .fetch_optional(&mut **tx)
+    .await?;
+    delegated.map(|_| ()).ok_or(Error::Forbidden)
 }
 
 #[cfg(test)]

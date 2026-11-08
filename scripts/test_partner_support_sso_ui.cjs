@@ -6,8 +6,8 @@ const fn=source.match(/async function acceptConnectLaunch\(\)\{[\s\S]*?^\}/m)?.[
 assert.ok(fn,'delegated support acceptance function is present');
 assert.match(source,/const connectLaunchAcceptance=acceptConnectLaunch\(\);/,'fragment processing starts during the first deferred script');
 assert.match(source,/me\.delegated_role==='partner_admin'[\s\S]*?'Partner administrator \(delegated\)'/,'delegated partner administrators have an attributable UI label');
-function fixture(hash){
- const calls=[],location={pathname:'/api/v1/connect/support/accept',hash},history={replaceState(_a,_b,path){location.pathname=path;location.hash='';}};
+function fixture(hash,pathname='/api/v1/connect/support/accept'){
+ const calls=[],location={pathname,hash},history={replaceState(_a,_b,path){location.pathname=path;location.hash='';}};
  const context={URL,URLSearchParams,JSON,Error,location,history,fetch:async(...args)=>{calls.push(args);assert.equal(location.hash,'','fragment must be cleared before exchange');return {ok:true,json:async()=>({kind:'staff'})};}};
  vm.createContext(context);vm.runInContext(fn,context);return {context,calls};
 }
@@ -16,6 +16,10 @@ function fixture(hash){
  let f=fixture(`#code=${encodeURIComponent(code)}&issuer=${encodeURIComponent(issuer)}`);
  assert.equal(await f.context.acceptConnectLaunch(),true);assert.equal(f.context.location.pathname,'/');assert.equal(f.context.location.hash,'');assert.equal(f.calls.length,1);
  assert.equal(f.calls[0][0],'/api/v1/connect/support/accept');assert.deepEqual(JSON.parse(f.calls[0][1].body),{code,issuer});assert.equal(f.calls[0][1].credentials,'same-origin');
+ assert.equal(f.calls[0][1].headers['X-SunCharts-Identity-Handoff'],'1');
+ f=fixture(`#code=${encodeURIComponent(code)}&issuer=${encodeURIComponent(issuer)}`,'/');
+ assert.equal(await f.context.acceptConnectLaunch(),true);assert.equal(f.context.location.pathname,'/');assert.equal(f.context.location.hash,'');assert.equal(f.calls.length,1);
+ assert.equal(f.calls[0][0],'/api/v1/connect/identity/accept','root-shell launches use the staff identity exchange');
  f=fixture(`#code=${encodeURIComponent(code)}&issuer=${encodeURIComponent(issuer)}&next=claimmd`);
  assert.equal(await f.context.acceptConnectLaunch(),true);assert.equal(f.context.location.pathname,'/?open=claimmd');assert.equal(f.context.location.hash,'');assert.equal(f.calls.length,1);
  f=fixture(`#code=${encodeURIComponent(code)}&issuer=${encodeURIComponent(issuer)}&next=care-pathways`);

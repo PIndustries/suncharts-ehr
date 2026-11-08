@@ -119,6 +119,12 @@ pub struct ChargeLine {
     pub units: i64,
     pub amount_cents: i64,
     pub diagnosis_codes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_release_id: Option<Uuid>,
+    // Accepted on stored rows for revision preservation, but always replaced
+    // from the trusted catalog on create/edit, never trusted from the caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_snapshot: Option<Value>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -146,7 +152,7 @@ impl AccountContent {
         for l in &self.lines {
             text(&l.code_system, 100)?;
             text(&l.code, 100)?;
-            text(&l.description, 500)?;
+            text(&l.description, 10000)?;
             bounded(&l.modifiers, 100)?;
             if !(1..=1000).contains(&l.units)
                 || !(1..=100000000).contains(&l.amount_cents)
@@ -168,6 +174,37 @@ impl AccountContent {
         }
         Ok(total)
     }
+}
+async fn resolve_charge_catalogs(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    content: &mut AccountContent,
+) -> Result<()> {
+    for line in &mut content.lines {
+        line.catalog_snapshot = None;
+        if let Some(id) = line.catalog_release_id {
+            let snapshot =
+                crate::terminology::resolve_code(tx, a, id, &line.code, content.service_date, true)
+                    .await?;
+            if !matches!(snapshot["system"].as_str(), Some("CPT" | "HCPCS"))
+                || snapshot["system"].as_str() != Some(line.code_system.as_str())
+            {
+                return Err(Error::Invalid(
+                    "charge code must match its selected CPT or HCPCS catalog",
+                ));
+            }
+            line.code = snapshot["code"]
+                .as_str()
+                .ok_or(Error::Invalid("catalog code is missing"))?
+                .to_string();
+            line.description = snapshot["display"]
+                .as_str()
+                .ok_or(Error::Invalid("catalog description is missing"))?
+                .to_string();
+            line.catalog_snapshot = Some(snapshot);
+        }
+    }
+    Ok(())
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -584,7 +621,7 @@ async fn new_account(
     a: Actor,
     ExtractState(s): ExtractState<State>,
     Path(p): Path<Uuid>,
-    Json(v): Json<New<AccountContent>>,
+    Json(mut v): Json<New<AccountContent>>,
 ) -> Result<Json<Account>> {
     write(&a)?;
     text(&v.reason, 1000)?;
@@ -597,6 +634,7 @@ async fn new_account(
         return Ok(Json(account_row(&mut tx, &a, p, id).await?));
     }
     account_links(&mut tx, &a, p, &v.content, v.source_history_id, false).await?;
+    resolve_charge_catalogs(&mut tx, &a, &mut v.content).await?;
     let id = Uuid::new_v4();
     sqlx::query("INSERT INTO billing_accounts (tenant_id,id,patient_id,visit_id,coverage_id,content,total_cents,request_id,creation_hash,source_history_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)").bind(a.tenant_id).bind(id).bind(p).bind(v.content.visit_id).bind(v.content.coverage_id).bind(json!(v.content)).bind(total).bind(v.request_id).bind(hash).bind(v.source_history_id).execute(&mut *tx).await?;
     let row = account_revision(&mut tx, &a, p, id, &v.reason).await?;
@@ -608,7 +646,7 @@ async fn edit_account(
     ExtractState(s): ExtractState<State>,
     Path((p, id)): Path<(Uuid, Uuid)>,
     h: HeaderMap,
-    Json(v): Json<Edit<AccountContent>>,
+    Json(mut v): Json<Edit<AccountContent>>,
 ) -> Result<Json<Account>> {
     write(&a)?;
     text(&v.reason, 1000)?;
@@ -622,6 +660,7 @@ async fn edit_account(
             "only the current draft billing account can be edited",
         ));
     }
+    resolve_charge_catalogs(&mut tx, &a, &mut v.content).await?;
     if old.diagnosis_snapshot.is_some()
         && (old.content["visit_id"] != json!(v.content.visit_id)
             || old.content["lines"] != json!(v.content.lines))

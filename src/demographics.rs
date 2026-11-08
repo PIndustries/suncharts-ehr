@@ -82,7 +82,7 @@ fn phone(s: &mut Option<String>) -> Result<()> {
     Ok(())
 }
 impl Content {
-    fn normalize(&mut self) -> Result<()> {
+    pub(crate) fn normalize(&mut self) -> Result<()> {
         field(&mut self.preferred_name, 100)?;
         field(&mut self.pronouns, 100)?;
         field(&mut self.language, 100)?;

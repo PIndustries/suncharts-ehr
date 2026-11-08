@@ -268,6 +268,13 @@ impl ClinicalBackend for PostgresBackend {
         .fetch_one(&mut *tx)
         .await?;
         crate::scheduling::revision(&mut tx, a, id, "Patient checked in").await?;
+        crate::scheduling::emit_appointment_event(
+            &mut tx,
+            a,
+            &row,
+            "suncharts.appointment.checked_in",
+        )
+        .await?;
         audit(&mut tx, a, "appointment.check_in", id).await?;
         tx.commit().await?;
         Ok(row)
@@ -383,6 +390,14 @@ impl ClinicalBackend for PostgresBackend {
         let v = visit_row(&mut tx, a, id).await?;
         crate::scheduling::revision(&mut tx, a, v.appointment_id, "Visit signed and completed")
             .await?;
+        crate::automation_event_runtime::emit_in_tx(&mut tx, a,
+            crate::automation_event_runtime::NewAutomationEvent {
+                event_type: "suncharts.visit.signed".into(),
+                source: "suncharts.visits".into(),
+                source_event_id: format!("{}:{}", v.id, v.version),
+                payload: serde_json::json!({"patient_id":v.patient_id,"appointment_id":v.appointment_id,"visit_id":v.id,"version":v.version}),
+                classification: "phi".into(), occurred_at: chrono::Utc::now(), retention_days: 30,
+            }).await?;
         audit(&mut tx, a, "visit.sign", id).await?;
         tx.commit().await?;
         Ok(v)

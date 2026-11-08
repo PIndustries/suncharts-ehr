@@ -1306,7 +1306,7 @@ async fn inbox_action(
     actor.staff()?;
     let reason = clean(&input.reason, 500)?;
     let mut tx = db(&state)?.begin().await?;
-    let current:(String,i64)=sqlx::query_as("SELECT status,version FROM gmail_referral_inbox WHERE tenant_id=$1 AND integration_id=$2 AND id=$3 FOR UPDATE").bind(actor.tenant_id).bind(id).bind(entry).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
+    let current:(String,i64,Option<Uuid>)=sqlx::query_as("SELECT status,version,patient_id FROM gmail_referral_inbox WHERE tenant_id=$1 AND integration_id=$2 AND id=$3 FOR UPDATE").bind(actor.tenant_id).bind(id).bind(entry).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
     let patient = match input.action.as_str() {
         "link" => {
             actor.clinical()?;
@@ -1335,6 +1335,24 @@ async fn inbox_action(
     };
     sqlx::query("UPDATE gmail_referral_inbox SET status=$4,patient_id=$5,version=version+1,reviewed_by=$6,reviewed_at=now(),updated_at=now() WHERE tenant_id=$1 AND integration_id=$2 AND id=$3").bind(actor.tenant_id).bind(id).bind(entry).bind(status).bind(patient).bind(actor.sub).execute(&mut *tx).await?;
     adapter_event(&mut tx,actor.tenant_id,id,actor.sub,"referral_reviewed",json!({"inbox_id":entry,"from_status":current.0,"to_status":status,"patient_id":patient,"reason":reason})).await?;
+    if let Some(patient) =
+        patient.filter(|patient| current.0 != "linked" || current.2 != Some(*patient))
+    {
+        crate::automation_event_runtime::emit_in_tx(
+            &mut tx,
+            &actor,
+            crate::automation_event_runtime::NewAutomationEvent {
+                event_type: "suncharts.intake.email_linked".into(),
+                source: "suncharts.gmail".into(),
+                source_event_id: format!("{}:{}", entry, current.1 + 1),
+                payload: json!({"patient_id":patient,"inbox_id":entry,"integration_id":id}),
+                classification: "phi".into(),
+                occurred_at: Utc::now(),
+                retention_days: 30,
+            },
+        )
+        .await?;
+    }
     tx.commit().await?;
     Ok(reply(
         json!({"id":entry,"status":status,"patient_id":patient,"version":current.1+1}),

@@ -3,7 +3,15 @@
 const ediBase='/api/v1/billing';let ediPartners=[],ediSources=[],ediCurrent,ediClaim,ediPartner,ediSource,ediCursor,ediWorkspaceGeneration=0;
 const ediOwner=()=>me.role==='owner';
 const ediField=(name,label,value='',max=200,required=true)=>billingField(name,label,value,'text',max,required);
-function ediPane(html){$('edi-detail').innerHTML=html;$('edi-detail').scrollIntoView({block:'start'});}
+function ediPane(html){
+ const pane=$('edi-detail');
+ pane.innerHTML=html;
+ // Keep the workspace shell anchored while changing the detail pane. Safari can
+ // scroll the nested tool surface entirely out of view when scrollIntoView is
+ // called here, which makes a successful editor open look like a blank page.
+ const heading=pane.querySelector('h2,h3');
+ if(heading){heading.tabIndex=-1;heading.focus({preventScroll:true});}
+}
 function ediWorkspaceCurrent(generation){return generation===ediWorkspaceGeneration&&!!$('edi-tool')&&!!$('edi-automation');}
 function ediWorkspaceWarning(generation,message){if(ediWorkspaceCurrent(generation))$('edi-automation').insertAdjacentHTML('beforeend',`<div class="notice error">${esc(message)}</div>`);}
 function collapseClaimAdvancedPanels(){
@@ -23,7 +31,7 @@ async function loadEdiOptionalPanels(generation){
 }
 async function showEdiWorkspace(after){
  const generation=++ediWorkspaceGeneration;
- showTool('Claim connections');
+ showTool('Claim lifecycle');
  $('tools').innerHTML='<section class="panel empty"><span class="empty-mark" aria-hidden="true">↔</span><h2>Loading Claim.MD workflow</h2><p>Checking coverage, claim, transmission and remittance activity.</p></section>';
  let claimMdStatusError;
  try{await loadClaimMdConnection();}catch(error){claimMdConnectionState={configured:false,connected:false,connections:[]};claimMdStatusError=error;}

@@ -1650,6 +1650,32 @@ async fn review(
     if changed != 1 {
         return Err(Error::Conflict("RingCentral event was already reviewed"));
     }
+    if status == "reviewed" {
+        if let Some(patient) = input.patient_id {
+            let kind:String=sqlx::query_scalar("SELECT event_kind FROM ringcentral_inbound_events WHERE tenant_id=$1 AND integration_id=$2 AND id=$3")
+                .bind(a.tenant_id).bind(id).bind(event_id).fetch_one(&mut *tx).await?;
+            let event_type = match kind.as_str() {
+                "call" | "voicemail" => "suncharts.intake.call_linked",
+                "sms" => "suncharts.intake.sms_linked",
+                "fax" => "suncharts.intake.fax_linked",
+                _ => "suncharts.intake.inquiry_linked",
+            };
+            crate::automation_event_runtime::emit_in_tx(
+                &mut tx,
+                &a,
+                crate::automation_event_runtime::NewAutomationEvent {
+                    event_type: event_type.into(),
+                    source: "suncharts.ringcentral".into(),
+                    source_event_id: event_id.to_string(),
+                    payload: json!({"patient_id":patient,"inbox_id":event_id,"integration_id":id}),
+                    classification: "phi".into(),
+                    occurred_at: Utc::now(),
+                    retention_days: 30,
+                },
+            )
+            .await?;
+        }
+    }
     audit(
         &mut tx,
         a.tenant_id,

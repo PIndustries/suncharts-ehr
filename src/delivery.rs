@@ -478,7 +478,15 @@ pub async fn process_one(pool: &PgPool, config: &Config) -> Result<bool> {
     } else {
         false
     };
-    let block = if !binding_valid {
+    let development = std::env::var("ENGINE_ENVIRONMENT").as_deref() != Ok("production");
+    let synthetic_test = c.content["synthetic_test"].as_bool().unwrap_or(false)
+        && c.control_number.starts_with("SCTEST")
+        && out.details["synthetic_test_reviewed"]
+            .as_bool()
+            .unwrap_or(false);
+    let block = if development && route.is_some_and(|r| r.usage == "P") && !synthetic_test {
+        "development_live_route_requires_synthetic_test_claim"
+    } else if !binding_valid {
         "provider_binding_changed_or_paused"
     } else if route.is_some_and(|r| {
         matches!(r.adapter, Adapter::OfficeAllySftp | Adapter::AvailitySftp)

@@ -10,7 +10,7 @@ function connectOnboardingCard(data,connection){
 function connectAuthorizationDestination(value,expectedOrigin='https://connect.suncharts.app'){
  const expected=new URL(expectedOrigin);
  const loopback=expected.protocol==='http:'&&['127.0.0.1','[::1]'].includes(expected.hostname);
- if(!['https://connect.suncharts.app','https://my.suncharts.app'].includes(expected.origin)&&!loopback)throw new Error('Unexpected SunCharts service configuration.');
+ if(!['https://connect.suncharts.app','https://my.suncharts.app','https://dev.suncharts.app'].includes(expected.origin)&&!loopback)throw new Error('Unexpected SunCharts service configuration.');
  const url=new URL(value);
  if(url.origin!==expected.origin||url.pathname!=='/connect/ehr'||url.username||url.password||url.hash)throw new Error('SunCharts returned an invalid authorization address. Start the connection again.');
  return url.href;

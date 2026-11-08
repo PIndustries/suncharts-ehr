@@ -311,10 +311,13 @@ fn patient(item: &Item) -> Result<NewPatient> {
     let p: NewPatient = serde_json::from_value(item.data.clone()).map_err(|_| {
         Error::Invalid("patient mapping requires mrn, given_name, family_name and birth_date")
     })?;
-    text(&p.mrn, 64)?;
+    let mrn = p.mrn.as_deref().ok_or(Error::Invalid(
+        "patient mapping requires mrn, given_name, family_name and birth_date",
+    ))?;
+    text(mrn, 64)?;
     text(&p.given_name, 100)?;
     text(&p.family_name, 100)?;
-    if p.mrn.trim() != p.mrn
+    if mrn.trim() != mrn
         || p.given_name.trim() != p.given_name
         || p.family_name.trim() != p.family_name
         || p.birth_date > Utc::now().date_naive()

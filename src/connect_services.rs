@@ -240,6 +240,16 @@ async fn with_transport(mut value: Value, db: &PgPool, tenant: Uuid) -> Result<V
     Ok(value)
 }
 
+/// Shared browser feed uses the same sanitized, tenant-scoped status as the
+/// dedicated connection feed; no credentials or clinical data are included.
+pub(crate) async fn browser_status(s: &State, actor: &Actor) -> Result<Value> {
+    actor.staff()?;
+    let mut tx = db(s)?.begin().await?;
+    let value = status_snapshot(&mut tx, actor).await?;
+    tx.commit().await?;
+    with_transport(value, db(s)?, actor.tenant_id).await
+}
+
 // The browser sees only sanitized connection health. Reauthenticate on each tick
 // so a logged-out, expired or disabled session cannot retain a live feed.
 async fn connection_events(

@@ -74,7 +74,7 @@ document.addEventListener('click',event=>{
   if(button.hasAttribute('data-referral-delivery-settings')){await showReferralDeliverySettings();return;}
   if(button.hasAttribute('data-referral-destination-discard')){referralDestinationDraft=null;const host=$('referral-destination-editor');if(host)host.replaceChildren();return;}
   if(button.hasAttribute('data-referral-destination-new')||button.hasAttribute('data-referral-destination-edit')){
-   if(me?.role!=='owner')return;if(referralDestinationDraft?.dirty&&!window.confirm('Replace unsaved destination settings?'))return;
+   if(me?.role!=='owner')return;if(referralDestinationDraft?.dirty&&!await confirmAction('The current unsaved destination settings will be replaced.',{title:'Open another destination?',confirmLabel:'Replace settings',tone:'danger'}))return;
    const item=referralDestinationItems.find(d=>d.id===button.dataset.referralDestinationEdit),values={name:item?.name||'',endpoint:item?.endpoint||'',enabled:item?.enabled??false,reason:''};
    referralDestinationDraft={id:item?.id,version:item?.version,loopback_test:item?.loopback_test||false,request_id:crypto.randomUUID(),values,baseline:JSON.stringify(values),dirty:false};showReferralDestinationEditor(referralDestinationDraft);return;
   }

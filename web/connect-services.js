@@ -24,7 +24,7 @@ function startConnectionStatusEvents(identity){
  if(typeof EventSource==='undefined'||me!==identity)return;
  if(connectionEventSource&&connectionEventIdentity===identity)return;
  clearConnectionStatusSession();connectionEventIdentity=identity;
- const source=new EventSource('/api/v1/connect/status/events');connectionEventSource=source;
+ const source=typeof openWorkspaceEventSource==='function'?openWorkspaceEventSource('status'):new EventSource('/api/v1/connect/status/events');connectionEventSource=source;
  source.addEventListener('connection',event=>{
   if(me!==identity||connectionEventSource!==source)return;
   try{const data=JSON.parse(event.data);if(data&&typeof data.status==='string'){connectionStatusGeneration++;applyConnectionStatus(data,identity);}}catch{/* Ignore malformed health events; the next HTTP refresh remains authoritative. */}

@@ -24,7 +24,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-const PROVIDERS: &[&str] = &["ringcentral", "gmail", "claude", "healthclinics"];
+const PROVIDERS: &[&str] = &["ringcentral", "gmail", "claude", "erebine", "healthclinics"];
 
 fn db(state: &State) -> Result<&PgPool> {
     Ok(&state.browser.as_ref().ok_or(Error::NotFound)?.db)
@@ -52,7 +52,7 @@ fn clean(value: &str, max: usize) -> Result<String> {
 fn auth_type(provider: &str) -> Option<&'static str> {
     match provider {
         "ringcentral" | "gmail" => Some("oauth2"),
-        "claude" => Some("api_key"),
+        "claude" | "erebine" => Some("api_key"),
         "healthclinics" => Some("oauth2_client"),
         _ => None,
     }
@@ -61,11 +61,12 @@ fn allowed(provider: &str) -> &'static [&'static str] {
     match provider {
         "ringcentral" => &["voice", "sms", "fax", "voicemail", "call_events"],
         "gmail" => &["referral_email", "attachments", "threaded_reply"],
-        "claude" => &[
+        "claude" | "erebine" => &[
             "document_classification",
             "structured_extraction",
             "draft_summary",
             "draft_response",
+            "workflow_design",
         ],
         "healthclinics" => &[
             "scheduling_availability_read",
@@ -129,6 +130,12 @@ fn validate_config(config: &Value) -> Result<()> {
         return Err(Error::Invalid(
             "credentials must use the protected credential field",
         ));
+    }
+    Ok(())
+}
+fn validate_provider_config(provider: &str, config: &Value) -> Result<()> {
+    if provider == "erebine" {
+        crate::erebine_adapter::validate_config(config)?;
     }
     Ok(())
 }
@@ -258,6 +265,14 @@ pub fn router() -> Router<State> {
     Router::new()
         .route("/api/v1/integrations/providers", get(provider_catalog))
         .route("/api/v1/integrations", get(list).post(create))
+        .route(
+            "/api/v1/integrations/erebine/models",
+            post(erebine_models_preview),
+        )
+        .route(
+            "/api/v1/integrations/{id}/erebine/models",
+            get(erebine_models),
+        )
         .route("/api/v1/integrations/{id}", get(detail).put(update))
         .route("/api/v1/integrations/{id}/actions", post(action))
         .route(
@@ -274,7 +289,7 @@ async fn provider_catalog(actor: Actor) -> Result<Response> {
         "oauth_supported":matches!(auth_type(provider),Some("oauth2"|"oauth2_client")),
         "capabilities":allowed(provider),
         "boundary":match *provider {
-            "claude" => "clinic_byok_direct",
+            "claude" | "erebine" => "clinic_byok_direct",
             "healthclinics" => "ehr_oauth_api_consumer",
             _ => "instance_local",
         },
@@ -320,6 +335,76 @@ async fn detail(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ErebineModelDiscovery {
+    config: Value,
+    credential: String,
+}
+
+fn model_discovery_response(
+    result: std::result::Result<Vec<String>, crate::claude_adapter::ProviderFailure>,
+) -> Result<Response> {
+    let models = result.map_err(|failure| Error::Conflict(failure.code()))?;
+    Ok(reply(
+        json!({"models":models.into_iter().map(|id|json!({"id":id})).collect::<Vec<_>>()}),
+    ))
+}
+
+/// Discover the account's native model IDs before persisting a new connection.
+/// Only protected request input goes to the SDK; no credential is stored here.
+async fn erebine_models_preview(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Json(input): Json<ErebineModelDiscovery>,
+) -> Result<Response> {
+    owner(&actor)?;
+    validate_config(&input.config)?;
+    let credential = Zeroizing::new(input.credential);
+    validate_credential(&credential)?;
+    let result = crate::erebine_adapter::discover_models(&input.config, &credential).await;
+    let mut tx = db(&state)?.begin().await?;
+    crate::postgres::audit(
+        &mut tx,
+        &actor,
+        "integration.models_discovery",
+        actor.tenant_id,
+    )
+    .await?;
+    tx.commit().await?;
+    model_discovery_response(result)
+}
+
+async fn erebine_models(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(id): Path<Uuid>,
+) -> Result<Response> {
+    owner(&actor)?;
+    let row: Option<(Value, Vec<u8>)> = sqlx::query_as(
+        "SELECT i.config,c.encrypted_secret FROM instance_integrations i
+         JOIN instance_integration_credentials c ON c.tenant_id=i.tenant_id
+          AND c.integration_id=i.id AND c.revision=i.credential_revision
+         WHERE i.tenant_id=$1 AND i.id=$2 AND i.provider='erebine' AND i.status<>'revoked'",
+    )
+    .bind(actor.tenant_id)
+    .bind(id)
+    .fetch_optional(db(&state)?)
+    .await?;
+    let (config, encrypted) = row.ok_or(Error::NotFound)?;
+    let credential = crate::provider_settings::open_secret(
+        actor.tenant_id,
+        id,
+        "instance-integration",
+        &encrypted,
+    )?;
+    let result = crate::erebine_adapter::discover_models(&config, credential.expose()).await;
+    let mut tx = db(&state)?.begin().await?;
+    crate::postgres::audit(&mut tx, &actor, "integration.models_discovery", id).await?;
+    tx.commit().await?;
+    model_discovery_response(result)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Create {
     provider: String,
     label: String,
@@ -331,6 +416,12 @@ struct Create {
 fn empty_object() -> Value {
     json!({})
 }
+fn validate_credential(secret: &str) -> Result<()> {
+    if secret.len() < 8 || secret.len() > 16_384 || secret.chars().any(char::is_control) {
+        return Err(Error::Invalid("credential is missing or exceeds its limit"));
+    }
+    Ok(())
+}
 async fn save_credential(
     tx: &mut Transaction<'_, Postgres>,
     pool: &PgPool,
@@ -339,9 +430,7 @@ async fn save_credential(
     revision: i64,
     secret: &str,
 ) -> Result<()> {
-    if secret.len() < 8 || secret.len() > 16_384 || secret.chars().any(char::is_control) {
-        return Err(Error::Invalid("credential is missing or exceeds its limit"));
-    }
+    validate_credential(secret)?;
     let encrypted = crate::provider_settings::seal_secret(
         pool,
         actor.tenant_id,
@@ -367,6 +456,7 @@ async fn create(
     input.label = clean(&input.label, 120)?;
     let caps = capabilities(&input.provider, input.capabilities.take())?;
     validate_config(&input.config)?;
+    validate_provider_config(&input.provider, &input.config)?;
     let secret = input.credential.take().map(Zeroizing::new);
     if input.provider == "healthclinics" && secret.is_some() {
         return Err(Error::Invalid(
@@ -432,6 +522,7 @@ async fn update(
     if current.status == "revoked" {
         return Err(Error::Conflict("revoked integration cannot be changed"));
     }
+    validate_provider_config(&current.provider, &input.config)?;
     let caps = capabilities(&current.provider, input.capabilities.take())?;
     let secret = input.credential.take().map(Zeroizing::new);
     if current.provider == "healthclinics" && secret.is_some() {
@@ -722,6 +813,9 @@ mod tests {
         assert_eq!(auth_type("ringcentral"), Some("oauth2"));
         assert!(capabilities("gmail", Some(vec!["attachments".into()])).is_ok());
         assert!(capabilities("gmail", Some(vec!["clinical_write".into()])).is_err());
+        assert!(capabilities("erebine", Some(vec!["workflow_design".into()])).is_ok());
+        assert!(capabilities("claude", Some(vec!["workflow_design".into()])).is_ok());
+        assert!(capabilities("gmail", Some(vec!["workflow_design".into()])).is_err());
         assert!(validate_config(&json!({"mailbox_label":"Referrals"})).is_ok());
         assert!(validate_config(&json!({"api_key":"must-not-be-here"})).is_err());
         assert!(validate_config(&json!({"nested":{"client_secret":"must-not-be-here"}})).is_err());

@@ -413,6 +413,7 @@ pub(crate) async fn emit_in_tx(
         )
         .await?;
     }
+    crate::workflow_triggers::enqueue(tx, actor, id, &input.event_type).await?;
     audit(tx, actor, "automation.event.emit", id).await?;
     Ok(EmitResult {
         id,
@@ -1017,6 +1018,7 @@ fn native_pathway_trigger(
         trigger_type: trigger_type.into(),
         trigger_key: format!("automation-event:{event_id}"),
         definition_id: None,
+        expected_definition_version: None,
         patient_id: input_uuid(&payload, "patient_id", true)?,
         appointment_id: input_uuid(&payload, "appointment_id", false)?,
         visit_id: input_uuid(&payload, "visit_id", false)?,

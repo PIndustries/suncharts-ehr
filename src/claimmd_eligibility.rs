@@ -222,8 +222,8 @@ async fn payer_search(
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct EligibilityRequest {
-    request_id: Uuid,
+pub(crate) struct EligibilityRequest {
+    pub(crate) request_id: Uuid,
     service_date: NaiveDate,
     #[serde(default)]
     service_codes: Vec<String>,
@@ -348,6 +348,15 @@ async fn mark(
     }
     sqlx::query("INSERT INTO claimmd_eligibility_events(tenant_id,check_id,status,actor_id) VALUES($1,$2,$3,$4)")
         .bind(actor.tenant_id).bind(id).bind(status).bind(actor.sub).execute(&mut **tx).await?;
+    if status == "completed" {
+        let (patient_id, coverage_id):(Uuid,Uuid) = sqlx::query_as("SELECT patient_id,coverage_id FROM claimmd_eligibility_checks WHERE tenant_id=$1 AND id=$2")
+            .bind(actor.tenant_id).bind(id).fetch_one(&mut **tx).await?;
+        crate::automation_event_runtime::emit_in_tx(tx,actor,crate::automation_event_runtime::NewAutomationEvent {
+            event_type:"suncharts.eligibility.returned".into(), source:"suncharts.claimmd".into(),source_event_id:id.to_string(),
+            payload:json!({"patient_id":patient_id,"coverage_id":coverage_id,"eligibility_id":id,"review_required":true}),
+            classification:"phi".into(),occurred_at:chrono::Utc::now(),retention_days:30,
+        }).await?;
+    }
     crate::postgres::audit(tx, actor, "claimmd.eligibility_result", id).await
 }
 
@@ -357,20 +366,32 @@ async fn create_eligibility(
     Path((patient_id, coverage_id)): Path<(Uuid, Uuid)>,
     Json(request): Json<EligibilityRequest>,
 ) -> Result<Response> {
+    Ok(reply(
+        run_eligibility(&state, &actor, patient_id, coverage_id, request).await?,
+    ))
+}
+
+pub(crate) async fn run_eligibility(
+    state: &State,
+    actor: &Actor,
+    patient_id: Uuid,
+    coverage_id: Uuid,
+    request: EligibilityRequest,
+) -> Result<Value> {
     actor.scheduling()?;
     validate_request(&request)?;
-    let pool = db(&state)?;
+    let pool = db(state)?;
     let digest = crate::oauth::hash(
         &serde_json::to_string(&(patient_id, coverage_id, &request))
             .map_err(|_| Error::Invalid("invalid eligibility request"))?,
     );
-    if let Some(existing) = existing(pool, &actor, request.request_id).await? {
+    if let Some(existing) = existing(pool, actor, request.request_id).await? {
         if existing.creation_hash != digest {
             return Err(Error::Conflict("eligibility request ID was already used"));
         }
         let check = existing.into_check();
         return if check.status == "completed" {
-            Ok(reply(json!(check)))
+            Ok(json!(check))
         } else {
             Err(Error::Conflict("eligibility request is not complete"))
         };
@@ -410,7 +431,7 @@ async fn create_eligibility(
         .bind(actor.tenant_id).bind(id).bind(patient_id).bind(coverage_id).bind(request.request_id).bind(&digest).bind(&route.key).bind(&snapshot).bind(actor.sub).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO claimmd_eligibility_events(tenant_id,check_id,status,actor_id) VALUES($1,$2,'pending',$3)")
         .bind(actor.tenant_id).bind(id).bind(actor.sub).execute(&mut *tx).await?;
-    crate::postgres::audit(&mut tx, &actor, "claimmd.eligibility_requested", id).await?;
+    crate::postgres::audit(&mut tx, actor, "claimmd.eligibility_requested", id).await?;
     tx.commit().await?;
 
     let date = |value: NaiveDate| value.format("%Y%m%d").to_string();
@@ -471,15 +492,15 @@ async fn create_eligibility(
     match result {
         Ok(response) => {
             let mut tx = pool.begin().await?;
-            mark(&mut tx, &actor, id, "completed", Some(&response)).await?;
+            mark(&mut tx, actor, id, "completed", Some(&response)).await?;
             tx.commit().await?;
             let check: Check = sqlx::query_as("SELECT id,patient_id,coverage_id,request_snapshot,response_snapshot,status,actor_id,created_at,completed_at FROM claimmd_eligibility_checks WHERE tenant_id=$1 AND id=$2")
                 .bind(actor.tenant_id).bind(id).fetch_one(pool).await?;
-            Ok(reply(json!(check)))
+            Ok(json!(check))
         }
         Err(error) => {
             let mut tx = pool.begin().await?;
-            mark(&mut tx, &actor, id, "failed", None).await?;
+            mark(&mut tx, actor, id, "failed", None).await?;
             tx.commit().await?;
             Err(error)
         }

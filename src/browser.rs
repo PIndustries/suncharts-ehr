@@ -332,6 +332,7 @@ pub async fn me(ExtractState(s): ExtractState<State>, a: Actor) -> Result<Json<V
         "user_id":a.sub,
         "tenant_id":a.tenant_id,
         "role":a.role,
+        "access_policy_supported":true,
         "display_name":display_name,
         "email":email,
         "delegated":delegated,

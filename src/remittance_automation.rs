@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Independent Claim.MD ERA discovery and opt-in staging. No automatic ledger posting.
+//! Independent Claim.MD ERA discovery and automatic review preparation. No automatic ledger posting.
 use crate::{
     auth::Actor,
     billing,
@@ -40,16 +40,20 @@ async fn sync(pool: &PgPool, c: &Config) -> Result<()> {
         let a = crate::delivery::worker(r.tenant_id);
         let mut tx = pool.begin().await?;
         billing::tenant_lock(&mut tx, &a).await?;
-        let n=sqlx::query("INSERT INTO edi_era_feeds (tenant_id,route_key) SELECT tenant_id,route_key FROM edi_connections WHERE tenant_id=$1 AND route_key=$2 ON CONFLICT DO NOTHING").bind(a.tenant_id).bind(&r.key).execute(&mut *tx).await?.rows_affected();
+        let n=sqlx::query("INSERT INTO edi_era_feeds (tenant_id,route_key,auto_stage) SELECT tenant_id,route_key,true FROM edi_connections WHERE tenant_id=$1 AND route_key=$2 ON CONFLICT DO NOTHING").bind(a.tenant_id).bind(&r.key).execute(&mut *tx).await?.rows_affected();
         if n > 0 {
             event(
                 &mut tx,
                 &a,
                 &r.key,
-                "Independent ERA cursor initialized; automatic staging disabled",
-                json!({"ledger_posting":false}),
+                "Automatic ERA retrieval and review preparation enabled",
+                json!({"automatic_retrieval":true,"automatic_review_preparation":true,"ledger_posting":false}),
             )
             .await?;
+        } else {
+            // Upgrade untouched feeds created before automatic preparation became the
+            // default. An explicit owner enable/disable event always wins.
+            sqlx::query("UPDATE edi_era_feeds f SET auto_stage=true,version=version+1 WHERE tenant_id=$1 AND route_key=$2 AND NOT auto_stage AND NOT EXISTS (SELECT 1 FROM edi_era_feed_events e WHERE e.tenant_id=f.tenant_id AND e.route_key=f.route_key AND e.evidence->>'action' IN ('enable_staging','disable_staging'))").bind(a.tenant_id).bind(&r.key).execute(&mut *tx).await?;
         }
         tx.commit().await?;
     }

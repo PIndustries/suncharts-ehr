@@ -83,13 +83,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .max_connections(10)
         .connect(&env_or_file("ENGINE_DATABASE_URL")?)
         .await
-        .map_err(|_| "engine database connection failed")?;
+        .map_err(|error| format!("engine database connection failed: {error}"))?;
     suncharts_engine::MIGRATOR
         .run(&db)
         .await
         .map_err(|_| "engine database migration failed")?;
     suncharts_engine::browser::bootstrap(&db).await?;
     tokio::spawn(suncharts_engine::managed_connect::run(db.clone()));
+    tokio::spawn(suncharts_engine::workflow_triggers::run(db.clone()));
     tokio::spawn(suncharts_engine::reminders::run(db.clone()));
     tokio::spawn(suncharts_engine::connect_updates::run(db.clone()));
     tokio::spawn(suncharts_engine::referral_delivery::run(db.clone()));

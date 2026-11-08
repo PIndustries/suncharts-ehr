@@ -72,7 +72,7 @@ async function editOrderDiagnosisLinks(){
  captureOrderDiagnosisLinkDraft();
  const patient=selected,old=workspace.labs.orders.find(row=>row.id===labSelected),host=$('lab-editor'),account=me,generation=++orderDiagnosisLinkGeneration;
  if(!old?.visit_id||old.status!=='draft'||!canDocument())return;
- if(host.querySelector?.('form:not(#order-diagnoses-form)')&&!window.confirm('Replace the open order editor? Unsaved entries in that form will be lost.'))return;
+ if(host.querySelector?.('form:not(#order-diagnoses-form)')&&!await confirmAction('Unsaved entries in the open order form will be lost.',{title:'Open diagnosis linking?',confirmLabel:'Replace editor',tone:'danger'}))return;
  const [list,data]=await Promise.all([api(`/api/v1/patients/${patient}/orders`),api(`/api/v1/visits/${old.visit_id}/diagnoses`)]);
  if(selected!==patient||labSelected!==old.id||$('lab-editor')!==host||me!==account||generation!==orderDiagnosisLinkGeneration)return;
  captureOrderDiagnosisLinkDraft();const o=list.orders.find(row=>row.id===old.id);
@@ -83,8 +83,8 @@ async function editOrderDiagnosisLinks(){
 }
 document.addEventListener('input',event=>{if(event.target.closest?.('#order-diagnoses-form'))captureOrderDiagnosisLinkDraft();});
 document.addEventListener('change',event=>{if(event.target.closest?.('#order-diagnoses-form'))captureOrderDiagnosisLinkDraft();});
-document.addEventListener('click',event=>{
- const discard=event.target.closest?.('[data-discard-order-link-draft]');if(discard){event.preventDefault();if(!window.confirm('Discard unapplied order diagnosis edits retained in this tab?'))return;orderDiagnosisLinkDrafts.delete(selected+':'+discard.dataset.discardOrderLinkDraft);const host=$('lab-editor');if(host)host.replaceChildren();if(workspace.labs.orders.some(o=>o.id===discard.dataset.discardOrderLinkDraft))showOrder(discard.dataset.discardOrderLinkDraft,false);return;}
+document.addEventListener('click',async event=>{
+ const discard=event.target.closest?.('[data-discard-order-link-draft]');if(discard){event.preventDefault();if(!await confirmAction('Unapplied order diagnosis edits retained in this tab will be removed.',{title:'Discard order diagnosis edits?',confirmLabel:'Discard edits',tone:'danger'}))return;orderDiagnosisLinkDrafts.delete(selected+':'+discard.dataset.discardOrderLinkDraft);const host=$('lab-editor');if(host)host.replaceChildren();if(workspace.labs.orders.some(o=>o.id===discard.dataset.discardOrderLinkDraft))showOrder(discard.dataset.discardOrderLinkDraft,false);return;}
  if(event.target.closest?.('[data-link-order-diagnoses]')){event.preventDefault();run(editOrderDiagnosisLinks);return;}
  if(event.target.closest?.('[data-rebase-order-diagnoses]')){event.preventDefault();captureOrderDiagnosisLinkDraft();const review=orderDiagnosisLinkReview,form=$('order-diagnoses-form');if(!review||!form||selected!==review.patient)return;const key=review.patient+':'+review.o.id,draft=orderDiagnosisLinkDrafts.get(key);if(!draft)return;draft.version=review.o.version;draft.values.visit_version=review.data.version;draft.values.diagnosis_ids=orderDiagnosisLinkValues(form).diagnosis_ids;form.dataset.version=String(draft.version);form.dataset.visitVersion=String(draft.values.visit_version);const submit=form.querySelector('[type="submit"]');if(submit)submit.disabled=false;}
 });

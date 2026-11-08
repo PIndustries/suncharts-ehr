@@ -27,12 +27,15 @@ fn notify() -> &'static Notify {
     WAKE.get_or_init(Notify::new)
 }
 #[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow)]
-struct Binding {
+pub(crate) struct Binding {
     id: Uuid,
     installation_id: Uuid,
     credential_revision: i64,
 }
-async fn binding(tx: &mut Transaction<'_, Postgres>, tenant: Uuid) -> Result<Option<Binding>> {
+pub(crate) async fn binding(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+) -> Result<Option<Binding>> {
     Ok(sqlx::query_as("SELECT id,installation_id,credential_revision FROM connect_service_settings WHERE tenant_id=$1 AND enabled AND verified AND NOT revoked").bind(tenant).fetch_optional(&mut **tx).await?)
 }
 fn pool(s: &State) -> Result<&PgPool> {
@@ -64,7 +67,7 @@ struct Notification {
     message_id: Uuid,
     created_at: DateTime<Utc>,
 }
-async fn notification_snapshot(
+pub(crate) async fn notification_snapshot(
     tx: &mut Transaction<'_, Postgres>,
     a: &Actor,
     b: Option<&Binding>,
@@ -149,7 +152,7 @@ struct Change {
     message_id: Option<Uuid>,
     created_at: DateTime<Utc>,
 }
-async fn max_cursor(tx: &mut Transaction<'_, Postgres>, tenant: Uuid) -> Result<i64> {
+pub(crate) async fn max_cursor(tx: &mut Transaction<'_, Postgres>, tenant: Uuid) -> Result<i64> {
     Ok(sqlx::query_scalar(
         "SELECT coalesce(max(id),0) FROM connect_update_events WHERE tenant_id=$1",
     )
@@ -157,6 +160,36 @@ async fn max_cursor(tx: &mut Transaction<'_, Postgres>, tenant: Uuid) -> Result<
     .fetch_one(&mut **tx)
     .await?)
 }
+/// A bounded page for the shared browser feed. Cursor changes on installation
+/// rebinding intentionally reset the client just like the dedicated feed.
+pub(crate) async fn browser_page(
+    s: &State,
+    a: &Actor,
+    previous: Option<&Binding>,
+    after: i64,
+) -> Result<(Option<Binding>, bool, i64, Vec<Value>, Value)> {
+    a.scheduling()?;
+    let mut tx = pool(s)?.begin().await?;
+    let b = binding(&mut tx, a.tenant_id).await?;
+    let changed = b.as_ref() != previous;
+    let cursor = if changed {
+        max_cursor(&mut tx, a.tenant_id).await?
+    } else {
+        after
+    };
+    let rows: Vec<Change> = sqlx::query_as("SELECT id,kind,resource_id,appointment_id,message_id,created_at FROM connect_update_events WHERE tenant_id=$1 AND id>$2 AND (installation_id IS NULL OR installation_id=$3) ORDER BY id LIMIT 100")
+        .bind(a.tenant_id).bind(cursor).bind(b.as_ref().map(|v|v.installation_id))
+        .fetch_all(&mut *tx).await?;
+    let snapshot = notification_snapshot(&mut tx, a, b.as_ref()).await?;
+    tx.commit().await?;
+    let rows = rows
+        .into_iter()
+        .map(serde_json::to_value)
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|_| Error::Invalid("invalid service event"))?;
+    Ok((b, changed, cursor, rows, snapshot))
+}
+
 async fn events(
     ExtractState(s): ExtractState<State>,
     h: HeaderMap,

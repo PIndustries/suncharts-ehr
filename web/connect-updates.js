@@ -71,7 +71,7 @@ function startConnectUpdates(identity){
  clearConnectUpdatesSession();connectUpdatesIdentity=identity;const generation=connectUpdatesGeneration;
  renderConnectNotifications();
  if(typeof EventSource==='undefined'){void refreshConnectNotifications().catch(()=>{});return;}
- const source=new EventSource('/api/v1/connect/services/events');connectUpdatesSource=source;
+ const source=typeof openWorkspaceEventSource==='function'?openWorkspaceEventSource('services'):new EventSource('/api/v1/connect/services/events');connectUpdatesSource=source;
  const current=()=>me===identity&&connectUpdatesIdentity===identity&&connectUpdatesSource===source&&connectUpdatesGeneration===generation;
  function baseline(event,reset=false){
   if(!current())return;

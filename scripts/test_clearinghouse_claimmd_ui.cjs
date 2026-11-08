@@ -7,9 +7,9 @@ const deliverySource=fs.readFileSync('web/delivery.js','utf8');
 
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const handlers={click:[],submit:[]},calls=[],order=[];let statusFailure=false,legacyFailure=false,optionalFailure=false,optionalHang=false;
-let workspaceHtml='',providerHtml='';
+let workspaceHtml='',providerHtml='',detailHeadingFocus=null;
 const nodes={};
-const manualSection={hidden:false,insertAdjacentHTML(){}};
+const manualSection={hidden:false,insertAdjacentHTML(){},before(){}};
 const partnerHeading={textContent:'Trading partners',closest:()=>manualSection};
 const emptyRow={textContent:'No generated submissions. Release a reviewed claim packet, then choose Generate X12 837P.'};
 const connectionNotice={outerHTML:'',insertAdjacentHTML(){}};
@@ -19,7 +19,7 @@ const ediTool={
  querySelectorAll(selector){return selector==='h3'?[partnerHeading]:selector==='.table-empty'?[emptyRow]:[];},
  querySelector(selector){return selector==='.mapping-notice'?connectionNotice:null;},
 };
-nodes.tools={hidden:false,set innerHTML(value){workspaceHtml=value;if(value.includes('id="edi-tool"')){providerHtml='';nodes['edi-tool']=ediTool;nodes['edi-automation']={prepend(section){providerHtml=section.innerHTML;},insertAdjacentHTML(_position,html){providerHtml+=html;}};nodes['edi-detail']={set innerHTML(html){providerHtml=html;},get innerHTML(){return providerHtml;},scrollIntoView(){}};}},get innerHTML(){return workspaceHtml;}};
+nodes.tools={hidden:false,set innerHTML(value){workspaceHtml=value;if(value.includes('id="edi-tool"')){providerHtml='';nodes['edi-tool']=ediTool;nodes['edi-automation']={prepend(section){providerHtml=section.innerHTML;},insertAdjacentHTML(_position,html){providerHtml+=html;}};nodes['edi-detail']={set innerHTML(html){providerHtml=html;},get innerHTML(){return providerHtml;},querySelector(selector){if(selector!=='h2,h3')return null;return {tabIndex:0,focus(options){detailHeadingFocus=options;}};}};}},get innerHTML(){return workspaceHtml;}};
 nodes['provider-settings-form']={providerSetting:null,elements:{account_key:{value:''}}};
 
 const context={
@@ -28,7 +28,7 @@ const context={
  billingWrite:()=>true,billingField:()=>'',selectField:()=>'',sourceNotice:()=>'',claimHistory:()=>'',
  $:id=>nodes[id],
  document:{
-  createElement:()=>({id:'',className:'',innerHTML:''}),
+  createElement:()=>({id:'',className:'',innerHTML:'',textContent:'',append(){}}),
   addEventListener:(kind,handler)=>{(handlers[kind]||=[]).push(handler);},
  },
  api:async path=>{
@@ -58,7 +58,7 @@ for(const file of ['web/claimmd-native.js','web/provider-settings.js','web/clear
  assert.doesNotMatch(deliverySource,/\$\('edi-automation'\)\.innerHTML=/);
  await vm.runInContext('showEdiWorkspace()',context);
  await settle();
- assert.equal(order[0],'show:Claim connections','workspace must become visible before any API work');
+ assert.equal(order[0],'show:Claim lifecycle','workspace must become visible before any API work');
  assert.match(ediTool.inserted,/NATIVE REVENUE CYCLE/);
  assert.match(ediTool.inserted,/Insurance &amp; eligibility|Insurance & eligibility/);
  assert.match(connectionNotice.outerHTML,/Claim\.MD is not connected/);
@@ -98,5 +98,14 @@ for(const file of ['web/claimmd-native.js','web/provider-settings.js','web/clear
  assert.match(providerHtml,/name="account_key"/);
  assert.match(providerHtml,/No sender, receiver or trading-partner form/);
  assert.doesNotMatch(providerHtml,/Create trading partner/);
+ assert.equal(detailHeadingFocus?.preventScroll,true);
+ assert.doesNotMatch(fs.readFileSync('web/clearinghouse.js','utf8'),/\.scrollIntoView\(/);
+ const nativeSource=fs.readFileSync('web/claimmd-native.js','utf8');
+ assert.match(nativeSource,/From coverage to settled balance/);
+ assert.match(nativeSource,/SYNTHETIC TEST CLAIM/);
+ assert.match(nativeSource,/synthetic_test_reviewed/);
+ assert.match(fs.readFileSync('web/claims.js','utf8'),/SCTEST control number/);
  console.log('PASS Connect Claim.MD opens direct AccountKey setup without a trading-partner prerequisite');
+ console.log('PASS Claim.MD setup focuses its heading without scrolling the clearinghouse workspace away');
+ console.log('PASS native claim lifecycle and reviewed synthetic-test submission remain visible in the EHR');
 })().catch(error=>{console.error(error);process.exitCode=1;});

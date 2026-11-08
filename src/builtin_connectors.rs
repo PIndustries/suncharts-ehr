@@ -88,6 +88,12 @@ pub fn manifests() -> Vec<ConnectorManifest> {
     vec![native_manifest()]
 }
 
+pub fn manifest(connector_id: &str) -> Option<ConnectorManifest> {
+    manifests()
+        .into_iter()
+        .find(|candidate| candidate.id == connector_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,10 +127,4 @@ mod tests {
         assert_eq!(manifest.actions.len(), 1);
         assert_eq!(manifest.actions[0].id, "workflow.start");
     }
-}
-
-pub fn manifest(connector_id: &str) -> Option<ConnectorManifest> {
-    manifests()
-        .into_iter()
-        .find(|candidate| candidate.id == connector_id)
 }

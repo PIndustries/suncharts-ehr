@@ -47,6 +47,14 @@ once; restarting does not reset it. Keep installation UUIDs stable. Review
 [.env.example](.env.example) and [operations](docs/operations.md) before changing
 storage, keys or the public address.
 
+For repeated interface work, start the server once with `sh scripts/dev-ui.sh`.
+It serves the application's HTML, JavaScript and CSS from the local `web/`
+directory with caching disabled. Interface changes need only a browser refresh;
+Rust and schema changes still require a server rebuild. Missing local assets fall
+back to the compiled copy, and production mode always uses compiled assets.
+This local shortcut does not replace the full validation gates required before
+a production merge.
+
 ## Documentation
 
 | Guide | Contents |
@@ -55,8 +63,8 @@ storage, keys or the public address.
 | [Scheduling](docs/scheduling.md) | Calendars, conflicts, recurring visits and reminders |
 | [Billing](docs/billing.md) | Coverage, charges, claims, ERA posting and test payments |
 | [Clearinghouses](docs/clearinghouses.md) | Claim.MD setup, HTTP/SFTP adapters and retrieval |
-| [Connected services](docs/integrations.md) | OAuth onboarding, managed reminders and support |
-| [API](docs/api.md) | Authentication, concurrency, FHIR and the OpenAPI contract |
+| [Integrations and connected services](docs/integrations.md) | Instance-local provider integrations and the optional Connect boundary |
+| [API](docs/api.md) | Native REST, FHIR, scheduling, billing, webhooks and the OpenAPI contract |
 | [Migration](docs/migration.md) | Source exports, staged import and reconciliation |
 | [Operations](docs/operations.md) | Staff, credentials, backups, builds and releases |
 | [Architecture](docs/architecture.md) | Service layout and data boundaries |
