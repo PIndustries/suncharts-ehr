@@ -88,6 +88,7 @@ async fn workflow_ai_events_are_tenant_scoped_staff_references() {
     }
     let mut patient = actor.clone();
     patient.role = Role::Patient;
+    patient.patient_id = Some(Uuid::new_v4());
     assert_eq!(
         json_call(
             &router,
