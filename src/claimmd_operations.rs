@@ -153,6 +153,33 @@ struct UploadedRequest {
 fn one() -> u16 {
     1
 }
+
+fn native_submission_id(file: &Value) -> Option<Uuid> {
+    let filename = file.get("filename")?.as_str()?;
+    let value = filename.strip_prefix("claim_")?.strip_suffix(".json")?;
+    Uuid::parse_str(value).ok()
+}
+
+async fn native_claim_for_upload(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    file: &Value,
+) -> Result<(Option<String>, Option<String>)> {
+    let Some(submission_id) = native_submission_id(file) else {
+        return Ok((None, None));
+    };
+    let linked: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT s.claim_id,c.control_number FROM edi_submissions s JOIN ehr_claims c ON c.tenant_id=s.tenant_id AND c.id=s.claim_id WHERE s.tenant_id=$1 AND s.id=$2",
+    )
+    .bind(tenant_id)
+    .bind(submission_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(linked
+        .map(|(claim_id, control)| (Some(claim_id.to_string()), Some(control)))
+        .unwrap_or((None, None)))
+}
+
 async fn sync_uploaded(
     actor: Actor,
     ExtractState(state): ExtractState<State>,
@@ -180,8 +207,10 @@ async fn sync_uploaded(
     for file in &files {
         bounded(file)?;
         let remote = numeric(&file["inboundid"], "Claim.MD uploaded file ID is invalid")?;
-        inserted += sqlx::query("INSERT INTO claimmd_operation_records(tenant_id,setting_id,kind,remote_id,content) VALUES($1,$2,'uploaded_file',$3,$4) ON CONFLICT DO NOTHING")
-            .bind(actor.tenant_id).bind(setting).bind(remote).bind(file).execute(&mut *tx).await?.rows_affected();
+        let (claim_id, patient_control_number) =
+            native_claim_for_upload(db(&state)?, actor.tenant_id, file).await?;
+        inserted += sqlx::query("INSERT INTO claimmd_operation_records(tenant_id,setting_id,kind,remote_id,claim_id,patient_control_number,content) VALUES($1,$2,'uploaded_file',$3,$4,$5,$6) ON CONFLICT DO NOTHING")
+            .bind(actor.tenant_id).bind(setting).bind(remote).bind(claim_id).bind(patient_control_number).bind(file).execute(&mut *tx).await?.rows_affected();
     }
     crate::postgres::audit(&mut tx, &actor, "claimmd.uploaded_files_sync", setting).await?;
     tx.commit().await?;
@@ -518,7 +547,26 @@ async fn list(
 ) -> Result<Json<Value>> {
     billing_operator(&actor)?;
     route(&state, &actor, setting).await?;
-    let records:Vec<Value>=sqlx::query_scalar("SELECT to_jsonb(r)-'tenant_id'-'setting_id' FROM claimmd_operation_records r WHERE tenant_id=$1 AND setting_id=$2 ORDER BY recorded_at DESC LIMIT 500").bind(actor.tenant_id).bind(setting).fetch_all(db(&state)?).await?;
+    let mut records:Vec<Value>=sqlx::query_scalar("SELECT to_jsonb(r)-'tenant_id'-'setting_id' FROM claimmd_operation_records r WHERE tenant_id=$1 AND setting_id=$2 ORDER BY recorded_at DESC LIMIT 500").bind(actor.tenant_id).bind(setting).fetch_all(db(&state)?).await?;
+    // Older synchronized upload rows are immutable audit evidence. Enrich their
+    // response dynamically instead of rewriting history when the filename maps
+    // to a native SunCharts submission in this tenant.
+    for record in &mut records {
+        if record.get("kind").and_then(Value::as_str) != Some("uploaded_file")
+            || record.get("claim_id").is_some_and(|value| !value.is_null())
+        {
+            continue;
+        }
+        let Some(content) = record.get("content") else {
+            continue;
+        };
+        let (claim_id, control) =
+            native_claim_for_upload(db(&state)?, actor.tenant_id, content).await?;
+        if let Some(object) = record.as_object_mut() {
+            object.insert("claim_id".into(), json!(claim_id));
+            object.insert("patient_control_number".into(), json!(control));
+        }
+    }
     let files:Vec<Value>=sqlx::query_scalar("SELECT to_jsonb(f)-'tenant_id'-'original_x12' FROM claimmd_transmitted_claim_files f WHERE tenant_id=$1 AND setting_id=$2 ORDER BY created_at DESC LIMIT 100").bind(actor.tenant_id).bind(setting).fetch_all(db(&state)?).await?;
     Ok(Json(json!({"records":records,"transmitted_files":files})))
 }
@@ -627,5 +675,17 @@ mod tests {
         assert!(valid_claimmd_id(Some("bad/id".into())).is_err());
         assert!(simple_filter(Some("1234567893".into()), 10).is_ok());
         assert!(simple_filter(Some("12345678901".into()), 10).is_err());
+    }
+
+    #[test]
+    fn native_upload_filenames_resolve_only_exact_submission_artifacts() {
+        let id = Uuid::new_v4();
+        assert_eq!(
+            native_submission_id(&json!({"filename":format!("claim_{id}.json")})),
+            Some(id)
+        );
+        assert!(native_submission_id(&json!({"filename":format!("claim_{id}.x12")})).is_none());
+        assert!(native_submission_id(&json!({"filename":"claim_../../secret.json"})).is_none());
+        assert!(native_submission_id(&json!({"filename":"external-claim.json"})).is_none());
     }
 }
