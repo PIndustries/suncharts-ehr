@@ -91,4 +91,10 @@ showClaimsWorkspace=async function(...args){
  const subtitle=heading?.querySelector('.muted');
  if(subtitle)subtitle.textContent='Claims, payer responses and reviewed remittances';
  if(heading)heading.insertAdjacentHTML('afterend',claimMdConnectionCard());
+ const setting=claimMdConnectionState?.active?.id;
+ if(setting&&typeof claimmdAccountUploads==='function'){
+  const account=await claimmdAccountUploads(setting,{refresh:true});
+  const firstSection=$('claims-tool')?.querySelector('.billing-section');
+  if(firstSection)firstSection.insertAdjacentHTML('beforebegin',account.html);
+ }
 };
