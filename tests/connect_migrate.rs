@@ -3760,6 +3760,8 @@ fn edi_details() -> Value {
 
 #[tokio::test]
 async fn patient_to_copay_to_cms1500_and_837p_preserves_the_revenue_cycle() {
+    use std::sync::Mutex;
+
     let (r, db, a, _) = setup().await;
     let (patient, visit) = billing_patient_visit(&r, &a).await;
     let patient_id = patient["id"].as_str().unwrap();
@@ -4016,6 +4018,150 @@ async fn patient_to_copay_to_cms1500_and_837p_preserves_the_revenue_cycle() {
         !x12.contains("*125.00***"),
         "the copay must not reduce the gross 837P claim amount"
     );
+
+    // Exercise the provider boundary with an in-process Claim.MD-compatible
+    // loopback. This proves upload receipt and status evidence without using a
+    // real credential, patient, clearinghouse account, or billable API call.
+    let control = claim["control_number"].clone();
+    let status_control = control.clone();
+    let response_cursors = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen_cursors = response_cursors.clone();
+    let gateway = Router::new()
+        .route(
+            "/services/upload/",
+            axum::routing::post(move |headers: HeaderMap, body: axum::body::Bytes| {
+                let control = control.clone();
+                async move {
+                    assert_eq!(headers["accept"], "application/json");
+                    assert!(headers["content-type"]
+                        .to_str()
+                        .unwrap()
+                        .starts_with("multipart/form-data; boundary="));
+                    assert!(!headers.contains_key("authorization"));
+                    let multipart = String::from_utf8(body.to_vec()).unwrap();
+                    assert!(multipart.contains("name=\"AccountKey\""));
+                    assert!(multipart.contains("synthetic-loopback-key"));
+                    assert!(multipart.contains("\"claim_form\":\"1500\""));
+                    assert!(multipart.contains("\"remote_claimid\":"));
+                    axum::Json(json!({"claim":[{
+                        "pcn":control,
+                        "bill_npi":"1234567893",
+                        "fileid":"837000001",
+                        "status":"A"
+                    }]}))
+                }
+            }),
+        )
+        .route(
+            "/services/response/",
+            axum::routing::post(move |headers: HeaderMap, body: axum::body::Bytes| {
+                let control = status_control.clone();
+                let seen_cursors = seen_cursors.clone();
+                async move {
+                    assert_eq!(headers["accept"], "application/json");
+                    let form: std::collections::HashMap<String, String> =
+                        url::form_urlencoded::parse(&body).into_owned().collect();
+                    assert_eq!(form["AccountKey"], "synthetic-loopback-key");
+                    seen_cursors
+                        .lock()
+                        .unwrap()
+                        .push(form["ResponseID"].clone());
+                    axum::Json(json!({
+                        "last_responseid":"1",
+                        "claim":[{
+                            "pcn":control,
+                            "bill_npi":"1234567893",
+                            "bill_taxid":"000000001",
+                            "ins_number":"SYNTHETIC-POLICY-01",
+                            "payerid":"SYN-ONLY",
+                            "total_charge":"150.00",
+                            "fdos":"2026-10-01",
+                            "fileid":"837000001",
+                            "claimmd_id":"golden-claim-1",
+                            "senderid":"CLMMD",
+                            "sender_name":"CLAIM.MD",
+                            "sender_icn":"",
+                            "status":"A",
+                            "messages":[{
+                                "responseid":1,
+                                "status":"A",
+                                "mesgid":"ACK",
+                                "message":"Synthetic Claim.MD receipt acknowledged"
+                            }]
+                        }]
+                    }))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let gateway_base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, gateway).await.unwrap() });
+    let config = provider_config(
+        &a,
+        &partner,
+        "claim_md",
+        &format!("{gateway_base}/services/upload/"),
+        &gateway_base,
+    );
+    queue_provider(&r, &a, &edi).await;
+    suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap();
+    suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap();
+    let (_, reports) = schedule_call(
+        &r,
+        &a,
+        "GET",
+        "/api/v1/billing/retrieved-reports",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(reports["items"].as_array().unwrap().len(), 1);
+    assert_eq!(reports["items"][0]["format"], "claimmd_status");
+    assert_eq!(response_cursors.lock().unwrap().as_slice(), ["0"]);
+    let (_, submitted_claim) = schedule_call(&r, &a, "GET", &claim_path, Value::Null, None).await;
+    assert_eq!(submitted_claim["claim"]["status"], "submitted");
+
+    // The status receipt creates an actionable, tenant-scoped follow-up rather
+    // than silently ending at transport. ERA/835 posting remains a separate
+    // payer-originated event because a Claim.MD upload acknowledgment cannot
+    // truthfully manufacture a remittance.
+    let (status, follow_up) = schedule_call(
+        &r,
+        &a,
+        "POST",
+        &format!("/api/v1/patients/{patient_id}/visits/{visit_id}/follow-ups"),
+        json!({
+            "request_id":Uuid::new_v4(),
+            "title":"Review synthetic claim acknowledgment and balance",
+            "instructions":"Confirm the synthetic Claim.MD receipt and review the remaining $125.00 patient balance.",
+            "assignee_id":a.sub,
+            "due_date":"2026-10-15",
+            "reason":"Synthetic post-claim follow-up"
+        }),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{follow_up}");
+    assert_eq!(follow_up["status"], "open");
+    let (_, work) = schedule_call(
+        &r,
+        &a,
+        "GET",
+        "/api/v1/follow-up/tasks?status=all",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert!(work["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["id"] == follow_up["id"]));
+    server.abort();
 }
 
 fn ack999(group: &str, accepted: bool) -> String {

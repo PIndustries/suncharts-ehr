@@ -16,8 +16,12 @@ practice explicitly enables.
 | RingCentral, Gmail, Claim.MD, own Resend and AI providers | Clinic-owned credentials are encrypted in the installation; provider callbacks return to the installation | Does not store or supply those clinic-owned credentials |
 | Support, managed reminders, native-client ecosystem and hosted-installation operations | Not part of the independent core service | Optional connected services |
 
-FHIR is the implemented HL7-family API boundary. A general HL7 v2 interface engine
-is not currently included. Provider webhooks and scheduling webhooks are narrow,
+FHIR is the implemented HL7-family API boundary. It is a bounded, instance-local
+FHIR R4 surface, not a US Core certification, SMART App Launch implementation or
+Bulk Data endpoint. A general HL7 v2 interface engine and ADT/SIU/ORU message
+listeners are not currently included. The installation's `/fhir/metadata`
+CapabilityStatement is the authoritative interaction list for that installation.
+Provider webhooks and scheduling webhooks are narrow,
 signed interfaces; they do not turn the EHR into a general-purpose relay or allow
 an integration to bypass tenant, role, consent or review checks. See the
 [API capability boundary](api.md#capability-and-service-boundary) and exact

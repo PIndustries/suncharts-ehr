@@ -87,17 +87,23 @@ profile is accepted.
 
 ## Hosted test payments
 
-Payment settings offer a practice's own Stripe test account or an authenticated
-SunCharts Payments connection backed by Stripe Connect. **Live charges are disabled.**
+Payment settings use an authenticated SunCharts Payments connection backed by
+Stripe Connect. **Live charges are disabled.**
 
-For an own account, save a `sk_test_` or `rk_test_` key, test authentication and
-explicitly activate test checkout. Saving changes disables new collection. A webhook
-signing secret is optional; without one, staff refreshes status explicitly.
+For a connected installation, configure the clinic payment account from the
+native SunCharts EHR billing experience. SunCharts Connect owns the Stripe
+platform secret and brokers onboarding, checkout, webhooks, refunds, and
+reconciliation behind the scenes. The clinic never enters a Stripe API key,
+installation ID, or broker token in the EHR. Only Stripe-hosted identity and
+bank verification opens outside the EHR, then returns to the clinic payment
+account. Staff refreshes account status and explicitly activates test checkout
+from the native billing experience.
 
 Managed payments require `ENGINE_PAYMENT_BROKER_URL`, a verified installation and
-completed owner enrollment. The owner completes setup through the authenticated
-SunCharts payment page and Stripe onboarding; selecting the option alone does not
-create a connected account.
+completed clinic enrollment. Authorized clinic owners, delegated partner
+administrators, and platform administrators manage the clinic-scoped account
+from the EHR. Stripe onboarding is used only for required identity and bank
+verification; selecting the option alone does not enable collection.
 
 Create a hosted Checkout Session from a posted account using its current version,
 a stable request UUID and an integer USD amount within the available balance.

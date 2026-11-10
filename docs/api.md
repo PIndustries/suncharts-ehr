@@ -102,9 +102,19 @@ lists and single-test draft orders also support the bounded writes described her
 | Binary | Immutable original document bytes | Read only; no search |
 | Immunization | Native documented vaccine events/reports | `_id`, `patient`, `status`, exact `date` |
 
+The write boundary is deliberately narrower than read/search:
+
+| Interaction group | Resources |
+|---|---|
+| Bounded `create` and `update` | Patient, Condition, AllergyIntolerance, MedicationStatement, ServiceRequest, Immunization |
+| Read and search only | Encounter, Observation, Appointment, Practitioner, Location, Coverage, Specimen, DiagnosticReport, DocumentReference, MedicationRequest |
+| Read by ID only | Binary |
+
 Searchable resources support `GET /fhir/{Resource}` and `GET /fhir/{Resource}/{id}`.
 Binary supports only `GET /fhir/Binary/{id}`. Metadata at
-`/fhir/metadata` advertises the implemented interactions and filters. Staff access
+`/fhir/metadata` advertises these implemented interactions and filters. It is a
+draft, installation-level statement of the current surface, not a certification
+or assertion of profile conformance. Staff access
 requires `clinical.read`, except Coverage requires `billing.read`. Patient-role
 tokens cannot use this staff boundary. Practitioner/Location name searches use a
 case-insensitive prefix. Practitioner `active` accepts `true`/`false`; Location
@@ -172,8 +182,10 @@ bundles omit `entry`.
   is provided.
 
 Beyond the bounded writes below, other resource writes, general version-history,
-code/date-range filters, includes, chaining and patient compartments are unsupported. US Core profiles, SMART, Bulk Data, EHI export,
-terminology validation and formal conformance/certification remain unfinished.
+code/date-range filters, includes, chaining and patient compartments are unsupported.
+No HL7 v2 message endpoint, ADT/SIU/ORU listener or interface engine is exposed.
+US Core profiles, SMART App Launch, Bulk Data, EHI export, terminology validation
+and formal conformance/certification remain unfinished.
 ### Patient registration writes
 
 `POST /fhir/Patient` creates registration identity and returns `201`, a Location,
