@@ -165,6 +165,7 @@ async fn owner_configuration_and_specialty_records_are_versioned_and_tenant_scop
             .into_iter()
             .map(|key| json!(key)),
     );
+    content["require_identity_correction_reason"] = json!(true);
     assert_eq!(saved["content"], content);
     let (read_status, reloaded) = call(
         &r,
