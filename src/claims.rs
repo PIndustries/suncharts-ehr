@@ -327,15 +327,12 @@ pub(crate) fn preflight(c: &Claim) -> Result<Vec<String>> {
     {
         issues.push("Every charge line requires 1 to 4 valid diagnosis pointers".into());
     }
-    for field in ["payer_code", "name"] {
-        if c.snapshot["account"]["coverage_snapshot"]["payer"]["content"][field]
-            .as_str()
-            .unwrap_or("")
-            .trim()
-            .is_empty()
-        {
-            issues.push(format!("Payer {field} is required"));
-        }
+    let payer = &c.snapshot["account"]["coverage_snapshot"]["payer"]["content"];
+    if payer["payer_code"].as_str().unwrap_or("").trim().is_empty() {
+        issues.push("Claim.MD payer ID is missing from the frozen payer mapping. Open the charge account and payer mapping, add the correct Claim.MD payer ID, then post a new insured account before preparing the electronic claim".into());
+    }
+    if payer["name"].as_str().unwrap_or("").trim().is_empty() {
+        issues.push("Payer name is required".into());
     }
     Ok(issues)
 }
