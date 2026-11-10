@@ -3783,6 +3783,16 @@ async fn patient_to_copay_to_cms1500_and_837p_preserves_the_revenue_cycle() {
     assert_eq!(diagnoses["diagnoses"][0]["code"], "Z00.00");
 
     let payer = billing_payer(&r, &a).await;
+    let (status, payer_directory) =
+        schedule_call(&r, &a, "GET", "/api/v1/billing/payers", Value::Null, None).await;
+    assert_eq!(status, 200, "{payer_directory}");
+    assert!(payer_directory["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["id"] == payer["id"]
+            && item["content"]["payer_code"] == "SYN-ONLY"
+            && item["content"]["active"] == true));
     let base = format!("/api/v1/patients/{patient_id}");
     let (status, coverage) = schedule_call(
         &r,
@@ -3799,6 +3809,18 @@ async fn patient_to_copay_to_cms1500_and_837p_preserves_the_revenue_cycle() {
     .await;
     assert_eq!(status, 200, "{coverage}");
     assert_eq!(coverage["content"]["copay_cents"], 2500);
+    assert_eq!(coverage["content"]["payer_id"], payer["id"]);
+
+    let (status, patient_billing) =
+        schedule_call(&r, &a, "GET", &format!("{base}/billing"), Value::Null, None).await;
+    assert_eq!(status, 200, "{patient_billing}");
+    assert!(patient_billing["coverages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["id"] == coverage["id"]
+            && item["content"]["payer_id"] == payer["id"]
+            && item["content"]["copay_cents"] == 2500));
 
     let charge = json!({
         "visit_id":visit["id"],
@@ -4011,6 +4033,10 @@ async fn patient_to_copay_to_cms1500_and_837p_preserves_the_revenue_cycle() {
     assert_eq!(status, 200, "{edi}");
     let x12 = edi["payload"].as_str().unwrap();
     assert!(x12.contains("CLM*"));
+    assert!(
+        x12.contains("*0*T*:~"),
+        "synthetic submission must use X12 test mode"
+    );
     assert!(x12.contains("*150.00***"), "{x12}");
     assert!(x12.contains("SV1*HC:99213*150.00*UN*1*11**1~"), "{x12}");
     assert!(x12.contains("HI*ABK:Z0000~"), "{x12}");
@@ -4124,6 +4150,22 @@ async fn patient_to_copay_to_cms1500_and_837p_preserves_the_revenue_cycle() {
     assert_eq!(response_cursors.lock().unwrap().as_slice(), ["0"]);
     let (_, submitted_claim) = schedule_call(&r, &a, "GET", &claim_path, Value::Null, None).await;
     assert_eq!(submitted_claim["claim"]["status"], "submitted");
+    assert_eq!(
+        submitted_claim["claim"]["control_number"],
+        claim["control_number"]
+    );
+
+    let (status, claim_worklist) =
+        schedule_call(&r, &a, "GET", "/api/v1/billing/claims", Value::Null, None).await;
+    assert_eq!(status, 200, "{claim_worklist}");
+    assert!(claim_worklist["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["id"] == claim["id"]
+            && item["status"] == "submitted"
+            && item["control_number"] == claim["control_number"]
+            && item["synthetic_test"] == true));
 
     // The status receipt creates an actionable, tenant-scoped follow-up rather
     // than silently ending at transport. ERA/835 posting remains a separate
