@@ -47,10 +47,15 @@ fn valid_broker_token(v: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 fn broker_base() -> Result<String> {
-    let v = std::env::var(BROKER_ENV).map_err(|_| {
-        Error::Invalid("SunCharts Payments is not enabled for this installation; connect this practice to SunCharts Connect and finish Stripe onboarding")
-    })?;
-    let u = url::Url::parse(&v)
+    // Managed payments are hosted by the same validated Connect origin.  A
+    // dedicated broker origin remains available for split deployments, but a
+    // managed EHR must not fail provisioning merely because that redundant
+    // override was omitted from its pod environment.
+    let v = std::env::var(BROKER_ENV).or_else(|_| crate::connect_onboarding::cloud_origin())?;
+    validate_broker_origin(&v)
+}
+fn validate_broker_origin(v: &str) -> Result<String> {
+    let u = url::Url::parse(v)
         .map_err(|_| Error::Invalid("invalid SunCharts Payments service configuration"))?;
     if u.scheme() != "https"
         || u.host_str().is_none()
@@ -1306,6 +1311,17 @@ async fn webhook(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn managed_payment_broker_accepts_only_a_fixed_https_origin() {
+        assert_eq!(
+            validate_broker_origin("https://connect.suncharts.app/").unwrap(),
+            "https://connect.suncharts.app"
+        );
+        assert!(validate_broker_origin("http://connect.suncharts.app/").is_err());
+        assert!(validate_broker_origin("https://connect.suncharts.app/payments").is_err());
+        assert!(validate_broker_origin("https://user@connect.suncharts.app/").is_err());
+    }
 
     #[test]
     fn connect_payment_setup_url_is_scoped_to_the_paired_connection() {
