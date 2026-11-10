@@ -77,6 +77,12 @@ pub struct WorkspaceContent {
     pub module_labels: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub module_groups: BTreeMap<String, String>,
+    #[serde(default = "default_true")]
+    pub require_identity_correction_reason: bool,
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 impl Default for WorkspaceContent {
@@ -92,6 +98,7 @@ impl Default for WorkspaceContent {
                 .collect(),
             module_labels: BTreeMap::new(),
             module_groups: BTreeMap::new(),
+            require_identity_correction_reason: true,
         }
     }
 }

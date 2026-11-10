@@ -97,7 +97,8 @@ impl PatientInput {
             birth_date: self.birth_date,
             reason,
         };
-        c.validate()?;
+        // FHIR identity corrections keep their explicit X-Change-Reason contract.
+        c.validate(true)?;
         Ok(c)
     }
 }
