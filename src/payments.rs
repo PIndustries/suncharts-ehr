@@ -66,8 +66,22 @@ fn broker_base() -> Result<String> {
     }
     Ok(u.origin().ascii_serialization())
 }
+fn connect_payments_url(connection_id: Uuid) -> Result<String> {
+    let mut url = url::Url::parse(&format!(
+        "{}/clinic/native-ehr/payments",
+        crate::connect_onboarding::cloud_origin()?.trim_end_matches('/')
+    ))
+    .map_err(|_| Error::Invalid("SunCharts Connect payment URL is invalid"))?;
+    url.query_pairs_mut()
+        .append_pair("connection", &connection_id.to_string());
+    Ok(url.to_string())
+}
 fn safe_onboarding_url(value: &str) -> Option<String> {
-    let base = url::Url::parse(&broker_base().ok()?).ok()?;
+    // Stripe onboarding is browser-hosted by Connect.  The server-to-server
+    // payment broker may be configured separately (or injected only into the
+    // worker), so do not hide a valid Connect verification link when the
+    // broker environment variable is absent from the EHR web process.
+    let base = url::Url::parse(&crate::connect_onboarding::cloud_origin().ok()?).ok()?;
     let u = url::Url::parse(value).ok()?;
     let pairs = u.query_pairs().collect::<Vec<_>>();
     if u.origin() != base.origin()
@@ -236,6 +250,10 @@ async fn read_settings(a: Actor, ExtractState(s): ExtractState<State>) -> Result
         .bind(a.tenant_id)
         .fetch_optional(&mut *tx)
         .await?;
+    let connection_id: Option<Uuid> = sqlx::query_scalar("SELECT connection_id FROM connect_service_settings WHERE tenant_id=$1 AND enabled AND verified AND NOT revoked AND connection_id IS NOT NULL")
+        .bind(a.tenant_id)
+        .fetch_optional(&mut *tx)
+        .await?;
     crate::postgres::audit(&mut tx, &a, "payment.settings_read", a.tenant_id).await?;
     tx.commit().await?;
     let storage_ready = if let Some(r) = &row {
@@ -246,11 +264,14 @@ async fn read_settings(a: Actor, ExtractState(s): ExtractState<State>) -> Result
         true
     };
     let broker = broker_base().ok();
+    let native_setup_url = connection_id.and_then(|id| connect_payments_url(id).ok());
     Ok(Json(json!({
         "setting":row.map(|r|r.public()),
         "test_mode_only":true,
-        "connect_available":broker.is_some(),
-        "connect_portal_url":broker.map(|base|format!("{base}/clinic/native-ehr/payments")),
+        "connect_available":native_setup_url.is_some(),
+        "native_setup_url":native_setup_url.clone(),
+        "connect_portal_url":native_setup_url,
+        "broker_available":broker.is_some(),
         "credential_storage_ready":storage_ready,
         "webhook_base":format!("{}/api/v1/payments/webhooks/",origin(&s)?)
     })))
@@ -1285,6 +1306,22 @@ async fn webhook(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connect_payment_setup_url_is_scoped_to_the_paired_connection() {
+        let connection_id = Uuid::parse_str("23c9c3b4-47aa-4c19-ad9f-154c8aa187e6").unwrap();
+        let url = connect_payments_url(connection_id).unwrap();
+        assert_eq!(
+            url,
+            "https://connect.suncharts.app/clinic/native-ehr/payments?connection=23c9c3b4-47aa-4c19-ad9f-154c8aa187e6"
+        );
+        assert_eq!(safe_onboarding_url(&url).as_deref(), Some(url.as_str()));
+        assert!(
+            safe_onboarding_url("https://connect.suncharts.app/clinic/native-ehr/payments")
+                .is_none()
+        );
+        assert!(safe_onboarding_url("https://attacker.example/clinic/native-ehr/payments?connection=23c9c3b4-47aa-4c19-ad9f-154c8aa187e6").is_none());
+    }
     fn example() -> Payment {
         Payment {
             tenant_id: Uuid::new_v4(),
