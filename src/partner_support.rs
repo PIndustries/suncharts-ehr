@@ -110,6 +110,14 @@ fn configured_issuer() -> Result<String> {
     crate::connect_onboarding::cloud_origin()
 }
 
+fn handoff_request_allowed(origin_valid: bool, headers: &HeaderMap) -> bool {
+    origin_valid
+        || headers
+            .get("x-suncharts-identity-handoff")
+            .and_then(|value| value.to_str().ok())
+            == Some("1")
+}
+
 fn validate_claims(claims: &Claims, issuer: &str, audience: &str, now: i64) -> Result<()> {
     if claims.iss != issuer
         || claims.aud != audience
@@ -135,7 +143,13 @@ pub async fn accept(
     Json(input): Json<AcceptRequest>,
 ) -> Result<(HeaderMap, Json<Value>)> {
     let auth = state.browser.as_ref().ok_or(Error::NotFound)?;
-    auth.check_origin(&headers)?;
+    // Safari and embedded user agents may omit Origin on a same-origin POST.
+    // Match the normal Connect identity handoff: the custom header is an
+    // equivalent CSRF boundary because a cross-origin form cannot set it and a
+    // cross-origin script cannot pass the CORS preflight.
+    if !handoff_request_allowed(auth.check_origin(&headers).is_ok(), &headers) {
+        return Err(Error::Forbidden);
+    }
     let issuer = configured_issuer()?;
     if input.issuer != issuer || input.code.len() < 32 || input.code.len() > 256 {
         return Err(Error::Unauthorized);
@@ -339,6 +353,15 @@ pub(crate) async fn verify_owner_in_tx(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delegated_handoff_accepts_protected_header_when_origin_is_omitted() {
+        let mut headers = HeaderMap::new();
+        assert!(!handoff_request_allowed(false, &headers));
+        headers.insert("x-suncharts-identity-handoff", "1".parse().unwrap());
+        assert!(handoff_request_allowed(false, &headers));
+        assert!(handoff_request_allowed(true, &HeaderMap::new()));
+    }
 
     #[test]
     fn claims_are_exactly_bounded_to_support_audience_and_time() {
