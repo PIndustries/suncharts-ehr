@@ -438,7 +438,7 @@ async fn save(
     tx.commit().await?;
     Ok(Json(out.public()))
 }
-async fn request_at(
+pub(crate) async fn request_at(
     base: &str,
     installation: Uuid,
     key: &str,
@@ -466,6 +466,32 @@ async fn request_at(
     }
     let bytes = crate::stedi::bytes(response, 262144).await?;
     serde_json::from_slice(&bytes).map_err(|_| Error::Invalid("invalid SunCharts service response"))
+}
+pub(crate) async fn installation_request(
+    s: &State,
+    tenant: Uuid,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<Value> {
+    let mut tx = db(s)?.begin().await?;
+    let setting = setting(&mut tx, tenant).await?.ok_or(Error::NotFound)?;
+    if !setting.enabled || !setting.verified || setting.revoked {
+        return Err(Error::Conflict(
+            "SunCharts Connect is not enabled and verified",
+        ));
+    }
+    let (_, token) = pinned(&mut tx, tenant, setting.id, setting.credential_revision).await?;
+    tx.commit().await?;
+    request_at(
+        &crate::connect_onboarding::cloud_origin()?,
+        setting.installation_id,
+        token.expose(),
+        method,
+        path,
+        body,
+    )
+    .await
 }
 fn status_evidence(
     v: &Value,

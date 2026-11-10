@@ -25,6 +25,10 @@ pub fn router() -> Router<State> {
         .route("/api/v1/schedule/locations", get(schedule_locations))
         .route("/api/v1/practice/staff", get(staff).post(create_staff))
         .route(
+            "/api/v1/practice/staff/{id}/resend",
+            axum::routing::post(resend_staff),
+        )
+        .route(
             "/api/v1/practice/staff/{id}",
             axum::routing::put(update_staff),
         )
@@ -135,7 +139,7 @@ async fn password_hash(password: String) -> Result<String> {
     .await
     .map_err(|_| Error::Invalid("password hashing failed"))?
 }
-const STAFF_SELECT:&str="SELECT jsonb_build_object('id',id,'email',email,'display_name',display_name,'role',role,'disabled',disabled,'version',version) FROM browser_users WHERE tenant_id=$1 AND id=$2";
+const STAFF_SELECT:&str="SELECT jsonb_build_object('id',u.id,'email',u.email,'display_name',u.display_name,'role',u.role,'disabled',u.disabled,'version',u.version,'identity_mode',CASE WHEN i.user_id IS NULL THEN 'local' ELSE 'connect_managed' END,'invite_status',i.state,'invite_delivery',i.delivery) FROM browser_users u LEFT JOIN managed_staff_invites i ON i.tenant_id=u.tenant_id AND i.user_id=u.id WHERE u.tenant_id=$1 AND u.id=$2";
 async fn staff_snapshot(tx: &mut Transaction<'_, Postgres>, a: &Actor, id: Uuid) -> Result<Value> {
     sqlx::query_scalar(STAFF_SELECT)
         .bind(a.tenant_id)
@@ -146,19 +150,20 @@ async fn staff_snapshot(tx: &mut Transaction<'_, Postgres>, a: &Actor, id: Uuid)
 }
 async fn staff(ExtractState(s): ExtractState<State>, h: HeaderMap) -> Result<Json<Value>> {
     let a = owner(&s, &h, false).await?;
+    let managed = sync_managed_staff(&s, &a).await.unwrap_or(false);
     let mut tx = locked(&s, &a, &h).await?;
-    let items:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',id,'email',email,'display_name',display_name,'role',role,'disabled',disabled,'version',version) FROM browser_users WHERE tenant_id=$1 ORDER BY lower(display_name),email LIMIT 1001").bind(a.tenant_id).fetch_all(&mut *tx).await?;
+    let items:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',u.id,'email',u.email,'display_name',u.display_name,'role',u.role,'disabled',u.disabled,'version',u.version,'identity_mode',CASE WHEN i.user_id IS NULL THEN 'local' ELSE 'connect_managed' END,'invite_status',i.state,'invite_delivery',i.delivery) FROM browser_users u LEFT JOIN managed_staff_invites i ON i.tenant_id=u.tenant_id AND i.user_id=u.id WHERE u.tenant_id=$1 ORDER BY lower(u.display_name),u.email LIMIT 1001").bind(a.tenant_id).fetch_all(&mut *tx).await?;
     crate::postgres::audit(&mut tx, &a, "practice.staff.read", a.tenant_id).await?;
     tx.commit().await?;
     Ok(Json(
-        json!({"has_more":items.len()>1000,"items":items.into_iter().take(1000).collect::<Vec<_>>()}),
+        json!({"managed_invites":managed,"has_more":items.len()>1000,"items":items.into_iter().take(1000).collect::<Vec<_>>()}),
     ))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NewStaff {
     email: String,
-    password: String,
+    password: Option<String>,
     display_name: String,
     role: String,
     reason: String,
@@ -183,12 +188,154 @@ async fn create_staff(
             "valid email, display name and supported staff role are required",
         ));
     }
-    let hash = password_hash(p.password).await?;
+    let managed = connect_managed(&s, a.tenant_id).await?;
+    let hash = if managed {
+        password_hash(Uuid::new_v4().to_string()).await?
+    } else {
+        password_hash(
+            p.password
+                .ok_or(Error::Invalid("password is required for self-hosted staff"))?,
+        )
+        .await?
+    };
     let mut tx = locked(&s, &a, &h).await?;
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO browser_users(tenant_id,id,email,password_hash,display_name,role) VALUES($1,$2,$3,$4,$5,$6)").bind(a.tenant_id).bind(id).bind(email).bind(hash).bind(p.display_name.trim()).bind(p.role).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO browser_users(tenant_id,id,email,password_hash,display_name,role,disabled) VALUES($1,$2,$3,$4,$5,$6,$7)").bind(a.tenant_id).bind(id).bind(&email).bind(hash).bind(p.display_name.trim()).bind(&p.role).bind(managed).execute(&mut *tx).await?;
+    if managed {
+        let request_id = Uuid::new_v4();
+        let body = json!({"request_id":request_id,"remote_user_id":id,"email":email,"display_name":p.display_name.trim(),"role":&p.role});
+        tx.commit().await?;
+        let response = match crate::connect_services::installation_request(
+            &s,
+            a.tenant_id,
+            reqwest::Method::POST,
+            "/staff-invites",
+            Some(&body),
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                // Do not leave a misleading local staff row when Connect did not
+                // accept the invitation request.
+                sqlx::query("DELETE FROM browser_users WHERE tenant_id=$1 AND id=$2")
+                    .bind(a.tenant_id)
+                    .bind(id)
+                    .execute(&s.browser.as_ref().ok_or(Error::Unauthorized)?.db)
+                    .await?;
+                return Err(error);
+            }
+        };
+        let mut tx = locked(&s, &a, &h).await?;
+        save_invite(&mut tx, &a, id, &response).await?;
+        let item = staff_snapshot(&mut tx, &a, id).await?;
+        record(&mut tx, &a, "staff", id, 1, &p.reason, &item).await?;
+        tx.commit().await?;
+        return Ok(Json(item));
+    }
     let item = staff_snapshot(&mut tx, &a, id).await?;
     record(&mut tx, &a, "staff", id, 1, &p.reason, &item).await?;
+    tx.commit().await?;
+    Ok(Json(item))
+}
+
+async fn connect_managed(s: &State, tenant: Uuid) -> Result<bool> {
+    let db = &s.browser.as_ref().ok_or(Error::Unauthorized)?.db;
+    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM connect_service_settings WHERE tenant_id=$1 AND enabled AND verified AND NOT revoked)").bind(tenant).fetch_one(db).await?)
+}
+async fn save_invite(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    user: Uuid,
+    v: &Value,
+) -> Result<()> {
+    let request = Uuid::parse_str(
+        v["request_id"]
+            .as_str()
+            .ok_or(Error::Invalid("invalid staff invite response"))?,
+    )
+    .map_err(|_| Error::Invalid("invalid staff invite response"))?;
+    let invite = v["invite_id"]
+        .as_str()
+        .and_then(|x| Uuid::parse_str(x).ok());
+    let state = v["state"]
+        .as_str()
+        .filter(|x| {
+            matches!(
+                *x,
+                "pending" | "accepted" | "revoked" | "expired" | "inactive" | "unavailable"
+            )
+        })
+        .ok_or(Error::Invalid("invalid staff invite response"))?;
+    sqlx::query("INSERT INTO managed_staff_invites(tenant_id,user_id,request_id,invite_id,state,delivery,accepted_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(tenant_id,user_id) DO UPDATE SET request_id=$3,invite_id=$4,state=$5,delivery=$6,accepted_at=$7,expires_at=$8,updated_at=now()")
+  .bind(a.tenant_id).bind(user).bind(request).bind(invite).bind(state).bind(&v["delivery"])
+  .bind(v["accepted_at"].as_str().and_then(|x|x.parse::<chrono::DateTime<chrono::Utc>>().ok()))
+  .bind(v["expires_at"].as_str().and_then(|x|x.parse::<chrono::DateTime<chrono::Utc>>().ok())).execute(&mut **tx).await?;
+    sqlx::query("UPDATE browser_users SET disabled=$3,version=version+1 WHERE tenant_id=$1 AND id=$2 AND disabled IS DISTINCT FROM $3")
+    .bind(a.tenant_id)
+    .bind(user)
+    .bind(state != "accepted")
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+async fn sync_managed_staff(s: &State, a: &Actor) -> Result<bool> {
+    if !connect_managed(s, a.tenant_id).await? {
+        return Ok(false);
+    }
+    let value = crate::connect_services::installation_request(
+        s,
+        a.tenant_id,
+        reqwest::Method::GET,
+        "/staff-invites",
+        None,
+    )
+    .await?;
+    let mut tx = s
+        .browser
+        .as_ref()
+        .ok_or(Error::Unauthorized)?
+        .db
+        .begin()
+        .await?;
+    for item in value["items"].as_array().into_iter().flatten() {
+        if let Some(id) = item["remote_user_id"]
+            .as_str()
+            .and_then(|x| Uuid::parse_str(x).ok())
+        {
+            save_invite(&mut tx, a, id, item).await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(true)
+}
+async fn resend_staff(
+    ExtractState(s): ExtractState<State>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>> {
+    let a = owner(&s, &h, true).await?;
+    let db = &s.browser.as_ref().ok_or(Error::Unauthorized)?.db;
+    let previous: Uuid = sqlx::query_scalar(
+        "SELECT request_id FROM managed_staff_invites WHERE tenant_id=$1 AND user_id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(id)
+    .fetch_optional(db)
+    .await?
+    .ok_or(Error::NotFound)?;
+    let response = crate::connect_services::installation_request(
+        &s,
+        a.tenant_id,
+        reqwest::Method::POST,
+        &format!("/staff-invites/{previous}/resend"),
+        Some(&json!({"request_id":Uuid::new_v4()})),
+    )
+    .await?;
+    let mut tx = locked(&s, &a, &h).await?;
+    save_invite(&mut tx, &a, id, &response).await?;
+    let item = staff_snapshot(&mut tx, &a, id).await?;
+    crate::postgres::audit(&mut tx, &a, "practice.staff.invite_resent", id).await?;
     tx.commit().await?;
     Ok(Json(item))
 }
@@ -231,6 +378,16 @@ async fn update_staff(
     if old_v != v {
         return Err(Error::Conflict(
             "staff record changed; reload before saving",
+        ));
+    }
+    let pending_managed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM managed_staff_invites WHERE tenant_id=$1 AND user_id=$2 AND state<>'accepted')")
+        .bind(a.tenant_id)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+    if pending_managed && !p.disabled {
+        return Err(Error::Conflict(
+            "Connect-managed staff access stays disabled until the invitation is accepted",
         ));
     }
     if old_role == "owner" && !old_disabled && (p.role != "owner" || p.disabled) {
