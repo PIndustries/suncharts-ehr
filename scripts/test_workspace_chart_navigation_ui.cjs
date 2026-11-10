@@ -20,14 +20,23 @@ vm.runInContext(app.slice(start,end),context,{filename:'chart-navigation.js'});
 const evaluate=source=>vm.runInContext(source,context),plain=value=>JSON.parse(JSON.stringify(value));
 
 async function main(){
+ evaluate(`workspace={appointments:[{id:'appt-1',status:'booked'}],billing:{accounts:[]}};activeVisit=null;patientClaimAccounts=()=>[];patientPaymentAccounts=()=>[];billingCan=()=>true`);
+ let actions=evaluate('patientWorkflowActions()');
+ assert.match(actions,/Check in to create encounter/);
+ assert.match(actions,/data-patient-create-claim disabled>Create insurance claim/);
+ assert.match(actions,/data-patient-collect-copay disabled>Collect copay \/ payment/);
+ evaluate(`workspace.appointments[0].status='checked_in'`);actions=evaluate('patientWorkflowActions()');
+ assert.match(actions,/data-start="appt-1">Create encounter/,'checked-in patients get a direct encounter action');
+
  const order=['billing','functional_status','profile','specialty_care','overview','visits','clinical','documents'];
  evaluate(`practiceWorkspaceSettings={version:4,content:{module_order:Object.keys(workspaceModuleIds),hidden_modules:['specialty'],chart_tabs:${JSON.stringify(order)}}}`);
  const html=evaluate('chartNavigation(configuredChartTabs(Object.entries(chartTabLabels)))');
- const primary=[...html.matchAll(/data-chart-section="([^"]+)"/g)].map(match=>match[1]);
- const secondary=[...html.matchAll(/<option value="([^"]+)"/g)].map(match=>match[1]);
- assert.deepEqual(primary,order.slice(0,6),'primary buttons follow the configured order, including specialty areas');
- assert.deepEqual(secondary,order.slice(6),'More retains the remaining configured order');
- assert.deepEqual([...primary,...secondary],order);
+ const primaryHtml=html.match(/chart-primary-tabs">([\s\S]*?)<\/div>/)?.[1]||'',secondaryHtml=html.match(/chart-workflow-tabs"[^>]*>([\s\S]*?)<\/div>/)?.[1]||'';
+ const primary=[...primaryHtml.matchAll(/data-chart-section="([^"]+)"/g)].map(match=>match[1]),secondary=[...secondaryHtml.matchAll(/data-chart-section="([^"]+)"/g)].map(match=>match[1]);
+ assert.deepEqual(primary,['functional_status','profile','specialty_care','overview','clinical','documents'],'configured clinical areas remain visible in the first chart row');
+ assert.deepEqual(secondary,['billing','visits'],'configured core workflow areas remain visible in the second chart row');
+ assert.equal(html.includes('chart-more-sections'),false,'patient chart navigation has no More dropdown');
+ assert.deepEqual([...primary,...secondary].sort(),[...order].sort());
 
  // Editing visibility in the legacy administration form preserves Studio ordering.
  const selected=['billing','functional_status','specialty_care','overview','visits','clinical','documents','source'];
@@ -71,6 +80,6 @@ async function main(){
  assert.equal(evaluate('chartSection'),'overview');
  assert.equal(nodes['specialty-care-panel'].hidden,true);
  assert.deepEqual(notices.at(-1),['Your role does not have access to this chart area.',true]);
- console.log('PASS configured chart order, administration save order, independent specialty navigation and disabled-area render guards');
+ console.log('PASS visible two-row chart navigation, administration save order, independent specialty navigation and disabled-area render guards');
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});
