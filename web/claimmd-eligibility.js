@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 
+let claimmdProviderDefaults={providers:[],facilities:[]};
+async function loadClaimmdProviderDefaults(){claimmdProviderDefaults=await api('/api/v1/billing/claimmd/provider-defaults');return claimmdProviderDefaults;}
+function claimmdClaimProviderDefaults(){
+ const provider=claimmdProviderDefaults.providers?.find(item=>item.id===claimmdProviderDefaults.default_provider_id)||(claimmdProviderDefaults.providers?.length===1?claimmdProviderDefaults.providers[0]:null);
+ const facility=claimmdProviderDefaults.facilities?.find(item=>item.id===claimmdProviderDefaults.default_facility_id)||(claimmdProviderDefaults.facilities?.length===1?claimmdProviderDefaults.facilities[0]:null);
+ return {billing_provider_name:facility?.name||provider?.display_name||'',billing_npi:provider?.npi||'',rendering_npi:provider?.npi||'',billing_address:facility?.address||'',tax_id:''};
+}
+
 function claimmdEligibilityButton(coverage){
  return billingWrite()&&coverage.content.status==='active'?`<button type="button" data-claimmd-eligibility="${esc(coverage.id)}">Check eligibility</button>`:'';
 }
@@ -35,11 +43,15 @@ async function openClaimmdEligibility(coverage,options={}){
  openBillingEditor(`<section><div class="section-head"><div><h3>${canRequest?'Check Claim.MD eligibility':'Review Claim.MD eligibility'}</h3><p class="muted">${esc(payerName(coverage.content.payer_id))} · member ${esc(coverage.content.member_id)}</p></div><button type="button" data-cancel-billing>Close</button></div><p>Submit a structured real-time eligibility request. A completed response is evidence returned by the payer; it is not a payment guarantee and does not change the coverage record.</p>${canRequest?`<form id="claimmd-eligibility-form" data-coverage="${esc(coverage.id)}" data-request="${crypto.randomUUID()}"><div class="form-grid">${billingField('insured_given_name','Subscriber given name',coverage.content.relationship==='self'?patient.given_name:subscriber.given,'text',100,true)}${billingField('insured_middle_name','Subscriber middle name',subscriber.middle,'text',100)}${billingField('insured_family_name','Subscriber family name',coverage.content.relationship==='self'?patient.family_name:subscriber.family,'text',100,true)}${billingField('insured_birth_date','Subscriber birth date',coverage.content.relationship==='self'?patient.birth_date:(coverage.content.subscriber_birth_date||''),'date')}${selectField('insured_sex','Subscriber administrative sex',['','F','M'],'')}${selectField('patient_sex','Patient administrative sex',['','F','M'],'')}${billingField('service_date','Service date',serviceDate,'date',0,true)}${billingField('service_codes','Benefit type codes (comma-separated)','30','text',200)}${billingField('procedure_code','CPT code instead of benefit types','','text',10)}${billingField('provider_npi','Provider NPI','','text',10,true)}${billingField('provider_taxid','Provider tax ID','','text',20,true)}${selectField('provider_taxid_type','Tax ID type',['E','S'],'E')}${billingField('provider_name','Provider organization / last name','','text',200)}${billingField('provider_taxonomy','Provider taxonomy','','text',10)}</div><p class="muted">Use either benefit type codes or a CPT code, not both. Benefit type 30 requests general health-plan coverage.</p><button class="primary" type="submit">Request eligibility</button></form>`:''}<div id="claimmd-eligibility-history">${claimmdEligibilityHistory(history.items)}</div></section>`);
 }
 
-function claimmdPayerRows(items){
- return `<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Payer</th><th>ID / type</th><th>Eligibility</th><th>Professional / institutional</th><th>ERA</th></tr></thead><tbody>${items.map(item=>`<tr><td><b>${esc(item.payer_name||'Unnamed payer')}</b><small>${esc(item.payer_state||'')}</small></td><td>${esc(item.payerid||'—')}<small>${esc(item.payer_type||'')}</small></td><td>${esc(item.eligibility||'no')}</td><td>${esc(item['1500_claims']||'no')} / ${esc(item.ub_claims||'no')}</td><td>${esc(item.era||'no')}</td></tr>`).join('')||'<tr><td colspan="5">No matching payers returned.</td></tr>'}</tbody></table></div>`;
+function claimmdPayerRows(items,selectable=false){
+ return `<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Payer</th><th>ID / type</th><th>Eligibility</th><th>Professional / institutional</th><th>ERA</th>${selectable?'<th></th>':''}</tr></thead><tbody>${items.map(item=>`<tr><td><b>${esc(item.payer_name||'Unnamed payer')}</b><small>${esc(item.payer_state||'')}</small></td><td>${esc(item.payerid||'—')}<small>${esc(item.payer_type||'')}</small></td><td>${esc(item.eligibility||'no')}</td><td>${esc(item['1500_claims']||'no')} / ${esc(item.ub_claims||'no')}</td><td>${esc(item.era||'no')}</td>${selectable?`<td><button type="button" data-claimmd-payer-select="${esc(item.payerid||'')}" data-payer-name="${esc(item.payer_name||'')}">Use payer</button></td>`:''}</tr>`).join('')||`<tr><td colspan="${selectable?6:5}">No matching payers returned.</td></tr>`}</tbody></table></div>`;
 }
 
+function claimmdCoveragePayerSearch(){return `<section class="billing-section"><h4>Find payer in Claim.MD</h4><form id="coverage-claimmd-payer-search" class="billing-filter"><label>Payer name<input name="name" minlength="2" maxlength="120" required></label><button type="submit">Search</button></form><div id="coverage-claimmd-payer-results"></div></section>`;}
+
 document.addEventListener('click',event=>{
+ const payer=event.target.closest('button[data-claimmd-payer-select]');
+ if(payer){event.preventDefault();const native=(billingPayers||[]).find(item=>item.content.payer_code===payer.dataset.claimmdPayerSelect);if(native){const select=document.querySelector('#coverage-form select[name="payer_id"]');if(select){select.value=native.id;select.dispatchEvent(new Event('change',{bubbles:true}));}notice('Existing native payer selected.');return;}const form=document.querySelector('#coverage-payer-form');if(form){form.elements.name.value=payer.dataset.payerName;form.elements.payer_code.value=payer.dataset.claimmdPayerSelect;notice('Payer details copied. Review and add the payer to use it.');}return;}
  const button=event.target.closest('button[data-claimmd-eligibility]');
  if(!button)return;
  event.preventDefault();event.stopImmediatePropagation();
@@ -47,13 +59,14 @@ document.addEventListener('click',event=>{
 },true);
 
 document.addEventListener('submit',event=>{
- const form=event.target;if(!['claimmd-eligibility-form','claimmd-payer-search'].includes(form.id))return;
+ const form=event.target;if(!['claimmd-eligibility-form','claimmd-payer-search','coverage-claimmd-payer-search'].includes(form.id))return;
  event.preventDefault();event.stopImmediatePropagation();
  run(async()=>{
   const data=Object.fromEntries(new FormData(form));
-  if(form.id==='claimmd-payer-search'){
-   const query=new URLSearchParams();if(data.payerid.trim())query.set('payerid',data.payerid.trim());if(data.name.trim())query.set('name',data.name.trim());
-   const result=await api(`/api/v1/billing/claimmd/payers?${query}`);$('claimmd-payer-results').innerHTML=claimmdPayerRows(result.items);notice('Claim.MD payer directory refreshed.');return;
+  if(form.id==='claimmd-payer-search'||form.id==='coverage-claimmd-payer-search'){
+   const payerid=(data.payerid||'').trim(),name=(data.name||'').trim();
+   const query=new URLSearchParams();if(payerid)query.set('payerid',payerid);if(name)query.set('name',name);
+   const result=await api(`/api/v1/billing/claimmd/payers?${query}`);$(form.id==='claimmd-payer-search'?'claimmd-payer-results':'coverage-claimmd-payer-results').innerHTML=claimmdPayerRows(result.items,form.id==='coverage-claimmd-payer-search');notice('Claim.MD payer directory refreshed.');return;
   }
   const serviceCodes=data.service_codes.split(',').map(value=>value.trim()).filter(Boolean);
   const body={request_id:form.dataset.request,service_date:data.service_date,service_codes:serviceCodes,procedure_code:data.procedure_code.trim()||null,insured_given_name:data.insured_given_name.trim(),insured_middle_name:data.insured_middle_name.trim()||null,insured_family_name:data.insured_family_name.trim(),insured_birth_date:data.insured_birth_date||null,insured_sex:data.insured_sex||null,patient_sex:data.patient_sex||null,provider_npi:data.provider_npi.trim(),provider_taxid:data.provider_taxid.trim(),provider_taxid_type:data.provider_taxid_type,provider_name:data.provider_name.trim()||null,provider_taxonomy:data.provider_taxonomy.trim()||null};
