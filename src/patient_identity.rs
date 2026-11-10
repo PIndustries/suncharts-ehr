@@ -43,23 +43,42 @@ pub struct Change {
     pub reason: String,
 }
 impl Change {
-    pub fn validate(&self) -> Result<()> {
+    pub fn validate(&self, reason_required: bool) -> Result<()> {
         for (v, max) in [
             (&self.mrn, 64),
             (&self.given_name, 100),
             (&self.family_name, 100),
-            (&self.reason, 1000),
         ] {
             text(v, max)?;
             if v.chars().any(char::is_control) {
                 return Err(Error::Invalid("identity fields contain control characters"));
             }
         }
+        if reason_required || !self.reason.trim().is_empty() {
+            text(&self.reason, 1000)?;
+        }
+        if self.reason.chars().any(char::is_control) {
+            return Err(Error::Invalid("identity fields contain control characters"));
+        }
         if self.birth_date > Utc::now().date_naive() || self.birth_date.year() < 1800 {
             return Err(Error::Invalid("invalid birth date"));
         }
         Ok(())
     }
+}
+
+async fn reason_required(tx: &mut Transaction<'_, Postgres>, a: &Actor) -> Result<bool> {
+    let content = sqlx::query_scalar::<_, Value>(
+        "SELECT content FROM practice_workspace_settings WHERE tenant_id=$1",
+    )
+    .bind(a.tenant_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(content
+        .as_ref()
+        .and_then(|value| value.get("require_identity_correction_reason"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true))
 }
 pub fn routes() -> Router<State> {
     Router::new()
@@ -108,8 +127,9 @@ async fn history(
 }
 async fn payload(tx: &mut Transaction<'_, Postgres>, a: &Actor, p: &Identity) -> Result<Value> {
     let (h, truncated) = history(tx, a, p.id).await?;
+    let reason_required = reason_required(tx, a).await?;
     Ok(
-        json!({"patient":p.patient(),"version":p.version,"can_edit":a.clinical().is_ok(),"history":h,"history_truncated":truncated}),
+        json!({"patient":p.patient(),"version":p.version,"can_edit":a.clinical().is_ok(),"reason_required":reason_required,"history":h,"history_truncated":truncated}),
     )
 }
 pub(crate) async fn read_identity(s: &State, a: &Actor, id: Uuid) -> Result<Identity> {
@@ -128,8 +148,9 @@ pub(crate) async fn update(
     input: &Change,
 ) -> Result<Identity> {
     a.clinical()?;
-    input.validate()?;
     let mut tx = db(s)?.begin().await?;
+    let require_reason = reason_required(&mut tx, a).await?;
+    input.validate(require_reason)?;
     let old = row(&mut tx, a, id, true).await?;
     if old.version != expected {
         return Err(Error::Conflict(
@@ -139,7 +160,12 @@ pub(crate) async fn update(
     sqlx::query("INSERT INTO patient_identity_revisions(tenant_id,patient_id,version,snapshot,reason) VALUES($1,$2,$3,$4,'Registration identity before first correction') ON CONFLICT DO NOTHING").bind(a.tenant_id).bind(id).bind(old.version).bind(old.patient()).execute(&mut *tx).await?;
     sqlx::query("UPDATE patients SET mrn=$3,given_name=$4,family_name=$5,birth_date=$6,identity_version=identity_version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(id).bind(input.mrn.trim()).bind(input.given_name.trim()).bind(input.family_name.trim()).bind(input.birth_date).execute(&mut *tx).await?;
     let p = row(&mut tx, a, id, false).await?;
-    sqlx::query("INSERT INTO patient_identity_revisions(tenant_id,patient_id,version,snapshot,actor_id,reason) VALUES($1,$2,$3,$4,$5,$6)").bind(a.tenant_id).bind(id).bind(p.version).bind(p.patient()).bind(a.sub).bind(input.reason.trim()).execute(&mut *tx).await?;
+    let reason = if input.reason.trim().is_empty() {
+        "Identity corrected; clinic reason prompt disabled"
+    } else {
+        input.reason.trim()
+    };
+    sqlx::query("INSERT INTO patient_identity_revisions(tenant_id,patient_id,version,snapshot,actor_id,reason) VALUES($1,$2,$3,$4,$5,$6)").bind(a.tenant_id).bind(id).bind(p.version).bind(p.patient()).bind(a.sub).bind(reason).execute(&mut *tx).await?;
     audit(&mut tx, a, "patient.identity_save", id).await?;
     tx.commit().await?;
     Ok(p)
@@ -183,4 +209,31 @@ async fn revisions(
     audit(&mut tx, &a, "patient.identity_history", id).await?;
     tx.commit().await?;
     Ok(Json(json!({"items":items,"truncated":truncated})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn change(reason: &str) -> Change {
+        Change {
+            mrn: "MRN-1".into(),
+            given_name: "Ada".into(),
+            family_name: "Lovelace".into(),
+            birth_date: NaiveDate::from_ymd_opt(1980, 1, 1).unwrap(),
+            reason: reason.into(),
+        }
+    }
+
+    #[test]
+    fn reason_policy_requires_reason_by_default() {
+        assert!(change("").validate(true).is_err());
+        assert!(change("Corrected family name").validate(true).is_ok());
+    }
+
+    #[test]
+    fn reason_policy_allows_blank_but_not_control_characters_when_disabled() {
+        assert!(change("").validate(false).is_ok());
+        assert!(change("invalid\nreason").validate(false).is_err());
+    }
 }
