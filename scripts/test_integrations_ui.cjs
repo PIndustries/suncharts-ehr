@@ -36,7 +36,7 @@ context.FormData=FixtureFormData;
  vm.runInContext("integrationEditor('claude')",context);
  assert.match(nodes['integration-editor'].innerHTML,/Anthropic API key/);
  assert.match(nodes['integration-editor'].innerHTML,/clinic-selected/);
- assert.match(nodes['integration-editor'].innerHTML,/clinic is responsible for its Anthropic agreement/);
+ assert.match(nodes['integration-editor'].innerHTML,/clinic controls its provider agreement, data-use configuration and charges/);
  vm.runInContext("integrationEditor('erebine')",context);
  const erebineEditor=nodes['integration-editor'].innerHTML;
  assert.match(erebineEditor,/Erebine API key/);assert.match(erebineEditor,/Encrypted API key saved/);assert.doesNotMatch(erebineEditor,/DO-NOT-DISPLAY/);
