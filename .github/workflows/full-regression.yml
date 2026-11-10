@@ -45,6 +45,19 @@ jobs:
             ~/.cargo/git
             target
           key: rust-release-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Size PostgreSQL for parallel schema-isolated tests
+        run: |
+          docker exec "${{ job.services.postgres.id }}" \
+            psql -U engine_test -d engine_test \
+            -c "ALTER SYSTEM SET max_locks_per_transaction = 512;"
+          docker restart "${{ job.services.postgres.id }}"
+          for attempt in {1..30}; do
+            if pg_isready -h 127.0.0.1 -p 55473 -U engine_test; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
       - name: Format and lint every Rust target
         run: |
           cargo fmt --check
