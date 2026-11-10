@@ -527,9 +527,45 @@ async fn list_eligibility(
     Ok(reply(json!({"items":rows})))
 }
 
+#[derive(Serialize, sqlx::FromRow)]
+struct ProviderDefault {
+    id: Uuid,
+    display_name: String,
+    npi: String,
+    specialty: String,
+}
+
+#[derive(Serialize, sqlx::FromRow)]
+struct FacilityDefault {
+    id: Uuid,
+    name: String,
+    address: String,
+}
+
+async fn provider_defaults(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+) -> Result<Response> {
+    actor.staff()?;
+    let pool = db(&state)?;
+    let providers: Vec<ProviderDefault> = sqlx::query_as("SELECT id,display_name,npi,specialty FROM practice_providers WHERE tenant_id=$1 AND active=true ORDER BY display_name,id LIMIT 100")
+        .bind(actor.tenant_id).fetch_all(pool).await?;
+    let facilities: Vec<FacilityDefault> = sqlx::query_as("SELECT id,name,address FROM practice_facilities WHERE tenant_id=$1 AND active=true ORDER BY name,id LIMIT 100")
+        .bind(actor.tenant_id).fetch_all(pool).await?;
+    let default_provider_id = (providers.len() == 1).then(|| providers[0].id);
+    let default_facility_id = (facilities.len() == 1).then(|| facilities[0].id);
+    Ok(reply(
+        json!({"providers":providers,"facilities":facilities,"default_provider_id":default_provider_id,"default_facility_id":default_facility_id}),
+    ))
+}
+
 pub fn router() -> Router<State> {
     Router::new()
         .route("/api/v1/billing/claimmd/payers", get(payer_search))
+        .route(
+            "/api/v1/billing/claimmd/provider-defaults",
+            get(provider_defaults),
+        )
         .route(
             "/api/v1/patients/{patient}/coverages/{coverage}/claimmd-eligibility",
             get(list_eligibility).post(create_eligibility),

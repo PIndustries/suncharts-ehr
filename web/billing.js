@@ -36,9 +36,10 @@ function showBillingAccount(id,activate=true){
 }
 function coveragePayerOptions(selectedId=''){return `<option value="">Choose the matching native payer</option>${billingPayers.map(p=>`<option value="${p.id}" ${selectedId===p.id?'selected':''}>${esc(p.content.name)}${p.content.payer_code?` · ${esc(p.content.payer_code)}`:''}${p.content.active?'':' (inactive)'}</option>`).join('')}`;}
 function coveragePayerSetup(){
- if(billingPayers.length)return me.role==='owner'?`<details class="amendment"><summary>Add a payer that is not listed</summary>${coveragePayerForm()}</details>`:'';
+ const search=typeof claimmdCoveragePayerSearch==='function'?claimmdCoveragePayerSearch():'';
+ if(billingPayers.length)return `${search}${me.role==='owner'?`<details class="amendment"><summary>Add a payer that is not listed</summary>${coveragePayerForm()}</details>`:''}`;
  if(me.role!=='owner')return '<div class="mapping-notice"><b>No native payers are available</b><p>A practice owner must add the payer before this coverage can be saved. The plan name alone cannot identify the payer used for eligibility and claims.</p></div>';
- return `<div class="mapping-notice"><b>Add the payer first</b><p>Create the native payer here without losing the coverage details above. If the practice uses Claim.MD, enter its Claim.MD payer ID so eligibility and claim work can resolve the same payer.</p></div>${coveragePayerForm()}`;
+ return `${search}<div class="mapping-notice"><b>Add the payer first</b><p>Create the native payer here without losing the coverage details above. If the practice uses Claim.MD, enter its Claim.MD payer ID so eligibility and claim work can resolve the same payer.</p></div>${coveragePayerForm()}`;
 }
 function coveragePayerForm(){return `<form id="coverage-payer-form" data-request="${crypto.randomUUID()}"><h4>Add native payer</h4><div class="form-grid">${billingField('name','Payer name','','text',200,true)}${billingField('payer_code','Claim.MD payer ID','','text',100,true)}${billingField('phone','Contact phone (optional)','','text',50)}</div><label>Address (optional)<textarea name="address" maxlength="1000"></textarea></label><p class="muted">Required here because insured accounts freeze this mapping when they are posted. Use the payer ID returned by the Claim.MD payer directory; do not guess or reuse a plan name as an ID.</p><button type="submit">Add payer and use it</button></form>`;}
 function coverageEditor(c,m){
