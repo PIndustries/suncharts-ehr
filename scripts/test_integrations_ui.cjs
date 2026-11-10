@@ -8,6 +8,7 @@ const api=async(path,method='GET',body,version)=>{
  calls.push({path,method,body,version});
  if(path==='/api/v1/integrations')return {credential_storage_ready:true,items:[{id:'ring-1',provider:'ringcentral',label:'Clinic RingCentral',status:'pending',enabled:true,credential_stored:true,last_test_at:'2026-11-07',last_test_result:'credential_storage_verified',version:2,config:{}},{id:'gmail-1',provider:'gmail',label:'Clinic Gmail',status:'connected',enabled:true,credential_stored:true,last_test_at:'2026-11-07',last_test_result:'oauth_account_verified',version:3,config:{}},{id:'claude-1',provider:'claude',label:'Clinic Claude',status:'configured',enabled:false,credential_stored:true,credential_hint:'…1234',version:2,config:{model:'clinic-selected'}},{id:'erebine-1',provider:'erebine',label:'Clinic Erebine',status:'configured',enabled:false,credential_stored:true,credential_hint:'DO-NOT-DISPLAY',version:1,config:{model:'clinic-erebine-model',project_id:'synthetic-project'}}]};
  if(path==='/api/v1/previsit/settings')return {profile:{enabled:true,public_slug:'new-patients'}};
+ if(path==='/api/v1/billing/payments/settings')return {setting:{mode:'suncharts_connect',verified:false,details_submitted:true,charges_enabled:false,payouts_enabled:false}};
  if(path.endsWith('/erebine/models'))return {models:[{id:'clinic-erebine-model'},{id:'second-model',name:'Second <model>'}]};
  return {items:[]};
 };
@@ -18,7 +19,10 @@ context.FormData=FixtureFormData;
 (async()=>{
  await vm.runInContext("showInstanceIntegrations({connection:{},onboarding:{},grants:{items:[{id:'grant-1',name:'HealthClinics',scope:'scheduling.read'}]},clients:{items:[{id:'client-1',name:'HealthClinics scheduling',redirect_uri:'https://healthclinics.example/oauth/callback',disabled:false}]}})",context);
  const html=nodes.tools.innerHTML;
- for(const label of ['SunCharts online booking','HealthClinics','RingCentral','Gmail referrals','Claude','Erebine','Sun assistance','Authorized applications'])assert.match(html,new RegExp(label));
+ for(const label of ['SunCharts Payments','Stripe Connect','Patient payments','Clinic payouts','SunCharts online booking','HealthClinics','RingCentral','Gmail referrals','Claude','Erebine','Sun assistance','Authorized applications'])assert.match(html,new RegExp(label));
+ assert.match(html,/data-payment-settings/);
+ assert.match(html,/Setup incomplete/);
+ assert.match(html,/never asks for a Stripe secret key/);
  assert.match(html,/HealthClinics.*reads availability and writes appointments|External partners use this instance.*authorized API/s);
  assert.match(html,/Credentials, tokens, workflow settings and audit history remain inside this EHR instance/);
  assert.match(html,/clinic supplies and governs its own provider account/i);
