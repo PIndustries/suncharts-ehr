@@ -7,6 +7,8 @@ const claims=fs.readFileSync('web/claims.js','utf8');
 
 assert.match(billing,/data-patient-claims>Review this patient’s claims/);
 assert.match(billing,/data-patient-create-claim aria-describedby="patient-claim-readiness"/);
+assert.match(billing,/data-new-billing aria-describedby="patient-claim-readiness">Prepare charge account/);
+assert.doesNotMatch(billing,/data-patient-create-claim[^>]*disabled/);
 assert.match(billing,/Add active coverage with a Claim\.MD payer ID, record charges, sign the visit and post the insured charge account to enable claim creation/);
 assert.match(billing,/const patientClaimAccounts=.*status==='posted'.*payer_code/);
 assert.match(billing,/if\(accounts\.length===1\)\{await beginClaim\(accounts\[0\]\.id\);return;\}/);

@@ -23,8 +23,13 @@ async function main(){
  evaluate(`workspace={appointments:[{id:'appt-1',status:'booked'}],billing:{accounts:[]}};activeVisit=null;patientClaimAccounts=()=>[];patientPaymentAccounts=()=>[];billingCan=()=>true`);
  let actions=evaluate('patientWorkflowActions()');
  assert.match(actions,/Check in to create encounter/);
- assert.match(actions,/data-patient-create-claim disabled>Create insurance claim/);
- assert.match(actions,/data-patient-collect-copay disabled>Collect copay \/ payment/);
+ assert.match(actions,/data-chart-section="billing">Prepare charges for claim/);
+ assert.match(actions,/data-chart-section="billing">Open patient billing/);
+ assert.doesNotMatch(actions,/data-patient-create-claim/,'claim creation remains unavailable until a posted insured charge account is ready');
+ evaluate(`patientClaimAccounts=()=>[{id:'account-1'}];patientPaymentAccounts=()=>[{id:'account-1'}]`);
+ actions=evaluate('patientWorkflowActions()');
+ assert.match(actions,/data-patient-create-claim>Create \/ review claim/);
+ assert.match(actions,/data-patient-collect-copay>Collect copay \/ payment/);
  evaluate(`workspace.appointments[0].status='checked_in'`);actions=evaluate('patientWorkflowActions()');
  assert.match(actions,/data-start="appt-1">Create encounter/,'checked-in patients get a direct encounter action');
 
