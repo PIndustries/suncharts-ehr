@@ -519,6 +519,7 @@ async fn claim_detail(
     let mut tx = db(&s)?.begin().await?;
     let c = claim_row(&mut tx, &a, id).await?;
     let issues = preflight(&c)?;
+    let submission_defaults = claim_submission_defaults(&mut tx, &a, &c).await?;
     let artifact_generated: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM edi_submissions WHERE tenant_id=$1 AND claim_id=$2)",
     )
@@ -530,8 +531,116 @@ async fn claim_detail(
     tx.commit().await?;
     let transport = clearinghouse_transport(db(&s)?, a.tenant_id, artifact_generated).await?;
     Ok(Json(
-        json!({"claim":c,"preflight_issues":issues,"transport":transport}),
+        json!({"claim":c,"preflight_issues":issues,"transport":transport,"submission_defaults":submission_defaults}),
     ))
+}
+
+fn x12_sex(value: Option<&str>) -> &'static str {
+    match value
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "female" | "f" => "F",
+        "male" | "m" => "M",
+        _ => "U",
+    }
+}
+
+fn split_person_name(value: &str) -> (String, String) {
+    let value = value.trim();
+    if let Some((family, given)) = value.split_once(',') {
+        return (given.trim().to_string(), family.trim().to_string());
+    }
+    let mut parts = value.split_whitespace().collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return (value.to_string(), String::new());
+    }
+    let family = parts.pop().unwrap_or_default().to_string();
+    (parts.join(" "), family)
+}
+
+fn structured_x12_address(content: Option<&Value>) -> Value {
+    let address = content
+        .and_then(|value| value.get("address"))
+        .unwrap_or(&Value::Null);
+    json!({
+        "line1": address.get("line1").and_then(Value::as_str).unwrap_or_default(),
+        "line2": address.get("line2").and_then(Value::as_str).unwrap_or_default(),
+        "city": address.get("city").and_then(Value::as_str).unwrap_or_default(),
+        "state": address.get("region").or_else(|| address.get("state")).and_then(Value::as_str).unwrap_or_default(),
+        "postal_code": address.get("postal_code").and_then(Value::as_str).unwrap_or_default(),
+    })
+}
+
+async fn claim_submission_defaults(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    claim: &Claim,
+) -> Result<Value> {
+    let demographics: Option<Value> = sqlx::query_scalar(
+        "SELECT content FROM patient_demographics WHERE tenant_id=$1 AND patient_id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(claim.patient_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let rendering_npi = claim.content["rendering_npi"].as_str().unwrap_or_default();
+    let provider_name: Option<String> = if rendering_npi.is_empty() {
+        None
+    } else {
+        sqlx::query_scalar("SELECT display_name FROM practice_providers WHERE tenant_id=$1 AND active AND npi=$2 ORDER BY id LIMIT 1")
+            .bind(a.tenant_id)
+            .bind(rendering_npi)
+            .fetch_optional(&mut **tx)
+            .await?
+    };
+    let patient = &claim.snapshot["patient"];
+    let coverage = &claim.snapshot["account"]["coverage_snapshot"]["coverage"]["content"];
+    let payer = &claim.snapshot["account"]["coverage_snapshot"]["payer"]["content"];
+    let relationship = coverage["relationship"].as_str().unwrap_or_default();
+    let patient_given = patient["given_name"].as_str().unwrap_or_default();
+    let patient_family = patient["family_name"].as_str().unwrap_or_default();
+    let (subscriber_given, subscriber_family) = if relationship == "self" {
+        (patient_given.to_string(), patient_family.to_string())
+    } else {
+        split_person_name(coverage["subscriber_name"].as_str().unwrap_or_default())
+    };
+    let (rendering_given, rendering_family) = provider_name
+        .as_deref()
+        .map(split_person_name)
+        .unwrap_or_default();
+    let patient_sex = x12_sex(
+        demographics
+            .as_ref()
+            .and_then(|value| value["administrative_gender"].as_str()),
+    );
+    let patient_address = structured_x12_address(demographics.as_ref());
+    let subscriber_address = if relationship == "self" {
+        patient_address.clone()
+    } else {
+        json!({"line1":"","line2":"","city":"","state":"","postal_code":""})
+    };
+    Ok(json!({
+        "subscriber_given_name": subscriber_given,
+        "subscriber_family_name": subscriber_family,
+        "patient_sex": patient_sex,
+        "subscriber_sex": if relationship == "self" { patient_sex } else { "U" },
+        "rendering_given_name": rendering_given,
+        "rendering_family_name": rendering_family,
+        "billing_taxonomy": "",
+        "filing_indicator": "CI",
+        "billing_address": {"line1":"","line2":"","city":"","state":"","postal_code":""},
+        "subscriber_address": subscriber_address,
+        "patient_address": patient_address,
+        "payer_address": {"line1":"","line2":"","city":"","state":"","postal_code":""},
+        "source_references": {
+            "billing_address": claim.content["billing_address"].as_str().unwrap_or_default(),
+            "payer_address": payer["address"].as_str().unwrap_or_default(),
+            "provider_name": provider_name.unwrap_or_default(),
+        }
+    }))
 }
 
 async fn clearinghouse_transport(
@@ -1552,4 +1661,53 @@ pub(crate) async fn post_rows(
         crate::era_chains::advance(tx, a, r, m, &c, prior_head).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod submission_default_tests {
+    use super::{split_person_name, structured_x12_address, x12_sex};
+    use serde_json::json;
+
+    #[test]
+    fn normalizes_claim_sex_without_guessing() {
+        assert_eq!(x12_sex(Some("female")), "F");
+        assert_eq!(x12_sex(Some("M")), "M");
+        assert_eq!(x12_sex(Some("nonbinary")), "U");
+        assert_eq!(x12_sex(None), "U");
+    }
+
+    #[test]
+    fn splits_display_and_claim_names() {
+        assert_eq!(
+            split_person_name("Park, David"),
+            ("David".to_string(), "Park".to_string())
+        );
+        assert_eq!(
+            split_person_name("David J Park"),
+            ("David J".to_string(), "Park".to_string())
+        );
+    }
+
+    #[test]
+    fn maps_structured_chart_address_to_x12_fields() {
+        let demographics = json!({
+            "address": {
+                "line1": "100 Main St",
+                "line2": "Suite 2",
+                "city": "Rockford",
+                "region": "IL",
+                "postal_code": "61114"
+            }
+        });
+        assert_eq!(
+            structured_x12_address(Some(&demographics)),
+            json!({
+                "line1": "100 Main St",
+                "line2": "Suite 2",
+                "city": "Rockford",
+                "state": "IL",
+                "postal_code": "61114"
+            })
+        );
+    }
 }
