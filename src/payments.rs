@@ -128,6 +128,25 @@ struct Save {
     installation_id: Option<Uuid>,
     broker_token: Option<String>,
 }
+fn exact_connect_binding_replay(input: &Save, prior: &Credentials) -> bool {
+    if input.mode != "suncharts_connect"
+        || prior.mode != "suncharts_connect"
+        || input.installation_id.is_none()
+        || input.installation_id != prior.installation_id
+    {
+        return false;
+    }
+    let (Some(input_token), Some(prior_token)) =
+        (input.broker_token.as_deref(), prior.broker_token.as_deref())
+    else {
+        return false;
+    };
+    aws_lc_rs::constant_time::verify_slices_are_equal(
+        input_token.as_bytes(),
+        prior_token.as_bytes(),
+    )
+    .is_ok()
+}
 #[derive(sqlx::FromRow)]
 struct Settings {
     id: Uuid,
@@ -302,6 +321,26 @@ async fn save_settings(
             .bind(a.tenant_id)
             .fetch_optional(&mut *tx)
             .await?;
+    let prior_credentials = if let Some(r) = &prior {
+        Some(credentials(db(&s)?, a.tenant_id, r.id, r.credential_revision).await?)
+    } else {
+        None
+    };
+    // Connect may retry after the EHR committed a binding but its response was
+    // lost. Only an explicit byte-equivalent installation/token replay may
+    // bypass a stale If-Match; changed or partially omitted bindings retain the
+    // normal optimistic-concurrency requirement below.
+    if prior_credentials
+        .as_ref()
+        .is_some_and(|credentials| exact_connect_binding_replay(&v, credentials))
+    {
+        let current = prior
+            .as_ref()
+            .expect("credentials require settings")
+            .public();
+        tx.commit().await?;
+        return Ok(Json(current));
+    }
     if let Some(r) = &prior {
         if crate::expected(&h)? != r.version {
             return Err(Error::Conflict(
@@ -311,11 +350,6 @@ async fn save_settings(
     } else if h.get("if-match").is_some_and(|v| v != "\"0\"") {
         return Err(Error::Conflict("payment settings have not been created"));
     }
-    let prior_credentials = if let Some(r) = &prior {
-        Some(credentials(db(&s)?, a.tenant_id, r.id, r.credential_revision).await?)
-    } else {
-        None
-    };
     let previous = prior_credentials.as_ref().filter(|p| p.mode == v.mode);
     let config = Credentials {
         mode: v.mode.clone(),
@@ -1400,6 +1434,44 @@ mod tests {
         assert!(verify_session(&p, &bad).is_err());
         assert!(valid_broker_token("scp_inst_with-URL_safe-token_material"));
         assert!(!valid_broker_token("scp_inst_bad token material"));
+    }
+    #[test]
+    fn connect_binding_replay_requires_explicit_identical_installation_and_token() {
+        let installation = Uuid::new_v4();
+        let token = "scp_inst_synthetic-replay-token-material";
+        let prior = Credentials {
+            mode: "suncharts_connect".into(),
+            api_key: None,
+            webhook_secret: None,
+            installation_id: Some(installation),
+            broker_token: Some(token.into()),
+        };
+        let replay = |installation_id, broker_token| Save {
+            mode: "suncharts_connect".into(),
+            api_key: None,
+            webhook_secret: None,
+            installation_id,
+            broker_token,
+        };
+        assert!(exact_connect_binding_replay(
+            &replay(Some(installation), Some(token.into())),
+            &prior
+        ));
+        assert!(!exact_connect_binding_replay(
+            &replay(Some(Uuid::new_v4()), Some(token.into())),
+            &prior
+        ));
+        assert!(!exact_connect_binding_replay(
+            &replay(
+                Some(installation),
+                Some("scp_inst_different-replay-token-material".into())
+            ),
+            &prior
+        ));
+        assert!(!exact_connect_binding_replay(
+            &replay(Some(installation), None),
+            &prior
+        ));
     }
     #[test]
     fn stripe_signatures_bind_raw_bytes_and_enforce_timestamp_tolerance() {
