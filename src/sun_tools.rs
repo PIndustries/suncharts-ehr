@@ -194,7 +194,7 @@ async fn validate_workflow_proposal(
         if matches!(step.kind.as_str(), "ai_extract_draft" | "ai_response_draft") {
             if let Some(ai)=&step.ai {
                 let capability=if step.kind=="ai_extract_draft" {"structured_extraction"} else {"draft_response"};
-                let available:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM instance_integrations WHERE tenant_id=$1 AND id=$2 AND provider IN ('claude','erebine') AND enabled AND status<>'revoked' AND credential_revision>0 AND capabilities ? $3)")
+                let available:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM instance_integrations WHERE tenant_id=$1 AND id=$2 AND provider IN ('claude','erebine','openai','azure_openai','aws_bedrock','google_gemini') AND enabled AND status<>'revoked' AND credential_revision>0 AND capabilities ? $3)")
                     .bind(actor.tenant_id).bind(ai.integration_id).bind(capability).fetch_one(&mut *tx).await?;
                 if !available { return Err(Error::Conflict("workflow proposal references an unavailable or unauthorized AI connection")); }
             } else if !warnings.contains(&"One or more Sun nodes have no AI configuration. Choose a permitted connection and explicit source field before using them.") {

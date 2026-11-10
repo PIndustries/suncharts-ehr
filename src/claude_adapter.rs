@@ -266,7 +266,7 @@ async fn connection(
          FROM instance_integrations i
          JOIN instance_integration_credentials c ON c.tenant_id=i.tenant_id
           AND c.integration_id=i.id AND c.revision=i.credential_revision
-         WHERE i.tenant_id=$1 AND i.provider IN ('claude','erebine') AND i.enabled
+         WHERE i.tenant_id=$1 AND i.provider IN ('claude','erebine','openai','azure_openai','aws_bedrock','google_gemini') AND i.enabled
           AND i.status<>'revoked' AND ($2::uuid IS NULL OR i.id=$2)
          ORDER BY i.updated_at DESC,i.id LIMIT 2",
     )
@@ -291,6 +291,8 @@ async fn connection(
     }
     if provider == "erebine" {
         crate::erebine_adapter::validate_config(config)?;
+    } else if crate::ai_provider_adapter::PROVIDERS.contains(&provider.as_str()) {
+        crate::ai_provider_adapter::validate_config(provider, config)?;
     }
     let model = config
         .get("model")
@@ -753,7 +755,7 @@ async fn connections(actor: Actor, ExtractState(state): ExtractState<State>) -> 
         "SELECT jsonb_build_object('id',id,'provider',provider,'label',label,
           'model',CASE WHEN provider='claude' THEN coalesce(config->>'model','claude-haiku-5-5') ELSE config->>'model' END,
           'enabled',enabled,'status',status,'credential_stored',true,'capabilities',capabilities)
-         FROM instance_integrations WHERE tenant_id=$1 AND provider IN ('claude','erebine')
+         FROM instance_integrations WHERE tenant_id=$1 AND provider IN ('claude','erebine','openai','azure_openai','aws_bedrock','google_gemini')
           AND enabled AND status<>'revoked' AND credential_revision>0 ORDER BY provider,label,id LIMIT 100",
     )
     .bind(actor.tenant_id)
@@ -881,6 +883,16 @@ async fn generate_inner(
 
     let provider = if connection.provider == "erebine" {
         crate::erebine_adapter::generate(
+            &connection.config,
+            connection.credential.expose(),
+            &details.purpose,
+            &approved.instruction,
+            &approved.source_text,
+        )
+        .await
+    } else if crate::ai_provider_adapter::PROVIDERS.contains(&connection.provider.as_str()) {
+        crate::ai_provider_adapter::generate(
+            &connection.provider,
             &connection.config,
             connection.credential.expose(),
             &details.purpose,

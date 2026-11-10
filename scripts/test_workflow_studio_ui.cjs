@@ -34,7 +34,7 @@ vm.runInContext(source,context);
 (async()=>{
  await vm.runInContext('showWorkflowStudio()',context);
  assert.match(host.innerHTML,/Draft workflow/);assert.match(host.innerHTML,/Open visual editor/);assert.match(host.innerHTML,/View live work/);assert.match(host.innerHTML,/PATIENT JOURNEY/);
- for(const tab of ['Choose workflow','Build','Test & publish','Run','Configure','Navigation & access','Forms','Version history'])assert.match(host.innerHTML,new RegExp(tab));
+ for(const tab of ['Current workflow','Build','Test & publish','Run','Configure','Navigation & access','Forms','Version history'])assert.match(host.innerHTML,new RegExp(tab));
  assert.match(host.innerHTML,/Partner-managed workspace/);assert.match(host.innerHTML,/Edit the visual path/);
  assert.doesNotMatch(host.innerHTML,/Ready this workflow|Choose a starting point/);
  vm.runInContext("studioDraft.status='active';studioDirty=false;studioRender()",context);assert.match(host.innerHTML,/Live workflow/);assert.match(host.innerHTML,/Open visual editor/);assert.match(host.innerHTML,/View live work/);assert.doesNotMatch(host.innerHTML,/Finish this draft|setup rail/i);

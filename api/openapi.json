@@ -7,7 +7,7 @@
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
     },
-    "description": "API specification Apache-2.0; implementation AGPL-3.0-only. Synthetic development preview. This contract is served by each independent SunCharts EHR installation and covers its native REST, bounded FHIR R4, scheduling, billing, EDI, webhook and practice-owned integration surfaces. Tenant/user identity is derived from authenticated credentials. OAuth2 authorization code with S256 PKCE, scoped opaque tokens and explicit local consent permits independent clients; optional SunCharts Connect routes add onboarding and managed services but are not required for the instance-local clinical, scheduling, billing, clearinghouse or integration APIs. Provider callbacks retain their endpoint-specific verification and are not general unauthenticated writes. FHIR R4 projections and bounded Patient, clinical-list and local draft-order writes form an initial HL7-family boundary; no general HL7 v2 interface, US Core, SMART or ONC claim. Legacy HS256 assertions require ENGINE_ALLOW_LEGACY_GATEWAY=true. Imports preserve source history and never authorize cutover. No automatic mutation retries."
+    "description": "API specification Apache-2.0; implementation AGPL-3.0-only. Synthetic development preview. This contract is served by each independent SunCharts EHR installation and covers its native REST, bounded FHIR R4, scheduling, billing, EDI, webhook and practice-owned integration surfaces. Tenant/user identity is derived from authenticated credentials. OAuth2 authorization code with S256 PKCE, scoped opaque tokens and explicit local consent permits independent clients; optional SunCharts Connect routes add onboarding and managed services but are not required for the instance-local clinical, scheduling, billing, clearinghouse or integration APIs. Provider callbacks retain their endpoint-specific verification and are not general unauthenticated writes. FHIR R4 projections and bounded Patient, clinical-list, local draft ServiceRequest and Immunization writes form an initial HL7-family boundary; no general HL7 v2 interface, US Core, SMART App Launch, Bulk Data or ONC claim. Legacy HS256 assertions require ENGINE_ALLOW_LEGACY_GATEWAY=true. Imports preserve source history and never authorize cutover. No automatic mutation retries."
   },
   "servers": [
     {
@@ -2804,7 +2804,7 @@
     "/fhir/metadata": {
       "get": {
         "operationId": "fhirCapabilities",
-        "description": "Draft FHIR R4 4.0.1 CapabilityStatement. Patient read/search only; no US Core, SMART or certification assertion.",
+        "description": "Draft instance-level FHIR R4 4.0.1 CapabilityStatement for 17 bounded native projections. Read/search is implemented for the advertised resources (Binary is read-only); bounded create/update is implemented only for Patient, Condition, AllergyIntolerance, MedicationStatement, ServiceRequest and Immunization. No general HL7 v2, US Core, SMART App Launch, Bulk Data or certification assertion.",
         "responses": {
           "200": {
             "description": "Success",

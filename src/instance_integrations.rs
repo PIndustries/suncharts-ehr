@@ -24,7 +24,17 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-const PROVIDERS: &[&str] = &["ringcentral", "gmail", "claude", "erebine", "healthclinics"];
+const PROVIDERS: &[&str] = &[
+    "ringcentral",
+    "gmail",
+    "claude",
+    "erebine",
+    "openai",
+    "azure_openai",
+    "aws_bedrock",
+    "google_gemini",
+    "healthclinics",
+];
 
 fn db(state: &State) -> Result<&PgPool> {
     Ok(&state.browser.as_ref().ok_or(Error::NotFound)?.db)
@@ -52,7 +62,9 @@ fn clean(value: &str, max: usize) -> Result<String> {
 fn auth_type(provider: &str) -> Option<&'static str> {
     match provider {
         "ringcentral" | "gmail" => Some("oauth2"),
-        "claude" | "erebine" => Some("api_key"),
+        "claude" | "erebine" | "openai" | "azure_openai" | "aws_bedrock" | "google_gemini" => {
+            Some("api_key")
+        }
         "healthclinics" => Some("oauth2_client"),
         _ => None,
     }
@@ -61,7 +73,7 @@ fn allowed(provider: &str) -> &'static [&'static str] {
     match provider {
         "ringcentral" => &["voice", "sms", "fax", "voicemail", "call_events"],
         "gmail" => &["referral_email", "attachments", "threaded_reply"],
-        "claude" | "erebine" => &[
+        "claude" | "erebine" | "openai" | "azure_openai" | "aws_bedrock" | "google_gemini" => &[
             "document_classification",
             "structured_extraction",
             "draft_summary",
@@ -136,6 +148,8 @@ fn validate_config(config: &Value) -> Result<()> {
 fn validate_provider_config(provider: &str, config: &Value) -> Result<()> {
     if provider == "erebine" {
         crate::erebine_adapter::validate_config(config)?;
+    } else if crate::ai_provider_adapter::PROVIDERS.contains(&provider) {
+        crate::ai_provider_adapter::validate_config(provider, config)?;
     }
     Ok(())
 }
@@ -289,7 +303,7 @@ async fn provider_catalog(actor: Actor) -> Result<Response> {
         "oauth_supported":matches!(auth_type(provider),Some("oauth2"|"oauth2_client")),
         "capabilities":allowed(provider),
         "boundary":match *provider {
-            "claude" | "erebine" => "clinic_byok_direct",
+            "claude" | "erebine" | "openai" | "azure_openai" | "aws_bedrock" | "google_gemini" => "clinic_byok_direct",
             "healthclinics" => "ehr_oauth_api_consumer",
             _ => "instance_local",
         },

@@ -3,6 +3,7 @@
 pub mod access_policies;
 pub mod action_governance;
 pub mod ai_privacy;
+pub mod ai_provider_adapter;
 pub mod auth;
 pub mod automation_event_runtime;
 pub mod backend;
