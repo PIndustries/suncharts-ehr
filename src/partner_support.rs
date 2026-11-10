@@ -46,6 +46,7 @@ struct Claims {
     sub: String,
     jti: Uuid,
     role: String,
+    purpose: String,
     partner_id: Uuid,
     customer_id: Uuid,
     order_id: Uuid,
@@ -124,6 +125,11 @@ fn validate_claims(claims: &Claims, issuer: &str, audience: &str, now: i64) -> R
         || !matches!(
             claims.role.as_str(),
             "partner_support" | "partner_admin" | "workflow_manager"
+        )
+        || !matches!(
+            (claims.role.as_str(), claims.purpose.as_str()),
+            ("partner_support" | "partner_admin", "support")
+                | ("workflow_manager", "workflow_management")
         )
         || claims.sub.is_empty()
         || claims.sub.len() > 500
@@ -372,6 +378,7 @@ mod tests {
             sub: "partner:synthetic".into(),
             jti: Uuid::new_v4(),
             role: "partner_admin".into(),
+            purpose: "support".into(),
             partner_id: Uuid::new_v4(),
             customer_id: Uuid::new_v4(),
             order_id: Uuid::new_v4(),
@@ -395,6 +402,15 @@ mod tests {
         )
         .is_err());
         claims.role = "partner_admin".into();
+        claims.purpose = "workflow_management".into();
+        assert!(validate_claims(
+            &claims,
+            "https://connect.example.test",
+            "https://ehr.example.test",
+            now
+        )
+        .is_err());
+        claims.purpose = "support".into();
         claims.exp = now + 901;
         assert!(validate_claims(
             &claims,
@@ -414,6 +430,7 @@ mod tests {
             sub: "partner:workflow-manager".into(),
             jti: Uuid::new_v4(),
             role: "workflow_manager".into(),
+            purpose: "workflow_management".into(),
             partner_id: Uuid::new_v4(),
             customer_id: Uuid::new_v4(),
             order_id: Uuid::new_v4(),

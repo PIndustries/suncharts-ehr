@@ -49,7 +49,7 @@ async fn exchange(
     let now = chrono::Utc::now().timestamp();
     Json(json!({
         "iss":cloud.issuer,"aud":cloud.audience,"sub":"partner:synthetic",
-        "jti":grant,"role":"partner_admin","partner_id":cloud.partner,
+        "jti":grant,"role":"partner_admin","purpose":"support","partner_id":cloud.partner,
         "customer_id":cloud.customer,"order_id":cloud.order,"tenant_id":cloud.tenant,
         "iat":now,"exp":now+600
     }))
