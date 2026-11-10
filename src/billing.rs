@@ -678,6 +678,8 @@ async fn edit_account(
 struct Action {
     action: String,
     reason: String,
+    #[serde(default)]
+    local_only: bool,
 }
 async fn account_action(
     a: Actor,
@@ -700,10 +702,23 @@ async fn account_action(
     let content: AccountContent = serde_json::from_value(old.content)
         .map_err(|_| Error::Invalid("invalid stored billing account"))?;
     let (status, snapshot) = match v.action.as_str() {
-        "post" => (
-            "posted",
-            account_links(&mut tx, &a, p, &content, old.source_history_id, true).await?,
-        ),
+        "post" => {
+            let snapshot =
+                account_links(&mut tx, &a, p, &content, old.source_history_id, true).await?;
+            let missing_electronic_payer = snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot["payer"]["content"]["payer_code"]
+                    .as_str()
+                    .unwrap_or("")
+                    .trim()
+                    .is_empty()
+            });
+            if missing_electronic_payer && !v.local_only {
+                return Err(Error::Invalid(
+                    "add the correct Claim.MD payer ID in the payer mapping before posting, or explicitly choose local-only insurance activity",
+                ));
+            }
+            ("posted", snapshot)
+        }
         "void" => ("void", None),
         _ => return Err(Error::Invalid("choose post or void")),
     };
