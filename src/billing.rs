@@ -459,6 +459,10 @@ pub fn router() -> Router<State> {
     Router::new()
         .route("/api/v1/billing/payers", get(payers).post(new_payer))
         .route(
+            "/api/v1/patients/{p}/billing/accounts/{id}/invoices",
+            get(patient_invoices).post(new_patient_invoice),
+        )
+        .route(
             "/api/v1/billing/payers/{id}",
             axum::routing::put(edit_payer),
         )
@@ -1089,6 +1093,94 @@ async fn link_account_diagnoses(
     sqlx::query("UPDATE billing_accounts SET content=$3,diagnosis_snapshot=$4,version=version+1 WHERE tenant_id=$1 AND id=$2")
         .bind(a.tenant_id).bind(id).bind(json!(content)).bind(snapshot).execute(&mut *tx).await?;
     let row = account_revision(&mut tx, &a, p, id, &input.reason).await?;
+    tx.commit().await?;
+    Ok(Json(row))
+}
+
+// Credits include all patient ledger activity; payments exclude nonpayment adjustments.
+pub(crate) async fn patient_ledger_totals(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    account: Uuid,
+) -> Result<(i64, i64)> {
+    Ok(sqlx::query_as("SELECT coalesce(-sum(e.effect_cents),0)::bigint,coalesce(-sum(e.effect_cents) FILTER (WHERE e.kind='payment' OR (e.kind='reversal' AND original.kind='payment') OR (e.kind='adjustment_debit' AND e.content->>'managed_payment_id' IS NOT NULL)),0)::bigint FROM billing_entries e LEFT JOIN billing_entries original ON original.tenant_id=e.tenant_id AND original.account_id=e.account_id AND original.id=e.reverses_id WHERE e.tenant_id=$1 AND e.account_id=$2 AND CASE WHEN e.kind='reversal' THEN original.content->>'party' ELSE e.content->>'party' END='patient'")
+        .bind(tenant).bind(account).fetch_one(&mut **tx).await?)
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PatientInvoiceInput {
+    request_id: Uuid,
+    responsibility_cents: i64,
+    reason: String,
+}
+async fn patient_invoices(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((p, id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<Value>> {
+    a.staff()?;
+    let mut tx = db(&s)?.begin().await?;
+    account_row(&mut tx, &a, p, id).await?;
+    let rows: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(i)-'tenant_id'-'creation_hash'-'request_id' FROM patient_invoice_snapshots i WHERE tenant_id=$1 AND patient_id=$2 AND account_id=$3 ORDER BY created_at DESC,id LIMIT 100")
+        .bind(a.tenant_id).bind(p).bind(id).fetch_all(&mut *tx).await?;
+    crate::postgres::audit(&mut tx, &a, "billing.invoices_read", id).await?;
+    tx.commit().await?;
+    Ok(Json(json!({"items":rows})))
+}
+async fn new_patient_invoice(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((p, id)): Path<(Uuid, Uuid)>,
+    h: HeaderMap,
+    Json(input): Json<PatientInvoiceInput>,
+) -> Result<Json<Value>> {
+    write(&a)?;
+    text(&input.reason, 1000)?;
+    let hash = digest(&(p, id, &input))?;
+    let mut tx = db(&s)?.begin().await?;
+    tenant_lock(&mut tx, &a).await?;
+    let account = account_row(&mut tx, &a, p, id).await?;
+    let prior: Option<(String, Value)> = sqlx::query_as("SELECT creation_hash,to_jsonb(i)-'tenant_id'-'creation_hash'-'request_id' FROM patient_invoice_snapshots i WHERE tenant_id=$1 AND request_id=$2")
+        .bind(a.tenant_id).bind(input.request_id).fetch_optional(&mut *tx).await?;
+    if let Some((prior_hash, row)) = prior {
+        if prior_hash != hash {
+            return Err(Error::Conflict(
+                "invoice request ID already used with different content",
+            ));
+        }
+        crate::postgres::audit(&mut tx, &a, "billing.invoice_replayed", id).await?;
+        tx.commit().await?;
+        return Ok(Json(row));
+    }
+    if account.version != crate::expected(&h)? {
+        return Err(Error::Conflict(
+            "account changed; reload before building the invoice",
+        ));
+    }
+    if account.status != "posted" {
+        return Err(Error::Conflict(
+            "post the reviewed charge account before building an invoice",
+        ));
+    }
+    if !(0..=account.total_cents).contains(&input.responsibility_cents) {
+        return Err(Error::Invalid(
+            "reviewed patient responsibility must be between zero and total charges",
+        ));
+    }
+    // Sum patient payments and credits, their reversals, and confirmed refunds.
+    // Unconfirmed processor attempts have no ledger entry and cannot reduce an invoice.
+    let (credit, _) = patient_ledger_totals(&mut tx, a.tenant_id, id).await?;
+    let patient: Value = sqlx::query_scalar("SELECT jsonb_build_object('given_name',given_name,'family_name',family_name) FROM patients WHERE tenant_id=$1 AND id=$2")
+        .bind(a.tenant_id).bind(p).fetch_one(&mut *tx).await?;
+    let test_activity: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM billing_entries WHERE tenant_id=$1 AND account_id=$2 AND content->>'test_mode'='true')")
+        .bind(a.tenant_id).bind(id).fetch_one(&mut *tx).await?;
+    let invoice = Uuid::new_v4();
+    let net = input.responsibility_cents - credit;
+    let snapshot = json!({"practice_name":crate::branding::InstanceBranding::from_env().display_name,"patient":patient,"service_date":account.content["service_date"],"gross_charges_cents":account.total_cents,"responsibility_cents":input.responsibility_cents,"patient_credit_cents":credit,"amount_due_cents":net.max(0),"credit_balance_cents":(-net).max(0),"currency":"USD","reason":input.reason,"test_activity":test_activity,"scope":"at_issuance"});
+    let row: Value = sqlx::query_scalar("INSERT INTO patient_invoice_snapshots(tenant_id,id,patient_id,account_id,request_id,creation_hash,account_version,snapshot,actor_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING to_jsonb(patient_invoice_snapshots)-'tenant_id'-'creation_hash'-'request_id'")
+        .bind(a.tenant_id).bind(invoice).bind(p).bind(id).bind(input.request_id).bind(hash).bind(account.version).bind(snapshot).bind(a.sub).fetch_one(&mut *tx).await?;
+    crate::postgres::audit(&mut tx, &a, "billing.invoice_created", invoice).await?;
     tx.commit().await?;
     Ok(Json(row))
 }

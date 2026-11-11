@@ -3939,6 +3939,105 @@ async fn patient_to_copay_to_cms1500_and_837p_preserves_the_revenue_cycle() {
     .unwrap();
     assert_eq!(balance, 12500);
 
+    // Patient responsibility is reviewed independently from gross insurance charges.
+    let invoice_path = format!("{account_path}/invoices");
+    let invoice_request = json!({"request_id":Uuid::new_v4(),"responsibility_cents":2500,"reason":"Reviewed synthetic plan copay"});
+    let (status, stale) = schedule_call(
+        &r,
+        &a,
+        "POST",
+        &invoice_path,
+        invoice_request.clone(),
+        Some(3),
+    )
+    .await;
+    assert_eq!(status, 409, "{stale}");
+    let (status, invoice) = schedule_call(
+        &r,
+        &a,
+        "POST",
+        &invoice_path,
+        invoice_request.clone(),
+        Some(4),
+    )
+    .await;
+    assert_eq!(status, 200, "{invoice}");
+    assert_eq!(invoice["snapshot"]["gross_charges_cents"], 15000);
+    assert_eq!(invoice["snapshot"]["responsibility_cents"], 2500);
+    assert_eq!(invoice["snapshot"]["patient_credit_cents"], 2500);
+    assert_eq!(invoice["snapshot"]["amount_due_cents"], 0);
+    let (status, replay) = schedule_call(
+        &r,
+        &a,
+        "POST",
+        &invoice_path,
+        invoice_request.clone(),
+        Some(3),
+    )
+    .await;
+    assert_eq!(status, 200, "{replay}");
+    assert_eq!(invoice["id"], replay["id"]);
+    let mut changed = invoice_request.clone();
+    changed["responsibility_cents"] = json!(3000);
+    assert_eq!(
+        schedule_call(&r, &a, "POST", &invoice_path, changed, Some(4))
+            .await
+            .0,
+        409
+    );
+    let (status, items) = schedule_call(&r, &a, "GET", &invoice_path, Value::Null, None).await;
+    assert_eq!(status, 200);
+    assert_eq!(items["items"].as_array().unwrap().len(), 1);
+    let mut foreign = a.clone();
+    foreign.tenant_id = Uuid::new_v4();
+    assert_eq!(
+        schedule_call(&r, &foreign, "GET", &invoice_path, Value::Null, None)
+            .await
+            .0,
+        404
+    );
+    let mut patient_actor = a.clone();
+    patient_actor.role = Role::Patient;
+    patient_actor.patient_id = Some(patient_id.parse().unwrap());
+    assert_eq!(
+        schedule_call(&r, &patient_actor, "GET", &invoice_path, Value::Null, None)
+            .await
+            .0,
+        403
+    );
+    let before_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM billing_entries WHERE tenant_id=$1 AND account_id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(account["id"].as_str().unwrap().parse::<Uuid>().unwrap())
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        before_count, 1,
+        "building an invoice must not create a charge or payment"
+    );
+    // A reversal must use the original entry's party, not the reversal form's party.
+    let (status,reversed)=schedule_call(&r,&a,"POST",&format!("{account_path}/entries"),json!({"request_id":Uuid::new_v4(),"kind":"reversal","amount_cents":null,"reverses_id":paid["id"],"party":"other","method":"none","reference":"SYNTHETIC-VOID","occurred_on":"2026-10-01","reason":"Reverse synthetic copay receipt"}),Some(4)).await;
+    assert_eq!(status, 200, "{reversed}");
+    let (status,unpaid_invoice)=schedule_call(&r,&a,"POST",&invoice_path,json!({"request_id":Uuid::new_v4(),"responsibility_cents":2500,"reason":"Review after receipt reversal"}),Some(5)).await;
+    assert_eq!(status, 200, "{unpaid_invoice}");
+    assert_eq!(unpaid_invoice["snapshot"]["patient_credit_cents"], 0);
+    assert_eq!(unpaid_invoice["snapshot"]["amount_due_cents"], 2500);
+    let (status,repaid)=schedule_call(&r,&a,"POST",&format!("{account_path}/entries"),json!({"request_id":Uuid::new_v4(),"kind":"payment","amount_cents":2500,"reverses_id":null,"party":"patient","method":"cash","reference":"SYNTHETIC-RECEIPT-2","occurred_on":"2026-10-01","reason":"Record replacement synthetic copay receipt"}),Some(5)).await;
+    assert_eq!(status, 200, "{repaid}");
+    let (_, saved) = schedule_call(&r, &a, "GET", &invoice_path, Value::Null, None).await;
+    assert_eq!(
+        saved["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == invoice["id"])
+            .unwrap()["snapshot"]["amount_due_cents"],
+        0,
+        "saved invoices must retain their issuance snapshot"
+    );
+
     let mut content = claim_content();
     content["synthetic_test"] = json!(true);
     content["diagnosis_codes"] = json!(["Z00.00"]);
@@ -3953,7 +4052,7 @@ async fn patient_to_copay_to_cms1500_and_837p_preserves_the_revenue_cycle() {
             "content":content,
             "reason":"Freeze reviewed synthetic claim after copay"
         }),
-        Some(4),
+        Some(6),
     )
     .await;
     assert_eq!(status, 200, "{claim}");

@@ -478,7 +478,7 @@ async fn create_claim(
     .bind(p)
     .fetch_one(&mut *tx)
     .await?;
-    let ledger: Value = sqlx::query_scalar(
+    let mut ledger: Value = sqlx::query_scalar(
         "SELECT jsonb_build_object(\
             'patient_payments_cents',coalesce(-sum(effect_cents) FILTER (WHERE kind='payment' AND content->>'party'='patient'),0),\
             'insurer_payments_cents',coalesce(-sum(effect_cents) FILTER (WHERE kind='payment' AND content->>'party'='insurer'),0),\
@@ -496,6 +496,11 @@ async fn create_claim(
     .bind(b.total_cents)
     .fetch_one(&mut *tx)
     .await?;
+    ledger["patient_payments_cents"] = json!(
+        crate::billing::patient_ledger_totals(&mut tx, a.tenant_id, id)
+            .await?
+            .1
+    );
     let claim = Uuid::new_v4();
     let control_number = if v.content.synthetic_test {
         format!("SCTEST{}", claim.simple())

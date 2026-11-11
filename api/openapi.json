@@ -28063,7 +28063,7 @@
       "post": {
         "operationId": "createWorkflowDispatch",
         "summary": "Submit a workflow node for explicit native-operation review",
-        "description": "Creates a tenant-scoped, idempotent work item only when the active pathway step is ready, integration-aware, and configured for manual approval. The step moves to awaiting_approval. No native scheduling mutation, provider transmission or model call occurs until a separate authorized reviewer approves this dispatch. Communication nodes and Claude/Erebine nodes create downstream drafts only; those drafts retain their own approval/send gates. Empty input on a configured AI node resolves only its explicit source_field from this run’s immutable definition and context. Original AI input stays local and is omitted from dispatch responses; an authorized reviewer must prepare and approve a privacy preview before execution. Eligibility and payment nodes use the configured native provider paths. A payment request creates test-mode checkout and waits for processor-confirmed payment plus ledger evidence; eligibility completion does not approve benefits. Patient-form issuance also has a direct versioned intake-packet endpoint.",
+        "description": "Creates a tenant-scoped, idempotent work item only when the active pathway step is ready, integration-aware, and configured for manual approval. The step moves to awaiting_approval. No native scheduling mutation, provider transmission or model call occurs until a separate authorized reviewer approves this dispatch. Communication nodes and Claude/Erebine nodes create downstream drafts only; those drafts retain their own approval/send gates. Empty input on a configured AI node resolves only its explicit source_field from this run\u2019s immutable definition and context. Original AI input stays local and is omitted from dispatch responses; an authorized reviewer must prepare and approve a privacy preview before execution. Eligibility and payment nodes use the configured native provider paths. A payment request creates test-mode checkout and waits for processor-confirmed payment plus ledger evidence; eligibility completion does not approve benefits. Patient-form issuance also has a direct versioned intake-packet endpoint.",
         "parameters": [
           {
             "name": "instance",
@@ -28278,7 +28278,7 @@
                   "privacy_preview_id": {
                     "type": "string",
                     "format": "uuid",
-                    "description": "Required for approve on AI dispatches; must be this reviewer’s current bound preview."
+                    "description": "Required for approve on AI dispatches; must be this reviewer\u2019s current bound preview."
                   },
                   "privacy_approved": {
                     "type": "boolean",
@@ -30946,6 +30946,109 @@
           }
         }
       }
+    },
+    "/api/v1/patients/{p}/billing/accounts/{id}/invoices": {
+      "get": {
+        "summary": "List immutable patient invoice snapshots for a tenant-scoped account",
+        "responses": {
+          "200": {
+            "description": "Up to 100 invoice snapshots at issuance"
+          }
+        },
+        "security": [
+          {
+            "oauth2": [
+              "billing.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Save reviewed patient responsibility less net patient ledger credits without collecting payment",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "request_id",
+                  "responsibility_cents",
+                  "reason"
+                ],
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "responsibility_cents": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000000000
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Immutable invoice snapshot; exact retries return the original"
+          },
+          "409": {
+            "description": "Account changed, unposted account, or reused request with different content"
+          }
+        },
+        "security": [
+          {
+            "oauth2": [
+              "billing.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ]
+      },
+      "parameters": [
+        {
+          "name": "p",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ]
     }
   },
   "components": {

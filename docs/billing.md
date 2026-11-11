@@ -13,7 +13,36 @@ state remain separate from clinical signing and administrative checkout.
 
 Patient responsibility must be reviewed. An account balance alone does not establish
 what the patient owes. Fee schedules, comprehensive responsibility allocation,
-statements, financial close and electronic eligibility are not implemented.
+automated statements, financial close and electronic eligibility are not implemented.
+
+## Copay, patient invoice and insurance claim
+
+1. Review coverage and the copay, sign the encounter, and post its charge account.
+2. Collect only reviewed patient responsibility. For a card payment, create a secure
+   payment link and reconcile confirmed processor evidence before treating it as
+   paid. Current card collection is **test-only**. For a payment already received
+   outside this integration, record the receipt with its method, date and reference;
+   recording a receipt does not itself charge a card.
+3. Choose **Build patient invoice** on the posted account. Enter total reviewed
+   patient responsibility before patient payments and credits, with its evidence.
+   The server subtracts net recorded patient ledger activity, including reversals
+   and refunds, without treating the gross insured balance as patient responsibility.
+   A stale account version requires a reload. Saving retains an immutable, audited
+   snapshot and does not collect money, email a bill or submit insurance.
+4. Open **Saved patient invoices** to print or save a PDF. Amounts describe the
+   ledger at issuance; confirm the current ledger before requesting payment.
+   Snapshots containing test processor activity are marked TEST. A later corrected
+   snapshot does not add another charge to the ledger.
+5. Create/review the insurance claim after recording the copay. The claim freezes
+   the gross charge and net patient payments independently. Copay reversals and
+   confirmed managed refunds reduce net patient payments. Review the claim, mark
+   it ready and explicitly submit through the clinic's active Claim.MD connection.
+   A later payment does not rewrite a previously frozen claim snapshot.
+
+Patient invoice snapshots are independent of Stripe account setup. They are not
+Stripe-hosted invoices or automatic collection requests. Online invoice delivery,
+automatic responsibility allocation and live card capture remain unavailable in
+this EHR workflow.
 
 ## Encounter diagnosis links
 
@@ -97,7 +126,10 @@ reconciliation behind the scenes. The clinic never enters a Stripe API key,
 installation ID, or broker token in the EHR. Only Stripe-hosted identity and
 bank verification opens outside the EHR, then returns to the clinic payment
 account. Staff refreshes account status and explicitly activates test checkout
-from the native billing experience.
+from the native billing experience. If status refresh fails or Stripe still needs
+information, choose **Continue Stripe setup** to resume the clinic-scoped setup
+page. This action stays available even when a previous refresh did not return an
+onboarding link. Complete verification, return to the EHR and refresh again.
 
 Managed payments require `ENGINE_PAYMENT_BROKER_URL`, a verified installation and
 completed clinic enrollment. Authorized clinic owners, delegated partner
@@ -107,7 +139,9 @@ verification; selecting the option alone does not enable collection.
 
 Create a hosted Checkout Session from a posted account using its current version,
 a stable request UUID and an integer USD amount within the available balance.
-Pending attempts reserve their amounts. Card details are entered on Stripe-hosted
+Enter the reviewed copay or patient responsibility explicitly; the account
+balance can include insurer responsibility and is not used as a default payment
+amount. Pending attempts reserve their amounts. Card details are entered on Stripe-hosted
 Checkout. The EHR sends generic payment details and opaque identifiers, not clinical
 notes, diagnoses, names or MRNs.
 
