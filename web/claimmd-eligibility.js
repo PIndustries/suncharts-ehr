@@ -35,8 +35,8 @@ function claimmdEligibilityHistory(items){
 }
 
 async function openClaimmdEligibility(coverage,options={}){
- const patientId=selected,identity=me,editor=$('billing-editor'),patient=workspace.patient,serviceDate=options.serviceDate||new Date().toISOString().slice(0,10);
- const current=()=>selected===patientId&&me===identity&&$('billing-editor')===editor&&(!options.isCurrent||options.isCurrent());
+ const patientId=selected,identity=me,editor=typeof billingEditorHost==='function'?billingEditorHost():$('billing-editor'),patient=workspace.patient,serviceDate=options.serviceDate||new Date().toISOString().slice(0,10);
+ const current=()=>selected===patientId&&me===identity&&(typeof billingEditorHost==='function'?billingEditorHost():$('billing-editor'))===editor&&(!options.isCurrent||options.isCurrent());
  if(!current())return;
  const history=options.history||await api(`/api/v1/patients/${patientId}/coverages/${coverage.id}/claimmd-eligibility`);if(!current())return;
  const subscriber=claimmdSubscriberParts(coverage.content.subscriber_name),canRequest=!options.readOnly&&billingWrite()&&coverage.content.status==='active'&&(typeof billingCan!=='function'||billingCan('create'));
@@ -55,7 +55,7 @@ document.addEventListener('click',event=>{
  const button=event.target.closest('button[data-claimmd-eligibility]');
  if(!button)return;
  event.preventDefault();event.stopImmediatePropagation();
- run(async()=>{const coverage=workspace.billing.coverages.find(item=>item.id===button.dataset.claimmdEligibility);if(!coverage)throw new Error('Coverage is no longer available.');await openClaimmdEligibility(coverage);});
+ run(async()=>{const coverage=workspace.billing.coverages.find(item=>item.id===button.dataset.claimmdEligibility);if(!coverage)throw new Error('Coverage is no longer available.');await openClaimmdEligibility(coverage,{serviceDate:typeof revenueServiceDate==='function'?revenueServiceDate():undefined});});
 },true);
 
 document.addEventListener('submit',event=>{
@@ -70,7 +70,12 @@ document.addEventListener('submit',event=>{
   }
   const serviceCodes=data.service_codes.split(',').map(value=>value.trim()).filter(Boolean);
   const body={request_id:form.dataset.request,service_date:data.service_date,service_codes:serviceCodes,procedure_code:data.procedure_code.trim()||null,insured_given_name:data.insured_given_name.trim(),insured_middle_name:data.insured_middle_name.trim()||null,insured_family_name:data.insured_family_name.trim(),insured_birth_date:data.insured_birth_date||null,insured_sex:data.insured_sex||null,patient_sex:data.patient_sex||null,provider_npi:data.provider_npi.trim(),provider_taxid:data.provider_taxid.trim(),provider_taxid_type:data.provider_taxid_type,provider_name:data.provider_name.trim()||null,provider_taxonomy:data.provider_taxonomy.trim()||null};
-  const result=await api(`/api/v1/patients/${selected}/coverages/${form.dataset.coverage}/claimmd-eligibility`,'POST',body);
-  const history=await api(`/api/v1/patients/${selected}/coverages/${form.dataset.coverage}/claimmd-eligibility`);$('claimmd-eligibility-history').innerHTML=claimmdEligibilityHistory(history.items);form.dataset.request=crypto.randomUUID();notice(`Eligibility response ${result.status}.`);
+  const patientId=selected,identity=me,coverageId=form.dataset.coverage;
+  const result=await api(`/api/v1/patients/${patientId}/coverages/${coverageId}/claimmd-eligibility`,'POST',body);
+  const history=await api(`/api/v1/patients/${patientId}/coverages/${coverageId}/claimmd-eligibility`);
+  if(selected!==patientId||me!==identity)return;
+  if(typeof updateInsuranceEligibility==='function')updateInsuranceEligibility(coverageId,history);
+  if($('claimmd-eligibility-form')!==form)return;
+  $('claimmd-eligibility-history').innerHTML=claimmdEligibilityHistory(history.items);form.dataset.request=crypto.randomUUID();notice(`Eligibility response ${result.status}.`);
  });
 },true);

@@ -36,7 +36,8 @@ impl Identity {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Change {
-    pub mrn: String,
+    #[serde(default)]
+    pub mrn: Option<String>,
     pub given_name: String,
     pub family_name: String,
     pub birth_date: NaiveDate,
@@ -44,11 +45,7 @@ pub struct Change {
 }
 impl Change {
     pub fn validate(&self, reason_required: bool) -> Result<()> {
-        for (v, max) in [
-            (&self.mrn, 64),
-            (&self.given_name, 100),
-            (&self.family_name, 100),
-        ] {
+        for (v, max) in [(&self.given_name, 100), (&self.family_name, 100)] {
             text(v, max)?;
             if v.chars().any(char::is_control) {
                 return Err(Error::Invalid("identity fields contain control characters"));
@@ -157,8 +154,13 @@ pub(crate) async fn update(
             "patient identity changed; reload before saving",
         ));
     }
+    if input.mrn.as_ref().is_some_and(|mrn| mrn != &old.mrn) {
+        return Err(Error::Invalid(
+            "MRN is system-assigned and cannot be changed",
+        ));
+    }
     sqlx::query("INSERT INTO patient_identity_revisions(tenant_id,patient_id,version,snapshot,reason) VALUES($1,$2,$3,$4,'Registration identity before first correction') ON CONFLICT DO NOTHING").bind(a.tenant_id).bind(id).bind(old.version).bind(old.patient()).execute(&mut *tx).await?;
-    sqlx::query("UPDATE patients SET mrn=$3,given_name=$4,family_name=$5,birth_date=$6,identity_version=identity_version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(id).bind(input.mrn.trim()).bind(input.given_name.trim()).bind(input.family_name.trim()).bind(input.birth_date).execute(&mut *tx).await?;
+    sqlx::query("UPDATE patients SET given_name=$3,family_name=$4,birth_date=$5,identity_version=identity_version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(id).bind(input.given_name.trim()).bind(input.family_name.trim()).bind(input.birth_date).execute(&mut *tx).await?;
     let p = row(&mut tx, a, id, false).await?;
     let reason = if input.reason.trim().is_empty() {
         "Identity corrected; clinic reason prompt disabled"
@@ -217,7 +219,7 @@ mod tests {
 
     fn change(reason: &str) -> Change {
         Change {
-            mrn: "MRN-1".into(),
+            mrn: None,
             given_name: "Ada".into(),
             family_name: "Lovelace".into(),
             birth_date: NaiveDate::from_ymd_opt(1980, 1, 1).unwrap(),

@@ -343,7 +343,7 @@ async fn audit_failures_rollback_upload_metadata_and_deny_download() {
     let path = format!("/api/v1/patients/{p}/documents");
     let (_, created) = call(&r, &doc, "POST", &path, upload_body(), None).await;
     let id = created["id"].as_str().unwrap();
-    sqlx::query("CREATE FUNCTION reject_document_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action IN ('patient.document.upload','patient.document.update','patient.document.download') THEN RAISE EXCEPTION 'synthetic audit failure'; END IF; RETURN NEW; END $$").execute(&db).await.unwrap();
+    sqlx::query("CREATE FUNCTION reject_document_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action IN ('patient.document.upload','patient.document.update','patient.document.download','patient.document.preview') THEN RAISE EXCEPTION 'synthetic audit failure'; END IF; RETURN NEW; END $$").execute(&db).await.unwrap();
     sqlx::query("CREATE TRIGGER document_audit_failure BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION reject_document_audit()").execute(&db).await.unwrap();
     assert_eq!(
         call(&r, &doc, "POST", &path, upload_body(), None).await.0,
@@ -366,6 +366,10 @@ async fn audit_failures_rollback_upload_metadata_and_deny_download() {
     );
     assert_eq!(
         download(&r, &doc, &format!("{path}/{id}/download")).await.0,
+        500
+    );
+    assert_eq!(
+        download(&r, &doc, &format!("{path}/{id}/preview")).await.0,
         500
     );
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM patient_documents")
@@ -396,5 +400,139 @@ async fn simultaneous_identical_uploads_create_one_original_and_one_revision() {
             .await
             .unwrap();
         assert_eq!(count, 1);
+    }
+}
+
+#[tokio::test]
+async fn inline_previews_preserve_originals_and_enforce_patient_tenant_staff_and_audit() {
+    use base64::Engine;
+    let (db, doc, nurse, p) = setup().await;
+    let r = app(db.clone());
+    let path = format!("/api/v1/patients/{p}/documents");
+    for (mime, bytes) in [
+        ("application/pdf", PDF),
+        ("image/png", &b"\x89PNG\r\n\x1a\nsynthetic"[..]),
+        ("image/jpeg", &b"\xff\xd8\xffsynthetic\xff\xd9"[..]),
+    ] {
+        let mut body = upload_body();
+        body["content_type"] = json!(mime);
+        body["content_base64"] = json!(base64::engine::general_purpose::STANDARD.encode(bytes));
+        let (status, created) = call(&r, &doc, "POST", &path, body, None).await;
+        assert_eq!(status, 200, "{created}");
+        let id = created["id"].as_str().unwrap();
+        let preview = format!("{path}/{id}/preview");
+        let (status, h, stored) = download(&r, &nurse, &preview).await;
+        assert_eq!(status, 200);
+        assert_eq!(stored, bytes);
+        assert_eq!(h["content-type"], mime);
+        assert!(h["content-disposition"]
+            .to_str()
+            .unwrap()
+            .starts_with("inline;"));
+        assert_eq!(h["cache-control"], "no-store");
+        assert_eq!(h["x-content-type-options"], "nosniff");
+        assert_eq!(h["x-frame-options"], "SAMEORIGIN");
+        assert_eq!(h["cross-origin-resource-policy"], "same-origin");
+        let csp = h["content-security-policy"].to_str().unwrap();
+        assert!(csp.contains("default-src 'none'"));
+        assert!(csp.contains("frame-ancestors 'self'"));
+        assert!(!csp.contains("frame-ancestors 'none'"));
+        let foreign = actor(Uuid::new_v4(), Role::Clinician);
+        assert_eq!(download(&r, &foreign, &preview).await.0, 404);
+        let mut patient = actor(doc.tenant_id, Role::Patient);
+        patient.patient_id = Some(p);
+        assert_eq!(download(&r, &patient, &preview).await.0, 403);
+        let wrong_patient = format!("/api/v1/patients/{}/documents/{id}/preview", Uuid::new_v4());
+        assert_eq!(download(&r, &nurse, &wrong_patient).await.0, 404);
+        let anonymous = r
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&preview)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+        let audits: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE tenant_id=$1 AND actor_id=$2 AND resource_id=$3 AND action='patient.document.preview'")
+            .bind(doc.tenant_id).bind(nurse.sub).bind(Uuid::parse_str(id).unwrap()).fetch_one(&db).await.unwrap();
+        assert_eq!(audits, 1);
+    }
+}
+
+#[tokio::test]
+async fn registration_staff_manage_only_registration_document_categories() {
+    let (db, doc, _, p) = setup().await;
+    let r = app(db.clone());
+    let desk = actor(doc.tenant_id, Role::FrontDesk);
+    sqlx::query("INSERT INTO browser_users(tenant_id,id,email,password_hash,role) VALUES($1,$2,'desk@example.test','synthetic-not-login','front_desk')").bind(desk.tenant_id).bind(desk.sub).execute(&db).await.unwrap();
+    let path = format!("/api/v1/patients/{p}/documents");
+    assert_eq!(
+        call(&r, &desk, "POST", &path, upload_body(), None).await.0,
+        403
+    );
+    let (_, consult) = call(&r, &doc, "POST", &path, upload_body(), None).await;
+    let mut relabeled = consult["content"].clone();
+    relabeled["category"] = json!("legal");
+    assert_eq!(
+        call(
+            &r,
+            &desk,
+            "PUT",
+            &format!("{path}/{}", consult["id"].as_str().unwrap()),
+            json!({"content":relabeled,"reason":"Unauthorized category conversion"}),
+            Some(1)
+        )
+        .await
+        .0,
+        403
+    );
+    for category in ["identity", "insurance", "legal"] {
+        let mut body = upload_body();
+        body["content"]["category"] = json!(category);
+        let (status, created) = call(&r, &desk, "POST", &path, body, None).await;
+        assert_eq!(status, 200, "{created}");
+        let detail = format!("{path}/{}", created["id"].as_str().unwrap());
+        let mut content = created["content"].clone();
+        content["title"] = json!("Corrected registration title");
+        assert_eq!(
+            call(
+                &r,
+                &desk,
+                "PUT",
+                &detail,
+                json!({"content":content,"reason":"Registration correction"}),
+                Some(1)
+            )
+            .await
+            .0,
+            200
+        );
+        content["category"] = json!("consult");
+        assert_eq!(
+            call(
+                &r,
+                &desk,
+                "PUT",
+                &detail,
+                json!({"content":content,"reason":"Unauthorized clinical conversion"}),
+                Some(2)
+            )
+            .await
+            .0,
+            403
+        );
+        let (status, page) = call(
+            &r,
+            &desk,
+            "GET",
+            &format!("{path}?category={category}"),
+            Value::Null,
+            None,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(page["items"].as_array().unwrap().len(), 1);
     }
 }

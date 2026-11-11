@@ -66,13 +66,13 @@ function applyWorkspaceAccessVisibility(){
 }
 function workspaceChartTabEnabled(key){
  const tabs=practiceWorkspaceSettings?.content?.chart_tabs;
- return !Array.isArray(tabs)||tabs.includes(key);
+ return !Array.isArray(tabs)||tabs.includes(key==='insurance'?'billing':key);
 }
 function configuredChartTabs(all){
  const order=practiceWorkspaceSettings?.content?.chart_tabs;if(!order)return all;
  const allowed=key=>key==='billing'?workspaceResourceAllowed('billing'):key==='source'?['clinical','billing','claims','migration'].every(r=>workspaceResourceAllowed(r)):key==='care_pathways'?workspaceResourceAllowed('workflows'):true;
  const map=new Map(all);const tabs=order.filter(key=>map.has(key)&&allowed(key)).map(key=>[key,map.get(key)]);
- if(!tabs.some(([key])=>key===chartSection))chartSection='overview';
+ if(!tabs.some(([key])=>key===(chartSection==='insurance'?'billing':chartSection)))chartSection='overview';
  return tabs;
 }
 

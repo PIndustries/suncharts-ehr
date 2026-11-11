@@ -4,13 +4,6 @@
  let active=null,pendingRestore=null;
  const focusableSelector='button:not([disabled]),[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
  const safe=value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
- function ensureStyle(){
-  if(document.getElementById('suncharts-dialog-style'))return;
-  const style=document.createElement('style');
-  style.id='suncharts-dialog-style';
-  style.textContent='#suncharts-dialog-host{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;padding:24px}#suncharts-dialog-host[hidden]{display:none}.app-dialog-backdrop{position:absolute;inset:0;background:#102d34a8;backdrop-filter:blur(3px)}.app-dialog{position:relative;width:min(520px,100%);padding:24px;border:1px solid #cfe0e4;border-radius:16px;background:#fff;box-shadow:0 28px 80px #0b2c3440;color:#183046}.app-dialog header{display:flex;align-items:center;gap:12px}.app-dialog header h2{margin:2px 0 0;font-size:21px}.app-dialog .eyebrow{margin:0;font-size:11px;letter-spacing:.08em}.app-dialog-mark{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;background:#e5f3f1;color:#126e73;font-weight:800}.app-dialog>p{margin:18px 0 0;line-height:1.55}.app-dialog-detail{padding:10px 12px;border-radius:8px;background:#f2f6f7;color:#52687c;font-size:12px}.app-dialog footer{display:flex;justify-content:flex-end;gap:8px;margin-top:24px}.app-dialog footer button{cursor:pointer;border:1px solid #bfd0d5;border-radius:7px;padding:.65rem 1rem;background:#fff;color:#183046;font-weight:700}.app-dialog footer .primary{border-color:#126b70;background:#126b70;color:#fff}.app-dialog.danger .app-dialog-mark{background:#fbeae7;color:#a33f31}.app-dialog footer .primary.danger{border-color:#a33f31;background:#a33f31;color:#fff}@media(max-width:600px){#suncharts-dialog-host{padding:12px;align-items:end}.app-dialog{padding:20px;border-radius:16px 16px 8px 8px}.app-dialog footer{display:grid;grid-template-columns:1fr 1fr}.app-dialog footer button{width:100%}}';
-  document.head.append(style);
- }
  function ensureHost(){
   let host=document.getElementById('suncharts-dialog-host');
   if(host)return host;
@@ -43,7 +36,6 @@
  }
  function confirmAction(message,options={}){
   if(options.signal?.aborted)return Promise.resolve(false);
-  ensureStyle();
   if(active)close(false);
   pendingRestore=null;
   const host=ensureHost(),restore=document.activeElement;

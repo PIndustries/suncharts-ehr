@@ -2,18 +2,33 @@
 
 ## Register and open a chart
 
-Owners, clinicians and front-desk staff can register a patient with an MRN, name
-and birth date. MRNs are unique within a practice. The patient-details workspace
+Owners, clinicians and front-desk staff register a patient with their name and
+birth date. The system assigns a unique MRN; staff cannot choose or edit it.
+Existing and imported MRNs are preserved. The patient-details workspace
 adds contact information, address, preferred name, pronouns, language,
 administrative gender and an emergency contact, with attributed revisions.
 
-Registration identity corrections retain versioned, attributed revisions. Patient matching, merge and proxy relationships are not implemented.
+Registered name and birth-date corrections retain versioned, attributed revisions. Patient matching, merge and proxy relationships are not implemented.
 Changing a contact destination invalidates its reminder verification and consent
 settings until staff reviews it again.
 
-The chart groups clinical lists, encounters, orders/results, checkout, financials
-and imported source records. Empty lists remain unknown until explicitly reviewed;
-an empty allergy list is not an assertion of no known allergies.
+The primary chart navigation is **Overview**, **Encounter**, **Insurance**,
+**Billing** and **Documents**. **Patient record** contains demographics,
+longitudinal problems/allergies/medications, histories, prescribing, referrals,
+assessments, specialty care and imported records. These records remain available
+without competing with the current encounter's workflow. Empty lists remain
+unknown until explicitly reviewed; an empty allergy list is not an assertion of
+no known allergies. An empty native billing list does not establish that imported
+coverage, payments or balances do not exist.
+
+Open **Encounter** to continue the selected visit directly. The encounter picker
+changes the visit; its local steps are **Rooming**, **Note & ICD-10**,
+**Procedures & CPT**, **Orders & prescriptions**, and **Checkout & AVS**, subject
+to the staff member's permissions. Procedures and charges stay linked to that
+encounter. Signing, posting charges, submitting a claim and completing checkout
+remain separate actions with their own readiness checks. **Insurance** shows
+coverage and the recorded plan copay for the selected appointment's service date;
+see [billing](billing.md) for receipts, patient invoices and claim follow-up.
 
 ## Clinical lists
 
@@ -28,7 +43,7 @@ supported text, severity and criticality fields.
 
 ## Prescribing
 
-The **Prescribing** chart tab keeps prescription orders separate from medication
+**Patient record → Prescribing** keeps prescription orders separate from medication
 statements. Staff can prepare a draft, select a pharmacy and record directions,
 quantity, refills and the intended visit. Only a clinician with an active provider
 profile and NPI can authorize it. Controlled-substance authorization is blocked.
@@ -99,7 +114,7 @@ unfinished. Use synthetic accounts while these production requirements are open.
 
 ## Surgical and dental history
 
-The **Surgical & dental history** chart section records longitudinal history
+**Patient record → Surgical & dental history** records longitudinal history
 separately from problems, encounter diagnoses and procedure orders. Clinicians
 and owners can add or revise entries; other staff can read them. Record status,
 verification, optional dates and a supplied terminology code, notes and a change
@@ -169,14 +184,24 @@ remain on the [roadmap](roadmap.md).
 
 ## Documents
 
-Clinicians can upload PDF, PNG or JPEG originals up to 10 MiB, with a title,
-category, optional document date and encounter link. The service checks declared
-media type and file signatures; it does not scan for malware or validate a complete
-PDF/image structure. Staff downloads use authenticated attachments with no inline
-preview. Uploading does not release a document to the patient or send it externally.
+Owners and clinicians can upload PDF, PNG or JPEG originals up to 10 MiB, with a
+title, category, optional document date and encounter link. Front-desk staff can
+upload and revise **ID / driver's license**, **Insurance card** and **Legal
+document** categories for registration. Both the existing and requested category
+must be within that set; changing a category cannot grant access to clinical
+document editing.
 
-Original file bytes, SHA-256 and upload attribution remain immutable. Clinicians
-can revise metadata or mark a record archived/entered in error, using the current
+Choose **Preview** to view a supported PDF or image inside the patient chart;
+**Download** remains available. Preview and download both require authenticated
+staff access to the exact tenant, patient and document and commit a read audit
+before returning bytes. Preview responses prevent caching and content-type
+sniffing and restrict framing to the same origin. The service checks declared
+media type and file signatures; it does not scan for malware or validate a complete
+PDF/image structure. HTML, SVG and arbitrary external document URLs are not
+previewed. Uploading does not release a document to the patient or send it externally.
+
+Original file bytes, SHA-256 and upload attribution remain immutable. Authorized
+staff can revise metadata or mark a record archived/entered in error, using the current
 version and an attributed reason. Staff can inspect revision history and download
 preserved originals. There is no destructive deletion or original-file replacement;
 upload a separate record for a new file. The web editor retains selected files
@@ -270,13 +295,13 @@ AVS snapshots support at most 100 entries per clinical-list kind and 100 linked
 orders; larger summaries fail rather than truncate silently. Staff reads retain
 bounded release/event/task histories with truncation flags.
 
-Patient-scoped APIs can read signed records and the latest released AVS. A patient
-portal with identity onboarding, proxies and messaging is still missing. See the
-[API guide](api.md) for access rules and response limits.
+Patient-scoped APIs can read signed records and the latest released AVS. The
+patient portal's access and release limits are described above; proxy access is
+not implemented. See the [API guide](api.md) for access rules and response limits.
 
 ## Immunization records
 
-The Immunizations chart tab distinguishes an administered vaccine, a historical
+**Patient record → Immunizations** distinguishes an administered vaccine, a historical
 report, and an event where a vaccine was not given. Owner, clinician and nurse
 roles may record or correct events; medical assistants and other staff may read.
 Saving documents an event. It does not administer a vaccine, decrement inventory,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Immutable document originals with attributed, versioned metadata.
 use crate::{
-    auth::Actor,
+    auth::{Actor, Role},
     error::{Error, Result},
     model::text,
     postgres::audit,
@@ -23,6 +23,27 @@ use sqlx::{Postgres, Transaction};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 const MAX_BYTES: usize = 10 * 1024 * 1024;
+const CATEGORIES: &[&str] = &[
+    "identity",
+    "insurance",
+    "legal",
+    "consult",
+    "laboratory",
+    "imaging",
+    "consent",
+    "referral",
+    "other",
+];
+const REGISTRATION_CATEGORIES: &[&str] = &["identity", "insurance", "legal"];
+fn write_document(a: &Actor, category: &str) -> Result<()> {
+    if matches!(a.role, Role::Owner | Role::Clinician)
+        || (matches!(a.role, Role::FrontDesk) && REGISTRATION_CATEGORIES.contains(&category))
+    {
+        Ok(())
+    } else {
+        Err(Error::Forbidden)
+    }
+}
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Content {
@@ -37,15 +58,7 @@ pub struct Content {
 impl Content {
     fn validate(&self) -> Result<()> {
         text(&self.title, 200)?;
-        if ![
-            "consult",
-            "laboratory",
-            "imaging",
-            "consent",
-            "referral",
-            "other",
-        ]
-        .contains(&self.category.as_str())
+        if !CATEGORIES.contains(&self.category.as_str())
             || !["active", "archived", "entered_in_error"].contains(&self.status.as_str())
             || self.notes.chars().count() > 10000
         {
@@ -106,6 +119,10 @@ pub fn routes() -> Router<State> {
         .route(
             "/api/v1/patients/{patient}/documents/{id}/download",
             get(download),
+        )
+        .route(
+            "/api/v1/patients/{patient}/documents/{id}/preview",
+            get(preview),
         )
 }
 fn db(s: &State) -> Result<&sqlx::PgPool> {
@@ -235,18 +252,8 @@ async fn list(
         .map_err(|_| Error::Invalid("invalid document cursor"))?;
     let category = filters.get("category");
     let status = filters.get("status");
-    if category.is_some_and(|v| {
-        ![
-            "consult",
-            "laboratory",
-            "imaging",
-            "consent",
-            "referral",
-            "other",
-        ]
-        .contains(&v.as_str())
-    }) || status
-        .is_some_and(|v| !["active", "archived", "entered_in_error"].contains(&v.as_str()))
+    if category.is_some_and(|v| !CATEGORIES.contains(&v.as_str()))
+        || status.is_some_and(|v| !["active", "archived", "entered_in_error"].contains(&v.as_str()))
     {
         return Err(Error::Invalid("unsupported document filter value"));
     }
@@ -320,7 +327,7 @@ async fn upload(
     Path(p): Path<Uuid>,
     Json(v): Json<Upload>,
 ) -> Result<Response> {
-    a.clinical()?;
+    write_document(&a, &v.content.category)?;
     v.content.validate()?;
     text(&v.reason, 1000)?;
     if v.content.status != "active" {
@@ -384,12 +391,14 @@ async fn update(
     h: HeaderMap,
     Json(v): Json<Change>,
 ) -> Result<Response> {
-    a.clinical()?;
+    write_document(&a, &v.content.category)?;
     v.content.validate()?;
     text(&v.reason, 1000)?;
     let expected = crate::expected(&h)?;
     let mut tx = db(&s)?.begin().await?;
     let old = row(&mut tx, &a, p, id, true).await?;
+    // Reclassifying a clinical document must not grant registration staff access to edit it.
+    write_document(&a, old.content["category"].as_str().unwrap_or_default())?;
     if old.version != expected {
         return Err(Error::Conflict(
             "document metadata changed; compare saved record before editing",
@@ -430,9 +439,29 @@ async fn download(
     ExtractState(s): ExtractState<State>,
     Path((p, id)): Path<(Uuid, Uuid)>,
 ) -> Result<Response> {
+    document_file(a, s, p, id, false).await
+}
+async fn preview(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((p, id)): Path<(Uuid, Uuid)>,
+) -> Result<Response> {
+    document_file(a, s, p, id, true).await
+}
+async fn document_file(a: Actor, s: State, p: Uuid, id: Uuid, inline: bool) -> Result<Response> {
     a.staff()?;
     let mut tx = db(&s)?.begin().await?;
     let v = row(&mut tx, &a, p, id, false).await?;
+    let ext = match v.content_type.as_str() {
+        "application/pdf" => "pdf",
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        _ => {
+            return Err(Error::Invalid(
+                "document format cannot be previewed or downloaded",
+            ))
+        }
+    };
     let bytes: Vec<u8> = sqlx::query_scalar(
         "SELECT bytes FROM patient_documents WHERE tenant_id=$1 AND patient_id=$2 AND id=$3",
     )
@@ -441,23 +470,49 @@ async fn download(
     .bind(id)
     .fetch_one(&mut *tx)
     .await?;
-    audit(&mut tx, &a, "patient.document.download", id).await?;
+    audit(
+        &mut tx,
+        &a,
+        if inline {
+            "patient.document.preview"
+        } else {
+            "patient.document.download"
+        },
+        id,
+    )
+    .await?;
     tx.commit().await?;
-    let ext = match v.content_type.as_str() {
-        "application/pdf" => "pdf",
-        "image/png" => "png",
-        _ => "jpg",
-    };
     let mut r = ([(header::CONTENT_TYPE, v.content_type)], bytes).into_response();
     r.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    let disposition = if inline { "inline" } else { "attachment" };
     r.headers_mut().insert(
         header::CONTENT_DISPOSITION,
-        HeaderValue::from_str(&format!("attachment; filename=\"document-{id}.{ext}\"")).unwrap(),
+        HeaderValue::from_str(&format!("{disposition}; filename=\"document-{id}.{ext}\"")).unwrap(),
     );
     r.headers_mut().insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
+    if inline {
+        r.headers_mut().insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'none'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
+            ),
+        );
+        r.headers_mut().insert(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("SAMEORIGIN"),
+        );
+        r.headers_mut().insert(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        );
+        r.headers_mut().insert(
+            "cross-origin-resource-policy",
+            HeaderValue::from_static("same-origin"),
+        );
+    }
     Ok(r)
 }

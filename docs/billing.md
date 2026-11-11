@@ -2,9 +2,14 @@
 
 ## Coverage and accounts
 
-Create payer records, record patient coverage and review subscriber/member details
-and effective dates. Coverage verification is a staff attestation, not a 270/271
-eligibility response.
+Open the patient's **Insurance** tab to review coverage, subscriber/member details,
+effective dates and the recorded plan copay for the selected appointment. Choose
+the appointment explicitly when reviewing a different service date. Coverage
+verification is a staff attestation, separate from a native Claim.MD eligibility
+response. The latest eligibility check shows its request date, service date and
+status; **View eligibility report** opens the retained structured response.
+**Payer response received** means the request completed, not that benefits are
+active or payment is guaranteed. Review the response before deciding what to collect.
 
 Create an encounter-linked charge account, review codes and amounts, then post it.
 Accounting uses integer cents and append-only entries. Reversals append opposite
@@ -13,31 +18,58 @@ state remain separate from clinical signing and administrative checkout.
 
 Patient responsibility must be reviewed. An account balance alone does not establish
 what the patient owes. Fee schedules, comprehensive responsibility allocation,
-automated statements, financial close and electronic eligibility are not implemented.
+automated statements and financial close are not implemented. Configured Claim.MD
+eligibility inquiries are supported; payer enrollment and returned benefits still
+require review.
 
 ## Copay, patient invoice and insurance claim
 
-1. Review coverage and the copay, sign the encounter, and post its charge account.
-2. Collect only reviewed patient responsibility. For a card payment, create a secure
-   payment link and reconcile confirmed processor evidence before treating it as
-   paid. Current card collection is **test-only**. For a payment already received
-   outside this integration, record the receipt with its method, date and reference;
-   recording a receipt does not itself charge a card.
-3. Choose **Build patient invoice** on the posted account. Enter total reviewed
+1. Review insurance and the applicable copay for the appointment. **Record received
+   copay** records confirmed cash, check or an external payment already received.
+   Supply its amount, date, method, reference and evidence; check/external receipts
+   require a reference. This can happen before an encounter or posted account
+   exists. Recording a receipt does not charge a card. Live card capture is
+   unavailable; hosted test payments are limited to development with synthetic data.
+2. Open the encounter, document the visit and ICD-10 diagnoses, and enter its
+   procedures and charges under **Procedures & CPT**. Review diagnosis links,
+   quantities and full line totals before signing and posting. Posting applies
+   available copay credit from this appointment to its account. A receipt recorded
+   after posting can apply immediately. Pending processor attempts reserve amounts;
+   allocation never exceeds the available account balance.
+3. **View / print receipt** produces a patient copy with the received amount,
+   method, reference, linked appointment and current allocation state. Unapplied
+   credit remains visible until charges exist. **Apply recorded copay credit**
+   allocates eligible remaining credit from the posted account. An unallocated
+   receipt can be corrected by voiding its record; this does not refund money.
+   Once allocated, use **Review ledger** and correct the original ledger entry.
+   A reversal preserves the original evidence and prevents silent reapplication
+   of that receipt. Refund movement must be handled separately.
+4. Choose **Build patient invoice** on the posted account. Enter total reviewed
    patient responsibility before patient payments and credits, with its evidence.
    The server subtracts net recorded patient ledger activity, including reversals
    and refunds, without treating the gross insured balance as patient responsibility.
    A stale account version requires a reload. Saving retains an immutable, audited
    snapshot and does not collect money, email a bill or submit insurance.
-4. Open **Saved patient invoices** to print or save a PDF. Amounts describe the
-   ledger at issuance; confirm the current ledger before requesting payment.
+5. Open **Saved patient invoices** to print or save a PDF. New snapshots include
+   itemized services, codes, quantities, full line totals and patient payment
+   activity, with separate payment and adjustment subtotals. They do not include
+   internal staff evidence notes. Amounts describe the ledger at issuance; confirm
+   the current ledger before requesting payment. Older saved invoices keep their
+   original totals and explicitly state when itemization was not saved; current
+   charges are never substituted into a historical invoice.
    Snapshots containing test processor activity are marked TEST. A later corrected
    snapshot does not add another charge to the ledger.
-5. Create/review the insurance claim after recording the copay. The claim freezes
+6. Create/review the insurance claim after recording the copay. The claim freezes
    the gross charge and net patient payments independently. Copay reversals and
    confirmed managed refunds reduce net patient payments. Review the claim, mark
    it ready and explicitly submit through the clinic's active Claim.MD connection.
    A later payment does not rewrite a previously frozen claim snapshot.
+
+The selected encounter's revenue summary links its current claim and remittance
+evidence. **Insurance claims** also supports patient- and account-filtered lists.
+Review the claim response and post reviewed ERA evidence before determining the
+remaining patient responsibility; charge posting or clearinghouse acceptance
+alone does not complete this work.
 
 Patient invoice snapshots are independent of Stripe account setup. They are not
 Stripe-hosted invoices or automatic collection requests. Online invoice delivery,
@@ -117,12 +149,17 @@ profile is accepted.
 ## Hosted test payments
 
 Payment settings use an authenticated SunCharts Payments connection backed by
-Stripe Connect. **Live charges are disabled.**
+Stripe Connect. **Live charges are disabled.** Test collection is available only
+in development with synthetic patients. When `ENGINE_ENVIRONMENT=production`,
+the EHR blocks test-payment activation, creation, refunds, and ledger
+reconciliation. Historical payment evidence and account setup remain available;
+simulated processor funds cannot reduce production patient balances. A correctly bound live Stripe account may display business, charge and payout readiness after a refresh. This authenticates the connection only and does not enable live collection.
 
 For a connected installation, configure the clinic payment account from the
 native SunCharts EHR billing experience. SunCharts Connect owns the Stripe
-platform secret and brokers onboarding, checkout, webhooks, refunds, and
-reconciliation behind the scenes. The clinic never enters a Stripe API key,
+platform secret and brokers onboarding and Checkout creation/retrieval. The EHR
+reconciles retrieved evidence; managed refund and webhook delivery contracts are
+not yet supported. The clinic never enters a Stripe API key,
 installation ID, or broker token in the EHR. Only Stripe-hosted identity and
 bank verification opens outside the EHR, then returns to the clinic payment
 account. Staff refreshes account status and explicitly activates test checkout
@@ -131,7 +168,8 @@ information, choose **Continue Stripe setup** to resume the clinic-scoped setup
 page. This action stays available even when a previous refresh did not return an
 onboarding link. Complete verification, return to the EHR and refresh again.
 
-Managed payments require `ENGINE_PAYMENT_BROKER_URL`, a verified installation and
+Managed payments use the verified Connect origin unless an operator supplies
+`ENGINE_PAYMENT_BROKER_URL`. They require a verified installation and
 completed clinic enrollment. Authorized clinic owners, delegated partner
 administrators, and platform administrators manage the clinic-scoped account
 from the EHR. Stripe onboarding is used only for required identity and bank

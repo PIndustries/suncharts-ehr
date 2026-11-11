@@ -431,7 +431,15 @@ async fn oauth_pkce_scopes_refresh_replay_revocation_and_live_events() {
     .await;
     assert_eq!(status, 200);
     assert_eq!(who["tenant_id"], json!(a.tenant_id));
-    let (status,_,patient)=json_call(&r,"POST","/api/v1/patients",Some(&auth),None,json!({"mrn":"CONNECT-001","given_name":"Synthetic","family_name":"Connection","birth_date":"1990-01-01"})).await;
+    let (status, _, patient) = json_call(
+        &r,
+        "POST",
+        "/api/v1/patients",
+        Some(&auth),
+        None,
+        json!({"given_name":"Synthetic","family_name":"Connection","birth_date":"1990-01-01"}),
+    )
+    .await;
     assert_eq!(status, 201);
     let (status, _, events) = json_call(
         &r,
@@ -509,7 +517,19 @@ async fn oauth_pkce_scopes_refresh_replay_revocation_and_live_events() {
     )
     .await;
     let read = format!("Bearer {}", t["access_token"].as_str().unwrap());
-    assert_eq!(json_call(&r,"POST","/api/v1/patients",Some(&read),None,json!({"mrn":"NO-WRITE","given_name":"Denied","family_name":"Synthetic","birth_date":"1990-01-01"})).await.0,403);
+    assert_eq!(
+        json_call(
+            &r,
+            "POST",
+            "/api/v1/patients",
+            Some(&read),
+            None,
+            json!({"given_name":"Denied","family_name":"Synthetic","birth_date":"1990-01-01"})
+        )
+        .await
+        .0,
+        403
+    );
     let refresh = t["refresh_token"].as_str().unwrap();
     let (status, rotated) = form(
         &r,
@@ -804,11 +824,20 @@ async fn fhir_patient_boundary_is_scoped_and_honest() {
     let (r, db, a, _) = setup().await;
     let auth = bearer(&a);
     let mut ids = Vec::new();
-    for n in 0..2 {
-        let (status, _, p) = json_call(&r, "POST", "/api/v1/patients", Some(&auth), None,
-            json!({"mrn":format!("FHIR-{n}"),"given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-02"})).await;
+    let mut mrns = Vec::new();
+    for _ in 0..2 {
+        let (status, _, p) = json_call(
+            &r,
+            "POST",
+            "/api/v1/patients",
+            Some(&auth),
+            None,
+            json!({"given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-02"}),
+        )
+        .await;
         assert_eq!(status, StatusCode::CREATED);
         ids.push(p["id"].as_str().unwrap().to_string());
+        mrns.push(p["mrn"].as_str().unwrap().to_string());
     }
     let (status, metadata_headers, cap) =
         json_call(&r, "GET", "/fhir/metadata", None, None, Value::Null).await;
@@ -896,7 +925,7 @@ async fn fhir_patient_boundary_is_scoped_and_honest() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(p["identifier"][0]["value"], "FHIR-0");
+    assert_eq!(p["identifier"][0]["value"], mrns[0]);
     assert_eq!(p["birthDate"], "1990-01-02");
     let mut other = a.clone();
     other.tenant_id = Uuid::new_v4();
@@ -988,7 +1017,15 @@ async fn version_call(
 async fn longitudinal_lists_are_versioned_reviewed_and_tenant_scoped() {
     let (r, db, a, _) = setup().await;
     let auth = bearer(&a);
-    let (_,_,p)=json_call(&r,"POST","/api/v1/patients",Some(&auth),None,json!({"mrn":"CLINICAL-1","given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-01"})).await;
+    let (_, _, p) = json_call(
+        &r,
+        "POST",
+        "/api/v1/patients",
+        Some(&auth),
+        None,
+        json!({"given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-01"}),
+    )
+    .await;
     let p = p["id"].as_str().unwrap();
     let path = format!("/api/v1/patients/{p}/clinical");
     let (status, _) = version_call(
@@ -1380,7 +1417,15 @@ fn laboratory_report(specimen: Option<&str>) -> Value {
 async fn orders_specimens_panels_corrections_and_acknowledgment_are_atomic() {
     let (r, db, a, _) = setup().await;
     let auth = bearer(&a);
-    let (_,_,p)=json_call(&r,"POST","/api/v1/patients",Some(&auth),None,json!({"mrn":"LAB-NATIVE","given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-01"})).await;
+    let (_, _, p) = json_call(
+        &r,
+        "POST",
+        "/api/v1/patients",
+        Some(&auth),
+        None,
+        json!({"given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-01"}),
+    )
+    .await;
     let p = p["id"].as_str().unwrap();
     let base = format!("/api/v1/patients/{p}/orders");
     let input = laboratory_order();
@@ -1783,7 +1828,15 @@ async fn source_laboratory_orders_and_reports_preserve_linkage_and_unverified_si
 async fn panel_coverage_and_typed_values_are_enforced() {
     let (r, db, a, _) = setup().await;
     let auth = bearer(&a);
-    let (_,_,p)=json_call(&r,"POST","/api/v1/patients",Some(&auth),None,json!({"mrn":"LAB-COVERAGE","given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-01"})).await;
+    let (_, _, p) = json_call(
+        &r,
+        "POST",
+        "/api/v1/patients",
+        Some(&auth),
+        None,
+        json!({"given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-01"}),
+    )
+    .await;
     let p = p["id"].as_str().unwrap();
     let base = format!("/api/v1/patients/{p}/orders");
     let mut input = laboratory_order();
@@ -1950,8 +2003,24 @@ async fn schedule_call(
 #[tokio::test]
 async fn native_scheduling_conflicts_versions_roles_and_visit_handoff() {
     let (r, db, a, _) = setup().await;
-    let (_,_,p)=json_call(&r,"POST","/api/v1/patients",Some(&bearer(&a)),None,json!({"mrn":"SCHEDULE-1","given_name":"Morgan","family_name":"Example","birth_date":"1990-01-01"})).await;
-    let (_,_,p2)=json_call(&r,"POST","/api/v1/patients",Some(&bearer(&a)),None,json!({"mrn":"SCHEDULE-2","given_name":"Sam","family_name":"Example","birth_date":"1991-01-01"})).await;
+    let (_, _, p) = json_call(
+        &r,
+        "POST",
+        "/api/v1/patients",
+        Some(&bearer(&a)),
+        None,
+        json!({"given_name":"Morgan","family_name":"Example","birth_date":"1990-01-01"}),
+    )
+    .await;
+    let (_, _, p2) = json_call(
+        &r,
+        "POST",
+        "/api/v1/patients",
+        Some(&bearer(&a)),
+        None,
+        json!({"given_name":"Sam","family_name":"Example","birth_date":"1991-01-01"}),
+    )
+    .await;
     let mut desk = a.clone();
     desk.role = Role::FrontDesk;
     let mut read = a.clone();
@@ -2480,7 +2549,15 @@ async fn appointment_migration_preserves_source_and_reconciles_explicitly() {
 }
 
 async fn billing_patient_visit(r: &Router, a: &Actor) -> (Value, Value) {
-    let (_,p)=schedule_call(r,a,"POST","/api/v1/patients",json!({"mrn":format!("BILL-{}",Uuid::new_v4()),"given_name":"Quinn","family_name":"Synthetic","birth_date":"1988-04-03"}),None).await;
+    let (_, p) = schedule_call(
+        r,
+        a,
+        "POST",
+        "/api/v1/patients",
+        json!({"given_name":"Quinn","family_name":"Synthetic","birth_date":"1988-04-03"}),
+        None,
+    )
+    .await;
     let (_,appt)=schedule_call(r,a,"POST","/api/v1/appointments",json!({"patient_id":p["id"],"clinician_id":a.sub,"starts_at":"2026-10-01T15:00:00Z","ends_at":"2026-10-01T15:30:00Z"}),None).await;
     assert_eq!(
         schedule_call(
@@ -3349,6 +3426,73 @@ fn era_document(c: &Value) -> Value {
     json!({"payer_code":"SYN-ONLY","trace":"SYN-TRACE-ERA-01","payment_date":"2026-10-01","total_paid_cents":8000,"currency":"USD","claims":[{"control_number":c["control_number"],"payer_control_number":"SYN-PCN","status":"1","patient_name":"Quinn Synthetic","charged_cents":12550,"paid_cents":8000,"patient_responsibility_cents":2000,"adjustments":[{"group":"CO","reason_code":"45","amount_cents":2550,"service_index":null},{"group":"PR","reason_code":"1","amount_cents":2000,"service_index":null}],"services":[]}]})
 }
 #[tokio::test]
+async fn encounter_claim_list_filters_patient_account_and_tenant() {
+    let (r, _db, a, _) = setup().await;
+    let (patient, _, account, claim) = claim_fixture(&r, &a).await;
+    let (status, other_patient) = schedule_call(
+        &r,
+        &a,
+        "POST",
+        "/api/v1/patients",
+        json!({"given_name":"Riley","family_name":"Synthetic","birth_date":"1990-01-01"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 201, "{other_patient}");
+    let patient_id = patient["id"].as_str().unwrap();
+    let account_id = account["id"].as_str().unwrap();
+    let path = format!("/api/v1/billing/claims?patient_id={patient_id}&account_id={account_id}");
+    let (status, result) = schedule_call(&r, &a, "GET", &path, Value::Null, None).await;
+    assert_eq!(status, 200, "{result}");
+    assert_eq!(result["items"].as_array().unwrap().len(), 1);
+    assert_eq!(result["items"][0]["id"], claim["id"]);
+    assert!(result["items"][0].get("snapshot").is_none());
+    assert!(result["next_cursor"].is_null());
+    for filter in [
+        format!("patient_id={}", other_patient["id"].as_str().unwrap()),
+        format!("account_id={}", Uuid::new_v4()),
+        format!(
+            "patient_id={}&account_id={account_id}",
+            other_patient["id"].as_str().unwrap()
+        ),
+        format!(
+            "patient_id={patient_id}&account_id={account_id}&after={}",
+            claim["id"].as_str().unwrap()
+        ),
+    ] {
+        let (status, result) = schedule_call(
+            &r,
+            &a,
+            "GET",
+            &format!("/api/v1/billing/claims?{filter}"),
+            Value::Null,
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{result}");
+        assert_eq!(result["items"], json!([]), "{filter}");
+    }
+    let mut foreign = a.clone();
+    foreign.tenant_id = Uuid::new_v4();
+    let (status, result) = schedule_call(&r, &foreign, "GET", &path, Value::Null, None).await;
+    assert_eq!(status, 200, "{result}");
+    assert_eq!(result["items"], json!([]));
+    let mut patient_actor = a.clone();
+    patient_actor.role = Role::Patient;
+    patient_actor.patient_id = Some(Uuid::parse_str(patient_id).unwrap());
+    assert_eq!(
+        schedule_call(&r, &patient_actor, "GET", &path, Value::Null, None)
+            .await
+            .0,
+        403
+    );
+    let (status, unfiltered) =
+        schedule_call(&r, &a, "GET", "/api/v1/billing/claims", Value::Null, None).await;
+    assert_eq!(status, 200, "{unfiltered}");
+    assert_eq!(unfiltered["items"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn claims_era_posting_and_reversal_are_scoped_atomic_and_exact() {
     let (r, db, a, _) = setup().await;
     let (p, payer, b, c) = claim_fixture(&r, &a).await;
@@ -3832,7 +3976,7 @@ async fn patient_to_copay_to_cms1500_and_837p_preserves_the_revenue_cycle() {
             "code":"99213",
             "description":"Synthetic established-patient office visit",
             "modifiers":"",
-            "units":1,
+            "units":2,
             "amount_cents":15000,
             "diagnosis_codes":[]
         }],
@@ -3966,6 +4110,31 @@ async fn patient_to_copay_to_cms1500_and_837p_preserves_the_revenue_cycle() {
     assert_eq!(invoice["snapshot"]["responsibility_cents"], 2500);
     assert_eq!(invoice["snapshot"]["patient_credit_cents"], 2500);
     assert_eq!(invoice["snapshot"]["amount_due_cents"], 0);
+    assert_eq!(invoice["snapshot"]["format_version"], 2);
+    assert_eq!(invoice["snapshot"]["patient_payment_cents"], 2500);
+    assert_eq!(invoice["snapshot"]["patient_adjustment_credit_cents"], 0);
+    assert_eq!(
+        invoice["snapshot"]["services"],
+        json!([{
+            "code_system":"CPT", "code":"99213",
+            "description":"Synthetic established-patient office visit",
+            "modifiers":"", "units":2, "line_total_cents":15000
+        }])
+    );
+    assert_eq!(
+        invoice["snapshot"]["patient_activity"][0]["reference"],
+        "SYNTHETIC-COPAY-RECEIPT"
+    );
+    assert_eq!(
+        invoice["snapshot"]["patient_activity"][0]["effect_cents"],
+        -2500
+    );
+    assert!(
+        invoice["snapshot"]["patient_activity"][0]
+            .get("reason")
+            .is_none(),
+        "staff evidence notes must not leak into the printable invoice"
+    );
     let (status, replay) = schedule_call(
         &r,
         &a,
@@ -4024,6 +4193,21 @@ async fn patient_to_copay_to_cms1500_and_837p_preserves_the_revenue_cycle() {
     assert_eq!(status, 200, "{unpaid_invoice}");
     assert_eq!(unpaid_invoice["snapshot"]["patient_credit_cents"], 0);
     assert_eq!(unpaid_invoice["snapshot"]["amount_due_cents"], 2500);
+    assert_eq!(
+        unpaid_invoice["snapshot"]["patient_activity"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        unpaid_invoice["snapshot"]["patient_activity"][1]["kind"],
+        "reversal"
+    );
+    assert_eq!(
+        unpaid_invoice["snapshot"]["patient_activity"][1]["effect_cents"],
+        2500
+    );
     let (status,repaid)=schedule_call(&r,&a,"POST",&format!("{account_path}/entries"),json!({"request_id":Uuid::new_v4(),"kind":"payment","amount_cents":2500,"reverses_id":null,"party":"patient","method":"cash","reference":"SYNTHETIC-RECEIPT-2","occurred_on":"2026-10-01","reason":"Record replacement synthetic copay receipt"}),Some(5)).await;
     assert_eq!(status, 200, "{repaid}");
     let (_, saved) = schedule_call(&r, &a, "GET", &invoice_path, Value::Null, None).await;
@@ -4033,10 +4217,13 @@ async fn patient_to_copay_to_cms1500_and_837p_preserves_the_revenue_cycle() {
             .unwrap()
             .iter()
             .find(|i| i["id"] == invoice["id"])
-            .unwrap()["snapshot"]["amount_due_cents"],
-        0,
-        "saved invoices must retain their issuance snapshot"
+            .unwrap()["snapshot"],
+        invoice["snapshot"],
+        "saved services, patient payments and amounts must retain their issuance snapshot"
     );
+    assert!(sqlx::query("UPDATE patient_invoice_snapshots SET snapshot='{}'::jsonb WHERE tenant_id=$1 AND id=$2")
+        .bind(a.tenant_id).bind(invoice["id"].as_str().unwrap().parse::<Uuid>().unwrap()).execute(&db).await.is_err(),
+        "issued invoice details must remain immutable");
 
     let mut content = claim_content();
     content["synthetic_test"] = json!(true);
@@ -4137,7 +4324,7 @@ async fn patient_to_copay_to_cms1500_and_837p_preserves_the_revenue_cycle() {
         "synthetic submission must use X12 test mode"
     );
     assert!(x12.contains("*150.00***"), "{x12}");
-    assert!(x12.contains("SV1*HC:99213*150.00*UN*1*11**1~"), "{x12}");
+    assert!(x12.contains("SV1*HC:99213*150.00*UN*2*11**1~"), "{x12}");
     assert!(x12.contains("HI*ABK:Z0000~"), "{x12}");
     assert!(
         !x12.contains("*125.00***"),

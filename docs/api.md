@@ -188,24 +188,31 @@ US Core profiles, SMART App Launch, Bulk Data, EHI export, terminology validatio
 and formal conformance/certification remain unfinished.
 ### Patient registration writes
 
-`POST /fhir/Patient` creates registration identity and returns `201`, a Location,
-weak ETag and `meta.versionId`. `PUT /fhir/Patient/{id}` corrects an existing
+`POST /fhir/Patient` creates registration identity with a system-assigned MRN and
+returns `201`, a Location, weak ETag and `meta.versionId`. Omit `identifier` when
+creating a patient; clients cannot choose a new MRN. `PUT /fhir/Patient/{id}` corrects an existing
 identity; it never creates a missing patient. It requires `If-Match: W/"n"` (a
 quoted strong version is also accepted) and a nonblank `X-Change-Reason` header.
 The resource ID must match the URL. Stale versions return `412`; missing versions
-return `428`; tenant MRN collisions return `409`, as FHIR OperationOutcome errors.
+return `428`. Attempts to assign or change an MRN return `400`, as FHIR
+OperationOutcome errors.
 
 Writes require clinical.write and a clinician/owner role. Only resourceType, id,
-meta.versionId, exactly one MRN identifier, one official name with one given name,
-and birthDate are supported. Use the installation's `/identifier/mrn` system.
+meta.versionId, one official name with one given name, and birthDate are supported.
+Updates include exactly one existing, unchanged MRN identifier using the
+installation's `/identifier/mrn` system; creation omits identifiers.
 Unsupported fields such as addresses, telecom, extensions or multiple names fail;
 they are never silently discarded. These writes do not alter contact demographics,
 merge patients, provision accounts or grant access. Conditional creation and
 transaction bundles are not implemented.
 
 The Patient details web workspace uses `/api/v1/patients/{id}/identity` to read
-and correct the same versioned registration identity, with immutable attributed
-revisions. Corrections do not rewrite signed visit content. Existing identities
+and correct the registered name and birth date, with immutable attributed
+revisions. MRNs are displayed read-only and cannot be changed through this API or
+with a versioned database update. Existing and imported MRNs remain intact; the
+reviewed source-migration workflow can preserve an established MRN when creating
+a patient. Routine `POST /api/v1/patients` registration omits `mrn` and assigns it
+on the server. Corrections do not rewrite signed visit content. Existing identities
 have an explicitly unattributed baseline; new application registrations record
 an attributed initial revision in the registration transaction.
 

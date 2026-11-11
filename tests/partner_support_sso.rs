@@ -407,7 +407,6 @@ async fn delegated_support_is_tenant_admin_revalidated_and_audited() {
         "Claim.MD native professional-claims JSON upload"
     );
 
-    let mrn = format!("PARTNER-{}", Uuid::new_v4().simple());
     assert_eq!(
         call(
             &app,
@@ -416,7 +415,6 @@ async fn delegated_support_is_tenant_admin_revalidated_and_audited() {
             Some(&cookie),
             Some(&audience),
             Some(json!({
-                "mrn":mrn,
                 "given_name":"Synthetic",
                 "family_name":"Partner Admin",
                 "birth_date":"1990-01-01"

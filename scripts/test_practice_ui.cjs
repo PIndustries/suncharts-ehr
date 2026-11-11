@@ -19,7 +19,7 @@ function fixture({search = '', practice = false} = {}) {
         setAttribute(name, value) { attributes.set(name, value); },
         removeAttribute(name) { attributes.delete(name); },
         getAttribute(name) { return attributes.get(name); },
-        classList: {contains: name => classes.has(name), remove: name => classes.delete(name), add: name => classes.add(name)},
+        classList: {contains: name => classes.has(name), remove: name => classes.delete(name), add: name => classes.add(name),toggle:(name,force)=>{const enabled=force??!classes.has(name);if(enabled)classes.add(name);else classes.delete(name);return enabled;}},
         replaceChildren() { this.innerHTML = ''; }, reset() {}, focus() {}, scrollIntoView() {},
         querySelector() { return null; }, addEventListener() {}
       });
@@ -64,17 +64,17 @@ async function testEncounterStates() {
   assert.doesNotMatch(f.evaluate('encounterDateLabel(activeVisit)'), /Invalid Date/);
   assert.equal(f.evaluate("encounterDateLabel({appointment_id:'missing'})"),'Encounter date not recorded');
   f.evaluate('renderVisit(false)');
-  assert.match(f.node('encounter-progress').innerHTML, /No patient journey is attached/);
+  assert.match(f.node('encounter-progress').innerHTML, /Note &amp; ICD-10|Note & ICD-10/);
   assert.match(f.node('visit-editor').innerHTML, /data-action="sign"/);
   assert.doesNotMatch(f.node('visit-editor').innerHTML, /id="amendment-form"/);
   f.evaluate(`activeVisit.note={subjective:'S',objective:'O',assessment:'A',plan:'P'}; activeVisit.vitals={heart_rate_bpm:70}; renderVisit(false)`);
-  assert.match(f.node('encounter-progress').innerHTML, /Encounter in progress/);
+  assert.match(f.node('encounter-progress').innerHTML, /In progress/);
   // A saved unsigned note must retain its sign action, not become a signed record.
   assert.match(f.node('visit-editor').innerHTML, /data-action="sign"/);
   f.evaluate(`activeVisit.status='signed';activeVisit.signed_at='2026-10-25T14:30:00Z';renderVisit(false)`);
   assert.doesNotMatch(f.node('visit-editor').innerHTML, /data-action="sign"|>Save note<|>Save vitals</);
   assert.match(f.node('visit-editor').innerHTML, /id="amendment-form"/);
-  assert.match(f.node('encounter-progress').innerHTML, /Signed encounter/);
+  assert.match(f.node('encounter-progress').innerHTML, /Signed clinical record/);
   for (const role of ['owner', 'clinician', 'front_desk', 'read_only']) {
     f.evaluate(`me.role=${JSON.stringify(role)}; activeVisit.clinician_id='another-clinician';renderVisit(false)`);
     assert.doesNotMatch(f.node('visit-editor').innerHTML, /data-action="sign"|id="amendment-form"|>Save note<|>Save vitals</, role);
@@ -90,7 +90,7 @@ async function testDelegatedRoomingControls(){
   f.evaluate(`me.role=${JSON.stringify(role)};activeVisit.clinician_id='another-clinician';activeVisit.status='in_progress';renderVisit(false)`);
   assert.match(f.node('visit-editor').innerHTML,/>Save vitals</,role);
   assert.doesNotMatch(f.node('visit-editor').innerHTML,/data-action="sign"|>Save note<|id="amendment-form"/,role);
-  assert.match(f.node('encounter-progress').innerHTML,/No patient journey is attached/,role);
+  assert.match(f.node('encounter-progress').innerHTML,/Note &amp; ICD-10|Note & ICD-10/,role);
   f.evaluate(`activeVisit.status='signed';renderVisit(false)`);
   assert.doesNotMatch(f.node('visit-editor').innerHTML,/>Save vitals<|>Save note<|data-action="sign"|id="amendment-form"/,role);
  }

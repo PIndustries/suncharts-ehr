@@ -2971,7 +2971,7 @@
             }
           }
         },
-        "description": "Strict supported identity subset only; unsupported fields and conditional operations are rejected. Exactly one MRN identifier, one official name with one given string and a complete birthDate. No patientmerge or contactfield writes. Patient.id must match URL; supplied meta.versionId must match If-Match.",
+        "description": "Versioned native identity correction. Supply exactly one unchanged existing MRN identifier; registered names and birth date may change. MRN reassignment is rejected and prior identity revisions are retained.",
         "parameters": [
           {
             "in": "header",
@@ -3137,12 +3137,12 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/WritableFhirPatient"
+                "$ref": "#/components/schemas/NewFhirPatient"
               }
             }
           }
         },
-        "description": "Strict supported identity subset only; unsupported fields and conditional operations are rejected. Exactly one MRN identifier, one official name with one given string and a complete birthDate. No patientmerge or contactfield writes. Server assignsID/version; request id/meta.versionId are not accepted."
+        "description": "Register a native patient from the supported FHIR Patient subset. Omit identifier; the server assigns and returns the MRN. Caller-supplied identifiers are rejected."
       }
     },
     "/api/v1/patients/{patient}/clinical": {
@@ -5396,7 +5396,7 @@
     "/api/v1/patients/{p}/billing": {
       "get": {
         "operationId": "patientBilling",
-        "description": "Staff insurance, accounts and append-only ledger. Maximum 1000 policies/accounts and 10000 entries; explicit error rather than silent truncation. Financial values are integer USD cents.",
+        "description": "Staff insurance, accounts and append-only ledger. Maximum 1000 policies/accounts and 10000 entries; explicit error rather than silent truncation. Financial values are integer USD cents. Includes appointment copay receipt evidence, which may predate an encounter or posted account.",
         "parameters": [
           {
             "name": "p",
@@ -6173,7 +6173,7 @@
     "/api/v1/billing/claims": {
       "get": {
         "operationId": "claimsWorklist",
-        "description": "List native claims, cursor paginated.",
+        "description": "List native claims, cursor paginated. Optional patient_id and account_id filters combine with AND inside the authenticated tenant scope; neither changes access authority.",
         "parameters": [
           {
             "name": "after",
@@ -6183,6 +6183,26 @@
               "format": "uuid"
             },
             "description": "Opaque UUID cursor from preceding page"
+          },
+          {
+            "name": "patient_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Restrict results to this native patient."
+          },
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Restrict results to this native account."
           }
         ],
         "security": [
@@ -12109,7 +12129,7 @@
     "/api/v1/billing/payments/settings": {
       "get": {
         "operationId": "readPaymentSettings",
-        "description": "Owner-only redacted configuration and key-storage/Connect availability status. Never returns credentials.",
+        "description": "Owner-only redacted configuration and key-storage/Connect availability status. Never returns credentials. Returns environment availability separately from configured account readiness. Production disables test transactions; historical evidence remains readable.",
         "security": [
           {
             "oauth2": [
@@ -12151,6 +12171,41 @@
                     "webhook_base": {
                       "type": "string",
                       "format": "uri"
+                    },
+                    "live_payments_available": {
+                      "const": false,
+                      "description": "Live card processing is not supported."
+                    },
+                    "test_payments_available": {
+                      "type": "boolean",
+                      "description": "False when ENGINE_ENVIRONMENT=production."
+                    },
+                    "collection_unavailable_reason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Human-readable environment restriction, or null."
+                    },
+                    "native_setup_url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uri",
+                      "description": "Verified Connect clinic-scoped continuation URL derived from the paired connection, available independently of the last Stripe readiness refresh."
+                    },
+                    "connect_portal_url": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uri",
+                      "description": "Verified Connect clinic-scoped continuation URL derived from the paired connection, available independently of the last Stripe readiness refresh."
+                    },
+                    "broker_available": {
+                      "type": "boolean",
+                      "description": "A valid payment broker origin is configured; this does not establish payment account readiness."
                     }
                   }
                 }
@@ -12252,7 +12307,7 @@
     "/api/v1/billing/payments/settings/test": {
       "post": {
         "operationId": "testPaymentSettings",
-        "description": "Owner-only fixed Stripe /v1/account or authenticated broker status query. Requires matching installation/remote tenant/test mode; readiness requires charges and details complete. Does not create a payment.",
+        "description": "Owner-only fixed Stripe /v1/account or authenticated broker status query. Broker status must match the installation and remote tenant. A correctly bound live account may supply readiness display evidence but never enables live collection. Test readiness requires test-mode charges and business details complete. Does not create a payment.",
         "security": [
           {
             "oauth2": [
@@ -12293,6 +12348,13 @@
                     },
                     "live_payment_enabled": {
                       "const": false
+                    },
+                    "processor_livemode": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ],
+                      "description": "Broker processor account mode when present. True permits readiness display only; live_payment_enabled remains false and ready is false for live accounts."
                     }
                   }
                 }
@@ -12326,7 +12388,7 @@
     "/api/v1/billing/payments/settings/activation": {
       "post": {
         "operationId": "activateTestPayments",
-        "description": "Owner-only explicit test-collection enable/disable after verified account test. Existing attempt reconciliation remains available.",
+        "description": "Owner-only explicit test-collection enable/disable after verified account test. Existing attempt reconciliation remains available. Test-payment activation (enabled=true), creation, refresh, expiry and refund are blocked in production. Simulated funds cannot be reconciled into production balances.",
         "security": [
           {
             "oauth2": [
@@ -12416,7 +12478,7 @@
       ],
       "get": {
         "operationId": "accountHostedPayments",
-        "description": "Staff tenant-scoped attempts and reserved/available balance for a posted account.",
+        "description": "Staff tenant-scoped attempts and reserved/available balance for a posted account. Returns environment availability separately from configured account readiness. Production disables test transactions; historical evidence remains readable.",
         "security": [
           {
             "oauth2": [
@@ -12462,6 +12524,21 @@
                     },
                     "test_mode": {
                       "const": true
+                    },
+                    "live_payments_available": {
+                      "const": false,
+                      "description": "Live card processing is not supported."
+                    },
+                    "test_payments_available": {
+                      "type": "boolean",
+                      "description": "False when ENGINE_ENVIRONMENT=production."
+                    },
+                    "collection_unavailable_reason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Human-readable environment restriction, or null."
                     }
                   }
                 }
@@ -12493,7 +12570,7 @@
       },
       "post": {
         "operationId": "createHostedPayment",
-        "description": "Billing-write staff. Reserve a bounded posted-account amount before provider I/O. Opaque UUID/generic line only; no PHI. Stable native/provider idempotency; ambiguous requests remain reserved and are not retried after 23h.",
+        "description": "Billing-write staff. Reserve a bounded posted-account amount before provider I/O. Opaque UUID/generic line only; no PHI. Stable native/provider idempotency; ambiguous requests remain reserved and are not retried after 23h. Test-payment activation (enabled=true), creation, refresh, expiry and refund are blocked in production. Simulated funds cannot be reconciled into production balances.",
         "security": [
           {
             "oauth2": [
@@ -12652,7 +12729,7 @@
       ],
       "post": {
         "operationId": "refreshHostedPayment",
-        "description": "Retrieve exact test session, expanded payment intent and charge; post paid/refund deltas exactly once. Retry original uncertain creation only within safe idempotency window.",
+        "description": "Retrieve exact test session, expanded payment intent and charge; post paid/refund deltas exactly once. Retry original uncertain creation only within safe idempotency window. Test-payment activation (enabled=true), creation, refresh, expiry and refund are blocked in production. Simulated funds cannot be reconciled into production balances.",
         "security": [
           {
             "oauth2": [
@@ -12713,7 +12790,7 @@
       ],
       "post": {
         "operationId": "expireHostedPayment",
-        "description": "Expire an own-account open Checkout Session. Broker contract does not support this operation.",
+        "description": "Expire an own-account open Checkout Session. Broker contract does not support this operation. Test-payment activation (enabled=true), creation, refresh, expiry and refund are blocked in production. Simulated funds cannot be reconciled into production balances.",
         "security": [
           {
             "oauth2": [
@@ -12774,7 +12851,7 @@
       ],
       "post": {
         "operationId": "refundHostedPayment",
-        "description": "Own-account only. Stable idempotent refund request; cumulative verified provider refund evidence controls ledger entries. Pending and confirmed-but-unreconciled requests hold additional refund capacity.",
+        "description": "Own-account only. Stable idempotent refund request; cumulative verified provider refund evidence controls ledger entries. Pending and confirmed-but-unreconciled requests hold additional refund capacity. Test-payment activation (enabled=true), creation, refresh, expiry and refund are blocked in production. Simulated funds cannot be reconciled into production balances.",
         "security": [
           {
             "oauth2": [
@@ -18026,6 +18103,9 @@
             "schema": {
               "type": "string",
               "enum": [
+                "identity",
+                "insurance",
+                "legal",
                 "consult",
                 "laboratory",
                 "imaging",
@@ -18108,7 +18188,7 @@
             }
           }
         },
-        "description": "Clinician/owner only. Decoded PDF/PNG/JPEG limited to10MiB, MIME and magic validated. JSONbody limited to15MiB. Immutable original bytes, SHA256 and uploader attribution; metadata revisions are separate. Request identity replay requires identical upload content. Stored documents are not automatically released to patients or sent externally."
+        "description": "Owner/clinician may upload any supported category. Front desk may upload identity, insurance or legal only. Decoded PDF/PNG/JPEG limited to 10 MiB; MIME and magic are validated, not a malware scan or complete file validation. JSON body limited to 15 MiB. Original bytes, SHA-256 and uploader are immutable; metadata revisions are separate. Exact request retries are idempotent. Uploading does not release to patients or send externally."
       }
     },
     "/api/v1/patients/{patient}/documents/{id}": {
@@ -18248,7 +18328,8 @@
               "pattern": "^\"[0-9]+\"$"
             }
           }
-        ]
+        ],
+        "description": "Current If-Match and attributed reason required; original bytes remain immutable. Owner/clinician may edit supported metadata. Front desk may edit only when BOTH the stored category and requested category are identity, insurance or legal; relabeling a clinical document does not bypass authorization."
       }
     },
     "/api/v1/patients/{patient}/documents/{id}/revisions": {
@@ -19839,7 +19920,7 @@
             }
           }
         ],
-        "description": "Clinician/owner only. Native quoted If-Match checks independent identity version. MRN remains tenantunique; updates preserve patientID and signedclinicalrecords. Atomic revision and audit."
+        "description": "Correct registered names and birth date with current If-Match and attributed history. Omit mrn; an unchanged legacy echo is accepted but changing an MRN is rejected."
       }
     },
     "/api/v1/patients/{id}/identity/revisions": {
@@ -30952,7 +31033,26 @@
         "summary": "List immutable patient invoice snapshots for a tenant-scoped account",
         "responses": {
           "200": {
-            "description": "Up to 100 invoice snapshots at issuance"
+            "description": "Up to 100 immutable snapshots; old snapshots retain their original shape",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "maxItems": 100,
+                      "items": {
+                        "$ref": "#/components/schemas/PatientInvoice"
+                      }
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ]
+                }
+              }
+            }
           }
         },
         "security": [
@@ -30964,7 +31064,8 @@
           {
             "browserSession": []
           }
-        ]
+        ],
+        "operationId": "listPatientInvoiceSnapshots"
       },
       "post": {
         "summary": "Save reviewed patient responsibility less net patient ledger credits without collecting payment",
@@ -31012,7 +31113,14 @@
         },
         "responses": {
           "200": {
-            "description": "Immutable invoice snapshot; exact retries return the original"
+            "description": "Immutable itemized snapshot; exact retries return the original",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientInvoice"
+                }
+              }
+            }
           },
           "409": {
             "description": "Account changed, unposted account, or reused request with different content"
@@ -31027,7 +31135,9 @@
           {
             "browserSession": []
           }
-        ]
+        ],
+        "operationId": "createPatientInvoiceSnapshot",
+        "description": "Billing-write staff. Requires a posted account and its current quoted If-Match. Reviewed responsibility must be between zero and gross charges, excluding insurer responsibility. Net patient ledger payments, credits, reversals and confirmed refunds determine amount due and credit balance. Freeze service lines and patient payment activity at issuance; do not recompute older snapshots. Never moves funds, emails an invoice, or submits insurance."
       },
       "parameters": [
         {
@@ -31049,6 +31159,391 @@
           }
         }
       ]
+    },
+    "/api/v1/patients/{patient}/documents/{id}/preview": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "patient",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "previewPatientDocument",
+        "summary": "Preview the authenticated immutable original",
+        "tags": [
+          "Documents"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original bytes for in-chart preview; no-store and inline disposition",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "no-store"
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "inline; generated document-ID filename"
+              },
+              "X-Content-Type-Options": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "nosniff"
+              },
+              "X-Frame-Options": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "SAMEORIGIN"
+              },
+              "Content-Security-Policy": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "default-src 'none'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'"
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "no-referrer"
+              },
+              "Cross-Origin-Resource-Policy": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "same-origin"
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Record not found in tenant/patient"
+          },
+          "409": {
+            "description": "Version, state or request identity conflict"
+          },
+          "500": {
+            "description": "Atomic operation failed"
+          }
+        },
+        "description": "Staff-only, tenant/patient/document scoped PDF, PNG or JPEG bytes. The preview audit commits before bytes are returned. Inline disposition uses a generated document-ID filename; no-store, nosniff, same-origin framing/resource policy and restrictive default-src 'none' CSP prevent active document embedding. No arbitrary remote URL or HTML/SVG preview is supported."
+      }
+    },
+    "/api/v1/patients/{p}/billing/copays": {
+      "parameters": [
+        {
+          "name": "p",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "recordAppointmentCopay",
+        "summary": "Record an already received appointment copay",
+        "description": "Owner, clinician or front desk with billing write authority. Requires a same-patient appointment, excluding cancelled/canceled/no_show. Coverage is optional and tenant/patient scoped. Works before an encounter or posted account exists. Matching posted encounter charges receive available credit atomically; otherwise credit remains unapplied. A tenant-scoped request UUID with identical input returns the same receipt; differing input conflicts. Audited receipt and allocation commit together.",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "billing.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Invalid values or unsupported shape"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Role or billing scope denied"
+          },
+          "404": {
+            "description": "Tenant/patient scoped record not found"
+          },
+          "409": {
+            "description": "Stale review, duplicate evidence, incompatible lifecycle or unsafe balance"
+          },
+          "428": {
+            "description": "Current quoted If-Match required"
+          },
+          "500": {
+            "description": "Database/audit failure; transaction rolled back"
+          },
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CopayReceipt"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CopayReceiptInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/patients/{p}/billing/copays/{id}/void": {
+      "parameters": [
+        {
+          "name": "p",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "voidUnallocatedCopayReceipt",
+        "summary": "Void an unallocated receipt record",
+        "description": "Billing-write staff. Append a void record only if the receipt has never been allocated. Repeated voids retain the original void record. Allocated receipts require ledger correction instead. This does not refund funds and never deletes the original receipt.",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "billing.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Invalid values or unsupported shape"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Role or billing scope denied"
+          },
+          "404": {
+            "description": "Tenant/patient scoped record not found"
+          },
+          "409": {
+            "description": "Stale review, duplicate evidence, incompatible lifecycle or unsafe balance"
+          },
+          "428": {
+            "description": "Current quoted If-Match required"
+          },
+          "500": {
+            "description": "Database/audit failure; transaction rolled back"
+          },
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "voided": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "voided"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CopayVoidInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/patients/{p}/billing/accounts/{id}/copays/apply": {
+      "parameters": [
+        {
+          "name": "p",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "applyRecordedAppointmentCopays",
+        "summary": "Apply available appointment copay credit",
+        "description": "Billing-write staff and current posted account version required. Only unvoided, unreversed receipts for the account encounter appointment apply. Allocation is bounded by the remaining account balance after pending processor reservations. Already allocated cents are never applied twice; any ledger reversal excludes the receipt from automatic reuse. Positive allocation advances the account version. No external funds move.",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "billing.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Invalid values or unsupported shape"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Role or billing scope denied"
+          },
+          "404": {
+            "description": "Tenant/patient scoped record not found"
+          },
+          "409": {
+            "description": "Stale review, duplicate evidence, incompatible lifecycle or unsafe balance"
+          },
+          "428": {
+            "description": "Current quoted If-Match required"
+          },
+          "500": {
+            "description": "Database/audit failure; transaction rolled back"
+          },
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "applied_cents": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "applied_cents"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Quoted current posted account version."
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -32163,9 +32658,6 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "mrn": {
-            "type": "string"
-          },
           "given_name": {
             "type": "string"
           },
@@ -32178,11 +32670,11 @@
           }
         },
         "required": [
-          "mrn",
           "given_name",
           "family_name",
           "birth_date"
-        ]
+        ],
+        "description": "Register with name and date of birth. The server assigns the MRN; a caller-supplied MRN is rejected. Reviewed historical imports preserve established identifiers through their separate import contract."
       },
       "Appointment": {
         "type": "object",
@@ -34504,7 +34996,7 @@
             "maximum": 1000000000
           },
           "content": {
-            "$ref": "#/components/schemas/NewBillingEntry"
+            "$ref": "#/components/schemas/BillingEntryContent"
           },
           "reverses_id": {
             "type": [
@@ -34570,6 +35062,13 @@
             "type": "string",
             "minLength": 0,
             "maxLength": 500
+          },
+          "copays": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CopayReceipt"
+            },
+            "description": "Bounded appointment receipt history with allocation and void state."
           }
         },
         "required": [
@@ -34578,7 +35077,8 @@
           "entries",
           "currency",
           "payment_policy",
-          "claims_policy"
+          "claims_policy",
+          "copays"
         ]
       },
       "BillingWorkItem": {
@@ -39628,7 +40128,32 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Includes live_connection_verified when the bound live account was authenticated for display only; this is not live payment activation."
+          },
+          "charges_enabled": {
+            "type": "boolean",
+            "description": "Last verified processor account capability evidence; distinct from environment collection availability."
+          },
+          "payouts_enabled": {
+            "type": "boolean",
+            "description": "Last verified processor account capability evidence; distinct from environment collection availability."
+          },
+          "details_submitted": {
+            "type": "boolean",
+            "description": "Last verified processor account capability evidence; distinct from environment collection availability."
+          },
+          "requirements_currently_due": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "requirements_past_due": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -39664,7 +40189,8 @@
               "string",
               "null"
             ],
-            "format": "uri"
+            "format": "uri",
+            "description": "Null in production even for a historical open test attempt."
           },
           "provider_mode": {
             "enum": [
@@ -39679,10 +40205,12 @@
             "type": "integer"
           },
           "refund_available": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "False in production; historical evidence is preserved."
           },
           "expiry_available": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "False in production; historical evidence is preserved."
           },
           "needs_review": {
             "type": "boolean"
@@ -39700,6 +40228,17 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "test_payments_available": {
+            "type": "boolean",
+            "description": "False when ENGINE_ENVIRONMENT=production."
+          },
+          "collection_unavailable_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Human-readable environment restriction, or null."
           }
         }
       },
@@ -41477,13 +42016,17 @@
           "category": {
             "type": "string",
             "enum": [
+              "identity",
+              "insurance",
+              "legal",
               "consult",
               "laboratory",
               "imaging",
               "consent",
               "referral",
               "other"
-            ]
+            ],
+            "description": "identity: ID/driver license; insurance: insurance card; legal: registration legal document. Front-desk writes are limited to those three categories."
           },
           "document_date": {
             "anyOf": [
@@ -42326,7 +42869,8 @@
           "mrn": {
             "type": "string",
             "maxLength": 64,
-            "minLength": 1
+            "minLength": 1,
+            "description": "Stable system-assigned or preserved imported identifier. Read-only during identity corrections."
           },
           "given_name": {
             "type": "string",
@@ -42358,7 +42902,8 @@
           "mrn": {
             "type": "string",
             "maxLength": 64,
-            "minLength": 1
+            "minLength": 1,
+            "description": "Optional compatibility echo of the exact existing MRN. Any different value is rejected; omit this field for identity corrections."
           },
           "given_name": {
             "type": "string",
@@ -42381,7 +42926,6 @@
           }
         },
         "required": [
-          "mrn",
           "given_name",
           "family_name",
           "birth_date",
@@ -42584,7 +43128,8 @@
           "identifier",
           "name",
           "birthDate"
-        ]
+        ],
+        "description": "Update subset: the single existing MRN identifier must remain unchanged."
       },
       "ReferralDestinationInput": {
         "type": "object",
@@ -46944,6 +47489,512 @@
             }
           }
         }
+      },
+      "CopayReceiptInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "appointment_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "coverage_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "amount_cents": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000000
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "cash",
+              "check",
+              "external"
+            ]
+          },
+          "reference": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "occurred_on": {
+            "type": "string",
+            "format": "date"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "received_confirmed": {
+            "const": true
+          }
+        },
+        "required": [
+          "request_id",
+          "appointment_id",
+          "amount_cents",
+          "method",
+          "reference",
+          "occurred_on",
+          "reason",
+          "received_confirmed"
+        ],
+        "description": "Confirmed payment already received. Receipt date cannot be in the future. Nonblank reference is required for check/external. Does not initiate a card or bank transaction."
+      },
+      "CopayReceipt": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "patient_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "appointment_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "coverage_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "amount_cents": {
+            "type": "integer"
+          },
+          "method": {
+            "enum": [
+              "cash",
+              "check",
+              "external"
+            ]
+          },
+          "reference": {
+            "type": "string"
+          },
+          "occurred_on": {
+            "type": "string",
+            "format": "date"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "coverage_snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Coverage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "actor_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "allocated_cents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reversed_cents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "voided": {
+            "type": "boolean"
+          },
+          "account_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "patient_id",
+          "appointment_id",
+          "amount_cents",
+          "method",
+          "reference",
+          "occurred_on",
+          "actor_id",
+          "created_at",
+          "allocated_cents",
+          "reversed_cents",
+          "voided",
+          "account_ids"
+        ],
+        "description": "Immutable receipt evidence plus current allocation/void state. Reversing an allocation does not refund funds or make the original receipt reusable."
+      },
+      "CopayVoidInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "reason"
+        ]
+      },
+      "PatientInvoiceService": {
+        "type": "object",
+        "properties": {
+          "code_system": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "modifiers": {
+            "type": "string"
+          },
+          "units": {
+            "type": "integer"
+          },
+          "line_total_cents": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code_system",
+          "code",
+          "description",
+          "modifiers",
+          "units",
+          "line_total_cents"
+        ],
+        "description": "Saved full line total for the quantity; do not multiply line_total_cents by units again."
+      },
+      "PatientInvoiceActivity": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "enum": [
+              "payment",
+              "adjustment_credit",
+              "adjustment_debit",
+              "reversal"
+            ]
+          },
+          "occurred_on": {
+            "type": "string",
+            "format": "date"
+          },
+          "method": {
+            "type": "string"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "effect_cents": {
+            "type": "integer"
+          },
+          "reverses_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        },
+        "description": "Patient-only ledger evidence at issuance. Negative effect reduces balance. Internal staff reason/notes are not copied."
+      },
+      "PatientInvoiceSnapshot": {
+        "type": "object",
+        "properties": {
+          "format_version": {
+            "const": 2
+          },
+          "practice_name": {
+            "type": "string"
+          },
+          "patient": {
+            "type": "object",
+            "properties": {
+              "given_name": {
+                "type": "string"
+              },
+              "family_name": {
+                "type": "string"
+              },
+              "mrn": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "given_name",
+              "family_name"
+            ]
+          },
+          "service_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "services": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PatientInvoiceService"
+            }
+          },
+          "patient_activity": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PatientInvoiceActivity"
+            }
+          },
+          "currency": {
+            "const": "USD"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "test_activity": {
+            "type": "boolean"
+          },
+          "scope": {
+            "const": "at_issuance"
+          },
+          "gross_charges_cents": {
+            "type": "integer"
+          },
+          "responsibility_cents": {
+            "type": "integer"
+          },
+          "patient_credit_cents": {
+            "type": "integer"
+          },
+          "patient_payment_cents": {
+            "type": "integer"
+          },
+          "patient_adjustment_credit_cents": {
+            "type": "integer"
+          },
+          "amount_due_cents": {
+            "type": "integer"
+          },
+          "credit_balance_cents": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "patient",
+          "service_date",
+          "gross_charges_cents",
+          "responsibility_cents",
+          "patient_credit_cents",
+          "amount_due_cents",
+          "credit_balance_cents",
+          "currency",
+          "scope"
+        ],
+        "description": "Immutable issuance snapshot. Format 2 adds itemized services, patient activity and payment/adjustment subtotals. These fields are absent in older saved snapshots; clients must show original totals with an explicit unavailable-itemization message, never rebuild old invoices from current records."
+      },
+      "PatientInvoice": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "patient_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "account_version": {
+            "type": "integer"
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/PatientInvoiceSnapshot"
+          },
+          "actor_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "patient_id",
+          "account_id",
+          "account_version",
+          "snapshot",
+          "actor_id",
+          "created_at"
+        ]
+      },
+      "NewFhirPatient": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "resourceType": {
+            "type": "string",
+            "const": "Patient"
+          },
+          "name": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "use": {
+                  "type": "string",
+                  "const": "official"
+                },
+                "family": {
+                  "type": "string",
+                  "maxLength": 100,
+                  "minLength": 1
+                },
+                "given": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 1,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 100,
+                    "minLength": 1
+                  }
+                }
+              },
+              "required": [
+                "family",
+                "given"
+              ]
+            }
+          },
+          "birthDate": {
+            "type": "string",
+            "format": "date"
+          }
+        },
+        "required": [
+          "resourceType",
+          "name",
+          "birthDate"
+        ],
+        "description": "Creation subset: identifiers are assigned by the server; omit identifier, id and meta."
+      },
+      "BillingEntryContent": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "payment",
+              "adjustment_credit",
+              "adjustment_debit",
+              "reversal"
+            ]
+          },
+          "amount_cents": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 1000000000
+          },
+          "reverses_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "party": {
+            "type": "string",
+            "enum": [
+              "patient",
+              "insurer",
+              "other"
+            ]
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "cash",
+              "check",
+              "external",
+              "other",
+              "none"
+            ]
+          },
+          "reference": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 200
+          },
+          "occurred_on": {
+            "type": "string",
+            "format": "date"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "copay_receipt_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Server-assigned source receipt for an automatic appointment copay allocation."
+          }
+        },
+        "required": [
+          "kind",
+          "amount_cents",
+          "party",
+          "method",
+          "reference",
+          "occurred_on",
+          "reason"
+        ],
+        "description": "Stored ledger content, including server-attributed receipt or provider evidence. Unlike NewBillingEntry, it is not accepted as a write payload."
       }
     }
   }

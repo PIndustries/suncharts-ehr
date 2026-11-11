@@ -876,6 +876,16 @@ pub fn app(state: State) -> Router {
             get(|| async { web_asset("style.css", "text/css", include_str!("../web/style.css")) }),
         )
         .route(
+            "/patient-print.css",
+            get(|| async {
+                web_asset(
+                    "patient-print.css",
+                    "text/css",
+                    include_str!("../web/patient-print.css"),
+                )
+            }),
+        )
+        .route(
             "/cms1500.css",
             get(|| async {
                 web_asset(
@@ -932,6 +942,16 @@ pub fn app(state: State) -> Router {
                     "billing.js",
                     "application/javascript",
                     include_str!("../web/billing.js"),
+                )
+            }),
+        )
+        .route(
+            "/patient-revenue.js",
+            get(|| async {
+                web_asset(
+                    "patient-revenue.js",
+                    "application/javascript",
+                    include_str!("../web/patient-revenue.js"),
                 )
             }),
         )
@@ -1120,9 +1140,11 @@ async fn headers(req: axum::extract::Request, next: Next) -> Response {
         HeaderValue::from_static("nosniff"),
     );
     let policy = branding::InstanceBranding::from_env().content_security_policy();
-    if let Ok(value) = HeaderValue::from_str(&policy) {
-        r.headers_mut()
-            .insert(header::CONTENT_SECURITY_POLICY, value);
+    if !r.headers().contains_key(header::CONTENT_SECURITY_POLICY) {
+        if let Ok(value) = HeaderValue::from_str(&policy) {
+            r.headers_mut()
+                .insert(header::CONTENT_SECURITY_POLICY, value);
+        }
     }
     r.headers_mut().insert(
         header::REFERRER_POLICY,
