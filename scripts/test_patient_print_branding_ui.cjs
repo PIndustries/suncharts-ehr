@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const asset='https://connect.example.test/api/v1/managed-ehr/branding/assets/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+let currentName='Synthetic Practice',logo=asset;
+const ctx={console,URL,Date,Intl,esc,date:String,document:{addEventListener(){},querySelector(selector){if(selector==='.practice-identity strong')return {textContent:currentName};if(selector==='.practice-identity-logo img'&&logo)return {getAttribute:attribute=>attribute==='src'?logo:null};return null;}}};
+vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/billing.js','utf8'),ctx);vm.runInContext(fs.readFileSync('web/patient-revenue.js','utf8'),ctx);
+const snapshot={practice_name:'Synthetic Practice',patient:{given_name:'Avery <script>',family_name:'Synthetic',mrn:'MRN<&'},service_date:'2026-11-11',gross_charges_cents:20000,responsibility_cents:3000,patient_credit_cents:2500,patient_payment_cents:2500,patient_adjustment_credit_cents:0,amount_due_cents:500,credit_balance_cents:0,services:[{code_system:'CPT',code:'99213',description:'Recorded service <img src=x>',modifiers:'25',units:2,line_total_cents:20000}],patient_activity:[{kind:'payment',method:'card',occurred_on:'2026-11-11',reference:'reference<&',effect_cents:-2500}],test_activity:true};
+const invoice={id:'invoice<&',created_at:'2026-11-11',snapshot};const before=JSON.stringify(invoice);
+let html=ctx.patientInvoiceDocument(invoice);
+assert.equal(JSON.stringify(invoice),before,'branding must not modify the saved snapshot');
+assert.match(html,/class="practice-print-logo"/);assert.match(html,/alt="Current practice logo"/);assert.match(html,/referrerpolicy="no-referrer"/);assert.match(html,/<meta name="referrer" content="no-referrer">/);
+assert(html.includes("img-src "+asset+";"),'iframe CSP permits only the exact approved asset URL');assert(!html.includes('img-src https:;'));assert(!html.includes('unsafe-inline'));assert(!html.includes(' *'));
+assert.match(html,/TEST — Patient invoice/);assert.match(html,/\$200\.00/);assert.match(html,/\$30\.00/);assert.match(html,/\$25\.00/);assert.match(html,/\$5\.00/);assert(!html.includes('$400.00'));
+assert.match(html,/Powered by P\.Industries · SunCharts Connected EHR/);assert.match(html,/Practice logo reflects current branding; invoice details remain as issued/);assert.match(html,/Avery &lt;script&gt;/);assert(!html.includes('<script>'));assert(!html.includes('<img src=x>'));
+currentName='Renamed Practice';html=ctx.patientInvoiceDocument(invoice);assert(!html.includes('practice-print-logo'));assert(html.includes('Synthetic Practice'));assert(!html.includes('Renamed Practice'),'current name cannot replace historical invoice identity');assert.match(html,/img-src 'none'/);
+currentName='Synthetic Practice';logo=null;html=ctx.patientInvoiceDocument(invoice);assert(!html.includes('practice-print-logo'));assert(html.includes('Synthetic Practice'));assert(html.includes('$5.00'));
+for(const invalid of ['javascript:alert(1)','data:image/svg+xml,<svg onload=alert(1)>','file:///logo.png','http://tracker.example/logo.png',asset+'?patient=private',asset+'#private',asset.replace('https://','https://user:password@'),asset+'/other','https://connect.example.test/pixel.png']){
+ logo=invalid;html=ctx.patientInvoiceDocument(invoice);assert(!html.includes('practice-print-logo'),invalid);assert(!html.includes(invalid));assert.match(html,/img-src 'none'/);
+}
+logo=asset;const receipt={id:'receipt',appointment_id:'appointment',amount_cents:2500,allocated_cents:2500,reversed_cents:0,voided:false,occurred_on:'2026-11-11',created_at:'2026-11-11',method:'external',reference:'capture<&',hosted_checkout:{livemode:false,status:'paid',refunded_cents:500,refunded_unapplied_cents:0}};
+const context={practiceName:'Synthetic Practice',patient:snapshot.patient,appointment:{id:'appointment',title:'Synthetic visit <script>',starts_at:'2026-11-11'},printedAt:'2026-11-11',logoUrl:'https://tracker.example/patient.png'};
+html=ctx.copayReceiptDocument(receipt,context);assert.match(html,/practice-print-logo/);assert(!html.includes(context.logoUrl),'caller-supplied logos are not used');assert.match(html,/TEST — Card copay receipt with verified refund/);assert.match(html,/No real funds were collected/);assert.match(html,/Verified refunded amount/);assert.match(html,/Net card payment/);assert.match(html,/\$20\.00/);assert.match(html,/capture&lt;&amp;/);assert.match(html,/Powered by P\.Industries · SunCharts Connected EHR/);
+html=ctx.copayReceiptDocument(receipt,{...context,appointment:{id:'appointment',starts_at:'2026-11-11'}});assert.match(html,/Scheduled appointment/);assert(!html.includes('Office visit'),'billing-only preview must not invent a clinical visit type');
+html=ctx.copayReceiptDocument({...receipt,voided:true},context);assert.match(html,/Voided receipt/);assert.match(html,/Original recorded amount/);assert(!html.includes('Remaining unapplied credit'));
+html=ctx.copayReceiptDocument({...receipt,reversed_cents:2500},context);assert.match(html,/Receipt with corrected allocation/);assert(!html.includes('Remaining unapplied credit'));assert.match(html,/does not establish that a refund was issued/);
+html=ctx.copayReceiptDocument({...receipt,hosted_checkout:{...receipt.hosted_checkout,status:'needs_review'}},context);assert.match(html,/requires reconciliation/);
+const css=fs.readFileSync('web/patient-print.css','utf8');assert.match(css,/@media print/);assert.match(css,/thead\s*\{ display: table-header-group/);assert.match(css,/object-fit: contain/);assert.match(css,/overflow-wrap: anywhere/);
+console.log('PASS branded invoice and receipt layouts preserve snapshots, restrict trusted logo loading, escape content, retain test/refund/void warnings and identify current branding');

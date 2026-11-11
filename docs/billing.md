@@ -368,3 +368,15 @@ provenance. Selecting manual pricing for a different code retains the entered
 amount; prior saved evidence remains in account history. Client-provided fee
 snapshots are never accepted as authority. Fee lookup and approval create no
 ledger activity, patient liability, payment or claim submission.
+
+Printed patient invoices and copay receipts use the practice identity and a
+readable print layout, with a discreet SunCharts footer. An invoice always keeps
+its saved practice name, service details and monetary snapshot. Its current
+practice logo is shown only when the saved practice name matches the current
+practice identity, and is identified as current branding; older invoices are not
+rewritten. Receipt copies use the current chart context as stated on the copy.
+Logos reuse only the server-approved immutable branding asset already present in
+the EHR, with an exact asset URL policy and no referrer. No patient identifiers,
+amounts or document content are added to an image request. Missing or mismatched
+logos fall back to the practice name. Test, refund, void and correction notices
+remain visible on printed copies.
