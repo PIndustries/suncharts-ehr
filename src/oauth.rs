@@ -490,6 +490,8 @@ pub async fn authenticate(s: &State, raw: &str, method: &Method, path: &str) -> 
             "billing-mapping",
             "claim-mapping",
             "copay-checkouts",
+            "fee-context",
+            "fee-quote",
         ]
         .contains(&segment)
     }) {

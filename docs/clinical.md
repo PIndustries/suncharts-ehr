@@ -24,6 +24,14 @@ coverage, payments or balances do not exist.
 
 **Patients** returns to the patient directory. The directory stays visible when
 opening a chart; **Hide patients** and **Show patients** control its visibility.
+The directory initially shows active patients. Choose **Archived patients** or
+**All patients** to find a retained chart. **Archive patient** and **Restore patient**
+require a reason and explicit confirmation from an owner, clinician or front-desk
+user with clinical edit access. Archiving never deletes or rewrites visits, files,
+signed notes, insurance claims or payments, and does not cancel appointments.
+Restore the chart before creating appointments or starting a new encounter.
+An encounter already in progress can still be completed by its authorized clinician.
+
 Encounter history combines appointments with their linked visits. Completed rows
 open the exact signed encounter rather than starting another visit.
 

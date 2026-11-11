@@ -34,7 +34,7 @@ pub(crate) async fn audit(tx: &mut Tx<'_>, actor: &Actor, action: &str, id: Uuid
 }
 
 async fn patient_row(tx: &mut Tx<'_>, actor: &Actor, id: Uuid) -> Result<Patient> {
-    sqlx::query_as("SELECT id,mrn,given_name,family_name,birth_date FROM patients WHERE tenant_id=$1 AND id=$2")
+    sqlx::query_as("SELECT p.id,p.mrn,p.given_name,p.family_name,p.birth_date,coalesce((SELECT archived FROM patient_lifecycle_events e WHERE e.tenant_id=p.tenant_id AND e.patient_id=p.id ORDER BY version DESC LIMIT 1),false) AS archived FROM patients p WHERE p.tenant_id=$1 AND p.id=$2")
         .bind(actor.tenant_id).bind(id).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)
 }
 
@@ -102,11 +102,16 @@ async fn visit_row(tx: &mut Tx<'_>, actor: &Actor, id: Uuid) -> Result<Visit> {
 
 #[async_trait]
 impl ClinicalBackend for PostgresBackend {
-    async fn patients(&self, a: &Actor, after: Option<Uuid>) -> Result<PatientPage> {
+    async fn patients(
+        &self,
+        a: &Actor,
+        after: Option<Uuid>,
+        status: crate::patient_lifecycle::PatientStatus,
+    ) -> Result<PatientPage> {
         a.staff()?;
         let mut tx = self.0.begin().await?;
-        let mut items:Vec<Patient>=sqlx::query_as("SELECT id,mrn,given_name,family_name,birth_date FROM patients WHERE tenant_id=$1 AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 51")
-            .bind(a.tenant_id).bind(after).fetch_all(&mut *tx).await?;
+        let mut items:Vec<Patient>=sqlx::query_as("SELECT p.id,p.mrn,p.given_name,p.family_name,p.birth_date,coalesce(e.archived,false) AS archived FROM patients p LEFT JOIN LATERAL (SELECT archived FROM patient_lifecycle_events WHERE tenant_id=p.tenant_id AND patient_id=p.id ORDER BY version DESC LIMIT 1) e ON true WHERE p.tenant_id=$1 AND ($2::uuid IS NULL OR p.id>$2) AND ($3::boolean IS NULL OR coalesce(e.archived,false)=$3) ORDER BY p.id LIMIT 51")
+            .bind(a.tenant_id).bind(after).bind(status.archived()).fetch_all(&mut *tx).await?;
         let next_cursor = if items.len() > 50 {
             items.pop();
             items.last().map(|p| p.id)
@@ -207,6 +212,7 @@ impl ClinicalBackend for PostgresBackend {
                     .map_err(Into::into);
             }
         }
+        crate::patient_lifecycle::require_active(&mut tx, a, p.patient_id).await?;
         if let Some(source) = p.source_history_id {
             crate::scheduling::source(&mut tx, a, p.patient_id, source).await?;
         }
@@ -283,6 +289,7 @@ impl ClinicalBackend for PostgresBackend {
                 .await?
                 .ok_or(Error::NotFound)?;
         rooming_authorized(&mut tx, a, row.clinician_id).await?;
+        crate::patient_lifecycle::require_active(&mut tx, a, row.patient_id).await?;
         if row.status != "checked_in" {
             return Err(Error::Conflict(
                 "appointment must be checked in before starting a visit",

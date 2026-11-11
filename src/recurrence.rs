@@ -160,6 +160,7 @@ async fn authorize_plan(tx: &mut Tx<'_>, a: &Actor, plan: &SeriesPlan) -> Result
             .fetch_optional(&mut **tx)
             .await?;
     p.ok_or(Error::NotFound)?;
+    crate::patient_lifecycle::require_active(tx, a, plan.patient_id).await?;
     scheduling::provider_locked(tx, a, plan.clinician_id, false).await?;
     let zone: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_timezone_names WHERE name=$1)")

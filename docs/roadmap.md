@@ -25,8 +25,10 @@ route is not evidence of a complete practice workflow.
 
 - Working-hours templates, available-slot search, waitlists and patient booking.
 - Expanded staff permissions, invitations, recovery and MFA.
-- Electronic eligibility, fee schedules, responsibility allocation and statements.
-- Secondary/tertiary billing, broader claim profiles, denials/appeals and financial close.
+- Expand electronic eligibility and reviewed practice fee schedules; add comprehensive
+  responsibility allocation and automated statements.
+- Tertiary and Medicare-as-secondary coordination, broader claim profiles,
+  denials/appeals and financial close.
 - Payout/fee and dispute reconciliation, terminals and recurring collection.
 - Enrolled clinical/financial partner testing with retained acceptance evidence.
 

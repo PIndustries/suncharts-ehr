@@ -280,6 +280,7 @@ async fn queue(
     }
     let out = clearinghouse::submission(&mut tx, &a, id).await?;
     let c = claims::claim_row(&mut tx, &a, out.claim_id).await?;
+    crate::claim_cob::require_outbound(&c)?;
     if out.version != version
         || out.status != "prepared"
         || c.status != "ready"
@@ -346,6 +347,7 @@ async fn delivered(
 ) -> Result<()> {
     let out = clearinghouse::submission(tx, a, j.submission_id).await?;
     let c = claims::claim_row(tx, a, out.claim_id).await?;
+    crate::claim_cob::require_outbound(&c)?;
     if out.status != "prepared" || c.status != "ready" || c.version != out.claim_version {
         return Err(Error::Conflict(
             "delivery receipt retained for reconciliation because the claim/artifact changed",
@@ -507,6 +509,8 @@ pub async fn process_one(pool: &PgPool, config: &Config) -> Result<bool> {
         && crate::claimmd::preflight(&out).is_err()
     {
         "claimmd_preflight_failed_before_transmission_review_original_claim_profile"
+    } else if crate::claim_cob::tracking_only(&c) {
+        "crossover_tracking_has_no_outbound_delivery"
     } else if out.status != "prepared"
         || c.status != "ready"
         || c.version != out.claim_version

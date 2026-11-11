@@ -347,6 +347,7 @@ async fn create_appointment(
         sqlx::query("INSERT INTO patient_demographics_history(tenant_id,patient_id,version,content,author_id,reason) VALUES($1,$2,1,$3,$4,'Partner booking supplied demographics; staff verification required')").bind(a.tenant_id).bind(id).bind(contact).bind(a.sub).execute(&mut *tx).await?;
         id
     };
+    crate::patient_lifecycle::require_active(&mut tx, &a, patient).await?;
     crate::scheduling::available(
         &mut tx,
         &a,

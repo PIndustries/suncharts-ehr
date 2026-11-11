@@ -26,6 +26,8 @@ function claimMdTrackingSummary(tracking={}){
  return `${connection||'<p class="muted">No Claim.MD polling connection is attached to this claim.</p>'}${response}<p class="muted">Clearinghouse acknowledgments and payer messages do not post insurance payments or settle the patient balance.</p>`;
 }
 function claimMdClaimLifecycle(claim,detail={},history={items:[]}){
+ if(claim.snapshot?.coordination_of_benefits?.crossover){const source=claim.snapshot.coordination_of_benefits.crossover;return `<section class="claim-lifecycle" aria-label="Crossover lifecycle"><h3>Received secondary crossover</h3><p>Primary forwarding is recorded. The exact secondary835 from ${esc(source.payment_date)} is linked for review; SunCharts has not sent a duplicate claim.</p><p>${detail.tracking?.remittance_posted?'A reviewed secondary remittance posting is active. Review the original account balance and any patient responsibility separately.':'No active secondary remittance posting. Review the linked response before applying its payment or adjustments.'}</p><p class="muted">A denial or a missing PR adjustment does not create or clear patient liability.</p></section>`;}
+
  const status=String(claim.status||'draft').toLowerCase(),connected=!!claimMdConnectionState?.connected,tracking=detail.tracking||{};
  const hasCoverage=!!claim.snapshot?.account?.coverage_snapshot,eligibility=tracking.eligibility;
  const submissions=tracking.submissions||[],reports=tracking.reports||[];

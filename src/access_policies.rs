@@ -458,6 +458,8 @@ fn resources(path: &str) -> Option<Vec<&'static str>> {
             "billing-mapping",
             "claim-mapping",
             "copay-checkouts",
+            "fee-context",
+            "fee-quote",
         ]
         .contains(part)
     }) {

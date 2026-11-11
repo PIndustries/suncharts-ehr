@@ -17,8 +17,8 @@ entries; they do not delete the original. Charges, payments, adjustments and cla
 state remain separate from clinical signing and administrative checkout.
 
 Patient responsibility must be reviewed. An account balance alone does not establish
-what the patient owes. Fee schedules, comprehensive responsibility allocation,
-automated statements and financial close are not implemented. Configured Claim.MD
+what the patient owes. Comprehensive responsibility allocation, automated
+statements and financial close are not implemented. Configured Claim.MD
 eligibility inquiries are supported; payer enrollment and returned benefits still
 require review.
 
@@ -79,7 +79,12 @@ copay collection is a separate operation with its own receipt and reconciliation
 
 ## Encounter diagnosis links
 
-Save an order or charge account as a draft linked to a native visit, then choose
+When entering charges, select saved encounter diagnoses inline on each procedure.
+Selections copy codes for explicit review; new procedures have no default diagnosis
+association. These copied codes are not provenance links and do not follow later
+encounter edits. Existing manual codes remain available.
+
+For versioned provenance, save an order or charge account as a draft linked to a native visit, then choose
 **Link encounter diagnoses**. Select the saved encounter diagnoses supporting the
 order or each charge line and record a reason. The server checks both the draft
 version and encounter version before capturing diagnosis IDs, codes, descriptions
@@ -111,8 +116,91 @@ identities; an HTTP success or mailbox transfer is not payer acceptance.
 
 The current generator has a restricted professional-claim profile. It does not
 provide complete payer companion-guide coverage, institutional/dental claims,
-secondary/tertiary coordination, denials/appeals or enrolled payer acceptance.
+tertiary coordination, Medicare-as-secondary/MSP profiles, denials/appeals or
+enrolled payer acceptance. The bounded commercial secondary profile is described below.
 See `src/x12.rs` and the API contract for accepted fields and validation errors.
+
+## Secondary insurance on the same encounter
+
+Record each service once. Effective primary, secondary and tertiary policies are
+shown together in encounter billing; the account retains its original posted
+primary policy. After the primary claim is adjudicated and its remittance posted,
+open **Review secondary billing** on that primary claim. Select the effective
+secondary policy, review primary service paid units, and explicitly record the
+EOB crossover and payer submission-timing review. The draft secondary claim uses
+the same account and original services, while freezing its own payer/subscriber
+identity and the primary payment, adjustments, control number and remittance date.
+Preparing a claim creates no ledger charge, patient liability or payment.
+
+This path requires a native delivered primary electronic artifact and an active,
+posted primary 835 row with exact ordered service controls and balanced charges,
+payment and CAS adjustments. CLP19 means the primary payer reports forwarding the
+claim and blocks another outbound secondary claim. Missing or unsupported evidence
+remains a review blocker. Existing secondary originals must be opened or corrected;
+they cannot be duplicated. Reversal of primary adjudication is blocked while a
+non-void downstream secondary claim depends on it.
+
+The supported 837P secondary profile is a commercial destination (filing indicator
+CI), with 2320/2330 prior-payer identity and 2430 service adjudication. Primary and
+secondary payer IDs are frozen separately; the primary is not sent again. Native
+Claim.MD submission still requires explicit review and queuing. Secondary CMS-1500
+preview is unavailable and is refused rather than rendering incomplete other-payer
+fields; the frozen JSON evidence and reviewed electronic artifact remain available.
+Manual/external primary adjudication, tertiary claims and MSP destinations require
+separate supported workflows and are not inferred by this path.
+
+Post the secondary payment to the same account. OA23 and other prior-payer impact
+remain evidence; PR does not create another charge. Already-posted primary CO
+credits are visible in remittance review. Selecting a secondary CO adjustment with
+the same reason and service scope as a posted primary credit is refused for review,
+even when the remaining balance could absorb it. Determine the final patient share
+from the reviewed secondary response before issuing a patient invoice.
+
+Claim.MD documents using the [same submission API for secondary claims](https://docs.claim.md/docs/is-there-a-separate-api-for-submitting-secondary-claims)
+and [reviewing crossover and payer timing before submission](https://docs.claim.md/docs/how-do-i-handle-secondary-and-tertiary-claims).
+CMS identifies prior insurance in [837P loops 2320–2330G](https://www.cms.gov/Outreach-and-Education/MLN/WBT/MLN4462429-MLN-WBT-1500/1500/lesson04/23/index.html).
+These references do not establish payer enrollment or acceptance of a particular claim.
+
+### Received secondary crossover responses
+
+When the posted primary835 reports CLP19, **Review secondary billing** does not
+create another outbound claim. It offers an explicit link only after an actual
+secondary835 has been imported or retrieved. Until then, it shows that a verified
+secondary response is awaited; forwarding status alone does not identify its payer.
+
+The bounded linkage profile requires the retained original835 and current active
+secondary coverage with matching payer ID, N1 PE/XX billing NPI, original primary
+patient-control number, secondary payer claim number, DTM472 service date, and
+ordered original service controls, procedure/modifiers and charges. Paid and CAS
+totals must balance. CLP2, CLP20 and CLP4 secondary responses are supported; missing
+or differing evidence remains unlinked for review. A native delivered primary
+artifact and its current posted CLP19 source are still required. This does not
+infer provider identity from a deposit payee or infer a secondary destination from
+Medicare forwarding alone.
+
+After staff confirms the linkage, one tracking-only secondary record freezes both
+sources on the same account. Its API status `submitted` identifies received
+secondary evidence; the UI labels it **Crossover response received**, and SunCharts
+has not transmitted anything. The record cannot be marked ready, exported as a
+packet/CMS-1500/837, queued or marked delivered. Review the linked remittance and
+post it separately; creation itself does not change charges, payments or liability.
+A denied CLP4 with zero payment and no PR evidence neither creates new patient
+responsibility nor clears the prior balance. Patient invoices require explicit
+reviewed responsibility, including after a denial.
+
+The first posting must use the exact bound remittance row and source hash. Later
+corrections follow the existing reviewed reversal chain. Reverse an active secondary
+posting before withdrawing an incorrect crossover link, then resolve its non-void
+descendants before reversing the primary. An unposted withdrawn link retains its
+history; its still-unposted source can be linked again after clearing any saved
+match. A previously posted/reversed source is not silently reused as a fresh
+crossover. Request replay returns the same record, and active source/payer bindings
+cannot be duplicated.
+
+CMS documents the forwarding meanings of CLP19 and CLP20 in its
+[Medicare Remit Easy Print guide](https://www.cms.gov/Research-Statistics-Data-and-Systems/CMS-Information-Technology/AccesstoDataApplication/Downloads/Medicare-Remit-Easy-Print-User-Guide-Version44.pdf).
+The forwarding code is evidence of processing status, not proof of a particular
+secondary payer's receipt or payment.
 
 ## ERA posting
 
@@ -241,3 +329,42 @@ managed legacy broker supports creation/retrieval and external-refund evidence.
 Payout/fee reconciliation, dispute resolution, multiple currencies, terminals and
 recurring charges remain unsupported. See [operations](operations.md) for
 credential backups and [the API](../api/openapi.json) for the separate contracts.
+
+## Reviewed practice fee schedules
+
+Practice owners can open **Practice administration → Practice fees**, load a
+locally prepared numeric reference proposal, and save an **inactive draft**.
+The owner chooses the provider, service facility, facility/non-facility setting,
+verified QP basis, locality, practice multiplier, code scope and service-date
+range. Source URLs, SHA-256 hashes, publication dates, exact code/modifier rows
+and reference amounts remain attached to the proposal. No Medicare dataset or
+CPT descriptions are bundled with the EHR. A source reference does not establish
+coverage, medical necessity or the amount an insurer will pay.
+
+Saving a proposal does not activate prices. Review the complete entries and
+source evidence, acknowledge the scope and approve the current version with a
+reason. Proposals and entries are immutable; correct them by preparing a new
+proposal. Two approved schedules cannot overlap for the same provider, facility,
+setting and service dates. Retiring a schedule stops new fee selection while
+preserving its history and all previously captured charge evidence. A changed
+provider or facility directory record requires a replacement reviewed proposal.
+
+The charge form uses one fee context for its service lines. The provider comes
+from the linked encounter; a facility is preselected only when the saved
+appointment facility name exactly matches one active directory entry. The
+service setting is preselected only from an explicitly approved default for that
+scope. Otherwise staff select it. Fee lookup requires billing-view permission and
+an exact approved code, modifier, date and scope match. Blank, professional and
+technical component modifiers are distinct; no fallback or reduction policy is
+inferred for unmatched modifiers.
+
+Only new empty amounts, or untouched new lines already filled by the fee engine,
+receive automatic prices. Unit price times units becomes the complete line
+total; billing never multiplies that total again. Existing draft and posted
+charges are not repriced. Staff can check and explicitly use a current approved
+fee or retain a reviewed manual amount. Changing an approved amount requires an
+override reason; the server records both expected and actual amounts with source
+provenance. Selecting manual pricing for a different code retains the entered
+amount; prior saved evidence remains in account history. Client-provided fee
+snapshots are never accepted as authority. Fee lookup and approval create no
+ledger activity, patient liability, payment or claim submission.

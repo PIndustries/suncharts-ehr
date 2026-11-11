@@ -320,11 +320,13 @@ async fn generate(
         return Ok(Json(submission(&mut tx, &a, sid).await?));
     }
     let c = claims::claim_row(&mut tx, &a, id).await?;
+    crate::claim_cob::require_outbound(&c)?;
     if c.version != version || c.status != "ready" {
         return Err(Error::Conflict(
             "generate 837P from the current ready claim",
         ));
     }
+    crate::claim_cob::validate_current(&mut tx, &a, &c).await?;
     let p = partner(&mut tx, &a, v.partner_id).await?;
     let pc: PartnerContent =
         serde_json::from_value(p.content.clone()).map_err(|_| Error::Invalid("invalid partner"))?;
@@ -425,6 +427,7 @@ async fn download(
     a.staff()?;
     let mut tx = db(&s)?.begin().await?;
     let v = submission(&mut tx, &a, id).await?;
+    crate::claim_cob::require_outbound(&claims::claim_row(&mut tx, &a, v.claim_id).await?)?;
     if v.status == "cancelled" {
         return Err(Error::Conflict("cancelled artifact cannot be downloaded"));
     }
@@ -473,6 +476,9 @@ async fn action(
     }
     crate::delivery::ensure_unreserved(&mut tx, &a, out.id).await?;
     let mut c = claims::claim_row(&mut tx, &a, out.claim_id).await?;
+    if v.action != "cancel" {
+        crate::claim_cob::require_outbound(&c)?;
+    }
     match (v.action.as_str(), out.status.as_str()) {
         ("cancel", "prepared") => {
             sqlx::query("UPDATE edi_submissions SET status='cancelled',version=version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(id).execute(&mut *tx).await?;

@@ -14,6 +14,7 @@ pub mod builtin_connectors;
 pub mod ca277;
 pub mod care_pathways;
 pub mod checkout;
+mod claim_cob;
 pub mod claimmd;
 pub mod claimmd_eligibility;
 pub mod claimmd_extended;
@@ -40,6 +41,7 @@ pub mod erebine_adapter;
 pub mod error;
 pub mod erx_setup;
 pub mod events;
+pub mod fees;
 pub mod fhir;
 pub mod gmail_referral_adapter;
 pub mod health_history;
@@ -54,6 +56,7 @@ pub mod office;
 pub mod partner_scheduling;
 pub mod partner_support;
 pub mod patient_identity;
+pub mod patient_lifecycle;
 pub mod patient_portal;
 pub mod payments;
 pub mod postgres;
@@ -347,6 +350,8 @@ pub fn app(state: State) -> Router {
         .merge(referrals::routes())
         .merge(referral_delivery::routes())
         .merge(patient_identity::routes())
+        .merge(patient_lifecycle::routes())
+        .merge(fees::routes())
         .merge(patient_portal::router())
         .merge(prescribing::router())
         .merge(erx_setup::router())
@@ -554,6 +559,16 @@ pub fn app(state: State) -> Router {
                     "demographics.js",
                     "application/javascript",
                     include_str!("../web/demographics.js"),
+                )
+            }),
+        )
+        .route(
+            "/fees.js",
+            get(|| async {
+                web_asset(
+                    "fees.js",
+                    "application/javascript",
+                    include_str!("../web/fees.js"),
                 )
             }),
         )
@@ -774,6 +789,16 @@ pub fn app(state: State) -> Router {
         .route(
             "/sun.css",
             get(|| async { web_asset("sun.css", "text/css", include_str!("../web/sun.css")) }),
+        )
+        .route(
+            "/patient-lifecycle.js",
+            get(|| async {
+                web_asset(
+                    "patient-lifecycle.js",
+                    "text/javascript; charset=utf-8",
+                    include_str!("../web/patient-lifecycle.js"),
+                )
+            }),
         )
         .route(
             "/patient-identity.js",
@@ -1290,13 +1315,15 @@ async fn headers(
 #[serde(deny_unknown_fields)]
 struct PatientQuery {
     after: Option<Uuid>,
+    #[serde(default)]
+    status: patient_lifecycle::PatientStatus,
 }
 async fn patients(
     a: Actor,
     ExtractState(s): ExtractState<State>,
     axum::extract::Query(q): axum::extract::Query<PatientQuery>,
 ) -> Result<Json<PatientPage>> {
-    Ok(Json(s.backend.patients(&a, q.after).await?))
+    Ok(Json(s.backend.patients(&a, q.after, q.status).await?))
 }
 async fn workspace(
     a: Actor,

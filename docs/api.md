@@ -216,6 +216,18 @@ on the server. Corrections do not rewrite signed visit content. Existing identit
 have an explicitly unattributed baseline; new application registrations record
 an attributed initial revision in the registration transaction.
 
+`GET /api/v1/patients` defaults to `status=active`; `archived` and `all` are
+explicit directory filters. Direct patient and record URLs retain tenant-scoped
+access. `GET /api/v1/patients/{id}/lifecycle` returns the archive state, quoted ETag
+and attributed history (latest 100 events). `PUT` requires the current quoted
+`If-Match`, an `archived` boolean and nonblank `reason`; owner, clinician or
+front-desk authority is intersected with custom clinical edit permissions.
+Version 1 is the initial active state. Archive/restore append an immutable event
+and audit in one transaction without updating the patient or linked records.
+New appointment and encounter creation rejects an archived chart with `409`.
+Existing appointment retry requests remain recoverable, and existing in-progress
+encounters may still be completed under ordinary author permissions.
+
 Reference baseline: [FHIR R4](https://hl7.org/fhir/R4/).
 
 
