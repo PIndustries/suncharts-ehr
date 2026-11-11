@@ -3,7 +3,7 @@ use super::*;
 use axum::{body::Body, http::Request};
 use http_body_util::BodyExt;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
 };
 use tower::ServiceExt;
@@ -15,6 +15,7 @@ struct FakeState {
     posts: usize,
     posted_bodies: Vec<Value>,
     paid: bool,
+    paid_requests: BTreeSet<Uuid>,
     refunded: i64,
     lose_create: bool,
     wrong_account: bool,
@@ -27,6 +28,7 @@ struct FakeState {
     omit_recovery: bool,
     omit_session: bool,
     card_capability_override: Option<Value>,
+    null_bound_session: bool,
 }
 struct FakeBroker {
     installation: Uuid,
@@ -50,7 +52,8 @@ impl FakeBroker {
         state: &FakeState,
         post: bool,
     ) -> Value {
-        let paid = state.paid || (post && state.post_only_paid);
+        let paid =
+            state.paid || state.paid_requests.contains(&id) || (post && state.post_only_paid);
         let pi = format!("pi_{}", id.simple());
         let ch = format!("ch_{}", id.simple());
         json!({"contract_version":1,"installation_id":self.installation,"remote_tenant_id":binding.tenant,"account_id":if state.wrong_account{"acct_wrong"}else{"acct_synthetic"},"livemode":self.live,"request_id":id,"session":{"id":session,"mode":"payment","livemode":self.live,"amount_total":amount,"currency":"usd","client_reference_id":id,"metadata":{"native_payment_id":id},"status":if paid{"complete"}else{"open"},"payment_status":if paid{"paid"}else{"unpaid"},"url":if paid{Value::Null}else{json!(format!("https://checkout.stripe.com/c/pay/{session}"))},"payment_intent":if paid{json!({"id":pi,"livemode":self.live,"status":"succeeded","amount":amount,"amount_received":amount,"currency":"usd","latest_charge":{"id":ch,"livemode":self.live,"amount":amount,"amount_refunded":state.refunded,"paid":true,"captured":true,"disputed":false,"created":state.created_times[&id],"currency":"usd","payment_intent":pi}})}else{Value::Null}}})
@@ -133,7 +136,14 @@ impl Broker for FakeBroker {
             .iter()
             .find(|(_, (_, value))| value == session)
             .ok_or(Error::NotFound)?;
-        Ok(self.envelope(binding, *id, *amount, session, &state, false))
+        let mut value = self.envelope(binding, *id, *amount, session, &state, false);
+        if state.null_bound_session {
+            value["session"] = Value::Null;
+            value["recovery_required"] = json!(false);
+            value["retry_safe_until"] =
+                json!((Utc::now() + chrono::Duration::hours(1)).to_rfc3339());
+        }
+        Ok(value)
     }
 }
 async fn setup() -> (PgPool, Actor, Uuid, Uuid, State) {
@@ -301,6 +311,155 @@ async fn rcm_ok(
         "{method} {path}: {status} {value}"
     );
     value
+}
+
+#[tokio::test]
+async fn checkout_return_resolves_only_authorized_operation_without_financial_writes() {
+    let (pool, a, patient, appointment, state) = setup().await;
+    let broker = FakeBroker::new(false);
+    let op = create_with(
+        &pool,
+        &a,
+        patient,
+        appointment,
+        input(false),
+        "http://127.0.0.1:8099",
+        &broker,
+        policy(false),
+    )
+    .await
+    .unwrap();
+    let before = row(&pool, &a, op.id).await.public(policy(false));
+    let path = format!("/api/v1/billing/copay-checkouts/{}", op.id);
+    let returned = rcm_ok(&state, &a, "GET", &path, Value::Null, None).await;
+    assert_eq!(returned["operation"], before);
+    assert_eq!(returned["operation"]["patient_id"], json!(patient));
+    assert_eq!(returned["operation"]["appointment_id"], json!(appointment));
+    assert_eq!(returned["operation"]["status"], "open");
+    assert!(returned["operation"]["receipt_id"].is_null());
+    assert_eq!(row(&pool, &a, op.id).await.public(policy(false)), before);
+    assert_eq!(count(&pool, "billing_copay_receipts").await, 0);
+    assert_eq!(count(&pool, "billing_entries").await, 0);
+    let mut other = a.clone();
+    other.tenant_id = Uuid::new_v4();
+    for method in ["GET", "POST"] {
+        let route = if method == "POST" {
+            format!("{path}/refresh")
+        } else {
+            path.clone()
+        };
+        assert_eq!(
+            rcm_request(&state, &other, method, &route, Value::Null, None)
+                .await
+                .0,
+            404
+        );
+    }
+    other = a.clone();
+    other.role = crate::auth::Role::Patient;
+    other.patient_id = Some(patient);
+    assert_eq!(
+        rcm_request(&state, &other, "GET", &path, Value::Null, None)
+            .await
+            .0,
+        403
+    );
+    other.role = crate::auth::Role::ReadOnly;
+    other.patient_id = None;
+    assert_eq!(
+        rcm_request(
+            &state,
+            &other,
+            "POST",
+            &format!("{path}/refresh"),
+            Value::Null,
+            None
+        )
+        .await
+        .0,
+        403
+    );
+
+    // A clinical staff identity with a billing-denied custom role cannot use
+    // the return resolver to discover patient or appointment IDs.
+    other.sub = Uuid::new_v4();
+    other.role = crate::auth::Role::Clinician;
+    let access = Uuid::new_v4();
+    sqlx::query("INSERT INTO browser_users(id,tenant_id,email,password_hash,role) VALUES($1,$2,'return-synthetic@example.test','synthetic','clinician')").bind(other.sub).bind(a.tenant_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO practice_access_policies(tenant_id,id,name,base_role,permissions,updated_by) VALUES($1,$2,'Synthetic no billing','clinician',$3,$4)").bind(a.tenant_id).bind(access).bind(json!({"clinical":{"view":true},"billing":{"view":false}})).bind(a.sub).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO practice_access_assignments(tenant_id,user_id,policy_id,updated_by) VALUES($1,$2,$3,$4)").bind(a.tenant_id).bind(other.sub).bind(access).bind(a.sub).execute(&pool).await.unwrap();
+    assert_eq!(
+        rcm_request(&state, &other, "GET", &path, Value::Null, None)
+            .await
+            .0,
+        403
+    );
+    assert_eq!(broker.state.lock().unwrap().posts, 1);
+    assert_eq!(row(&pool, &a, op.id).await.public(policy(false)), before);
+}
+
+#[tokio::test]
+async fn checkout_return_reconciliation_never_creates_and_records_verified_capture_once() {
+    let (pool, a, patient, appointment, _) = setup().await;
+    let broker = FakeBroker::new(false);
+    broker.state.lock().unwrap().lose_create = true;
+    let op = create_with(
+        &pool,
+        &a,
+        patient,
+        appointment,
+        input(false),
+        "http://127.0.0.1:8099",
+        &broker,
+        policy(false),
+    )
+    .await
+    .unwrap();
+    assert!(op.provider_session_id.is_none());
+    let calls = broker.state.lock().unwrap().calls;
+    process_id_mode(&pool, &a, op.id, &broker, policy(false), false)
+        .await
+        .unwrap();
+    assert_eq!(
+        broker.state.lock().unwrap().calls,
+        calls,
+        "return must not recover an unbound create"
+    );
+    assert_eq!(count(&pool, "billing_copay_receipts").await, 0);
+    // The normal durable worker can independently recover the original binding.
+    due(&pool).await;
+    poll(&pool, &broker, policy(false)).await.unwrap();
+    assert!(row(&pool, &a, op.id).await.provider_session_id.is_some());
+    process_id_mode(&pool, &a, op.id, &broker, policy(false), false)
+        .await
+        .unwrap();
+    assert_eq!(
+        count(&pool, "billing_copay_receipts").await,
+        0,
+        "an unpaid/cancelled browser return is not capture evidence"
+    );
+    broker.state.lock().unwrap().paid = true;
+    process_id_mode(&pool, &a, op.id, &broker, policy(false), false)
+        .await
+        .unwrap();
+    let captured = row(&pool, &a, op.id).await;
+    assert_eq!(captured.status, "paid");
+    assert!(captured.receipt_id.is_some());
+    process_id_mode(&pool, &a, op.id, &broker, policy(false), false)
+        .await
+        .unwrap();
+    assert_eq!(row(&pool, &a, op.id).await.receipt_id, captured.receipt_id);
+    assert_eq!(count(&pool, "billing_copay_receipts").await, 1);
+    assert_eq!(count(&pool, "billing_entries").await, 0);
+    // Even contradictory null-session evidence with a valid retry window must
+    // not fall through to the worker's POST-create recovery branch.
+    broker.state.lock().unwrap().null_bound_session = true;
+    process_id_mode(&pool, &a, op.id, &broker, policy(false), false)
+        .await
+        .unwrap();
+    assert_eq!(row(&pool, &a, op.id).await.status, "needs_review");
+    assert_eq!(broker.state.lock().unwrap().posts, 1);
+    assert_eq!(count(&pool, "billing_copay_receipts").await, 1);
 }
 
 #[tokio::test]
@@ -1443,3 +1602,6 @@ async fn transfers_only_or_unknown_card_capability_cannot_reserve_a_copay() {
     assert_eq!(broker.state.lock().unwrap().posts, 1);
     pool.close().await;
 }
+
+#[path = "copay_checkout_browser_fixture.rs"]
+mod browser_fixture;
