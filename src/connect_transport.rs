@@ -303,13 +303,47 @@ async fn health(db: &PgPool, b: &Binding, session: Uuid, state: &str, seen: bool
 }
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+fn socket_error(error: &tokio_tungstenite::tungstenite::Error) -> Error {
+    use std::io::ErrorKind;
+    use tokio_tungstenite::tungstenite::{error::ProtocolError, Error as SocketError};
+    // Never format the underlying error: HTTP responses, URLs, frames and TLS/IO
+    // messages may carry credentials or patient content. Only static categories
+    // enter the operational log through the existing worker error handler.
+    Error::Invalid(match error {
+        SocketError::ConnectionClosed => "Connect channel closed normally",
+        SocketError::AlreadyClosed => "Connect channel already closed",
+        SocketError::Io(error) => match error.kind() {
+            ErrorKind::UnexpectedEof => "Connect channel network EOF",
+            ErrorKind::ConnectionReset => "Connect channel connection reset",
+            ErrorKind::ConnectionAborted => "Connect channel connection aborted",
+            ErrorKind::BrokenPipe => "Connect channel broken pipe",
+            ErrorKind::TimedOut => "Connect channel network timeout",
+            _ => "Connect channel network error",
+        },
+        SocketError::Protocol(ProtocolError::ResetWithoutClosingHandshake) => {
+            "Connect channel protocol EOF"
+        }
+        SocketError::Protocol(_) => "Connect channel protocol error",
+        SocketError::Tls(_) => "Connect channel TLS error",
+        SocketError::Capacity(_) => "Connect channel frame limit exceeded",
+        SocketError::WriteBufferFull(_) => "Connect channel write buffer full",
+        SocketError::Utf8(_) => "Connect channel invalid UTF-8",
+        SocketError::AttackAttempt => "Connect channel rejected protocol attack",
+        SocketError::Url(_) => "Connect channel invalid endpoint",
+        SocketError::Http(response) if matches!(response.status().as_u16(), 401 | 403) => {
+            "Connect channel handshake authorization rejected"
+        }
+        SocketError::Http(_) => "Connect channel HTTP handshake rejected",
+        SocketError::HttpFormat(_) => "Connect channel malformed HTTP handshake",
+    })
+}
 async fn send(socket: &mut Socket, message: Message) -> Result<()> {
     // A stalled peer must not retain a worker forever. In particular, failure to
     // deliver a mutation response never retries the already-dispatched request.
     tokio::time::timeout(Duration::from_secs(10), socket.send(message))
         .await
         .map_err(|_| Error::Invalid("Connect channel write timed out"))?
-        .map_err(|_| Error::Invalid("Connect channel closed"))
+        .map_err(|error| socket_error(&error))
 }
 async fn close(socket: &mut Socket) {
     let _ = tokio::time::timeout(Duration::from_secs(2), socket.close(None)).await;
@@ -378,7 +412,7 @@ async fn connection(
     )
     .await
     .map_err(|_| Error::Invalid("Connect channel unavailable"))?
-    .map_err(|_| Error::Invalid("Connect channel unavailable"))?;
+    .map_err(|error| socket_error(&error))?;
     let mut last = std::time::Instant::now();
     let mut check = tokio::time::interval(Duration::from_secs(3));
     let mut seen_ids = HashSet::new();
@@ -419,7 +453,10 @@ async fn connection(
                     },
                     Some(Ok(Message::Ping(bytes)))=>{send(&mut socket,Message::Pong(bytes)).await?;},
                     Some(Ok(Message::Pong(_)))=>{},
-                    _=>return Err(Error::Invalid("Connect channel closed"))
+                    Some(Ok(Message::Close(_)))=>return Err(Error::Invalid("Connect peer closed channel")),
+                    Some(Ok(_))=>return Err(Error::Invalid("Connect channel unexpected frame")),
+                    Some(Err(error))=>return Err(socket_error(&error)),
+                    None=>return Err(Error::Invalid("Connect channel stream ended"))
                 }
             }
         }
@@ -524,6 +561,34 @@ pub async fn status(db: &PgPool, tenant: Uuid) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn socket_diagnostics_never_include_underlying_messages_or_frames() {
+        use tokio_tungstenite::tungstenite::{error::ProtocolError, Error as SocketError};
+        let marker = "synthetic-sensitive-token-and-content";
+        let io = SocketError::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            marker,
+        ));
+        assert_eq!(socket_error(&io).to_string(), "Connect channel network EOF");
+        let protocol = SocketError::Protocol(ProtocolError::ResetWithoutClosingHandshake);
+        assert_eq!(
+            socket_error(&protocol).to_string(),
+            "Connect channel protocol EOF"
+        );
+        for error in [
+            SocketError::Utf8(marker.into()),
+            SocketError::WriteBufferFull(Box::new(Message::Text(marker.into()))),
+            SocketError::Http(Box::new(
+                axum::http::Response::builder()
+                    .status(403)
+                    .body(Some(marker.as_bytes().to_vec()))
+                    .unwrap(),
+            )),
+        ] {
+            assert!(!socket_error(&error).to_string().contains(marker));
+        }
+    }
 
     #[test]
     fn connected_frame_requires_the_expected_installation() {

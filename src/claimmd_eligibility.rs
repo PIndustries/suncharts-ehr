@@ -139,25 +139,101 @@ pub(crate) async fn acquire_rate_limit_key(pool: &PgPool, account_key: &str) -> 
     Ok(())
 }
 
-async fn post(route: &Route, service: &str, mut fields: Vec<(String, String)>) -> Result<Value> {
-    fields.push(("AccountKey".into(), key(route)?));
-    let response = crate::stedi::client()?
-        .post(endpoint(route, service)?)
+// Retain only bounded machine evidence. Provider messages can echo names,
+// membership numbers, credentials or tax IDs and must not enter diagnostics.
+#[derive(Debug, Serialize)]
+struct Failure {
+    kind: &'static str,
+    http_status: Option<u16>,
+    provider_codes: Vec<String>,
+}
+impl Failure {
+    fn new(kind: &'static str, http_status: Option<u16>) -> Self {
+        Self {
+            kind,
+            http_status,
+            provider_codes: Vec::new(),
+        }
+    }
+    fn error(&self) -> Error {
+        Error::Invalid(match self.kind {
+            "provider_rejected" => {
+                "Claim.MD rejected the request; review the saved eligibility diagnostic"
+            }
+            "transport_unavailable" => "Claim.MD request unavailable",
+            "configuration_unavailable" => "Claim.MD connection configuration is unavailable",
+            "response_invalid" => "Claim.MD returned an unsupported response",
+            _ => "Claim.MD request failed; review the saved eligibility diagnostic",
+        })
+    }
+}
+fn normalized_response(value: Value) -> std::result::Result<Value, Failure> {
+    let value = value
+        .get("result")
+        .filter(|v| v.is_object())
+        .cloned()
+        .unwrap_or(value);
+    if !value.is_object() {
+        return Err(Failure::new("response_invalid", Some(200)));
+    }
+    if let Some(error) = value
+        .get("error")
+        .filter(|e| !e.is_null() && **e != json!(false) && **e != json!("") && **e != json!([]))
+    {
+        let mut failure = Failure::new("provider_rejected", Some(200));
+        let entries: Vec<&Value> = error
+            .as_array()
+            .map(|items| items.iter().take(10).collect())
+            .unwrap_or_else(|| vec![error]);
+        for entry in entries {
+            if let Some(code) = entry.get("error_code") {
+                let code = code
+                    .as_str()
+                    .map(str::to_owned)
+                    .or_else(|| code.as_u64().map(|v| v.to_string()));
+                if let Some(code) = code.filter(|s| {
+                    !s.is_empty() && s.len() <= 6 && s.bytes().all(|b| b.is_ascii_digit())
+                }) {
+                    if !failure.provider_codes.contains(&code) {
+                        failure.provider_codes.push(code);
+                    }
+                }
+            }
+        }
+        return Err(failure);
+    }
+    Ok(value)
+}
+async fn post_evidence(
+    route: &Route,
+    service: &str,
+    mut fields: Vec<(String, String)>,
+) -> std::result::Result<Value, Failure> {
+    let config = || Failure::new("configuration_unavailable", None);
+    fields.push(("AccountKey".into(), key(route).map_err(|_| config())?));
+    let response = crate::stedi::client()
+        .map_err(|_| config())?
+        .post(endpoint(route, service).map_err(|_| config())?)
         .header("Accept", "application/json")
         .form(&fields)
         .send()
         .await
-        .map_err(|_| Error::Invalid("Claim.MD request unavailable"))?;
-    if response.status() != 200 {
-        return Err(Error::Invalid("Claim.MD request failed"));
+        .map_err(|_| Failure::new("transport_unavailable", None))?;
+    let status = response.status().as_u16();
+    if status != 200 {
+        return Err(Failure::new("http_rejected", Some(status)));
     }
-    let raw = crate::stedi::bytes(response, MAX_RESPONSE).await?;
-    let value: Value = serde_json::from_slice(&raw)
-        .map_err(|_| Error::Invalid("Claim.MD returned unsupported JSON"))?;
-    if value.get("error").is_some() {
-        return Err(Error::Invalid("Claim.MD rejected the request"));
-    }
-    Ok(value)
+    let raw = crate::stedi::bytes(response, MAX_RESPONSE)
+        .await
+        .map_err(|_| Failure::new("response_invalid", Some(status)))?;
+    let value =
+        serde_json::from_slice(&raw).map_err(|_| Failure::new("response_invalid", Some(status)))?;
+    normalized_response(value)
+}
+async fn post(route: &Route, service: &str, fields: Vec<(String, String)>) -> Result<Value> {
+    post_evidence(route, service, fields)
+        .await
+        .map_err(|e| e.error())
 }
 
 #[derive(Deserialize)]
@@ -234,8 +310,19 @@ pub(crate) struct EligibilityRequest {
     insured_birth_date: Option<NaiveDate>,
     insured_sex: Option<String>,
     patient_sex: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_version: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    billing_organization_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    billing_organization_version: Option<i64>,
+    #[serde(default)]
     provider_npi: String,
+    #[serde(default)]
     provider_taxid: String,
+    #[serde(default)]
     provider_taxid_type: String,
     provider_name: Option<String>,
     provider_taxonomy: Option<String>,
@@ -245,7 +332,11 @@ fn validate_request(request: &EligibilityRequest) -> Result<()> {
     bounded(&request.insured_given_name, 100)?;
     bounded(&request.insured_family_name, 100)?;
     identifier(&request.provider_npi, 10)?;
-    identifier(&request.provider_taxid, 20)?;
+    if !crate::practice_billing::valid_tax_id(&request.provider_taxid) {
+        return Err(Error::Invalid(
+            "provider tax ID must contain exactly nine digits",
+        ));
+    }
     if !valid_npi(&request.provider_npi)
         || !["E", "S"].contains(&request.provider_taxid_type.as_str())
         || request
@@ -297,6 +388,30 @@ struct Check {
     actor_id: Uuid,
     created_at: chrono::DateTime<chrono::Utc>,
     completed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+fn redact_tax_snapshot(snapshot: &mut Value) {
+    let tax = snapshot
+        .get("request")
+        .and_then(|r| r.get("provider_taxid"))
+        .and_then(Value::as_str);
+    let masked = tax.filter(|s| !s.is_empty()).map(|s| {
+        if s.len() == 9
+            && (s.bytes().all(|b| b.is_ascii_digit())
+                || s.starts_with("*****") && s[5..].bytes().all(|b| b.is_ascii_digit()))
+        {
+            format!("*****{}", &s[5..])
+        } else {
+            "redacted".into()
+        }
+    });
+    if let Some(masked) = masked {
+        snapshot["request"]["provider_taxid"] = json!(masked);
+    }
+}
+fn check_json(mut check: Check) -> Value {
+    redact_tax_snapshot(&mut check.request_snapshot);
+    json!(check)
 }
 
 #[derive(sqlx::FromRow)]
@@ -378,8 +493,19 @@ pub(crate) async fn run_eligibility(
     coverage_id: Uuid,
     request: EligibilityRequest,
 ) -> Result<Value> {
+    run_with_route(state, actor, patient_id, coverage_id, request, None).await
+}
+// The optional route is private and used by the synthetic loopback contract test.
+// Public handlers and workflow dispatch always resolve the tenant's saved route.
+async fn run_with_route(
+    state: &State,
+    actor: &Actor,
+    patient_id: Uuid,
+    coverage_id: Uuid,
+    mut request: EligibilityRequest,
+    route_override: Option<Route>,
+) -> Result<Value> {
     actor.scheduling()?;
-    validate_request(&request)?;
     let pool = db(state)?;
     let digest = crate::oauth::hash(
         &serde_json::to_string(&(patient_id, coverage_id, &request))
@@ -391,12 +517,67 @@ pub(crate) async fn run_eligibility(
         }
         let check = existing.into_check();
         return if check.status == "completed" {
-            Ok(json!(check))
+            Ok(check_json(check))
         } else {
             Err(Error::Conflict("eligibility request is not complete"))
         };
     }
-    let route = route(pool, actor.tenant_id).await?;
+    let mut tx = pool.begin().await?;
+    let directory_selection = request.provider_id.is_some()
+        || request.billing_organization_id.is_some()
+        || request.provider_version.is_some()
+        || request.billing_organization_version.is_some();
+    if directory_selection {
+        let (
+            Some(provider_id),
+            Some(provider_version),
+            Some(organization_id),
+            Some(organization_version),
+        ) = (
+            request.provider_id,
+            request.provider_version,
+            request.billing_organization_id,
+            request.billing_organization_version,
+        )
+        else {
+            return Err(Error::Invalid(
+                "select both a provider and billing organization with their current versions",
+            ));
+        };
+        if !request.provider_npi.is_empty()
+            || !request.provider_taxid.is_empty()
+            || !request.provider_taxid_type.is_empty()
+        {
+            return Err(Error::Invalid(
+                "directory selections cannot be combined with manually entered provider identity",
+            ));
+        }
+        let provider: Option<(String,String,i64)> = sqlx::query_as("SELECT p.display_name,p.npi,p.version FROM practice_providers p JOIN browser_users u ON u.tenant_id=p.tenant_id AND u.id=p.id WHERE p.tenant_id=$1 AND p.id=$2 AND p.active AND NOT u.disabled AND u.role IN ('owner','clinician') FOR SHARE OF p,u")
+            .bind(actor.tenant_id).bind(provider_id).fetch_optional(&mut *tx).await?;
+        let (_, npi, version) = provider.ok_or(Error::Invalid(
+            "select an active enabled provider from Practice administration",
+        ))?;
+        if version != provider_version {
+            return Err(Error::Conflict(
+                "provider changed; reload and review the selection",
+            ));
+        }
+        let (_, kind, tax) = crate::practice_billing::resolve(
+            &mut tx,
+            actor.tenant_id,
+            organization_id,
+            organization_version,
+        )
+        .await?;
+        request.provider_npi = npi;
+        request.provider_taxid = tax.expose().to_owned();
+        request.provider_taxid_type = kind;
+    }
+    validate_request(&request)?;
+    let route = match route_override {
+        Some(route) => route,
+        None => route(pool, actor.tenant_id).await?,
+    };
     acquire_rate_limit(pool, &route).await?;
     let row: Option<(String, String, NaiveDate, Value, Value)> = sqlx::query_as(
         "SELECT p.given_name,p.family_name,p.birth_date,c.content,py.content
@@ -424,9 +605,11 @@ pub(crate) async fn run_eligibility(
         .filter(|value| !value.is_empty())
         .ok_or(Error::Invalid("coverage member ID is required"))?
         .to_owned();
-    let snapshot = json!({"request":&request,"patient":{"id":patient_id,"given_name":patient_given,"family_name":patient_family,"birth_date":patient_birth},"coverage_id":coverage_id,"payerid":payerid,"member_id":member,"pat_rel":pat_rel});
+    let mut saved_request = serde_json::to_value(&request)
+        .map_err(|_| Error::Invalid("invalid eligibility request"))?;
+    saved_request["provider_taxid"] = json!(format!("*****{}", &request.provider_taxid[5..]));
+    let snapshot = json!({"request":saved_request,"patient":{"id":patient_id,"given_name":patient_given,"family_name":patient_family,"birth_date":patient_birth},"coverage_id":coverage_id,"payerid":payerid,"member_id":member,"pat_rel":pat_rel});
     let id = Uuid::new_v4();
-    let mut tx = pool.begin().await?;
     sqlx::query("INSERT INTO claimmd_eligibility_checks(tenant_id,id,patient_id,coverage_id,request_id,creation_hash,route_key,request_snapshot,status,actor_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9)")
         .bind(actor.tenant_id).bind(id).bind(patient_id).bind(coverage_id).bind(request.request_id).bind(&digest).bind(&route.key).bind(&snapshot).bind(actor.sub).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO claimmd_eligibility_events(tenant_id,check_id,status,actor_id) VALUES($1,$2,'pending',$3)")
@@ -478,17 +661,18 @@ pub(crate) async fn run_eligibility(
             fields.push(("pat_sex".into(), value.clone()));
         }
     }
-    let result = post(&route, "eligdata", fields).await.and_then(|response| {
-        let rows = rows(&response, "elig")?;
-        if rows.is_empty() || rows.len() > 10 {
-            return Err(Error::Invalid(
-                "Claim.MD eligibility response count is invalid",
-            ));
-        }
-        let mut normalized = response;
-        normalized["elig"] = Value::Array(rows);
-        Ok(normalized)
-    });
+    let result = post_evidence(&route, "eligdata", fields)
+        .await
+        .and_then(|response| {
+            let rows =
+                rows(&response, "elig").map_err(|_| Failure::new("response_invalid", Some(200)))?;
+            if rows.is_empty() || rows.len() > 10 {
+                return Err(Failure::new("response_invalid", Some(200)));
+            }
+            let mut normalized = response;
+            normalized["elig"] = Value::Array(rows);
+            Ok(normalized)
+        });
     match result {
         Ok(response) => {
             let mut tx = pool.begin().await?;
@@ -496,13 +680,14 @@ pub(crate) async fn run_eligibility(
             tx.commit().await?;
             let check: Check = sqlx::query_as("SELECT id,patient_id,coverage_id,request_snapshot,response_snapshot,status,actor_id,created_at,completed_at FROM claimmd_eligibility_checks WHERE tenant_id=$1 AND id=$2")
                 .bind(actor.tenant_id).bind(id).fetch_one(pool).await?;
-            Ok(json!(check))
+            Ok(check_json(check))
         }
         Err(error) => {
             let mut tx = pool.begin().await?;
-            mark(&mut tx, actor, id, "failed", None).await?;
+            let evidence = json!({"failure":&error});
+            mark(&mut tx, actor, id, "failed", Some(&evidence)).await?;
             tx.commit().await?;
-            Err(error)
+            Err(error.error())
         }
     }
 }
@@ -524,12 +709,15 @@ async fn list_eligibility(
     )
     .await?;
     tx.commit().await?;
-    Ok(reply(json!({"items":rows})))
+    Ok(reply(
+        json!({"items":rows.into_iter().map(check_json).collect::<Vec<_>>()}),
+    ))
 }
 
 #[derive(Serialize, sqlx::FromRow)]
 struct ProviderDefault {
     id: Uuid,
+    version: i64,
     display_name: String,
     npi: String,
     specialty: String,
@@ -548,14 +736,19 @@ async fn provider_defaults(
 ) -> Result<Response> {
     actor.staff()?;
     let pool = db(&state)?;
-    let providers: Vec<ProviderDefault> = sqlx::query_as("SELECT id,display_name,npi,specialty FROM practice_providers WHERE tenant_id=$1 AND active=true ORDER BY display_name,id LIMIT 100")
+    let providers: Vec<ProviderDefault> = sqlx::query_as("SELECT p.id,p.version,p.display_name,p.npi,p.specialty FROM practice_providers p JOIN browser_users u ON u.tenant_id=p.tenant_id AND u.id=p.id WHERE p.tenant_id=$1 AND p.active AND NOT u.disabled AND u.role IN ('owner','clinician') ORDER BY p.display_name,p.id LIMIT 100")
         .bind(actor.tenant_id).fetch_all(pool).await?;
     let facilities: Vec<FacilityDefault> = sqlx::query_as("SELECT id,name,address FROM practice_facilities WHERE tenant_id=$1 AND active=true ORDER BY name,id LIMIT 100")
         .bind(actor.tenant_id).fetch_all(pool).await?;
+    let providers: Vec<ProviderDefault> = providers
+        .into_iter()
+        .filter(|p| valid_npi(&p.npi))
+        .collect();
+    let organizations = crate::practice_billing::choices(pool, actor.tenant_id).await?;
     let default_provider_id = (providers.len() == 1).then(|| providers[0].id);
     let default_facility_id = (facilities.len() == 1).then(|| facilities[0].id);
     Ok(reply(
-        json!({"providers":providers,"facilities":facilities,"default_provider_id":default_provider_id,"default_facility_id":default_facility_id}),
+        json!({"providers":providers,"billing_organizations":organizations,"facilities":facilities,"default_provider_id":default_provider_id,"default_facility_id":default_facility_id}),
     ))
 }
 
@@ -576,7 +769,7 @@ pub fn router() -> Router<State> {
 mod tests {
     use super::*;
 
-    fn request() -> EligibilityRequest {
+    pub(super) fn request() -> EligibilityRequest {
         EligibilityRequest {
             request_id: Uuid::new_v4(),
             service_date: NaiveDate::from_ymd_opt(2026, 11, 5).unwrap(),
@@ -588,6 +781,10 @@ mod tests {
             insured_birth_date: Some(NaiveDate::from_ymd_opt(1980, 1, 1).unwrap()),
             insured_sex: Some("F".into()),
             patient_sex: Some("F".into()),
+            provider_id: None,
+            provider_version: None,
+            billing_organization_id: None,
+            billing_organization_version: None,
             provider_npi: "1234567893".into(),
             provider_taxid: "000000001".into(),
             provider_taxid_type: "E".into(),
@@ -608,6 +805,37 @@ mod tests {
         let mut npi = request();
         npi.provider_npi = "1234567890".into();
         assert!(validate_request(&npi).is_err());
+    }
+
+    #[test]
+    fn rejection_evidence_excludes_provider_text_and_keeps_only_bounded_codes() {
+        let failure=normalized_response(json!({"error":[{"error_code":"42","error_message":"Synthetic patient 000000017 secret"},{"error_code":"000000017"},{"error_code":"PATIENT"}]})).unwrap_err();
+        let saved = serde_json::to_value(failure).unwrap();
+        assert_eq!(
+            saved,
+            json!({"kind":"provider_rejected","http_status":200,"provider_codes":["42"]})
+        );
+        let payer=normalized_response(json!({"result":{"elig":{"error":[{"error_code":"72","error_message":"Synthetic payer response"}]}}})).unwrap();
+        assert!(
+            payer["elig"]["error"].is_array(),
+            "payer response must not become a transport rejection"
+        );
+        assert!(normalized_response(json!({"error":null,"elig":[]})).is_ok());
+        assert!(normalized_response(json!(null)).is_err());
+    }
+
+    #[test]
+    fn historical_tax_snapshots_are_masked_without_rewriting_other_evidence() {
+        let mut snapshot = json!({"request":{"provider_taxid":"000000017","provider_npi":"1234567893"},"payerid":"SYN"});
+        redact_tax_snapshot(&mut snapshot);
+        assert_eq!(snapshot["request"]["provider_taxid"], "*****0017");
+        assert_eq!(snapshot["request"]["provider_npi"], "1234567893");
+        assert_eq!(snapshot["payerid"], "SYN");
+        redact_tax_snapshot(&mut snapshot);
+        assert_eq!(snapshot["request"]["provider_taxid"], "*****0017");
+        snapshot["request"]["provider_taxid"] = json!("00-0000017");
+        redact_tax_snapshot(&mut snapshot);
+        assert_eq!(snapshot["request"]["provider_taxid"], "redacted");
     }
 
     #[test]
@@ -641,3 +869,7 @@ mod tests {
         assert!(rows(&json!({"result":"missing"}), "elig").is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "claimmd_eligibility_tests.rs"]
+mod workflow_tests;

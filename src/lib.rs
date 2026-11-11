@@ -62,6 +62,7 @@ pub mod payments;
 pub mod postgres;
 pub mod practice;
 pub mod practice_admin;
+pub mod practice_billing;
 pub mod prescribing;
 pub mod previsit;
 pub mod provider_settings;
@@ -365,6 +366,7 @@ pub fn app(state: State) -> Router {
         .merge(connector_catalog::router())
         .merge(practice::router())
         .merge(practice_admin::router())
+        .merge(practice_billing::router())
         .merge(previsit::router())
         .merge(partner_scheduling::router())
         .merge(specialty_workspace::router())
@@ -569,6 +571,16 @@ pub fn app(state: State) -> Router {
                     "fees.js",
                     "application/javascript",
                     include_str!("../web/fees.js"),
+                )
+            }),
+        )
+        .route(
+            "/practice-billing.js",
+            get(|| async {
+                web_asset(
+                    "practice-billing.js",
+                    "application/javascript; charset=utf-8",
+                    include_str!("../web/practice-billing.js"),
                 )
             }),
         )

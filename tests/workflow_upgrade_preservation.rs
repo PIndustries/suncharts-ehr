@@ -462,5 +462,31 @@ SELECT tenant_id,id,version,requested_by,'Historical synthetic verified capture'
             "fee upgrade must not fabricate approval, entries or change existing charges"
         );
     }
+    let tables_98:Vec<String>=sqlx::query_scalar("SELECT tablename FROM pg_tables WHERE schemaname=current_schema() AND tablename<>'_sqlx_migrations' ORDER BY tablename").fetch_all(&pool).await.unwrap();
+    let before_billing_identity = snapshot_tables(&pool, &tables_98).await;
+    let migration_history_98: Value = sqlx::query_scalar(
+        "SELECT jsonb_agg(to_jsonb(m) ORDER BY version) FROM _sqlx_migrations m WHERE version<=98",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    for _ in 0..2 {
+        through_revision(99).run(&pool).await.unwrap();
+        assert_eq!(
+            before_billing_identity,
+            snapshot_tables(&pool, &tables_98).await,
+            "billing identity migration preserves every existing table and prior migration row"
+        );
+        let retained_history:Value=sqlx::query_scalar("SELECT jsonb_agg(to_jsonb(m) ORDER BY version) FROM _sqlx_migrations m WHERE version<=98").fetch_one(&pool).await.unwrap();
+        assert_eq!(
+            migration_history_98, retained_history,
+            "prior migration checksums remain exact"
+        );
+        let identities:i64=sqlx::query_scalar("SELECT (SELECT count(*) FROM practice_billing_organizations)+(SELECT count(*) FROM practice_billing_organization_history)").fetch_one(&pool).await.unwrap();
+        assert_eq!(
+            identities, 0,
+            "no organization or tax identity may be invented by migration"
+        );
+    }
     pool.close().await;
 }

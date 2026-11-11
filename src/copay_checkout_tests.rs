@@ -251,6 +251,567 @@ async fn call(
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
 }
+
+// Keep this full-cycle fixture on authenticated application routes. Only the
+// outbound provider boundaries are replaced with synthetic test implementations.
+async fn rcm_request(
+    state: &State,
+    a: &Actor,
+    method: &str,
+    path: &str,
+    body: Value,
+    version: Option<i64>,
+) -> (u16, Value) {
+    let token = jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        a,
+        &jsonwebtoken::EncodingKey::from_secret(state.secret.as_bytes()),
+    )
+    .unwrap();
+    let mut request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json");
+    if let Some(version) = version {
+        request = request.header("If-Match", format!("\"{version}\""));
+    }
+    let response = crate::app(state.clone())
+        .oneshot(request.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value = serde_json::from_slice(&bytes)
+        .unwrap_or_else(|_| json!(String::from_utf8(bytes.to_vec()).unwrap()));
+    (status, value)
+}
+
+async fn rcm_ok(
+    state: &State,
+    a: &Actor,
+    method: &str,
+    path: &str,
+    body: Value,
+    version: Option<i64>,
+) -> Value {
+    let (status, value) = rcm_request(state, a, method, path, body, version).await;
+    assert!(
+        (200..300).contains(&status),
+        "{method} {path}: {status} {value}"
+    );
+    value
+}
+
+#[tokio::test]
+async fn hosted_copay_through_claimmd_835_and_invoice_preserves_full_revenue_cycle() {
+    let (pool, a, patient, appointment, state) = setup().await;
+    let billing_path = format!("/api/v1/patients/{patient}/billing");
+    let payer = rcm_ok(
+        &state,
+        &a,
+        "POST",
+        "/api/v1/billing/payers",
+        json!({
+        "request_id":Uuid::new_v4(),"content":{"name":"Synthetic Insurance",
+        "payer_code":"SYN-ONLY","phone":"","address":"Synthetic address","active":true},
+        "reason":"Synthetic revenue cycle directory"}),
+        None,
+    )
+    .await;
+    let coverage = rcm_ok(
+        &state,
+        &a,
+        "POST",
+        &format!("/api/v1/patients/{patient}/coverages"),
+        json!({
+        "request_id":Uuid::new_v4(),"content":{"payer_id":payer["id"],"priority":"primary",
+        "status":"active","member_id":"SYNTHETIC-POLICY-01","group_number":"SYN-GROUP",
+        "plan_name":"Synthetic plan","subscriber_name":"Avery Synthetic",
+        "subscriber_birth_date":"1990-01-01","relationship":"self","effective_date":"2026-01-01",
+        "end_date":"2026-12-31","copay_cents":2500,"verification":"unverified","notes":""},
+        "reason":"Reviewed synthetic policy and copay"}),
+        None,
+    )
+    .await;
+
+    // The real durable orchestration reserves the checkout before fake provider
+    // I/O. Neither a checkout return nor the POST response records a payment.
+    let broker = FakeBroker::new(false);
+    let mut request = input(false);
+    request.coverage_id = serde_json::from_value(coverage["id"].clone()).unwrap();
+    let operation = create_with(
+        &pool,
+        &a,
+        patient,
+        appointment,
+        request,
+        "http://127.0.0.1:8099",
+        &broker,
+        policy(false),
+    )
+    .await
+    .unwrap();
+    assert_eq!(operation.status, "open");
+    assert_eq!(count(&pool, "billing_copay_receipts").await, 0);
+    assert_eq!(count(&pool, "billing_entries").await, 0);
+    broker.state.lock().unwrap().paid = true;
+    due(&pool).await;
+    poll(&pool, &broker, policy(false)).await.unwrap();
+    let operation_path = format!(
+        "/api/v1/patients/{patient}/appointments/{appointment}/copay-checkouts/{}",
+        operation.id
+    );
+    let captured = rcm_ok(&state, &a, "GET", &operation_path, Value::Null, None).await;
+    assert_eq!(captured["operation"]["status"], "paid");
+    assert_eq!(captured["operation"]["livemode"], false);
+    assert!(captured["operation"]["receipt_id"].is_string());
+    due(&pool).await;
+    poll(&pool, &broker, policy(false)).await.unwrap();
+    assert_eq!(count(&pool, "billing_copay_receipts").await, 1);
+    assert_eq!(count(&pool, "billing_entries").await, 0);
+    assert_eq!(broker.state.lock().unwrap().posts, 1);
+
+    // Clinician work is saved and signed through the same versioned APIs as the
+    // encounter UI, with two diagnoses and separately linked procedure lines.
+    let visit = rcm_ok(
+        &state,
+        &a,
+        "POST",
+        "/api/v1/visits",
+        json!({"appointment_id":appointment}),
+        None,
+    )
+    .await;
+    let visit_path = format!("/api/v1/visits/{}", visit["id"].as_str().unwrap());
+    let diagnoses = rcm_ok(
+        &state,
+        &a,
+        "PUT",
+        &format!("{visit_path}/diagnoses"),
+        json!({
+        "diagnoses":[{"code":"Z00.00","display":"Synthetic examination"},
+        {"code":"M62.81","display":"Synthetic weakness assessment"}],
+        "reason":"Synthetic encounter diagnoses"}),
+        Some(1),
+    )
+    .await;
+    let account = rcm_ok(
+        &state,
+        &a,
+        "POST",
+        &format!("{billing_path}/accounts"),
+        json!({
+        "request_id":Uuid::new_v4(),"content":{"visit_id":visit["id"],"coverage_id":coverage["id"],
+        "service_date":"2026-10-25","currency":"USD","lines":[
+        {"code_system":"CPT","code":"99213","description":"Synthetic office service",
+        "modifiers":"25","units":1,"amount_cents":15000,"diagnosis_codes":[]},
+        {"code_system":"CPT","code":"97110","description":"Synthetic therapy service",
+        "modifiers":"","units":2,"amount_cents":5000,"diagnosis_codes":[]}],"notes":""},
+        "reason":"Reviewed synthetic procedures and charges"}),
+        None,
+    )
+    .await;
+    let account_path = format!(
+        "{billing_path}/accounts/{}",
+        account["id"].as_str().unwrap()
+    );
+    let linked = rcm_ok(
+        &state,
+        &a,
+        "PUT",
+        &format!("{account_path}/diagnoses"),
+        json!({
+        "visit_version":diagnoses["version"],"lines":[
+        {"line_index":0,"diagnosis_ids":[diagnoses["diagnoses"][0]["id"]]},
+        {"line_index":1,"diagnosis_ids":[diagnoses["diagnoses"][1]["id"]]}],
+        "reason":"Reviewed per-line diagnosis links"}),
+        Some(1),
+    )
+    .await;
+    let saved_lines = linked["content"]["lines"].clone();
+    assert_eq!(saved_lines[0]["diagnosis_codes"], json!(["Z00.00"]));
+    assert_eq!(saved_lines[1]["diagnosis_codes"], json!(["M62.81"]));
+    let note = json!({"subjective":"Synthetic visit only","objective":"Synthetic findings",
+        "assessment":"Synthetic examination and weakness","plan":"Synthetic follow-up"});
+    let noted = rcm_ok(
+        &state,
+        &a,
+        "PUT",
+        &format!("{visit_path}/note"),
+        note.clone(),
+        diagnoses["version"].as_i64(),
+    )
+    .await;
+    let signed = rcm_ok(
+        &state,
+        &a,
+        "POST",
+        &format!("{visit_path}/sign"),
+        Value::Null,
+        noted["version"].as_i64(),
+    )
+    .await;
+    assert_eq!(signed["status"], "signed");
+    assert_eq!(
+        rcm_request(
+            &state,
+            &a,
+            "PUT",
+            &format!("{visit_path}/note"),
+            note,
+            signed["version"].as_i64()
+        )
+        .await
+        .0,
+        409
+    );
+
+    let posted = rcm_ok(
+        &state,
+        &a,
+        "POST",
+        &format!("{account_path}/actions"),
+        json!({"action":"post","reason":"Signed encounter and reviewed charges"}),
+        linked["version"].as_i64(),
+    )
+    .await;
+    assert_eq!(posted["total_cents"], 20000);
+    let allocated = rcm_ok(&state, &a, "GET", &billing_path, Value::Null, None).await;
+    assert_eq!(allocated["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(allocated["entries"][0]["effect_cents"], -2500);
+    assert_eq!(allocated["entries"][0]["content"]["test_mode"], true);
+    assert_eq!(
+        allocated["copays"][0]["id"],
+        captured["operation"]["receipt_id"]
+    );
+    assert_eq!(allocated["copays"][0]["allocated_cents"], 2500);
+    due(&pool).await;
+    poll(&pool, &broker, policy(false)).await.unwrap();
+    assert_eq!(count(&pool, "billing_copay_allocations").await, 1);
+    assert_eq!(count(&pool, "billing_entries").await, 1);
+    let applied_again = rcm_ok(
+        &state,
+        &a,
+        "POST",
+        &format!("{account_path}/copays/apply"),
+        Value::Null,
+        posted["version"].as_i64(),
+    )
+    .await;
+    assert_eq!(applied_again["applied_cents"], 0);
+
+    let claim = rcm_ok(
+        &state,
+        &a,
+        "POST",
+        &format!("{account_path}/claims"),
+        json!({
+        "request_id":Uuid::new_v4(),"frequency":"original","content":{
+        "billing_provider_name":"Synthetic Clinic","billing_npi":"1234567893","tax_id":"000000001",
+        "billing_address":"1 Synthetic Way","rendering_npi":"1234567893",
+        "patient_address":"2 Synthetic Way","subscriber_address":"2 Synthetic Way",
+        "subscriber_birth_date":"1990-01-01","place_of_service":"11",
+        "diagnosis_codes":["Z00.00","M62.81"],"line_diagnosis_pointers":[[1],[2]],
+        "external_control_number":"","notes":"Synthetic test only","synthetic_test":true},
+        "reason":"Reviewed synthetic primary claim"}),
+        posted["version"].as_i64(),
+    )
+    .await;
+    let claim_path = format!("/api/v1/billing/claims/{}", claim["id"].as_str().unwrap());
+    let before_delivery = rcm_ok(&state, &a, "GET", &claim_path, Value::Null, None).await;
+    assert_eq!(before_delivery["preflight_issues"], json!([]));
+    assert_eq!(
+        before_delivery["claim"]["snapshot"]["financial_summary"]["claim_charge_cents"],
+        20000
+    );
+    assert_eq!(
+        before_delivery["claim"]["snapshot"]["financial_summary"]["patient_payments_cents"],
+        2500
+    );
+    let review = rcm_ok(
+        &state,
+        &a,
+        "GET",
+        &format!("{claim_path}/cms1500"),
+        Value::Null,
+        None,
+    )
+    .await;
+    let html = review.as_str().unwrap();
+    assert!(html.contains("99213 · 25") && html.contains("97110"));
+    assert!(html.contains("A: Z00.00") && html.contains("B: M62.81"));
+    assert!(html.contains("$200.00") && html.contains("$25.00"));
+    assert!(
+        html.contains("CMS-1500 service lines"),
+        "the existing claim review must render its frozen service lines"
+    );
+    let ready = rcm_ok(
+        &state,
+        &a,
+        "POST",
+        &format!("{claim_path}/actions"),
+        json!({"action":"ready","reason":"Synthetic claim packet reviewed"}),
+        Some(1),
+    )
+    .await;
+    let partner = rcm_ok(&state, &a, "POST", "/api/v1/billing/clearinghouses", json!({
+        "request_id":Uuid::new_v4(),"content":{"name":"Synthetic Claim.MD loopback","active":true,
+        "sender_qualifier":"ZZ","sender_id":"SYN-SENDER","receiver_qualifier":"ZZ",
+        "receiver_id":"SYN-RECEIVER","application_sender":"SYN-SENDER","application_receiver":"SYN-RECEIVER",
+        "submitter_name":"Synthetic Clinic","submitter_id":"SYN-SUBMIT","receiver_name":"Synthetic Clearinghouse",
+        "receiver_identifier":"SYN-RECEIVER","contact_name":"Synthetic Operator","contact_phone":"2025550100",
+        "usage":"T","guide_reference":"Synthetic test enrollment"},"reason":"Synthetic route"}), None).await;
+    let address = json!({"line1":"1 Synthetic Way","line2":"","city":"Chicago","state":"IL","postal_code":"60601"});
+    let artifact = rcm_ok(&state, &a, "POST", &format!("{claim_path}/837p"), json!({
+        "request_id":Uuid::new_v4(),"partner_id":partner["id"],"partner_version":partner["version"],
+        "details":{"billing_address":address,"subscriber_address":address,"patient_address":address,"payer_address":address,
+        "subscriber_given_name":"Avery","subscriber_family_name":"Synthetic","patient_sex":"U","subscriber_sex":"U",
+        "rendering_given_name":"Test","rendering_family_name":"Clinician","billing_taxonomy":"207Q00000X",
+        "filing_indicator":"CI","signature_on_file":true,"benefits_assigned":true,"release_authorized":true,
+        "routine_professional_reviewed":true},"reason":"Synthetic test transmission only"}), ready["version"].as_i64()).await;
+    let x12 = artifact["payload"].as_str().unwrap();
+    assert!(x12.contains("*200.00***") && x12.contains("*0*T*:~"));
+    assert!(x12.contains("SV1*HC:99213:25*150.00*UN*1*11**1~"));
+    assert!(x12.contains("SV1*HC:97110*50.00*UN*2*11**2~"));
+
+    // Exercise the actual Claim.MD multipart adapter against a local fake. An
+    // upload receipt changes transport state, never payer payment or the ledger.
+    let delivered = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let observed = delivered.clone();
+    let control = claim["control_number"].clone();
+    let gateway = axum::Router::new().route("/services/upload/", axum::routing::post(
+        move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+            let observed = observed.clone();
+            let control = control.clone();
+            async move {
+                assert_eq!(headers["accept"], "application/json");
+                assert!(!headers.contains_key("authorization"));
+                let multipart = String::from_utf8(body.to_vec()).unwrap();
+                assert!(multipart.contains("synthetic-loopback-key"));
+                let raw = multipart.split("\r\n\r\n").find(|part| part.starts_with('{')).unwrap();
+                let payload: Value = serde_json::from_str(raw.split("\r\n--").next().unwrap()).unwrap();
+                observed.lock().unwrap().push(payload);
+                axum::Json(json!({"claim":[{"pcn":control,"bill_npi":"1234567893","fileid":"837000001","status":"A"}]}))
+            }
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/services/upload/", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, gateway).await.unwrap() });
+    let config: crate::delivery::Config = serde_json::from_value(json!({"routes":[{
+        "key":"synthetic-rcm","tenant_id":a.tenant_id,"partner_id":partner["id"],"adapter":"claim_md",
+        "endpoint":endpoint,"usage":"T","loopback_test":true}]})).unwrap();
+    let delivery_path = format!(
+        "/api/v1/billing/submissions/{}/delivery",
+        artifact["id"].as_str().unwrap()
+    );
+    let delivery_request = json!({"request_id":Uuid::new_v4(),"route_key":"synthetic-rcm","reason":"Synthetic loopback only"});
+    rcm_ok(
+        &state,
+        &a,
+        "POST",
+        &delivery_path,
+        delivery_request.clone(),
+        Some(1),
+    )
+    .await;
+    assert!(crate::delivery::process_one(&pool, &config).await.unwrap());
+    assert!(!crate::delivery::process_one(&pool, &config).await.unwrap());
+    rcm_ok(
+        &state,
+        &a,
+        "POST",
+        &delivery_path,
+        delivery_request,
+        Some(1),
+    )
+    .await;
+    assert_eq!(delivered.lock().unwrap().len(), 1);
+    let native = delivered.lock().unwrap()[0]["claim"][0].clone();
+    assert_eq!(native["pcn"], claim["control_number"]);
+    assert_eq!(native["total_charge"], "200.00");
+    assert_eq!(native["charge"][0]["charge"], "150.00");
+    assert_eq!(native["charge"][0]["mod1"], "25");
+    assert_eq!(native["charge"][0]["diag_ref"], "A");
+    assert_eq!(native["charge"][1]["units"], "2");
+    assert_eq!(native["charge"][1]["diag_ref"], "B");
+    let submitted = rcm_ok(&state, &a, "GET", &claim_path, Value::Null, None).await;
+    assert_eq!(submitted["claim"]["status"], "submitted");
+    assert_eq!(count(&pool, "billing_entries").await, 1);
+    server.abort();
+
+    // Receive a separate synthetic payer 835. CO reduces charges; PR establishes
+    // responsibility within the existing balance and must never create a charge.
+    let segments = [
+        "ST*835*0001".to_string(),
+        "BPR*I*120*C*CHK************20261026".into(),
+        "TRN*1*SYN-RCM-ERA".into(),
+        "N1*PR*Synthetic Payer*PI*SYN-ONLY".into(),
+        format!(
+            "CLP*{}*1*200*120*30*CI*SYN-PCN",
+            claim["control_number"].as_str().unwrap()
+        ),
+        "SVC*HC:99213:25*150*90**1".into(),
+        "DTM*472*20261025".into(),
+        "CAS*CO*45*40".into(),
+        "CAS*PR*3*20".into(),
+        "SVC*HC:97110*50*30**2".into(),
+        "DTM*472*20261025".into(),
+        "CAS*CO*45*10".into(),
+        "CAS*PR*3*10".into(),
+    ];
+    let raw = format!("{}~SE*{}*0001~", segments.join("~"), segments.len() + 1);
+    let remit_request = json!({"request_id":Uuid::new_v4(),"payer_id":payer["id"],
+        "format":"x12_835","original_text":raw,"reason":"Synthetic payer adjudication evidence"});
+    let remit = rcm_ok(
+        &state,
+        &a,
+        "POST",
+        "/api/v1/billing/remittances",
+        remit_request.clone(),
+        None,
+    )
+    .await;
+    let remit_replay = rcm_ok(
+        &state,
+        &a,
+        "POST",
+        "/api/v1/billing/remittances",
+        remit_request,
+        None,
+    )
+    .await;
+    assert_eq!(remit_replay["id"], remit["id"]);
+    let remit_path = format!(
+        "/api/v1/billing/remittances/{}",
+        remit["id"].as_str().unwrap()
+    );
+    let matched = rcm_ok(&state, &a, "PUT", &format!("{remit_path}/matches"), json!({
+        "matches":[{"row_index":0,"claim_id":claim["id"],"claim_version":submitted["claim"]["version"],
+        "account_version":posted["version"],"writeoff_adjustments":[0,2]}],
+        "reason":"Reviewed same account, exact service amounts and CO adjustments"}), Some(1)).await;
+    assert_eq!(matched["issues"], json!([]));
+    let post_request = json!({"action":"post","reason":"Reviewed synthetic payer payment and contractual adjustments"});
+    let posted_era = rcm_ok(
+        &state,
+        &a,
+        "POST",
+        &format!("{remit_path}/actions"),
+        post_request.clone(),
+        matched["remittance"]["version"].as_i64(),
+    )
+    .await;
+    assert_eq!(posted_era["status"], "posted");
+    assert_eq!(
+        rcm_request(
+            &state,
+            &a,
+            "POST",
+            &format!("{remit_path}/actions"),
+            post_request,
+            matched["remittance"]["version"].as_i64()
+        )
+        .await
+        .0,
+        409
+    );
+    let after_era = rcm_ok(&state, &a, "GET", &billing_path, Value::Null, None).await;
+    let entries = after_era["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 3);
+    assert!(entries.iter().any(|entry| entry["kind"] == "payment"
+        && entry["content"]["party"] == "insurer"
+        && entry["effect_cents"] == -12000));
+    assert!(entries
+        .iter()
+        .any(|entry| entry["kind"] == "adjustment_credit" && entry["effect_cents"] == -5000));
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry["effect_cents"].as_i64().unwrap())
+            .sum::<i64>(),
+        -19500
+    );
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry["effect_cents"].as_i64().unwrap() < 0),
+        "PR must not add a second charge"
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| entry["content"]["party"] == "patient")
+            .count(),
+        1
+    );
+    let settlement = rcm_ok(&state, &a, "GET", &remit_path, Value::Null, None).await;
+    assert_eq!(settlement["postings"][0]["account_id"], account["id"]);
+    assert_eq!(
+        settlement["postings"][0]["current_account_balance_cents"],
+        500
+    );
+    assert_eq!(
+        settlement["postings"][0]["patient_responsibility_cents"],
+        3000
+    );
+    assert_eq!(settlement["postings"][0]["writeoff_cents"], 5000);
+    assert_eq!(after_era["accounts"][0]["content"]["lines"], saved_lines);
+    assert_eq!(after_era["accounts"][0]["total_cents"], 20000);
+    let final_claim = rcm_ok(&state, &a, "GET", &claim_path, Value::Null, None).await;
+    assert_eq!(final_claim["claim"]["status"], "adjudicated");
+    assert_eq!(final_claim["claim"]["snapshot"], claim["snapshot"]);
+
+    let invoice_request = json!({"request_id":Uuid::new_v4(),"responsibility_cents":3000,
+        "reason":"Reviewed $30 payer responsibility less the verified $25 copay"});
+    let invoice = rcm_ok(
+        &state,
+        &a,
+        "POST",
+        &format!("{account_path}/invoices"),
+        invoice_request.clone(),
+        after_era["accounts"][0]["version"].as_i64(),
+    )
+    .await;
+    assert_eq!(invoice["snapshot"]["gross_charges_cents"], 20000);
+    assert_eq!(invoice["snapshot"]["responsibility_cents"], 3000);
+    assert_eq!(invoice["snapshot"]["patient_payment_cents"], 2500);
+    assert_eq!(invoice["snapshot"]["amount_due_cents"], 500);
+    assert_eq!(invoice["snapshot"]["test_activity"], true);
+    assert_eq!(invoice["snapshot"]["services"][1]["units"], 2);
+    assert_eq!(invoice["snapshot"]["services"][1]["line_total_cents"], 5000);
+    let same_invoice = rcm_ok(
+        &state,
+        &a,
+        "POST",
+        &format!("{account_path}/invoices"),
+        invoice_request,
+        Some(1),
+    )
+    .await;
+    assert_eq!(same_invoice, invoice);
+    due(&pool).await;
+    poll(&pool, &broker, policy(false)).await.unwrap();
+    let replayed = rcm_ok(&state, &a, "GET", &billing_path, Value::Null, None).await;
+    assert_eq!(replayed["entries"], after_era["entries"]);
+    assert_eq!(replayed["accounts"], after_era["accounts"]);
+    assert_eq!(count(&pool, "billing_copay_receipts").await, 1);
+    assert_eq!(count(&pool, "billing_copay_allocations").await, 1);
+    assert_eq!(count(&pool, "patient_invoice_snapshots").await, 1);
+    let mut outsider = a.clone();
+    outsider.tenant_id = Uuid::new_v4();
+    assert_eq!(
+        rcm_request(&state, &outsider, "GET", &operation_path, Value::Null, None)
+            .await
+            .0,
+        404
+    );
+    assert_eq!(
+        rcm_request(&state, &outsider, "GET", &claim_path, Value::Null, None)
+            .await
+            .0,
+        404
+    );
+}
 async fn posted_account(
     pool: &PgPool,
     a: &Actor,
