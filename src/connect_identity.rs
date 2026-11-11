@@ -269,9 +269,12 @@ struct StaffSession {
     role: String,
     email: String,
 }
-pub(crate) async fn authenticate_staff(auth: &BrowserAuth, token: &str) -> Result<Option<Actor>> {
+pub(crate) async fn authenticate_staff_hash(
+    auth: &BrowserAuth,
+    token_hash: &str,
+) -> Result<Option<Actor>> {
     let s: Option<StaffSession> = sqlx::query_as("SELECT s.tenant_id,s.issuer_tenant_id,s.user_id,s.grant_id,s.issuer,s.audience,s.expires_at,u.role,u.email FROM connect_identity_sessions s JOIN browser_users u ON u.tenant_id=s.tenant_id AND u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND s.revoked_at IS NULL AND NOT u.disabled")
-        .bind(crate::browser::hash(token)).fetch_optional(&auth.db).await?;
+        .bind(token_hash).fetch_optional(&auth.db).await?;
     let Some(s) = s else {
         return Ok(None);
     };
@@ -287,13 +290,13 @@ pub(crate) async fn authenticate_staff(auth: &BrowserAuth, token: &str) -> Resul
             .is_some_and(|v| v > now && v <= s.expires_at.timestamp());
     if !valid {
         sqlx::query("UPDATE connect_identity_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE token_hash=$1")
-            .bind(crate::browser::hash(token)).execute(&auth.db).await?;
+            .bind(token_hash).execute(&auth.db).await?;
         return Err(Error::Unauthorized);
     }
     sqlx::query(
         "UPDATE connect_identity_sessions SET last_introspected_at=now() WHERE token_hash=$1",
     )
-    .bind(crate::browser::hash(token))
+    .bind(token_hash)
     .execute(&auth.db)
     .await?;
     let role: Role = serde_json::from_value(json!(s.role)).map_err(|_| Error::Unauthorized)?;

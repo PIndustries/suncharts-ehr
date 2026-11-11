@@ -459,6 +459,10 @@ pub fn router() -> Router<State> {
     Router::new()
         .route("/api/v1/billing/payers", get(payers).post(new_payer))
         .route(
+            "/api/v1/patients/{p}/billing/accounts/{id}/invoices",
+            get(patient_invoices).post(new_patient_invoice),
+        )
+        .route(
             "/api/v1/billing/payers/{id}",
             axum::routing::put(edit_payer),
         )
@@ -474,6 +478,15 @@ pub fn router() -> Router<State> {
         .route(
             "/api/v1/patients/{p}/coverages/{id}/history",
             get(coverage_history),
+        )
+        .route("/api/v1/patients/{p}/billing/copays", post(record_copay))
+        .route(
+            "/api/v1/patients/{p}/billing/copays/{id}/void",
+            post(void_copay),
+        )
+        .route(
+            "/api/v1/patients/{p}/billing/accounts/{id}/copays/apply",
+            post(apply_recorded_copays),
         )
         .route("/api/v1/patients/{p}/billing/accounts", post(new_account))
         .route(
@@ -723,6 +736,9 @@ async fn account_action(
         _ => return Err(Error::Invalid("choose post or void")),
     };
     sqlx::query("UPDATE billing_accounts SET status=$3,coverage_snapshot=$4,version=version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(id).bind(status).bind(snapshot).execute(&mut *tx).await?;
+    if status == "posted" {
+        allocate_copays(&mut tx, &a, p, id).await?;
+    }
     let row = account_revision(&mut tx, &a, p, id, &v.reason).await?;
     tx.commit().await?;
     Ok(Json(row))
@@ -790,7 +806,7 @@ async fn new_entry(
             .reverses_id
             .ok_or(Error::Invalid("select the entry to reverse"))?;
         let managed: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM era_posting_entries WHERE tenant_id=$1 AND entry_id=$2) OR EXISTS(SELECT 1 FROM payment_ledger_links WHERE tenant_id=$1 AND entry_id=$2)",
+            "SELECT EXISTS(SELECT 1 FROM era_posting_entries WHERE tenant_id=$1 AND entry_id=$2) OR EXISTS(SELECT 1 FROM payment_ledger_links WHERE tenant_id=$1 AND entry_id=$2) OR EXISTS(SELECT 1 FROM billing_copay_allocations x JOIN copay_checkout_attempts o ON o.tenant_id=x.tenant_id AND o.receipt_id=x.receipt_id WHERE x.tenant_id=$1 AND x.entry_id=$2) OR EXISTS(SELECT 1 FROM copay_checkout_refund_allocations WHERE tenant_id=$1 AND entry_id=$2)",
         )
         .bind(a.tenant_id)
         .bind(original)
@@ -873,10 +889,16 @@ async fn workspace(
             "patient billing workspace exceeds preview limit; use an archival review workflow",
         ));
     }
+    let copays = copay_rows(&mut tx, &a, p, None).await?;
+    if copays.len() > 1000 {
+        return Err(Error::Invalid(
+            "patient copay history exceeds preview limit; use an archival review workflow",
+        ));
+    }
     crate::postgres::audit(&mut tx, &a, "billing.workspace_read", p).await?;
     tx.commit().await?;
     Ok(Json(
-        json!({"coverages":coverages,"accounts":accounts,"entries":entries,"currency":"USD","payment_policy":"Recorded payments only; no funds transferred","claims_policy":"Local accounts only; no claim submitted"}),
+        json!({"coverages":coverages,"accounts":accounts,"entries":entries,"copays":copays,"currency":"USD","payment_policy":"Recorded payments only; no funds transferred","claims_policy":"Local accounts only; no claim submitted"}),
     ))
 }
 #[derive(Deserialize)]
@@ -1091,4 +1113,554 @@ async fn link_account_diagnoses(
     let row = account_revision(&mut tx, &a, p, id, &input.reason).await?;
     tx.commit().await?;
     Ok(Json(row))
+}
+
+// Credits include all patient ledger activity; payments exclude nonpayment adjustments.
+pub(crate) async fn patient_ledger_totals(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    account: Uuid,
+) -> Result<(i64, i64)> {
+    Ok(sqlx::query_as("SELECT coalesce(-sum(e.effect_cents),0)::bigint,coalesce(-sum(e.effect_cents) FILTER (WHERE e.kind='payment' OR (e.kind='reversal' AND original.kind='payment') OR (e.kind='adjustment_debit' AND (e.content->>'managed_payment_id' IS NOT NULL OR e.content->>'hosted_copay_operation_id' IS NOT NULL))),0)::bigint FROM billing_entries e LEFT JOIN billing_entries original ON original.tenant_id=e.tenant_id AND original.account_id=e.account_id AND original.id=e.reverses_id WHERE e.tenant_id=$1 AND e.account_id=$2 AND CASE WHEN e.kind='reversal' THEN original.content->>'party' ELSE e.content->>'party' END='patient'")
+        .bind(tenant).bind(account).fetch_one(&mut **tx).await?)
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PatientInvoiceInput {
+    request_id: Uuid,
+    responsibility_cents: i64,
+    reason: String,
+}
+async fn patient_invoices(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((p, id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<Value>> {
+    a.staff()?;
+    let mut tx = db(&s)?.begin().await?;
+    account_row(&mut tx, &a, p, id).await?;
+    let rows: Vec<Value> = sqlx::query_scalar("SELECT to_jsonb(i)-'tenant_id'-'creation_hash'-'request_id' FROM patient_invoice_snapshots i WHERE tenant_id=$1 AND patient_id=$2 AND account_id=$3 ORDER BY created_at DESC,id LIMIT 100")
+        .bind(a.tenant_id).bind(p).bind(id).fetch_all(&mut *tx).await?;
+    crate::postgres::audit(&mut tx, &a, "billing.invoices_read", id).await?;
+    tx.commit().await?;
+    Ok(Json(json!({"items":rows})))
+}
+async fn new_patient_invoice(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((p, id)): Path<(Uuid, Uuid)>,
+    h: HeaderMap,
+    Json(input): Json<PatientInvoiceInput>,
+) -> Result<Json<Value>> {
+    write(&a)?;
+    text(&input.reason, 1000)?;
+    let hash = digest(&(p, id, &input))?;
+    let mut tx = db(&s)?.begin().await?;
+    tenant_lock(&mut tx, &a).await?;
+    let account = account_row(&mut tx, &a, p, id).await?;
+    let prior: Option<(String, Value)> = sqlx::query_as("SELECT creation_hash,to_jsonb(i)-'tenant_id'-'creation_hash'-'request_id' FROM patient_invoice_snapshots i WHERE tenant_id=$1 AND request_id=$2")
+        .bind(a.tenant_id).bind(input.request_id).fetch_optional(&mut *tx).await?;
+    if let Some((prior_hash, row)) = prior {
+        if prior_hash != hash {
+            return Err(Error::Conflict(
+                "invoice request ID already used with different content",
+            ));
+        }
+        crate::postgres::audit(&mut tx, &a, "billing.invoice_replayed", id).await?;
+        tx.commit().await?;
+        return Ok(Json(row));
+    }
+    if account.version != crate::expected(&h)? {
+        return Err(Error::Conflict(
+            "account changed; reload before building the invoice",
+        ));
+    }
+    if account.status != "posted" {
+        return Err(Error::Conflict(
+            "post the reviewed charge account before building an invoice",
+        ));
+    }
+    if !(0..=account.total_cents).contains(&input.responsibility_cents) {
+        return Err(Error::Invalid(
+            "reviewed patient responsibility must be between zero and total charges",
+        ));
+    }
+    // Sum patient payments and credits, their reversals, and confirmed refunds.
+    // Unconfirmed processor attempts have no ledger entry and cannot reduce an invoice.
+    let (credit, payments) = patient_ledger_totals(&mut tx, a.tenant_id, id).await?;
+    let patient: Value = sqlx::query_scalar("SELECT jsonb_build_object('given_name',given_name,'family_name',family_name,'mrn',mrn) FROM patients WHERE tenant_id=$1 AND id=$2")
+        .bind(a.tenant_id).bind(p).fetch_one(&mut *tx).await?;
+    // Copy only patient-facing fields. A saved invoice must never re-read current
+    // charges or ledger activity, and staff notes are not part of its receipt.
+    let services: Vec<Value> = account.content["lines"]
+        .as_array()
+        .ok_or(Error::Invalid("stored charge lines are unavailable"))?
+        .iter()
+        .map(|line| {
+            json!({"code_system":line["code_system"],"code":line["code"],"description":line["description"],"modifiers":line["modifiers"],"units":line["units"],"line_total_cents":line["amount_cents"]})
+        })
+        .collect();
+    let patient_activity: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('id',e.id,'kind',e.kind,'occurred_on',e.content->'occurred_on','method',e.content->'method','reference',e.content->'reference','effect_cents',e.effect_cents,'reverses_id',e.reverses_id) FROM billing_entries e LEFT JOIN billing_entries original ON original.tenant_id=e.tenant_id AND original.account_id=e.account_id AND original.id=e.reverses_id WHERE e.tenant_id=$1 AND e.account_id=$2 AND CASE WHEN e.kind='reversal' THEN original.content->>'party' ELSE e.content->>'party' END='patient' ORDER BY e.created_at,e.id")
+        .bind(a.tenant_id).bind(id).fetch_all(&mut *tx).await?;
+    let test_activity: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM billing_entries WHERE tenant_id=$1 AND account_id=$2 AND content->>'test_mode'='true')")
+        .bind(a.tenant_id).bind(id).fetch_one(&mut *tx).await?;
+    let invoice = Uuid::new_v4();
+    let net = input.responsibility_cents - credit;
+    let snapshot = json!({"format_version":2,"practice_name":crate::branding::InstanceBranding::from_env().display_name,"patient":patient,"service_date":account.content["service_date"],"services":services,"patient_activity":patient_activity,"gross_charges_cents":account.total_cents,"responsibility_cents":input.responsibility_cents,"patient_credit_cents":credit,"patient_payment_cents":payments,"patient_adjustment_credit_cents":credit-payments,"amount_due_cents":net.max(0),"credit_balance_cents":(-net).max(0),"currency":"USD","reason":input.reason,"test_activity":test_activity,"scope":"at_issuance"});
+    let row: Value = sqlx::query_scalar("INSERT INTO patient_invoice_snapshots(tenant_id,id,patient_id,account_id,request_id,creation_hash,account_version,snapshot,actor_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING to_jsonb(patient_invoice_snapshots)-'tenant_id'-'creation_hash'-'request_id'")
+        .bind(a.tenant_id).bind(invoice).bind(p).bind(id).bind(input.request_id).bind(hash).bind(account.version).bind(snapshot).bind(a.sub).fetch_one(&mut *tx).await?;
+    crate::postgres::audit(&mut tx, &a, "billing.invoice_created", invoice).await?;
+    tx.commit().await?;
+    Ok(Json(row))
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CopayInput {
+    request_id: Uuid,
+    appointment_id: Uuid,
+    coverage_id: Option<Uuid>,
+    amount_cents: i64,
+    method: String,
+    reference: String,
+    occurred_on: NaiveDate,
+    reason: String,
+    received_confirmed: bool,
+}
+async fn copay_rows(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    p: Uuid,
+    receipt: Option<Uuid>,
+) -> Result<Vec<Value>> {
+    Ok(sqlx::query_scalar("SELECT (to_jsonb(r)-'tenant_id'-'creation_hash'-'request_id') || jsonb_build_object('hosted_checkout',(SELECT jsonb_build_object('id',o.id,'livemode',o.livemode,'status',o.status,'refunded_cents',o.refunded_cents,'refunded_unapplied_cents',coalesce((SELECT sum(f.unapplied_cents) FROM copay_checkout_refund_events f WHERE f.tenant_id=o.tenant_id AND f.operation_id=o.id),0)) FROM copay_checkout_attempts o WHERE o.tenant_id=r.tenant_id AND o.receipt_id=r.id),'allocated_cents',coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),0),'reversed_cents',coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x JOIN billing_entries e ON e.tenant_id=x.tenant_id AND e.reverses_id=x.entry_id WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),0),'voided',EXISTS(SELECT 1 FROM billing_copay_voids v WHERE v.tenant_id=r.tenant_id AND v.receipt_id=r.id),'account_ids',coalesce((SELECT jsonb_agg(DISTINCT x.account_id) FROM billing_copay_allocations x WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),'[]'::jsonb)) FROM billing_copay_receipts r WHERE tenant_id=$1 AND patient_id=$2 AND ($3::uuid IS NULL OR id=$3) ORDER BY created_at,id LIMIT 1001")
+        .bind(a.tenant_id).bind(p).bind(receipt).fetch_all(&mut **tx).await?)
+}
+#[derive(sqlx::FromRow)]
+struct CopayAllocationCandidate {
+    id: Uuid,
+    remaining: i64,
+    method: String,
+    reference: String,
+    occurred_on: NaiveDate,
+    hosted_operation: Option<Uuid>,
+    livemode: Option<bool>,
+}
+// Call under the tenant billing lock. Immutable allocations remain consumed after
+// a ledger reversal, so a corrected receipt can never be silently posted again.
+async fn allocate_copays(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    p: Uuid,
+    account: Uuid,
+) -> Result<i64> {
+    let linked: Option<(Uuid,i64)> = sqlx::query_as("SELECT v.appointment_id,b.total_cents FROM billing_accounts b JOIN visits v ON v.tenant_id=b.tenant_id AND v.id=b.visit_id AND v.patient_id=b.patient_id WHERE b.tenant_id=$1 AND b.patient_id=$2 AND b.id=$3 AND b.status='posted' FOR UPDATE OF b")
+        .bind(a.tenant_id).bind(p).bind(account).fetch_optional(&mut **tx).await?;
+    let Some((appointment, total)) = linked else {
+        return Ok(0);
+    };
+    let effect:i64=sqlx::query_scalar("SELECT coalesce(sum(effect_cents),0)::bigint FROM billing_entries WHERE tenant_id=$1 AND account_id=$2").bind(a.tenant_id).bind(account).fetch_one(&mut **tx).await?;
+    let reserved:i64=sqlx::query_scalar("SELECT coalesce(sum(amount_cents),0)::bigint FROM payment_attempts WHERE tenant_id=$1 AND account_id=$2 AND status IN ('creating','open','needs_review') AND paid_entry_id IS NULL").bind(a.tenant_id).bind(account).fetch_one(&mut **tx).await?;
+    let mut available = (total + effect - reserved).max(0);
+    let receipts:Vec<CopayAllocationCandidate>=sqlx::query_as("SELECT r.id,r.amount_cents-coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),0)::bigint-coalesce((SELECT sum(f.unapplied_cents) FROM copay_checkout_refund_events f WHERE f.tenant_id=o.tenant_id AND f.operation_id=o.id),0)::bigint AS remaining,r.method,r.reference,r.occurred_on,o.id AS hosted_operation,o.livemode FROM billing_copay_receipts r LEFT JOIN copay_checkout_attempts o ON o.tenant_id=r.tenant_id AND o.receipt_id=r.id WHERE r.tenant_id=$1 AND r.patient_id=$2 AND r.appointment_id=$3 AND (o.id IS NULL OR o.status<>'needs_review') AND NOT EXISTS(SELECT 1 FROM billing_copay_voids v WHERE v.tenant_id=r.tenant_id AND v.receipt_id=r.id) AND NOT EXISTS(SELECT 1 FROM billing_copay_allocations x JOIN billing_entries reversal ON reversal.tenant_id=x.tenant_id AND reversal.reverses_id=x.entry_id WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id) ORDER BY r.created_at,r.id")
+        .bind(a.tenant_id).bind(p).bind(appointment).fetch_all(&mut **tx).await?;
+    let mut applied = 0;
+    for row in receipts {
+        let CopayAllocationCandidate {
+            id: receipt,
+            remaining,
+            method,
+            reference,
+            occurred_on,
+            hosted_operation,
+            livemode,
+        } = row;
+        if livemode == Some(false)
+            && std::env::var("ENGINE_ENVIRONMENT").as_deref() == Ok("production")
+        {
+            continue;
+        }
+        let amount = available.min(remaining);
+        if amount <= 0 {
+            continue;
+        }
+        let entry = Uuid::new_v4();
+        let mut content = json!({"kind":"payment","amount_cents":amount,"party":"patient","method":method,"reference":reference,"occurred_on":occurred_on,"reason":"Applied recorded appointment copay","copay_receipt_id":receipt});
+        if let Some(operation) = hosted_operation {
+            content["hosted_copay_operation_id"] = json!(operation);
+            content["method"] = json!("card");
+            content["test_mode"] = json!(livemode == Some(false));
+        }
+        sqlx::query("INSERT INTO billing_entries(tenant_id,id,account_id,kind,effect_cents,content,request_id,creation_hash,actor_id) VALUES($1,$2,$3,'payment',$4,$5,$2,$6,$7)")
+            .bind(a.tenant_id).bind(entry).bind(account).bind(-amount).bind(&content).bind(digest(&(receipt,entry,amount))?).bind(a.sub).execute(&mut **tx).await?;
+        sqlx::query("INSERT INTO billing_copay_allocations(tenant_id,receipt_id,patient_id,account_id,entry_id,amount_cents,actor_id) VALUES($1,$2,$3,$4,$5,$6,$7)")
+            .bind(a.tenant_id).bind(receipt).bind(p).bind(account).bind(entry).bind(amount).bind(a.sub).execute(&mut **tx).await?;
+        crate::postgres::audit(tx, a, "billing.copay_applied", receipt).await?;
+        available -= amount;
+        applied += amount;
+    }
+    Ok(applied)
+}
+// Only the server-side checkout reconciler may call this after matching captured
+// provider evidence. The caller holds the tenant billing lock and operation row.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn record_verified_hosted_copay(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    p: Uuid,
+    appointment: Uuid,
+    coverage: Option<Uuid>,
+    amount: i64,
+    operation: Uuid,
+    provider_charge: &str,
+    livemode: bool,
+    occurred_on: NaiveDate,
+) -> Result<Uuid> {
+    if !(1..=100000000).contains(&amount)
+        || provider_charge.trim().is_empty()
+        || provider_charge.len() > 200
+        || occurred_on < NaiveDate::from_ymd_opt(2010, 1, 1).unwrap()
+        || occurred_on > (Utc::now() + chrono::Duration::minutes(5)).date_naive()
+        || (!livemode && std::env::var("ENGINE_ENVIRONMENT").as_deref() == Ok("production"))
+    {
+        return Err(Error::Invalid("invalid verified hosted copay evidence"));
+    }
+    let bound: Option<(Option<Value>,)> = sqlx::query_as(
+        "SELECT coverage_snapshot FROM copay_checkout_attempts WHERE tenant_id=$1 AND id=$2
+         AND patient_id=$3 AND appointment_id=$4 AND coverage_id IS NOT DISTINCT FROM $5
+         AND amount_cents=$6 AND livemode=$7 FOR UPDATE",
+    )
+    .bind(a.tenant_id)
+    .bind(operation)
+    .bind(p)
+    .bind(appointment)
+    .bind(coverage)
+    .bind(amount)
+    .bind(livemode)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let (coverage_snapshot,) = bound.ok_or(Error::Conflict(
+        "hosted copay operation does not match captured evidence",
+    ))?;
+    let hash = digest(&(
+        "verified_hosted_copay",
+        p,
+        appointment,
+        coverage,
+        amount,
+        operation,
+        provider_charge,
+        livemode,
+        occurred_on,
+    ))?;
+    let prior: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT id,creation_hash FROM billing_copay_receipts WHERE tenant_id=$1 AND request_id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(operation)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some((id, prior_hash)) = prior {
+        if prior_hash != hash {
+            return Err(Error::Conflict(
+                "hosted copay receipt binding conflicts with prior evidence",
+            ));
+        }
+        return Ok(id);
+    }
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO billing_copay_receipts(tenant_id,id,patient_id,appointment_id,coverage_id,amount_cents,method,reference,occurred_on,reason,coverage_snapshot,request_id,creation_hash,actor_id) VALUES($1,$2,$3,$4,$5,$6,'external',$7,$8,'Verified hosted card copay',$9,$10,$11,$12)")
+        .bind(a.tenant_id).bind(id).bind(p).bind(appointment).bind(coverage).bind(amount)
+        .bind(provider_charge).bind(occurred_on).bind(coverage_snapshot)
+        .bind(operation).bind(hash).bind(a.sub).execute(&mut **tx).await?;
+    // Link before allocation so both immediate and later allocations carry the
+    // same immutable operation identity and explicit test/live provenance.
+    let linked = sqlx::query("UPDATE copay_checkout_attempts SET receipt_id=$3,status='paid' WHERE tenant_id=$1 AND id=$2 AND receipt_id IS NULL")
+        .bind(a.tenant_id).bind(operation).bind(id).execute(&mut **tx).await?;
+    if linked.rows_affected() != 1 {
+        return Err(Error::Conflict(
+            "hosted copay already has a different receipt",
+        ));
+    }
+    crate::postgres::audit(tx, a, "billing.hosted_copay_recorded", id).await?;
+    allocate_verified_hosted_copay_credit(tx, a, operation).await?;
+    Ok(id)
+}
+pub(crate) async fn allocate_verified_hosted_copay_credit(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    operation: Uuid,
+) -> Result<()> {
+    let scope: Option<(Uuid, Uuid)> = sqlx::query_as("SELECT patient_id,appointment_id FROM copay_checkout_attempts WHERE tenant_id=$1 AND id=$2 AND receipt_id IS NOT NULL AND status='paid'")
+        .bind(a.tenant_id).bind(operation).fetch_optional(&mut **tx).await?;
+    let Some((patient, appointment)) = scope else {
+        return Ok(());
+    };
+    let accounts: Vec<Uuid> = sqlx::query_scalar("SELECT b.id FROM billing_accounts b JOIN visits v ON v.tenant_id=b.tenant_id AND v.id=b.visit_id AND v.patient_id=b.patient_id WHERE b.tenant_id=$1 AND b.patient_id=$2 AND v.appointment_id=$3 AND b.status='posted' ORDER BY b.created_at,b.id")
+        .bind(a.tenant_id).bind(patient).bind(appointment).fetch_all(&mut **tx).await?;
+    for account in accounts {
+        if allocate_copays(tx, a, patient, account).await? > 0 {
+            sqlx::query(
+                "UPDATE billing_accounts SET version=version+1 WHERE tenant_id=$1 AND id=$2",
+            )
+            .bind(a.tenant_id)
+            .bind(account)
+            .execute(&mut **tx)
+            .await?;
+            account_revision(tx, a, patient, account, "Applied verified hosted copay").await?;
+        }
+    }
+    Ok(())
+}
+// The caller has verified the same provider charge and holds the tenant/operation
+// locks. Cumulative observations are monotonic and every consumed cent is bound
+// to either unapplied receipt credit or a specific original allocation.
+pub(crate) async fn apply_verified_hosted_copay_refund(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    operation: Uuid,
+    refunded: i64,
+) -> Result<()> {
+    let (receipt, patient, amount, prior, livemode): (Uuid, Uuid, i64, i64, bool) =
+        sqlx::query_as("SELECT receipt_id,patient_id,amount_cents,refunded_cents,livemode FROM copay_checkout_attempts WHERE tenant_id=$1 AND id=$2 AND receipt_id IS NOT NULL FOR UPDATE")
+            .bind(a.tenant_id).bind(operation).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)?;
+    if !livemode && std::env::var("ENGINE_ENVIRONMENT").as_deref() == Ok("production") {
+        return Err(Error::Invalid(
+            "test copay refunds cannot change production balances",
+        ));
+    }
+    if refunded < prior || refunded > amount {
+        return Err(Error::Conflict(
+            "hosted refund evidence is out of order or exceeds the capture",
+        ));
+    }
+    let (observed, prior_unapplied): (i64, i64) = sqlx::query_as("SELECT coalesce(sum(delta_cents),0)::bigint,coalesce(sum(unapplied_cents),0)::bigint FROM copay_checkout_refund_events WHERE tenant_id=$1 AND operation_id=$2")
+        .bind(a.tenant_id).bind(operation).fetch_one(&mut **tx).await?;
+    if observed != prior {
+        return Err(Error::Conflict(
+            "hosted refund accounting requires reconciliation",
+        ));
+    }
+    if refunded == prior {
+        return Ok(());
+    }
+    let allocated: i64 = sqlx::query_scalar("SELECT coalesce(sum(amount_cents),0)::bigint FROM billing_copay_allocations WHERE tenant_id=$1 AND receipt_id=$2")
+        .bind(a.tenant_id).bind(receipt).fetch_one(&mut **tx).await?;
+    let delta = refunded - prior;
+    let unapplied = delta.min((amount - allocated - prior_unapplied).max(0));
+    sqlx::query("INSERT INTO copay_checkout_refund_events(tenant_id,operation_id,cumulative_cents,delta_cents,unapplied_cents,actor_id) VALUES($1,$2,$3,$4,$5,$6)")
+        .bind(a.tenant_id).bind(operation).bind(refunded).bind(delta).bind(unapplied).bind(a.sub).execute(&mut **tx).await?;
+    let allocations: Vec<(Uuid, Uuid, i64, bool)> = sqlx::query_as("SELECT x.account_id,x.entry_id,x.amount_cents-coalesce((SELECT sum(f.amount_cents) FROM copay_checkout_refund_allocations f WHERE f.tenant_id=x.tenant_id AND f.allocation_entry_id=x.entry_id),0)::bigint,EXISTS(SELECT 1 FROM billing_entries r WHERE r.tenant_id=x.tenant_id AND r.reverses_id=x.entry_id) FROM billing_copay_allocations x JOIN billing_entries e ON e.tenant_id=x.tenant_id AND e.id=x.entry_id WHERE x.tenant_id=$1 AND x.receipt_id=$2 ORDER BY e.created_at DESC,e.id DESC")
+        .bind(a.tenant_id).bind(receipt).fetch_all(&mut **tx).await?;
+    let mut remaining = delta - unapplied;
+    let mut changed_accounts = std::collections::BTreeSet::new();
+    for (account, allocation, available, corrected) in allocations {
+        let take = remaining.min(available.max(0));
+        if take == 0 {
+            continue;
+        }
+        let entry = if corrected {
+            None
+        } else {
+            // A refund increases the patient balance. It does not erase or
+            // modify the original payment, its receipt, or a prior invoice.
+            account_row(tx, a, patient, account).await?;
+            let id = Uuid::new_v4();
+            let content = json!({"kind":"adjustment_debit","amount_cents":take,"party":"patient","method":"card","reference":operation,"occurred_on":Utc::now().date_naive(),"reason":"Verified hosted card refund","hosted_copay_operation_id":operation,"copay_receipt_id":receipt,"refund_cumulative_cents":refunded,"test_mode":!livemode});
+            sqlx::query("INSERT INTO billing_entries(tenant_id,id,account_id,kind,effect_cents,content,request_id,creation_hash,actor_id) VALUES($1,$2,$3,'adjustment_debit',$4,$5,$2,$6,$7)")
+                .bind(a.tenant_id).bind(id).bind(account).bind(take).bind(content)
+                .bind(digest(&(operation, refunded, allocation, take))?).bind(a.sub).execute(&mut **tx).await?;
+            changed_accounts.insert(account);
+            Some(id)
+        };
+        sqlx::query("INSERT INTO copay_checkout_refund_allocations(tenant_id,operation_id,cumulative_cents,account_id,allocation_entry_id,entry_id,amount_cents) VALUES($1,$2,$3,$4,$5,$6,$7)")
+            .bind(a.tenant_id).bind(operation).bind(refunded).bind(account).bind(allocation).bind(entry).bind(take).execute(&mut **tx).await?;
+        remaining -= take;
+    }
+    if remaining != 0 {
+        return Err(Error::Conflict(
+            "hosted refund cannot be matched to original receipt credit",
+        ));
+    }
+    for account in changed_accounts {
+        sqlx::query("UPDATE billing_accounts SET version=version+1 WHERE tenant_id=$1 AND id=$2")
+            .bind(a.tenant_id)
+            .bind(account)
+            .execute(&mut **tx)
+            .await?;
+        account_revision(tx, a, patient, account, "Verified hosted card refund").await?;
+    }
+    crate::postgres::audit(tx, a, "billing.hosted_copay_refund_recorded", receipt).await?;
+    Ok(())
+}
+async fn record_copay(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(p): Path<Uuid>,
+    Json(v): Json<CopayInput>,
+) -> Result<Json<Value>> {
+    write(&a)?;
+    text(&v.reason, 1000)?;
+    bounded(&v.reference, 200)?;
+    choice(&v.method, &["cash", "check", "external"])?;
+    if !v.received_confirmed
+        || !(1..=100000000).contains(&v.amount_cents)
+        || v.occurred_on > Utc::now().date_naive()
+        || (v.method != "cash" && v.reference.trim().is_empty())
+    {
+        return Err(Error::Invalid(
+            "confirm receipt, amount, date and payment reference before recording the copay",
+        ));
+    }
+    let hash = digest(&(p, &v))?;
+    let mut tx = db(&s)?.begin().await?;
+    tenant_lock(&mut tx, &a).await?;
+    patient(&mut tx, &a, p).await?;
+    let prior: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT id,creation_hash FROM billing_copay_receipts WHERE tenant_id=$1 AND request_id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(v.request_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some((id, prior_hash)) = prior {
+        if hash != prior_hash {
+            return Err(Error::Conflict(
+                "copay request ID already used with different content",
+            ));
+        }
+        let rows = copay_rows(&mut tx, &a, p, Some(id)).await?;
+        let row = rows
+            .into_iter()
+            .find(|r| r["id"] == id.to_string())
+            .ok_or(Error::NotFound)?;
+        tx.commit().await?;
+        return Ok(Json(row));
+    }
+    let appointment: Option<String> = sqlx::query_scalar(
+        "SELECT status FROM appointments WHERE tenant_id=$1 AND patient_id=$2 AND id=$3 FOR UPDATE",
+    )
+    .bind(a.tenant_id)
+    .bind(p)
+    .bind(v.appointment_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let status = appointment.ok_or(Error::NotFound)?;
+    if ["cancelled", "canceled", "no_show"].contains(&status.as_str()) {
+        return Err(Error::Conflict(
+            "select an active appointment before recording its copay",
+        ));
+    }
+    let coverage = if let Some(id) = v.coverage_id {
+        Some(json!(coverage_row(&mut tx, &a, p, id).await?))
+    } else {
+        None
+    };
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO billing_copay_receipts(tenant_id,id,patient_id,appointment_id,coverage_id,amount_cents,method,reference,occurred_on,reason,coverage_snapshot,request_id,creation_hash,actor_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
+        .bind(a.tenant_id).bind(id).bind(p).bind(v.appointment_id).bind(v.coverage_id).bind(v.amount_cents).bind(v.method).bind(v.reference.trim()).bind(v.occurred_on).bind(v.reason.trim()).bind(coverage).bind(v.request_id).bind(hash).bind(a.sub).execute(&mut *tx).await?;
+    crate::postgres::audit(&mut tx, &a, "billing.copay_recorded", id).await?;
+    let account:Option<Uuid>=sqlx::query_scalar("SELECT b.id FROM billing_accounts b JOIN visits v ON v.tenant_id=b.tenant_id AND v.id=b.visit_id WHERE b.tenant_id=$1 AND b.patient_id=$2 AND v.appointment_id=$3 AND b.status='posted'").bind(a.tenant_id).bind(p).bind(v.appointment_id).fetch_optional(&mut *tx).await?;
+    if let Some(account) = account {
+        if allocate_copays(&mut tx, &a, p, account).await? > 0 {
+            sqlx::query(
+                "UPDATE billing_accounts SET version=version+1 WHERE tenant_id=$1 AND id=$2",
+            )
+            .bind(a.tenant_id)
+            .bind(account)
+            .execute(&mut *tx)
+            .await?;
+            account_revision(
+                &mut tx,
+                &a,
+                p,
+                account,
+                "Applied recorded appointment copay",
+            )
+            .await?;
+        }
+    }
+    let row = copay_rows(&mut tx, &a, p, Some(id))
+        .await?
+        .into_iter()
+        .find(|r| r["id"] == id.to_string())
+        .ok_or(Error::NotFound)?;
+    tx.commit().await?;
+    Ok(Json(row))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CopayVoid {
+    reason: String,
+}
+async fn void_copay(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((p, id)): Path<(Uuid, Uuid)>,
+    Json(v): Json<CopayVoid>,
+) -> Result<Json<Value>> {
+    write(&a)?;
+    text(&v.reason, 1000)?;
+    let mut tx = db(&s)?.begin().await?;
+    tenant_lock(&mut tx, &a).await?;
+    let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM billing_copay_receipts WHERE tenant_id=$1 AND patient_id=$2 AND id=$3)").bind(a.tenant_id).bind(p).bind(id).fetch_one(&mut *tx).await?;
+    if !exists {
+        return Err(Error::NotFound);
+    }
+    let hosted: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM copay_checkout_attempts WHERE tenant_id=$1 AND receipt_id=$2)",
+    )
+    .bind(a.tenant_id)
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if hosted {
+        return Err(Error::Conflict("hosted card receipts require verified processor refund evidence and cannot be manually voided"));
+    }
+    let allocated:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM billing_copay_allocations WHERE tenant_id=$1 AND receipt_id=$2)").bind(a.tenant_id).bind(id).fetch_one(&mut *tx).await?;
+    if allocated {
+        return Err(Error::Conflict(
+            "this copay is already on the ledger; correct its original ledger entry instead",
+        ));
+    }
+    sqlx::query("INSERT INTO billing_copay_voids(tenant_id,receipt_id,reason,actor_id) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING").bind(a.tenant_id).bind(id).bind(v.reason.trim()).bind(a.sub).execute(&mut *tx).await?;
+    crate::postgres::audit(&mut tx, &a, "billing.copay_voided", id).await?;
+    tx.commit().await?;
+    Ok(Json(json!({"voided":true})))
+}
+async fn apply_recorded_copays(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((p, id)): Path<(Uuid, Uuid)>,
+    h: HeaderMap,
+) -> Result<Json<Value>> {
+    write(&a)?;
+    let mut tx = db(&s)?.begin().await?;
+    tenant_lock(&mut tx, &a).await?;
+    let account = account_row(&mut tx, &a, p, id).await?;
+    if account.version != crate::expected(&h)? || account.status != "posted" {
+        return Err(Error::Conflict(
+            "reload the posted account before applying recorded copays",
+        ));
+    }
+    let amount = allocate_copays(&mut tx, &a, p, id).await?;
+    if amount > 0 {
+        sqlx::query("UPDATE billing_accounts SET version=version+1 WHERE tenant_id=$1 AND id=$2")
+            .bind(a.tenant_id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        account_revision(
+            &mut tx,
+            &a,
+            p,
+            id,
+            "Applied available recorded copay credit",
+        )
+        .await?;
+    }
+    crate::postgres::audit(&mut tx, &a, "billing.copay_application_review", id).await?;
+    tx.commit().await?;
+    Ok(Json(json!({"applied_cents":amount})))
 }

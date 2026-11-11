@@ -571,7 +571,7 @@ async fn staff_context_rejects_shared_cookie_switch_without_mutation_or_logout()
         (
             "POST",
             "/api/v1/patients",
-            json!({"mrn":"STALE-CONTEXT","given_name":"Synthetic","family_name":"Stale","birth_date":"1980-01-01"}),
+            json!({"given_name":"Synthetic","family_name":"Stale","birth_date":"1980-01-01"}),
         ),
         ("PUT", "/api/v1/prescribing/erx/connection", f.setup()),
         ("POST", "/auth/logout", json!({})),
@@ -626,7 +626,14 @@ async fn staff_context_rejects_shared_cookie_switch_without_mutation_or_logout()
         .unwrap();
     assert_eq!(rejected.status(), StatusCode::CONFLICT);
     assert!(!rejected.headers().contains_key("set-cookie"));
-    let created=call(&f.app,&matched,"POST","/api/v1/patients",json!({"mrn":"BOUND-CONTEXT","given_name":"Synthetic","family_name":"Bound","birth_date":"1980-01-01"})).await;
+    let created = call(
+        &f.app,
+        &matched,
+        "POST",
+        "/api/v1/patients",
+        json!({"given_name":"Synthetic","family_name":"Bound","birth_date":"1980-01-01"}),
+    )
+    .await;
     assert_eq!(created.0, StatusCode::CREATED, "{}", created.1);
     let mut duplicate = matched.clone();
     duplicate.append(

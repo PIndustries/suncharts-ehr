@@ -359,15 +359,13 @@ async fn package(
     let mut docs = vec![];
     let mut total = 0usize;
     for id in ids {
-        let metadata = crate::documents::validate_link(tx, a.tenant_id, p, id).await?;
-        let bytes: Vec<u8> = sqlx::query_scalar(
-            "SELECT bytes FROM patient_documents WHERE tenant_id=$1 AND patient_id=$2 AND id=$3",
-        )
-        .bind(a.tenant_id)
-        .bind(p)
-        .bind(id)
-        .fetch_one(&mut **tx)
-        .await?;
+        let reviewed = snapshot
+            .as_ref()
+            .and_then(Value::as_array)
+            .and_then(|items| items.iter().find(|item| item["id"] == id.to_string()));
+        let metadata =
+            crate::documents::validate_reviewed_link(tx, a.tenant_id, p, id, reviewed).await?;
+        let bytes = crate::documents::linked_file_bytes(tx, a.tenant_id, p, id, &metadata).await?;
         total += bytes.len();
         if total > MAX_PACKAGE {
             return Err(Error::Invalid("referral package attachments exceed20MiB"));

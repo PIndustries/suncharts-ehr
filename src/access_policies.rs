@@ -242,6 +242,14 @@ fn action(method: &Method, path: &str) -> Option<Action> {
         Method::PUT | Method::PATCH => Some(Action::Edit),
         Method::DELETE => Some(Action::Delete),
         Method::POST => {
+            if path.starts_with("/api/v1/patients/") && path.contains("/documents/") {
+                if path.ends_with("/office-sessions") {
+                    return Some(Action::View);
+                }
+                if path.contains("/office-sessions/") && path.ends_with("/save") {
+                    return Some(Action::Edit);
+                }
+            }
             if path.starts_with("/api/v1/care-pathways/instances/")
                 && path.ends_with("/intake-packet")
                 || path.starts_with("/api/v1/previsit/packets/") && path.ends_with("/demographics")
@@ -443,10 +451,16 @@ fn resources(path: &str) -> Option<Vec<&'static str>> {
     }) {
         return Some(vec!["claims"]);
     }
-    if segments
-        .iter()
-        .any(|part| ["billing", "coverages", "billing-mapping", "claim-mapping"].contains(part))
-    {
+    if segments.iter().any(|part| {
+        [
+            "billing",
+            "coverages",
+            "billing-mapping",
+            "claim-mapping",
+            "copay-checkouts",
+        ]
+        .contains(part)
+    }) {
         return Some(vec!["billing"]);
     }
     if segments
@@ -457,8 +471,8 @@ fn resources(path: &str) -> Option<Vec<&'static str>> {
     }
     match segments.get(3).copied() {
         Some(
-            "patients" | "visits" | "labs" | "prescribing" | "immunizations" | "referrals"
-            | "referral-delivery" | "follow-up",
+            "patients" | "documents" | "visits" | "labs" | "prescribing" | "immunizations"
+            | "referrals" | "referral-delivery" | "follow-up",
         ) => Some(vec!["clinical"]),
         Some("portal-inbox" | "patient-portal" | "portal") => Some(vec!["communications"]),
         Some("care-pathways" | "workflow-dispatches" | "automation") => Some(vec!["workflows"]),
@@ -509,7 +523,9 @@ fn public_callback(path: &str) -> bool {
     matches!(
         path,
         "/api/v1/connect/identity/accept" | "/api/v1/connect/support/accept"
-    ) || path.starts_with("/api/v1/payments/webhooks/")
+    ) || path.starts_with("/api/v1/office/source/")
+        || path.starts_with("/api/v1/office/callback/")
+        || path.starts_with("/api/v1/payments/webhooks/")
         || path.starts_with("/api/v1/integrations/ringcentral/webhooks/")
         || path.ends_with("/gmail/pubsub")
         || path.ends_with("/oauth/callback")

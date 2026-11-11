@@ -343,7 +343,7 @@ async fn audit_failures_rollback_upload_metadata_and_deny_download() {
     let path = format!("/api/v1/patients/{p}/documents");
     let (_, created) = call(&r, &doc, "POST", &path, upload_body(), None).await;
     let id = created["id"].as_str().unwrap();
-    sqlx::query("CREATE FUNCTION reject_document_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action IN ('patient.document.upload','patient.document.update','patient.document.download') THEN RAISE EXCEPTION 'synthetic audit failure'; END IF; RETURN NEW; END $$").execute(&db).await.unwrap();
+    sqlx::query("CREATE FUNCTION reject_document_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action IN ('patient.document.upload','patient.document.update','patient.document.download','patient.document.preview') THEN RAISE EXCEPTION 'synthetic audit failure'; END IF; RETURN NEW; END $$").execute(&db).await.unwrap();
     sqlx::query("CREATE TRIGGER document_audit_failure BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION reject_document_audit()").execute(&db).await.unwrap();
     assert_eq!(
         call(&r, &doc, "POST", &path, upload_body(), None).await.0,
@@ -366,6 +366,10 @@ async fn audit_failures_rollback_upload_metadata_and_deny_download() {
     );
     assert_eq!(
         download(&r, &doc, &format!("{path}/{id}/download")).await.0,
+        500
+    );
+    assert_eq!(
+        download(&r, &doc, &format!("{path}/{id}/preview")).await.0,
         500
     );
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM patient_documents")
@@ -397,4 +401,344 @@ async fn simultaneous_identical_uploads_create_one_original_and_one_revision() {
             .unwrap();
         assert_eq!(count, 1);
     }
+}
+
+#[tokio::test]
+async fn inline_previews_preserve_originals_and_enforce_patient_tenant_staff_and_audit() {
+    use base64::Engine;
+    let (db, doc, nurse, p) = setup().await;
+    let r = app(db.clone());
+    let path = format!("/api/v1/patients/{p}/documents");
+    for (mime, bytes) in [
+        ("application/pdf", PDF),
+        ("image/png", &b"\x89PNG\r\n\x1a\nsynthetic"[..]),
+        ("image/jpeg", &b"\xff\xd8\xffsynthetic\xff\xd9"[..]),
+    ] {
+        let mut body = upload_body();
+        body["content_type"] = json!(mime);
+        body["content_base64"] = json!(base64::engine::general_purpose::STANDARD.encode(bytes));
+        let (status, created) = call(&r, &doc, "POST", &path, body, None).await;
+        assert_eq!(status, 200, "{created}");
+        let id = created["id"].as_str().unwrap();
+        let preview = format!("{path}/{id}/preview");
+        let (status, h, stored) = download(&r, &nurse, &preview).await;
+        assert_eq!(status, 200);
+        assert_eq!(stored, bytes);
+        assert_eq!(h["content-type"], mime);
+        assert!(h["content-disposition"]
+            .to_str()
+            .unwrap()
+            .starts_with("inline;"));
+        assert_eq!(h["cache-control"], "no-store");
+        assert_eq!(h["x-content-type-options"], "nosniff");
+        assert_eq!(h["x-frame-options"], "SAMEORIGIN");
+        assert_eq!(h["cross-origin-resource-policy"], "same-origin");
+        let csp = h["content-security-policy"].to_str().unwrap();
+        assert!(csp.contains("default-src 'none'"));
+        assert!(csp.contains("frame-ancestors 'self'"));
+        assert!(!csp.contains("frame-ancestors 'none'"));
+        let foreign = actor(Uuid::new_v4(), Role::Clinician);
+        assert_eq!(download(&r, &foreign, &preview).await.0, 404);
+        let mut patient = actor(doc.tenant_id, Role::Patient);
+        patient.patient_id = Some(p);
+        assert_eq!(download(&r, &patient, &preview).await.0, 403);
+        let wrong_patient = format!("/api/v1/patients/{}/documents/{id}/preview", Uuid::new_v4());
+        assert_eq!(download(&r, &nurse, &wrong_patient).await.0, 404);
+        let anonymous = r
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&preview)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+        let audits: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE tenant_id=$1 AND actor_id=$2 AND resource_id=$3 AND action='patient.document.preview'")
+            .bind(doc.tenant_id).bind(nurse.sub).bind(Uuid::parse_str(id).unwrap()).fetch_one(&db).await.unwrap();
+        assert_eq!(audits, 1);
+    }
+}
+
+#[tokio::test]
+async fn registration_staff_manage_only_registration_document_categories() {
+    let (db, doc, _, p) = setup().await;
+    let r = app(db.clone());
+    let desk = actor(doc.tenant_id, Role::FrontDesk);
+    sqlx::query("INSERT INTO browser_users(tenant_id,id,email,password_hash,role) VALUES($1,$2,'desk@example.test','synthetic-not-login','front_desk')").bind(desk.tenant_id).bind(desk.sub).execute(&db).await.unwrap();
+    let path = format!("/api/v1/patients/{p}/documents");
+    assert_eq!(
+        call(&r, &desk, "POST", &path, upload_body(), None).await.0,
+        403
+    );
+    let (_, consult) = call(&r, &doc, "POST", &path, upload_body(), None).await;
+    let mut relabeled = consult["content"].clone();
+    relabeled["category"] = json!("legal");
+    assert_eq!(
+        call(
+            &r,
+            &desk,
+            "PUT",
+            &format!("{path}/{}", consult["id"].as_str().unwrap()),
+            json!({"content":relabeled,"reason":"Unauthorized category conversion"}),
+            Some(1)
+        )
+        .await
+        .0,
+        403
+    );
+    for category in ["identity", "insurance", "legal"] {
+        let mut body = upload_body();
+        body["content"]["category"] = json!(category);
+        let (status, created) = call(&r, &desk, "POST", &path, body, None).await;
+        assert_eq!(status, 200, "{created}");
+        let detail = format!("{path}/{}", created["id"].as_str().unwrap());
+        let mut content = created["content"].clone();
+        content["title"] = json!("Corrected registration title");
+        assert_eq!(
+            call(
+                &r,
+                &desk,
+                "PUT",
+                &detail,
+                json!({"content":content,"reason":"Registration correction"}),
+                Some(1)
+            )
+            .await
+            .0,
+            200
+        );
+        content["category"] = json!("consult");
+        assert_eq!(
+            call(
+                &r,
+                &desk,
+                "PUT",
+                &detail,
+                json!({"content":content,"reason":"Unauthorized clinical conversion"}),
+                Some(2)
+            )
+            .await
+            .0,
+            403
+        );
+        let (status, page) = call(
+            &r,
+            &desk,
+            "GET",
+            &format!("{path}?category={category}"),
+            Value::Null,
+            None,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn file_versions_are_append_only_scoped_and_keep_the_original_and_metadata_unchanged() {
+    use base64::Engine;
+    let (db, doc, nurse, p) = setup().await;
+    let r = app(db.clone());
+    let mut body = upload_body();
+    body["filename"] = json!("clinical.txt");
+    body["content_type"] = json!("text/plain");
+    body["content_base64"] =
+        json!(base64::engine::general_purpose::STANDARD.encode("Synthetic original text"));
+    let path = format!("/api/v1/patients/{p}/documents");
+    let (status, original) = call(&r, &doc, "POST", &path, body, None).await;
+    assert_eq!(status, 200, "{original}");
+    let id = original["id"].as_str().unwrap();
+    let files = format!("{path}/{id}/files");
+    let save = json!({"request_id":Uuid::new_v4(),"text_content":"Edited <script> remains plain text","annotations":[],"reason":"Correct supporting document"});
+    assert_eq!(
+        call(&r, &nurse, "POST", &files, save.clone(), Some(1))
+            .await
+            .0,
+        403
+    );
+    let (status, saved) = call(&r, &doc, "POST", &files, save.clone(), Some(1)).await;
+    assert_eq!(status, 200, "{saved}");
+    assert_eq!(saved["version"], 2);
+    assert_eq!(
+        call(&r, &doc, "POST", &files, save.clone(), Some(1))
+            .await
+            .1,
+        saved,
+        "identical retry returns its original saved version"
+    );
+    let mut changed = save.clone();
+    changed["text_content"] = json!("Different request body");
+    assert_eq!(
+        call(&r, &doc, "POST", &files, changed.clone(), Some(1))
+            .await
+            .0,
+        409
+    );
+    changed["request_id"] = json!(Uuid::new_v4());
+    assert_eq!(
+        call(&r, &doc, "POST", &files, changed.clone(), Some(1))
+            .await
+            .0,
+        409,
+        "stale base cannot overwrite newer content"
+    );
+    let (_, detail) = call(&r, &doc, "GET", &format!("{path}/{id}"), Value::Null, None).await;
+    assert_eq!(detail["version"], 1, "metadata revision is independent");
+    assert_eq!(detail["file_version"], 2);
+    assert_eq!(detail["sha256"], original["sha256"]);
+    let (status, headers, bytes) = download(&r, &doc, &format!("{files}/2/preview")).await;
+    assert_eq!(status, 200);
+    assert_eq!(headers["content-type"], "text/plain");
+    assert_eq!(headers["x-content-type-options"], "nosniff");
+    assert!(headers["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .contains("default-src 'none'"));
+    assert_eq!(bytes, b"Edited <script> remains plain text");
+    assert_eq!(
+        download(&r, &doc, &format!("{path}/{id}/download")).await.2,
+        b"Synthetic original text"
+    );
+    assert_eq!(
+        call(&r, &doc, "GET", &files, Value::Null, None).await.1["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let other = actor(Uuid::new_v4(), Role::Clinician);
+    assert_eq!(
+        download(&r, &other, &format!("{files}/2/preview")).await.0,
+        404
+    );
+    assert_eq!(
+        download(
+            &r,
+            &doc,
+            &format!(
+                "/api/v1/patients/{}/documents/{id}/files/2/preview",
+                Uuid::new_v4()
+            )
+        )
+        .await
+        .0,
+        404
+    );
+    assert!(sqlx::query(
+        "UPDATE patient_document_file_versions SET reason='rewrite' WHERE document_id=$1"
+    )
+    .bind(Uuid::parse_str(id).unwrap())
+    .execute(&db)
+    .await
+    .is_err());
+    assert!(
+        sqlx::query("DELETE FROM patient_document_file_versions WHERE document_id=$1")
+            .bind(Uuid::parse_str(id).unwrap())
+            .execute(&db)
+            .await
+            .is_err()
+    );
+    let audits:i64=sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE tenant_id=$1 AND action='patient.document.file_saved'").bind(doc.tenant_id).fetch_one(&db).await.unwrap();
+    assert_eq!(audits, 1);
+}
+
+#[tokio::test]
+async fn annotations_validate_coordinates_and_registration_permissions_without_replacing_pdf_bytes()
+{
+    let (db, doc, _, p) = setup().await;
+    let r = app(db.clone());
+    let desk = actor(doc.tenant_id, Role::FrontDesk);
+    sqlx::query("INSERT INTO browser_users(tenant_id,id,email,password_hash,role) VALUES($1,$2,'files-desk@example.test','synthetic-not-login','front_desk')").bind(desk.tenant_id).bind(desk.sub).execute(&db).await.unwrap();
+    let path = format!("/api/v1/patients/{p}/documents");
+    let (_, original) = call(&r, &doc, "POST", &path, upload_body(), None).await;
+    let id = original["id"].as_str().unwrap();
+    let files = format!("{path}/{id}/files");
+    let annotation = json!({"id":Uuid::new_v4(),"page":1,"kind":"highlight","x":0.1,"y":0.2,"width":0.3,"height":0.1,"text":"Synthetic highlight","color":"yellow"});
+    let mut save = json!({"request_id":Uuid::new_v4(),"annotations":[annotation],"reason":"Mark reviewed source"});
+    assert_eq!(
+        call(&r, &desk, "POST", &files, save.clone(), Some(1))
+            .await
+            .0,
+        403,
+        "front desk cannot annotate clinical records"
+    );
+    save["annotations"][0]["x"] = json!(0.9);
+    assert_eq!(
+        call(&r, &doc, "POST", &files, save.clone(), Some(1))
+            .await
+            .0,
+        400,
+        "off-page rectangles rejected"
+    );
+    save["annotations"][0]["x"] = json!(0.1);
+    let (status, saved) = call(&r, &doc, "POST", &files, save.clone(), Some(1)).await;
+    assert_eq!(status, 200, "{saved}");
+    assert_eq!(saved["sha256"], original["sha256"]);
+    assert_eq!(
+        download(&r, &doc, &format!("{files}/2/preview")).await.2,
+        PDF
+    );
+    let mut next = save.clone();
+    next["request_id"] = json!(Uuid::new_v4());
+    next["reason"] = json!("Concurrent revision");
+    let mut next2 = next.clone();
+    next2["request_id"] = json!(Uuid::new_v4());
+    let (a, b) = tokio::join!(
+        call(&r, &doc, "POST", &files, next, Some(2)),
+        call(&r, &doc, "POST", &files, next2, Some(2))
+    );
+    assert!(
+        (a.0 == 200 && b.0 == 409) || (a.0 == 409 && b.0 == 200),
+        "concurrent saves must not fork history: {a:?} {b:?}"
+    );
+}
+
+#[tokio::test]
+async fn audio_and_office_uploads_remain_authenticated_and_office_is_not_inline_html() {
+    use base64::Engine;
+    let (db, doc, _, p) = setup().await;
+    let r = app(db);
+    let path = format!("/api/v1/patients/{p}/documents");
+    for (mime, filename, bytes, inline) in [
+        (
+            "audio/wav",
+            "voice.wav",
+            b"RIFF\x24\x00\x00\x00WAVEfmt synthetic audio".as_slice(),
+            true,
+        ),
+        (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "document.docx",
+            b"PK\x03\x04synthetic opaque office container".as_slice(),
+            false,
+        ),
+    ] {
+        let mut body = upload_body();
+        body["filename"] = json!(filename);
+        body["content_type"] = json!(mime);
+        body["content_base64"] = json!(base64::engine::general_purpose::STANDARD.encode(bytes));
+        let (status, value) = call(&r, &doc, "POST", &path, body, None).await;
+        assert_eq!(status, 200, "{value}");
+        let id = value["id"].as_str().unwrap();
+        assert_eq!(
+            download(&r, &doc, &format!("{path}/{id}/files/1/preview"))
+                .await
+                .0,
+            if inline { 200 } else { 400 }
+        );
+        assert_eq!(
+            download(&r, &doc, &format!("{path}/{id}/download")).await.2,
+            bytes
+        );
+    }
+    let mut body = upload_body();
+    body["content_type"] = json!("audio/wav");
+    assert_eq!(
+        call(&r, &doc, "POST", &path, body, None).await.0,
+        400,
+        "PDF cannot masquerade as audio"
+    );
 }

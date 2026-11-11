@@ -90,7 +90,14 @@ async fn request(
         .header("Content-Type", "application/fhir+json")
         .header("X-Change-Reason", "Synthetic identity correction");
     if let Some(v) = version {
-        q = q.header("If-Match", format!("W/\"{v}\""));
+        q = q.header(
+            "If-Match",
+            if path.starts_with("/fhir/") {
+                format!("W/\"{v}\"")
+            } else {
+                format!("\"{v}\"")
+            },
+        );
     }
     let res = r
         .clone()
@@ -106,17 +113,20 @@ async fn request(
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
 }
-fn patient(mrn: &str) -> Value {
-    json!({"resourceType":"Patient","identifier":[{"system":"http://127.0.0.1:8099/identifier/mrn","value":mrn}],"name":[{"use":"official","family":"Synthetic","given":["Avery"]}],"birthDate":"1990-01-02"})
+fn patient() -> Value {
+    json!({"resourceType":"Patient","name":[{"use":"official","family":"Synthetic","given":["Avery"]}],"birthDate":"1990-01-02"})
 }
 #[tokio::test]
 async fn creates_and_corrects_patient_identity_with_fhir_headers_and_native_history() {
     let (db, r, a) = setup().await;
-    let (status, h, created) =
-        call(&r, &a, "POST", "/fhir/Patient", patient("SYN-001"), None).await;
+    let (status, h, created) = call(&r, &a, "POST", "/fhir/Patient", patient(), None).await;
     assert_eq!(status, 201, "{created}");
     assert_eq!(h["etag"], "W/\"1\"");
     assert!(h["location"].to_str().unwrap().contains("/fhir/Patient/"));
+    assert!(created["identifier"][0]["value"]
+        .as_str()
+        .unwrap()
+        .starts_with("SC-"));
     let id = created["id"].as_str().unwrap();
     let path = format!("/fhir/Patient/{id}");
     let mut corrected = created.clone();
@@ -124,6 +134,7 @@ async fn creates_and_corrects_patient_identity_with_fhir_headers_and_native_hist
     let (status, h, updated) = call(&r, &a, "PUT", &path, corrected.clone(), Some(1)).await;
     assert_eq!(status, 200, "{updated}");
     assert_eq!(h["etag"], "W/\"2\"");
+    assert_eq!(updated["identifier"], created["identifier"]);
     assert_eq!(updated["name"][0]["family"], "Corrected");
     assert_eq!(updated["meta"]["versionId"], "2");
     let (status, h, read) = call(&r, &a, "GET", &path, Value::Null, None).await;
@@ -150,30 +161,31 @@ async fn creates_and_corrects_patient_identity_with_fhir_headers_and_native_hist
         .is_err());
 }
 #[tokio::test]
-async fn rejects_unsupported_payloads_missing_versions_and_identity_collisions() {
+async fn rejects_unsupported_payloads_missing_versions_and_manual_mrns() {
     let (_db, r, a) = setup().await;
-    let mut bad = patient("SYN-001");
+    let mut bad = patient();
     bad["telecom"] = json!([{"system":"phone","value":"5550100"}]);
     let (status, _, out) = call(&r, &a, "POST", "/fhir/Patient", bad, None).await;
     assert_eq!(status, 400);
     assert_eq!(out["resourceType"], "OperationOutcome");
-    let (_, _, created) = call(&r, &a, "POST", "/fhir/Patient", patient("SYN-001"), None).await;
+    let (_, _, created) = call(&r, &a, "POST", "/fhir/Patient", patient(), None).await;
     let path = format!("/fhir/Patient/{}", created["id"].as_str().unwrap());
     assert_eq!(
         call(&r, &a, "PUT", &path, created.clone(), None).await.0,
         428
     );
+    let mut manual = patient();
+    manual["identifier"] =
+        json!([{"system":"http://127.0.0.1:8099/identifier/mrn","value":"MANUAL-001"}]);
     assert_eq!(
-        call(&r, &a, "POST", "/fhir/Patient", patient("SYN-001"), None)
-            .await
-            .0,
-        409
+        call(&r, &a, "POST", "/fhir/Patient", manual, None).await.0,
+        400
     );
-    let (_, _, other) = call(&r, &a, "POST", "/fhir/Patient", patient("SYN-002"), None).await;
+    let (_, _, other) = call(&r, &a, "POST", "/fhir/Patient", patient(), None).await;
     let mut collision = created.clone();
     collision["identifier"][0]["value"] = json!("SYN-002");
     let (status, _, error) = call(&r, &a, "PUT", &path, collision, Some(1)).await;
-    assert_eq!(status, 409);
+    assert_eq!(status, 400);
     assert_eq!(error["resourceType"], "OperationOutcome");
     let mut wrong = created.clone();
     wrong["id"] = other["id"].clone();
@@ -185,16 +197,9 @@ async fn rejects_unsupported_payloads_missing_versions_and_identity_collisions()
     patient_role.role = Role::Patient;
     patient_role.patient_id = Some(Uuid::parse_str(created["id"].as_str().unwrap()).unwrap());
     assert_eq!(
-        call(
-            &r,
-            &patient_role,
-            "POST",
-            "/fhir/Patient",
-            patient("SYN-PATIENT"),
-            None
-        )
-        .await
-        .0,
+        call(&r, &patient_role, "POST", "/fhir/Patient", patient(), None)
+            .await
+            .0,
         403
     );
     let mut nurse = a.clone();
@@ -215,7 +220,7 @@ async fn rejects_unsupported_payloads_missing_versions_and_identity_collisions()
 #[tokio::test]
 async fn correction_is_serialized_and_audit_failure_rolls_back_identity_and_history() {
     let (db, r, a) = setup().await;
-    let (_, _, created) = call(&r, &a, "POST", "/fhir/Patient", patient("SYN-RACE"), None).await;
+    let (_, _, created) = call(&r, &a, "POST", "/fhir/Patient", patient(), None).await;
     let path = format!("/fhir/Patient/{}", created["id"].as_str().unwrap());
     let mut c1 = created.clone();
     c1["name"][0]["given"] = json!(["First"]);
@@ -239,23 +244,16 @@ async fn correction_is_serialized_and_audit_failure_rolls_back_identity_and_hist
         current
     );
     assert_eq!(
-        call(
-            &r,
-            &a,
-            "POST",
-            "/fhir/Patient",
-            patient("SYN-ROLLBACK"),
-            None
-        )
-        .await
-        .0,
+        call(&r, &a, "POST", "/fhir/Patient", patient(), None)
+            .await
+            .0,
         500
     );
-    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM patients WHERE mrn='SYN-ROLLBACK'")
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM patients")
         .fetch_one(&db)
         .await
         .unwrap();
-    assert_eq!(n, 0);
+    assert_eq!(n, 1);
     let n: i64 = sqlx::query_scalar("SELECT count(*) FROM patient_identity_revisions")
         .fetch_one(&db)
         .await
@@ -277,16 +275,9 @@ async fn oauth_patient_writes_require_clinical_write_scope() {
     sqlx::query("INSERT INTO oauth_grants(id,client_id,tenant_id,user_id,scope) VALUES($1,$2,$3,$4,'clinical.read')").bind(grant).bind(client).bind(a.tenant_id).bind(a.sub).execute(&db).await.unwrap();
     sqlx::query("INSERT INTO oauth_tokens(hash,grant_id,kind,expires_at) VALUES($1,$2,'access',now()+interval '5 minutes')").bind(hash).bind(grant).execute(&db).await.unwrap();
     assert_eq!(
-        request(
-            &r,
-            &token,
-            "POST",
-            "/fhir/Patient",
-            patient("SYN-OAUTH"),
-            None
-        )
-        .await
-        .0,
+        request(&r, &token, "POST", "/fhir/Patient", patient(), None)
+            .await
+            .0,
         403
     );
     sqlx::query("UPDATE oauth_grants SET scope='clinical.write' WHERE id=$1")
@@ -295,16 +286,9 @@ async fn oauth_patient_writes_require_clinical_write_scope() {
         .await
         .unwrap();
     assert_eq!(
-        request(
-            &r,
-            &token,
-            "POST",
-            "/fhir/Patient",
-            patient("SYN-OAUTH"),
-            None
-        )
-        .await
-        .0,
+        request(&r, &token, "POST", "/fhir/Patient", patient(), None)
+            .await
+            .0,
         201
     );
 }
@@ -312,7 +296,7 @@ async fn oauth_patient_writes_require_clinical_write_scope() {
 #[tokio::test]
 async fn conditional_headers_are_rejected_and_signed_visit_content_is_not_rewritten() {
     let (db, r, a) = setup().await;
-    let (_, _, created) = call(&r, &a, "POST", "/fhir/Patient", patient("SYN-SIGNED"), None).await;
+    let (_, _, created) = call(&r, &a, "POST", "/fhir/Patient", patient(), None).await;
     let id = Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
     let ap = Uuid::new_v4();
     let visit = Uuid::new_v4();
@@ -333,12 +317,7 @@ async fn conditional_headers_are_rejected_and_signed_visit_content_is_not_rewrit
     .unwrap();
     let path = format!("/fhir/Patient/{id}");
     for (method, path, extra, body) in [
-        (
-            "POST",
-            "/fhir/Patient",
-            "If-None-Exist",
-            patient("SYN-REJECTED"),
-        ),
+        ("POST", "/fhir/Patient", "If-None-Exist", patient()),
         ("PUT", path.as_str(), "If-None-Match", created.clone()),
     ] {
         let req = Request::builder()
@@ -373,4 +352,94 @@ async fn conditional_headers_are_rejected_and_signed_visit_content_is_not_rewrit
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn routine_registration_and_identity_corrections_keep_mrns_system_controlled() {
+    let (db, r, a) = setup().await;
+    let registration =
+        json!({"given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-02"});
+    let (status, _, created) = call(
+        &r,
+        &a,
+        "POST",
+        "/api/v1/patients",
+        registration.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(status, 201, "{created}");
+    let (status, _, second) = call(
+        &r,
+        &a,
+        "POST",
+        "/api/v1/patients",
+        registration.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(status, 201, "{second}");
+    assert_ne!(created["mrn"], second["mrn"]);
+    assert!(created["mrn"].as_str().unwrap().starts_with("SC-"));
+    let mut manual = registration.clone();
+    manual["mrn"] = json!("STAFF-CHOSEN");
+    let (status, _, error) = call(&r, &a, "POST", "/api/v1/patients", manual, None).await;
+    assert_eq!(status, 400, "{error}");
+    let id = created["id"].as_str().unwrap();
+    let path = format!("/api/v1/patients/{id}/identity");
+    let mut edit = registration.clone();
+    edit["family_name"] = json!("Corrected");
+    edit["reason"] = json!("Synthetic registration review");
+    edit["mrn"] = json!("TAMPERED");
+    assert_eq!(
+        call(&r, &a, "PUT", &path, edit.clone(), Some(1)).await.0,
+        400
+    );
+    let (_, _, unchanged) = call(&r, &a, "GET", &path, Value::Null, None).await;
+    assert_eq!(unchanged["patient"]["mrn"], created["mrn"]);
+    assert_eq!(unchanged["version"], 1);
+    edit.as_object_mut().unwrap().remove("mrn");
+    let (status, _, corrected) = call(&r, &a, "PUT", &path, edit.clone(), Some(1)).await;
+    assert_eq!(status, 200, "{corrected}");
+    assert_eq!(corrected["patient"]["mrn"], created["mrn"]);
+    assert_eq!(corrected["patient"]["family_name"], "Corrected");
+    let mut reader = a.clone();
+    reader.role = Role::ReadOnly;
+    assert_eq!(
+        call(&r, &reader, "PUT", &path, edit.clone(), Some(2))
+            .await
+            .0,
+        403
+    );
+    let mut foreign = a.clone();
+    foreign.tenant_id = Uuid::new_v4();
+    assert_eq!(
+        call(&r, &foreign, "PUT", &path, edit.clone(), Some(2))
+            .await
+            .0,
+        404
+    );
+    // Source imports may insert a preserved MRN, but later identity corrections cannot replace it.
+    let imported = Uuid::new_v4();
+    sqlx::query("INSERT INTO patients(tenant_id,id,mrn,given_name,family_name,birth_date) VALUES($1,$2,'LEGACY-KEEP-001','Avery','Imported','1990-01-02')").bind(a.tenant_id).bind(imported).execute(&db).await.unwrap();
+    let (status, _, corrected) = call(
+        &r,
+        &a,
+        "PUT",
+        &format!("/api/v1/patients/{imported}/identity"),
+        edit,
+        Some(1),
+    )
+    .await;
+    assert_eq!(status, 200, "{corrected}");
+    assert_eq!(corrected["patient"]["mrn"], "LEGACY-KEEP-001");
+    assert!(sqlx::query("UPDATE patients SET mrn='TAMPERED',identity_version=identity_version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(imported).execute(&db).await.is_err());
+    let stored: String =
+        sqlx::query_scalar("SELECT mrn FROM patients WHERE tenant_id=$1 AND id=$2")
+            .bind(a.tenant_id)
+            .bind(imported)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(stored, "LEGACY-KEEP-001");
 }

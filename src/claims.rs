@@ -10,7 +10,7 @@ use crate::{
     State,
 };
 use axum::{
-    extract::{Path, Query, State as ExtractState},
+    extract::{DefaultBodyLimit, Path, Query, State as ExtractState},
     http::{header, HeaderMap},
     response::Html,
     routing::{get, post, put},
@@ -186,6 +186,13 @@ struct Import {
 struct ListQuery {
     after: Option<Uuid>,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClaimListQuery {
+    after: Option<Uuid>,
+    patient_id: Option<Uuid>,
+    account_id: Option<Uuid>,
+}
 pub(crate) async fn claim_row(
     tx: &mut Transaction<'_, Postgres>,
     a: &Actor,
@@ -278,6 +285,19 @@ fn npi(s: &str) -> bool {
         % 10
         == 0
 }
+fn new_control_number(id: Uuid, synthetic: bool) -> String {
+    // Preserve the synthetic marker while keeping every new PCN within the
+    // 17-character payer interoperability limit. Existing PCNs are immutable.
+    let prefix = if synthetic { "SCTEST" } else { "SC" };
+    let mut value = id.as_u128();
+    let mut suffix = vec![b'0'; 17 - prefix.len()];
+    for byte in suffix.iter_mut().rev() {
+        *byte = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"[(value % 36) as usize];
+        value /= 36;
+    }
+    format!("{prefix}{}", String::from_utf8(suffix).expect("ASCII PCN"))
+}
+
 pub(crate) fn preflight(c: &Claim) -> Result<Vec<String>> {
     let p: ClaimContent = serde_json::from_value(c.content.clone())
         .map_err(|_| Error::Invalid("invalid stored claim content"))?;
@@ -353,12 +373,14 @@ pub fn router() -> Router<State> {
         .route("/api/v1/billing/claims/{id}/history", get(claim_history))
         .route(
             "/api/v1/billing/remittances",
-            get(remittances).post(import_remittance),
+            get(remittances)
+                .post(import_remittance)
+                .layer(DefaultBodyLimit::max(4 * era835::MAX_FILE_BYTES)),
         )
         .route("/api/v1/billing/remittances/{id}", get(remit_detail))
         .route(
             "/api/v1/billing/remittances/{id}/matches",
-            put(match_remittance),
+            put(match_remittance).layer(DefaultBodyLimit::max(era835::MAX_FILE_BYTES)),
         )
         .route(
             "/api/v1/billing/remittances/{id}/actions",
@@ -377,11 +399,11 @@ pub fn router() -> Router<State> {
 async fn claims(
     a: Actor,
     ExtractState(s): ExtractState<State>,
-    Query(q): Query<ListQuery>,
+    Query(q): Query<ClaimListQuery>,
 ) -> Result<Json<Value>> {
     a.staff()?;
     let mut tx = db(&s)?.begin().await?;
-    let mut rows:Vec<Value>=sqlx::query_scalar("SELECT (to_jsonb(c)-'tenant_id'-'creation_hash'-'request_id'-'content'-'snapshot')||jsonb_build_object('patient_name',p.family_name||', '||p.given_name,'total_cents',c.snapshot->'account'->'total_cents','payer_name',c.snapshot->'account'->'coverage_snapshot'->'payer'->'content'->>'name','synthetic_test',coalesce((c.content->>'synthetic_test')::boolean,false)) FROM ehr_claims c JOIN patients p ON p.tenant_id=c.tenant_id AND p.id=c.patient_id WHERE c.tenant_id=$1 AND ($2::uuid IS NULL OR c.id>$2) ORDER BY c.id LIMIT 101").bind(a.tenant_id).bind(q.after).fetch_all(&mut *tx).await?;
+    let mut rows:Vec<Value>=sqlx::query_scalar("SELECT (to_jsonb(c)-'tenant_id'-'creation_hash'-'request_id'-'content'-'snapshot')||jsonb_build_object('patient_name',p.family_name||', '||p.given_name,'total_cents',c.snapshot->'account'->'total_cents','payer_name',c.snapshot->'account'->'coverage_snapshot'->'payer'->'content'->>'name','synthetic_test',coalesce((c.content->>'synthetic_test')::boolean,false)) FROM ehr_claims c JOIN patients p ON p.tenant_id=c.tenant_id AND p.id=c.patient_id WHERE c.tenant_id=$1 AND ($2::uuid IS NULL OR c.id>$2) AND ($3::uuid IS NULL OR c.patient_id=$3) AND ($4::uuid IS NULL OR c.account_id=$4) ORDER BY c.id LIMIT 101").bind(a.tenant_id).bind(q.after).bind(q.patient_id).bind(q.account_id).fetch_all(&mut *tx).await?;
     let next = if rows.len() > 100 {
         rows.truncate(100);
         rows.last().map(|r| r["id"].clone())
@@ -478,7 +500,7 @@ async fn create_claim(
     .bind(p)
     .fetch_one(&mut *tx)
     .await?;
-    let ledger: Value = sqlx::query_scalar(
+    let mut ledger: Value = sqlx::query_scalar(
         "SELECT jsonb_build_object(\
             'patient_payments_cents',coalesce(-sum(effect_cents) FILTER (WHERE kind='payment' AND content->>'party'='patient'),0),\
             'insurer_payments_cents',coalesce(-sum(effect_cents) FILTER (WHERE kind='payment' AND content->>'party'='insurer'),0),\
@@ -496,12 +518,13 @@ async fn create_claim(
     .bind(b.total_cents)
     .fetch_one(&mut *tx)
     .await?;
+    ledger["patient_payments_cents"] = json!(
+        crate::billing::patient_ledger_totals(&mut tx, a.tenant_id, id)
+            .await?
+            .1
+    );
     let claim = Uuid::new_v4();
-    let control_number = if v.content.synthetic_test {
-        format!("SCTEST{}", claim.simple())
-    } else {
-        format!("SC{}", claim.simple())
-    };
+    let control_number = new_control_number(claim, v.content.synthetic_test);
     sqlx::query("INSERT INTO ehr_claims (tenant_id,id,patient_id,account_id,payer_id,control_number,frequency,parent_id,content,snapshot,request_id,creation_hash,source_history_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)").bind(a.tenant_id).bind(claim).bind(p).bind(id).bind(payer_id).bind(control_number).bind(v.frequency).bind(v.parent_id).bind(json!(v.content)).bind(json!({"account":b,"patient":patient,"financial_summary":ledger})).bind(v.request_id).bind(digest).bind(v.source_history_id).execute(&mut *tx).await?;
     let c = revision(&mut tx, &a, claim, &v.reason, json!({"transport":"none"})).await?;
     tx.commit().await?;
@@ -517,6 +540,7 @@ async fn claim_detail(
     let c = claim_row(&mut tx, &a, id).await?;
     let issues = preflight(&c)?;
     let submission_defaults = claim_submission_defaults(&mut tx, &a, &c).await?;
+    let tracking = crate::retrieval::claim_tracking(&mut tx, &a, &c).await?;
     let artifact_generated: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM edi_submissions WHERE tenant_id=$1 AND claim_id=$2)",
     )
@@ -528,7 +552,7 @@ async fn claim_detail(
     tx.commit().await?;
     let transport = clearinghouse_transport(db(&s)?, a.tenant_id, artifact_generated).await?;
     Ok(Json(
-        json!({"claim":c,"preflight_issues":issues,"transport":transport,"submission_defaults":submission_defaults}),
+        json!({"claim":c,"preflight_issues":issues,"transport":transport,"submission_defaults":submission_defaults,"tracking":tracking}),
     ))
 }
 
@@ -1170,9 +1194,14 @@ pub(crate) async fn review_row(
             sum += adjustment.amount_cents;
         }
         let prior:i64=sqlx::query_scalar("SELECT coalesce(sum(effect_cents),0)::bigint FROM billing_entries WHERE tenant_id=$1 AND account_id=$2").bind(a.tenant_id).bind(b.id).fetch_one(&mut **tx).await?;
-        if !(0..=1000000000).contains(&(b.total_cents + prior - row.paid_cents - sum)) {
+        // A settled patient overpayment is a credit, not a second PR charge.
+        // Only existing net patient payments/credits may explain a negative
+        // balance; insurer overpayment still blocks the complete settlement.
+        let (patient_credit, _) = billing::patient_ledger_totals(tx, a.tenant_id, b.id).await?;
+        let balance = b.total_cents + prior - row.paid_cents - sum;
+        if !(-patient_credit.max(0)..=1000000000).contains(&balance) {
             issues.push(format!(
-                "Row {}: posting would overpay or exceed the supported balance",
+                "Row {}: posting exceeds the balance after accounting for existing patient credits",
                 m.row_index + 1
             ));
         }
@@ -1194,7 +1223,7 @@ async fn remit_detail(
     } else {
         review(&mut tx, &a, &r, &matches).await?
     };
-    let postings:Vec<Value>=sqlx::query_scalar("SELECT to_jsonb(p)-'tenant_id' FROM era_postings p WHERE tenant_id=$1 AND remittance_id=$2 ORDER BY row_index").bind(a.tenant_id).bind(id).fetch_all(&mut *tx).await?;
+    let postings:Vec<Value>=sqlx::query_scalar("SELECT to_jsonb(p)-'tenant_id' || jsonb_build_object('current_account_balance_cents',b.total_cents+coalesce(e.total,0)) FROM era_postings p JOIN billing_accounts b ON b.tenant_id=p.tenant_id AND b.id=p.account_id LEFT JOIN LATERAL (SELECT sum(effect_cents)::bigint AS total FROM billing_entries WHERE tenant_id=p.tenant_id AND account_id=p.account_id) e ON true WHERE p.tenant_id=$1 AND p.remittance_id=$2 ORDER BY p.row_index").bind(a.tenant_id).bind(id).fetch_all(&mut *tx).await?;
     let batch_id: Option<Uuid> = sqlx::query_scalar(
         "SELECT batch_id FROM era_batch_items WHERE tenant_id=$1 AND remittance_id=$2",
     )
@@ -1219,7 +1248,7 @@ async fn match_remittance(
     a.scheduling()?;
     text(&v.reason, 1000)?;
     let version = crate::expected(&h)?;
-    if v.matches.len() > 30 {
+    if v.matches.len() > era835::MAX_CLAIMS {
         return Err(Error::Invalid("too many remittance matches"));
     }
     let mut tx = db(&s)?.begin().await?;
@@ -1662,8 +1691,24 @@ pub(crate) async fn post_rows(
 
 #[cfg(test)]
 mod submission_default_tests {
-    use super::{split_person_name, structured_x12_address, x12_sex};
+    use super::{new_control_number, split_person_name, structured_x12_address, x12_sex};
     use serde_json::json;
+
+    #[test]
+    fn new_claim_control_numbers_fit_payer_limits_without_losing_test_marker() {
+        let mut seen = std::collections::HashSet::new();
+        for synthetic in [false, true] {
+            for _ in 0..1000 {
+                let number = new_control_number(uuid::Uuid::new_v4(), synthetic);
+                assert_eq!(number.len(), 17);
+                assert!(number.bytes().all(|v| v.is_ascii_alphanumeric()));
+                if synthetic {
+                    assert!(number.starts_with("SCTEST"));
+                }
+                assert!(seen.insert(number));
+            }
+        }
+    }
 
     #[test]
     fn normalizes_claim_sex_without_guessing() {

@@ -144,7 +144,7 @@ impl InstanceBranding {
 
     pub(crate) fn content_security_policy(&self) -> String {
         const PREFIX: &str = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:";
-        const SUFFIX: &str = "; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
+        const SUFFIX: &str = "; worker-src 'self'; media-src 'self' blob:; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
         let source = self.logo_url.as_deref().and_then(|value| {
             let connect = crate::connect_onboarding::cloud_origin().ok()?;
             if valid_logo_url(value, &connect) {

@@ -28,6 +28,7 @@ pub mod connect_services;
 pub mod connect_transport;
 pub mod connect_updates;
 pub mod connector_catalog;
+pub mod copay_checkout;
 pub mod delivery;
 pub mod demographics;
 pub mod documents;
@@ -49,6 +50,7 @@ pub mod managed_connect;
 pub mod migration;
 pub mod model;
 pub mod oauth;
+pub mod office;
 pub mod partner_scheduling;
 pub mod partner_support;
 pub mod patient_identity;
@@ -341,6 +343,7 @@ pub fn app(state: State) -> Router {
         .merge(gmail_referral_adapter::router())
         .merge(ringcentral_adapter::router())
         .merge(documents::routes())
+        .merge(office::router())
         .merge(referrals::routes())
         .merge(referral_delivery::routes())
         .merge(patient_identity::routes())
@@ -368,6 +371,7 @@ pub fn app(state: State) -> Router {
         .merge(claimmd_eligibility::router())
         .merge(care_pathways::routes())
         .merge(payments::router())
+        .merge(copay_checkout::router())
         .merge(claims::router())
         .merge(checkout::router())
         .merge(era_batches::router())
@@ -802,6 +806,56 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/document-files.js",
+            get(|| async {
+                web_asset(
+                    "document-files.js",
+                    "application/javascript",
+                    include_str!("../web/document-files.js"),
+                )
+            }),
+        )
+        .route(
+            "/document-files.css",
+            get(|| async {
+                web_asset(
+                    "document-files.css",
+                    "text/css",
+                    include_str!("../web/document-files.css"),
+                )
+            }),
+        )
+        .route(
+            "/vendor/pdfjs/pdf.mjs",
+            get(|| async {
+                web_asset(
+                    "vendor/pdfjs/pdf.mjs",
+                    "application/javascript",
+                    include_str!("../web/vendor/pdfjs/pdf.mjs"),
+                )
+            }),
+        )
+        .route(
+            "/vendor/pdfjs/pdf.worker.mjs",
+            get(|| async {
+                web_asset(
+                    "vendor/pdfjs/pdf.worker.mjs",
+                    "application/javascript",
+                    include_str!("../web/vendor/pdfjs/pdf.worker.mjs"),
+                )
+            }),
+        )
+        .route(
+            "/document-office.js",
+            get(|| async {
+                web_asset(
+                    "document-office.js",
+                    "application/javascript",
+                    include_str!("../web/document-office.js"),
+                )
+            }),
+        )
+        .route(
             "/documents.js",
             get(|| async {
                 web_asset(
@@ -876,6 +930,26 @@ pub fn app(state: State) -> Router {
             get(|| async { web_asset("style.css", "text/css", include_str!("../web/style.css")) }),
         )
         .route(
+            "/navigation-history.js",
+            get(|| async {
+                web_asset(
+                    "navigation-history.js",
+                    "application/javascript",
+                    include_str!("../web/navigation-history.js"),
+                )
+            }),
+        )
+        .route(
+            "/patient-print.css",
+            get(|| async {
+                web_asset(
+                    "patient-print.css",
+                    "text/css",
+                    include_str!("../web/patient-print.css"),
+                )
+            }),
+        )
+        .route(
             "/cms1500.css",
             get(|| async {
                 web_asset(
@@ -932,6 +1006,26 @@ pub fn app(state: State) -> Router {
                     "billing.js",
                     "application/javascript",
                     include_str!("../web/billing.js"),
+                )
+            }),
+        )
+        .route(
+            "/patient-revenue.js",
+            get(|| async {
+                web_asset(
+                    "patient-revenue.js",
+                    "application/javascript",
+                    include_str!("../web/patient-revenue.js"),
+                )
+            }),
+        )
+        .route(
+            "/encounter-start.js",
+            get(|| async {
+                web_asset(
+                    "encounter-start.js",
+                    "application/javascript",
+                    include_str!("../web/encounter-start.js"),
                 )
             }),
         )
@@ -1107,11 +1201,15 @@ pub fn app(state: State) -> Router {
             access_policies::enforce,
         ))
         .layer(DefaultBodyLimit::max(64 * 1024))
-        .layer(middleware::from_fn(headers))
+        .layer(middleware::from_fn_with_state(state.clone(), headers))
         .with_state(state)
 }
 
-async fn headers(req: axum::extract::Request, next: Next) -> Response {
+async fn headers(
+    ExtractState(state): ExtractState<State>,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
     let mut r = next.run(req).await;
     r.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -1119,10 +1217,21 @@ async fn headers(req: axum::extract::Request, next: Next) -> Response {
         "x-content-type-options",
         HeaderValue::from_static("nosniff"),
     );
-    let policy = branding::InstanceBranding::from_env().content_security_policy();
-    if let Ok(value) = HeaderValue::from_str(&policy) {
-        r.headers_mut()
-            .insert(header::CONTENT_SECURITY_POLICY, value);
+    let mut policy = branding::InstanceBranding::from_env().content_security_policy();
+    if let Some(origin) = office::configured_origin(&state) {
+        policy = policy
+            .replace("script-src 'self'", &format!("script-src 'self' {origin}"))
+            .replace(
+                "connect-src 'self'",
+                &format!("connect-src 'self' {origin}"),
+            );
+        policy.push_str(&format!("; frame-src 'self' {origin}"));
+    }
+    if !r.headers().contains_key(header::CONTENT_SECURITY_POLICY) {
+        if let Ok(value) = HeaderValue::from_str(&policy) {
+            r.headers_mut()
+                .insert(header::CONTENT_SECURITY_POLICY, value);
+        }
     }
     r.headers_mut().insert(
         header::REFERRER_POLICY,

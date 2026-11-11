@@ -431,7 +431,15 @@ async fn oauth_pkce_scopes_refresh_replay_revocation_and_live_events() {
     .await;
     assert_eq!(status, 200);
     assert_eq!(who["tenant_id"], json!(a.tenant_id));
-    let (status,_,patient)=json_call(&r,"POST","/api/v1/patients",Some(&auth),None,json!({"mrn":"CONNECT-001","given_name":"Synthetic","family_name":"Connection","birth_date":"1990-01-01"})).await;
+    let (status, _, patient) = json_call(
+        &r,
+        "POST",
+        "/api/v1/patients",
+        Some(&auth),
+        None,
+        json!({"given_name":"Synthetic","family_name":"Connection","birth_date":"1990-01-01"}),
+    )
+    .await;
     assert_eq!(status, 201);
     let (status, _, events) = json_call(
         &r,
@@ -509,7 +517,19 @@ async fn oauth_pkce_scopes_refresh_replay_revocation_and_live_events() {
     )
     .await;
     let read = format!("Bearer {}", t["access_token"].as_str().unwrap());
-    assert_eq!(json_call(&r,"POST","/api/v1/patients",Some(&read),None,json!({"mrn":"NO-WRITE","given_name":"Denied","family_name":"Synthetic","birth_date":"1990-01-01"})).await.0,403);
+    assert_eq!(
+        json_call(
+            &r,
+            "POST",
+            "/api/v1/patients",
+            Some(&read),
+            None,
+            json!({"given_name":"Denied","family_name":"Synthetic","birth_date":"1990-01-01"})
+        )
+        .await
+        .0,
+        403
+    );
     let refresh = t["refresh_token"].as_str().unwrap();
     let (status, rotated) = form(
         &r,
@@ -804,11 +824,20 @@ async fn fhir_patient_boundary_is_scoped_and_honest() {
     let (r, db, a, _) = setup().await;
     let auth = bearer(&a);
     let mut ids = Vec::new();
-    for n in 0..2 {
-        let (status, _, p) = json_call(&r, "POST", "/api/v1/patients", Some(&auth), None,
-            json!({"mrn":format!("FHIR-{n}"),"given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-02"})).await;
+    let mut mrns = Vec::new();
+    for _ in 0..2 {
+        let (status, _, p) = json_call(
+            &r,
+            "POST",
+            "/api/v1/patients",
+            Some(&auth),
+            None,
+            json!({"given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-02"}),
+        )
+        .await;
         assert_eq!(status, StatusCode::CREATED);
         ids.push(p["id"].as_str().unwrap().to_string());
+        mrns.push(p["mrn"].as_str().unwrap().to_string());
     }
     let (status, metadata_headers, cap) =
         json_call(&r, "GET", "/fhir/metadata", None, None, Value::Null).await;
@@ -896,7 +925,7 @@ async fn fhir_patient_boundary_is_scoped_and_honest() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(p["identifier"][0]["value"], "FHIR-0");
+    assert_eq!(p["identifier"][0]["value"], mrns[0]);
     assert_eq!(p["birthDate"], "1990-01-02");
     let mut other = a.clone();
     other.tenant_id = Uuid::new_v4();
@@ -988,7 +1017,15 @@ async fn version_call(
 async fn longitudinal_lists_are_versioned_reviewed_and_tenant_scoped() {
     let (r, db, a, _) = setup().await;
     let auth = bearer(&a);
-    let (_,_,p)=json_call(&r,"POST","/api/v1/patients",Some(&auth),None,json!({"mrn":"CLINICAL-1","given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-01"})).await;
+    let (_, _, p) = json_call(
+        &r,
+        "POST",
+        "/api/v1/patients",
+        Some(&auth),
+        None,
+        json!({"given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-01"}),
+    )
+    .await;
     let p = p["id"].as_str().unwrap();
     let path = format!("/api/v1/patients/{p}/clinical");
     let (status, _) = version_call(
@@ -1380,7 +1417,15 @@ fn laboratory_report(specimen: Option<&str>) -> Value {
 async fn orders_specimens_panels_corrections_and_acknowledgment_are_atomic() {
     let (r, db, a, _) = setup().await;
     let auth = bearer(&a);
-    let (_,_,p)=json_call(&r,"POST","/api/v1/patients",Some(&auth),None,json!({"mrn":"LAB-NATIVE","given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-01"})).await;
+    let (_, _, p) = json_call(
+        &r,
+        "POST",
+        "/api/v1/patients",
+        Some(&auth),
+        None,
+        json!({"given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-01"}),
+    )
+    .await;
     let p = p["id"].as_str().unwrap();
     let base = format!("/api/v1/patients/{p}/orders");
     let input = laboratory_order();
@@ -1783,7 +1828,15 @@ async fn source_laboratory_orders_and_reports_preserve_linkage_and_unverified_si
 async fn panel_coverage_and_typed_values_are_enforced() {
     let (r, db, a, _) = setup().await;
     let auth = bearer(&a);
-    let (_,_,p)=json_call(&r,"POST","/api/v1/patients",Some(&auth),None,json!({"mrn":"LAB-COVERAGE","given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-01"})).await;
+    let (_, _, p) = json_call(
+        &r,
+        "POST",
+        "/api/v1/patients",
+        Some(&auth),
+        None,
+        json!({"given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-01"}),
+    )
+    .await;
     let p = p["id"].as_str().unwrap();
     let base = format!("/api/v1/patients/{p}/orders");
     let mut input = laboratory_order();
@@ -1950,8 +2003,24 @@ async fn schedule_call(
 #[tokio::test]
 async fn native_scheduling_conflicts_versions_roles_and_visit_handoff() {
     let (r, db, a, _) = setup().await;
-    let (_,_,p)=json_call(&r,"POST","/api/v1/patients",Some(&bearer(&a)),None,json!({"mrn":"SCHEDULE-1","given_name":"Morgan","family_name":"Example","birth_date":"1990-01-01"})).await;
-    let (_,_,p2)=json_call(&r,"POST","/api/v1/patients",Some(&bearer(&a)),None,json!({"mrn":"SCHEDULE-2","given_name":"Sam","family_name":"Example","birth_date":"1991-01-01"})).await;
+    let (_, _, p) = json_call(
+        &r,
+        "POST",
+        "/api/v1/patients",
+        Some(&bearer(&a)),
+        None,
+        json!({"given_name":"Morgan","family_name":"Example","birth_date":"1990-01-01"}),
+    )
+    .await;
+    let (_, _, p2) = json_call(
+        &r,
+        "POST",
+        "/api/v1/patients",
+        Some(&bearer(&a)),
+        None,
+        json!({"given_name":"Sam","family_name":"Example","birth_date":"1991-01-01"}),
+    )
+    .await;
     let mut desk = a.clone();
     desk.role = Role::FrontDesk;
     let mut read = a.clone();
@@ -2480,7 +2549,15 @@ async fn appointment_migration_preserves_source_and_reconciles_explicitly() {
 }
 
 async fn billing_patient_visit(r: &Router, a: &Actor) -> (Value, Value) {
-    let (_,p)=schedule_call(r,a,"POST","/api/v1/patients",json!({"mrn":format!("BILL-{}",Uuid::new_v4()),"given_name":"Quinn","family_name":"Synthetic","birth_date":"1988-04-03"}),None).await;
+    let (_, p) = schedule_call(
+        r,
+        a,
+        "POST",
+        "/api/v1/patients",
+        json!({"given_name":"Quinn","family_name":"Synthetic","birth_date":"1988-04-03"}),
+        None,
+    )
+    .await;
     let (_,appt)=schedule_call(r,a,"POST","/api/v1/appointments",json!({"patient_id":p["id"],"clinician_id":a.sub,"starts_at":"2026-10-01T15:00:00Z","ends_at":"2026-10-01T15:30:00Z"}),None).await;
     assert_eq!(
         schedule_call(
@@ -3349,6 +3426,73 @@ fn era_document(c: &Value) -> Value {
     json!({"payer_code":"SYN-ONLY","trace":"SYN-TRACE-ERA-01","payment_date":"2026-10-01","total_paid_cents":8000,"currency":"USD","claims":[{"control_number":c["control_number"],"payer_control_number":"SYN-PCN","status":"1","patient_name":"Quinn Synthetic","charged_cents":12550,"paid_cents":8000,"patient_responsibility_cents":2000,"adjustments":[{"group":"CO","reason_code":"45","amount_cents":2550,"service_index":null},{"group":"PR","reason_code":"1","amount_cents":2000,"service_index":null}],"services":[]}]})
 }
 #[tokio::test]
+async fn encounter_claim_list_filters_patient_account_and_tenant() {
+    let (r, _db, a, _) = setup().await;
+    let (patient, _, account, claim) = claim_fixture(&r, &a).await;
+    let (status, other_patient) = schedule_call(
+        &r,
+        &a,
+        "POST",
+        "/api/v1/patients",
+        json!({"given_name":"Riley","family_name":"Synthetic","birth_date":"1990-01-01"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 201, "{other_patient}");
+    let patient_id = patient["id"].as_str().unwrap();
+    let account_id = account["id"].as_str().unwrap();
+    let path = format!("/api/v1/billing/claims?patient_id={patient_id}&account_id={account_id}");
+    let (status, result) = schedule_call(&r, &a, "GET", &path, Value::Null, None).await;
+    assert_eq!(status, 200, "{result}");
+    assert_eq!(result["items"].as_array().unwrap().len(), 1);
+    assert_eq!(result["items"][0]["id"], claim["id"]);
+    assert!(result["items"][0].get("snapshot").is_none());
+    assert!(result["next_cursor"].is_null());
+    for filter in [
+        format!("patient_id={}", other_patient["id"].as_str().unwrap()),
+        format!("account_id={}", Uuid::new_v4()),
+        format!(
+            "patient_id={}&account_id={account_id}",
+            other_patient["id"].as_str().unwrap()
+        ),
+        format!(
+            "patient_id={patient_id}&account_id={account_id}&after={}",
+            claim["id"].as_str().unwrap()
+        ),
+    ] {
+        let (status, result) = schedule_call(
+            &r,
+            &a,
+            "GET",
+            &format!("/api/v1/billing/claims?{filter}"),
+            Value::Null,
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{result}");
+        assert_eq!(result["items"], json!([]), "{filter}");
+    }
+    let mut foreign = a.clone();
+    foreign.tenant_id = Uuid::new_v4();
+    let (status, result) = schedule_call(&r, &foreign, "GET", &path, Value::Null, None).await;
+    assert_eq!(status, 200, "{result}");
+    assert_eq!(result["items"], json!([]));
+    let mut patient_actor = a.clone();
+    patient_actor.role = Role::Patient;
+    patient_actor.patient_id = Some(Uuid::parse_str(patient_id).unwrap());
+    assert_eq!(
+        schedule_call(&r, &patient_actor, "GET", &path, Value::Null, None)
+            .await
+            .0,
+        403
+    );
+    let (status, unfiltered) =
+        schedule_call(&r, &a, "GET", "/api/v1/billing/claims", Value::Null, None).await;
+    assert_eq!(status, 200, "{unfiltered}");
+    assert_eq!(unfiltered["items"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn claims_era_posting_and_reversal_are_scoped_atomic_and_exact() {
     let (r, db, a, _) = setup().await;
     let (p, payer, b, c) = claim_fixture(&r, &a).await;
@@ -3832,7 +3976,7 @@ async fn patient_to_copay_to_cms1500_and_837p_preserves_the_revenue_cycle() {
             "code":"99213",
             "description":"Synthetic established-patient office visit",
             "modifiers":"",
-            "units":1,
+            "units":2,
             "amount_cents":15000,
             "diagnosis_codes":[]
         }],
@@ -3939,6 +4083,148 @@ async fn patient_to_copay_to_cms1500_and_837p_preserves_the_revenue_cycle() {
     .unwrap();
     assert_eq!(balance, 12500);
 
+    // Patient responsibility is reviewed independently from gross insurance charges.
+    let invoice_path = format!("{account_path}/invoices");
+    let invoice_request = json!({"request_id":Uuid::new_v4(),"responsibility_cents":2500,"reason":"Reviewed synthetic plan copay"});
+    let (status, stale) = schedule_call(
+        &r,
+        &a,
+        "POST",
+        &invoice_path,
+        invoice_request.clone(),
+        Some(3),
+    )
+    .await;
+    assert_eq!(status, 409, "{stale}");
+    let (status, invoice) = schedule_call(
+        &r,
+        &a,
+        "POST",
+        &invoice_path,
+        invoice_request.clone(),
+        Some(4),
+    )
+    .await;
+    assert_eq!(status, 200, "{invoice}");
+    assert_eq!(invoice["snapshot"]["gross_charges_cents"], 15000);
+    assert_eq!(invoice["snapshot"]["responsibility_cents"], 2500);
+    assert_eq!(invoice["snapshot"]["patient_credit_cents"], 2500);
+    assert_eq!(invoice["snapshot"]["amount_due_cents"], 0);
+    assert_eq!(invoice["snapshot"]["format_version"], 2);
+    assert_eq!(invoice["snapshot"]["patient_payment_cents"], 2500);
+    assert_eq!(invoice["snapshot"]["patient_adjustment_credit_cents"], 0);
+    assert_eq!(
+        invoice["snapshot"]["services"],
+        json!([{
+            "code_system":"CPT", "code":"99213",
+            "description":"Synthetic established-patient office visit",
+            "modifiers":"", "units":2, "line_total_cents":15000
+        }])
+    );
+    assert_eq!(
+        invoice["snapshot"]["patient_activity"][0]["reference"],
+        "SYNTHETIC-COPAY-RECEIPT"
+    );
+    assert_eq!(
+        invoice["snapshot"]["patient_activity"][0]["effect_cents"],
+        -2500
+    );
+    assert!(
+        invoice["snapshot"]["patient_activity"][0]
+            .get("reason")
+            .is_none(),
+        "staff evidence notes must not leak into the printable invoice"
+    );
+    let (status, replay) = schedule_call(
+        &r,
+        &a,
+        "POST",
+        &invoice_path,
+        invoice_request.clone(),
+        Some(3),
+    )
+    .await;
+    assert_eq!(status, 200, "{replay}");
+    assert_eq!(invoice["id"], replay["id"]);
+    let mut changed = invoice_request.clone();
+    changed["responsibility_cents"] = json!(3000);
+    assert_eq!(
+        schedule_call(&r, &a, "POST", &invoice_path, changed, Some(4))
+            .await
+            .0,
+        409
+    );
+    let (status, items) = schedule_call(&r, &a, "GET", &invoice_path, Value::Null, None).await;
+    assert_eq!(status, 200);
+    assert_eq!(items["items"].as_array().unwrap().len(), 1);
+    let mut foreign = a.clone();
+    foreign.tenant_id = Uuid::new_v4();
+    assert_eq!(
+        schedule_call(&r, &foreign, "GET", &invoice_path, Value::Null, None)
+            .await
+            .0,
+        404
+    );
+    let mut patient_actor = a.clone();
+    patient_actor.role = Role::Patient;
+    patient_actor.patient_id = Some(patient_id.parse().unwrap());
+    assert_eq!(
+        schedule_call(&r, &patient_actor, "GET", &invoice_path, Value::Null, None)
+            .await
+            .0,
+        403
+    );
+    let before_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM billing_entries WHERE tenant_id=$1 AND account_id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(account["id"].as_str().unwrap().parse::<Uuid>().unwrap())
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        before_count, 1,
+        "building an invoice must not create a charge or payment"
+    );
+    // A reversal must use the original entry's party, not the reversal form's party.
+    let (status,reversed)=schedule_call(&r,&a,"POST",&format!("{account_path}/entries"),json!({"request_id":Uuid::new_v4(),"kind":"reversal","amount_cents":null,"reverses_id":paid["id"],"party":"other","method":"none","reference":"SYNTHETIC-VOID","occurred_on":"2026-10-01","reason":"Reverse synthetic copay receipt"}),Some(4)).await;
+    assert_eq!(status, 200, "{reversed}");
+    let (status,unpaid_invoice)=schedule_call(&r,&a,"POST",&invoice_path,json!({"request_id":Uuid::new_v4(),"responsibility_cents":2500,"reason":"Review after receipt reversal"}),Some(5)).await;
+    assert_eq!(status, 200, "{unpaid_invoice}");
+    assert_eq!(unpaid_invoice["snapshot"]["patient_credit_cents"], 0);
+    assert_eq!(unpaid_invoice["snapshot"]["amount_due_cents"], 2500);
+    assert_eq!(
+        unpaid_invoice["snapshot"]["patient_activity"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        unpaid_invoice["snapshot"]["patient_activity"][1]["kind"],
+        "reversal"
+    );
+    assert_eq!(
+        unpaid_invoice["snapshot"]["patient_activity"][1]["effect_cents"],
+        2500
+    );
+    let (status,repaid)=schedule_call(&r,&a,"POST",&format!("{account_path}/entries"),json!({"request_id":Uuid::new_v4(),"kind":"payment","amount_cents":2500,"reverses_id":null,"party":"patient","method":"cash","reference":"SYNTHETIC-RECEIPT-2","occurred_on":"2026-10-01","reason":"Record replacement synthetic copay receipt"}),Some(5)).await;
+    assert_eq!(status, 200, "{repaid}");
+    let (_, saved) = schedule_call(&r, &a, "GET", &invoice_path, Value::Null, None).await;
+    assert_eq!(
+        saved["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == invoice["id"])
+            .unwrap()["snapshot"],
+        invoice["snapshot"],
+        "saved services, patient payments and amounts must retain their issuance snapshot"
+    );
+    assert!(sqlx::query("UPDATE patient_invoice_snapshots SET snapshot='{}'::jsonb WHERE tenant_id=$1 AND id=$2")
+        .bind(a.tenant_id).bind(invoice["id"].as_str().unwrap().parse::<Uuid>().unwrap()).execute(&db).await.is_err(),
+        "issued invoice details must remain immutable");
+
     let mut content = claim_content();
     content["synthetic_test"] = json!(true);
     content["diagnosis_codes"] = json!(["Z00.00"]);
@@ -3953,7 +4239,7 @@ async fn patient_to_copay_to_cms1500_and_837p_preserves_the_revenue_cycle() {
             "content":content,
             "reason":"Freeze reviewed synthetic claim after copay"
         }),
-        Some(4),
+        Some(6),
     )
     .await;
     assert_eq!(status, 200, "{claim}");
@@ -4038,7 +4324,7 @@ async fn patient_to_copay_to_cms1500_and_837p_preserves_the_revenue_cycle() {
         "synthetic submission must use X12 test mode"
     );
     assert!(x12.contains("*150.00***"), "{x12}");
-    assert!(x12.contains("SV1*HC:99213*150.00*UN*1*11**1~"), "{x12}");
+    assert!(x12.contains("SV1*HC:99213*150.00*UN*2*11**1~"), "{x12}");
     assert!(x12.contains("HI*ABK:Z0000~"), "{x12}");
     assert!(
         !x12.contains("*125.00***"),
@@ -5281,19 +5567,34 @@ fn receipt_ack_text(values: &[Value]) -> String {
 
 #[tokio::test]
 async fn claimmd_multipart_delivery_and_responseid_feed_preserve_structured_evidence() {
+    claimmd_status_link_fixture(false).await;
+}
+#[tokio::test]
+async fn claimmd_exact_receipt_automatically_links_status_without_posting_money() {
+    claimmd_status_link_fixture(true).await;
+}
+async fn claimmd_status_link_fixture(automatic: bool) {
     use std::sync::Mutex;
     let (r, db, a, _) = setup().await;
     let (c, p, out) = automated_fixture(&r, &a).await;
+    if automatic {
+        for service_date in ["2026-10-01", "2026-10-02"] {
+            sqlx::query("INSERT INTO claimmd_eligibility_checks(tenant_id,id,patient_id,coverage_id,request_id,creation_hash,route_key,request_snapshot,response_snapshot,status,actor_id,completed_at) SELECT tenant_id,$3,patient_id,(snapshot->'account'->'coverage_snapshot'->'coverage'->>'id')::uuid,$4,'synthetic-eligibility','provider-test',jsonb_build_object('request',jsonb_build_object('service_date',$5::text),'member_id',snapshot->'account'->'coverage_snapshot'->'coverage'->'content'->>'member_id','payerid',snapshot->'account'->'coverage_snapshot'->'payer'->'content'->>'payer_code'),jsonb_build_object('elig',jsonb_build_array()),'completed',$6,now() FROM ehr_claims WHERE tenant_id=$1 AND id=$2")
+                .bind(a.tenant_id).bind(c["id"].as_str().unwrap().parse::<Uuid>().unwrap()).bind(Uuid::new_v4()).bind(Uuid::new_v4()).bind(service_date).bind(a.sub).execute(&db).await.unwrap();
+        }
+    }
     let control = c["control_number"].clone();
     let control2 = control.clone();
     let cursors = Arc::new(Mutex::new(Vec::<String>::new()));
     let cc = cursors.clone();
+    let changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let server_changed = changed.clone();
     let gateway=Router::new().route("/services/upload/",axum::routing::post(move |h:HeaderMap,body:axum::body::Bytes|{let control=control.clone();async move{
         assert_eq!(h["accept"],"application/json");assert!(h["content-type"].to_str().unwrap().starts_with("multipart/form-data; boundary="));assert!(!h.contains_key("authorization"));let b=String::from_utf8(body.to_vec()).unwrap();assert!(b.contains("name=\"AccountKey\""));assert!(b.contains("synthetic-loopback-key"));assert!(b.contains("filename=\"claim_"));assert!(b.contains("\"claim_form\":\"1500\""));assert!(b.contains("\"remote_claimid\":"));assert!(!b.contains("ISA*00*"));
         axum::Json(json!({"claim":[{"pcn":control,"bill_npi":"1234567893","fileid":"123456","status":"A"}]}))
-    }})).route("/services/response/",axum::routing::post(move |h:HeaderMap,body:axum::body::Bytes|{let control=control2.clone();let cc=cc.clone();async move{
+    }})).route("/services/response/",axum::routing::post(move |h:HeaderMap,body:axum::body::Bytes|{let control=control2.clone();let cc=cc.clone();let changed=server_changed.clone();async move{
         assert_eq!(h["accept"],"application/json");let form:std::collections::HashMap<String,String>=url::form_urlencoded::parse(&body).into_owned().collect();assert_eq!(form["AccountKey"],"synthetic-loopback-key");cc.lock().unwrap().push(form["ResponseID"].clone());
-        axum::Json(json!({"last_responseid":"9","claim":[{"pcn":control,"bill_npi":"1234567893","bill_taxid":"000000001","ins_number":"SYNTHETIC-POLICY-01","payerid":"SYN-ONLY","total_charge":"125.50","fdos":"2026-10-01","fileid":"123456","claimmd_id":"456","senderid":"CLMMD","sender_name":"CLAIM.MD","sender_icn":"","status":"A","unknown_secret":"must-not-retain-unreviewed-field","messages":[{"responseid":9,"status":"A","mesgid":"ACK","message":"Acknowledged by synthetic Claim.MD"}]}]}))
+        axum::Json(json!({"last_responseid":"9","claim":[{"pcn":control,"bill_npi":"1234567893","bill_taxid":"000000001","ins_number":"SYNTHETIC-POLICY-01","payerid":"SYN-ONLY","total_charge":"125.50","fdos":"2026-10-01","fileid":if automatic {"123456"} else {"unknown-file"},"claimmd_id":"456","senderid":"CLMMD","sender_name":"CLAIM.MD","sender_icn":"","status":"A","unknown_secret":"must-not-retain-unreviewed-field","messages":[{"responseid":9,"status":"A","mesgid":"ACK","message":if changed.load(std::sync::atomic::Ordering::SeqCst){"Changed reused response"}else{"Acknowledged by synthetic Claim.MD"}}]}]}))
     }}));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -5333,56 +5634,93 @@ async fn claimmd_multipart_delivery_and_responseid_feed_preserve_structured_evid
     let cp = format!("/api/v1/billing/claims/{}", c["id"].as_str().unwrap());
     let (_, before) = schedule_call(&r, &a, "GET", &cp, Value::Null, None).await;
     assert_eq!(before["claim"]["status"], "submitted");
-    let body = json!({"action":"link_status_evidence","submission_id":out["id"],"submission_version":2,"claim_version":3,"reason":"Reviewed provider, payer, member, control, amount and date"});
-    let mut reader = a.clone();
-    reader.role = Role::ReadOnly;
-    assert_eq!(
-        schedule_call(
-            &r,
-            &reader,
-            "POST",
-            &format!("{path}/actions"),
-            body.clone(),
-            Some(1)
-        )
-        .await
-        .0,
-        403
-    );
-    let mut other = a.clone();
-    other.tenant_id = Uuid::new_v4();
-    assert_ne!(
-        schedule_call(
-            &r,
-            &other,
-            "POST",
-            &format!("{path}/actions"),
-            body.clone(),
-            Some(1)
-        )
-        .await
-        .0,
-        200
-    );
-    let (s, v) = schedule_call(
-        &r,
-        &a,
-        "POST",
-        &format!("{path}/actions"),
-        body.clone(),
-        Some(1),
-    )
-    .await;
-    assert_eq!(s, 200, "{v}");
-    assert_eq!(v["clinical_status_changed"], false);
-    assert_eq!(
-        schedule_call(&r, &a, "POST", &format!("{path}/actions"), body, Some(1))
+    if automatic {
+        assert_eq!(detail["report"]["native_id"], out["id"]);
+        assert_eq!(before["tracking"]["submissions"][0]["status"], "delivered");
+        assert_eq!(
+            before["tracking"]["reports"][0]["evidence"]["senderid"],
+            "CLMMD"
+        );
+        assert_eq!(before["tracking"]["remittance_posted"], false);
+        assert_eq!(
+            before["tracking"]["eligibility"]["service_date"],
+            "2026-10-01"
+        );
+        assert_eq!(
+            before["tracking"]["connections"][0]["last_result"],
+            "page_persisted"
+        );
+        let mut other = a.clone();
+        other.tenant_id = Uuid::new_v4();
+        assert_ne!(
+            schedule_call(&r, &other, "GET", &cp, Value::Null, None)
+                .await
+                .0,
+            200
+        );
+    } else {
+        let body = json!({"action":"link_status_evidence","submission_id":out["id"],"submission_version":2,"claim_version":3,"reason":"Reviewed provider, payer, member, control, amount and date"});
+        let mut reader = a.clone();
+        reader.role = Role::ReadOnly;
+        assert_eq!(
+            schedule_call(
+                &r,
+                &reader,
+                "POST",
+                &format!("{path}/actions"),
+                body.clone(),
+                Some(1)
+            )
             .await
             .0,
-        409
-    );
+            403
+        );
+        let mut other = a.clone();
+        other.tenant_id = Uuid::new_v4();
+        assert_ne!(
+            schedule_call(
+                &r,
+                &other,
+                "POST",
+                &format!("{path}/actions"),
+                body.clone(),
+                Some(1)
+            )
+            .await
+            .0,
+            200
+        );
+        let (s, v) = schedule_call(
+            &r,
+            &a,
+            "POST",
+            &format!("{path}/actions"),
+            body.clone(),
+            Some(1),
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(v["clinical_status_changed"], false);
+        assert_eq!(
+            schedule_call(&r, &a, "POST", &format!("{path}/actions"), body, Some(1))
+                .await
+                .0,
+            409
+        );
+    }
     let (_, after) = schedule_call(&r, &a, "GET", &cp, Value::Null, None).await;
     assert_eq!(before["claim"], after["claim"]);
+    if automatic {
+        let entries: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM billing_entries WHERE tenant_id=$1 AND kind='payment'",
+        )
+        .bind(a.tenant_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(entries, 0, "status A must not post payment");
+    }
+
     sqlx::query("UPDATE edi_connections SET next_poll_at=now() WHERE tenant_id=$1")
         .bind(a.tenant_id)
         .execute(&db)
@@ -5399,6 +5737,25 @@ async fn claimmd_multipart_delivery_and_responseid_feed_preserve_structured_evid
             .await
             .unwrap();
     assert_eq!(count, 1);
+    changed.store(true, std::sync::atomic::Ordering::SeqCst);
+    sqlx::query("UPDATE edi_connections SET next_poll_at=now() WHERE tenant_id=$1")
+        .bind(a.tenant_id)
+        .execute(&db)
+        .await
+        .unwrap();
+    assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .is_err());
+    let (_, retained) = schedule_call(&r, &a, "GET", &path, Value::Null, None).await;
+    assert!(!retained.to_string().contains("Changed reused response"));
+    let cursor: Option<String> = sqlx::query_scalar(
+        "SELECT page_token FROM edi_connections WHERE tenant_id=$1 AND route_key='provider-test'",
+    )
+    .bind(a.tenant_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(cursor.as_deref(), Some("9"));
     server.abort();
 }
 
@@ -5434,13 +5791,13 @@ async fn provider_discovery_audit_failure_retains_cursor_and_retries_without_los
         .execute(&db)
         .await
         .unwrap();
-    sqlx::query(
-        "UPDATE edi_connections SET lease_until=now()-interval '1 second' WHERE tenant_id=$1",
-    )
-    .bind(a.tenant_id)
-    .execute(&db)
-    .await
-    .unwrap();
+    let failure:(String,bool)=sqlx::query_as("SELECT last_result,lease_id IS NULL AND lease_until IS NULL FROM edi_connections WHERE tenant_id=$1").bind(a.tenant_id).fetch_one(&db).await.unwrap();
+    assert_eq!(failure, ("poll_failed_cursor_retained".into(), true));
+    sqlx::query("UPDATE edi_connections SET next_poll_at=now() WHERE tenant_id=$1")
+        .bind(a.tenant_id)
+        .execute(&db)
+        .await
+        .unwrap();
     assert!(suncharts_engine::retrieval::poll_one(&db, &config)
         .await
         .unwrap());
@@ -6414,6 +6771,282 @@ async fn claimmd_era_pagination_keeps_fixed_base_until_all_pages_are_durable() {
         409
     );
     task.abort();
+}
+
+#[tokio::test]
+async fn realistic_era_preserves_patient_credit_without_double_billing_and_replay_is_atomic() {
+    let (r, db, a, _) = setup().await;
+    let (p, payer, b, c) = claim_fixture(&r, &a).await;
+    let cp = format!("/api/v1/billing/claims/{}", c["id"].as_str().unwrap());
+    let bp = format!(
+        "/api/v1/patients/{}/billing/accounts/{}",
+        p["id"].as_str().unwrap(),
+        b["id"].as_str().unwrap()
+    );
+    let (s, receipt) = schedule_call(&r, &a, "POST", &format!("{bp}/entries"), json!({"request_id":Uuid::new_v4(),"kind":"payment","amount_cents":3000,"party":"patient","method":"external","reference":"SYN-COPAY-30","occurred_on":"2026-10-01","reason":"Actual synthetic patient payment before adjudication"}), Some(2)).await;
+    assert_eq!(s, 200, "{receipt}");
+    for (version, action) in [
+        (1, "ready"),
+        (2, "record_submission"),
+        (3, "record_acceptance"),
+    ] {
+        let (s, result) = schedule_call(&r, &a, "POST", &format!("{cp}/actions"), json!({"action":action,"reason":"Synthetic reviewed payer evidence","reference":"SYN-ACK","event_date":"2026-10-01","payer_control_number":"SYN-PCN"}), Some(version)).await;
+        assert_eq!(s, 200, "{result}");
+    }
+    let raw = claimmd_835(&c, "SYN-CREDIT-ERA")
+        .replace(
+            "N1*PR*Synthetic Payer*PI*SYN-ONLY~",
+            "N1*PR*Synthetic Payer*XV*PLAN-123~REF*2U*SYN-ONLY~N1*PE*Practice*XX*1234567893~",
+        )
+        .replace("CAS*CO*", "MOA*80*0*N1~AMT*AU*100~QTY*CA*1~CAS*CO*");
+    let prefix = raw.split("SE*").next().unwrap();
+    let raw = format!(
+        "{prefix}SE*{}*0001~",
+        prefix.split('~').filter(|v| !v.is_empty()).count() + 1
+    );
+    let input = json!({"request_id":Uuid::new_v4(),"payer_id":payer["id"],"format":"x12_835","original_text":raw,"reason":"Review full payer evidence and supplemental data"});
+    let (s, era) = schedule_call(
+        &r,
+        &a,
+        "POST",
+        "/api/v1/billing/remittances",
+        input.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{era}");
+    assert_eq!(era["document"]["payer_code"], "SYN-ONLY");
+    assert_eq!(era["document"]["supplemental"].as_array().unwrap().len(), 3);
+    let ep = format!(
+        "/api/v1/billing/remittances/{}",
+        era["id"].as_str().unwrap()
+    );
+    let (s, review) = schedule_call(&r, &a, "PUT", &format!("{ep}/matches"), json!({"matches":[{"row_index":0,"claim_id":c["id"],"claim_version":4,"account_version":3,"writeoff_adjustments":[0]}],"reason":"Patient paid30; finalPR20 leaves10credit"}), Some(1)).await;
+    assert_eq!(s, 200, "{review}");
+    assert_eq!(review["issues"], json!([]));
+    let action = json!({"action":"post","reason":"Reviewed insurer payment and CO with patient credit retained"});
+    let path = format!("{ep}/actions");
+    let (one, two) = tokio::join!(
+        schedule_call(&r, &a, "POST", &path, action.clone(), Some(2)),
+        schedule_call(&r, &a, "POST", &path, action, Some(2))
+    );
+    assert!(
+        (one.0 == 200 && two.0 == 409) || (one.0 == 409 && two.0 == 200),
+        "{one:?} {two:?}"
+    );
+    let account = Uuid::parse_str(b["id"].as_str().unwrap()).unwrap();
+    let effects: Vec<(String,i64)> = sqlx::query_as("SELECT kind,effect_cents FROM billing_entries WHERE tenant_id=$1 AND account_id=$2 ORDER BY effect_cents")
+        .bind(a.tenant_id).bind(account).fetch_all(&db).await.unwrap();
+    assert_eq!(
+        effects,
+        vec![
+            ("payment".into(), -8000),
+            ("payment".into(), -3000),
+            ("adjustment_credit".into(), -2550)
+        ]
+    );
+    assert_eq!(12550 + effects.iter().map(|(_, v)| v).sum::<i64>(), -1000);
+    let (s, current) = schedule_call(&r, &a, "GET", &ep, Value::Null, None).await;
+    assert_eq!(s, 200, "{current}");
+    assert_eq!(
+        current["postings"][0]["current_account_balance_cents"],
+        -1000
+    );
+    let (s, invoice) = schedule_call(&r,&a,"POST",&format!("{bp}/invoices"),json!({"request_id":Uuid::new_v4(),"responsibility_cents":2000,"reason":"Final reviewed PR with actual copay credit"}),Some(4)).await;
+    assert_eq!(s, 200, "{invoice}");
+    assert_eq!(invoice["snapshot"]["amount_due_cents"], 0);
+    assert_eq!(invoice["snapshot"]["credit_balance_cents"], 1000);
+    let (s, replay) =
+        schedule_call(&r, &a, "POST", "/api/v1/billing/remittances", input, None).await;
+    assert_eq!(s, 200, "{replay}");
+    assert_eq!(replay["id"], era["id"]);
+    let (s, reversed) = schedule_call(&r,&a,"POST",&path,json!({"action":"reverse","reason":"Synthetic verified reversal preserves original receipt and invoice"}),Some(3)).await;
+    assert_eq!(s, 200, "{reversed}");
+    let net:i64=sqlx::query_scalar("SELECT sum(effect_cents)::bigint FROM billing_entries WHERE tenant_id=$1 AND account_id=$2").bind(a.tenant_id).bind(account).fetch_one(&db).await.unwrap();
+    assert_eq!(net, -3000);
+    let saved: Value = sqlx::query_scalar(
+        "SELECT snapshot FROM patient_invoice_snapshots WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(Uuid::parse_str(invoice["id"].as_str().unwrap()).unwrap())
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(saved, invoice["snapshot"]);
+}
+
+#[tokio::test]
+async fn era_large_file_routes_accept_bounded_files_and_unmatched_claims_cannot_partially_post() {
+    let (r, db, a, _) = setup().await;
+    let (_, payer, _, c) = claim_fixture(&r, &a).await;
+    let mut raw = "ST*835*1~BPR*I*64000*C*CHK************20261001~TRN*1*SYN-LARGE~N1*PR*Synthetic~REF*2U*SYN-ONLY~".to_string();
+    for i in 0..800 {
+        raw.push_str(&format!("CLP*SYN-{i}*1*125.50*80*20*CI*PAYER-{i}~CAS*CO*45*25.50~CAS*PR*1*20~AMT*AU*100~QTY*CA*1~"));
+    }
+    raw.push_str(&format!(
+        "SE*{}*1~",
+        raw.split('~').filter(|v| !v.is_empty()).count() + 1
+    ));
+    assert!(raw.len() > 64 * 1024);
+    let (s, preview) = schedule_call(
+        &r,
+        &a,
+        "POST",
+        "/api/v1/billing/era-batches/preview",
+        json!({"original_text":raw}),
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{preview}");
+    assert_eq!(
+        preview["parts"][0]["document"]["claims"]
+            .as_array()
+            .unwrap()
+            .len(),
+        800
+    );
+    let (s,era)=schedule_call(&r,&a,"POST","/api/v1/billing/remittances",json!({"request_id":Uuid::new_v4(),"payer_id":payer["id"],"format":"x12_835","original_text":raw,"reason":"Large original remittance is staged without losing rows"}),None).await;
+    assert_eq!(s, 200, "{era}");
+    let ep = format!(
+        "/api/v1/billing/remittances/{}",
+        era["id"].as_str().unwrap()
+    );
+    let (s, review)=schedule_call(&r,&a,"PUT",&format!("{ep}/matches"),json!({"matches":[{"row_index":0,"claim_id":c["id"],"claim_version":1,"account_version":2,"writeoff_adjustments":[0]}],"reason":"Incomplete mapping must remain reviewable with no partial ledger"}),Some(1)).await;
+    assert_eq!(s, 200, "{review}");
+    assert_eq!(review["remittance"]["status"], "staged");
+    assert!(review["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|i| i.as_str().unwrap().contains("Every remittance claim")));
+    assert_eq!(
+        schedule_call(
+            &r,
+            &a,
+            "POST",
+            &format!("{ep}/actions"),
+            json!({"action":"post","reason":"Cannot skip unmatched claims"}),
+            Some(2)
+        )
+        .await
+        .0,
+        409
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM billing_entries")
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn era_credit_exception_does_not_allow_unbacked_insurer_overpayment() {
+    let (r, db, a, _) = setup().await;
+    let (p, payer, b, c) = claim_fixture(&r, &a).await;
+    let bp = format!(
+        "/api/v1/patients/{}/billing/accounts/{}",
+        p["id"].as_str().unwrap(),
+        b["id"].as_str().unwrap()
+    );
+    let (s,entry)=schedule_call(&r,&a,"POST",&format!("{bp}/entries"),json!({"request_id":Uuid::new_v4(),"kind":"payment","amount_cents":3000,"party":"insurer","method":"external","reference":"SYN-PRIOR-INSURER","occurred_on":"2026-10-01","reason":"Prior insurer payment must not masquerade as patient credit"}),Some(2)).await;
+    assert_eq!(s, 200, "{entry}");
+    let cp = format!(
+        "/api/v1/billing/claims/{}/actions",
+        c["id"].as_str().unwrap()
+    );
+    for (version, action) in [(1, "ready"), (2, "record_submission")] {
+        let(s,result)=schedule_call(&r,&a,"POST",&cp,json!({"action":action,"reason":"Synthetic reviewed provider evidence","reference":"SYN-ACK","event_date":"2026-10-01"}),Some(version)).await;
+        assert_eq!(s, 200, "{result}");
+    }
+    let(s,era)=schedule_call(&r,&a,"POST","/api/v1/billing/remittances",json!({"request_id":Uuid::new_v4(),"payer_id":payer["id"],"format":"normalized","document":era_document(&c),"reason":"Balanced source still overpays insurer ledger"}),None).await;
+    assert_eq!(s, 200, "{era}");
+    let ep = format!(
+        "/api/v1/billing/remittances/{}",
+        era["id"].as_str().unwrap()
+    );
+    let(s,review)=schedule_call(&r,&a,"PUT",&format!("{ep}/matches"),json!({"matches":[{"row_index":0,"claim_id":c["id"],"claim_version":3,"account_version":3,"writeoff_adjustments":[0]}],"reason":"Existing insurer money cannot authorize patient credit"}),Some(1)).await;
+    assert_eq!(s, 200, "{review}");
+    assert_eq!(review["remittance"]["status"], "staged");
+    assert!(review["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v.as_str().unwrap().contains("existing patient credits")));
+    assert_eq!(
+        schedule_call(
+            &r,
+            &a,
+            "POST",
+            &format!("{ep}/actions"),
+            json!({"action":"post","reason":"Must remain blocked"}),
+            Some(2)
+        )
+        .await
+        .0,
+        409
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM billing_entries")
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn era_provider_review_capacity_matches_the_parser_without_posting_money() {
+    let (r, db, a, _) = setup().await;
+    let payer = billing_payer(&r, &a).await;
+    let adjustments: Vec<Value> = (0..1000)
+        .map(|i| plb("FB", &format!("SYN-{i}"), if i % 2 == 0 { 1 } else { -1 }))
+        .collect();
+    let document = json!({"payer_code":"SYN-ONLY","trace":"SYN-LARGE-PLB","payment_date":"2026-10-01","total_paid_cents":0,"currency":"USD","claims":[],"provider_adjustments":adjustments});
+    let(s,era)=schedule_call(&r,&a,"POST","/api/v1/billing/remittances",json!({"request_id":Uuid::new_v4(),"payer_id":payer["id"],"format":"normalized","document":document,"reason":"Bounded large provider-only settlement"}),None).await;
+    assert_eq!(s, 200, "{era}");
+    let decisions: Vec<Value> = (0..1000)
+        .map(|i| json!({"index":i,"category":"forward_balance","original_remittance_id":null}))
+        .collect();
+    let body = json!({"decisions":decisions,"reason":"Review every retained provider adjustment"});
+    assert!(serde_json::to_vec(&body).unwrap().len() > 64 * 1024);
+    let (s, result) = schedule_call(
+        &r,
+        &a,
+        "PUT",
+        &format!(
+            "/api/v1/billing/remittances/{}/provider-adjustments",
+            era["id"].as_str().unwrap()
+        ),
+        body,
+        Some(1),
+    )
+    .await;
+    assert_eq!(s, 200, "{result}");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT jsonb_array_length(decisions)::bigint FROM era_provider_reviews"
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap(),
+        1000
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM billing_entries")
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM era_provider_entries")
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+        0
+    );
 }
 
 async fn posted_era_fixture(r: &Router, a: &Actor) -> (Value, Value, Value, Value) {
@@ -7431,6 +8064,160 @@ async fn practice_worklist_follows_saved_encounters_without_cross_tenant_or_pati
     assert_eq!(work["has_more"], true);
 }
 
+async fn assert_claimmd_corrections_rejected_before_queue(
+    r: &Router,
+    db: &PgPool,
+    a: &Actor,
+    setting: &Value,
+    patient: &Value,
+    account: &Value,
+    original: &Value,
+) {
+    let original_control = original["control_number"].as_str().unwrap();
+    assert_eq!(original_control.len(), 17);
+    assert!(original_control.bytes().all(|v| v.is_ascii_alphanumeric()));
+    // Existing production identifiers must not be shortened or remapped.
+    let legacy_id = Uuid::new_v4();
+    let legacy_control = format!("SC{}", Uuid::new_v4().simple());
+    sqlx::query("INSERT INTO ehr_claims(tenant_id,id,patient_id,account_id,payer_id,control_number,frequency,content,snapshot,status,request_id,creation_hash) SELECT tenant_id,$3,patient_id,account_id,payer_id,$4,'original',content,snapshot,'void',$5,'synthetic-legacy' FROM ehr_claims WHERE tenant_id=$1 AND id=$2")
+        .bind(a.tenant_id).bind(Uuid::parse_str(original["id"].as_str().unwrap()).unwrap()).bind(legacy_id).bind(&legacy_control).bind(Uuid::new_v4()).execute(db).await.unwrap();
+    let cp = format!(
+        "/api/v1/billing/claims/{}/actions",
+        original["id"].as_str().unwrap()
+    );
+    for (version, action) in [
+        (1, "ready"),
+        (2, "record_submission"),
+        (3, "record_rejection"),
+    ] {
+        let (status, result) = schedule_call(r,a,"POST",&cp,json!({"action":action,"reason":"Synthetic correction preflight fixture","reference":"SYN-REJECTION","event_date":"2026-10-01","payer_control_number":"SYN-PAYER-CONTROL"}),Some(version)).await;
+        assert_eq!(status, 200, "{result}");
+    }
+    for frequency in ["replacement", "void_request"] {
+        let path = format!(
+            "/api/v1/patients/{}/billing/accounts/{}/claims",
+            patient["id"].as_str().unwrap(),
+            account["id"].as_str().unwrap()
+        );
+        let (status, claim) = schedule_call(r,a,"POST",&path,json!({"request_id":Uuid::new_v4(),"frequency":frequency,"parent_id":original["id"],"content":claim_content(),"reason":"Synthetic correction"}),Some(2)).await;
+        assert_eq!(status, 200, "{claim}");
+        let cp = format!("/api/v1/billing/claims/{}", claim["id"].as_str().unwrap());
+        let (status, ready) = schedule_call(
+            r,
+            a,
+            "POST",
+            &format!("{cp}/actions"),
+            json!({"action":"ready","reason":"Reviewed synthetic correction"}),
+            Some(1),
+        )
+        .await;
+        assert_eq!(status, 200, "{ready}");
+        let (status, submission) = schedule_call(r,a,"POST",&format!("{cp}/837p"),json!({"request_id":Uuid::new_v4(),"partner_id":setting["partner_id"],"partner_version":1,"details":edi_details(),"reason":"Review immutable correction artifact"}),Some(2)).await;
+        assert_eq!(status, 200, "{submission}");
+        let queue = format!(
+            "/api/v1/billing/submissions/{}/delivery",
+            submission["id"].as_str().unwrap()
+        );
+        let (status, error) = schedule_call(r,a,"POST",&queue,json!({"request_id":Uuid::new_v4(),"route_key":setting["route_key"],"reason":"Must fail before provider delivery"}),Some(1)).await;
+        assert_eq!(status, 400, "{error}");
+        assert!(
+            error.to_string().contains("original claims only"),
+            "{error}"
+        );
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM edi_delivery_jobs WHERE tenant_id=$1 AND submission_id=$2",
+        )
+        .bind(a.tenant_id)
+        .bind(Uuid::parse_str(submission["id"].as_str().unwrap()).unwrap())
+        .fetch_one(db)
+        .await
+        .unwrap();
+        assert_eq!(
+            count, 0,
+            "unsupported corrections must not reserve a delivery job"
+        );
+        // Simulate a job queued by an older client before its Claim.MD route
+        // was configured. Worker validation must stop before leasing/network.
+        let legacy = queue_provider(r, a, &submission).await;
+        let config = provider_config(
+            a,
+            &json!({"id":setting["partner_id"]}),
+            "claim_md",
+            "http://127.0.0.1:9/services/upload/",
+            "http://127.0.0.1:9",
+        );
+        suncharts_engine::delivery::process_one(db, &config)
+            .await
+            .unwrap();
+        let jp = format!(
+            "/api/v1/billing/delivery/jobs/{}",
+            legacy["id"].as_str().unwrap()
+        );
+        let (_, blocked) = schedule_call(r, a, "GET", &jp, Value::Null, None).await;
+        assert_eq!(blocked["job"]["status"], "blocked");
+        assert_eq!(
+            blocked["job"]["attempts"], 0,
+            "no provider transmission attempted"
+        );
+        assert!(blocked["job"]["last_result"]
+            .as_str()
+            .unwrap()
+            .contains("preflight_failed_before_transmission"));
+        let (status, result) = schedule_call(
+            r,
+            a,
+            "POST",
+            &format!("{jp}/actions"),
+            json!({"action":"cancel","reason":"Discard untransmitted synthetic fixture"}),
+            blocked["job"]["version"].as_i64(),
+        )
+        .await;
+        assert_eq!(status, 200, "{result}");
+        let (status, result) = schedule_call(
+            r,
+            a,
+            "POST",
+            &format!("{cp}/actions"),
+            json!({"action":"void_draft","reason":"Release untransmitted synthetic correction"}),
+            Some(2),
+        )
+        .await;
+        assert_eq!(status, 200, "{result}");
+    }
+    let (_, retained) = schedule_call(
+        r,
+        a,
+        "GET",
+        cp.trim_end_matches("/actions"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(
+        retained["claim"]["control_number"], original_control,
+        "corrections never rewrite the prior claim identifier"
+    );
+    let (_, legacy) = schedule_call(
+        r,
+        a,
+        "GET",
+        &format!("/api/v1/billing/claims/{legacy_id}"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(legacy["claim"]["control_number"], legacy_control);
+    assert_eq!(legacy_control.len(), 34);
+    assert!(sqlx::query(
+        "UPDATE ehr_claims SET control_number='REWRITTEN' WHERE tenant_id=$1 AND id=$2"
+    )
+    .bind(a.tenant_id)
+    .bind(legacy_id)
+    .execute(db)
+    .await
+    .is_err());
+}
+
 #[tokio::test]
 async fn native_claimmd_settings_encrypt_secrets_and_scope_runtime_activation() {
     let (r, db, a, _) = setup().await;
@@ -7571,7 +8358,7 @@ async fn native_claimmd_settings_encrypt_secrets_and_scope_runtime_activation() 
     .await;
     assert_eq!(connection["connected"], true);
     assert_eq!(connection["active"]["usage"], "T");
-    let (_, _, _, claim) = claim_fixture_kind(&r, &a, true).await;
+    let (patient, _, account, claim) = claim_fixture_kind(&r, &a, true).await;
     let (_, detail) = schedule_call(
         &r,
         &a,
@@ -7598,6 +8385,52 @@ async fn native_claimmd_settings_encrypt_secrets_and_scope_runtime_activation() 
     .await;
     assert_eq!(outside_connection["configured"], false);
     config.validate().unwrap();
+    assert_claimmd_corrections_rejected_before_queue(
+        &r, &db, &a, &saved, &patient, &account, &claim,
+    )
+    .await;
+    // A deployment-wide connection count is not a per-tenant UI limit. These
+    // synthetic credentials never contact a provider; verification is fixture evidence.
+    for index in 0..55 {
+        let mut tenant = a.clone();
+        tenant.tenant_id = Uuid::new_v4();
+        let mut request = request.clone();
+        request["account_key"] = json!(format!("synthetic-scale-key-{index}"));
+        let (status, created) = schedule_call(&r, &tenant, "POST", base, request, None).await;
+        assert_eq!(status, 200, "{created}");
+        sqlx::query("UPDATE edi_provider_settings SET enabled=true,verified=true WHERE tenant_id=$1 AND id=$2").bind(tenant.tenant_id).bind(Uuid::parse_str(created["id"].as_str().unwrap()).unwrap()).execute(&db).await.unwrap();
+    }
+    let scaled = suncharts_engine::provider_settings::load(&db)
+        .await
+        .unwrap();
+    assert_eq!(
+        scaled.routes.len(),
+        56,
+        "load every verified connection, including those beyond the former global limit"
+    );
+    suncharts_engine::retrieval::sync(&db, &scaled)
+        .await
+        .unwrap();
+    let connections: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM edi_connections WHERE route_key<>'provider-test'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(connections, 56);
+    let (_, scoped) = schedule_call(
+        &r,
+        &a,
+        "GET",
+        "/api/v1/billing/delivery/routes",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(
+        scoped["items"].as_array().unwrap().len(),
+        1,
+        "tenant route discovery remains scoped"
+    );
     suncharts_engine::retrieval::sync(&db, &config)
         .await
         .unwrap();

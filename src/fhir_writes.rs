@@ -22,6 +22,7 @@ struct PatientInput {
     resource_type: String,
     id: Option<Uuid>,
     meta: Option<Meta>,
+    #[serde(default)]
     identifier: Vec<Identifier>,
     name: Vec<Name>,
     birth_date: chrono::NaiveDate,
@@ -61,37 +62,48 @@ struct Name {
     use_: Option<String>,
 }
 impl PatientInput {
-    fn change(self, base: &str, reason: String) -> Result<Change, Error> {
-        if self.resource_type != "Patient" || self.identifier.len() != 1 || self.name.len() != 1 {
+    fn change(self, base: &str, reason: String, creating: bool) -> Result<Change, Error> {
+        if self.resource_type != "Patient" || self.name.len() != 1 {
+            return Err(Error::Invalid("Patient requires one official name"));
+        }
+        if creating && !self.identifier.is_empty() {
             return Err(Error::Invalid(
-                "Patient requires exactly one MRN identifier and one official name",
+                "MRN is assigned by the system; omit identifiers when registering a patient",
             ));
         }
-        let i = self.identifier.into_iter().next().unwrap();
+        if !creating && self.identifier.len() != 1 {
+            return Err(Error::Invalid(
+                "Patient update requires its existing MRN identifier",
+            ));
+        }
         let n = self.name.into_iter().next().unwrap();
-        if i.system
-            .as_ref()
-            .is_some_and(|s| s != &format!("{base}/identifier/mrn"))
-            || i.use_
+        if n.use_.as_ref().is_some_and(|s| s != "official") || n.given.len() != 1 {
+            return Err(Error::Invalid("unsupported name representation"));
+        }
+        let mrn = if let Some(i) = self.identifier.into_iter().next() {
+            if i.system
                 .as_ref()
-                .is_some_and(|s| !matches!(s.as_str(), "usual" | "official"))
-            || n.use_.as_ref().is_some_and(|s| s != "official")
-            || n.given.len() != 1
-        {
-            return Err(Error::Invalid(
-                "unsupported identifier system or name representation",
-            ));
-        }
-        if let Some(t) = i.type_ {
-            if t.coding.len() != 1
-                || t.coding[0].system != "http://terminology.hl7.org/CodeSystem/v2-0203"
-                || t.coding[0].code != "MR"
+                .is_some_and(|s| s != &format!("{base}/identifier/mrn"))
+                || i.use_
+                    .as_ref()
+                    .is_some_and(|s| !matches!(s.as_str(), "usual" | "official"))
             {
-                return Err(Error::Invalid("identifier type must be MR"));
+                return Err(Error::Invalid("unsupported identifier system"));
             }
-        }
+            if let Some(t) = i.type_ {
+                if t.coding.len() != 1
+                    || t.coding[0].system != "http://terminology.hl7.org/CodeSystem/v2-0203"
+                    || t.coding[0].code != "MR"
+                {
+                    return Err(Error::Invalid("identifier type must be MR"));
+                }
+            }
+            Some(i.value)
+        } else {
+            None
+        };
         let c = Change {
-            mrn: i.value,
+            mrn,
             given_name: n.given.into_iter().next().unwrap(),
             family_name: n.family,
             birth_date: self.birth_date,
@@ -176,13 +188,13 @@ pub(super) async fn create(
         return Err(Error::Invalid("Patient creation assigns its own ID and version").into());
     }
     let base = origin(&s)?;
-    let c = i.change(base, "FHIR Patient registered".into())?;
+    let c = i.change(base, "FHIR Patient registered".into(), true)?;
     let p = s
         .backend
         .create_patient(
             &a,
             NewPatient {
-                mrn: Some(c.mrn),
+                mrn: None,
                 given_name: c.given_name,
                 family_name: c.family_name,
                 birth_date: c.birth_date,
@@ -242,7 +254,7 @@ pub(super) async fn update(
         ))?
         .to_owned();
     let base = origin(&s)?;
-    let c = i.change(base, reason)?;
+    let c = i.change(base, reason, false)?;
     let p = patient_identity::update(&s, &a, id, expected, &c).await?;
     Ok(response(p, base, StatusCode::OK))
 }

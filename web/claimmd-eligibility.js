@@ -22,21 +22,39 @@ function claimmdSubscriberParts(value){
  return {given:parts.shift()||'',family:parts.pop()||'',middle:parts.join(' ')};
 }
 
+function claimmdBenefitValue(benefit){
+ const decimal=value=>typeof value==='number'||typeof value==='string'&&/^\d+(?:\.\d{1,2})?$/.test(value)?Number(value):NaN;
+ const amount=decimal(benefit.benefit_amount),percent=decimal(benefit.benefit_percent);
+ const values=[];
+ if(Number.isFinite(amount)&&amount>=0)values.push(new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(amount));
+ if(Number.isFinite(percent)&&percent>=0&&percent<=100)values.push(`${percent}%`);
+ return values.join(' · ')||'Not returned';
+}
+function claimmdBenefitContext(benefit){
+ const network={Y:'In network',N:'Out of network',W:'Network not applicable'}[benefit.inplan_network]||'Network not specified';
+ return [benefit.benefit_description||benefit.benefit_code,network,benefit.benefit_level_description||benefit.benefit_level_code,benefit.benefit_period_description||benefit.benefit_period_code,benefit.benefit_notes].filter(Boolean).join(' · ');
+}
+function claimmdBenefitSummary(check){
+ if(check?.status!=='completed')return '';
+ const plans=Array.isArray(check.response_snapshot?.elig)?check.response_snapshot.elig:[];
+ const categories=[['B','Copay'],['A','Coinsurance'],['C','Deductible'],['G','Out-of-pocket limit']];
+ const rows=plans.flatMap(plan=>(Array.isArray(plan.benefit)?plan.benefit:plan.benefit&&typeof plan.benefit==='object'?[plan.benefit]:[]).map(benefit=>({benefit,plan:plan.insurance_plan})));
+ return `<div class="eligibility-benefits"><h4>Returned patient benefits</h4>${categories.map(([code,label])=>{const found=rows.filter(row=>row.benefit.benefit_coverage_code===code);return `<div><b>${label}</b>${found.length?found.map(({benefit,plan})=>`<p><strong>${esc(claimmdBenefitValue(benefit))}</strong><small>${esc([plan,claimmdBenefitContext(benefit)].filter(Boolean).join(' · '))}</small></p>`).join(''):'<p class="muted">Not returned</p>'}</div>`;}).join('')}<p class="muted">Use the benefit for this visit’s service, network and coverage level. These returned benefits do not change the recorded copay or confirm payment.</p></div>`;
+}
 function claimmdEligibilityRows(check){
  const response=check.response_snapshot||{},elig=Array.isArray(response.elig)?response.elig:[];
- return elig.map(item=>{
-  const benefits=Array.isArray(item.benefit)?item.benefit:[];
-  return `<section class="billing-section"><div class="section-head"><h4>${esc(item.insurance_plan||'Eligibility response')}</h4><span class="pill">${esc(item.eligid||'No response ID')}</span></div><dl class="billing-dl"><dt>Member</dt><dd>${esc(item.ins_name_f||'')} ${esc(item.ins_name_l||'')} · ${esc(item.ins_number||'Not returned')}</dd><dt>Plan period</dt><dd>${esc(item.plan_begin_date||'Not returned')}</dd><dt>Group</dt><dd>${esc(item.group_number||'Not returned')}</dd></dl><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Benefit</th><th>Coverage</th><th>Level / period</th><th>Network</th><th>Amount</th></tr></thead><tbody>${benefits.map(benefit=>`<tr><td>${esc(benefit.benefit_description||benefit.benefit_code||'—')}<small>${esc(benefit.insurance_type_description||'')}</small></td><td>${esc(benefit.benefit_coverage_description||benefit.benefit_coverage_code||'—')}</td><td>${esc([benefit.benefit_level_description,benefit.benefit_period_description].filter(Boolean).join(' · ')||'—')}</td><td>${esc(benefit.inplan_network||'—')}</td><td>${esc(benefit.benefit_amount??benefit.benefit_percent??'—')}</td></tr>`).join('')||'<tr><td colspan="5">No benefit rows were returned.</td></tr>'}</tbody></table></div><details><summary>Original structured response</summary><pre class="billing-source">${esc(JSON.stringify(item,null,2))}</pre></details></section>`;
+ return claimmdBenefitSummary(check)+elig.map(item=>{
+  const benefits=Array.isArray(item.benefit)?item.benefit:item.benefit&&typeof item.benefit==='object'?[item.benefit]:[];
+  return `<section class="billing-section"><div class="section-head"><h4>${esc(item.insurance_plan||'Eligibility response')}</h4><span class="pill">${esc(item.eligid||'No response ID')}</span></div><dl class="billing-dl"><dt>Member</dt><dd>${esc(item.ins_name_f||'')} ${esc(item.ins_name_l||'')} · ${esc(item.ins_number||'Not returned')}</dd><dt>Plan period</dt><dd>${esc(item.plan_begin_date||'Not returned')} – ${esc(item.plan_end_date||'Not returned')}</dd><dt>Group</dt><dd>${esc(item.group_number||'Not returned')}</dd></dl><details><summary>All returned benefits (${benefits.length})</summary><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Benefit</th><th>Coverage</th><th>Service / network / period</th><th>Amount</th></tr></thead><tbody>${benefits.map(benefit=>`<tr><td>${esc(benefit.benefit_description||benefit.benefit_code||'—')}<small>${esc(benefit.insurance_type_description||'')}</small></td><td>${esc(benefit.benefit_coverage_description||benefit.benefit_coverage_code||'—')}</td><td>${esc(claimmdBenefitContext(benefit))}</td><td>${esc(claimmdBenefitValue(benefit))}</td></tr>`).join('')||'<tr><td colspan="4">No benefit rows were returned.</td></tr>'}</tbody></table></div></details><details><summary>Original structured response</summary><pre class="billing-source">${esc(JSON.stringify(item,null,2))}</pre></details></section>`;
  }).join('')||'<p>No structured eligibility rows were returned.</p>';
 }
-
 function claimmdEligibilityHistory(items){
- return `<h3>Eligibility history</h3>${items.map(check=>`<details class="amendment" ${check.status==='completed'?'open':''}><summary>${esc(human(check.status))} · ${esc(date(check.created_at))}</summary>${check.status==='completed'?claimmdEligibilityRows(check):'<p>The request did not produce a completed structured response.</p>'}<p class="muted">Requested by ${esc(check.actor_id)}</p></details>`).join('')||'<p>No eligibility checks have been recorded for this coverage.</p>'}`;
+ return `<h3>Eligibility history</h3>${items.map(check=>`<details class="amendment" ${check.status==='completed'?'open':''}><summary>${esc(check.status==='completed'?'Response received':human(check.status))} · ${esc(date(check.completed_at||check.created_at))}${check.request_snapshot?.request?.service_date?' · Service '+esc(check.request_snapshot.request.service_date):''}</summary>${check.status==='completed'?claimmdEligibilityRows(check):`<p>${check.status==='pending'?'Awaiting the eligibility response.':'The request failed; no completed benefits were returned. Review the connection and request details before retrying.'}</p>`}<p class="muted">Requested by ${esc(check.actor_id)}</p></details>`).join('')||'<p>No eligibility checks have been recorded for this coverage.</p>'}`;
 }
 
 async function openClaimmdEligibility(coverage,options={}){
- const patientId=selected,identity=me,editor=$('billing-editor'),patient=workspace.patient,serviceDate=options.serviceDate||new Date().toISOString().slice(0,10);
- const current=()=>selected===patientId&&me===identity&&$('billing-editor')===editor&&(!options.isCurrent||options.isCurrent());
+ const patientId=selected,identity=me,editor=typeof billingEditorHost==='function'?billingEditorHost():$('billing-editor'),patient=workspace.patient,serviceDate=options.serviceDate||new Date().toISOString().slice(0,10);
+ const current=()=>selected===patientId&&me===identity&&(typeof billingEditorHost==='function'?billingEditorHost():$('billing-editor'))===editor&&(!options.isCurrent||options.isCurrent());
  if(!current())return;
  const history=options.history||await api(`/api/v1/patients/${patientId}/coverages/${coverage.id}/claimmd-eligibility`);if(!current())return;
  const subscriber=claimmdSubscriberParts(coverage.content.subscriber_name),canRequest=!options.readOnly&&billingWrite()&&coverage.content.status==='active'&&(typeof billingCan!=='function'||billingCan('create'));
@@ -55,7 +73,7 @@ document.addEventListener('click',event=>{
  const button=event.target.closest('button[data-claimmd-eligibility]');
  if(!button)return;
  event.preventDefault();event.stopImmediatePropagation();
- run(async()=>{const coverage=workspace.billing.coverages.find(item=>item.id===button.dataset.claimmdEligibility);if(!coverage)throw new Error('Coverage is no longer available.');await openClaimmdEligibility(coverage);});
+ run(async()=>{const coverage=workspace.billing.coverages.find(item=>item.id===button.dataset.claimmdEligibility);if(!coverage)throw new Error('Coverage is no longer available.');await openClaimmdEligibility(coverage,{serviceDate:typeof revenueServiceDate==='function'?revenueServiceDate():undefined});});
 },true);
 
 document.addEventListener('submit',event=>{
@@ -70,7 +88,12 @@ document.addEventListener('submit',event=>{
   }
   const serviceCodes=data.service_codes.split(',').map(value=>value.trim()).filter(Boolean);
   const body={request_id:form.dataset.request,service_date:data.service_date,service_codes:serviceCodes,procedure_code:data.procedure_code.trim()||null,insured_given_name:data.insured_given_name.trim(),insured_middle_name:data.insured_middle_name.trim()||null,insured_family_name:data.insured_family_name.trim(),insured_birth_date:data.insured_birth_date||null,insured_sex:data.insured_sex||null,patient_sex:data.patient_sex||null,provider_npi:data.provider_npi.trim(),provider_taxid:data.provider_taxid.trim(),provider_taxid_type:data.provider_taxid_type,provider_name:data.provider_name.trim()||null,provider_taxonomy:data.provider_taxonomy.trim()||null};
-  const result=await api(`/api/v1/patients/${selected}/coverages/${form.dataset.coverage}/claimmd-eligibility`,'POST',body);
-  const history=await api(`/api/v1/patients/${selected}/coverages/${form.dataset.coverage}/claimmd-eligibility`);$('claimmd-eligibility-history').innerHTML=claimmdEligibilityHistory(history.items);form.dataset.request=crypto.randomUUID();notice(`Eligibility response ${result.status}.`);
+  const patientId=selected,identity=me,coverageId=form.dataset.coverage;
+  let result,requestError;try{result=await api(`/api/v1/patients/${patientId}/coverages/${coverageId}/claimmd-eligibility`,'POST',body);}catch(error){requestError=error;}
+  const history=await api(`/api/v1/patients/${patientId}/coverages/${coverageId}/claimmd-eligibility`);
+  if(selected!==patientId||me!==identity)return;
+  if(typeof updateInsuranceEligibility==='function')updateInsuranceEligibility(coverageId,history);
+  if($('claimmd-eligibility-form')!==form)return;
+  $('claimmd-eligibility-history').innerHTML=claimmdEligibilityHistory(history.items);if(result||history.items?.some(check=>check.request_snapshot?.request?.request_id===body.request_id&&['failed','completed'].includes(check.status)))form.dataset.request=crypto.randomUUID();if(requestError)throw requestError;notice(`Eligibility response ${result.status}.`);
  });
 },true);

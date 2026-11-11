@@ -96,8 +96,8 @@ evidence; signed notes and clinical orders keep their existing authoring paths.
 Native bindings and actions are bounded by the supported catalog. Clinical rules,
 signatures, financial safeguards and tenant access remain authoritative. Provider
 credentials, payer configuration, communication approval and payment setup remain
-required; a workflow definition does not supply them. Current hosted payment
-execution remains in test mode.
+required; a workflow definition does not supply them. Hosted appointment copays require explicit EHR and Connect live-mode gates;
+legacy posted-account payments remain test-only. Test activity is blocked in production.
 
 ## Connections and imports
 

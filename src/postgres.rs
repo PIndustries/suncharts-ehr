@@ -142,8 +142,10 @@ impl ClinicalBackend for PostgresBackend {
     }
     async fn create_patient(&self, a: &Actor, p: NewPatient) -> Result<Patient> {
         a.scheduling()?;
-        if let Some(mrn) = p.mrn.as_deref() {
-            text(mrn, 64)?;
+        if p.mrn.is_some() {
+            return Err(Error::Invalid(
+                "MRN is assigned by the system; omit it when registering a patient",
+            ));
         }
         text(&p.given_name, 100)?;
         text(&p.family_name, 100)?;
@@ -152,19 +154,9 @@ impl ClinicalBackend for PostgresBackend {
         }
         let mut tx = self.0.begin().await?;
         let id = Uuid::new_v4();
-        // Staff should not have to invent identifiers during registration. The
-        // UUID-derived value is tenant-unique, opaque, and remains editable via
-        // the attributed identity-correction workflow when a practice imports
-        // an established MRN.
-        let mrn = p
-            .mrn
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-            .unwrap_or_else(|| {
-                format!("SC-{}", id.simple().to_string()[..12].to_ascii_uppercase())
-            });
+        // Routine registration assigns a stable identifier. Source migrations
+        // preserve established identifiers through their reviewed import path.
+        let mrn = format!("SC-{}", id.simple().to_string()[..12].to_ascii_uppercase());
         let p = sqlx::query_as("INSERT INTO patients (tenant_id,id,mrn,given_name,family_name,birth_date) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id,mrn,given_name,family_name,birth_date")
             .bind(a.tenant_id).bind(id).bind(mrn).bind(p.given_name.trim()).bind(p.family_name.trim()).bind(p.birth_date)
             .fetch_one(&mut *tx).await?;

@@ -9,6 +9,7 @@ use uuid::Uuid;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NewPatient {
+    // Accepted by the reviewed source-migration model; routine registration rejects it.
     #[serde(default)]
     pub mrn: Option<String>,
     pub given_name: String,

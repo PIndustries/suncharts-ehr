@@ -22,6 +22,24 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 const STRIPE: &str = "https://api.stripe.com/v1";
 const BROKER_ENV: &str = "ENGINE_PAYMENT_BROKER_URL";
+const LIVE_UNAVAILABLE: &str = "Direct checkout for posted charge accounts is unavailable in production. Appointment card copays have separate activation in Insurance. Test payments cannot change production balances.";
+
+fn test_payments_available() -> bool {
+    test_payments_available_in(crate::DeploymentEnvironment::from_env())
+}
+fn test_payments_available_in(environment: crate::DeploymentEnvironment) -> bool {
+    !matches!(environment, crate::DeploymentEnvironment::Production)
+}
+fn require_test_payments(available: bool) -> Result<()> {
+    if available {
+        Ok(())
+    } else {
+        Err(Error::Invalid(LIVE_UNAVAILABLE))
+    }
+}
+fn collection_unavailable_reason() -> Option<&'static str> {
+    (!test_payments_available()).then_some(LIVE_UNAVAILABLE)
+}
 fn db(s: &State) -> Result<&PgPool> {
     Ok(&s.browser.as_ref().ok_or(Error::NotFound)?.db)
 }
@@ -46,7 +64,7 @@ fn valid_broker_token(v: &str) -> bool {
         && v.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
-fn broker_base() -> Result<String> {
+pub(crate) fn broker_base() -> Result<String> {
     // Managed payments are hosted by the same validated Connect origin.  A
     // dedicated broker origin remains available for split deployments, but a
     // managed EHR must not fail provisioning merely because that redundant
@@ -128,6 +146,53 @@ struct Save {
     installation_id: Option<Uuid>,
     broker_token: Option<String>,
 }
+fn exact_connect_binding_replay(input: &Save, prior: &Credentials) -> bool {
+    if input.mode != "suncharts_connect"
+        || prior.mode != "suncharts_connect"
+        || input.installation_id.is_none()
+        || input.installation_id != prior.installation_id
+    {
+        return false;
+    }
+    let (Some(input_token), Some(prior_token)) =
+        (input.broker_token.as_deref(), prior.broker_token.as_deref())
+    else {
+        return false;
+    };
+    aws_lc_rs::constant_time::verify_slices_are_equal(
+        input_token.as_bytes(),
+        prior_token.as_bytes(),
+    )
+    .is_ok()
+}
+fn bound_connect_status<'a>(
+    config: &Credentials,
+    tenant: Uuid,
+    value: &'a Value,
+) -> Option<&'a Value> {
+    let installation = config.installation_id?;
+    (config.mode == "suncharts_connect"
+        && value["installation_id"] == installation.to_string()
+        && value["remote_tenant_id"] == tenant.to_string()
+        && value["livemode"].is_boolean())
+    .then_some(value)
+}
+fn verified_test_account(config: &Credentials, tenant: Uuid, value: &Value) -> Option<String> {
+    let account = if config.mode == "own_stripe" {
+        value["id"].as_str()
+    } else {
+        let bound = bound_connect_status(config, tenant, value)?;
+        if bound["livemode"] != false
+            || bound["charges_enabled"] != true
+            || bound["card_payments_active"] != true
+            || bound["details_submitted"] != true
+        {
+            return None;
+        }
+        bound["account_id"].as_str()
+    }?;
+    ident(account, "acct_").then(|| account.to_owned())
+}
 #[derive(sqlx::FromRow)]
 struct Settings {
     id: Uuid,
@@ -140,6 +205,7 @@ struct Settings {
     last_test_result: Option<String>,
     onboarding_url: Option<String>,
     charges_enabled: bool,
+    card_payments_active: bool,
     payouts_enabled: bool,
     details_submitted: bool,
     requirements_currently_due: Value,
@@ -148,7 +214,7 @@ struct Settings {
 }
 impl Settings {
     fn public(&self) -> Value {
-        json!({"id":self.id,"mode":self.mode,"enabled":self.enabled,"verified":self.verified,"provider_account_id":self.provider_account_id,"last_test_at":self.last_test_at,"last_test_result":self.last_test_result,"version":self.version,"test_mode":true,"credentials_configured":true,"onboarding_url":self.onboarding_url.as_deref().and_then(safe_onboarding_url),"charges_enabled":self.charges_enabled,"payouts_enabled":self.payouts_enabled,"details_submitted":self.details_submitted,"requirements_currently_due":self.requirements_currently_due,"requirements_past_due":self.requirements_past_due})
+        json!({"id":self.id,"mode":self.mode,"enabled":self.enabled,"verified":self.verified,"provider_account_id":self.provider_account_id,"last_test_at":self.last_test_at,"last_test_result":self.last_test_result,"version":self.version,"test_mode":true,"credentials_configured":true,"onboarding_url":self.onboarding_url.as_deref().and_then(safe_onboarding_url),"charges_enabled":self.charges_enabled,"card_payments_active":self.card_payments_active,"payouts_enabled":self.payouts_enabled,"details_submitted":self.details_submitted,"requirements_currently_due":self.requirements_currently_due,"requirements_past_due":self.requirements_past_due})
     }
 }
 #[derive(Clone, Serialize, sqlx::FromRow)]
@@ -178,7 +244,7 @@ pub struct Payment {
 }
 impl Payment {
     fn public(&self) -> Value {
-        json!({"id":self.id,"account_id":self.account_id,"amount_cents":self.amount_cents,"currency":self.currency,"status":self.status,"checkout_url":if self.status=="open"{self.checkout_url.clone()}else{None},"refunded_cents":self.refunded_cents,"ledger_recorded":self.paid_entry_id.is_some(),"version":self.version,"created_at":self.created_at,"updated_at":self.updated_at,"test_mode":true,"provider_mode":self.provider_mode,"refund_available":self.provider_mode=="own_stripe","expiry_available":self.provider_mode=="own_stripe","needs_review":self.status=="needs_review"})
+        json!({"id":self.id,"account_id":self.account_id,"amount_cents":self.amount_cents,"currency":self.currency,"status":self.status,"checkout_url":if self.status=="open"&&test_payments_available(){self.checkout_url.clone()}else{None},"refunded_cents":self.refunded_cents,"ledger_recorded":self.paid_entry_id.is_some(),"version":self.version,"created_at":self.created_at,"updated_at":self.updated_at,"test_mode":true,"provider_mode":self.provider_mode,"test_payments_available":test_payments_available(),"collection_unavailable_reason":collection_unavailable_reason(),"refund_available":test_payments_available()&&self.provider_mode=="own_stripe","expiry_available":test_payments_available()&&self.provider_mode=="own_stripe","needs_review":self.status=="needs_review"})
     }
 }
 async fn setting(tx: &mut Transaction<'_, Postgres>, tenant: Uuid) -> Result<Settings> {
@@ -273,6 +339,10 @@ async fn read_settings(a: Actor, ExtractState(s): ExtractState<State>) -> Result
     Ok(Json(json!({
         "setting":row.map(|r|r.public()),
         "test_mode_only":true,
+        "live_payments_available":false,
+        "hosted_copays_live_enabled":crate::copay_checkout::live_collection_enabled(),
+        "test_payments_available":test_payments_available(),
+        "collection_unavailable_reason":collection_unavailable_reason(),
         "connect_available":native_setup_url.is_some(),
         "native_setup_url":native_setup_url.clone(),
         "connect_portal_url":native_setup_url,
@@ -302,6 +372,26 @@ async fn save_settings(
             .bind(a.tenant_id)
             .fetch_optional(&mut *tx)
             .await?;
+    let prior_credentials = if let Some(r) = &prior {
+        Some(credentials(db(&s)?, a.tenant_id, r.id, r.credential_revision).await?)
+    } else {
+        None
+    };
+    // Connect may retry after the EHR committed a binding but its response was
+    // lost. Only an explicit byte-equivalent installation/token replay may
+    // bypass a stale If-Match; changed or partially omitted bindings retain the
+    // normal optimistic-concurrency requirement below.
+    if prior_credentials
+        .as_ref()
+        .is_some_and(|credentials| exact_connect_binding_replay(&v, credentials))
+    {
+        let current = prior
+            .as_ref()
+            .expect("credentials require settings")
+            .public();
+        tx.commit().await?;
+        return Ok(Json(current));
+    }
     if let Some(r) = &prior {
         if crate::expected(&h)? != r.version {
             return Err(Error::Conflict(
@@ -311,11 +401,6 @@ async fn save_settings(
     } else if h.get("if-match").is_some_and(|v| v != "\"0\"") {
         return Err(Error::Conflict("payment settings have not been created"));
     }
-    let prior_credentials = if let Some(r) = &prior {
-        Some(credentials(db(&s)?, a.tenant_id, r.id, r.credential_revision).await?)
-    } else {
-        None
-    };
     let previous = prior_credentials.as_ref().filter(|p| p.mode == v.mode);
     let config = Credentials {
         mode: v.mode.clone(),
@@ -358,7 +443,7 @@ async fn save_settings(
     );
     let encrypted =
         crate::provider_settings::seal_secret(db(&s)?, a.tenant_id, id, "payments", &raw).await?;
-    sqlx::query("INSERT INTO payment_settings(tenant_id,id,mode) VALUES($1,$2,$3) ON CONFLICT(tenant_id) DO UPDATE SET mode=$3,credential_revision=payment_settings.credential_revision+1,enabled=false,verified=false,provider_account_id=NULL,last_test_at=NULL,last_test_result=NULL,onboarding_url=NULL,charges_enabled=false,payouts_enabled=false,details_submitted=false,requirements_currently_due='[]'::jsonb,requirements_past_due='[]'::jsonb,version=payment_settings.version+1,updated_at=now()").bind(a.tenant_id).bind(id).bind(v.mode).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO payment_settings(tenant_id,id,mode) VALUES($1,$2,$3) ON CONFLICT(tenant_id) DO UPDATE SET mode=$3,credential_revision=payment_settings.credential_revision+1,enabled=false,verified=false,provider_account_id=NULL,last_test_at=NULL,last_test_result=NULL,onboarding_url=NULL,charges_enabled=false,card_payments_active=false,payouts_enabled=false,details_submitted=false,requirements_currently_due='[]'::jsonb,requirements_past_due='[]'::jsonb,version=payment_settings.version+1,updated_at=now()").bind(a.tenant_id).bind(id).bind(v.mode).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO payment_credentials(tenant_id,setting_id,revision,encrypted_config) VALUES($1,$2,$3,$4)").bind(a.tenant_id).bind(id).bind(revision).bind(encrypted).execute(&mut *tx).await?;
     setting_event(&mut tx, &a, id, "credentials_saved_disabled").await?;
     let result = setting(&mut tx, a.tenant_id).await?;
@@ -471,40 +556,21 @@ async fn test_settings(
         None,
     )
     .await;
-    let verified = result.as_ref().ok().and_then(|v| {
-        if config.mode == "own_stripe" {
-            v["id"]
-                .as_str()
-                .filter(|id| ident(id, "acct_"))
-                .map(str::to_owned)
-        } else {
-            if v["installation_id"]
-                != config
-                    .installation_id
-                    .map(|v| v.to_string())
-                    .unwrap_or_default()
-                || v["remote_tenant_id"] != a.tenant_id.to_string()
-                || v["livemode"] != false
-                || v["charges_enabled"] != true
-                || v["details_submitted"] != true
-            {
-                return None;
-            }
-            v["account_id"]
-                .as_str()
-                .filter(|id| ident(id, "acct_"))
-                .map(str::to_owned)
-        }
-    });
-    let bound_installation = result.as_ref().ok().is_some_and(|v| {
-        config.mode == "suncharts_connect"
-            && v["installation_id"]
-                == config
-                    .installation_id
-                    .map(|id| id.to_string())
-                    .unwrap_or_default()
-            && v["remote_tenant_id"] == a.tenant_id.to_string()
-            && v["livemode"] == false
+    let connect_status = result
+        .as_ref()
+        .ok()
+        .and_then(|v| bound_connect_status(&config, a.tenant_id, v));
+    let verified = result
+        .as_ref()
+        .ok()
+        .and_then(|v| verified_test_account(&config, a.tenant_id, v));
+    let bound_installation = connect_status.is_some();
+    let processor_livemode = connect_status.and_then(|v| v["livemode"].as_bool());
+    let provider_account = verified.clone().or_else(|| {
+        connect_status
+            .and_then(|v| v["account_id"].as_str())
+            .filter(|id| ident(id, "acct_"))
+            .map(str::to_owned)
     });
     let onboarding = if bound_installation {
         result
@@ -515,24 +581,32 @@ async fn test_settings(
     } else {
         None
     };
-    let connect_status = result.as_ref().ok().filter(|_| bound_installation);
     let charges_enabled = connect_status.is_some_and(|v| v["charges_enabled"] == true);
+    let card_payments_active = connect_status.is_some_and(|v| v["card_payments_active"] == true);
     let payouts_enabled = connect_status.is_some_and(|v| v["payouts_enabled"] == true);
     let details_submitted = connect_status.is_some_and(|v| v["details_submitted"] == true);
     let currently_due = connect_status
-        .and_then(|v| v.get("requirements_currently_due").cloned())
+        .and_then(|v| {
+            v.get("requirements_currently_due")
+                .or_else(|| v["requirements"].get("currently_due"))
+                .cloned()
+        })
         .filter(Value::is_array)
         .unwrap_or_else(|| json!([]));
     let past_due = connect_status
-        .and_then(|v| v.get("requirements_past_due").cloned())
+        .and_then(|v| {
+            v.get("requirements_past_due")
+                .or_else(|| v["requirements"].get("past_due"))
+                .cloned()
+        })
         .filter(Value::is_array)
         .unwrap_or_else(|| json!([]));
-    sqlx::query("UPDATE payment_settings SET verified=$2,enabled=false,provider_account_id=$3,last_test_at=now(),last_test_result=$4,onboarding_url=$5,charges_enabled=$6,payouts_enabled=$7,details_submitted=$8,requirements_currently_due=$9,requirements_past_due=$10,version=version+1,updated_at=now() WHERE tenant_id=$1").bind(a.tenant_id).bind(verified.is_some()).bind(&verified).bind(if verified.is_some(){"test_account_verified"}else if onboarding.is_some(){"owner_setup_required"}else{"connection_not_verified"}).bind(&onboarding).bind(charges_enabled).bind(payouts_enabled).bind(details_submitted).bind(currently_due).bind(past_due).execute(&mut *tx).await?;
+    sqlx::query("UPDATE payment_settings SET verified=$2,enabled=false,provider_account_id=$3,last_test_at=now(),last_test_result=$4,onboarding_url=$5,charges_enabled=$6,payouts_enabled=$7,details_submitted=$8,requirements_currently_due=$9,requirements_past_due=$10,card_payments_active=$11,version=version+1,updated_at=now() WHERE tenant_id=$1").bind(a.tenant_id).bind(verified.is_some()).bind(&provider_account).bind(if processor_livemode==Some(true){"live_connection_verified"}else if verified.is_some(){"test_account_verified"}else if bound_installation{"owner_setup_required"}else{"connection_not_verified"}).bind(&onboarding).bind(charges_enabled).bind(payouts_enabled).bind(details_submitted).bind(currently_due).bind(past_due).bind(card_payments_active).execute(&mut *tx).await?;
     setting_event(
         &mut tx,
         &a,
         current.id,
-        if verified.is_some() {
+        if verified.is_some() || bound_installation {
             "connection_verified"
         } else {
             "connection_test_failed"
@@ -542,7 +616,7 @@ async fn test_settings(
     let out = setting(&mut tx, a.tenant_id).await?;
     tx.commit().await?;
     Ok(Json(
-        json!({"setting":out.public(),"authenticated":verified.is_some()||bound_installation,"ready":verified.is_some(),"live_payment_enabled":false}),
+        json!({"setting":out.public(),"authenticated":verified.is_some()||bound_installation,"ready":verified.is_some(),"processor_livemode":processor_livemode,"live_payment_enabled":false}),
     ))
 }
 #[derive(Deserialize)]
@@ -557,6 +631,9 @@ async fn activate(
     Json(v): Json<Activation>,
 ) -> Result<Json<Value>> {
     owner(&a)?;
+    if v.enabled {
+        require_test_payments(test_payments_available())?;
+    }
     let mut tx = db(&s)?.begin().await?;
     billing::tenant_lock(&mut tx, &a).await?;
     let row = setting(&mut tx, a.tenant_id).await?;
@@ -607,7 +684,8 @@ async fn list(
     crate::postgres::audit(&mut tx, &a, "payment.account_read", id).await?;
     tx.commit().await?;
     Ok(Json(
-        json!({"items":items.iter().map(Payment::public).collect::<Vec<_>>(),"balance_cents":current,"reserved_cents":reserved,"available_cents":(current-reserved).max(0),"payments_enabled":settings.as_ref().is_some_and(|(e,v,m)|*e&&*v&&m=="suncharts_connect"),"mode":settings.map(|(_,_,m)|m),"test_mode":true,"connect_required":true}),
+        json!({"items":items.iter().map(Payment::public).collect::<Vec<_>>(),"balance_cents":current,"reserved_cents":reserved,"available_cents":(current-reserved).max(0),"payments_enabled":test_payments_available()&&settings.as_ref().is_some_and(|(e,v,m)|*e&&*v&&m=="suncharts_connect"),"mode":settings.map(|(_,_,m)|m),"test_mode":true,"connect_required":true,"live_payments_available":false,
+        "hosted_copays_live_enabled":crate::copay_checkout::live_collection_enabled(),"test_payments_available":test_payments_available(),"collection_unavailable_reason":collection_unavailable_reason()}),
     ))
 }
 #[derive(Deserialize, Serialize)]
@@ -635,6 +713,7 @@ pub(crate) async fn create_native(
     v: NewPayment,
 ) -> Result<Value> {
     a.scheduling()?;
+    require_test_payments(test_payments_available())?;
     if !(50..=100000000).contains(&v.amount_cents) {
         return Err(Error::Invalid(
             "enter an amount from 50 cents through the supported test-payment limit",
@@ -934,6 +1013,18 @@ async fn ledger(
     Ok(entry)
 }
 async fn apply_session(pool: &PgPool, a: &Actor, id: Uuid, v: &Value) -> Result<Payment> {
+    apply_session_with_policy(pool, a, id, v, test_payments_available()).await
+}
+async fn apply_session_with_policy(
+    pool: &PgPool,
+    a: &Actor,
+    id: Uuid,
+    v: &Value,
+    test_payments_allowed: bool,
+) -> Result<Payment> {
+    // Even verified Stripe test evidence represents no real funds. Keep it out
+    // of production receivables, including webhook/retry reconciliation paths.
+    require_test_payments(test_payments_allowed)?;
     let mut tx = pool.begin().await?;
     billing::tenant_lock(&mut tx, a).await?;
     let p = payment(&mut tx, a.tenant_id, id).await?;
@@ -1017,6 +1108,7 @@ async fn refresh(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>> {
     a.scheduling()?;
+    require_test_payments(test_payments_available())?;
     let mut tx = db(&s)?.begin().await?;
     let p = payment(&mut tx, a.tenant_id, id).await?;
     tx.commit().await?;
@@ -1040,6 +1132,7 @@ async fn expire(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>> {
     a.scheduling()?;
+    require_test_payments(test_payments_available())?;
     let mut tx = db(&s)?.begin().await?;
     let p = payment(&mut tx, a.tenant_id, id).await?;
     tx.commit().await?;
@@ -1076,6 +1169,7 @@ async fn refund(
     Json(v): Json<NewPayment>,
 ) -> Result<Json<Value>> {
     a.scheduling()?;
+    require_test_payments(test_payments_available())?;
     let mut tx = db(&s)?.begin().await?;
     billing::tenant_lock(&mut tx, &a).await?;
     let p = payment(&mut tx, a.tenant_id, id).await?;
@@ -1313,6 +1407,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn live_account_readiness_is_displayable_but_never_verifies_test_collection() {
+        let tenant = Uuid::new_v4();
+        let installation = Uuid::new_v4();
+        let config = Credentials {
+            mode: "suncharts_connect".into(),
+            api_key: None,
+            webhook_secret: None,
+            installation_id: Some(installation),
+            broker_token: None,
+        };
+        let mut status = json!({"installation_id":installation,"remote_tenant_id":tenant,
+            "livemode":true,"account_id":"acct_synthetic","charges_enabled":true,"card_payments_active":true,
+            "details_submitted":true,"payouts_enabled":true,
+            "requirements":{"currently_due":[],"past_due":[]}});
+        assert!(bound_connect_status(&config, tenant, &status).is_some());
+        assert!(verified_test_account(&config, tenant, &status).is_none());
+        status["livemode"] = json!(false);
+        assert_eq!(
+            verified_test_account(&config, tenant, &status).as_deref(),
+            Some("acct_synthetic")
+        );
+        status["card_payments_active"] = json!(false);
+        assert!(verified_test_account(&config, tenant, &status).is_none());
+        status
+            .as_object_mut()
+            .unwrap()
+            .remove("card_payments_active");
+        assert!(verified_test_account(&config, tenant, &status).is_none());
+        status["card_payments_active"] = json!(true);
+        status["charges_enabled"] = json!(false);
+        assert!(bound_connect_status(&config, tenant, &status).is_some());
+        assert!(verified_test_account(&config, tenant, &status).is_none());
+        status["remote_tenant_id"] = json!(Uuid::new_v4());
+        assert!(bound_connect_status(&config, tenant, &status).is_none());
+        status["remote_tenant_id"] = json!(tenant);
+        status["installation_id"] = json!(Uuid::new_v4());
+        assert!(bound_connect_status(&config, tenant, &status).is_none());
+    }
+
+    #[test]
+    fn simulated_payments_are_limited_to_development() {
+        assert!(test_payments_available_in(
+            crate::DeploymentEnvironment::Development
+        ));
+        assert!(!test_payments_available_in(
+            crate::DeploymentEnvironment::Production
+        ));
+        assert!(require_test_payments(false).is_err());
+        assert!(require_test_payments(true).is_ok());
+    }
+
+    #[test]
     fn managed_payment_broker_accepts_only_a_fixed_https_origin() {
         assert_eq!(
             validate_broker_origin("https://connect.suncharts.app/").unwrap(),
@@ -1400,6 +1546,44 @@ mod tests {
         assert!(verify_session(&p, &bad).is_err());
         assert!(valid_broker_token("scp_inst_with-URL_safe-token_material"));
         assert!(!valid_broker_token("scp_inst_bad token material"));
+    }
+    #[test]
+    fn connect_binding_replay_requires_explicit_identical_installation_and_token() {
+        let installation = Uuid::new_v4();
+        let token = "scp_inst_synthetic-replay-token-material";
+        let prior = Credentials {
+            mode: "suncharts_connect".into(),
+            api_key: None,
+            webhook_secret: None,
+            installation_id: Some(installation),
+            broker_token: Some(token.into()),
+        };
+        let replay = |installation_id, broker_token| Save {
+            mode: "suncharts_connect".into(),
+            api_key: None,
+            webhook_secret: None,
+            installation_id,
+            broker_token,
+        };
+        assert!(exact_connect_binding_replay(
+            &replay(Some(installation), Some(token.into())),
+            &prior
+        ));
+        assert!(!exact_connect_binding_replay(
+            &replay(Some(Uuid::new_v4()), Some(token.into())),
+            &prior
+        ));
+        assert!(!exact_connect_binding_replay(
+            &replay(
+                Some(installation),
+                Some("scp_inst_different-replay-token-material".into())
+            ),
+            &prior
+        ));
+        assert!(!exact_connect_binding_replay(
+            &replay(Some(installation), None),
+            &prior
+        ));
     }
     #[test]
     fn stripe_signatures_bind_raw_bytes_and_enforce_timestamp_tolerance() {
@@ -1532,6 +1716,48 @@ mod tests {
             &json!({"account":p.account_id,"amount":p.amount_cents}).to_string(),
         );
         sqlx::query("INSERT INTO payment_attempts(tenant_id,id,account_id,setting_id,credential_revision,request_id,creation_hash,requested_by,amount_cents,status,provider_account_id,provider_mode) VALUES($1,$2,$3,$4,1,$5,$6,$7,$8,'creating','acct_synthetic','own_stripe')").bind(a.tenant_id).bind(p.id).bind(p.account_id).bind(p.setting_id).bind(p.request_id).bind(&p.creation_hash).bind(a.sub).bind(p.amount_cents).execute(&pool).await.unwrap();
+        // A fully verified simulated charge is still forbidden from reducing a
+        // production receivable; no attempt, account, or event is rewritten.
+        let history_before: Value = sqlx::query_scalar(
+            "SELECT to_jsonb(p) FROM payment_attempts p WHERE tenant_id=$1 AND id=$2",
+        )
+        .bind(a.tenant_id)
+        .bind(p.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            apply_session_with_policy(&pool, &a, p.id, &snapshot(&p, true, 0), false)
+                .await
+                .is_err()
+        );
+        let history_after: Value = sqlx::query_scalar(
+            "SELECT to_jsonb(p) FROM payment_attempts p WHERE tenant_id=$1 AND id=$2",
+        )
+        .bind(a.tenant_id)
+        .bind(p.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(history_before, history_after);
+        let entries: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM billing_entries WHERE tenant_id=$1")
+                .bind(a.tenant_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(entries, 0);
+        let mut tx = pool.begin().await.unwrap();
+        assert_eq!(
+            balance(&mut tx, a.tenant_id, p.account_id).await.unwrap(),
+            10000
+        );
+        tx.commit().await.unwrap();
+        let historical = detail(a.clone(), ExtractState(state.clone()), Path(p.id))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(historical["payment"]["status"], "creating");
         let open = apply_session(&pool, &a, p.id, &snapshot(&p, false, 0))
             .await
             .unwrap();

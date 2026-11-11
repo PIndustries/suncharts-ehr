@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Immutable document originals with attributed, versioned metadata.
 use crate::{
-    auth::Actor,
+    auth::{Actor, Role},
     error::{Error, Result},
     model::text,
     postgres::audit,
@@ -23,6 +23,27 @@ use sqlx::{Postgres, Transaction};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 const MAX_BYTES: usize = 10 * 1024 * 1024;
+const CATEGORIES: &[&str] = &[
+    "identity",
+    "insurance",
+    "legal",
+    "consult",
+    "laboratory",
+    "imaging",
+    "consent",
+    "referral",
+    "other",
+];
+const REGISTRATION_CATEGORIES: &[&str] = &["identity", "insurance", "legal"];
+pub(super) fn write_document(a: &Actor, category: &str) -> Result<()> {
+    if matches!(a.role, Role::Owner | Role::Clinician)
+        || (matches!(a.role, Role::FrontDesk) && REGISTRATION_CATEGORIES.contains(&category))
+    {
+        Ok(())
+    } else {
+        Err(Error::Forbidden)
+    }
+}
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Content {
@@ -37,15 +58,7 @@ pub struct Content {
 impl Content {
     fn validate(&self) -> Result<()> {
         text(&self.title, 200)?;
-        if ![
-            "consult",
-            "laboratory",
-            "imaging",
-            "consent",
-            "referral",
-            "other",
-        ]
-        .contains(&self.category.as_str())
+        if !CATEGORIES.contains(&self.category.as_str())
             || !["active", "archived", "entered_in_error"].contains(&self.status.as_str())
             || self.notes.chars().count() > 10000
         {
@@ -85,8 +98,9 @@ struct Document {
     updated_by: Uuid,
     uploaded_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    file_version: i64,
 }
-const FIELDS:&str="id,patient_id,version,content,filename,content_type,sha256,size_bytes,uploaded_by,(SELECT coalesce(nullif(u.display_name,''),u.email) FROM browser_users u WHERE u.tenant_id=patient_documents.tenant_id AND u.id=patient_documents.uploaded_by) AS uploader_label,updated_by,uploaded_at,updated_at";
+const FIELDS:&str="id,patient_id,version,content,filename,content_type,sha256,size_bytes,uploaded_by,(SELECT coalesce(nullif(u.display_name,''),u.email) FROM browser_users u WHERE u.tenant_id=patient_documents.tenant_id AND u.id=patient_documents.uploaded_by) AS uploader_label,updated_by,uploaded_at,updated_at,(SELECT coalesce(max(f.version),1) FROM patient_document_file_versions f WHERE f.tenant_id=patient_documents.tenant_id AND f.document_id=patient_documents.id) AS file_version";
 pub fn routes() -> Router<State> {
     Router::new()
         .route(
@@ -107,7 +121,13 @@ pub fn routes() -> Router<State> {
             "/api/v1/patients/{patient}/documents/{id}/download",
             get(download),
         )
+        .route(
+            "/api/v1/patients/{patient}/documents/{id}/preview",
+            get(preview),
+        )
+        .merge(files::routes())
 }
+pub(crate) mod files;
 fn db(s: &State) -> Result<&sqlx::PgPool> {
     Ok(&s.browser.as_ref().ok_or(Error::NotFound)?.db)
 }
@@ -181,6 +201,71 @@ pub(crate) async fn validate_link(
     }
 }
 
+/// Capture the current immutable file alongside independently versioned metadata.
+/// The parent row share lock serializes this review with file-version appends.
+pub(crate) async fn validate_current_link(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    patient: Uuid,
+    id: Uuid,
+) -> Result<Value> {
+    let mut value = validate_link(tx, tenant, patient, id).await?;
+    let file: Option<Value> = sqlx::query_scalar("SELECT jsonb_build_object('file_version',version,'filename',filename,'content_type',content_type,'sha256',sha256,'size_bytes',size_bytes,'annotations',annotations) FROM patient_document_file_versions WHERE tenant_id=$1 AND patient_id=$2 AND document_id=$3 ORDER BY version DESC LIMIT 1")
+        .bind(tenant).bind(patient).bind(id).fetch_optional(&mut **tx).await?;
+    if let Some(file) = file {
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(file.as_object().unwrap().clone());
+    } else {
+        value["file_version"] = json!(1);
+        value["annotations"] = json!([]);
+    }
+    Ok(value)
+}
+
+/// Legacy reviewed packets retain their exact original-file contract. New
+/// packets must still match the latest reviewed file before delivery is queued.
+pub(crate) async fn validate_reviewed_link(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    patient: Uuid,
+    id: Uuid,
+    reviewed: Option<&Value>,
+) -> Result<Value> {
+    if reviewed.is_some_and(|v| v.get("file_version").is_none()) {
+        validate_link(tx, tenant, patient, id).await
+    } else {
+        validate_current_link(tx, tenant, patient, id).await
+    }
+}
+
+pub(crate) async fn linked_file_bytes(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    patient: Uuid,
+    id: Uuid,
+    metadata: &Value,
+) -> Result<Vec<u8>> {
+    let version = match metadata.get("file_version") {
+        None => 1,
+        Some(v) => v
+            .as_i64()
+            .filter(|v| *v > 0)
+            .ok_or(Error::Invalid("invalid referral file version"))?,
+    };
+    let bytes: Vec<u8> = sqlx::query_scalar("SELECT bytes FROM patient_documents WHERE tenant_id=$1 AND patient_id=$2 AND id=$3 AND $4=1 UNION ALL SELECT bytes FROM patient_document_file_versions WHERE tenant_id=$1 AND patient_id=$2 AND document_id=$3 AND version=$4")
+        .bind(tenant).bind(patient).bind(id).bind(version).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)?;
+    if metadata["sha256"] != format!("{:x}", Sha256::digest(&bytes))
+        || metadata["size_bytes"] != json!(bytes.len())
+    {
+        return Err(Error::Conflict(
+            "referral file differs from reviewed attachment",
+        ));
+    }
+    Ok(bytes)
+}
+
 fn response(v: Document) -> Response {
     let version = v.version;
     let mut r = Json(v).into_response();
@@ -235,18 +320,8 @@ async fn list(
         .map_err(|_| Error::Invalid("invalid document cursor"))?;
     let category = filters.get("category");
     let status = filters.get("status");
-    if category.is_some_and(|v| {
-        ![
-            "consult",
-            "laboratory",
-            "imaging",
-            "consent",
-            "referral",
-            "other",
-        ]
-        .contains(&v.as_str())
-    }) || status
-        .is_some_and(|v| !["active", "archived", "entered_in_error"].contains(&v.as_str()))
+    if category.is_some_and(|v| !CATEGORIES.contains(&v.as_str()))
+        || status.is_some_and(|v| !["active", "archived", "entered_in_error"].contains(&v.as_str()))
     {
         return Err(Error::Invalid("unsupported document filter value"));
     }
@@ -292,18 +367,43 @@ fn file_bytes(v: &Upload) -> Result<Vec<u8>> {
     if bytes.is_empty() || bytes.len() > MAX_BYTES {
         return Err(Error::Invalid("document must contain 1 byte to 10 MiB"));
     }
-    let magic = match v.content_type.as_str() {
+    validate_file_type(&v.content_type, &bytes)?;
+    Ok(bytes)
+}
+pub(super) fn validate_file_type(content_type: &str, bytes: &[u8]) -> Result<()> {
+    let magic = match content_type {
         "application/pdf" => bytes.starts_with(b"%PDF-") && bytes.windows(5).any(|v| v == b"%%EOF"),
         "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
         "image/jpeg" => bytes.starts_with(b"\xff\xd8\xff") && bytes.ends_with(b"\xff\xd9"),
+        "text/plain" => {
+            bytes.len() <= 200_000
+                && std::str::from_utf8(bytes).is_ok_and(|s| {
+                    !s.chars()
+                        .any(|c| c.is_control() && !['\n', '\r', '\t'].contains(&c))
+                })
+        }
+        "audio/mpeg" => {
+            bytes.starts_with(b"ID3")
+                || (bytes.len() > 2 && bytes[0] == 0xff && bytes[1] & 0xe0 == 0xe0)
+        }
+        "audio/wav" => bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE"),
+        "audio/ogg" => bytes.starts_with(b"OggS"),
+        "audio/webm" => bytes.starts_with(b"\x1a\x45\xdf\xa3"),
+        "audio/mp4" => bytes.get(4..8) == Some(b"ftyp"),
+        // Office packages stay opaque binary files. Never render their XML/HTML
+        // on this origin; only a separately configured Office editor may open them.
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => {
+            bytes.starts_with(b"PK\x03\x04")
+        }
         _ => false,
     };
     if !magic {
         return Err(Error::Invalid(
-            "only PDF, PNG or JPEG with matching file signatures are accepted",
+            "file content does not match a supported document or audio format",
         ));
     }
-    Ok(bytes)
+    Ok(())
 }
 async fn revision(
     tx: &mut Transaction<'_, Postgres>,
@@ -320,7 +420,7 @@ async fn upload(
     Path(p): Path<Uuid>,
     Json(v): Json<Upload>,
 ) -> Result<Response> {
-    a.clinical()?;
+    write_document(&a, &v.content.category)?;
     v.content.validate()?;
     text(&v.reason, 1000)?;
     if v.content.status != "active" {
@@ -384,12 +484,14 @@ async fn update(
     h: HeaderMap,
     Json(v): Json<Change>,
 ) -> Result<Response> {
-    a.clinical()?;
+    write_document(&a, &v.content.category)?;
     v.content.validate()?;
     text(&v.reason, 1000)?;
     let expected = crate::expected(&h)?;
     let mut tx = db(&s)?.begin().await?;
     let old = row(&mut tx, &a, p, id, true).await?;
+    // Reclassifying a clinical document must not grant registration staff access to edit it.
+    write_document(&a, old.content["category"].as_str().unwrap_or_default())?;
     if old.version != expected {
         return Err(Error::Conflict(
             "document metadata changed; compare saved record before editing",
@@ -430,9 +532,39 @@ async fn download(
     ExtractState(s): ExtractState<State>,
     Path((p, id)): Path<(Uuid, Uuid)>,
 ) -> Result<Response> {
+    document_file(a, s, p, id, false).await
+}
+async fn preview(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((p, id)): Path<(Uuid, Uuid)>,
+) -> Result<Response> {
+    document_file(a, s, p, id, true).await
+}
+async fn document_file(a: Actor, s: State, p: Uuid, id: Uuid, inline: bool) -> Result<Response> {
     a.staff()?;
     let mut tx = db(&s)?.begin().await?;
     let v = row(&mut tx, &a, p, id, false).await?;
+    let ext = match v.content_type.as_str() {
+        "application/pdf" => "pdf",
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "text/plain" => "txt",
+        "audio/mpeg" => "mp3",
+        "audio/wav" => "wav",
+        "audio/ogg" => "ogg",
+        "audio/webm" => "webm",
+        "audio/mp4" => "m4a",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" if !inline => {
+            "docx"
+        }
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if !inline => "xlsx",
+        _ => {
+            return Err(Error::Invalid(
+                "document format cannot be previewed or downloaded",
+            ))
+        }
+    };
     let bytes: Vec<u8> = sqlx::query_scalar(
         "SELECT bytes FROM patient_documents WHERE tenant_id=$1 AND patient_id=$2 AND id=$3",
     )
@@ -441,23 +573,49 @@ async fn download(
     .bind(id)
     .fetch_one(&mut *tx)
     .await?;
-    audit(&mut tx, &a, "patient.document.download", id).await?;
+    audit(
+        &mut tx,
+        &a,
+        if inline {
+            "patient.document.preview"
+        } else {
+            "patient.document.download"
+        },
+        id,
+    )
+    .await?;
     tx.commit().await?;
-    let ext = match v.content_type.as_str() {
-        "application/pdf" => "pdf",
-        "image/png" => "png",
-        _ => "jpg",
-    };
     let mut r = ([(header::CONTENT_TYPE, v.content_type)], bytes).into_response();
     r.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    let disposition = if inline { "inline" } else { "attachment" };
     r.headers_mut().insert(
         header::CONTENT_DISPOSITION,
-        HeaderValue::from_str(&format!("attachment; filename=\"document-{id}.{ext}\"")).unwrap(),
+        HeaderValue::from_str(&format!("{disposition}; filename=\"document-{id}.{ext}\"")).unwrap(),
     );
     r.headers_mut().insert(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
+    if inline {
+        r.headers_mut().insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'none'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
+            ),
+        );
+        r.headers_mut().insert(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("SAMEORIGIN"),
+        );
+        r.headers_mut().insert(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        );
+        r.headers_mut().insert(
+            "cross-origin-resource-policy",
+            HeaderValue::from_static("same-origin"),
+        );
+    }
     Ok(r)
 }

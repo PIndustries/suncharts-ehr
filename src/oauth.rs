@@ -484,7 +484,14 @@ pub async fn authenticate(s: &State, raw: &str, method: &Method, path: &str) -> 
     } else if path == "/fhir/Coverage" || path.starts_with("/fhir/Coverage/") {
         "billing.read"
     } else if path.split('/').any(|segment| {
-        ["billing", "coverages", "billing-mapping", "claim-mapping"].contains(&segment)
+        [
+            "billing",
+            "coverages",
+            "billing-mapping",
+            "claim-mapping",
+            "copay-checkouts",
+        ]
+        .contains(&segment)
     }) {
         if read {
             "billing.read"

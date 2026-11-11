@@ -1,0 +1,20 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+body { font: 16px system-ui; color: #182f3c; max-width: 760px; margin: 24px auto; padding: 24px; }
+body.patient-receipt { max-width: 680px; }
+h1 { font-size: 28px; }
+h2 { font-size: 19px; margin-top: 28px; }
+dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; }
+dd { margin: 0; text-align: right; }
+small { display: block; overflow-wrap: anywhere; color: #425b69; }
+table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+th, td { text-align: left; border-bottom: 1px solid #ccd7dd; padding: 10px 8px; vertical-align: top; overflow-wrap: anywhere; }
+th { font-size: 14px; }
+.amount { text-align: right; white-space: nowrap; }
+.reference { overflow-wrap: anywhere; }
+thead { display: table-header-group; }
+tr { break-inside: avoid; }
+footer { margin-top: 28px; border-top: 1px solid #ccc; padding-top: 16px; }
+@media print {
+  body { margin: 0; padding: 12px; }
+  h2 { break-after: avoid; }
+}

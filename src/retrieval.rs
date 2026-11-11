@@ -188,9 +188,14 @@ pub(crate) async fn insert_observation(
     key: &str,
     item: &Observation,
 ) -> Result<()> {
-    let prior:Option<(String,Value)>=sqlx::query_as("SELECT format,metadata FROM edi_remote_reports WHERE tenant_id=$1 AND route_key=$2 AND remote_id=$3").bind(a.tenant_id).bind(key).bind(&item.remote_id).fetch_optional(&mut **tx).await?;
-    if let Some((format, metadata)) = prior {
-        if format != item.format || metadata != item.metadata {
+    let prior:Option<(String,Value,Option<String>)>=sqlx::query_as("SELECT format,metadata,original_hash FROM edi_remote_reports WHERE tenant_id=$1 AND route_key=$2 AND remote_id=$3").bind(a.tenant_id).bind(key).bind(&item.remote_id).fetch_optional(&mut **tx).await?;
+    if let Some((format, metadata, original_hash)) = prior {
+        if format != item.format
+            || metadata != item.metadata
+            || item.inline.as_ref().is_some_and(|raw| {
+                original_hash.as_deref() != Some(crate::oauth::hash(raw).as_str())
+            })
+        {
             return Err(Error::Conflict(
                 "provider reused a report identity with changed evidence",
             ));
@@ -333,6 +338,105 @@ fn stedi_page(v: Value, usage: &str) -> Result<Page> {
         next: Some(next),
     })
 }
+// Provider status is evidence, never an automatic payer acceptance or ledger posting.
+fn claimmd_identity_matches(evidence: &Value, frozen: &Value) -> bool {
+    let account = &frozen["snapshot"]["account"];
+    let content = &frozen["content"];
+    let nonempty_equal = |left: &Value, right: &Value| {
+        left.as_str()
+            .is_some_and(|value| !value.is_empty() && right.as_str() == Some(value))
+    };
+    let control = &evidence["pcn"];
+    let Some(cents) = account["total_cents"].as_i64().filter(|v| *v > 0) else {
+        return false;
+    };
+    (nonempty_equal(control, &frozen["control_number"])
+        || nonempty_equal(control, &content["external_control_number"]))
+        && nonempty_equal(&evidence["bill_npi"], &content["billing_npi"])
+        && nonempty_equal(&evidence["bill_taxid"], &content["tax_id"])
+        && nonempty_equal(
+            &evidence["ins_number"],
+            &account["coverage_snapshot"]["coverage"]["content"]["member_id"],
+        )
+        && nonempty_equal(
+            &evidence["payerid"],
+            &account["coverage_snapshot"]["payer"]["content"]["payer_code"],
+        )
+        && evidence["total_charge"].as_str()
+            == Some(format!("{}.{:02}", cents / 100, cents % 100).as_str())
+        && nonempty_equal(&evidence["fdos"], &account["content"]["service_date"])
+}
+
+async fn attach_claimmd_status(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    key: &str,
+) -> Result<()> {
+    // Receipt binding narrows the candidates before inspecting patient identifiers.
+    // Imported records are not eligible, and no match/ambiguous matches stay in the review inbox.
+    let reports: Vec<(Uuid, Value)> = sqlx::query_as("SELECT r.id,r.parse_summary FROM edi_remote_reports r WHERE r.tenant_id=$1 AND r.route_key=$2 AND r.format='claimmd_status' AND r.status='retrieved' AND r.native_id IS NULL AND r.metadata->>'source'='claimmd_response_api' AND r.last_result IS DISTINCT FROM 'identity_match_needs_review' AND EXISTS (SELECT 1 FROM edi_delivery_jobs j WHERE j.tenant_id=r.tenant_id AND j.route_key=r.route_key AND j.status='delivered' AND j.receipt_reference='claimmd-file:'||(r.parse_summary->>'fileid')) ORDER BY r.received_at,r.id LIMIT 200")
+        .bind(a.tenant_id).bind(key).fetch_all(&mut **tx).await?;
+    for (report, evidence) in reports {
+        let candidates: Vec<(Uuid, Value)> = sqlx::query_as("SELECT DISTINCT s.id,s.claim_snapshot FROM edi_submissions s JOIN edi_delivery_jobs j ON j.tenant_id=s.tenant_id AND j.submission_id=s.id JOIN edi_connections c ON c.tenant_id=j.tenant_id AND c.route_key=j.route_key AND c.partner_id=s.partner_id WHERE j.tenant_id=$1 AND j.route_key=$2 AND j.status='delivered' AND s.status='delivered' AND j.receipt_reference=$3")
+            .bind(a.tenant_id).bind(key).bind(format!("claimmd-file:{}", evidence["fileid"].as_str().unwrap_or(""))).fetch_all(&mut **tx).await?;
+        let matches: Vec<_> = candidates
+            .iter()
+            .filter(|(_, frozen)| claimmd_identity_matches(&evidence, frozen))
+            .collect();
+        if matches.len() != 1 {
+            sqlx::query("UPDATE edi_remote_reports SET last_result='identity_match_needs_review',version=version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(report).execute(&mut **tx).await?;
+            report_event(
+                tx,
+                a,
+                report,
+                "No unique exact claim match; operator review required",
+                json!({"clinical_status_changed":false,"match_count":matches.len()}),
+            )
+            .await?;
+            continue;
+        }
+        let submission = matches[0].0;
+        link_evidence(
+            tx,
+            a,
+            report,
+            "submission",
+            submission,
+            "Exact Claim.MD receipt and frozen claim identities matched",
+            false,
+        )
+        .await?;
+        sqlx::query("UPDATE edi_submissions SET version=version+1 WHERE tenant_id=$1 AND id=$2")
+            .bind(a.tenant_id)
+            .bind(submission)
+            .execute(&mut **tx)
+            .await?;
+        crate::clearinghouse::event(tx,a,submission,"Claim.MD status evidence attached automatically",json!({"retrieved_report_id":report,"provider":"claim_md","clinical_status_changed":false,"status_evidence":evidence,"origin":"exact_receipt_and_identity_match"})).await?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn claim_tracking(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    claim: &crate::claims::Claim,
+) -> Result<Value> {
+    let submissions: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('id',s.id,'status',s.status,'technical_status',s.technical_status,'payer_outcome',s.payer_outcome,'created_at',s.created_at) FROM edi_submissions s WHERE s.tenant_id=$1 AND s.claim_id=$2 ORDER BY s.created_at,s.id")
+        .bind(a.tenant_id).bind(claim.id).fetch_all(&mut **tx).await?;
+    let mut reports: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('id',r.id,'submission_id',r.native_id,'received_at',r.received_at,'evidence',r.parse_summary) FROM edi_remote_reports r JOIN edi_submissions s ON s.tenant_id=r.tenant_id AND s.id=r.native_id WHERE r.tenant_id=$1 AND s.claim_id=$2 AND r.native_kind='submission' AND r.format='claimmd_status' ORDER BY r.received_at DESC,CASE WHEN r.metadata->>'response_id' ~ '^[0-9]{1,20}$' THEN (r.metadata->>'response_id')::numeric END DESC,r.id DESC LIMIT 200")
+        .bind(a.tenant_id).bind(claim.id).fetch_all(&mut **tx).await?;
+    reports.reverse();
+    let connections: Vec<Value> = sqlx::query_scalar("SELECT DISTINCT jsonb_build_object('route_key',c.route_key,'paused',c.paused,'last_poll_at',c.last_poll_at,'last_success_at',c.last_success_at,'next_poll_at',c.next_poll_at,'last_result',c.last_result) FROM edi_connections c JOIN edi_delivery_jobs j ON j.tenant_id=c.tenant_id AND j.route_key=c.route_key JOIN edi_submissions s ON s.tenant_id=j.tenant_id AND s.id=j.submission_id WHERE s.tenant_id=$1 AND s.claim_id=$2 AND c.adapter='claim_md'")
+        .bind(a.tenant_id).bind(claim.id).fetch_all(&mut **tx).await?;
+    let eligibility: Option<Value> = sqlx::query_scalar("SELECT jsonb_build_object('status',status,'created_at',created_at,'completed_at',completed_at,'service_date',request_snapshot->'request'->>'service_date') FROM claimmd_eligibility_checks WHERE tenant_id=$1 AND patient_id=$2 AND coverage_id::text=$3 AND request_snapshot->'request'->>'service_date'=$4 AND request_snapshot->>'member_id'=$5 AND request_snapshot->>'payerid'=$6 ORDER BY created_at DESC,id DESC LIMIT 1")
+        .bind(a.tenant_id).bind(claim.patient_id).bind(claim.snapshot["account"]["coverage_snapshot"]["coverage"]["id"].as_str()).bind(claim.snapshot["account"]["content"]["service_date"].as_str()).bind(claim.snapshot["account"]["coverage_snapshot"]["coverage"]["content"]["member_id"].as_str()).bind(claim.snapshot["account"]["coverage_snapshot"]["payer"]["content"]["payer_code"].as_str()).fetch_optional(&mut **tx).await?;
+    let external_submission: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM claim_revisions WHERE tenant_id=$1 AND claim_id=$2 AND evidence->>'action'='record_submission')").bind(a.tenant_id).bind(claim.id).fetch_one(&mut **tx).await?;
+    let remittance = crate::era_chains::head(tx, a, claim.id).await?;
+    Ok(
+        json!({"submissions":submissions,"reports":reports,"connections":connections,"eligibility":eligibility,"remittance_posted":remittance.is_some(),"external_submission_recorded":external_submission}),
+    )
+}
+
 pub async fn poll_one(pool: &PgPool, c: &Config) -> Result<bool> {
     sync(pool, c).await?;
     let candidate:Option<(Uuid,String)>=sqlx::query_as("SELECT c.tenant_id,c.route_key FROM edi_connections c JOIN jsonb_to_recordset($1) cfg(tenant_id uuid,route_key text) ON cfg.tenant_id=c.tenant_id AND cfg.route_key=c.route_key WHERE NOT paused AND next_poll_at<=now() AND (lease_until IS NULL OR lease_until<now()) ORDER BY next_poll_at,route_key LIMIT 1").bind(json!(c.routes.iter().filter(|r|r.retrieval.is_some()).map(|r|json!({"tenant_id":r.tenant_id,"route_key":r.key})).collect::<Vec<_>>())).fetch_optional(pool).await?;
@@ -377,10 +481,10 @@ pub async fn poll_one(pool: &PgPool, c: &Config) -> Result<bool> {
         Adapter::Stedi => stedi::page(r, token.as_deref(), start)
             .await
             .and_then(|v| stedi_page(v, &r.usage)),
-        Adapter::ClaimMd => {
-            crate::claimmd_eligibility::acquire_rate_limit(pool, r).await?;
-            crate::claimmd::page(r, token.as_deref().unwrap_or("0")).await
-        }
+        Adapter::ClaimMd => match crate::claimmd_eligibility::acquire_rate_limit(pool, r).await {
+            Ok(()) => crate::claimmd::page(r, token.as_deref().unwrap_or("0")).await,
+            Err(error) => Err(error),
+        },
         Adapter::OfficeAllySftp | Adapter::AvailitySftp => crate::sftp_transport::page(r).await,
         _ => Err(Error::Invalid("unsupported retrieval adapter")),
     };
@@ -390,12 +494,32 @@ pub async fn poll_one(pool: &PgPool, c: &Config) -> Result<bool> {
     if !current {
         return Ok(true);
     }
-    let ok = result.is_ok();
+    let mut ok = result.is_ok();
+    let mut persistence_error = None;
     if let Ok(page) = result {
-        for item in &page.items {
-            insert_observation(&mut tx, &a, &key, item).await?;
+        sqlx::query("SAVEPOINT provider_page")
+            .execute(&mut *tx)
+            .await?;
+        let persisted: Result<()> = async {
+            for item in &page.items {
+                insert_observation(&mut tx, &a, &key, item).await?;
+            }
+            if r.adapter == Adapter::ClaimMd {
+                attach_claimmd_status(&mut tx, &a, &key).await?;
+            }
+            sqlx::query("UPDATE edi_connections SET page_token=$3,pages=pages+1,last_success_at=now() WHERE tenant_id=$1 AND route_key=$2").bind(tenant).bind(&key).bind(page.next).execute(&mut *tx).await?;
+            Ok(())
+        }.await;
+        if let Err(error) = persisted {
+            sqlx::query("ROLLBACK TO SAVEPOINT provider_page")
+                .execute(&mut *tx)
+                .await?;
+            ok = false;
+            persistence_error = Some(error);
         }
-        sqlx::query("UPDATE edi_connections SET page_token=$3,pages=pages+1,last_success_at=now() WHERE tenant_id=$1 AND route_key=$2").bind(tenant).bind(&key).bind(page.next).execute(&mut *tx).await?;
+        sqlx::query("RELEASE SAVEPOINT provider_page")
+            .execute(&mut *tx)
+            .await?;
     }
     sqlx::query("UPDATE edi_connections SET lease_id=NULL,lease_until=NULL,next_poll_at=now()+make_interval(secs=>$3),last_result=$4,version=version+1 WHERE tenant_id=$1 AND route_key=$2").bind(tenant).bind(&key).bind(r.retrieval.as_ref().unwrap().interval_seconds as f64).bind(if ok{"page_persisted"}else{"poll_failed_cursor_retained"}).execute(&mut *tx).await?;
     connection_event(
@@ -407,6 +531,9 @@ pub async fn poll_one(pool: &PgPool, c: &Config) -> Result<bool> {
     )
     .await?;
     tx.commit().await?;
+    if let Some(error) = persistence_error {
+        return Err(error);
+    }
     Ok(true)
 }
 pub async fn fetch_one(pool: &PgPool, c: &Config) -> Result<bool> {
@@ -867,4 +994,31 @@ async fn from_source(
     crate::postgres::audit(&mut tx, &a, "edi.provider_source_map", id).await?;
     tx.commit().await?;
     Ok(Json(json!({"id":id,"transport_activated":false})))
+}
+
+#[cfg(test)]
+mod claimmd_tracking_tests {
+    use super::*;
+    #[test]
+    fn exact_status_link_requires_all_frozen_nonempty_identities() {
+        let frozen = json!({"control_number":"SYN-CONTROL","content":{"billing_npi":"1234567893","tax_id":"000000001","external_control_number":""},"snapshot":{"account":{"total_cents":12550,"content":{"service_date":"2026-10-01"},"coverage_snapshot":{"coverage":{"content":{"member_id":"SYN-MEMBER"}},"payer":{"content":{"payer_code":"SYN-PAYER"}}}}}});
+        let evidence = json!({"pcn":"SYN-CONTROL","bill_npi":"1234567893","bill_taxid":"000000001","ins_number":"SYN-MEMBER","payerid":"SYN-PAYER","total_charge":"125.50","fdos":"2026-10-01","status":"A"});
+        assert!(claimmd_identity_matches(&evidence, &frozen));
+        for field in [
+            "pcn",
+            "bill_npi",
+            "bill_taxid",
+            "ins_number",
+            "payerid",
+            "total_charge",
+            "fdos",
+        ] {
+            for value in [json!("other"), json!(""), Value::Null, json!(123)] {
+                let mut mismatch = evidence.clone();
+                mismatch[field] = value;
+                assert!(!claimmd_identity_matches(&mismatch, &frozen), "{field}");
+            }
+        }
+        assert!(!claimmd_identity_matches(&json!({}), &json!({})));
+    }
 }

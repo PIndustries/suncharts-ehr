@@ -4,6 +4,144 @@
 use crate::error::{Error, Result};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
+pub const MAX_FILE_BYTES: usize = 1024 * 1024;
+pub const MAX_CLAIMS: usize = 1000;
+pub const MAX_SEGMENTS: usize = 100_000;
+pub const MAX_TRANSACTIONS: usize = 100;
+pub const MAX_PROVIDER_ADJUSTMENTS: usize = 1000;
+
+/// Source identifiers have different meanings: 5010 REF*2U is a payer ID;
+/// N1*PR/XV identifies a plan. PI is retained as an explicit legacy payer ID.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PayerIdentity {
+    pub n1_qualifier: String,
+    pub n1_identifier: String,
+    pub additional_payer_id: Option<String>,
+}
+impl PayerIdentity {
+    fn code(&self) -> Result<&str> {
+        if self.n1_qualifier.len() > 3 || self.n1_identifier.len() > 100 {
+            return Err(Error::Invalid("invalid payer identification"));
+        }
+        if let Some(id) = &self.additional_payer_id {
+            if id.trim().is_empty() || id.len() > 100 {
+                return Err(Error::Invalid("invalid additional payer identification"));
+            }
+            if self.n1_qualifier == "PI"
+                && !self.n1_identifier.is_empty()
+                && self.n1_identifier != *id
+            {
+                return Err(Error::Invalid(
+                    "conflicting payer identifiers require review",
+                ));
+            }
+            return Ok(id);
+        }
+        if self.n1_qualifier != "PI" || self.n1_identifier.trim().is_empty() {
+            return Err(Error::Invalid(
+                "835 requires payer-loop REF*2U or an explicit legacy N1*PR*name*PI payer ID",
+            ));
+        }
+        Ok(&self.n1_identifier)
+    }
+}
+
+/// Informational evidence never creates a ledger entry or replaces CLP/CAS/SVC
+/// balancing. Original fields and their claim/service scope remain reviewable.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Supplemental {
+    pub segment: String,
+    pub elements: Vec<String>,
+    pub claim_index: Option<usize>,
+    pub service_index: Option<usize>,
+}
+impl Supplemental {
+    fn validate(&self) -> Result<()> {
+        let e = &self.elements;
+        let maximum = match self.segment.as_str() {
+            "AMT" | "QTY" => 3,
+            "TS2" => 19,
+            "TS3" | "MIA" => 24,
+            "MOA" => 9,
+            _ => return Err(Error::Invalid("unsupported supplemental segment")),
+        };
+        if e.is_empty()
+            || e.len() > maximum
+            || e.iter()
+                .any(|v| v.len() > 200 || !v.is_ascii() || v.bytes().any(|b| b.is_ascii_control()))
+        {
+            return Err(Error::Invalid("invalid supplemental evidence shape"));
+        }
+        let number = |v: &str| {
+            let value = v.strip_prefix('-').unwrap_or(v);
+            let mut parts = value.split('.');
+            let whole = parts.next().unwrap_or("");
+            let fraction = parts.next().unwrap_or("");
+            !whole.is_empty()
+                && whole.len() <= 18
+                && whole.bytes().all(|b| b.is_ascii_digit())
+                && fraction.len() <= 6
+                && fraction.bytes().all(|b| b.is_ascii_digit())
+                && parts.next().is_none()
+        };
+        let numeric = |indices: &[usize]| -> Result<()> {
+            if indices
+                .iter()
+                .any(|i| e.get(*i).is_some_and(|v| !v.is_empty() && !number(v)))
+            {
+                return Err(Error::Invalid("invalid supplemental numeric evidence"));
+            }
+            Ok(())
+        };
+        match self.segment.as_str() {
+            "AMT" | "QTY" => {
+                if self.claim_index.is_none()
+                    || e.len() < 2
+                    || e[0].is_empty()
+                    || e[0].len() > 3
+                    || !e[0].bytes().all(|b| b.is_ascii_alphanumeric())
+                    || e[1].is_empty()
+                {
+                    return Err(Error::Invalid(
+                        "claim/service supplemental value requires a qualifier and amount",
+                    ));
+                }
+                numeric(&[1])?;
+            }
+            "TS3" => {
+                if e.len() < 5
+                    || e[0].is_empty()
+                    || e[1].is_empty()
+                    || NaiveDate::parse_from_str(&e[2], "%Y%m%d").is_err()
+                    || e[3].is_empty()
+                    || e[4].is_empty()
+                {
+                    return Err(Error::Invalid("invalid provider summary evidence"));
+                }
+                numeric(&(3..e.len()).collect::<Vec<_>>())?;
+            }
+            "TS2" => numeric(&(0..e.len()).collect::<Vec<_>>())?,
+            "MIA" => {
+                if self.claim_index.is_none() || self.service_index.is_some() {
+                    return Err(Error::Invalid("MIA requires claim scope"));
+                }
+                numeric(&[
+                    0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+                ])?;
+            }
+            "MOA" => {
+                if self.claim_index.is_none() || self.service_index.is_some() {
+                    return Err(Error::Invalid("MOA requires claim scope"));
+                }
+                numeric(&[0, 1, 7, 8])?;
+            }
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Adjustment {
@@ -46,6 +184,10 @@ pub struct ProviderAdjustment {
 #[serde(deny_unknown_fields)]
 pub struct Document {
     pub payer_code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payer_identity: Option<PayerIdentity>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supplemental: Vec<Supplemental>,
     pub trace: String,
     pub payment_date: NaiveDate,
     pub total_paid_cents: i64,
@@ -87,12 +229,13 @@ pub(crate) fn money(s: &str) -> Result<i64> {
 impl Document {
     pub fn validate(&self) -> Result<Vec<String>> {
         if (self.claims.is_empty() && self.provider_adjustments.is_empty())
-            || self.claims.len() > 30
-            || self.provider_adjustments.len() > 120
+            || self.claims.len() > MAX_CLAIMS
+            || self.provider_adjustments.len() > MAX_PROVIDER_ADJUSTMENTS
             || self.trace.trim().is_empty()
             || self.trace.len() > 150
             || self.payer_code.len() > 100
-            || self.issues.len() > 100
+            || self.issues.len() > MAX_SEGMENTS
+            || self.supplemental.len() > MAX_SEGMENTS
             || self.issues.iter().any(|s| s.len() > 300)
         {
             return Err(Error::Invalid(
@@ -100,6 +243,27 @@ impl Document {
             ));
         }
         let mut issues = self.issues.clone();
+        if let Some(identity) = &self.payer_identity {
+            if identity.code()? != self.payer_code {
+                return Err(Error::Invalid(
+                    "payer identity differs from resolved payer code",
+                ));
+            }
+        }
+        for evidence in &self.supplemental {
+            evidence.validate()?;
+            if evidence.claim_index.is_some_and(|i| i >= self.claims.len())
+                || evidence.service_index.is_some_and(|i| {
+                    evidence
+                        .claim_index
+                        .is_none_or(|c| i >= self.claims[c].services.len())
+                })
+            {
+                return Err(Error::Invalid(
+                    "supplemental evidence scope is out of range",
+                ));
+            }
+        }
         if self.currency != "USD" {
             issues.push("Only USD remittances can be posted".into());
         }
@@ -258,9 +422,9 @@ pub(crate) fn parse_transaction(
     raw: &str,
     delimiters: Option<(char, char, char)>,
 ) -> Result<Document> {
-    if raw.len() > 48000 || !raw.is_ascii() {
+    if raw.len() > MAX_FILE_BYTES || !raw.is_ascii() {
         return Err(Error::Invalid(
-            "835 review import requires ASCII text up to 48000 bytes",
+            "835 review import requires ASCII text up to 1 MiB",
         ));
     }
     let raw = raw.trim();
@@ -281,7 +445,7 @@ pub(crate) fn parse_transaction(
         .filter(|s| !s.is_empty())
         .map(|s| s.split(element).collect())
         .collect();
-    if segments.len() > 1500 {
+    if segments.len() > MAX_SEGMENTS {
         return Err(Error::Invalid("835 segment limit exceeded"));
     }
     let tags: Vec<&str> = segments.iter().map(|s| s[0]).collect();
@@ -313,6 +477,8 @@ pub(crate) fn parse_transaction(
     }
     let mut doc = Document {
         payer_code: String::new(),
+        payer_identity: None,
+        supplemental: vec![],
         trace: String::new(),
         payment_date: chrono::Utc::now().date_naive(),
         total_paid_cents: 0,
@@ -326,6 +492,8 @@ pub(crate) fn parse_transaction(
     let mut bpr = false;
     let mut trn = false;
     let mut payer = false;
+    let mut payer_loop = false;
+    let mut summary_scope = false;
     let mut service = None;
     let component = if raw.starts_with("ISA") {
         raw.as_bytes()[104] as char
@@ -386,15 +554,22 @@ pub(crate) fn parse_transaction(
                 doc.trace = v(2).to_owned();
             }
             "N1" => {
+                payer_loop = v(1) == "PR";
                 if v(1) == "PR" {
                     if payer {
                         return Err(Error::Invalid("duplicate payer identity"));
                     }
                     payer = true;
-                    doc.payer_code = v(4).to_owned();
+                    doc.payer_identity = Some(PayerIdentity {
+                        n1_qualifier: v(3).into(),
+                        n1_identifier: v(4).into(),
+                        additional_payer_id: None,
+                    });
                 }
             }
             "CLP" => {
+                payer_loop = false;
+                summary_scope = false;
                 if plb_started {
                     return Err(Error::Invalid("CLP cannot follow PLB"));
                 }
@@ -457,6 +632,20 @@ pub(crate) fn parse_transaction(
                 }
             }
             "REF" => {
+                if v(1) == "2U" && payer_loop {
+                    let identity = doc
+                        .payer_identity
+                        .as_mut()
+                        .ok_or(Error::Invalid("payer reference outside payer loop"))?;
+                    if identity
+                        .additional_payer_id
+                        .as_ref()
+                        .is_some_and(|old| old != v(2))
+                    {
+                        return Err(Error::Invalid("conflicting additional payer identifiers"));
+                    }
+                    identity.additional_payer_id = Some(v(2).into());
+                }
                 if v(1) == "6R" {
                     if let (Some(c), Some(i)) = (doc.claims.last_mut(), service) {
                         c.services[i].line_control = v(2).into();
@@ -464,6 +653,7 @@ pub(crate) fn parse_transaction(
                 }
             }
             "PLB" => {
+                payer_loop = false;
                 plb_started = true;
                 service = None;
                 if seg.len() < 5 || seg.len() > 15 || (seg.len() - 3) % 2 != 0 {
@@ -482,14 +672,39 @@ pub(crate) fn parse_transaction(
                     });
                 }
             }
-            "AMT" | "QTY" | "TS2" | "TS3" | "MIA" | "MOA" => doc.issues.push(format!(
-                "{} supplemental data requires manual review; posting blocked",
-                v(0)
-            )),
-            "DTM" | "N2" | "N3" | "N4" | "PER" | "LX" | "LQ" => {}
+            "LX" => {
+                payer_loop = false;
+                summary_scope = true;
+                service = None;
+            }
+            "AMT" | "QTY" | "TS2" | "TS3" | "MIA" | "MOA" => {
+                let summary = matches!(v(0), "TS2" | "TS3");
+                if summary && !summary_scope {
+                    return Err(Error::Invalid("provider summary requires LX scope"));
+                }
+                let evidence = Supplemental {
+                    segment: v(0).into(),
+                    elements: seg.iter().skip(1).map(|s| (*s).into()).collect(),
+                    claim_index: if summary {
+                        None
+                    } else {
+                        doc.claims.len().checked_sub(1)
+                    },
+                    service_index: if summary { None } else { service },
+                };
+                evidence.validate()?;
+                doc.supplemental.push(evidence);
+            }
+            "DTM" | "N2" | "N3" | "N4" | "PER" | "LQ" => {}
             _ => doc.issues.push(format!("Unsupported 835 segment {}", v(0))),
         }
     }
+    doc.payer_code = doc
+        .payer_identity
+        .as_ref()
+        .ok_or(Error::Invalid("missing payer identity"))?
+        .code()?
+        .into();
     if st.is_none() || !se || !bpr || !trn || !payer {
         return Err(Error::Invalid(
             "835 requires complete ST/SE, BPR, TRN and payer identity",
@@ -501,6 +716,78 @@ pub(crate) fn parse_transaction(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn transaction(body: &str) -> String {
+        let count = body.split('~').filter(|s| !s.is_empty()).count() + 2;
+        format!("ST*835*1~{body}SE*{count}*1~")
+    }
+    fn bulk_transaction(claims: usize) -> String {
+        let mut body = format!("BPR*I*{}*C*CHK************20261020~TRN*1*SYN-LARGE~N1*PR*Synthetic~REF*2U*SYN-PAYER~N1*PE*Practice*XX*1234567893~", claims * 80);
+        for i in 0..claims {
+            body.push_str(&format!("CLP*SYN-{i}*1*120*80*20*12*PAYER-{i}~CAS*CO*45*20~CAS*PR*1*20~AMT*AU*100~QTY*CA*1~"));
+        }
+        transaction(&body)
+    }
+    #[test]
+    fn realistic_supplemental_evidence_preserves_scope_without_changing_accounting() {
+        // CMS 5010 companion guide and UHC's 835 guide use these supplemental
+        // segments. The values are evidence, never extra CLP/CAS ledger amounts.
+        let raw = transaction("BPR*I*80*C*CHK************20261020~TRN*1*SYN-SUPPLEMENTAL~N1*PR*Synthetic*XV*PLAN-123~REF*2U*SYN-PAYER~N1*PE*Practice*XX*1234567893~LX*1~TS3*1234567893*11*20261231*1*120~TS2*0*0*0~CLP*SYN-1*1*120*80*20*12*PAYER-1~MIA*1*0*0*0*N1~MOA*80*0*N1~AMT*AU*100~QTY*CA*1~SVC*HC:99213*120*80~CAS*CO*45*20~CAS*PR*1*20~AMT*B6*100~QTY*ZK*1~");
+        let doc = parse(&raw).unwrap();
+        assert!(doc.validate().unwrap().is_empty());
+        assert_eq!(doc.payer_code, "SYN-PAYER");
+        assert_eq!(doc.total_paid_cents, 8000);
+        assert_eq!(doc.claims[0].patient_responsibility_cents, 2000);
+        assert_eq!(doc.supplemental.len(), 8);
+        assert_eq!(doc.supplemental[0].segment, "TS3");
+        assert_eq!(doc.supplemental[0].claim_index, None);
+        assert_eq!(doc.supplemental[2].claim_index, Some(0));
+        assert_eq!(doc.supplemental[6].service_index, Some(0));
+        assert_eq!(doc.supplemental[6].elements, ["B6", "100"]);
+        let unknown = transaction("BPR*I*0*C*CHK************20261020~TRN*1*SYN-UNKNOWN~N1*PR*Synthetic~REF*2U*SYN-PAYER~CLP*SYN-1*4*120*0*120*12*PAYER-1~CAS*PR*1*120~ZZZ*1~");
+        assert!(!parse(&unknown).unwrap().validate().unwrap().is_empty());
+        assert!(parse(&raw.replace("AMT*B6*100", "AMT*B6*not-money")).is_err());
+    }
+    #[test]
+    fn payer_id_is_scoped_and_conflicting_identifiers_never_route_a_payment() {
+        let base = "BPR*I*0*C*CHK************20261020~TRN*1*SYN-PAYER-ID~N1*PR*Synthetic~REF*2U*SYN-PAYER~N1*PE*Practice*XX*1234567893~REF*2U*PAYEE-NOT-PAYER~CLP*SYN-1*4*120*0*120*12*PAYER-1~CAS*PR*1*120~REF*2U*CLAIM-NOT-PAYER~";
+        assert_eq!(parse(&transaction(base)).unwrap().payer_code, "SYN-PAYER");
+        for replacement in ["REF*2U*SYN-PAYER~REF*2U*OTHER~", "REF*2U*~"] {
+            assert!(parse(&transaction(&base.replacen(
+                "REF*2U*SYN-PAYER~",
+                replacement,
+                1
+            )))
+            .is_err());
+        }
+        assert!(parse(&transaction(&base.replacen(
+            "N1*PR*Synthetic~",
+            "N1*PR*Synthetic*PI*OTHER~",
+            1
+        )))
+        .is_err());
+        assert!(parse(&transaction(&base.replacen("REF*2U*SYN-PAYER~", "", 1))).is_err());
+        assert!(parse(&transaction(&base.replacen(
+            "N1*PR*Synthetic~REF*2U*SYN-PAYER~",
+            "N1*PR*Synthetic*XV*PLAN-ONLY~",
+            1
+        )))
+        .is_err());
+    }
+    #[test]
+    fn larger_remittances_are_bounded_and_old_document_hash_shape_is_preserved() {
+        let raw = bulk_transaction(700);
+        assert!(raw.len() > 48_000);
+        let doc = parse(&raw).unwrap();
+        assert_eq!(doc.claims.len(), 700);
+        assert!(doc.validate().unwrap().is_empty());
+        assert!(parse(&bulk_transaction(MAX_CLAIMS + 1)).is_err());
+        assert!(parse(&" ".repeat(MAX_FILE_BYTES + 1)).is_err());
+        let mut old = serde_json::to_value(parse(&sample()).unwrap()).unwrap();
+        old.as_object_mut().unwrap().remove("payer_identity");
+        old.as_object_mut().unwrap().remove("supplemental");
+        let restored: Document = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap(), old);
+    }
     fn sample() -> String {
         "ST*835*0001~BPR*I*80*C*CHK************20261020~TRN*1*SYN-TRACE~N1*PR*Synthetic*PI*SYN-PAYER~CLP*SC-CONTROL*1*120*80*20*12*SYN-PAYER-CLAIM~CAS*CO*45*20*1~CAS*PR*1*20*1~SE*8*0001~".into()
     }

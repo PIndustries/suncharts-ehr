@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const handlers={},nodes={},fields={};
+const node=id=>nodes[id]??={innerHTML:'',scrollIntoView(){},insertAdjacentHTML(){},querySelector(){return null;}};
+const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const account={id:'account',patient_id:'patient',version:5,status:'posted',total_cents:20000,content:{service_date:'2026-11-10',lines:[{code:'99213',diagnosis_codes:['M62.81','R26.89','M62.81']},{code:'97110',diagnosis_codes:['R26.89','M25.561']},{code:'97112',diagnosis_codes:['M25.561','M62.81']}]},coverage_snapshot:{coverage:{content:{relationship:'self',subscriber_birth_date:'1990-01-01'}},payer:{content:{name:'Synthetic payer'}}}};
+const ctx={console,crypto:{randomUUID:()=> 'synthetic-request'},document:{addEventListener:(event,handler)=>(handlers[event]??=[]).push(handler),querySelector:()=>({querySelector:()=>({insertAdjacentHTML(){}})})},$:node,esc,human:value=>value,date:value=>value,money:value=>String(value),sourceNotice:()=>'',chargeTable:()=>'',billingWrite:()=>true,claimMdConnectionState:{connected:true},selected:'patient',workspace:{patient:{id:'patient'},demographics:{patient_id:'patient',content:{address:{line1:'100 Synthetic Way',line2:'Suite 2',city:'Austin',region:'TX',postal_code:'78701',country:'US'}}}},billingField:(name,label,value)=>{fields[name]=value;return `<input name="${name}" value="${esc(value)}">`;},selectField:(name,label,options,value)=>{fields[name]=value;return '';},claimmdClaimProviderDefaults:()=>({billing_provider_name:'Synthetic Clinic',billing_npi:'1234567893'}),FormData:class{constructor(form){return Object.entries(form.values||{})[Symbol.iterator]();}},run:fn=>ctx.pending=fn(),notice:()=>{}};
+vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/claims.js','utf8'),ctx);
+const original=JSON.stringify(account);
+ctx.claimEditor(account);
+assert.equal(fields.diagnosis_codes,'M62.81, R26.89, M25.561');
+assert.equal(fields.pointer_0,'1, 2');assert.equal(fields.pointer_1,'2, 3');assert.equal(fields.pointer_2,'3, 1');
+assert.equal(fields.patient_address,'100 Synthetic Way, Suite 2, Austin, TX, 78701, US');assert.equal(fields.subscriber_address,fields.patient_address);
+assert.equal(JSON.stringify(account),original,'defaulting a claim must not mutate posted charges');
+ctx.claimEditor({...account,coverage_snapshot:{...account.coverage_snapshot,coverage:{content:{relationship:'spouse'}}}});assert.equal(fields.subscriber_address,'');assert.match(fields.patient_address,/100 Synthetic Way/);
+ctx.selected='other';ctx.claimEditor(account);assert.equal(fields.patient_address,'');ctx.selected='patient';
+ctx.workspace.demographics.patient_id='other';ctx.claimEditor(account);assert.equal(fields.patient_address,'');ctx.workspace.demographics.patient_id='patient';
+ctx.workspace.demographics.content.address.line1={invalid:true};ctx.claimEditor(account);assert.equal(fields.patient_address,'');ctx.workspace.demographics.content.address.line1='100 Synthetic Way';
+const reviewed={diagnosis_codes:['Z01.00','M62.81'],line_diagnosis_pointers:[[2],[1],[2,1]],patient_address:'Reviewed patient address',subscriber_address:'Reviewed subscriber address',notes:'Reviewed',synthetic_test:false};
+ctx.claimEditor(account,{id:'draft',content:reviewed});assert.equal(fields.diagnosis_codes,'Z01.00, M62.81');assert.equal(fields.pointer_0,'2');assert.equal(fields.patient_address,'Reviewed patient address');
+ctx.claimEditor(account,null,null,{id:'parent',payer_control_number:'SYN-PCN',content:reviewed});assert.equal(fields.diagnosis_codes,'Z01.00, M62.81');assert.equal(fields.pointer_2,'2, 1');assert.equal(fields.subscriber_address,'Reviewed subscriber address');
+ctx.claimEditor(account,null,{source_history_id:'source'});assert.equal(fields.diagnosis_codes,'');assert.equal(fields.pointer_0,'');assert.equal(fields.patient_address,'');
+(async()=>{
+ const claim={id:'claim',patient_id:'patient',account_id:'account',version:1,status:'ready',frequency:'original',control_number:'SYN-CLAIM',content:reviewed,snapshot:{account,patient:{given_name:'Avery',family_name:'Synthetic'}}};
+ ctx.api=async url=>url.endsWith('/history')?{items:[]}:{claim,preflight_issues:[],transport:{claimmd_connected:true}};
+ await ctx.showClaim('claim');
+ assert.match(node('claims-detail').innerHTML,/Review Claim\.MD submission/);assert.match(node('claims-detail').innerHTML,/Record external claim activity/);assert.match(node('claims-detail').innerHTML,/only to record a submission already made outside this EHR/);assert.match(node('claims-detail').innerHTML,/value="record_submission"/);
+ claim.status='draft';await ctx.showClaim('claim');assert.match(node('claims-detail').innerHTML,/Review claim readiness/);assert.match(node('claims-detail').innerHTML,/Save review decision/);assert.doesNotMatch(node('claims-detail').innerHTML,/Record external claim activity/);
+ claim.status='submitted';await ctx.showClaim('claim');assert.match(node('claims-detail').innerHTML,/Record external claim activity/);assert.match(node('claims-detail').innerHTML,/does not send a claim or record an insurance payment/);
+ ctx.claimEditor(account);const values={...fields,frequency:'original',notes:'Reviewed synthetic draft',reason:'Reviewed encounter coding'};
+ const submitted=[];ctx.api=async(...args)=>{submitted.push(args);return {id:'new-claim'};};ctx.showClaimsWorkspace=async()=>{};ctx.showClaim=async()=>{};
+ handlers.submit[0]({target:{id:'claim-editor-form',dataset:{request:'synthetic-request',edit:'',parent:''},values},preventDefault(){}});await ctx.pending;
+ assert.equal(submitted[0][0],'/api/v1/patients/patient/billing/accounts/account/claims');assert.equal(submitted[0][1],'POST');assert.equal(submitted[0][3],5);
+ const content=JSON.parse(JSON.stringify(submitted[0][2].content));assert.deepEqual(content.diagnosis_codes,['M62.81','R26.89','M25.561']);assert.deepEqual(content.line_diagnosis_pointers,[[1,2],[2,3],[3,1]]);assert.equal(content.patient_address,content.subscriber_address);
+ console.log('PASS claim draft carries reviewed charge ICD codes and line pointers through submission, scopes address defaults, preserves reviewed/source packets and distinguishes external activity from transmission');
+})().catch(error=>{console.error(error);process.exitCode=1;});

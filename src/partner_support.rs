@@ -238,12 +238,15 @@ pub async fn accept(
 
 /// Revalidate every delegated request. Connect unavailability fails closed; an explicit inactive
 /// response permanently revokes the local session and records that revocation atomically.
-pub(crate) async fn authenticate(auth: &BrowserAuth, token: &str) -> Result<Option<Actor>> {
+pub(crate) async fn authenticate_hash(
+    auth: &BrowserAuth,
+    token_hash: &str,
+) -> Result<Option<Actor>> {
     let session: Option<Session> = sqlx::query_as(
         "SELECT tenant_id,grant_id,partner_id,customer_id,order_id,issuer,audience,expires_at,actor_subject,delegated_role FROM partner_support_sessions
           WHERE token_hash=$1 AND expires_at>now() AND revoked_at IS NULL",
     )
-    .bind(crate::browser::hash(token))
+    .bind(token_hash)
     .fetch_optional(&auth.db)
     .await?;
     let Some(session) = session else {
@@ -287,7 +290,7 @@ pub(crate) async fn authenticate(auth: &BrowserAuth, token: &str) -> Result<Opti
             "UPDATE partner_support_sessions SET revoked_at=COALESCE(revoked_at,clock_timestamp())
               WHERE token_hash=$1 AND revoked_at IS NULL",
         )
-        .bind(crate::browser::hash(token))
+        .bind(token_hash)
         .execute(&mut *tx)
         .await?;
         if revoked.rows_affected() == 1 {
@@ -298,7 +301,7 @@ pub(crate) async fn authenticate(auth: &BrowserAuth, token: &str) -> Result<Opti
         return Err(Error::Unauthorized);
     }
     sqlx::query("UPDATE partner_support_sessions SET last_introspected_at=clock_timestamp() WHERE token_hash=$1 AND revoked_at IS NULL")
-        .bind(crate::browser::hash(token)).execute(&auth.db).await?;
+        .bind(token_hash).execute(&auth.db).await?;
     Ok(Some(Actor {
         sub: session.grant_id,
         tenant_id: session.tenant_id,

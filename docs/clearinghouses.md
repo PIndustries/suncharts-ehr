@@ -27,7 +27,9 @@ legacy environment-managed routes. Never put keys in that file: route entries
 reference environment-variable names. The web workspace shows safe route metadata,
 pause/resume, polling and retrieved evidence.
 
-A file has `{"routes": [...]}` with at most 50 entries. Keys are unique per tenant.
+A file has `{"routes": [...]}` and is bounded to 64 KB. Keys are unique per tenant.
+Enabled database connections are loaded across all tenants without a global
+50-connection cutoff; account binding and credential uniqueness still apply.
 Bind each actual provider account/mailbox to one route and tenant. API credentials
 cannot be shared across configured routes; SFTP host/port/user combinations are
 also unique. Different tenants must use separately authorized provider accounts.
@@ -87,6 +89,38 @@ Claim.MD's `status: A` does not automatically mean payer acceptance. Known respo
 fields and each message are retained as canonical JSON, not converted to X12 or
 claimed to be a byte-for-byte copy of the complete provider page. Unknown fields
 are excluded. This adapter does not synthesize 277CAs or ERA payments from messages.
+
+New claims receive an alphanumeric patient control number of at most 17 characters;
+existing identifiers and their response matching remain unchanged. Claim.MD's
+native submission currently supports original claims only. Replacement (frequency
+7) and void (frequency 8) artifacts are rejected before queueing on a configured
+Claim.MD route. Older queued unsupported artifacts are held before transmission,
+with a deterministic preflight result, rather than an uncertain delivery result.
+
+The background poller attaches response evidence only when a delivered submission
+on the same tenant, route and partner has the exact Claim.MD file receipt and
+matching frozen control number, billing NPI, tax ID, member, payer, amount and
+service date. Missing or ambiguous matches remain in the response inbox for
+review; imported records are not automatically linked. Reused response IDs with
+changed content fail the poll without advancing its cursor. Attachment appends
+submission history and does not change the claim's adjudication state or ledger.
+
+Claim detail includes `tracking`: delivery and external-submission evidence,
+linked responses, matching-date eligibility status, active remittance posting,
+and each attached connection's last attempt, last success, next check and error
+state. The encounter and claim views refresh this saved evidence while open.
+A clearinghouse acknowledgment is labeled separately from an external sender;
+staff review payer identity and the returned message before acting. Claim.MD
+status `A`, a paid-looking message, and an adjudicated claim do not settle a balance.
+
+Eligibility displays the payer's returned copay, coinsurance, deductible and
+out-of-pocket benefits with service, network, coverage level, period and notes.
+Dollar amounts and percentage values retain their documented units, including
+zero. The check is bound to `request_snapshot.request.service_date`; older or
+failed checks are not presented as current benefits. A completed request does
+not establish active coverage, and benefits never overwrite the recorded copay.
+The response format follows the [official Claim.MD API](https://api.claim.md/).
+
 
 Example SFTP route; use `office_ally_sftp` or `availity_sftp` as appropriate:
 

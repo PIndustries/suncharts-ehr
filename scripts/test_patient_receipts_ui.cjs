@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const handlers={},nodes={};
+const node=id=>nodes[id]??={id,children:[],attributes:{},append(child){this.children.push(child);nodes[child.id]=child;},setAttribute(name,value){this.attributes[name]=value;},contentWindow:{focus(){},print(){ctx.printed=true;}}};
+const receipt={id:'receipt-old',patient_id:'patient',appointment_id:'appointment-old',amount_cents:2500,allocated_cents:0,reversed_cents:0,voided:false,method:'external',occurred_on:'2026-10-25',created_at:'2026-10-25T14:00:00Z',reference:'SYNTHETIC-RECEIPT<&',reason:'PRIVATE STAFF EVIDENCE'};
+const appointment={id:'appointment-old',title:'Earlier therapy visit',starts_at:'2026-10-25T14:00:00Z'};
+const ctx={console,Date,Intl,esc,date:v=>v,human:v=>v,me:{role:'owner'},selected:'patient',workspace:{patient:{id:'patient',given_name:'Avery <script>',family_name:'Synthetic',mrn:'LEGACY-123'},appointments:[{id:'appointment-new',title:'Wrong visit',starts_at:'2026-11-10T12:00:00Z'},appointment],billing:{copays:[receipt]}},document:{addEventListener:(name,fn)=>(handlers[name]??=[]).push(fn),querySelector:()=>({textContent:'Synthetic Practice'}),createElement:()=>node('created')},$:node,run:fn=>ctx.pending=fn()};
+vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/billing.js','utf8'),ctx);vm.runInContext(fs.readFileSync('web/patient-revenue.js','utf8'),ctx);
+ctx.openBillingEditor=html=>ctx.editor=html;
+ctx.showCopayReceipt('receipt-old');
+assert.match(ctx.editor,/data-print-copay/);
+const frame=node('copay-receipt-frame'),html=frame.srcdoc;
+assert.equal(frame.attributes.sandbox,'allow-same-origin allow-modals');assert.match(html,/default-src 'none'/);
+assert.match(html,/href="\/patient-print\.css"/);assert(!html.includes('<style>'));
+for(const text of ['Synthetic Practice','LEGACY-123','receipt-old','Earlier therapy visit','2026-10-25','$25.00','External payment','Remaining unapplied credit'])assert(html.includes(text),text);
+assert.match(html,/Avery &lt;script&gt;/);assert.match(html,/SYNTHETIC-RECEIPT&lt;&amp;/);assert(!html.includes('Wrong visit'));assert(!html.includes('PRIVATE STAFF EVIDENCE'));assert(!html.includes('<script>'));
+const context={patient:ctx.workspace.patient,appointment,printedAt:'2026-11-10'};
+const voided=ctx.copayReceiptDocument({...receipt,voided:true},context);assert.match(voided,/Voided receipt/);assert.match(voided,/Original recorded amount/);assert(!voided.includes('Remaining unapplied credit'));
+const corrected=ctx.copayReceiptDocument({...receipt,allocated_cents:2500,reversed_cents:2500},context);assert.match(corrected,/Receipt with corrected allocation/);assert.match(corrected,/does not establish that a refund was issued/);assert(!corrected.includes('Remaining unapplied credit'));
+const missingAppointment=ctx.copayReceiptDocument(receipt,{...context,appointment:null});assert.match(missingAppointment,/Appointment reference:/);assert.match(missingAppointment,/appointment-old/);
+assert.throws(()=>ctx.showCopayReceipt('missing'),/unavailable/);ctx.workspace.billing.copays=[{...receipt,patient_id:'other'}];assert.throws(()=>ctx.showCopayReceipt('receipt-old'),/current patient/);
+const button={dataset:{},closest:()=>null,hasAttribute:name=>name==='data-print-copay'};for(const listener of handlers.click)listener({target:{closest:selector=>selector==='button'?button:null},preventDefault(){}});assert.equal(ctx.printed,true);
+assert.match(ctx.copayReceiptMarkup([receipt]),/View \/ print receipt/);
+console.log('PASS receipt preview/printing, exact appointment context, current-patient isolation, escaped output, historic correction labels, no staff-note disclosure');

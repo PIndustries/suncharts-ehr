@@ -124,7 +124,8 @@ async fn complete_visit_is_durable_scoped_versioned_and_append_only() {
     let other = actor(Uuid::new_v4(), Role::Clinician, None);
     let readonly = actor(tenant, Role::ReadOnly, None);
     let peer = actor(tenant, Role::Clinician, None);
-    let new_patient = json!({"mrn":"SIM-001","given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-01"});
+    let new_patient =
+        json!({"given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-01"});
     assert_eq!(
         call(
             &app,
@@ -193,19 +194,21 @@ async fn complete_visit_is_durable_scoped_versioned_and_append_only() {
     .await;
     assert_eq!(status, 201, "{p}");
     let patient = id(&p);
+    let (status, second_registration) = call(
+        &app,
+        Some(&desk),
+        "POST",
+        "/api/v1/patients",
+        new_patient.clone(),
+        None,
+    )
+    .await;
     assert_eq!(
-        call(
-            &app,
-            Some(&desk),
-            "POST",
-            "/api/v1/patients",
-            new_patient.clone(),
-            None
-        )
-        .await
-        .0,
-        409
+        status, 201,
+        "demographics alone must not merge patient identities"
     );
+    assert_ne!(second_registration["id"], p["id"]);
+    assert_ne!(second_registration["mrn"], p["mrn"]);
     assert_eq!(
         call(
             &app,
@@ -228,7 +231,7 @@ async fn complete_visit_is_durable_scoped_versioned_and_append_only() {
         None,
     )
     .await;
-    assert_eq!(status, 201, "MRNs are tenant-local");
+    assert_eq!(status, 201, "another tenant can register independently");
     let patient_actor = actor(tenant, Role::Patient, Some(patient));
     let wrong_patient = actor(tenant, Role::Patient, Some(Uuid::new_v4()));
     assert_eq!(
@@ -682,7 +685,8 @@ async fn standalone_browser_sessions_require_origin_and_revoke_on_logout() {
     assert_eq!(who["display_name"], "clinician@example.test");
     assert_eq!(who["email"], "clinician@example.test");
     assert_eq!(who["delegated"], false);
-    let patient = json!({"mrn":"WEB-001","given_name":"Taylor","family_name":"Synthetic","birth_date":"1992-05-01"});
+    let patient =
+        json!({"given_name":"Taylor","family_name":"Synthetic","birth_date":"1992-05-01"});
     assert_eq!(
         router
             .clone()

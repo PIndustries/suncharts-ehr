@@ -25,6 +25,15 @@ function fixture(kind){
  }console.log('PASS placed orders and posted accounts have no editable link workflow');
  f=fixture('order');let captured;f.context.api=async(...args)=>{captured=args;return {};};let form={id:'order-diagnoses-form',dataset:{patient:'p1',order:'o1',version:'3',visitVersion:'7'},values:{reason:'Explicit selection'},querySelectorAll:()=>[{value:'d2'}]};await f.submit(form);assert.equal(captured[0],'/api/v1/patients/p1/orders/o1/diagnoses');assert.equal(captured[1],'PUT');assert.equal(captured[3],3);assert.deepEqual(JSON.parse(JSON.stringify(captured[2])),{visit_version:7,diagnosis_ids:['d2'],reason:'Explicit selection'});console.log('PASS order saves submit reviewed IDs with resource and encounter versions');
  f=fixture('account');f.context.api=async(...args)=>{captured=args;return {};};form={id:'account-diagnoses-form',dataset:{patient:'p1',account:'a1',version:'4',visitVersion:'7'},values:{reason:'Explicit charge selection'},querySelectorAll:()=>[{dataset:{diagnosisLine:'0'},querySelectorAll:()=>[{value:'d1'}]}]};await f.submit(form);assert.equal(captured[3],4);assert.deepEqual(JSON.parse(JSON.stringify(captured[2])),{visit_version:7,lines:[{line_index:0,diagnosis_ids:['d1']}],reason:'Explicit charge selection'});console.log('PASS charge saves select individual line IDs without replacing manual code fields');
+ for(const initialSection of ['visits','billing',undefined]){
+  f=fixture('account');if(initialSection!==undefined)f.context.chartSection=initialSection;
+  await f.run('editAccountDiagnosisLinks()');let reloaded,shown;
+  f.context.api=async()=>({});
+  f.context.selectPatient=async(...args)=>{reloaded=args;f.context.chartSection='summary';};
+  f.context.showChartSection=section=>{shown=section;};
+  form={id:'account-diagnoses-form',dataset:{patient:'p1',account:'a1',version:'4',visitVersion:'7'},values:{reason:'Stay in selected workflow'},querySelectorAll:()=>[{dataset:{diagnosisLine:'0'},querySelectorAll:()=>[{value:'d1'}]}]};
+  await f.submit(form);assert.deepEqual(reloaded,['p1','v1']);assert.equal(shown,initialSection??'billing');
+ }console.log('PASS charge diagnosis saves preserve encounter or billing workflow across patient reload');
  for(const kind of ['order','account']){
   f=fixture(kind);f.context.api=async()=>{throw new Error('Visit changed; review current diagnoses');};form=kind==='order'?{id:'order-diagnoses-form',dataset:{patient:'p1',order:'o1',version:'3',visitVersion:'7'},values:{reason:'Keep edit'},querySelectorAll:()=>[{value:'d2'}]}:{id:'account-diagnoses-form',dataset:{patient:'p1',account:'a1',version:'4',visitVersion:'7'},values:{reason:'Keep edit'},querySelectorAll:()=>[]};f.host.innerHTML='Reviewed unsaved selection';await assert.rejects(f.submit(form),/Visit changed/);assert.equal(f.host.innerHTML,'Reviewed unsaved selection');
  }console.log('PASS failed/conflicting link saves retain selections for explicit review');

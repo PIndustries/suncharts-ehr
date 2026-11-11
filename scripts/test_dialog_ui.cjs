@@ -4,6 +4,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 const source=fs.readFileSync('web/dialog.js','utf8');
 const index=fs.readFileSync('web/index.html','utf8');
 const portal=fs.readFileSync('web/patient-portal.html','utf8');
+const style=fs.readFileSync('web/style.css','utf8'),portalStyle=fs.readFileSync('web/patient-portal.css','utf8');
 const scripts=fs.readdirSync('web').filter(name=>name.endsWith('.js')&&name!=='dialog.js');
 
 class EventTargetFake{
@@ -30,7 +31,7 @@ class ElementFake extends EventTargetFake{
 }
 class DocumentFake extends EventTargetFake{
  constructor(){super();this.ids=new Map();this.head=new ElementFake('head',this);this.body=new ElementFake('body',this);this.head.isConnected=this.body.isConnected=true;this.activeElement=this.body}
- createElement(tag){return new ElementFake(tag,this)}
+ createElement(tag){assert.notEqual(tag.toLowerCase(),'style','dialogs must use external CSS allowed by the application CSP');return new ElementFake(tag,this)}
  getElementById(id){return this.ids.get(id)||null}
 }
 const key=(document,value,shiftKey=false)=>document.dispatchEvent({type:'keydown',key:value,shiftKey,defaultPrevented:false});
@@ -130,6 +131,10 @@ const key=(document,value,shiftKey=false)=>document.dispatchEvent({type:'keydown
 
  assert.match(index,/<script src="\/dialog\.js"><\/script>/);
  assert.match(portal,/<script src="\/dialog\.js" defer><\/script>/);
+ const dialogRules=style.match(/^#suncharts-dialog-host\{[^\n]+$/m)?.[0];
+ assert.ok(dialogRules?.includes('.app-dialog footer button'),'the app stylesheet contains complete scoped dialog controls');
+ assert.ok(portalStyle.includes(dialogRules),'the patient portal uses the same external dialog rules');
+ assert.equal(document.head.children.length,0,'opening confirmations never injects an inline stylesheet');
  for(const name of scripts){
   const script=fs.readFileSync(`web/${name}`,'utf8');
   assert.doesNotMatch(script,/\b(?:window\.)?confirm\s*\(/,`${name} must not use browser confirm dialogs`);
