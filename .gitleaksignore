@@ -1,0 +1,8 @@
+# Exact historical test fixtures only; do not suppress these paths or scanner rules.
+# Fixed synthetic JWT signing key used only by the disposable payment-operations API test.
+7931f956abc2f762eae8f0b787471a11578b1f2f:src/payment_operations_tests.rs:generic-api-key:113
+# Synthetic pathway trigger identifiers, not credentials.
+1006b48176cf4daff8aea97e92c9416566749e2e:tests/care_pathways.rs:generic-api-key:797
+f94e9d34ccf8d7b9d5de13fe6f3d668789250f25:tests/care_pathways.rs:generic-api-key:193
+# Repeated hexadecimal unit-test digest for stable invocation UUID derivation.
+4dfc3afce25d674950ad8f43d1c2d8c62beec094:src/automation_event_runtime.rs:generic-api-key:1212
