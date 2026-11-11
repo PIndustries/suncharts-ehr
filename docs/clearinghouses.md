@@ -109,7 +109,12 @@ Example Claim.MD route (same common tenant/partner/usage fields as above):
 
 Claim.MD uses its ResponseID position rather than start_at for discovery. The
 initial response ID defaults to zero; subsequent positions come only from committed
-provider responses. `start_at` remains recorded as an operator review boundary.
+provider responses. An exact empty JSON object from the status feed is a successful
+empty poll and retains the saved ResponseID. An exact empty ERA page likewise
+retains the saved ERAID; when ending a paginated scan, it completes only through
+the highest ERAID already durably received on earlier pages. Missing cursors in
+nonempty or malformed responses remain failures, with prior cursors retained.
+`start_at` remains recorded as an operator review boundary.
 Claim.MD's `status: A` does not automatically mean payer acceptance. Known response
 fields and each message are retained as canonical JSON, not converted to X12 or
 claimed to be a byte-for-byte copy of the complete provider page. Unknown fields

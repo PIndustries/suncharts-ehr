@@ -6212,6 +6212,7 @@ fn claimmd_835(c: &Value, trace: &str) -> String {
 }
 #[derive(Clone)]
 struct EraMock {
+    response: Value,
     list: Value,
     download: Value,
     requests: Vec<Value>,
@@ -6226,12 +6227,14 @@ async fn era_mock(
     tokio::task::JoinHandle<()>,
 ) {
     let state = Arc::new(std::sync::Mutex::new(EraMock {
+        response: json!({"last_responseid":"9","claim":[]}),
         list: json!({"last_eraid":"2","era":[{"eraid":"1","payerid":"SYN-ONLY","prov_npi":"1234567893","prov_taxid":"000000001","check_number":"SYN-AUTO-ERA","paid_amount":"80.00","paid_date":"2026-10-01","check_type":"eft","AccountKey":"must-not-retain"}]}),
         download: json!({"eraid":"1","data":[raw]}),
         requests: vec![],
     }));
     let m = state.clone();
     let n = state.clone();
+    let responses = state.clone();
     let router = Router::new()
         .route(
             "/services/eralist/",
@@ -6268,7 +6271,20 @@ async fn era_mock(
         )
         .route(
             "/services/response/",
-            axum::routing::post(|| async { axum::Json(json!({"last_responseid":"9","claim":[]})) }),
+            axum::routing::post(move |h: HeaderMap, body: axum::body::Bytes| {
+                let responses = responses.clone();
+                async move {
+                    assert_eq!(h["accept"], "application/json");
+                    let fields: std::collections::HashMap<String, String> =
+                        url::form_urlencoded::parse(&body).into_owned().collect();
+                    assert_eq!(fields["AccountKey"], "synthetic-loopback-key");
+                    let mut state = responses.lock().unwrap();
+                    state
+                        .requests
+                        .push(json!({"response_cursor":fields["ResponseID"]}));
+                    axum::Json(state.response.clone())
+                }
+            }),
         );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -8504,4 +8520,199 @@ async fn native_claimmd_settings_encrypt_secrets_and_scope_runtime_activation() 
     std::env::remove_var("ENGINE_CREDENTIAL_KEY_FILE");
     std::fs::remove_dir_all(key_dir).unwrap();
     db.close().await;
+}
+
+#[tokio::test]
+async fn claimmd_exact_empty_feeds_are_successful_without_resetting_cursors_or_posting_money() {
+    let (r, db, a, _) = setup().await;
+    let (claim, partner, _) = automated_fixture(&r, &a).await;
+    let (config, state, task) = era_mock(&a, &partner, claimmd_835(&claim, "SYN-EMPTY-FEED")).await;
+    {
+        let mut mock = state.lock().unwrap();
+        mock.response = json!({});
+        mock.list = json!({});
+    }
+    let baseline: i64 = sqlx::query_scalar("SELECT count(*) FROM billing_entries")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    suncharts_engine::remittance_automation::poll_one(&db, &config)
+        .await
+        .unwrap();
+    for saved in ["0", "19", "19"] {
+        sqlx::query("UPDATE edi_connections SET page_token=$1,next_poll_at=now()")
+            .bind(saved)
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE edi_era_feeds SET cursor_id=$1,next_poll_at=now()")
+            .bind(saved)
+            .execute(&db)
+            .await
+            .unwrap();
+        assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+            .await
+            .unwrap());
+        assert!(
+            suncharts_engine::remittance_automation::poll_one(&db, &config)
+                .await
+                .unwrap()
+        );
+        let status: (String, String, bool) = sqlx::query_as(
+            "SELECT page_token,last_result,last_success_at IS NOT NULL FROM edi_connections",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let era: (String, String, bool) = sqlx::query_as(
+            "SELECT cursor_id,last_result,last_success_at IS NOT NULL FROM edi_era_feeds",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(status, (saved.into(), "page_persisted".into(), true));
+        assert_eq!(era, (saved.into(), "era_page_persisted".into(), true));
+    }
+    for invalid in [
+        json!(null),
+        json!([]),
+        json!({"unexpected":"value"}),
+        json!({"error":null}),
+        json!({"claim":[]}),
+        json!({"era":[]}),
+    ] {
+        {
+            let mut mock = state.lock().unwrap();
+            mock.response = invalid.clone();
+            mock.list = invalid;
+        }
+        sqlx::query("UPDATE edi_connections SET next_poll_at=now()")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE edi_era_feeds SET next_poll_at=now()")
+            .execute(&db)
+            .await
+            .unwrap();
+        assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+            .await
+            .unwrap());
+        assert!(
+            suncharts_engine::remittance_automation::poll_one(&db, &config)
+                .await
+                .unwrap()
+        );
+        let status: (String, String) =
+            sqlx::query_as("SELECT page_token,last_result FROM edi_connections")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        let era: (String, String) =
+            sqlx::query_as("SELECT cursor_id,last_result FROM edi_era_feeds")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(status, ("19".into(), "poll_failed_cursor_retained".into()));
+        assert_eq!(era, ("19".into(), "era_poll_failed_cursor_retained".into()));
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM edi_remote_reports")
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM billing_entries")
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+        baseline
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM era_remittances")
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(!state
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .any(|r| r.get("download").is_some()));
+    task.abort();
+}
+
+#[tokio::test]
+async fn claimmd_empty_terminal_era_page_finishes_only_previously_persisted_high_water() {
+    let (r, db, a, _) = setup().await;
+    let (claim, partner, _) = automated_fixture(&r, &a).await;
+    let (config, state, task) =
+        era_mock(&a, &partner, claimmd_835(&claim, "SYN-EMPTY-TERMINAL")).await;
+    state.lock().unwrap().list = json!({"last_eraid":"100","era":(1..=100).rev().map(|n|json!({"eraid":n.to_string()})).collect::<Vec<_>>()});
+    assert!(
+        suncharts_engine::remittance_automation::poll_one(&db, &config)
+            .await
+            .unwrap()
+    );
+    let cursor: String = sqlx::query_scalar("SELECT cursor_id FROM edi_era_feeds")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&cursor).unwrap(),
+        json!({"after":0,"page":2,"max_seen":100})
+    );
+    let original: Value =
+        sqlx::query_scalar("SELECT jsonb_agg(to_jsonb(r) ORDER BY r.id) FROM edi_remote_reports r")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    state.lock().unwrap().list = json!({});
+    for _ in 0..2 {
+        sqlx::query("UPDATE edi_era_feeds SET next_poll_at=now()")
+            .execute(&db)
+            .await
+            .unwrap();
+        assert!(
+            suncharts_engine::remittance_automation::poll_one(&db, &config)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT cursor_id FROM edi_era_feeds")
+                .fetch_one(&db)
+                .await
+                .unwrap(),
+            "100"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, Value>(
+                "SELECT jsonb_agg(to_jsonb(r) ORDER BY r.id) FROM edi_remote_reports r"
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+            original
+        );
+    }
+    let requests = state.lock().unwrap().requests.clone();
+    assert_eq!(
+        requests,
+        vec![
+            json!({"era_cursor":"0","page":"1"}),
+            json!({"era_cursor":"0","page":"2"}),
+            json!({"era_cursor":"100","page":"1"})
+        ]
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM era_remittances")
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+        0
+    );
+    task.abort();
 }
