@@ -198,6 +198,50 @@ function currentHostedCopayView(view,checkEditor=true){
  return selected===view.patient&&me===view.identity&&chartSection===view.section&&(typeof activeVisit==='undefined'?null:activeVisit?.id)===view.visit&&(typeof encounterSection==='undefined'?null:encounterSection)===view.step&&revenueAppointment()?.id===view.appointment&&(!checkEditor||!view.editor||typeof billingEditorHost==='function'&&billingEditorHost()===view.editor&&view.editor.firstChild===view.editorChild);
 }
 function hostedCopayBase(state){return `/api/v1/patients/${encodeURIComponent(state.patient)}/appointments/${encodeURIComponent(state.appointment)}/copay-checkouts`;}
+function validCopayReturnId(value){return typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);}
+function validateCopayReturn(operation,id,previous){
+ if(!operation||!validCopayReturnId(operation.id)||operation.id.toLowerCase()!==id.toLowerCase()||!validCopayReturnId(operation.patient_id)||!validCopayReturnId(operation.appointment_id)||(previous&&(operation.patient_id!==previous.patient_id||operation.appointment_id!==previous.appointment_id)))throw new Error('The card payment could not be matched to this return. Open its appointment from the patient chart.');
+ return operation;
+}
+function copayReturnStatusMarkup(operation,id,message){
+ const labels={creating:'Payment request is still being reconciled',open:'Awaiting card payment',paid:'Card payment verified',refunded:'Card payment refunded',expired:'Checkout expired',needs_review:'Payment status needs review'};
+ return `<h2>Card payment status</h2>${operation?`<p><b>${operation.livemode?'':'TEST · '}${money(operation.amount_cents)} · ${esc(labels[operation.status]||'Payment status unavailable')}</b></p>${operation.receipt_id?'<p>A verified payment receipt is recorded.</p>':''}`:''}<p role="status">${esc(message)}</p><p class="muted">Returning from checkout does not confirm payment or cancellation. Do not collect again until the recorded status is resolved.</p>${validCopayReturnId(id)?`<button type="button" data-copay-return-retry="${esc(id)}">Refresh returned payment</button>`:''}`;
+}
+async function openHostedCopayReturn(id){
+ if(!me)return;
+ const identity=me;
+ showTool('Card payment status');
+ $('tools').innerHTML='<section id="copay-return-result" class="panel"><h2>Card payment status</h2><p role="status">Loading the authorized payment record…</p></section>';
+ const host=$('copay-return-result'),current=()=>me===identity&&$('copay-return-result')===host&&$('page-title')?.textContent==='Card payment status'&&!$('tools').hidden;
+ if(!validCopayReturnId(id)){host.innerHTML=copayReturnStatusMarkup(null,null,'This card payment return link is invalid. Open the appointment from its patient chart.');return;}
+ let operation,refreshFailed=false;
+ try{
+  const base=`/api/v1/billing/copay-checkouts/${encodeURIComponent(id)}`;
+  operation=validateCopayReturn((await api(base)).operation,id);
+  if(!current())return;
+  if(billingCan('edit')&&!['expired','refunded'].includes(operation.status)){
+   try{const refreshed=await api(`${base}/refresh`,'POST',{});if(!current())return;operation=validateCopayReturn(refreshed.operation,id,operation);}
+   catch{if(!current())return;refreshFailed=true;}
+  }
+  if(!current())return;
+  const statusMessage=refreshFailed?'The latest processor check could not complete. The last saved status is shown; refresh before collecting again.':'Status was loaded from the authorized payment record.';
+  if(!billingCan('create')||(typeof workspaceResourceAllowed==='function'&&!workspaceResourceAllowed('clinical'))){host.innerHTML=copayReturnStatusMarkup(operation,id,statusMessage+' Your access does not include opening this appointment’s full billing chart.');return;}
+  await selectPatient(operation.patient_id,null,current);
+  if(!current())return;
+  if(selected!==operation.patient_id||workspace?.patient?.id!==operation.patient_id||!workspace.appointments?.some(item=>item.id===operation.appointment_id))throw new Error('The appointment could not be opened. Review its payment status before collecting again.');
+  insuranceAppointmentSelection.set(operation.patient_id,operation.appointment_id);
+  activeVisit=workspace.visits?.find(visit=>visit.appointment_id===operation.appointment_id);
+  chartSection=activeVisit?'visits':'insurance';encounterSection='charges';
+  showTool('Patients & encounters');$('tools').replaceChildren();$('tools').hidden=true;$('clinical-workspace').hidden=false;
+  $('new-patient').hidden=!canRegisterPatient();$('toggle-directory').hidden=false;
+  const state=hostedCopayStateFor(operation.appointment_id);acceptHostedCopayOperation(state,operation);
+  renderChart();showChartSection(chartSection);if(activeVisit)setEncounterSection('charges');
+  const panel=$(activeVisit?'encounter-hosted-copay':'insurance-hosted-copay');panel?.scrollIntoView({block:'center'});
+  notice(refreshFailed?statusMessage:operation.status==='paid'&&operation.receipt_id?'Card payment verified. Review the recorded receipt below.':operation.status==='open'?'Checkout is still awaiting payment. Returning here did not charge the card.':'Review the recorded card payment status below.',refreshFailed);
+ }catch{
+  if(current())host.innerHTML=copayReturnStatusMarkup(operation,id,operation?'The payment record is available, but the chart could not be opened. Refresh or open the appointment from the patient directory.':'This card payment could not be loaded with your current access. Refresh or open the appointment from its patient chart.');
+ }
+}
 function safeHostedCopayUrl(value){try{const url=new URL(value);return url.protocol==='https:'&&url.hostname==='checkout.stripe.com'&&!url.username&&!url.password&&!url.port?url.href:null;}catch{return null;}}
 function hostedCopayOperationMarkup(operation){
  const labels={creating:'Preparing secure checkout',open:'Awaiting card payment',paid:'Card payment verified',refunded:'Card payment refunded',expired:'Checkout expired',needs_review:'Payment status needs review'},url=operation.status==='open'?safeHostedCopayUrl(operation.checkout_url):null;
@@ -245,6 +289,7 @@ async function refreshHostedCopay(appointment,id){
 }
 document.addEventListener('click',event=>{
  const button=event.target.closest('button');if(!button)return;
+ if(button.dataset.copayReturnRetry){event.preventDefault();run(()=>openHostedCopayReturn(button.dataset.copayReturnRetry));return;}
  if(button.dataset.collectCardCopay){event.preventDefault();run(()=>openHostedCopayEditor(button.dataset.collectCardCopay));return;}
  if(button.dataset.retryHostedCopay){event.preventDefault();run(async()=>{const state=hostedCopayStateFor(button.dataset.retryHostedCopay);if(!state.uncertain||!state.retry)throw new Error('Refresh the current card payment status.');await createHostedCopay(state,state.retry);});return;}
  if(button.dataset.refreshHostedCopay){event.preventDefault();run(()=>refreshHostedCopay(button.dataset.appointment,button.dataset.refreshHostedCopay));return;}

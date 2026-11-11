@@ -33993,6 +33993,144 @@
           }
         ]
       }
+    },
+    "/api/v1/billing/copay-checkouts/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getHostedCopayReturn",
+        "summary": "Resolve an authorized card-checkout return",
+        "description": "Authenticated staff billing-read lookup by opaque operation UUID. Tenant-scoped and audited; returns only the authorized saved operation, including its patient and appointment IDs. The return URL is not payment evidence.",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "billing.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current durable operation state; financial effects require verified provider evidence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "operation": {
+                      "$ref": "#/components/schemas/HostedCopayOperation"
+                    }
+                  },
+                  "required": [
+                    "operation"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input or unavailable/mismatched payment mode"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Billing permission denied"
+          },
+          "404": {
+            "description": "Tenant/patient/appointment-scoped record not found"
+          },
+          "409": {
+            "description": "Conflicting retry, pending collection, unsafe balance or over-limit history"
+          },
+          "500": {
+            "description": "Database/audit failure; mutation rolled back"
+          }
+        }
+      }
+    },
+    "/api/v1/billing/copay-checkouts/{id}/refresh": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "refreshHostedCopayReturn",
+        "summary": "Reconcile an existing checkout after browser return",
+        "description": "Billing-edit and native scheduling authorization are required. Retrieves only a previously bound provider session using the stored tenant/account/mode binding; never creates or retries creating a checkout. Missing session binding remains pending. Payment and refund ledger changes require independently verified provider evidence, never query parameters. Existing worker/manual retry behavior is unchanged.",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "billing.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current durable operation state; financial effects require verified provider evidence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "operation": {
+                      "$ref": "#/components/schemas/HostedCopayOperation"
+                    }
+                  },
+                  "required": [
+                    "operation"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input or unavailable/mismatched payment mode"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Billing permission denied"
+          },
+          "404": {
+            "description": "Tenant/patient/appointment-scoped record not found"
+          },
+          "409": {
+            "description": "Conflicting retry, pending collection, unsafe balance or over-limit history"
+          },
+          "500": {
+            "description": "Database/audit failure; mutation rolled back"
+          }
+        }
+      }
     }
   },
   "components": {
