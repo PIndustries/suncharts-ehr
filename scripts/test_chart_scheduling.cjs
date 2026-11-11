@@ -11,8 +11,8 @@ function fixture(){
   localTime:value=>{const d=new Date(value),pad=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;},
   date:value=>new Date(value).toISOString(),esc:value=>String(value??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x])),
   $:node,me:{role:'clinician',user_id:'provider-1'},selected:'off-page-patient',
-  activeVisit:{id:'visit-1',appointment_id:'appointment-1'},
-  workspace:{patient:{id:'off-page-patient',family_name:'Example',given_name:'Synthetic',mrn:'SYN-PINNED'},appointments:[{id:'appointment-1',title:'Synthetic follow-up',category:'Follow-up',facility:'Synthetic clinic',room:'4',clinician_id:'provider-1',status:'in_progress',starts_at:'2026-10-25T14:00:00Z'}]},
+  activeVisit:{id:'visit-1',appointment_id:'appointment-1',status:'in_progress'},
+  workspace:{visits:[{id:'visit-1',appointment_id:'appointment-1',status:'in_progress',created_at:'2026-10-25T14:00:00Z'}],patient:{id:'off-page-patient',family_name:'Example',given_name:'Synthetic',mrn:'SYN-PINNED'},appointments:[{id:'appointment-1',title:'Synthetic follow-up',category:'Follow-up',facility:'Synthetic clinic',room:'4',clinician_id:'provider-1',status:'in_progress',starts_at:'2026-10-25T14:00:00Z'}]},
   FormData:class{constructor(form){this.values=form.values;}[Symbol.iterator](){return this.values[Symbol.iterator]();}},
   showChartSection:section=>calls.push(['section',section]),
   notice:message=>calls.push(['notice',message]),
@@ -29,8 +29,8 @@ async function main(){
  let html=f.evaluate('patientAppointmentWorkspace()');
  assert.match(html,/data-chart-book="off-page-patient"/);
  assert.match(html,/Synthetic follow-up/);assert.match(html,/Follow-up/);assert.match(html,/Synthetic clinic · Room 4/);
- assert.match(html,/<details >/); // History is collapsed during the active encounter.
- assert.doesNotMatch(html,/id="booking-form"/);
+ assert.match(html,/<details id="patient-encounter-history" >/); // History is collapsed during the active encounter.
+ assert.doesNotMatch(html,/id="booking-form"/);assert.match(html,/data-visit="visit-1">Continue encounter/);assert.doesNotMatch(html,/data-history-appointment="appointment-1"/,'linked appointments appear once as their encounter');
  await f.evaluate("openPatientAppointmentEditor('off-page-patient')");
  html=f.node('chart-booking-editor').innerHTML;
  assert.match(html,/data-chart-patient="off-page-patient" data-chart-visit="visit-1"/);
@@ -72,6 +72,20 @@ async function main(){
  f.c.selected='another-patient';submit({target:form,preventDefault(){}});
  await assert.rejects(f.c.lastRun,/Patient context changed/);
  assert.equal(f.calls.filter(call=>call[0]==='api'&&call[2]==='POST').length,postsBefore);
+
+ // Appointment and encounter records form one history without losing orphan records.
+ const h=fixture();h.evaluate(`workspace.appointments.push(
+ {id:'appointment-complete',title:'Completed return',clinician_id:'provider-1',status:'completed',starts_at:'2026-10-24T14:00:00Z'},
+ {id:'appointment-booked',title:'Next appointment',clinician_id:'provider-1',status:'booked',starts_at:'2026-10-28T14:00:00Z'},
+ {id:'appointment-unlinked',title:'Historic appointment',clinician_id:'provider-1',status:'completed',starts_at:'2026-10-22T14:00:00Z'});
+ workspace.visits.push({id:'visit-complete',appointment_id:'appointment-complete',status:'signed',created_at:'2026-10-24T14:05:00Z',signed_at:'2026-10-26T14:00:00Z'},
+ {id:'visit-orphan',appointment_id:'missing-appointment',status:'signed',created_at:'2026-10-23T14:00:00Z'});`);
+ const entries=JSON.parse(JSON.stringify(h.evaluate('patientEncounterHistoryEntries()')));
+ assert.deepEqual(entries.map(row=>row.visit?.id||row.appointment.id),['appointment-booked','visit-1','visit-complete','visit-orphan','appointment-unlinked'],'history sorts by service date instead of later signature date');
+ const timeline=h.evaluate('patientAppointmentWorkspace()');
+ assert.equal([...timeline.matchAll(/data-history-visit="visit-complete"/g)].length,1);assert.doesNotMatch(timeline,/data-history-appointment="appointment-complete"/);assert.match(timeline,/data-visit="visit-complete">Open completed encounter/);assert.match(timeline,/Completed · Signed encounter/);assert.match(timeline,/data-visit="visit-orphan"/);assert.match(timeline,/data-history-appointment="appointment-unlinked"/);assert.match(timeline,/No encounter record is linked/);assert.match(timeline,/data-check-in="appointment-booked"/);
+ h.c.me.role='read_only';assert.doesNotMatch(h.evaluate('patientAppointmentWorkspace()'),/data-check-in=|data-start=|data-chart-book=/);assert.match(h.evaluate('patientAppointmentWorkspace()'),/data-visit="visit-complete"/);assert.equal(h.calls.length,0,'history rendering performs no mutation or fetch');
+ h.c.activeVisit=null;assert.match(h.evaluate('patientAppointmentWorkspace()'),/<details id="patient-encounter-history" open>/);
  console.log('PASS chart booking: full editor, pinned patient, actual provider, roles, no opening rerender, capture close, native POST, visit-preserving return and stale-context rejection');
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

@@ -108,4 +108,17 @@ for(const file of ['web/claimmd-native.js','web/provider-settings.js','web/clear
  console.log('PASS Connect Claim.MD opens direct AccountKey setup without a trading-partner prerequisite');
  console.log('PASS Claim.MD setup focuses its heading without scrolling the clearinghouse workspace away');
  console.log('PASS native claim lifecycle and reviewed synthetic-test submission remain visible in the EHR');
+ const originalApi=context.api;
+ for(const change of ['identity','loading-host','generation']){
+  let release;context.bridgeCurrent=true;context.bridgeGuard=()=>context.bridgeCurrent;
+  context.api=async path=>path==='/api/v1/billing/claims'?new Promise(resolve=>release=resolve):originalApi(path);
+  const pending=vm.runInContext('showEdiWorkspace(undefined,bridgeGuard)',context);await settle();assert.equal(typeof release,'function');
+  if(change==='identity')context.bridgeCurrent=false;
+  if(change==='loading-host')nodes.tools.firstElementChild={id:'new-workspace'};
+  if(change==='generation')vm.runInContext('ediWorkspaceGeneration++',context);
+  nodes.tools.innerHTML='A different workspace is now open';release({items:[]});assert.equal(await pending,false);assert.equal(workspaceHtml,'A different workspace is now open','late native reads must not replace another workspace');
+ }
+ context.api=originalApi;
+ console.log('PASS existing-submission workspace bridge guards identity, loading host and generation before publishing awaited claim data');
+
 })().catch(error=>{console.error(error);process.exitCode=1;});

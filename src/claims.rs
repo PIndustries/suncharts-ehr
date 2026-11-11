@@ -834,14 +834,27 @@ fn html_escape(value: &str) -> String {
 fn json_text<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or("")
 }
-async fn cms1500(
-    a: Actor,
-    ExtractState(s): ExtractState<State>,
-    Path(id): Path<Uuid>,
-) -> Result<Html<String>> {
-    a.staff()?;
-    let mut tx = db(&s)?.begin().await?;
-    let c = claim_row(&mut tx, &a, id).await?;
+fn review_text(value: &str) -> String {
+    if value.trim().is_empty() {
+        "Not recorded".to_string()
+    } else {
+        html_escape(value)
+    }
+}
+fn review_money(cents: Option<i64>) -> String {
+    cents
+        .map(|v| {
+            format!(
+                "{}${}.{:02}",
+                if v < 0 { "-" } else { "" },
+                v.unsigned_abs() / 100,
+                v.unsigned_abs() % 100
+            )
+        })
+        .unwrap_or_else(|| "Not recorded".to_string())
+}
+// A records review of frozen claim evidence, never a paper-submission form.
+fn render_cms1500_review(c: &Claim) -> Result<String> {
     let content: ClaimContent = serde_json::from_value(c.content.clone())
         .map_err(|_| Error::Invalid("invalid claim content"))?;
     let account = &c.snapshot["account"];
@@ -862,14 +875,25 @@ async fn cms1500(
                 .cloned()
                 .unwrap_or_default()
                 .iter()
-                .map(usize::to_string)
+                .map(|pointer| {
+                    if (1..=12).contains(pointer) && *pointer <= content.diagnosis_codes.len() {
+                        ((b'A' + *pointer as u8 - 1) as char).to_string()
+                    } else {
+                        "Unresolved".to_string()
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
+            let units = line["units"].as_i64().filter(|v| *v > 0)
+                .map(|v| v.to_string()).unwrap_or_else(|| "Not recorded".into());
+            let modifiers = json_text(line, "modifiers").trim();
+            let procedure = if modifiers.is_empty() { html_escape(json_text(line, "code")) }
+                else { format!("{} · {}", html_escape(json_text(line, "code")), html_escape(modifiers)) };
             let cents = line.get("amount_cents").and_then(Value::as_i64).unwrap_or(0);
-            format!("<tr><td>{0}</td><td>{0}</td><td>{1}</td><td></td><td class=procedure>{2}<small>{3}</small></td><td>{4}</td><td class=charge>${5}.{6:02}</td><td>1</td><td></td><td>{7}</td></tr>",
+            format!("<tr><td>{0}</td><td>{0}</td><td>{1}</td><td></td><td class=procedure>{2}<small>{3}</small></td><td>{4}</td><td class=charge>${5}.{6:02}</td><td>{8}</td><td></td><td>{7}</td></tr>",
                 html_escape(json_text(&account["content"], "service_date")), html_escape(&content.place_of_service),
-                html_escape(json_text(line, "code")), html_escape(json_text(line, "description")), html_escape(&pointers),
-                cents / 100, cents.abs() % 100, html_escape(&content.rendering_npi))
+                procedure, html_escape(json_text(line, "description")), review_text(&pointers),
+                cents / 100, cents.abs() % 100, html_escape(&content.rendering_npi), units)
         }).collect::<String>();
     for _ in account["content"]["lines"].as_array().map_or(0, Vec::len)..6 {
         line_rows.push_str("<tr><td>&nbsp;</td><td></td><td></td><td></td><td><small></small></td><td></td><td></td><td></td><td></td><td></td></tr>");
@@ -888,46 +912,69 @@ async fn cms1500(
         .collect::<Vec<_>>()
         .join("");
     let patient_name = format!(
-        "{} {}",
-        html_escape(json_text(patient, "given_name")),
-        html_escape(json_text(patient, "family_name"))
+        "{}, {}",
+        html_escape(json_text(patient, "family_name")),
+        html_escape(json_text(patient, "given_name"))
     );
+    let subscriber_dob = content
+        .subscriber_birth_date
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| json_text(policy, "subscriber_birth_date").to_string());
+    let relationship = match json_text(policy, "relationship") {
+        "self" => "Self",
+        "spouse" => "Spouse",
+        "child" => "Child",
+        "other" => "Other",
+        _ => "Not recorded",
+    };
+    let review_label = if content.synthetic_test {
+        "Synthetic test review copy"
+    } else {
+        "Review copy"
+    };
+    let watermark = if content.synthetic_test {
+        "SYNTHETIC TEST · NOT FOR SUBMISSION"
+    } else {
+        "REVIEW COPY · NOT FOR SUBMISSION"
+    };
+    let patient_paid_cents = c.snapshot["financial_summary"]["patient_payments_cents"].as_i64();
+    let patient_paid = review_money(patient_paid_cents);
     let total_cents = account["total_cents"].as_i64().unwrap_or(0);
-    let paid_cents = c.snapshot["financial_summary"]["patient_payments_cents"]
-        .as_i64()
-        .unwrap_or(0)
-        + c.snapshot["financial_summary"]["insurer_payments_cents"]
-            .as_i64()
-            .unwrap_or(0)
-        + c.snapshot["financial_summary"]["other_payments_cents"]
-            .as_i64()
-            .unwrap_or(0);
-    let open_balance_cents = c.snapshot["financial_summary"]["open_balance_cents"]
-        .as_i64()
-        .unwrap_or(total_cents);
+    let financial = &c.snapshot["financial_summary"];
+    let paid_cents = [
+        "patient_payments_cents",
+        "insurer_payments_cents",
+        "other_payments_cents",
+    ]
+    .into_iter()
+    .try_fold(0i64, |total, key| {
+        total.checked_add(financial[key].as_i64()?)
+    });
+    let paid_summary = review_money(paid_cents);
+    let open_balance = review_money(financial["open_balance_cents"].as_i64());
     let document = format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>CMS-1500 {control}</title><style>
+        r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Claim review {control}</title><style>
 @page{{size:letter landscape;margin:.18in}}*{{box-sizing:border-box}}:root{{--red:#c52e52;--ink:#15232d;--rule:1.15px solid var(--red)}}body{{margin:0;background:#e8edf0;color:var(--ink);font:9px Arial,sans-serif}}.toolbar{{width:10.6in;margin:14px auto 9px;padding:11px 15px;border-radius:8px;background:#123038;color:#fff;display:flex;justify-content:space-between;align-items:center;box-shadow:0 4px 18px #0002}}.toolbar strong{{font-size:14px;display:block}}.toolbar span{{color:#cfe0e3}}button{{border:0;border-radius:5px;padding:9px 13px;background:#7bd9d3;font-weight:700;cursor:pointer}}.sheet{{position:relative;width:10.6in;min-height:8.05in;margin:0 auto 22px;padding:.1in .15in;background:#fffdfd;box-shadow:0 5px 24px #25374655;overflow:hidden}}.watermark{{position:absolute;left:1.45in;top:3.45in;transform:rotate(-20deg);font:bold 38px Arial;color:#d3264518;letter-spacing:.09em;pointer-events:none}}.form{{position:relative;color:var(--red)}}.mast{{height:.55in;display:grid;grid-template-columns:2.7in 1fr 2.25in;align-items:end;gap:8px}}.mast .title{{text-align:center;font:bold 18px Arial}}.mast .approval{{text-align:right;font-weight:700;font-size:8px}}.payer{{height:.5in;border:var(--rule);display:grid;grid-template-columns:7.25in 1fr}}.programs{{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;padding:5px 7px;align-items:center}}.box{{display:inline-block;width:11px;height:11px;border:1px solid var(--red);margin-right:3px;vertical-align:-2px;line-height:9px;text-align:center;color:var(--ink)}}.payername{{border-left:var(--rule);padding:4px 7px;color:var(--ink)}}.rows{{border-left:var(--rule);border-top:var(--rule)}}.row{{display:grid}}.cell{{position:relative;min-height:.37in;padding:14px 5px 3px;border-right:var(--rule);border-bottom:var(--rule);color:var(--ink);font-weight:600;line-height:1.15}}.cell label{{position:absolute;left:4px;right:3px;top:2px;color:var(--red);font-size:7px;font-weight:700;line-height:1.03}}.r1{{grid-template-columns:2.15in 2.4in 1.55in 2.2in 1.97in}}.r2{{grid-template-columns:3.05in 1.5in 2.45in 1.3in 1.97in}}.r3{{grid-template-columns:4.55in 2.45in 3.27in}}.r4{{grid-template-columns:2.35in 2.2in 2.1in 1.65in 1.97in}}.r5{{grid-template-columns:4.55in 3.75in 1.97in}}.choices{{font-weight:400;color:var(--red);word-spacing:6px}}.sig{{font-family:"Segoe Script","Bradley Hand",cursive;color:#46515a;font-size:10px}}.diagnosis{{min-height:.55in}}.codes{{display:grid;grid-template-columns:repeat(4,1fr);gap:2px}}.codes span{{border-bottom:1px dotted #d18494;padding:2px}}table{{width:100%;border-collapse:collapse;table-layout:fixed;border-left:var(--rule);color:var(--ink)}}th,td{{border-right:var(--rule);border-bottom:var(--rule);padding:2px;text-align:center;vertical-align:top}}thead th{{border-top:var(--rule);height:.3in;color:var(--red);font-size:6.5px;line-height:1.05}}tbody td{{height:.29in;font-size:8px}}th:nth-child(1),th:nth-child(2){{width:.8in}}th:nth-child(3){{width:.35in}}th:nth-child(4){{width:.25in}}th:nth-child(5){{width:2.2in}}th:nth-child(6){{width:.5in}}th:nth-child(7){{width:.7in}}th:nth-child(8){{width:.35in}}th:nth-child(9){{width:.4in}}th:nth-child(10){{width:1.65in}}.procedure{{font-weight:700}}.procedure small{{display:block;font-weight:400;font-size:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}.charge{{font-weight:700}}.bottom{{display:grid;grid-template-columns:1.45in 2.1in 1.1in 1.2in 2.3in 2.12in;border-left:var(--rule)}}.bottom .cell{{min-height:.45in}}.footer{{display:flex;justify-content:space-between;align-items:end;padding-top:4px;color:var(--red);font-size:7px;font-weight:700}}.version{{border:1px solid var(--red);padding:3px 6px}}@media print{{body{{background:#fff}}.toolbar{{display:none}}.sheet{{margin:0;box-shadow:none}}}}@media(max-width:900px){{.toolbar{{margin:8px}}}}
 </style><link rel="stylesheet" href="/cms1500.css"><script src="/cms1500.js" defer></script></head><body>
-<div class=toolbar><div><strong>CMS-1500 claim review · {control}</strong><span>Synthetic review copy. Printing does not submit this claim.</span></div><div class=preview-actions aria-label="Form preview controls"><button type=button id=cms-zoom-out aria-label="Zoom out">−</button><output id=cms-zoom-label aria-live=polite>125%</output><button type=button id=cms-zoom-in aria-label="Zoom in">+</button><button type=button id=cms-fit-page>Fit page</button><button type=button id=cms-print>Print / Save PDF</button></div></div>
-<main class=sheet aria-label="CMS-1500 health insurance claim form review"><div class=watermark>SYNTHETIC TEST · NOT FOR SUBMISSION</div><div class=form>
-<div class=mast><div><b>1500&nbsp;&nbsp; HEALTH INSURANCE CLAIM FORM</b><br><small>APPROVED BY NATIONAL UNIFORM CLAIM COMMITTEE (NUCC) 02/12</small></div><div class=title>HEALTH INSURANCE CLAIM FORM</div><div class=approval>CARRIER<br>APPROVED OMB-0938-1197<br>FORM CMS-1500 (02/12)</div></div>
-<section class=payer><div class=programs><span><i class=box></i>MEDICARE</span><span><i class=box></i>MEDICAID</span><span><i class=box></i>TRICARE</span><span><i class=box></i>CHAMPVA</span><span><i class=box>×</i>OTHER</span></div><div class=payername><b>{payer}</b><br><small>INSURANCE PLAN NAME OR PROGRAM NAME</small></div></section>
+<div class=toolbar><div><strong>Claim review · {control}</strong><span>{review_label} for records. Printing does not submit this claim.</span></div><div class=preview-actions aria-label="Form preview controls"><button type=button id=cms-zoom-out aria-label="Zoom out">−</button><output id=cms-zoom-label aria-live=polite>125%</output><button type=button id=cms-zoom-in aria-label="Zoom in">+</button><button type=button id=cms-fit-page>Fit page</button><button type=button id=cms-print>Print / Save PDF</button></div></div>
+<main class=sheet aria-label="Claim review for records"><div class=watermark>{watermark}</div><div class=form>
+<div class=mast><div><b>SunCharts claim review</b><br><small>CMS-1500 field references for review only</small></div><div class=title>{review_label}</div><div class=approval>NOT AN OFFICIAL PAPER FORM<br>NOT FOR PAPER SUBMISSION</div></div>
+<section class=payer><div class=programs><span><i class=box></i>MEDICARE</span><span><i class=box></i>MEDICAID</span><span><i class=box></i>TRICARE</span><span><i class=box></i>CHAMPVA</span><span><i class=box></i>OTHER</span></div><div class=payername><b>{payer}</b><br><small>INSURANCE PLAN NAME OR PROGRAM NAME</small></div></section>
 <section class=rows>
-<div class="row r1"><div class=cell><label>1. TYPE OF HEALTH INSURANCE</label>OTHER</div><div class=cell><label>1a. INSURED'S I.D. NUMBER</label>{member}</div><div class=cell><label>2. PATIENT'S NAME (Last, First, Middle)</label>{patient_name}</div><div class=cell><label>3. PATIENT'S BIRTH DATE &nbsp; SEX</label>{patient_dob} &nbsp; <span class=choices>☐M ☐F</span></div><div class=cell><label>4. INSURED'S NAME</label>{patient_name}</div></div>
-<div class="row r2"><div class=cell><label>5. PATIENT'S ADDRESS (No., Street)</label>{patient_address}</div><div class=cell><label>6. PATIENT RELATIONSHIP TO INSURED</label><span class=choices>☒Self ☐Spouse ☐Child</span></div><div class=cell><label>7. INSURED'S ADDRESS (No., Street)</label>{subscriber_address}</div><div class=cell><label>8. RESERVED FOR NUCC USE</label></div><div class=cell><label>9. OTHER INSURED'S NAME</label></div></div>
-<div class="row r3"><div class=cell><label>9a. OTHER INSURED'S POLICY OR GROUP NUMBER</label></div><div class=cell><label>9b–9c. RESERVED FOR NUCC USE</label></div><div class=cell><label>9d. INSURANCE PLAN NAME OR PROGRAM NAME</label></div></div>
-<div class="row r4"><div class=cell><label>10a. CONDITION RELATED TO EMPLOYMENT?</label><span class=choices>☐YES ☒NO</span></div><div class=cell><label>10b. AUTO ACCIDENT? &nbsp; PLACE</label><span class=choices>☐YES ☒NO</span></div><div class=cell><label>10c. OTHER ACCIDENT?</label><span class=choices>☐YES ☒NO</span></div><div class=cell><label>10d. CLAIM CODES</label></div><div class=cell><label>11. INSURED'S POLICY GROUP OR FECA NUMBER</label></div></div>
-<div class="row r2"><div class=cell><label>11a. INSURED'S DATE OF BIRTH &nbsp; SEX</label>{patient_dob}</div><div class=cell><label>11b. OTHER CLAIM ID</label>{payer_control}</div><div class=cell><label>11c. INSURANCE PLAN NAME</label>{payer}</div><div class=cell><label>11d. ANOTHER HEALTH BENEFIT PLAN?</label><span class=choices>☐YES ☒NO</span></div><div class=cell><label>CLAIM FREQUENCY</label>{frequency}</div></div>
-<div class="row r5"><div class=cell><label>12. PATIENT'S OR AUTHORIZED PERSON'S SIGNATURE</label><span class=sig>Signature on file</span></div><div class=cell><label>13. INSURED'S OR AUTHORIZED PERSON'S SIGNATURE</label><span class=sig>Signature on file</span></div><div class=cell><label>PATIENT ACCOUNT NO.</label>{control}</div></div>
+<div class="row r1"><div class=cell><label>1. TYPE OF HEALTH INSURANCE</label>Not recorded</div><div class=cell><label>1a. INSURED'S I.D. NUMBER</label>{member}</div><div class=cell><label>2. PATIENT'S NAME (Last, First, Middle)</label>{patient_name}</div><div class=cell><label>3. PATIENT'S BIRTH DATE &nbsp; SEX</label>{patient_dob} · Sex not recorded</div><div class=cell><label>4. INSURED'S NAME</label>{subscriber_name}</div></div>
+<div class="row r2"><div class=cell><label>5. PATIENT'S ADDRESS (No., Street)</label>{patient_address}</div><div class=cell><label>6. PATIENT RELATIONSHIP TO INSURED</label>{relationship}</div><div class=cell><label>7. INSURED'S ADDRESS (No., Street)</label>{subscriber_address}</div><div class=cell><label>8. RESERVED FOR NUCC USE</label></div><div class=cell><label>9. OTHER INSURED'S NAME</label>Not recorded</div></div>
+<div class="row r3"><div class=cell><label>9a. OTHER INSURED'S POLICY OR GROUP NUMBER</label>Not recorded</div><div class=cell><label>9b–9c. RESERVED FOR NUCC USE</label></div><div class=cell><label>9d. INSURANCE PLAN NAME OR PROGRAM NAME</label>Not recorded</div></div>
+<div class="row r4"><div class=cell><label>10a. CONDITION RELATED TO EMPLOYMENT?</label>Not recorded</div><div class=cell><label>10b. AUTO ACCIDENT? &nbsp; PLACE</label>Not recorded</div><div class=cell><label>10c. OTHER ACCIDENT?</label>Not recorded</div><div class=cell><label>10d. CLAIM CODES</label></div><div class=cell><label>11. INSURED'S POLICY GROUP OR FECA NUMBER</label>{group_number}</div></div>
+<div class="row r2"><div class=cell><label>11a. INSURED'S DATE OF BIRTH &nbsp; SEX</label>{subscriber_dob} · Sex not recorded</div><div class=cell><label>11b. OTHER CLAIM ID</label>{payer_control}</div><div class=cell><label>11c. INSURANCE PLAN NAME</label>{plan_name}</div><div class=cell><label>11d. ANOTHER HEALTH BENEFIT PLAN?</label>Not recorded</div><div class=cell><label>CLAIM FREQUENCY</label>{frequency}</div></div>
+<div class="row r5"><div class=cell><label>12. PATIENT'S OR AUTHORIZED PERSON'S SIGNATURE</label>Not recorded</div><div class=cell><label>13. INSURED'S OR AUTHORIZED PERSON'S SIGNATURE</label>Not recorded</div><div class=cell><label>PATIENT ACCOUNT NO.</label>{control}</div></div>
 <div class="row r3"><div class=cell><label>14. DATE OF CURRENT ILLNESS, INJURY, OR PREGNANCY</label></div><div class=cell><label>15. OTHER DATE</label></div><div class=cell><label>16. DATES PATIENT UNABLE TO WORK</label></div></div>
 <div class="row r5"><div class=cell><label>17. NAME OF REFERRING PROVIDER OR OTHER SOURCE</label></div><div class=cell><label>17b. NPI</label></div><div class=cell><label>18. HOSPITALIZATION DATES</label></div></div>
-<div class="row r3"><div class=cell><label>19. ADDITIONAL CLAIM INFORMATION</label>{notes}</div><div class=cell><label>20. OUTSIDE LAB? &nbsp; $ CHARGES</label><span class=choices>☐YES ☒NO</span></div><div class="cell diagnosis"><label>21. DIAGNOSIS OR NATURE OF ILLNESS OR INJURY</label><div class=codes>{diagnoses}</div></div></div>
-<div class="row r5"><div class=cell><label>22. RESUBMISSION CODE &nbsp; ORIGINAL REF. NO.</label>{frequency}</div><div class=cell><label>23. PRIOR AUTHORIZATION NUMBER</label></div><div class=cell><label>INTERNAL MRN — REVIEW ONLY</label>{mrn}</div></div>
+<div class="row r3"><div class=cell><label>19. ADDITIONAL CLAIM INFORMATION</label>{notes}</div><div class=cell><label>20. OUTSIDE LAB? &nbsp; $ CHARGES</label>Not recorded</div><div class="cell diagnosis"><label>21. DIAGNOSIS OR NATURE OF ILLNESS OR INJURY</label><div class=codes>{diagnoses}</div></div></div>
+<div class="row r5"><div class=cell><label>22. RESUBMISSION CODE &nbsp; ORIGINAL REF. NO.</label>{frequency}</div><div class=cell><label>23. PRIOR AUTHORIZATION NUMBER</label>Not recorded</div><div class=cell><label>INTERNAL MRN — REVIEW ONLY</label>{mrn}</div></div>
 </section>
 <table aria-label="CMS-1500 service lines"><thead><tr><th>24A. DATE(S) OF SERVICE<br>FROM</th><th>TO</th><th>24B.<br>POS</th><th>24C.<br>EMG</th><th>24D. PROCEDURES, SERVICES, OR SUPPLIES<br>CPT/HCPCS · MODIFIER</th><th>24E.<br>DIAGNOSIS POINTER</th><th>24F.<br>$ CHARGES</th><th>24G.<br>DAYS/UNITS</th><th>24H.<br>EPSDT</th><th>24J. RENDERING<br>PROVIDER ID. #</th></tr></thead><tbody>{line_rows}</tbody></table>
-<section class=bottom><div class=cell><label>25. FEDERAL TAX I.D. NUMBER</label>{tax_id}</div><div class=cell><label>26. PATIENT'S ACCOUNT NO.</label>{control}</div><div class=cell><label>27. ACCEPT ASSIGNMENT?</label><span class=choices>☒YES</span></div><div class=cell><label>28. TOTAL CHARGE</label>${total_dollars}.{total_pennies:02}</div><div class=cell><label>29. AMOUNT PAID</label>${paid_dollars}.{paid_pennies:02}</div><div class=cell><label>30. RESERVED FOR NUCC USE</label></div><div class="cell sig" style="grid-column:span 4"><label>31. SIGNATURE OF PHYSICIAN OR SUPPLIER</label>{provider} · Signature on file</div><div class=cell><label>32. SERVICE FACILITY LOCATION</label>{billing_address}</div><div class=cell><label>32a. NPI</label>{rendering_npi}</div><div class=cell style="grid-column:span 4"><label>33. BILLING PROVIDER INFO &amp; PH #</label>{provider}<br>{billing_address}</div><div class=cell><label>33a. NPI</label>{billing_npi}</div><div class=cell><label>33b. OTHER ID #</label></div></section>
-<div class=footer><span>Generated from frozen SunCharts claim version {version}. Gross claim ${total_dollars}.{total_pennies:02}; recorded paid ${paid_dollars}.{paid_pennies:02}; local open balance ${open_dollars}.{open_pennies:02}. Viewing or printing does not submit or alter the claim.</span><span class=version>NUCC 02/12 REVIEW LAYOUT · SYNTHETIC DATA</span></div>
+<section class=bottom><div class=cell><label>25. FEDERAL TAX I.D. NUMBER</label>{tax_id}</div><div class=cell><label>26. PATIENT'S ACCOUNT NO.</label>{control}</div><div class=cell><label>27. ACCEPT ASSIGNMENT?</label>Not recorded</div><div class=cell><label>28. TOTAL CHARGE</label>${total_dollars}.{total_pennies:02}</div><div class=cell><label>29. AMOUNT PAID — PATIENT</label>{patient_paid}</div><div class=cell><label>30. RESERVED FOR NUCC USE</label></div><div class="cell sig" style="grid-column:span 4"><label>31. SIGNATURE OF PHYSICIAN OR SUPPLIER</label>Not recorded</div><div class=cell><label>32. SERVICE FACILITY LOCATION</label>Not recorded</div><div class=cell><label>32a. NPI</label>Not recorded</div><div class=cell style="grid-column:span 4"><label>33. BILLING PROVIDER INFO &amp; PH #</label>{provider}<br>{billing_address}</div><div class=cell><label>33a. NPI</label>{billing_npi}</div><div class=cell><label>33b. OTHER ID #</label></div></section>
+<div class=footer><span>Generated from frozen SunCharts claim version {version}. Gross claim ${total_dollars}.{total_pennies:02}; recorded paid {paid_summary}; local open balance {open_balance}. Viewing or printing does not submit or alter the claim. This is not an official paper-submission form. The reviewed electronic 837P is submitted separately through Claim.MD.</span><span class=version>{review_label} · CMS-1500 field references</span></div>
 </div></main></body></html>"#,
         control = html_escape(&c.control_number),
         member = html_escape(json_text(policy, "member_id")),
@@ -937,24 +984,40 @@ async fn cms1500(
         patient_dob = html_escape(json_text(patient, "birth_date")),
         mrn = html_escape(json_text(patient, "mrn")),
         patient_address = html_escape(&content.patient_address),
-        subscriber_address = html_escape(&content.subscriber_address),
+        subscriber_address = review_text(&content.subscriber_address),
+        subscriber_name = review_text(json_text(policy, "subscriber_name")),
+        subscriber_dob = review_text(&subscriber_dob),
+        relationship = relationship,
+        group_number = review_text(json_text(policy, "group_number")),
+        plan_name = review_text(json_text(policy, "plan_name")),
+        review_label = review_label,
+        watermark = watermark,
+        patient_paid = patient_paid,
         provider = html_escape(&content.billing_provider_name),
         billing_address = html_escape(&content.billing_address),
         billing_npi = html_escape(&content.billing_npi),
         tax_id = html_escape(&content.tax_id),
-        rendering_npi = html_escape(&content.rendering_npi),
         diagnoses = diagnoses,
         line_rows = line_rows,
         notes = html_escape(&content.notes),
         total_dollars = total_cents / 100,
         total_pennies = total_cents.abs() % 100,
-        paid_dollars = paid_cents / 100,
-        paid_pennies = paid_cents.abs() % 100,
-        open_dollars = open_balance_cents / 100,
-        open_pennies = open_balance_cents.abs() % 100,
+        paid_summary = paid_summary,
+        open_balance = open_balance,
         payer_control = html_escape(&c.payer_control_number),
         version = c.version
     );
+    Ok(document)
+}
+async fn cms1500(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(id): Path<Uuid>,
+) -> Result<Html<String>> {
+    a.staff()?;
+    let mut tx = db(&s)?.begin().await?;
+    let c = claim_row(&mut tx, &a, id).await?;
+    let document = render_cms1500_review(&c)?;
     crate::postgres::audit(&mut tx, &a, "claim.cms1500_view", id).await?;
     tx.commit().await?;
     Ok(Html(document))
@@ -1751,5 +1814,150 @@ mod submission_default_tests {
                 "postal_code": "61114"
             })
         );
+    }
+}
+
+#[cfg(test)]
+mod claim_review_tests {
+    use super::{render_cms1500_review, Claim};
+    use serde_json::{json, Value};
+    use uuid::Uuid;
+
+    fn frozen_claim(synthetic: bool) -> Claim {
+        Claim {
+            id: Uuid::new_v4(),
+            patient_id: Uuid::new_v4(),
+            account_id: Uuid::new_v4(),
+            payer_id: Uuid::new_v4(),
+            control_number: "SCTESTPREFIXALONE".into(),
+            frequency: "original".into(),
+            parent_id: None,
+            status: "draft".into(),
+            version: 3,
+            payer_control_number: "PAYER-REFERENCE".into(),
+            source_history_id: None,
+            content: json!({"billing_provider_name":"Recorded Practice","billing_npi":"1234567893","tax_id":"123456789","billing_address":"Recorded billing address","rendering_npi":"1234567893","patient_address":"Recorded patient address","subscriber_address":"Recorded insured address","subscriber_birth_date":"1981-02-03","place_of_service":"11","diagnosis_codes":["A00","B00","C00","D00","E00","F00","G00","H00","I00","J00","K00","L00"],"line_diagnosis_pointers":[[1,2,12]],"external_control_number":"","notes":"Frozen review note","synthetic_test":synthetic}),
+            snapshot: json!({"patient":{"given_name":"Patient","family_name":"Example","birth_date":"2010-05-06","mrn":"UNCHANGED"},"account":{"total_cents":15000,"content":{"service_date":"2026-11-10","lines":[{"code":"SYN01","description":"Synthetic service only","modifiers":"25 59","units":2,"amount_cents":15000}]},"coverage_snapshot":{"coverage":{"content":{"member_id":"MEMBER","subscriber_name":"Insured Example","subscriber_birth_date":"1980-01-02","relationship":"child","group_number":"GROUP-RECORDED","plan_name":"Recorded plan"}},"payer":{"content":{"name":"Recorded payer"}}}},"financial_summary":{"patient_payments_cents":2500,"insurer_payments_cents":5000,"other_payments_cents":1000,"open_balance_cents":6500}}),
+        }
+    }
+    fn cell<'a>(html: &'a str, label: &str) -> &'a str {
+        html.split_once(&format!("<label>{label}</label>"))
+            .unwrap()
+            .1
+            .split_once("</div>")
+            .unwrap()
+            .0
+    }
+
+    #[test]
+    fn recorded_claim_review_uses_frozen_subscriber_services_and_patient_paid_only() {
+        let claim = frozen_claim(false);
+        let before = (claim.content.clone(), claim.snapshot.clone());
+        let html = render_cms1500_review(&claim).unwrap();
+        assert!(html.contains("REVIEW COPY · NOT FOR SUBMISSION"));
+        assert!(!html.contains("SYNTHETIC TEST"));
+        assert!(!html.contains("APPROVED OMB"));
+        assert_eq!(cell(&html, "4. INSURED'S NAME"), "Insured Example");
+        assert_eq!(cell(&html, "6. PATIENT RELATIONSHIP TO INSURED"), "Child");
+        assert_eq!(
+            cell(&html, "11a. INSURED'S DATE OF BIRTH &nbsp; SEX"),
+            "1981-02-03 · Sex not recorded"
+        );
+        assert_eq!(
+            cell(&html, "11. INSURED'S POLICY GROUP OR FECA NUMBER"),
+            "GROUP-RECORDED"
+        );
+        assert_eq!(cell(&html, "11c. INSURANCE PLAN NAME"), "Recorded plan");
+        assert_eq!(
+            cell(&html, "2. PATIENT'S NAME (Last, First, Middle)"),
+            "Example, Patient"
+        );
+        let row = html
+            .split_once("<tbody>")
+            .unwrap()
+            .1
+            .split_once("</tr>")
+            .unwrap()
+            .0;
+        assert!(row.contains("SYN01 · 25 59"));
+        assert!(row.contains("<td>A, B, L</td>"));
+        assert!(row.contains("<td class=charge>$150.00</td><td>2</td>"));
+        assert_eq!(cell(&html, "29. AMOUNT PAID — PATIENT"), "$25.00");
+        assert!(html.contains("recorded paid $85.00; local open balance $65.00"));
+        assert!(html.contains("not an official paper-submission form"));
+        assert!(html.contains("electronic 837P is submitted separately through Claim.MD"));
+        assert_eq!((claim.content, claim.snapshot), before);
+    }
+
+    #[test]
+    fn missing_claim_evidence_does_not_invent_attestations_or_subscriber_identity() {
+        let mut claim = frozen_claim(false);
+        claim.content["subscriber_birth_date"] = Value::Null;
+        claim.snapshot["account"]["coverage_snapshot"]["coverage"]["content"] = json!({});
+        claim.snapshot["account"]["content"]["lines"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("units");
+        claim.snapshot["financial_summary"] = json!({});
+        let html = render_cms1500_review(&claim).unwrap();
+        for label in [
+            "4. INSURED'S NAME",
+            "6. PATIENT RELATIONSHIP TO INSURED",
+            "11. INSURED'S POLICY GROUP OR FECA NUMBER",
+            "11c. INSURANCE PLAN NAME",
+            "10a. CONDITION RELATED TO EMPLOYMENT?",
+            "10b. AUTO ACCIDENT? &nbsp; PLACE",
+            "10c. OTHER ACCIDENT?",
+            "11d. ANOTHER HEALTH BENEFIT PLAN?",
+            "12. PATIENT'S OR AUTHORIZED PERSON'S SIGNATURE",
+            "13. INSURED'S OR AUTHORIZED PERSON'S SIGNATURE",
+            "20. OUTSIDE LAB? &nbsp; $ CHARGES",
+            "23. PRIOR AUTHORIZATION NUMBER",
+            "27. ACCEPT ASSIGNMENT?",
+            "29. AMOUNT PAID — PATIENT",
+            "31. SIGNATURE OF PHYSICIAN OR SUPPLIER",
+            "32. SERVICE FACILITY LOCATION",
+            "32a. NPI",
+        ] {
+            assert_eq!(cell(&html, label), "Not recorded", "{label}");
+        }
+        assert_eq!(
+            cell(&html, "11a. INSURED'S DATE OF BIRTH &nbsp; SEX"),
+            "Not recorded · Sex not recorded"
+        );
+        assert!(html.contains("recorded paid Not recorded; local open balance Not recorded"));
+        assert!(!html.contains("Signature on file"));
+        assert!(!html.contains('☒'));
+        let row = html
+            .split_once("<tbody>")
+            .unwrap()
+            .1
+            .split_once("</tr>")
+            .unwrap()
+            .0;
+        assert!(row.contains("<td class=charge>$150.00</td><td>Not recorded</td>"));
+    }
+
+    #[test]
+    fn synthetic_marker_is_explicit_and_coverage_fallback_stays_escaped() {
+        let mut claim = frozen_claim(true);
+        claim.content["subscriber_birth_date"] = Value::Null;
+        claim.snapshot["account"]["coverage_snapshot"]["coverage"]["content"]["subscriber_name"] =
+            json!("Recorded <script> name");
+        claim.snapshot["account"]["coverage_snapshot"]["coverage"]["content"]["relationship"] =
+            json!("spouse");
+        let html = render_cms1500_review(&claim).unwrap();
+        assert!(html.contains("SYNTHETIC TEST · NOT FOR SUBMISSION"));
+        assert!(html.contains("Synthetic test review copy"));
+        assert_eq!(
+            cell(&html, "4. INSURED'S NAME"),
+            "Recorded &lt;script&gt; name"
+        );
+        assert_eq!(cell(&html, "6. PATIENT RELATIONSHIP TO INSURED"), "Spouse");
+        assert_eq!(
+            cell(&html, "11a. INSURED'S DATE OF BIRTH &nbsp; SEX"),
+            "1980-01-02 · Sex not recorded"
+        );
+        assert!(!html.contains("<script> name"));
     }
 }

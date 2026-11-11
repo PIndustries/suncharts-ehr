@@ -34,7 +34,7 @@ document.addEventListener('click',event=>{
   if(b.hasAttribute('data-payments-back')){await showBillingQueue();return;}
   if(b.dataset.paymentRefundRetry){await api(`${paymentApi}/${b.dataset.paymentRefundRetry}/refunds`,'POST',{request_id:b.dataset.request,amount_cents:Number(b.dataset.amount)});await openPaymentStatus(b.dataset.paymentRefundRetry);notice('Original refund request reconciled without creating a new request.');return;}
   if(b.dataset.paymentOpen){await openPaymentStatus(b.dataset.paymentOpen);return;}
-  if(b.hasAttribute('data-payment-test')||b.hasAttribute('data-payment-activation')){if(b.hasAttribute('data-payment-test')){const result=await api(`${paymentApi}/settings/test`,'POST',{},Number(b.dataset.version));await openPaymentSettings();notice(result.processor_livemode===true?'Stripe account refreshed. Review appointment card copay availability in patient Insurance or encounter Billing & claim.':result.ready?'Payment account refreshed.':result.authenticated?'Stripe still needs information. Continue secure verification here.':'Payment account could not be refreshed. Use Continue Stripe setup to resume or repair the connection, then refresh again.',!result.authenticated);}else{await api(`${paymentApi}/settings/activation`,'POST',{enabled:b.dataset.paymentActivation==='true'},Number(b.dataset.version));await openPaymentSettings();notice('Patient payment availability updated.');}return;}
+  if(b.hasAttribute('data-payment-test')||b.hasAttribute('data-payment-activation')){if(b.hasAttribute('data-payment-test')){const result=await api(`${paymentApi}/settings/test`,'POST',{},Number(b.dataset.version));await openPaymentSettings();notice(result.processor_livemode===true?'Stripe account refreshed. Review appointment card copay availability in patient Insurance or encounter Procedures & billing.':result.ready?'Payment account refreshed.':result.authenticated?'Stripe still needs information. Continue secure verification here.':'Payment account could not be refreshed. Use Continue Stripe setup to resume or repair the connection, then refresh again.',!result.authenticated);}else{await api(`${paymentApi}/settings/activation`,'POST',{enabled:b.dataset.paymentActivation==='true'},Number(b.dataset.version));await openPaymentSettings();notice('Patient payment availability updated.');}return;}
   const id=b.dataset.paymentRefresh||b.dataset.paymentExpire;await api(`${paymentApi}/${id}/${b.dataset.paymentExpire?'expire':'refresh'}`,'POST',{});await openPaymentStatus(id);notice('Payment status reconciled against the provider.');
  });
 },true);
@@ -46,14 +46,14 @@ async function openPaymentSettings(){
   ['SunCharts connection',true,'Connected'],
   ['Stripe account',Boolean(s.provider_account_id),s.provider_account_id?'Created':'Waiting'],
   ['Business details',Boolean(s.details_submitted),s.details_submitted?'Submitted':'Action needed'],
-  [s.last_test_result==='live_connection_verified'?'Stripe charges':'Test charges',Boolean(s.charges_enabled),s.charges_enabled?'Enabled':'Paused'],
+  [s.last_test_result==='live_connection_verified'||!testPaymentsAvailable?'Stripe charges':'Test charges',Boolean(s.charges_enabled),s.charges_enabled?'Enabled':'Paused'],
   ['Bank payouts',Boolean(s.payouts_enabled),s.payouts_enabled?'Enabled':'Paused']
  ]:[];
  const hostedLive=data.hosted_copays_live_enabled===true,liveBound=s?.mode==='suncharts_connect'&&s.last_test_result==='live_connection_verified'&&Boolean(s.provider_account_id);
  const liveInterface=hostedLive||liveBound||!testPaymentsAvailable,showTestControls=testPaymentsAvailable&&!liveBound&&!hostedLive;
  const cardReady=hostedLive&&liveBound&&s.card_payments_active===true&&s.charges_enabled===true&&s.details_submitted===true;
  const readinessLabel=hostedLive?(cardReady?'Card copays ready':'Complete Stripe setup'):liveInterface?'Support activation required':s?.enabled?'Test payments enabled':'Test collection paused';
- const readinessDescription=liveInterface?'Collect card copays from Insurance or Billing & claim in an encounter.':'Patient charges and clinic bank payouts are separate Stripe capabilities. This account supports test payments only.';
+ const readinessDescription=liveInterface?'Collect card copays from Insurance or Procedures & billing in an encounter.':'Patient charges and clinic bank payouts are separate Stripe capabilities. This account supports test payments only.';
  const hostedStatus=hostedLive?(cardReady?'':'Complete Stripe setup, then refresh account status before collecting card copays.'):liveInterface?'Contact SunCharts support to activate live card copays. Stripe account setup remains available here.':'';
  const setupUrl=data.native_setup_url||data.connect_portal_url;
  const continueUrl=setupUrl||s?.onboarding_url;

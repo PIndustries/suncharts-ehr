@@ -23,7 +23,7 @@ function fixture(){
  ctx.showOutboundWorkspace=async(provider='ringcentral')=>{ctx.showTool('Send & review');ctx.channel=provider;await ctx.api('/outbound');};
  ctx.showSunPage=async()=>{ctx.showTool('Sun');await ctx.api('/sun');};
  ctx.showSchedule=async()=>{ctx.showTool('Schedule');await ctx.api('/schedule');};
- ctx.showClinical=async()=>{ctx.captureVisitDrafts();ctx.showTool('Patients & encounters');await ctx.api('/patients');nodes['clinical-workspace'].hidden=false;};
+ ctx.showClinical=async()=>{ctx.captureVisitDrafts();ctx.showTool('Patients & encounters');ctx.selected=null;ctx.activeVisit=null;ctx.workspace=null;ctx.chartSection='overview';await ctx.api('/patients');nodes['clinical-workspace'].hidden=false;};
  ctx.selectPatient=async(patient,visit)=>{ctx.captureVisitDrafts();await ctx.api(`/patients/${patient}`);ctx.selected=patient;ctx.activeVisit=visit?{id:visit,status:'in_progress'}:null;ctx.claimRoute=null;ctx.fileRoute=null;ctx.workspace={patient:{id:patient},appointments:[{id:'appointment-one'},{id:'appointment-two'}],billing:{accounts:[{id:'account',content:{visit_id:visit}}]},labs:{orders:[{id:'order'}]}};ctx.formText=drafts.get(`${patient}:${visit}`)||'';};
  ctx.showChartSection=section=>{ctx.captureVisitDrafts();ctx.chartSection=section;};
  ctx.setEncounterSection=step=>{ctx.captureVisitDrafts();ctx.encounterSection=step;ctx.showChartSection('visits');};
@@ -51,6 +51,12 @@ test('nested navigation records one final route, captures drafts and stores only
  c.formText='PRIVATE UNSAVED SOAP TEXT';c.scrollY=320;c.captureVisitDrafts();await c.run(()=>c.showBillingQueue());
  const count=f.entries().length;f.history.back();await f.settle();assert.equal(c.selected,'patient-one');assert.equal(c.activeVisit.id,'visit-one');assert.equal(c.encounterSection,'charges');assert.equal(c.formText,'PRIVATE UNSAVED SOAP TEXT');assert.equal(c.scrollY,320);assert.equal(f.entries().length,count);assert.ok(c.captureCount>0);assert.doesNotMatch(JSON.stringify(f.entries()),/PRIVATE UNSAVED SOAP TEXT/);
  f.history.forward();await f.settle();assert.equal(c.page,'Billing');assert.equal(f.entries().length,count);
+});
+test('Patients returns to the directory and Back restores the encounter draft',async()=>{
+ const f=fixture(),c=f.ctx;await c.enter();await c.run(async()=>{await c.showClinical();await c.selectPatient('patient-one','visit-one');c.setEncounterSection('documentation');});
+ c.formText='UNSAVED SYNTHETIC NOTE';await c.run(()=>c.showClinical());assert.equal(c.selected,null);assert.equal(c.activeVisit,null);assert.equal(c.workspace,null);assert.equal(f.route().patient,null);assert.equal(f.drafts.get('patient-one:visit-one'),'UNSAVED SYNTHETIC NOTE');
+ f.history.back();await f.settle();assert.equal(c.selected,'patient-one');assert.equal(c.activeVisit.id,'visit-one');assert.equal(c.formText,'UNSAVED SYNTHETIC NOTE');assert.equal(c.mutations,0);
+ f.history.forward();await f.settle();assert.equal(c.selected,null);assert.equal(c.activeVisit,null);
 });
 test('Back and Forward only reload views and never replay the preceding mutation',async()=>{
  const f=fixture(),c=f.ctx;await c.enter();await c.run(async()=>{await c.api('/synthetic-change','POST');await c.showClaimsWorkspace();await c.showClaim('claim-one');});assert.equal(c.mutations,1);assert.equal(f.route().kind,'claim');f.history.back();await f.settle();f.history.forward();await f.settle();assert.deepEqual(c.detail,['claim','claim-one']);assert.equal(c.mutations,1);
@@ -86,7 +92,7 @@ test('a history restore interrupted by sign-out cannot overwrite the new staff h
 test('patient chart reads from a previous sign-in never publish into the next session',async()=>{
  const app=fs.readFileSync('web/app.js','utf8'),start=app.indexOf('async function selectPatient('),end=app.indexOf('\nconst date =',start),source=app.slice(start,end);
  for(const stage of ['workspace','related']){
-  let resolve,calls=0;const gate=new Promise(r=>resolve=r),ctx={me:{user_id:'old'},selected:'new-patient',workspace:{patient:{id:'new-patient'}},activeVisit:null,captureVisitDrafts(){},workspaceResourceAllowed:()=>true,
+  let resolve,calls=0;const gate=new Promise(r=>resolve=r),ctx={patientWorkspaceGeneration:0,me:{user_id:'old'},selected:'new-patient',workspace:{patient:{id:'new-patient'}},activeVisit:null,captureVisitDrafts(){},workspaceResourceAllowed:()=>true,
    api:async()=>{calls++;if(stage==='workspace'||calls===2)await gate;return {items:[],visits:[]};},renderChart(){throw new Error('stale chart published');},renderPatients(){throw new Error('stale directory published');}};
   vm.createContext(ctx);vm.runInContext(source,ctx);const pending=ctx.selectPatient('old-patient');await new Promise(r=>setImmediate(r));ctx.me={user_id:'new'};resolve();await pending;assert.equal(ctx.selected,'new-patient');assert.equal(ctx.workspace.patient.id,'new-patient');if(stage==='workspace')assert.equal(calls,1);
  }

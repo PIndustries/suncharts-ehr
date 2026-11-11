@@ -816,6 +816,46 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/terminology-autocomplete.css",
+            get(|| async {
+                web_asset(
+                    "terminology-autocomplete.css",
+                    "text/css",
+                    include_str!("../web/terminology-autocomplete.css"),
+                )
+            }),
+        )
+        .route(
+            "/encounter-navigation.css",
+            get(|| async {
+                web_asset(
+                    "encounter-navigation.css",
+                    "text/css",
+                    include_str!("../web/encounter-navigation.css"),
+                )
+            }),
+        )
+        .route(
+            "/document-files-groups.css",
+            get(|| async {
+                web_asset(
+                    "document-files-groups.css",
+                    "text/css",
+                    include_str!("../web/document-files-groups.css"),
+                )
+            }),
+        )
+        .route(
+            "/claim-workflow.css",
+            get(|| async {
+                web_asset(
+                    "claim-workflow.css",
+                    "text/css",
+                    include_str!("../web/claim-workflow.css"),
+                )
+            }),
+        )
+        .route(
             "/document-files.css",
             get(|| async {
                 web_asset(

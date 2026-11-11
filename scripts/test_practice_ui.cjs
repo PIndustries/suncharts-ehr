@@ -64,7 +64,7 @@ async function testEncounterStates() {
   assert.doesNotMatch(f.evaluate('encounterDateLabel(activeVisit)'), /Invalid Date/);
   assert.equal(f.evaluate("encounterDateLabel({appointment_id:'missing'})"),'Encounter date not recorded');
   f.evaluate('renderVisit(false)');
-  assert.match(f.node('encounter-progress').innerHTML, /Note &amp; ICD-10|Note & ICD-10/);
+  assert.match(f.node('encounter-progress').innerHTML, /Notes &amp; diagnoses \(ICD-10\)|Notes & diagnoses \(ICD-10\)/);
   assert.match(f.node('visit-editor').innerHTML, /data-action="sign"/);
   assert.doesNotMatch(f.node('visit-editor').innerHTML, /id="amendment-form"/);
   f.evaluate(`activeVisit.note={subjective:'S',objective:'O',assessment:'A',plan:'P'}; activeVisit.vitals={heart_rate_bpm:70}; renderVisit(false)`);
@@ -90,7 +90,7 @@ async function testDelegatedRoomingControls(){
   f.evaluate(`me.role=${JSON.stringify(role)};activeVisit.clinician_id='another-clinician';activeVisit.status='in_progress';renderVisit(false)`);
   assert.match(f.node('visit-editor').innerHTML,/>Save vitals</,role);
   assert.doesNotMatch(f.node('visit-editor').innerHTML,/data-action="sign"|>Save note<|id="amendment-form"/,role);
-  assert.match(f.node('encounter-progress').innerHTML,/Note &amp; ICD-10|Note & ICD-10/,role);
+  assert.match(f.node('encounter-progress').innerHTML,/Notes &amp; diagnoses \(ICD-10\)|Notes & diagnoses \(ICD-10\)/,role);
   f.evaluate(`activeVisit.status='signed';renderVisit(false)`);
   assert.doesNotMatch(f.node('visit-editor').innerHTML,/>Save vitals<|>Save note<|data-action="sign"|id="amendment-form"/,role);
  }
@@ -132,7 +132,7 @@ async function testVisitDrafts(){
 
 async function testEncounterSelectionRefresh(){
  const f=clinicalFixture();f.context.pending=[];
- f.evaluate(`api=async()=>({...activeVisit,id:'signed-visit',status:'signed'});run=action=>pending.push(Promise.resolve().then(action));renderChart=()=>calls.push(['chart',activeVisit.id]);renderVisit=()=>calls.push(['editor-only']);`);
+ f.evaluate(`workspace.visits=[{...activeVisit,id:'signed-visit',patient_id:selected,status:'signed'}];api=async()=>workspace.visits[0];run=action=>pending.push(Promise.resolve().then(action));renderChart=()=>calls.push(['chart',activeVisit.id]);renderVisit=()=>calls.push(['editor-only']);`);
  const button={id:'',type:'button',dataset:{visit:'signed-visit'},closest(){return null;},hasAttribute(name){return name==='data-visit';}};
  f.listeners.get('click')[0].callback({target:{closest:()=>button}});
  await Promise.all(f.context.pending);

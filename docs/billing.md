@@ -32,7 +32,7 @@ require review.
    the separately configured hosted checkout described below; test-mode collections
    are limited to development with synthetic data.
 2. Open the encounter, document the visit and ICD-10 diagnoses, and enter its
-   procedures and charges under the encounter’s **Billing & claim** step. Review diagnosis links,
+   procedures and charges under the encounter’s **Procedures (CPT/HCPCS) & billing** step. Review diagnosis links,
    quantities and full line totals before signing and posting. Posting applies
    available copay credit from this appointment to its account. A receipt recorded
    after posting can apply immediately. Pending processor attempts reserve amounts;
@@ -96,6 +96,14 @@ lookup, clinical necessity decisions and external submission remain separate.
 Prepare a claim from a posted account, review the professional claim packet and
 generate its supported 837P profile. Release and queue delivery explicitly.
 Configure a [clearinghouse connection](clearinghouses.md) before transport.
+
+The claim workspace separates **Preview claim**, **Submit electronically** and
+**Track response**. The CMS-1500 preview is a review copy of frozen claim evidence,
+not an official paper-submission form. It shows recorded units, modifiers,
+diagnosis pointers and patient payments; unavailable attestations remain unfilled.
+Printing does not submit a claim. **Review & submit to Claim.MD** opens the existing
+submission review before staff explicitly queue delivery. Manual activity performed
+outside SunCharts is recorded separately.
 
 Transport delivery, technical acknowledgment, claim acceptance and payer adjudication
 are distinct. Review TA1/999 evidence and matched 277CA rows with their control
@@ -162,7 +170,7 @@ profile is accepted.
 
 ## Hosted appointment copays
 
-The encounter's **Billing & claim** step and pre-visit **Insurance** tab can open
+The encounter's **Procedures (CPT/HCPCS) & billing** step and pre-visit **Insurance** tab can open
 Stripe-hosted Checkout for a reviewed appointment copay before charges exist.
 The appointment, patient, optional coverage snapshot, amount, installation,
 credential revision, Stripe account and test/live mode are bound to that attempt.

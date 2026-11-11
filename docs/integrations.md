@@ -176,6 +176,12 @@ alongside the record; manual entry remains available without a catalog claim.
 Diagnosis-to-charge links are chosen explicitly. A code match does not establish
 medical necessity, payer coverage or reimbursement.
 
+In procedure rows, type at least two characters in the code or description to
+see matching CPT or HCPCS entries from the selected installed catalog. Use the
+arrow keys and Enter, or select a suggestion, to fill both fields. Editing either
+field manually clears its catalog provenance. The lookup reports when no applicable
+catalog is installed; HCPCS Level II does not replace a licensed CPT catalog.
+
 Prepare the official public US datasets with:
 
 ```sh

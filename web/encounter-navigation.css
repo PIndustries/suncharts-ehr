@@ -1,0 +1,24 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+.patient-directory-landing{align-content:center}
+#toggle-directory{min-width:112px}
+.clinical-summary-links{display:flex;flex-wrap:wrap;gap:4px 12px}
+.clinical-summary-links .text-button{padding:4px 0}
+.patient-encounter-history .section-head{gap:12px;align-items:center}
+.patient-encounter-history details>summary{font-weight:600;color:var(--text);padding:12px 0}
+.patient-encounter-history details>summary .pill{margin-left:6px}
+.encounter-history-row{gap:16px;align-items:center}
+.encounter-history-row>div{min-width:0}
+.encounter-history-row strong,.encounter-history-row small{display:block}
+.encounter-history-row small{line-height:1.7}
+.encounter-history-row>button{flex-shrink:0}
+.encounter-history-row.selected-encounter{border-left:3px solid var(--blue);padding-left:12px;background:var(--accent)}
+#patient-encounter-history{scroll-margin-top:110px}
+.encounter-selection{flex-wrap:wrap}
+.encounter-selection>button{align-self:end}
+#encounter-progress .encounter-step-tabs button{white-space:normal;max-width:260px;line-height:1.5;text-align:left}
+#encounter-progress .encounter-step-tabs button>span{flex-shrink:0}
+@media(max-width:760px){
+ .patient-encounter-history .section-head,.encounter-history-row{align-items:flex-start;flex-wrap:wrap}
+ .encounter-history-row>button{margin-top:4px}
+ #encounter-progress .encounter-step-tabs button{max-width:210px}
+}
