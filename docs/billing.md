@@ -407,3 +407,9 @@ open the clinical chart. Claim status is loaded separately under the claims
 policy; a denied or unavailable claims service does not hide billing records.
 Claim submission, acceptance and crossover tracking are workflow evidence and do
 not establish payment or a settled patient balance.
+
+### Native Stripe account summary
+
+Payment settings includes a read-only account summary for owners and existing authorized delegated administrators. It shows available and pending Stripe balances, payout/card readiness, and the latest ten payments and payouts. Live and test accounts are labeled separately. Account capability readiness does not enable live collection; the existing operator gates still apply.
+
+Requests go through the installation-bound SunCharts Connect broker. The server checks installation, tenant, account, mode and current credentials; the browser receives no Stripe keys, customer details, bank/card data or provider invoice links. Unavailable sections display as unavailable rather than zero. This account view does not post or reconcile patient ledger entries. Patient invoices and copay receipts remain in native patient billing.
