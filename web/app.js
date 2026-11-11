@@ -36,6 +36,23 @@ function clearHostedCopaySignInReturn(){
  history.replaceState(history.state,'',location.pathname+(query.size?'?'+query.toString():'')+location.hash);
 }
 
+function rememberPatientPaymentSetupSignInReturn(){
+ const id=new URLSearchParams(location.search).get('payment_setup');
+ if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id||''))return;
+ try{sessionStorage.setItem('suncharts.payment-setup-return',JSON.stringify({id,expires:Date.now()+600000}));}catch{}
+}
+function takePatientPaymentSetupSignInReturn(){
+ try{
+  const raw=sessionStorage.getItem('suncharts.payment-setup-return');sessionStorage.removeItem('suncharts.payment-setup-return');const value=JSON.parse(raw||'null');
+  return value&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.id||'')&&Number.isFinite(value.expires)&&value.expires>Date.now()&&value.expires<=Date.now()+600000?value.id:null;
+ }catch{return null;}
+}
+function clearPatientPaymentSetupSignInReturn(){
+ try{sessionStorage.removeItem('suncharts.payment-setup-return');}catch{}
+ const query=new URLSearchParams(location.search);if(!query.has('payment_setup'))return;query.delete('payment_setup');
+ history.replaceState(history.state,'',location.pathname+(query.size?'?'+query.toString():'')+location.hash);
+}
+
 // Connect delivers delegated support codes in the fragment so they never reach an HTTP log.
 // Remove it before making any request, then exchange through this EHR's same-origin server.
 async function acceptConnectLaunch(){
@@ -56,6 +73,9 @@ async function acceptConnectLaunch(){
   const savedCopayReturn=takeHostedCopaySignInReturn();
   const copayReturn=new URLSearchParams(location.search).get('copay_checkout')??savedCopayReturn;
   if(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(copayReturn||''))returnQuery.set('copay_checkout',copayReturn);
+  const savedSetupReturn=takePatientPaymentSetupSignInReturn();
+  const setupReturn=new URLSearchParams(location.search).get('payment_setup')??savedSetupReturn;
+  if(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(setupReturn||''))returnQuery.set('payment_setup',setupReturn);
   history.replaceState(null,'',returnQuery.size?'/?'+returnQuery.toString():'/');
   let issuerUrl;
   try{issuerUrl=new URL(issuer);}catch{throw new Error('This support sign-in link is invalid or incomplete.');}
@@ -302,6 +322,9 @@ async function enter() {
   if(typeof finishConnectOnboarding==='function'&&await finishConnectOnboarding())return;
   if (new URLSearchParams(location.search).has('oauth_request')) { await showConsent(); return; }
   if (!selected) $('chart').innerHTML='<div class="panel empty"><span class="empty-mark" aria-hidden="true">⊕</span><h2>Open a patient chart</h2><p>Select a patient from the directory to review their record,<br>manage orders, or document an encounter.</p><div class="empty-shortcuts"><button type="button" data-open-schedule>View schedule</button></div></div>';
+  if(new URLSearchParams(location.search).has('payment_setup')&&typeof openPatientPaymentSetupReturn==='function'){
+    await openPatientPaymentSetupReturn(new URLSearchParams(location.search).get('payment_setup'));return;
+  }
   if(new URLSearchParams(location.search).has('copay_checkout')&&typeof openHostedCopayReturn==='function'){
     await openHostedCopayReturn(new URLSearchParams(location.search).get('copay_checkout'));return;
   }
@@ -511,15 +534,16 @@ function applyChartSection(){
  if($('encounter-revenue'))$('encounter-revenue').hidden=!(inEncounter&&hasVisit&&step==='charges'&&chartAreaEnabled('billing'));
  if($('encounter-orders-actions'))$('encounter-orders-actions').hidden=!(inEncounter&&hasVisit&&step==='orders'&&chartAreaEnabled('orders'));
  if($('encounter-progress')){$('encounter-progress').hidden=!inEncounter;if(inEncounter&&typeof refreshEncounterProgress==='function')refreshEncounterProgress();}
- const primary=['overview','visits','insurance','documents'];
+ const primary=['overview','visits','insurance','billing','documents'];
  if(typeof applyLabEncounterScope==='function')applyLabEncounterScope();
  if(typeof documentFileNavigationChanged==='function')documentFileNavigationChanged();
  document.querySelectorAll('.chart-tabs button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.chartSection===chartSection)));
  const record=$('patient-record-navigation');if(record){record.classList.toggle('active',!primary.includes(chartSection));if(primary.includes(chartSection))record.open=false;}
  const context=$('record-context');if(context){context.hidden=!hasVisit||primary.includes(chartSection);context.innerHTML='<button type="button" data-chart-section="visits">← Return to selected encounter</button>';}
+ if(chartSection==='billing'&&typeof renderPatientBillingChart==='function')void renderPatientBillingChart();
 }
 function chartNavigation(tabs){
- const available=new Map(tabs),main=[['overview','Overview'],['visits','Encounter'],['insurance','Insurance'],['documents','Files']].filter(([key])=>available.has(key)),mainKeys=new Set(main.map(([key])=>key));
+ const available=new Map(tabs),main=[['overview','Overview'],['visits','Encounter'],['insurance','Insurance'],['billing','Billing'],['documents','Files']].filter(([key])=>available.has(key)),mainKeys=new Set(main.map(([key])=>key));
  const names={billing:'Account summary',profile:'Demographics',clinical:'Problems, allergies & medications',history:'Surgical & dental history',care_pathways:'Practice workflows',functional_status:'Function & assessments',source:'Imported records'};
  const records=tabs.filter(([key])=>!mainKeys.has(key)&&key!=='checkout');
  const button=([key,label])=>`<button type="button" data-chart-section="${key}" aria-pressed="${key===chartSection}">${esc(label)}</button>`;
@@ -719,7 +743,7 @@ document.addEventListener('submit',e=>{
   });
 });
 document.addEventListener('click',e=>{
-  if(e.target.closest?.('#connect-login')?.id==='connect-login'){rememberHostedCopaySignInReturn();return;}
+  if(e.target.closest?.('#connect-login')?.id==='connect-login'){rememberHostedCopaySignInReturn();rememberPatientPaymentSetupSignInReturn();return;}
   const button=e.target.closest('button');if(!button||(button.type==='submit' && button.form))return;
   if(button.dataset.action==='focus-amendment'){if(!busy)focusVisitAmendment();return;}
   if(button.dataset.action==='review-amendment-version'){if(!busy)reviewVisitAmendmentVersion(button);return;}
@@ -769,7 +793,7 @@ document.addEventListener('click',e=>{
     if(button.dataset.revoke){await api(`/api/v1/oauth/grants/${button.dataset.revoke}/revoke`,'POST');await showApps();notice('Connection access revoked.');return;}
     if(button.dataset.reconcile){const report=await api(`/api/v1/migrations/${button.dataset.reconcile}/reconcile`,'POST');await showMigrations();notice(report.ready_to_import?'Snapshot reconciled. Review the import before proceeding.':'Snapshot has unresolved counts or mappings.',!report.ready_to_import);return;}
     if(button.dataset.commit){if(!await confirmAction('Original clinical records will be preserved as history. This does not switch your active EHR.',{title:'Import reconciled records?',confirmLabel:'Import records',tone:'danger'}))return;await api(`/api/v1/migrations/${button.dataset.commit}/commit`,'POST',{digest:button.dataset.digest});await showMigrations();notice('Import completed. Clinical cutover remains separate.');return;}
-    if(button.id==='logout'){await api('/auth/logout','POST');clearHostedCopaySignInReturn();signInScreen();return;}
+    if(button.id==='logout'){await api('/auth/logout','POST');clearHostedCopaySignInReturn();clearPatientPaymentSetupSignInReturn();signInScreen();return;}
     if(button.id==='load-more'){const page=await api(typeof patientDirectoryQuery==='function'?patientDirectoryQuery(cursor):`/api/v1/patients?after=${encodeURIComponent(cursor)}`);patients.push(...page.items);cursor=page.next_cursor;renderPatients();return;}
     if(button.dataset.patient){await selectPatient(button.dataset.patient);return;}
     if(button.dataset.checkIn){await api(`/api/v1/appointments/${button.dataset.checkIn}/check-in`,'POST');await selectPatient(selected);showChartSection('visits');notice('Patient checked in.');return;}

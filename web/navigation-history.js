@@ -35,6 +35,7 @@
    step:typeof encounterSection==='undefined'?'documentation':encounterSection,
    appointment:typeof insuranceAppointmentSelection==='undefined'||chartSection!=='insurance'?null:insuranceAppointmentSelection.get(selected)||null,
    claim:typeof encounterClaimRoute==='function'?encounterClaimRoute():null,
+   billing:typeof patientBillingRoute==='function'&&chartSection==='billing'?patientBillingRoute():null,
    file:typeof encounterFileRoute==='function'?encounterFileRoute():null,
    account:typeof billingSelected==='undefined'||chartSection!=='billing'?null:billingSelected||null,
    order:typeof labSelected==='undefined'||!['orders','visits'].includes(chartSection)?null:labSelected||null};
@@ -43,7 +44,8 @@
   const active=document.querySelector('#workspace-navigation [aria-current="page"]')?.id;
   return toolsByNav[active]?{view:'tool',nav:active}:null;
  }
- function routeNow(){return patientRoute()||pendingRoute||toolRoute();}
+ function billingRoute(){const route=typeof patientBillingRoute==='function'?patientBillingRoute():null;return route?.surface==='global'?{view:'patientBilling',billing:route}:null;}
+ function routeNow(){return patientRoute()||billingRoute()||pendingRoute||toolRoute();}
  function remember(){
   if(restoring||depth||typeof busy!=='undefined'&&busy||!identity())return;
   const route=routeNow();if(!route)return;
@@ -85,7 +87,8 @@
     }
     showChartSection(route.section||'overview');
     if(chartSection==='visits'&&activeVisit)setEncounterSection(route.step||'documentation');
-    if(route.account&&workspace.billing?.accounts.some(a=>a.id===route.account))showBillingAccount(route.account,false);
+    if(valid()&&route.billing&&chartSection==='billing')await invoke('restorePatientBillingRoute',route.billing);
+    if(!route.billing&&route.account&&workspace.billing?.accounts.some(a=>a.id===route.account))showBillingAccount(route.account,false);
     if(route.order&&workspace.labs?.orders.some(o=>o.id===route.order))showOrder(route.order,false);
     if(route.claim&&chartSection==='visits'&&encounterSection==='charges'&&workspace.billing?.accounts.some(a=>a.id===route.claim.account&&a.content.visit_id===activeVisit?.id)){
      if(route.claim.claim)await invoke('showEncounterClaim',route.claim.claim,route.claim.account);
@@ -95,6 +98,7 @@
    }
    return;
   }
+  if(route.view==='patientBilling'){await invoke('restorePatientBillingRoute',route.billing);return;}
   if(route.view==='tool'&&toolsByNav[route.nav]){await invoke(toolsByNav[route.nav]);return;}
   if(route.view==='screen'&&screenMethods[route.kind]){
    if(route.kind==='reminders'&&typeof reminderFilter!=='undefined'&&typeof route.filter==='string')reminderFilter=route.filter;
@@ -144,6 +148,7 @@
  wrap('run');
  wrap('enter');
  wrap('showTool',()=>toolRoute());
+ for(const name of ['showPatientBillingWorkspace','changePatientBillingTab','renderPatientBillingChart'])wrap(name,()=>billingRoute()||patientRoute());
  for(const name of ['showClinical','selectPatient','showChartSection','setEncounterSection','renderVisit','showBillingAccount','showOrder','showEncounterClaim','beginClaim','openDocumentFile'])wrap(name,()=>patientRoute());
  for(const [nav,name] of Object.entries(toolsByNav))if(name!=='showClinical')wrap(name,()=>({view:'tool',nav}));
  for(const [kind,name] of Object.entries(screenMethods))wrap(name,args=>({view:'screen',kind,...(kind==='inbox'?{channel:args[0]||'communications'}:kind==='outbound'?{channel:args[0]||'ringcentral'}:kind==='reminders'?{filter:typeof reminderFilter==='undefined'?'due':reminderFilter}:{})}));

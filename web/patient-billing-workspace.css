@@ -1,0 +1,29 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+.patient-billing-hub{min-width:0}
+.patient-billing-header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:20px}
+.patient-billing-header h2{margin:0 0 6px;font-size:1.7rem}
+.patient-billing-header p{margin:0;color:var(--muted)}
+.patient-billing-selector{padding:16px;background:var(--surface-alt,var(--accent));border:1px solid var(--line);border-radius:8px;margin-bottom:20px}
+.patient-billing-search-row{display:flex;gap:8px;align-items:center;margin-top:6px}
+.patient-billing-search-row input{max-width:500px;flex:1;min-width:160px}
+.patient-billing-search-results{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-top:12px}
+.patient-billing-search-results button{text-align:left;white-space:normal}
+.patient-billing-search-results b,.patient-billing-search-results small{display:block}
+.patient-billing-tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);overflow-x:auto;margin-bottom:16px}
+.patient-billing-tabs button{border:0;border-bottom:3px solid transparent;border-radius:0;background:transparent;white-space:nowrap;padding:12px 16px}
+.patient-billing-tabs button[aria-selected="true"]{border-bottom-color:var(--blue);color:var(--blue);font-weight:700;background:var(--accent)}
+.patient-billing-tabs button:focus-visible{outline:2px solid var(--blue);outline-offset:-3px}
+.patient-billing-scope{display:flex;align-items:flex-end;gap:16px;justify-content:space-between;margin-bottom:20px}
+.patient-billing-scope select{width:auto;min-width:190px}
+.patient-billing-scope p{font-size:.85rem;color:var(--muted);margin:0 0 8px}
+.patient-billing-totals{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:16px 0 24px}
+.patient-billing-totals section{padding:18px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.patient-billing-totals span,.patient-billing-totals small{display:block;color:var(--muted)}
+.patient-billing-totals strong{display:block;font-size:1.8rem;line-height:1.6;font-variant-numeric:tabular-nums}
+.patient-billing-empty{padding:28px 20px;background:var(--surface-alt,var(--accent));border-radius:8px}
+.patient-billing-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-top:16px}
+.patient-billing-card{border:1px solid var(--line);border-radius:8px;padding:18px;min-width:0}
+.patient-billing-card h4{margin:0 0 8px}
+.patient-billing-card p{margin:7px 0}
+#patient-billing-preview{border-top:1px solid var(--line);margin-top:24px;padding-top:20px}
+@media(max-width:800px){.patient-billing-header,.patient-billing-scope{display:block}.patient-billing-header>.actions{margin-top:12px}.patient-billing-totals{grid-template-columns:1fr}.patient-billing-search-row{flex-wrap:wrap}.patient-billing-scope p{margin-top:8px}.patient-billing-tabs button{padding:12px}}

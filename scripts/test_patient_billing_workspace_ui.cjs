@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const source=fs.readFileSync('web/patient-billing-workspace.js','utf8'),overview=fs.readFileSync('web/billing-overview.js','utf8'),app=fs.readFileSync('web/app.js','utf8');
+const patient='11111111-1111-4111-8111-111111111111',other='22222222-2222-4222-8222-222222222222',request='33333333-3333-4333-8333-333333333333';
+function fixture(){
+ const nodes={},calls=[],handlers={};
+ class Node{
+  constructor(id,parent){this.id=id;this.parentElement=parent;this.hidden=false;this.isConnected=true;this.dataset={};this.children=[];this._html='';nodes[id]=this;}
+  set innerHTML(value){for(const n of this.children)n.detach?.();this.children=[];this._html=value;for(const m of value.matchAll(/<([a-z][a-z0-9]*)\b([^>]*\bid="([^"]+)"[^>]*)>/g)){const n=new Node(m[3],this);n.tagName=m[1].toUpperCase();if(m[2].includes('role="tab"')){n.dataset.hubTab=/data-hub-tab="([^"]+)"/.exec(m[2])?.[1];n.role='tab';}this.children.push(n);}}
+  get innerHTML(){return this._html;}
+  detach(){this.isConnected=false;for(const n of this.children)n.detach?.();if(nodes[this.id]===this)delete nodes[this.id];}
+  querySelector(selector){if(selector.startsWith('#')){const n=nodes[selector.slice(1)];return n&&n.isConnected&&n.descends(this)?n:null;}return null;}
+  querySelectorAll(selector){return selector==='[role="tab"]'?this.children.filter(n=>n.role==='tab'):[];}
+  descends(p){for(let n=this;n;n=n.parentElement)if(n===p)return true;return false;}
+  closest(selector){if(selector==='.patient-billing-hub')return this.id==='patient-billing-global'||this.id==='patient-billing-chart'?this:this.parentElement?.closest(selector);return null;}
+  setAttribute(k,v){this[k]=v;}
+  append(n){this.children.push(n);n.parentElement=this;if(n.id)nodes[n.id]=n;}
+  replaceChildren(){this.innerHTML='';}
+  scrollIntoView(){}
+  focus(){this.focused=true;}
+ }
+ new Node('tools');new Node('clinical-workspace');nodes['clinical-workspace'].hidden=true;
+ const person=id=>({id,given_name:'Synthetic',family_name:id===patient?'A <Patient>':'B',mrn:'MRN-'+id.slice(0,3),archived:false});
+ const native=id=>({patient:id?person(id):null,mode:'recorded',summary:{accounts:{open_invoice_count:1,reviewed_patient_due_cents:500,invoice_review_count:1},copays:{net_received_cents:2500,receipts:1,usable_unapplied_cents:0,review_count:0}},accounts:{items:[{id:'account',patient_id:id,patient_name:'Synthetic <Patient>',mrn:'MRN',service_date:'2026-11-11',status:'posted',total_cents:20000,account_balance_cents:17500}],next_cursor:null},copays:{items:[{id:'receipt',patient_id:id,patient_name:'Synthetic',mrn:'MRN',occurred_on:'2026-11-11',method:'cash',amount_cents:2500,net_received_cents:2500,usable_unapplied_cents:0}],next_cursor:null}});
+ const profile=id=>({patient_id:id,contract_version:1,livemode:false,checked_at:'2026-11-11T20:00:00Z',customer:{status:'available',id:'cus_NEVER_DISPLAY'},payment_methods:{status:'available',data:{items:[{id:'pm_NEVER_DISPLAY',brand:'visa',last4:'4242',exp_month:4,exp_year:2030}],has_more:false,next_cursor:null}},invoices:{status:'available',data:{items:[{id:'in_NEVER_DISPLAY',status:'open',currency:'usd',total:20000,amount_due:500,amount_paid:2500,amount_remaining:500,created:1794430800,due_date:null}],has_more:false}},subscriptions:{status:'available',data:{items:[{id:'sub_NEVER_DISPLAY',status:'active',currency:'usd',created:1794430800,cancel_at_period_end:false,items:[{id:'si_NEVER_DISPLAY',unit_amount:5000,quantity:2,interval:'month',interval_count:1,current_period_start:1794430800,current_period_end:1797022800}]}],has_more:false}},setup_available:true});
+ const location={pathname:'/',search:'?payment_setup='+request,hash:''};
+ const ctx={console,Intl,Date,URL,URLSearchParams,Symbol,encodeURIComponent,crypto:{randomUUID:()=>request},location,history:{state:{},replaceState(_s,_t,path){const u=new URL(path,'https://ehr.test');Object.assign(location,{pathname:u.pathname,search:u.search,hash:u.hash});}},sessionStorage:{setItem(){},getItem(){return null;},removeItem(){}},me:{tenant_id:'tenant',user_id:'user',role:'front_desk'},selected:patient,chartSection:'overview',workspace:{patient:person(patient)},document:{addEventListener:(k,v)=>(handlers[k]??=[]).push(v),createElement:()=>({setAttribute(){}})},$:id=>nodes[id]||null,esc:v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'),human:v=>String(v).replaceAll('_',' '),date:String,money:v=>'$'+(v/100).toFixed(2),invoicePaymentMethod:String,workspaceResourceAllowed:r=>r==='billing',billingCan:()=>true,captureVisitDrafts:()=>calls.push(['draft-capture']),captureBillingChargeDraft(){},showTool(){nodes.tools.hidden=false;nodes['clinical-workspace'].hidden=true;},run:fn=>ctx.pending=fn(),patientInvoiceDocument:v=>{calls.push(['invoice-render',v]);return 'immutable invoice';},copayReceiptDocument:(r,c)=>{calls.push(['receipt-render',r,c]);return 'receipt';},showChartSection:k=>ctx.chartSection=k};
+ ctx.api=async(path,method='GET',body)=>{calls.push([path,method,body]);const u=new URL(path,'https://ehr.test');if(u.pathname==='/api/v1/billing/overview')return native(u.searchParams.get('patient_id'));if(u.pathname==='/api/v1/billing/patients')return {items:[person(patient),person(other)],next_cursor:'next'};if(path.includes('/payment-profile'))return profile(path.split('/')[5]);if(path.includes('/payment-setups'))return {request_id:request,patient_id:patient,livemode:false,status:method==='POST'?'open':'succeeded',session:{url:'https://checkout.stripe.com/c/pay/cs_test_synthetic'},recovery_required:false};if(/\/patients\/.*\/invoices/.test(path))return {items:[{id:'invoice',patient_id:patient,created_at:'2026-11-11',account_status:'posted',is_latest:false,needs_review:true,snapshot:{amount_due_cents:500,service_date:'2026-11-10'}}],next_cursor:null};if(path.includes('/invoices/'))return {id:'invoice',patient_id:patient,snapshot:{amount_due_cents:500,practice_name:'Original Practice'}};return {receipt:{id:'receipt',patient_id:patient},context:{}};};
+ vm.createContext(ctx);vm.runInContext(overview,ctx);vm.runInContext(source,ctx);
+ return {ctx,nodes,calls,handlers,Node,native,profile,person};
+}
+const flush=async()=>{await new Promise(setImmediate);await new Promise(setImmediate);};
+const state=f=>vm.runInContext('patientBillingWorkspace',f.ctx);
+const html=f=>f.nodes['patient-billing-panel'].innerHTML;
+(async()=>{
+ let f=fixture();await f.ctx.renderBillingOverview();assert.ok(html(f).includes('$5.00'));assert.ok(!html(f).includes('data-billing-patient'),'billing-only never offered chart entry');assert.ok(f.nodes['patient-billing-global'].innerHTML.includes('Payment methods'));assert.ok(f.calls.every(c=>!String(c[0]).includes('/workspace')));
+ await f.ctx.searchPatientBillingPatients(state(f),'Synthetic');assert.ok(f.nodes['billing-patient-results'].innerHTML.includes('A &lt;Patient&gt;'));assert.ok(f.calls.some(c=>String(c[0]).startsWith('/api/v1/billing/patients?q=Synthetic')));
+ await f.ctx.showPatientBillingWorkspace({patientId:patient});assert.ok(f.calls.some(c=>String(c[0]).includes('patient_id='+patient)));assert.equal(f.nodes['patient-billing-heading'].textContent,'A <Patient>, Synthetic');
+ await f.ctx.changePatientBillingTab('invoices');await flush();assert.match(html(f),/\$5\.00/);assert.match(html(f),/Needs review/);assert.match(f.nodes['patient-billing-stripe-invoices'].innerHTML,/Remaining \$5\.00/);assert.ok(!f.nodes['patient-billing-stripe-invoices'].innerHTML.includes('in_NEVER_DISPLAY'));
+ await f.ctx.showPatientBillingDocument('invoice','invoice');assert.equal(f.calls.find(c=>c[0]==='invoice-render')[1].snapshot.practice_name,'Original Practice');assert.equal(f.calls.filter(c=>c[1]==='POST').length,0);
+ await f.ctx.changePatientBillingTab('methods');await flush();let profileHTML=f.nodes['patient-billing-profile-section'].innerHTML;assert.match(profileHTML,/4242/);assert.match(profileHTML,/Stripe TEST/);assert.ok(!profileHTML.includes('NEVER_DISPLAY'));assert.match(profileHTML,/Add payment method/);
+ await f.ctx.changePatientBillingTab('subscriptions');await flush();assert.match(f.nodes['patient-billing-profile-section'].innerHTML,/\$50\.00 per unit/);assert.match(f.nodes['patient-billing-profile-section'].innerHTML,/quantity 2/);assert.match(f.nodes['patient-billing-profile-section'].innerHTML,/Encounter payment plans/);assert.ok(!f.nodes['patient-billing-profile-section'].innerHTML.includes('data-hub-add'));
+ assert.match(f.ctx.patientBillingAmount(500,'jpy'),/500/);assert.match(f.ctx.patientBillingAmount(500,'isk'),/5/);assert.equal(f.ctx.patientBillingAmount(null,'usd'),'Not available');
+ const empty=f.profile(patient);empty.customer.status='not_created';empty.payment_methods={status:'not_created',data:null};assert.match(f.ctx.patientBillingProfileMarkup(empty,'methods',state(f)),/does not establish a reusable saved card/);empty.payment_methods={status:'unavailable',data:null};assert.match(f.ctx.patientBillingProfileMarkup(empty,'methods',state(f)),/number of records is unknown/);empty.payment_methods={status:'available',data:{items:[],has_more:false}};assert.match(f.ctx.patientBillingProfileMarkup(empty,'methods',state(f)),/No saved payment methods/);
+ f.ctx.billingCan=()=>false;assert.ok(!f.ctx.patientBillingProfileMarkup(f.profile(patient),'methods',state(f)).includes('data-hub-add-method'));
+ for(const url of ['http://checkout.stripe.com/x','https://checkout.stripe.com.evil.test/x','https://user@checkout.stripe.com/x','https://checkout.stripe.com:444/x','javascript:alert(1)'])assert.equal(f.ctx.patientBillingCheckoutUrl(url),null);assert.equal(f.ctx.patientBillingCheckoutUrl('https://checkout.stripe.com/x'),'https://checkout.stripe.com/x');
+
+ // A patient's late native read must never overwrite the subsequently selected patient.
+ f=fixture();let resolve;const original=f.ctx.api;f.ctx.api=(path,...rest)=>path.includes('patient_id='+patient)?new Promise(r=>resolve=r):original(path,...rest);
+ const pending=f.ctx.showPatientBillingWorkspace({patientId:patient});await f.ctx.showPatientBillingWorkspace({patientId:other});resolve(f.native(patient));await pending;assert.equal(state(f).patientId,other);assert.equal(f.nodes['patient-billing-heading'].textContent,'B, Synthetic');
+ f=fixture();await f.ctx.showPatientBillingWorkspace({patientId:patient});f.ctx.api=()=>new Promise(r=>resolve=r);const preview=f.ctx.showPatientBillingDocument('invoice','invoice');f.ctx.me={tenant_id:'other',role:'owner'};resolve({patient_id:patient,snapshot:{}});await preview;assert.ok(!f.calls.some(c=>c[0]==='invoice-render'));
+
+ // New card setup is explicit, and uncertain creation retains its one request ID.
+ f=fixture();await f.ctx.showPatientBillingWorkspace({patientId:patient,tab:'methods'});await flush();const s=state(f);assert.equal(f.calls.filter(c=>c[1]==='POST').length,0);
+ const before=f.ctx.api;f.ctx.api=async(path,method,body)=>{if(method==='POST'){f.calls.push([path,method,body]);throw Error('response lost');}return before(path,method,body);};await f.ctx.patientBillingCreateSetup(s);assert.equal(f.ctx.patientBillingSetupFor(s).status,'unknown');assert.equal(f.ctx.patientBillingSetupFor(s).request_id,request);await f.ctx.patientBillingCreateSetup(s);assert.equal(f.calls.filter(c=>c[1]==='POST').length,1,'uncertainty cannot silently create another setup');
+ f.ctx.api=before;await f.ctx.patientBillingRefreshSetup(s);assert.equal(f.ctx.patientBillingSetupFor(s).status,'succeeded');assert.equal(f.calls.filter(c=>c[1]==='POST').length,1);
+
+ // Resuming a durable pending request does not create a new operation after navigation.
+ f=fixture();const durableApi=f.ctx.api;f.ctx.api=async(path,...args)=>{const result=await durableApi(path,...args);if(path.includes('/payment-profile'))result.active_setup={request_id:request,status:'open'};if(path.includes('/payment-setups/'))result.status='open';return result;};
+ await f.ctx.showPatientBillingWorkspace({patientId:patient,tab:'methods'});await flush();assert.match(f.nodes['patient-billing-profile-section'].innerHTML,/Continue secure card setup/);assert.ok(!f.nodes['patient-billing-profile-section'].innerHTML.includes('data-hub-add-method'));assert.equal(f.calls.filter(c=>c[1]==='POST').length,0);
+ // The form must carry explicit consent; retry is explicit and uses the same UUID.
+ f=fixture();await f.ctx.showPatientBillingWorkspace({patientId:patient,tab:'methods'});await flush();
+ for(const handler of f.handlers.submit)handler({target:{id:'patient-billing-setup-form',elements:{consent:{checked:false}},closest:()=>state(f).host},preventDefault(){}});assert.equal(f.calls.filter(c=>c[1]==='POST').length,0);
+ const retryApi=f.ctx.api;f.ctx.api=async(path,method,body)=>{if(method==='POST'){f.calls.push([path,method,body]);throw Error('network unavailable');}return retryApi(path,method,body);};await f.ctx.patientBillingCreateSetup(state(f));const uncertain=f.ctx.patientBillingSetupFor(state(f));assert.match(f.ctx.patientBillingSetupMarkup(state(f)),/Retry this setup request/);
+ f.ctx.api=retryApi;await f.ctx.patientBillingCreateSetup(state(f),uncertain);assert.equal(f.calls.filter(c=>c[1]==='POST').length,2);assert.ok(f.calls.filter(c=>c[1]==='POST').every(c=>c[2].request_id===request&&c[2].consent===true));
+ // Provider cursor is scoped to this patient's selected section, not a mode/account switch.
+ state(f).profileCursors.payment_methods='pm_after';await f.ctx.loadPatientBillingProfile(state(f),state(f).panelRequest);assert.ok(f.calls.at(-1)[0].endsWith('payment-profile?methods_after=pm_after'));assert.ok(!f.calls.at(-1)[0].includes('livemode='));
+
+ // Return lookup is GET-only and independent of a success/cancel URL assertion.
+ f=fixture();f.ctx.location.search+='&cancelled=1&paid=true';await f.ctx.openPatientPaymentSetupReturn(request);await flush();assert.equal(state(f).patientId,patient);assert.equal(state(f).tab,'methods');assert.equal(f.ctx.patientBillingSetupFor(state(f)).status,'succeeded');assert.equal(f.calls.filter(c=>c[1]==='POST').length,0);assert.ok(f.calls.every(c=>!String(c[0]).includes('/workspace')),'billing-only return never reads clinical records');
+ f=fixture();f.ctx.api=()=>new Promise(r=>resolve=r);const returning=f.ctx.openPatientPaymentSetupReturn(request);f.nodes.tools.innerHTML='<section id="other-screen"></section>';resolve({request_id:request,patient_id:patient,status:'succeeded'});await returning;assert.equal(f.nodes['patient-billing-global'],undefined,'late return does not hijack later navigation');
+ f=fixture();f.ctx.api=async()=>({request_id:request,patient_id:'invalid',status:'succeeded'});await f.ctx.openPatientPaymentSetupReturn(request);assert.match(f.nodes['patient-payment-setup-return'].innerHTML,/could not be verified/);assert.equal(f.nodes['patient-billing-global'],undefined);
+
+ // Same-tab external sign-in stores one opaque request UUID only, bounded to 10 minutes.
+ f=fixture();const c=f.ctx,stored=new Map();c.sessionStorage={getItem:k=>stored.get(k)??null,setItem:(k,v)=>stored.set(k,v),removeItem:k=>stored.delete(k)};
+ vm.runInContext(app.slice(app.indexOf('function rememberHostedCopaySignInReturn('),app.indexOf('// Connect delivers delegated support codes')),c);
+ c.rememberPatientPaymentSetupSignInReturn();assert.deepEqual(Object.keys(JSON.parse(stored.get('suncharts.payment-setup-return'))).sort(),['expires','id']);
+ c.location.search='';c.location.hash='#code='+'s'.repeat(40)+'&issuer=https%3A%2F%2Fconnect.example.test';c.fetch=async()=>({ok:true,json:async()=>({kind:'staff'})});
+ vm.runInContext(app.slice(app.indexOf('async function acceptConnectLaunch('),app.indexOf('const connectLaunchAcceptance=')),c);await c.acceptConnectLaunch();assert.equal(new URLSearchParams(c.location.search).get('payment_setup'),request);assert.equal(c.location.hash,'');assert.equal(stored.size,0);
+ stored.set('suncharts.payment-setup-return',JSON.stringify({id:request,expires:Date.now()-1}));assert.equal(c.takePatientPaymentSetupSignInReturn(),null);
+ console.log('PASS patient billing hub: scoped selector/native history, typed Stripe sections, unavailable vs empty, masked cards, stable explicit setup, GET-only returns, stale response/session and opaque sign-in recovery');
+})().catch(e=>{console.error(e);process.exitCode=1;});

@@ -36,9 +36,9 @@ async function main(){
  // Primary tasks remain visible; supporting longitudinal areas share one record menu.
  let tabs=plain(evaluate('configuredChartTabs(Object.entries(chartTabLabels))'));tabs.splice(tabs.findIndex(([key])=>key==='billing'),0,['insurance','Insurance']);context.tabs=tabs;
  const html=evaluate('chartNavigation(tabs)'),primaryHtml=html.split('<details')[0];
- assert.deepEqual([...primaryHtml.matchAll(/data-chart-section="([^"]+)"/g)].map(match=>match[1]),['overview','visits','insurance','documents']);
+ assert.deepEqual([...primaryHtml.matchAll(/data-chart-section="([^"]+)"/g)].map(match=>match[1]),['overview','visits','insurance','billing','documents']);
  assert.match(primaryHtml,/data-chart-section="documents"[^>]*>Files/);assert.equal([...html.matchAll(/data-chart-section="documents"/g)].length,1,'Files has one primary destination, not a duplicate buried menu action');
- assert.match(html,/<summary>Patient record<\/summary>/);assert.match(html,/data-chart-section="billing"[^>]*>Account summary/);assert.doesNotMatch(html,/Shared documents/);
+ assert.match(html,/<summary>Patient record<\/summary>/);assert.match(primaryHtml,/data-chart-section="billing"[^>]*>Billing/);assert.equal([...html.matchAll(/data-chart-section="billing"/g)].length,1);assert.doesNotMatch(html,/Shared documents/);
  assert.match(html,/data-chart-section="profile"[^>]*>Demographics/);
  assert.match(html,/data-chart-section="clinical"[^>]*>Problems, allergies &amp; medications/);
  assert.doesNotMatch(html,/data-chart-section="checkout"/,'checkout belongs to the selected encounter');

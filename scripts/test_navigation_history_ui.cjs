@@ -3,7 +3,7 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const source=fs.readFileSync('web/navigation-history.js','utf8');
 const clone=value=>value==null?value:JSON.parse(JSON.stringify(value));
-function fixture(){
+function fixture(billingHub=false){
  const handlers={},events={},calls=[],drafts=new Map(),nodes={'clinical-workspace':{hidden:true},'workspace-back':{hidden:true,disabled:false},chart:{innerHTML:''}};
  let activeNav=null,entries=[{value:null,url:'/'}],index=0;
  const ctx={console,URL,JSON,Map,Promise,setTimeout,clearTimeout,me:{tenant_id:'tenant-a',user_id:'staff-a',role:'clinician'},busy:false,selected:null,activeVisit:null,workspace:null,chartSection:'overview',encounterSection:'documentation',insuranceAppointmentSelection:new Map(),billingSelected:null,labSelected:null,scrollX:0,scrollY:0,formText:'',captureCount:0,mutations:0,location:{pathname:'/',search:'',hash:''},$:id=>nodes[id],document:{addEventListener:(type,fn)=>(handlers[type]??=[]).push(fn),querySelector:()=>activeNav?{id:activeNav}:null},requestAnimationFrame:fn=>setImmediate(fn)};
@@ -38,6 +38,14 @@ function fixture(){
  ctx.encounterFileRoute=()=>ctx.chartSection==='documents'||ctx.chartSection==='visits'&&ctx.encounterSection==='files'?ctx.fileRoute||null:null;
  ctx.openDocumentFile=async(id,version=1)=>{await ctx.api(`/documents/${id}/files/${version}`);ctx.fileRoute={document:id,version};};
  ctx.restoreEncounterFileRoute=async route=>ctx.openDocumentFile(route.document,route.version);
+ if(billingHub){
+  ctx.hubRoute=null;
+  ctx.patientBillingRoute=()=>ctx.hubRoute&&(ctx.hubRoute.surface==='chart'?!nodes['clinical-workspace'].hidden&&ctx.chartSection==='billing':ctx.page==='Patient billing')?clone(ctx.hubRoute):null;
+  ctx.showPatientBillingWorkspace=async options=>{ctx.captureVisitDrafts();ctx.showTool('Patient billing');ctx.hubRoute={patient:options.patientId,tab:options.tab||'overview',mode:options.mode||'recorded',surface:'global'};await ctx.api('/billing/patients/'+options.patientId);};
+  ctx.changePatientBillingTab=async tab=>{ctx.hubRoute.tab=tab;await ctx.api('/billing/'+tab);};
+  ctx.renderPatientBillingChart=async options=>{ctx.showChartSection('billing');ctx.hubRoute={patient:ctx.selected,tab:options.tab||'overview',mode:options.mode||'recorded',surface:'chart'};await ctx.api('/billing/patients/'+ctx.selected);};
+  ctx.restorePatientBillingRoute=async route=>route.surface==='chart'?ctx.renderPatientBillingChart(route):ctx.showPatientBillingWorkspace({patientId:route.patient,tab:route.tab,mode:route.mode});
+ }
  ctx.enter=async()=>ctx.showPracticeWorkspace();
  vm.createContext(ctx);vm.runInContext(source,ctx);
  const settle=async()=>{await new Promise(r=>setTimeout(r,40));for(let i=0;i<4;i++)await new Promise(r=>setImmediate(r));};
@@ -47,7 +55,7 @@ const tests=[];const test=(name,fn)=>tests.push([name,fn]);
 test('nested navigation records one final route, captures drafts and stores only identifiers',async()=>{
  const f=fixture(),c=f.ctx;await c.enter();const initial=f.entries().length;
  await c.run(async()=>{await c.showClinical();await c.selectPatient('patient-one','visit-one');c.setEncounterSection('charges');});
- assert.equal(f.entries().length,initial+1);assert.deepEqual(f.route(),{view:'patient',patient:'patient-one',visit:'visit-one',section:'visits',step:'charges',appointment:null,claim:null,file:null,account:null,order:null});
+ assert.equal(f.entries().length,initial+1);assert.deepEqual(f.route(),{view:'patient',patient:'patient-one',visit:'visit-one',section:'visits',step:'charges',appointment:null,claim:null,billing:null,file:null,account:null,order:null});
  c.formText='PRIVATE UNSAVED SOAP TEXT';c.scrollY=320;c.captureVisitDrafts();await c.run(()=>c.showBillingQueue());
  const count=f.entries().length;f.history.back();await f.settle();assert.equal(c.selected,'patient-one');assert.equal(c.activeVisit.id,'visit-one');assert.equal(c.encounterSection,'charges');assert.equal(c.formText,'PRIVATE UNSAVED SOAP TEXT');assert.equal(c.scrollY,320);assert.equal(f.entries().length,count);assert.ok(c.captureCount>0);assert.doesNotMatch(JSON.stringify(f.entries()),/PRIVATE UNSAVED SOAP TEXT/);
  f.history.forward();await f.settle();assert.equal(c.page,'Billing');assert.equal(f.entries().length,count);
@@ -108,6 +116,14 @@ test('Back and Forward restore file and exact version in encounter and shared pa
  for(const section of ['visits','documents']){
   const f=fixture(),c=f.ctx;await c.enter();await c.run(async()=>{await c.showClinical();await c.selectPatient('patient-one','visit-one');if(section==='visits')c.setEncounterSection('files');else c.showChartSection('documents');});await c.run(()=>c.openDocumentFile('document-one',2));await c.run(()=>c.openDocumentFile('document-two',1));f.history.back();await f.settle();assert.equal(c.chartSection,section);assert.deepEqual(c.fileRoute,{document:'document-one',version:2});f.history.forward();await f.settle();assert.deepEqual(c.fileRoute,{document:'document-two',version:1});assert.equal(c.mutations,0);
  }
+});
+
+test('patient billing hub Back restores exact selected patient/tab using reads and retains encounter drafts',async()=>{
+ const f=fixture(true),c=f.ctx;await c.enter();await c.run(async()=>{await c.showClinical();await c.selectPatient('patient-one','visit-one');c.setEncounterSection('documentation');});
+ c.formText='UNSAVED SYNTHETIC SOAP';await c.run(()=>c.renderPatientBillingChart({tab:'invoices'}));await c.run(()=>c.changePatientBillingTab('payments'));
+ f.history.back();await f.settle();assert.equal(c.selected,'patient-one');assert.equal(c.activeVisit.id,'visit-one');assert.equal(c.hubRoute.tab,'invoices');assert.equal(c.formText,'UNSAVED SYNTHETIC SOAP');
+ await c.run(()=>c.showPatientBillingWorkspace({patientId:'billing-only-patient',tab:'methods',mode:'test'}));await c.run(()=>c.changePatientBillingTab('subscriptions'));const prior=f.calls.length;f.history.back();await f.settle();
+ assert.deepEqual(c.hubRoute,{patient:'billing-only-patient',tab:'methods',mode:'test',surface:'global'});assert.ok(f.calls.slice(prior).every(call=>call[0]==='GET'&&call[1].startsWith('/billing/')),'global billing history never loads clinical chart');assert.equal(c.mutations,0);assert.doesNotMatch(JSON.stringify(f.entries()),/UNSAVED SYNTHETIC SOAP/);
 });
 
 (async()=>{let failed=0;for(const [name,fn] of tests){try{await fn();console.log('PASS '+name);}catch(error){failed++;console.error('FAIL '+name+'\n'+error.message);}}if(failed)process.exitCode=1;})().catch(error=>{console.error(error);process.exitCode=1;});
