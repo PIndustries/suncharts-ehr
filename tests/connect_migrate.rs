@@ -5569,6 +5569,194 @@ fn receipt_ack_text(values: &[Value]) -> String {
 async fn claimmd_multipart_delivery_and_responseid_feed_preserve_structured_evidence() {
     claimmd_status_link_fixture(false).await;
 }
+
+#[tokio::test]
+async fn claimmd_processed_rejection_without_file_id_is_delivered_once_and_linked_exactly() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (r, db, a, _) = setup().await;
+    let (claim, partner, submission) = automated_fixture(&r, &a).await;
+    let mut receipt: Value =
+        serde_json::from_str(include_str!("fixtures/claimmd/rejected-upload.json")).unwrap();
+    for key in ["pcn", "claimid", "remote_claimid"] {
+        receipt["claim"][0][key] = claim["control_number"].clone();
+    }
+    let mut status_claim = receipt["claim"][0].clone();
+    status_claim["messages"] = json!([{"responseid":"3","status":"R","mesgid":"ERPR1","message":"Synthetic payer rejected"}]);
+    let mut wrong_identity = status_claim.clone();
+    wrong_identity["bill_taxid"] = json!("000000002");
+    wrong_identity["messages"][0]["responseid"] = json!("1");
+    let mut wrong_provider = status_claim.clone();
+    wrong_provider["claimmd_id"] = json!("902000002");
+    wrong_provider["messages"][0]["responseid"] = json!("2");
+    let page = json!({"last_responseid":"3","claim":[wrong_identity,wrong_provider,status_claim]});
+    let calls = Arc::new(AtomicUsize::new(0));
+    let sent = calls.clone();
+    let gateway = Router::new()
+        .route(
+            "/services/upload/",
+            axum::routing::post(move || {
+                let receipt = receipt.clone();
+                let sent = sent.clone();
+                async move {
+                    sent.fetch_add(1, Ordering::SeqCst);
+                    axum::Json(receipt)
+                }
+            }),
+        )
+        .route(
+            "/services/response/",
+            axum::routing::post(move || {
+                let page = page.clone();
+                async move { axum::Json(page) }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, gateway).await.unwrap() });
+    let config = provider_config(
+        &a,
+        &partner,
+        "claim_md",
+        &format!("{base}/services/upload/"),
+        &base,
+    );
+    let queued = queue_provider(&r, &a, &submission).await;
+    assert!(suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap());
+    assert!(!suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap());
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "Received rejection must not be uploaded again"
+    );
+    let path = format!(
+        "/api/v1/billing/delivery/jobs/{}",
+        queued["id"].as_str().unwrap()
+    );
+    let (_, job) = schedule_call(&r, &a, "GET", &path, Value::Null, None).await;
+    assert_eq!(job["job"]["status"], "delivered");
+    assert_eq!(job["job"]["receipt_reference"], "claimmd-claim:902000001");
+    suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap();
+    let cp = format!("/api/v1/billing/claims/{}", claim["id"].as_str().unwrap());
+    let (_, detail) = schedule_call(&r, &a, "GET", &cp, Value::Null, None).await;
+    assert_eq!(
+        detail["claim"]["status"], "submitted",
+        "Transport receipt is not payer acceptance or adjudication"
+    );
+    assert_eq!(detail["tracking"]["reports"].as_array().unwrap().len(), 1);
+    assert_eq!(detail["tracking"]["reports"][0]["evidence"]["status"], "R");
+    assert_eq!(
+        detail["tracking"]["reports"][0]["evidence"]["message"]["mesgid"],
+        "ERPR1"
+    );
+    assert_eq!(detail["tracking"]["remittance_posted"], false);
+    let records:Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('remote_id',remote_id,'native_id',native_id,'last_result',last_result) FROM edi_remote_reports WHERE tenant_id=$1 ORDER BY remote_id")
+        .bind(a.tenant_id).fetch_all(&db).await.unwrap();
+    assert_eq!(records.len(), 3);
+    assert!(records
+        .iter()
+        .any(|v| v["native_id"].is_null() && v["last_result"] == "identity_match_needs_review"));
+    assert_eq!(
+        records
+            .iter()
+            .filter(|v| v["native_id"] == submission["id"])
+            .count(),
+        1
+    );
+    let ledger: i64 = sqlx::query_scalar("SELECT count(*) FROM billing_entries WHERE tenant_id=$1")
+        .bind(a.tenant_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(ledger, 0);
+    let mut other = a.clone();
+    other.tenant_id = Uuid::new_v4();
+    assert_ne!(
+        schedule_call(&r, &other, "GET", &cp, Value::Null, None)
+            .await
+            .0,
+        200
+    );
+    sqlx::query("UPDATE edi_connections SET next_poll_at=now() WHERE tenant_id=$1")
+        .bind(a.tenant_id)
+        .execute(&db)
+        .await
+        .unwrap();
+    suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap();
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM edi_remote_reports WHERE tenant_id=$1")
+            .bind(a.tenant_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(count, 3, "Repeated feed cannot duplicate evidence");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn claimmd_invalid_provider_receipt_stays_unknown_without_automatic_retry() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (r, db, a, _) = setup().await;
+    let (claim, partner, submission) = automated_fixture(&r, &a).await;
+    let control = claim["control_number"].clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let sent = calls.clone();
+    let gateway=Router::new().route("/services/upload/",axum::routing::post(move || {
+        let control=control.clone();let sent=sent.clone();
+        async move {sent.fetch_add(1,Ordering::SeqCst);axum::Json(json!({"claim":[{"pcn":control,"bill_npi":"1234567893","fileid":"","claimmd_id":"not-a-provider-id","status":"R"}]}))}
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, gateway).await.unwrap() });
+    let config = provider_config(
+        &a,
+        &partner,
+        "claim_md",
+        &format!("{base}/services/upload/"),
+        &base,
+    );
+    let queued = queue_provider(&r, &a, &submission).await;
+    suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap();
+    assert!(!suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap());
+    let (_, job) = schedule_call(
+        &r,
+        &a,
+        "GET",
+        &format!(
+            "/api/v1/billing/delivery/jobs/{}",
+            queued["id"].as_str().unwrap()
+        ),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(job["job"]["status"], "unknown");
+    assert_eq!(job["job"]["attempts"], 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let (_, current) = schedule_call(
+        &r,
+        &a,
+        "GET",
+        &format!("/api/v1/billing/claims/{}", claim["id"].as_str().unwrap()),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(current["claim"]["status"], "ready");
+    server.abort();
+}
 #[tokio::test]
 async fn claimmd_exact_receipt_automatically_links_status_without_posting_money() {
     claimmd_status_link_fixture(true).await;

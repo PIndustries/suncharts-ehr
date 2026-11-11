@@ -374,11 +374,12 @@ async fn attach_claimmd_status(
 ) -> Result<()> {
     // Receipt binding narrows the candidates before inspecting patient identifiers.
     // Imported records are not eligible, and no match/ambiguous matches stay in the review inbox.
-    let reports: Vec<(Uuid, Value)> = sqlx::query_as("SELECT r.id,r.parse_summary FROM edi_remote_reports r WHERE r.tenant_id=$1 AND r.route_key=$2 AND r.format='claimmd_status' AND r.status='retrieved' AND r.native_id IS NULL AND r.metadata->>'source'='claimmd_response_api' AND r.last_result IS DISTINCT FROM 'identity_match_needs_review' AND EXISTS (SELECT 1 FROM edi_delivery_jobs j WHERE j.tenant_id=r.tenant_id AND j.route_key=r.route_key AND j.status='delivered' AND j.receipt_reference='claimmd-file:'||(r.parse_summary->>'fileid')) ORDER BY r.received_at,r.id LIMIT 200")
+    let reports: Vec<(Uuid, Value)> = sqlx::query_as("SELECT r.id,r.parse_summary FROM edi_remote_reports r WHERE r.tenant_id=$1 AND r.route_key=$2 AND r.format='claimmd_status' AND r.status='retrieved' AND r.native_id IS NULL AND r.metadata->>'source'='claimmd_response_api' AND r.last_result IS DISTINCT FROM 'identity_match_needs_review' AND EXISTS (SELECT 1 FROM edi_delivery_jobs j WHERE j.tenant_id=r.tenant_id AND j.route_key=r.route_key AND j.status='delivered' AND (j.receipt_reference='claimmd-file:'||(r.parse_summary->>'fileid') OR j.receipt_reference='claimmd-claim:'||(r.parse_summary->>'claimmd_id'))) ORDER BY r.received_at,r.id LIMIT 200")
         .bind(a.tenant_id).bind(key).fetch_all(&mut **tx).await?;
     for (report, evidence) in reports {
-        let candidates: Vec<(Uuid, Value)> = sqlx::query_as("SELECT DISTINCT s.id,s.claim_snapshot FROM edi_submissions s JOIN edi_delivery_jobs j ON j.tenant_id=s.tenant_id AND j.submission_id=s.id JOIN edi_connections c ON c.tenant_id=j.tenant_id AND c.route_key=j.route_key AND c.partner_id=s.partner_id WHERE j.tenant_id=$1 AND j.route_key=$2 AND j.status='delivered' AND s.status='delivered' AND j.receipt_reference=$3")
-            .bind(a.tenant_id).bind(key).bind(format!("claimmd-file:{}", evidence["fileid"].as_str().unwrap_or(""))).fetch_all(&mut **tx).await?;
+        let references = crate::claimmd::receipt_references(&evidence);
+        let candidates: Vec<(Uuid, Value)> = sqlx::query_as("SELECT DISTINCT s.id,s.claim_snapshot FROM edi_submissions s JOIN edi_delivery_jobs j ON j.tenant_id=s.tenant_id AND j.submission_id=s.id JOIN edi_connections c ON c.tenant_id=j.tenant_id AND c.route_key=j.route_key AND c.partner_id=s.partner_id WHERE j.tenant_id=$1 AND j.route_key=$2 AND j.status='delivered' AND s.status='delivered' AND j.receipt_reference=ANY($3)")
+            .bind(a.tenant_id).bind(key).bind(references).fetch_all(&mut **tx).await?;
         let matches: Vec<_> = candidates
             .iter()
             .filter(|(_, frozen)| claimmd_identity_matches(&evidence, frozen))
