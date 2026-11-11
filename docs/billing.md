@@ -368,3 +368,27 @@ provenance. Selecting manual pricing for a different code retains the entered
 amount; prior saved evidence remains in account history. Client-provided fee
 snapshots are never accepted as authority. Fee lookup and approval create no
 ledger activity, patient liability, payment or claim submission.
+
+### Native billing overview
+
+Patient billing opens the practice-wide native invoice and copay overview. Copays
+appear before an encounter charge account exists. Recorded and test card activity
+are separate views. Totals include archived patients and cover every record in the
+selected view, independently of list pagination. Allocating a receipt is not another
+collection. Verified refunds reduce net received and usable unapplied credit;
+voided receipts, reversed allocations and payments needing reconciliation cannot
+supply usable credit.
+
+Only the latest invoice for each account contributes to the overview. Older
+invoice snapshots remain available and unchanged. Invoice amounts describe the
+explicitly reviewed patient responsibility at issuance; gross charges and account
+balances also contain payer amounts. If the account or ledger changes after an
+invoice, its current patient amount requires review and is excluded from the open
+invoice total. Viewing or printing a record never creates an invoice, collects a
+payment, or submits a claim.
+
+Billing-view staff can open receipts and invoices directly without permission to
+open the clinical chart. Claim status is loaded separately under the claims
+policy; a denied or unavailable claims service does not hide billing records.
+Claim submission, acceptance and crossover tracking are workflow evidence and do
+not establish payment or a settled patient balance.
