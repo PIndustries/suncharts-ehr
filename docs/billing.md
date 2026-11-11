@@ -17,8 +17,8 @@ entries; they do not delete the original. Charges, payments, adjustments and cla
 state remain separate from clinical signing and administrative checkout.
 
 Patient responsibility must be reviewed. An account balance alone does not establish
-what the patient owes. Fee schedules, comprehensive responsibility allocation,
-automated statements and financial close are not implemented. Configured Claim.MD
+what the patient owes. Comprehensive responsibility allocation, automated
+statements and financial close are not implemented. Configured Claim.MD
 eligibility inquiries are supported; payer enrollment and returned benefits still
 require review.
 
