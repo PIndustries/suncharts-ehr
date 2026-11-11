@@ -61,7 +61,79 @@ function patientDirectoryLanding(){
 }
 // Unsaved clinical edits live only in this tab, isolated by encounter and patient.
 const visitDrafts=new Map();
+const visitAmendmentDrafts=new Map(),visitAmendmentContexts=new WeakMap();
+let visitAmendmentOwner;
+function clearVisitAmendmentDrafts(){visitAmendmentDrafts.clear();visitAmendmentOwner=me;}
+function amendmentContextKey(context){return JSON.stringify([context.tenantId,context.patientId,context.visitId]);}
+function currentAmendmentDraft(visit=activeVisit){
+ if(visitAmendmentOwner!==me)clearVisitAmendmentDrafts();
+ return visit?visitAmendmentDrafts.get(amendmentContextKey({tenantId:me?.tenant_id,patientId:selected,visitId:visit.id})):undefined;
+}
+function visitAmendmentsHaveDrafts(){if(visitAmendmentOwner!==me)clearVisitAmendmentDrafts();return visitAmendmentDrafts.size>0;}
+function amendmentValues(form){const values=formData(form);return {reason:values.reason||'',text:values.text||''};}
+function sameAmendmentValues(a,b){return a.reason===b.reason&&a.text===b.text;}
+function captureVisitAmendmentDraft(){
+ if(visitAmendmentOwner!==me)clearVisitAmendmentDrafts();
+ const form=$('amendment-form'),context=form&&visitAmendmentContexts.get(form);
+ if(!context||context.identity!==me||context.tenantId!==me?.tenant_id)return;
+ const values=amendmentValues(form),key=amendmentContextKey(context);
+ if(values.reason||values.text)visitAmendmentDrafts.set(key,{...context,values});else visitAmendmentDrafts.delete(key);
+ updateVisitAmendmentStatus();
+}
+function currentAmendmentContext(form){
+ const context=form&&visitAmendmentContexts.get(form);
+ return context&&context.identity===me&&context.tenantId===me?.tenant_id&&context.patientId===selected&&context.visitId===activeVisit?.id&&activeVisit.status==='signed'&&['owner','clinician'].includes(me?.role)&&activeVisit.clinician_id===me.user_id&&$('amendment-form')===form?context:null;
+}
+function updateVisitAmendmentStatus(){
+ const form=$('amendment-form'),context=currentAmendmentContext(form),status=$('amendment-draft-status');if(!context||!status)return;
+ const draft=visitAmendmentDrafts.get(amendmentContextKey(context)),stale=context.version!==activeVisit.version;
+ status.textContent=stale?'The saved encounter changed. Review the signed note and amendment history, then confirm the current version before signing this correction.':draft?'Unsaved correction retained in this tab. Sign the amendment before closing or reloading.':'The original note stays unchanged. This correction will be signed and appended to its history.';
+ const review=$('amendment-review-current');if(review){review.hidden=!stale;review.dataset.version=String(activeVisit.version);}
+ const discard=$('amendment-discard');if(discard)discard.hidden=!draft;
+ const submit=$('amendment-submit');if(submit)submit.disabled=stale;
+}
+function focusVisitAmendment(){
+ const form=$('amendment-form');if(!currentAmendmentContext(form))return;
+ setEncounterSection('documentation');form.scrollIntoView({block:'center'});form.elements.reason.focus();
+}
+function reviewVisitAmendmentVersion(button){
+ const form=$('amendment-form'),context=currentAmendmentContext(form);
+ if(!context||Number(button.dataset.version)!==activeVisit.version)return;
+ captureVisitAmendmentDraft();context.version=activeVisit.version;form.dataset.version=String(context.version);
+ const draft=visitAmendmentDrafts.get(amendmentContextKey(context));if(draft)draft.version=context.version;
+ updateVisitAmendmentStatus();form.elements.text.focus();
+}
+async function discardVisitAmendmentDraft(){
+ const form=$('amendment-form'),context=currentAmendmentContext(form);if(!context)return;
+ captureVisitAmendmentDraft();const key=amendmentContextKey(context),draft=visitAmendmentDrafts.get(key);if(!draft)return;
+ if(!await confirmAction('Only this unsaved correction will be removed. The signed note and recorded amendments stay unchanged.',{title:'Discard unsaved correction?',confirmLabel:'Discard correction',tone:'danger'}))return;
+ if(!currentAmendmentContext(form)||context.identity!==me)return;
+ if(!sameAmendmentValues(amendmentValues(form),draft.values))throw new Error('Your correction changed. Review it before discarding.');
+ form.elements.reason.value='';form.elements.text.value='';visitAmendmentDrafts.delete(key);renderVisit(false);focusVisitAmendment();
+}
+async function submitVisitAmendment(form){
+ const context=currentAmendmentContext(form);if(!context)throw new Error('Open the assigned encounter before signing this correction.');
+ if(context.version!==activeVisit.version)throw new Error('Review the changed encounter and confirm its current version before signing this correction.');
+ captureVisitAmendmentDraft();
+ const submitted=amendmentValues(form),key=amendmentContextKey(context),version=context.version;
+ const visit=await api(`/api/v1/visits/${context.visitId}/amendments`,'POST',submitted,version);
+ if(context.identity!==me||context.tenantId!==me?.tenant_id)return;
+ if(visit.id!==context.visitId||visit.patient_id!==context.patientId)throw new Error('The saved amendment returned an unexpected encounter. Reload the original chart.');
+ const visibleForm=$('amendment-form'),visibleContext=currentAmendmentContext(visibleForm),visible=visibleContext&&amendmentContextKey(visibleContext)===key;
+ const retained=visitAmendmentDrafts.get(key),latest=visible?amendmentValues(visibleForm):retained?.values||submitted;
+ if(sameAmendmentValues(latest,submitted)){
+  visitAmendmentDrafts.delete(key);
+  if(visible){visibleForm.elements.reason.value='';visibleForm.elements.text.value='';}
+ }else{
+  visitAmendmentDrafts.set(key,{...context,version:(retained?.version??version)===version?visit.version:retained.version,values:latest});
+ }
+ if(!visible)return;
+ visibleContext.version=visitAmendmentDrafts.get(key)?.version??visit.version;visibleForm.dataset.version=String(visibleContext.version);
+ await selectPatient(context.patientId,context.visitId);
+ if(context.identity===me&&selected===context.patientId&&activeVisit?.id===context.visitId)notice('Amendment signed and appended. The original note is unchanged.');
+}
 function captureVisitDrafts(includeRooming=true){
+ captureVisitAmendmentDraft();
  if(typeof captureClaimDraft==='function')captureClaimDraft();
  if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();
  if(typeof capturePrescribingDraft==='function')capturePrescribingDraft();
@@ -136,6 +208,7 @@ function signInScreen() {
   if(typeof resetAccountDiagnosisLinkDrafts==='function')resetAccountDiagnosisLinkDrafts();
   if(typeof clearHealthHistorySession==='function')clearHealthHistorySession(); if(typeof clearImmunizationSession==='function')clearImmunizationSession();
   visitDrafts.clear();
+  clearVisitAmendmentDrafts();
   if(typeof roomingDrafts!=='undefined'){roomingDrafts.clear();roomingPending.clear();roomingGeneration++;}
   if(typeof visitDiagnosisDrafts!=='undefined'){visitDiagnosisDrafts.clear();visitDiagnosisStates.clear();visitDiagnosisPending.clear();visitDiagnosisGeneration++;}
   if(typeof practiceAdminGeneration!=='undefined'){practiceAdminState=null;practiceAdminGeneration++;}
@@ -275,6 +348,7 @@ async function openPatientEncounter(id){
 
 const date = s => new Date(s).toLocaleString(undefined,{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
 function renderChart() {
+  captureVisitAmendmentDraft();
   if(typeof capturePatientLifecycleDraft==='function')capturePatientLifecycleDraft();
   if(typeof capturePatientIdentityDraft==='function')capturePatientIdentityDraft();
   if(typeof captureReferralDeliveryDraft==='function')captureReferralDeliveryDraft();
@@ -315,14 +389,17 @@ function canRegisterPatient(){return ['owner','clinician','front_desk'].includes
 function isRoomingStaff(){return ['nurse','medical_assistant'].includes(me?.role);}
 function canRecordVisitVitals(v){return v?.status==='in_progress'&&(isRoomingStaff()||(['owner','clinician'].includes(me?.role)&&v.clinician_id===me.user_id));}
 function renderVisit(activate=true) {
+  captureVisitAmendmentDraft();
   if(activate){chartSection='visits';}
   const v=activeVisit, draft=visitDrafts.get(v.id), retained=draft?.patientId===selected&&v.status!=='signed'?draft:null, note=retained?.note?.values||v.note||{}, vitals=retained?.vitals?.values||v.vitals||{}, signed=v.status==='signed', writable=['owner','clinician'].includes(me.role)&&v.clinician_id===me.user_id, locked=signed||!writable, vitalsLocked=!canRecordVisitVitals(v);
+  const correction=signed&&writable?currentAmendmentDraft(v):null;
   const vitalLabels={systolic_mm_hg:'Systolic BP (mmHg)',diastolic_mm_hg:'Diastolic BP (mmHg)',heart_rate_bpm:'Heart rate (bpm)',temperature_c:'Temperature (°C)',weight_kg:'Weight (kg)',height_cm:'Height (cm)',oxygen_saturation_pct:'Oxygen saturation (%)'};
   const amendments=workspace.amendments.filter(a=>a.visit_id===v.id);
-  $('visit-editor').innerHTML=`<section class="panel"><div class="section-head"><h2>${signed?'Signed clinical record':'Visit documentation'}</h2><span class="pill ${signed?'signed':''}">${signed?'Signed':'In progress'}</span></div>${signed?`<div class="signed-notice">Signed ${esc(date(v.signed_at))}. Original documentation is preserved; corrections are added below.</div>`:''}
+  $('visit-editor').innerHTML=`<section class="panel"><div class="section-head"><h2>${signed?'Signed clinical record':'Visit documentation'}</h2><span class="pill ${signed?'signed':''}">${signed?'Signed':'In progress'}</span></div>${signed?`<div class="signed-notice" id="signed-note-help"><strong>Signed note — read-only.</strong> Signed ${esc(date(v.signed_at))}. The original SOAP note and vitals cannot be overwritten.${writable?' Add a signed correction to this encounter, or start a new encounter for a new visit.<div class="actions"><button type="button" data-action="focus-amendment" aria-controls="amendment-form">Add a signed correction</button></div>':' Only the assigned clinician can append a correction.'}</div>`:''}
   <p id="visit-draft-status" class="muted" role="status"></p><div id="encounter-intake"><div class="encounter-context-links"><button type="button" data-chart-section="insurance">Review insurance & copay</button><button type="button" data-chart-section="clinical">Review allergies & medications</button><button type="button" data-chart-section="documents">Review patient documents</button></div><div id="encounter-benefits" class="billing-section"></div><div id="visit-rooming"></div><h3>Vitals</h3><form id="vitals-form" data-visit-id="${v.id}" data-version="${retained?.vitals?.version??v.version}"><div class="form-grid vitals-grid">${Object.entries(vitalLabels).map(([key,label])=>`<label>${label}<input name="${key}" type="number" step="${['systolic_mm_hg','diastolic_mm_hg','heart_rate_bpm'].includes(key)?'1':'any'}" required value="${esc(vitals[key])}" ${vitalsLocked?'disabled':''}></label>`).join('')}</div>${vitalsLocked?'':'<button type="submit">Save vitals</button>'}</form>
-  </div><div id="encounter-documentation"><section id="visit-diagnoses"></section><form id="note-form" data-visit-id="${v.id}" data-version="${retained?.note?.version??v.version}"><h3>SOAP note</h3><div class="form-grid note-grid">${['subjective','objective','assessment','plan'].map(key=>`<label>${key[0].toUpperCase()+key.slice(1)}<textarea name="${key}" required maxlength="10000" ${locked?'readonly':''}>${esc(note[key])}</textarea></label>`).join('')}</div>${locked?'':'<div class="actions"><button type="submit">Save note</button><button class="primary" type="button" data-action="sign">Sign encounter note</button><span class="muted">Save your note before signing. Then review procedures and charges, complete checkout, and submit the reviewed claim.</span></div>'}</form>
-  ${signed?`<h3>Amendments</h3>${amendments.map(a=>`<div class="amendment"><p><b>${esc(a.reason)}</b></p><p class="note-text">${esc(a.text)}</p><small class="muted">Recorded ${esc(date(a.created_at))}</small></div>`).join('')||'<p class="muted">No amendments.</p>'}${writable?`<form id="amendment-form"><label>Reason<input name="reason" required maxlength="1000"></label><label>Correction<textarea name="text" required maxlength="10000"></textarea></label><div class="actions"><button type="submit">Sign & append amendment</button></div></form>`:''}`:''}${!writable?'<p class="muted">Documentation is read-only. Only the assigned clinician can save, sign or amend the note. Authorized rooming staff may record intake and vitals before signing.</p>':''}</div></section>`;
+  </div><div id="encounter-documentation"><section id="visit-diagnoses"></section><form id="note-form" data-visit-id="${v.id}" data-version="${retained?.note?.version??v.version}"${signed?' aria-describedby="signed-note-help"':''}><h3>${signed?'SOAP note — signed original':'SOAP note'}</h3><div class="form-grid note-grid">${['subjective','objective','assessment','plan'].map(key=>`<label>${key[0].toUpperCase()+key.slice(1)}<textarea name="${key}" required maxlength="10000" ${locked?'readonly':''}>${esc(note[key])}</textarea></label>`).join('')}</div>${locked?'':'<div class="actions"><button type="submit">Save note</button><button class="primary" type="button" data-action="sign">Sign encounter note</button><span class="muted">Save your note before signing. Then review procedures and charges, complete checkout, and submit the reviewed claim.</span></div>'}</form>
+  ${signed?`<h3>Amendment history</h3>${amendments.map(a=>`<div class="amendment"><p><b>${esc(a.reason)}</b></p><p class="note-text">${esc(a.text)}</p><small class="muted">Recorded ${esc(date(a.created_at))}</small></div>`).join('')||'<p class="muted">No amendments.</p>'}${writable?`<form id="amendment-form" data-visit-id="${esc(v.id)}" data-patient-id="${esc(selected)}" data-version="${correction?.version??v.version}" aria-describedby="amendment-draft-status"><h3>Add a signed correction</h3><p id="amendment-draft-status" class="muted" role="status"></p><button id="amendment-review-current" type="button" data-action="review-amendment-version" hidden>I reviewed the current record — keep my correction</button><label>Reason<input name="reason" required maxlength="1000" value="${esc(correction?.values.reason||'')}"></label><label>Correction<textarea name="text" required maxlength="10000">${esc(correction?.values.text||'')}</textarea></label><div class="actions"><button id="amendment-submit" type="submit">Sign & append amendment</button><button id="amendment-discard" type="button" data-action="discard-amendment-draft" class="quiet" hidden>Discard unsaved correction</button></div></form>`:''}`:''}${!writable?'<p class="muted">Documentation is read-only. Only the assigned clinician can save, sign or amend the note. Authorized rooming staff may record intake and vitals before signing.</p>':''}</div></section>`;
+  if(signed&&writable){const form=$('amendment-form');if(form)visitAmendmentContexts.set(form,{identity:me,tenantId:me.tenant_id,patientId:selected,visitId:v.id,version:correction?.version??v.version});updateVisitAmendmentStatus();}
   updateDraftStatus();refreshEncounterProgress();if(typeof renderRooming==='function')void renderRooming();if(typeof renderVisitDiagnoses==='function')void renderVisitDiagnoses();if(typeof renderVisitCheckout==='function')renderVisitCheckout();if(typeof renderEncounterRevenue==='function')void renderEncounterRevenue();renderEncounterOrderActions();if(typeof renderEncounterStartBenefits==='function')void renderEncounterStartBenefits('encounter-benefits',revenueServiceDate(workspace.appointments.find(a=>a.id===v.appointment_id)));if(encounterSection==='files'&&typeof renderEncounterFiles==='function')void renderEncounterFiles();applyChartSection();
 }
 function renderHistory() {
@@ -611,11 +688,13 @@ document.addEventListener('submit',e=>{
     }
     if(form.id==='vitals-form'){Object.keys(data).forEach(k=>{data[k]=Number(data[k]);});rememberVisit(await api(`/api/v1/visits/${activeVisit.id}/vitals`,'PUT',data,Number(form.dataset.version)),'vitals');notice('Vitals saved.');return;}
     if(form.id==='note-form'){rememberVisit(await api(`/api/v1/visits/${activeVisit.id}/note`,'PUT',data,Number(form.dataset.version)),'note');notice('Note saved.');return;}
-    if(form.id==='amendment-form'){const v=await api(`/api/v1/visits/${activeVisit.id}/amendments`,'POST',data,activeVisit.version);await selectPatient(selected,v.id);notice('Amendment signed and appended.');}
+    if(form.id==='amendment-form'){await submitVisitAmendment(form);}
   });
 });
 document.addEventListener('click',e=>{
   const button=e.target.closest('button');if(!button||(button.type==='submit' && button.form))return;
+  if(button.dataset.action==='focus-amendment'){if(!busy)focusVisitAmendment();return;}
+  if(button.dataset.action==='review-amendment-version'){if(!busy)reviewVisitAmendmentVersion(button);return;}
   if(button.id==='toggle-directory'){setPatientDirectoryVisible($('clinical-workspace').classList.contains('directory-collapsed'));return;}
   if(button.hasAttribute('data-encounter-history')){showChartSection('visits');const history=$('patient-encounter-history');if(history){history.open=true;history.scrollIntoView({block:'start'});}return;}
   if(button.dataset.clinicalFocus){showChartSection('clinical');if(chartSection!=='clinical')return;const label=({allergy:'Allergies',problem:'Problems',medication:'Medications'})[button.dataset.clinicalFocus];const section=Array.from($('clinical-lists')?.querySelectorAll('.clinical-domain')||[]).find(node=>node.querySelector('h3')?.textContent===label);section?.scrollIntoView({block:'start'});return;}
@@ -635,7 +714,7 @@ document.addEventListener('click',e=>{
   // listener briefly acquiring the shared busy gate and swallowing the click.
   const navigationTitles={'nav-schedule':'Schedule','nav-workflows':'Workflow Studio','nav-automation':'Automation Center','nav-communications':'Inbox','nav-ai-review':'Sun review','nav-referrals':'Referrals','nav-portal':'Inbox','nav-followup':'Follow-up tasks','nav-labs':'Labs & results','nav-specialty':'Specialty care','nav-edi':'Claim lifecycle','nav-claims':'Claims & remittances','nav-billing':'Billing & insurance','nav-admin':'Practice administration','nav-apps':'Integrations','nav-migration':'Data import','nav-clinical':'Patients & encounters','nav-customize':'Practice administration'};
   const navigationTitle=navigationTitles[button.id]||(button.hasAttribute('data-open-schedule')?'Schedule':null);
-  const ownsAction=navigationTitle||['logout','load-more'].includes(button.id)||['data-consent','data-disable-client','data-revoke','data-reconcile','data-commit','data-patient','data-check-in','data-start','data-visit'].some(name=>button.hasAttribute(name))||['reload','discard-visit-draft','sign'].includes(button.dataset.action);
+  const ownsAction=navigationTitle||['logout','load-more'].includes(button.id)||['data-consent','data-disable-client','data-revoke','data-reconcile','data-commit','data-patient','data-check-in','data-start','data-visit'].some(name=>button.hasAttribute(name))||['reload','discard-visit-draft','discard-amendment-draft','sign'].includes(button.dataset.action);
   if(!ownsAction)return;
   run(async()=>{
     if(navigationTitle){captureVisitDrafts();showTool(navigationTitle);$('tools').innerHTML=`<p class="muted" role="status">Loading ${esc(navigationTitle.toLowerCase())}…</p>`;}
@@ -669,6 +748,7 @@ document.addEventListener('click',e=>{
     if(button.dataset.start){const v=await api('/api/v1/visits','POST',{appointment_id:button.dataset.start});await selectPatient(selected,v.id);return;}
     if(button.dataset.visit){await openPatientEncounter(button.dataset.visit);return;}
     if(button.dataset.action==='reload'){await selectPatient(selected,activeVisit?.id);return;}
+    if(button.dataset.action==='discard-amendment-draft'){await discardVisitAmendmentDraft();return;}
     if(button.dataset.action==='discard-visit-draft'){if(!await confirmAction('The unsaved note and vitals edits in this tab will be removed and the saved record will be shown.',{title:'Discard encounter edits?',confirmLabel:'Discard edits',tone:'danger'}))return;visitDrafts.delete(activeVisit.id);renderVisit();notice('Unsaved encounter edits discarded. The saved record is shown.');return;}
     if(button.dataset.action==='sign'){
       if(typeof captureVisitDiagnosisDraft==='function')captureVisitDiagnosisDraft();
@@ -687,7 +767,7 @@ $('search').addEventListener('input',renderPatients);
 // Every workspace module is deferred; initialize after all of them are loaded.
 document.addEventListener('DOMContentLoaded',()=>connectLaunchAcceptance.then(()=>enter()).catch(error=>{signInScreen();if(error.message!=='Please sign in to continue.')$('login-error').textContent=error.message;}),{once:true});
 
-document.addEventListener('input',e=>{if(e.target.closest?.('#note-form,#vitals-form'))captureVisitDrafts();});
-window.addEventListener('beforeunload',e=>{captureVisitDrafts();if((typeof patientLifecycleHasDrafts==='function'&&patientLifecycleHasDrafts())||(typeof billingChargeHasDrafts==='function'&&billingChargeHasDrafts())||(typeof prescribingHaveDrafts==='function'&&prescribingHaveDrafts())||(typeof portalStaffHasDrafts==='function'&&portalStaffHasDrafts())||(typeof supportHasDrafts==='function'&&supportHasDrafts())||(typeof patientIdentityHasDrafts==='function'&&patientIdentityHasDrafts())||(typeof referralDeliveryHasDrafts==='function'&&referralDeliveryHasDrafts())||(typeof documentsHaveDrafts==='function'&&documentsHaveDrafts())||(typeof referralHasDrafts==='function'&&referralHasDrafts())||(typeof orderDiagnosisLinkDrafts!=='undefined'&&orderDiagnosisLinkDrafts.size)||(typeof accountDiagnosisLinkDrafts!=='undefined'&&accountDiagnosisLinkDrafts.size)||(typeof healthHistoryHasDrafts==='function'&&healthHistoryHasDrafts())||(typeof immunizationHasDrafts==='function'&&immunizationHasDrafts())||visitDrafts.size||(typeof visitDiagnosisDrafts!=='undefined'&&visitDiagnosisDrafts.size)||(typeof roomingDrafts!=='undefined'&&roomingDrafts.size)||(typeof checkoutDrafts!=='undefined'&&checkoutDrafts.size)){e.preventDefault();e.returnValue='';}});
+document.addEventListener('input',e=>{if(e.target.closest?.('#note-form,#vitals-form'))captureVisitDrafts();else if(e.target.closest?.('#amendment-form'))captureVisitAmendmentDraft();});
+window.addEventListener('beforeunload',e=>{captureVisitDrafts();if(visitAmendmentsHaveDrafts()||(typeof patientLifecycleHasDrafts==='function'&&patientLifecycleHasDrafts())||(typeof billingChargeHasDrafts==='function'&&billingChargeHasDrafts())||(typeof prescribingHaveDrafts==='function'&&prescribingHaveDrafts())||(typeof portalStaffHasDrafts==='function'&&portalStaffHasDrafts())||(typeof supportHasDrafts==='function'&&supportHasDrafts())||(typeof patientIdentityHasDrafts==='function'&&patientIdentityHasDrafts())||(typeof referralDeliveryHasDrafts==='function'&&referralDeliveryHasDrafts())||(typeof documentsHaveDrafts==='function'&&documentsHaveDrafts())||(typeof referralHasDrafts==='function'&&referralHasDrafts())||(typeof orderDiagnosisLinkDrafts!=='undefined'&&orderDiagnosisLinkDrafts.size)||(typeof accountDiagnosisLinkDrafts!=='undefined'&&accountDiagnosisLinkDrafts.size)||(typeof healthHistoryHasDrafts==='function'&&healthHistoryHasDrafts())||(typeof immunizationHasDrafts==='function'&&immunizationHasDrafts())||visitDrafts.size||(typeof visitDiagnosisDrafts!=='undefined'&&visitDiagnosisDrafts.size)||(typeof roomingDrafts!=='undefined'&&roomingDrafts.size)||(typeof checkoutDrafts!=='undefined'&&checkoutDrafts.size)){e.preventDefault();e.returnValue='';}});
 
 document.addEventListener('change',event=>{if(event.target.id!=='encounter-picker')return;const id=event.target.value;run(()=>openPatientEncounter(id));});

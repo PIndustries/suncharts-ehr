@@ -175,6 +175,14 @@ are not exported as FHIR Procedure or Condition resources yet.
    original note, diagnoses, intake and vitals.
 5. Corrections to signed documentation use attributed amendments.
 
+Signed SOAP fields are labeled read-only. The assigned clinician can use **Add a
+signed correction** to focus the amendment form; the original note stays intact.
+Unsaved amendment text is retained only in memory in the current browser tab,
+scoped to the staff session, tenant, patient and encounter. Navigating between
+charts or refreshing chart data preserves that draft. Closing or reloading the
+browser warns about unsaved corrections. If the encounter version changes, the
+clinician must review the current record before signing the retained correction.
+
 | Role | Intake/vitals before signing | SOAP/sign/amend |
 |---|---|---|
 | Assigned clinician or owner assigned to visit | Yes | Yes |
