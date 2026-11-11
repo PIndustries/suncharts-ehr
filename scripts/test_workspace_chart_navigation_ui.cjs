@@ -35,12 +35,15 @@ async function main(){
  // Primary tasks remain visible; supporting longitudinal areas share one record menu.
  let tabs=plain(evaluate('configuredChartTabs(Object.entries(chartTabLabels))'));tabs.splice(tabs.findIndex(([key])=>key==='billing'),0,['insurance','Insurance']);context.tabs=tabs;
  const html=evaluate('chartNavigation(tabs)'),primaryHtml=html.split('<details')[0];
- assert.deepEqual([...primaryHtml.matchAll(/data-chart-section="([^"]+)"/g)].map(match=>match[1]),['overview','visits','insurance']);
- assert.match(html,/<summary>Patient record<\/summary>/);assert.match(html,/data-chart-section="billing"[^>]*>Account summary/);assert.match(html,/data-chart-section="documents"[^>]*>Shared documents/);
+ assert.deepEqual([...primaryHtml.matchAll(/data-chart-section="([^"]+)"/g)].map(match=>match[1]),['overview','visits','insurance','documents']);
+ assert.match(primaryHtml,/data-chart-section="documents"[^>]*>Files/);assert.equal([...html.matchAll(/data-chart-section="documents"/g)].length,1,'Files has one primary destination, not a duplicate buried menu action');
+ assert.match(html,/<summary>Patient record<\/summary>/);assert.match(html,/data-chart-section="billing"[^>]*>Account summary/);assert.doesNotMatch(html,/Shared documents/);
  assert.match(html,/data-chart-section="profile"[^>]*>Demographics/);
  assert.match(html,/data-chart-section="clinical"[^>]*>Problems, allergies &amp; medications/);
  assert.doesNotMatch(html,/data-chart-section="checkout"/,'checkout belongs to the selected encounter');
  assert.doesNotMatch(html,/chart-workflow-tabs/,'the old second row no longer duplicates encounter work');
+ context.renderEncounterFiles=()=>calls.push({render:'patient-files'});
+ const beforeFiles=captured;evaluate("showChartSection('documents')");assert.equal(evaluate('activeVisit'),null);assert.equal(nodes['documents-panel'].hidden,false);assert.equal(nodes['appointments-panel'].hidden,true);assert.equal(nodes['record-context'].hidden,true);assert.equal(nodes['patient-record-navigation'].open,false);assert.ok(captured>beforeFiles,'Files navigation still captures existing drafts');assert.equal(calls.at(-1).render,'patient-files');
 
  // Refreshes on Insurance must retain the tab; it inherits Billing configuration and access.
  evaluate("chartSection='insurance';configuredChartTabs(Object.entries(chartTabLabels))");

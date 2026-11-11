@@ -12,8 +12,9 @@ Registered name and birth-date corrections retain versioned, attributed revision
 Changing a contact destination invalidates its reminder verification and consent
 settings until staff reviews it again.
 
-The primary chart navigation is **Overview**, **Encounter** and **Insurance**.
-**Patient record** contains shared documents, the account summary, demographics,
+The primary chart navigation is **Overview**, **Encounter**, **Insurance** and
+**Files**. Files opens all patient documents without selecting an encounter.
+**Patient record** contains the account summary, demographics,
 longitudinal problems/allergies/medications, histories, prescribing, referrals,
 assessments, specialty care and imported records. These records remain available
 without competing with the current encounter's workflow. Empty lists remain
@@ -205,7 +206,8 @@ remain on the [roadmap](roadmap.md).
 **Files & voice** separates **This encounter** from **Patient files**. Patient
 files include every unlinked document, regardless of its category. **Other
 encounters** expands files linked to other visits, with their original context.
-**Patient record → Shared documents** shows all loaded patient files. Category,
+The primary **Files** tab shows all loaded patient files. Encounter-linked files
+show the appointment title and date when available, in both the list and preview. Category,
 status and text filters apply to loaded pages; use **Load more files** for
 additional records. Files retain their original links and are not copied into
 each encounter.

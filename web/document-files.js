@@ -26,15 +26,15 @@ function documentFileItems(state){
 function documentFileGroups(items,encounter=fileEncounter()){
  return {encounter:encounter?items.filter(d=>d.content.visit_id===encounter):[],patient:items.filter(d=>!d.content.visit_id),other:items.filter(d=>d.content.visit_id&&d.content.visit_id!==encounter)};
 }
-function documentFileEncounterDate(id){
+function documentFileEncounterLabel(id){
  const visit=workspace?.visits?.find(v=>v.id===id),appointment=visit&&workspace?.appointments?.find(a=>a.id===visit.appointment_id);
- if(appointment?.starts_at)return date(appointment.starts_at);
- return visit?.created_at?'Created '+date(visit.created_at):'Date unavailable';
+ const when=appointment?.starts_at?date(appointment.starts_at):visit?.created_at?'Created '+date(visit.created_at):'Date unavailable';
+ return [appointment?.title,when].filter(Boolean).join(' · ');
 }
 function documentFileContext(entry,encounter=fileEncounter()){
  const id=entry.content.visit_id;
  if(!id)return 'Patient file · No encounter link';
- return `${id===encounter?'This encounter':encounter?'Other encounter':'Encounter'} · ${documentFileEncounterDate(id)}`;
+ return `${id===encounter?'This encounter':encounter?'Other encounter':'Encounter'} · ${documentFileEncounterLabel(id)}`;
 }
 function documentFileListMarkup(state,items,active){
  const encounter=fileEncounter(),groups=documentFileGroups(items,encounter),row=d=>`<button type="button" class="document-file-row ${d.id===active?.id?'selected':''}" data-file-open="${esc(d.id)}" aria-pressed="${d.id===active?.id}"><strong>${esc(d.content.title)}</strong><span>${esc(documentFileKind(d.content_type))} · ${esc(documentCategoryLabel(d.content.category))}</span><small>${esc(d.filename)} · File v${d.file_version||1}</small><small class="document-file-context">${esc(documentFileContext(d,encounter))}</small>${d.content.status!=='active'?`<span>${esc(human(d.content.status))}</span>`:''}</button>`;
