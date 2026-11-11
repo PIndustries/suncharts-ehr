@@ -294,6 +294,14 @@ pub(crate) async fn page(r: &Route, cursor: &str) -> Result<Page> {
             "Claim.MD returned account error; cursor retained",
         ));
     }
+    // Claim.MD returns exactly {} when no newer responses are available.
+    // A missing cursor on any nonempty payload remains a protocol failure.
+    if v.as_object().is_some_and(|object| object.is_empty()) {
+        return Ok(Page {
+            items: vec![],
+            next: Some(id(&json!(cursor)).ok_or(Error::Invalid("invalid Claim.MD cursor"))?),
+        });
+    }
     let next =
         id(&v["last_responseid"]).ok_or(Error::Invalid("Claim.MD response cursor missing"))?;
     if next.parse::<u64>().ok() < cursor.parse::<u64>().ok() {
@@ -446,6 +454,15 @@ pub(crate) async fn era_page(r: &Route, cursor: &str) -> Result<Page> {
         ],
     )
     .await?;
+    // An exact empty object is the provider's empty page. Finish a paginated
+    // scan at its already-persisted high water, just like any short final page;
+    // never reset to zero or advance to an ID not present in prior pages.
+    if v.as_object().is_some_and(|object| object.is_empty()) {
+        return Ok(Page {
+            items: vec![],
+            next: Some(position.max_seen.to_string()),
+        });
+    }
     let next = id(&v["last_eraid"]).ok_or(Error::Invalid("missing ERA cursor"))?;
     let rows = v
         .get("era")
