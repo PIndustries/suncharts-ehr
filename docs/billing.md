@@ -288,3 +288,42 @@ managed legacy broker supports creation/retrieval and external-refund evidence.
 Payout/fee reconciliation, dispute resolution, multiple currencies, terminals and
 recurring charges remain unsupported. See [operations](operations.md) for
 credential backups and [the API](../api/openapi.json) for the separate contracts.
+
+## Reviewed practice fee schedules
+
+Practice owners can open **Practice administration → Practice fees**, load a
+locally prepared numeric reference proposal, and save an **inactive draft**.
+The owner chooses the provider, service facility, facility/non-facility setting,
+verified QP basis, locality, practice multiplier, code scope and service-date
+range. Source URLs, SHA-256 hashes, publication dates, exact code/modifier rows
+and reference amounts remain attached to the proposal. No Medicare dataset or
+CPT descriptions are bundled with the EHR. A source reference does not establish
+coverage, medical necessity or the amount an insurer will pay.
+
+Saving a proposal does not activate prices. Review the complete entries and
+source evidence, acknowledge the scope and approve the current version with a
+reason. Proposals and entries are immutable; correct them by preparing a new
+proposal. Two approved schedules cannot overlap for the same provider, facility,
+setting and service dates. Retiring a schedule stops new fee selection while
+preserving its history and all previously captured charge evidence. A changed
+provider or facility directory record requires a replacement reviewed proposal.
+
+The charge form uses one fee context for its service lines. The provider comes
+from the linked encounter; a facility is preselected only when the saved
+appointment facility name exactly matches one active directory entry. The
+service setting is preselected only from an explicitly approved default for that
+scope. Otherwise staff select it. Fee lookup requires billing-view permission and
+an exact approved code, modifier, date and scope match. Blank, professional and
+technical component modifiers are distinct; no fallback or reduction policy is
+inferred for unmatched modifiers.
+
+Only new empty amounts, or untouched new lines already filled by the fee engine,
+receive automatic prices. Unit price times units becomes the complete line
+total; billing never multiplies that total again. Existing draft and posted
+charges are not repriced. Staff can check and explicitly use a current approved
+fee or retain a reviewed manual amount. Changing an approved amount requires an
+override reason; the server records both expected and actual amounts with source
+provenance. Selecting manual pricing for a different code retains the entered
+amount; prior saved evidence remains in account history. Client-provided fee
+snapshots are never accepted as authority. Fee lookup and approval create no
+ledger activity, patient liability, payment or claim submission.

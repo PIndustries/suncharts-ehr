@@ -41,6 +41,7 @@ pub mod erebine_adapter;
 pub mod error;
 pub mod erx_setup;
 pub mod events;
+pub mod fees;
 pub mod fhir;
 pub mod gmail_referral_adapter;
 pub mod health_history;
@@ -350,6 +351,7 @@ pub fn app(state: State) -> Router {
         .merge(referral_delivery::routes())
         .merge(patient_identity::routes())
         .merge(patient_lifecycle::routes())
+        .merge(fees::routes())
         .merge(patient_portal::router())
         .merge(prescribing::router())
         .merge(erx_setup::router())
@@ -557,6 +559,16 @@ pub fn app(state: State) -> Router {
                     "demographics.js",
                     "application/javascript",
                     include_str!("../web/demographics.js"),
+                )
+            }),
+        )
+        .route(
+            "/fees.js",
+            get(|| async {
+                web_asset(
+                    "fees.js",
+                    "application/javascript",
+                    include_str!("../web/fees.js"),
                 )
             }),
         )

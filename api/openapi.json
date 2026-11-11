@@ -33141,6 +33141,467 @@
         ],
         "description": "Owner, clinician or front desk with clinical edit permission may archive or restore using the current quoted If-Match. Status, reason and audit commit atomically. Existing records are never deleted or rewritten. Archived charts cannot start new appointments or encounters until restored; direct records remain accessible. Stale versions return 409."
       }
+    },
+    "/api/v1/practice/fee-schedules": {
+      "get": {
+        "operationId": "listPracticeFeeSchedules",
+        "summary": "List newest 100 owner-visible fee schedules",
+        "tags": [
+          "Practice fees"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Invalid scope, source, amount or missing approval acknowledgement"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Staff role, owner privilege or billing scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant/patient scope"
+          },
+          "409": {
+            "description": "Version, immutable scope or approved-schedule conflict"
+          },
+          "428": {
+            "description": "Current quoted If-Match version required"
+          }
+        },
+        "description": "Owner browser sessions only, including valid delegated owners. No OAuth administration. Entries omitted; response {items,limit:100}."
+      },
+      "post": {
+        "operationId": "createPracticeFeeProposal",
+        "summary": "Save an immutable inactive fee proposal",
+        "tags": [
+          "Practice fees"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Invalid scope, source, amount or missing approval acknowledgement"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Staff role, owner privilege or billing scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant/patient scope"
+          },
+          "409": {
+            "description": "Version, immutable scope or approved-schedule conflict"
+          },
+          "428": {
+            "description": "Current quoted If-Match version required"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewPracticeFeeProposal"
+              }
+            }
+          }
+        },
+        "description": "16 MiB request limit. Tenant-scoped request_id replay binding; validates active provider/facility and captures their versions. Draft proposals never price charges. Fees create no ledger entries."
+      }
+    },
+    "/api/v1/practice/fee-schedules/{id}": {
+      "get": {
+        "operationId": "getPracticeFeeSchedule",
+        "summary": "Read complete immutable fee proposal and status",
+        "tags": [
+          "Practice fees"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Invalid scope, source, amount or missing approval acknowledgement"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Staff role, owner privilege or billing scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant/patient scope"
+          },
+          "409": {
+            "description": "Version, immutable scope or approved-schedule conflict"
+          },
+          "428": {
+            "description": "Current quoted If-Match version required"
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ]
+    },
+    "/api/v1/practice/fee-schedules/{id}/actions": {
+      "post": {
+        "operationId": "actOnPracticeFeeSchedule",
+        "summary": "Approve or retire the current immutable proposal",
+        "tags": [
+          "Practice fees"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Invalid scope, source, amount or missing approval acknowledgement"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Staff role, owner privilege or billing scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant/patient scope"
+          },
+          "409": {
+            "description": "Version, immutable scope or approved-schedule conflict"
+          },
+          "428": {
+            "description": "Current quoted If-Match version required"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PracticeFeeAction"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "\"1\""
+            }
+          }
+        ],
+        "description": "Approval rechecks unchanged provider/facility evidence and rejects overlapping approved provider/facility/setting/service-date ranges. State change, attributed history and audit commit atomically. No automatic approval or repricing."
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ]
+    },
+    "/api/v1/practice/fee-schedules/{id}/history": {
+      "get": {
+        "operationId": "listPracticeFeeHistory",
+        "summary": "Read attributed immutable proposal state history",
+        "tags": [
+          "Practice fees"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Invalid scope, source, amount or missing approval acknowledgement"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Staff role, owner privilege or billing scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant/patient scope"
+          },
+          "409": {
+            "description": "Version, immutable scope or approved-schedule conflict"
+          },
+          "428": {
+            "description": "Current quoted If-Match version required"
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ]
+    },
+    "/api/v1/patients/{patient_id}/fee-context": {
+      "get": {
+        "operationId": "getPatientFeeContext",
+        "summary": "Derive safe charge context",
+        "tags": [
+          "Practice fees"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          },
+          {
+            "oauth2": [
+              "billing.read"
+            ]
+          },
+          {
+            "delegatedJwt": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Invalid scope, source, amount or missing approval acknowledgement"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Staff role, owner privilege or billing scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant/patient scope"
+          },
+          "409": {
+            "description": "Version, immutable scope or approved-schedule conflict"
+          },
+          "428": {
+            "description": "Current quoted If-Match version required"
+          }
+        },
+        "parameters": [
+          {
+            "name": "patient_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "visit_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "service_date",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          }
+        ],
+        "description": "Staff only with native billing view permission and billing.read OAuth scope when applicable. Tenant and patient-bound encounter lookup. Returns provider_id, active facilities, exact unique appointment-facility match and explicitly approved setting default, otherwise null choices."
+      }
+    },
+    "/api/v1/patients/{patient_id}/fee-quote": {
+      "get": {
+        "operationId": "quotePatientPracticeFee",
+        "summary": "Read an exact approved fee quote",
+        "tags": [
+          "Practice fees"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          },
+          {
+            "oauth2": [
+              "billing.read"
+            ]
+          },
+          {
+            "delegatedJwt": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Invalid scope, source, amount or missing approval acknowledgement"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Staff role, owner privilege or billing scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant/patient scope"
+          },
+          "409": {
+            "description": "Version, immutable scope or approved-schedule conflict"
+          },
+          "428": {
+            "description": "Current quoted If-Match version required"
+          }
+        },
+        "parameters": [
+          {
+            "name": "patient_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "visit_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "service_date",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "facility_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "setting",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "facility",
+                "nonfacility"
+              ]
+            }
+          },
+          {
+            "name": "code_system",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "CPT",
+                "HCPCS"
+              ]
+            }
+          },
+          {
+            "name": "code",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 5
+            }
+          },
+          {
+            "name": "modifiers",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "units",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          }
+        ],
+        "description": "Staff only with native billing view permission and billing.read OAuth scope when applicable. Tenant and patient-bound encounter lookup. Returns {quote,reason}. quote is null without an approved exact code/modifier/date/context match or after provider/facility version change. Amounts are one unit fee and complete unit-times-units line total. No price is fabricated and no financial state changes."
+      }
     }
   },
   "components": {
@@ -36136,6 +36597,31 @@
             "$ref": "#/components/schemas/TerminologySelectionSnapshot",
             "readOnly": true,
             "description": "Server-resolved code and service-date provenance. Any supplied value is discarded and regenerated from catalog_release_id; omitted without a catalog selection."
+          },
+          "fee_schedule_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "fee_entry_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Canonical system:code:exact-modifiers key returned by the quote."
+          },
+          "fee_snapshot": {
+            "$ref": "#/components/schemas/PracticeFeeSnapshot"
+          },
+          "fee_override_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 1000,
+            "description": "Required when an approved fee line amount differs from unit fee times units."
           }
         },
         "required": [
@@ -36188,6 +36674,17 @@
             "type": "string",
             "minLength": 0,
             "maxLength": 2000
+          },
+          "fee_context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PracticeFeeContext"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional once-per-account fee context; provider is derived from the linked visit. Required for newly selected approved fee lines."
           }
         },
         "required": [
@@ -50623,6 +51120,294 @@
             "type": "boolean"
           }
         }
+      },
+      "PracticeFeeContext": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "facility_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "setting": {
+            "type": "string",
+            "enum": [
+              "facility",
+              "nonfacility"
+            ]
+          }
+        },
+        "required": [
+          "facility_id",
+          "setting"
+        ]
+      },
+      "PracticeFeeSource": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "HTTPS source URL; no embedded credentials",
+            "maxLength": 2000
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-fA-F0-9]{64}$"
+          },
+          "published_on": {
+            "type": "string",
+            "format": "date"
+          }
+        },
+        "required": [
+          "id",
+          "url",
+          "sha256",
+          "published_on"
+        ]
+      },
+      "PracticeFeeEntry": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "code_system": {
+            "type": "string",
+            "enum": [
+              "CPT",
+              "HCPCS"
+            ]
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[A-Z0-9]{5}$"
+          },
+          "modifiers": {
+            "type": "string",
+            "description": "Exact ordered modifier tokens; normalized uppercase, comma separated, at most four two-character tokens. Blank is a separate key."
+          },
+          "reference_unit_cents": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000000
+          },
+          "source_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "source_row": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "qualification": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        },
+        "required": [
+          "code_system",
+          "code",
+          "modifiers",
+          "reference_unit_cents",
+          "source_id",
+          "source_row",
+          "qualification"
+        ]
+      },
+      "PracticeFeeProposal": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "provider_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "facility_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "setting": {
+            "type": "string",
+            "enum": [
+              "facility",
+              "nonfacility"
+            ]
+          },
+          "qp_basis": {
+            "type": "string",
+            "enum": [
+              "qp",
+              "non_qp",
+              "not_applicable"
+            ]
+          },
+          "locality": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "reference_from": {
+            "type": "string",
+            "format": "date"
+          },
+          "reference_to": {
+            "type": "string",
+            "format": "date"
+          },
+          "effective_from": {
+            "type": "string",
+            "format": "date"
+          },
+          "effective_to": {
+            "type": "string",
+            "format": "date"
+          },
+          "multiplier_basis_points": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000,
+            "description": "Explicit percentage in basis points: 10000 means 100%. Rounded half up to unit cents before multiplying by units."
+          },
+          "default_for_scope": {
+            "type": "boolean",
+            "description": "Explicit owner choice allowing this setting as default for the provider/facility/date scope."
+          },
+          "sources": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/PracticeFeeSource"
+            }
+          },
+          "entries": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20000,
+            "items": {
+              "$ref": "#/components/schemas/PracticeFeeEntry"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "provider_id",
+          "facility_id",
+          "setting",
+          "qp_basis",
+          "locality",
+          "reference_from",
+          "reference_to",
+          "effective_from",
+          "effective_to",
+          "multiplier_basis_points",
+          "default_for_scope",
+          "sources",
+          "entries"
+        ]
+      },
+      "NewPracticeFeeProposal": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "content": {
+            "$ref": "#/components/schemas/PracticeFeeProposal"
+          }
+        },
+        "required": [
+          "request_id",
+          "reason",
+          "content"
+        ]
+      },
+      "PracticeFeeAction": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "approve",
+              "retire"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "reviewed_scope_and_sources": {
+            "type": "boolean",
+            "default": false,
+            "description": "Must be true for approval; never implied by saving a draft."
+          }
+        },
+        "required": [
+          "action",
+          "reason"
+        ]
+      },
+      "PracticeFeeSchedule": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "approved",
+              "retired"
+            ]
+          },
+          "version": {
+            "type": "integer"
+          },
+          "content": {
+            "type": "object",
+            "description": "Immutable proposal plus server-captured directory_snapshot (provider and facility IDs/names/versions). List responses omit entries and supply entry_count."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "approved_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "PracticeFeeSnapshot": {
+        "type": "object",
+        "readOnly": true,
+        "description": "Server-generated immutable approved fee evidence. Includes schedule_id, entry_key, unit_amount_cents, expected_line_amount_cents, actual_line_amount_cents, units, service_date, context, approved schedule scope/source metadata, source entry, override_reason and recorded_by. Unchanged saved line evidence survives retirement and directory changes. Supplied client snapshots are discarded."
       }
     }
   }

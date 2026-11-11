@@ -125,6 +125,14 @@ pub struct ChargeLine {
     // from the trusted catalog on create/edit, never trusted from the caller.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog_snapshot: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_schedule_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_entry_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_snapshot: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_override_reason: Option<String>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -134,6 +142,8 @@ pub struct AccountContent {
     pub service_date: NaiveDate,
     pub currency: String,
     pub lines: Vec<ChargeLine>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_context: Option<crate::fees::FeeContext>,
     pub notes: String,
 }
 impl AccountContent {
@@ -648,6 +658,7 @@ async fn new_account(
     }
     account_links(&mut tx, &a, p, &v.content, v.source_history_id, false).await?;
     resolve_charge_catalogs(&mut tx, &a, &mut v.content).await?;
+    crate::fees::resolve(&mut tx, &a, p, &mut v.content, None).await?;
     let id = Uuid::new_v4();
     sqlx::query("INSERT INTO billing_accounts (tenant_id,id,patient_id,visit_id,coverage_id,content,total_cents,request_id,creation_hash,source_history_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)").bind(a.tenant_id).bind(id).bind(p).bind(v.content.visit_id).bind(v.content.coverage_id).bind(json!(v.content)).bind(total).bind(v.request_id).bind(hash).bind(v.source_history_id).execute(&mut *tx).await?;
     let row = account_revision(&mut tx, &a, p, id, &v.reason).await?;
@@ -674,6 +685,7 @@ async fn edit_account(
         ));
     }
     resolve_charge_catalogs(&mut tx, &a, &mut v.content).await?;
+    crate::fees::resolve(&mut tx, &a, p, &mut v.content, Some(&old.content)).await?;
     if old.diagnosis_snapshot.is_some()
         && (old.content["visit_id"] != json!(v.content.visit_id)
             || old.content["lines"] != json!(v.content.lines))

@@ -402,6 +402,11 @@ VALUES('10000000-0000-0000-0000-000000000001',gen_random_uuid(),'20000000-0000-0
             events, 0,
             "existing patients must remain active without fabricated history"
         );
+        let fees: i64 = sqlx::query_scalar("SELECT (SELECT count(*) FROM practice_fee_schedules)+(SELECT count(*) FROM practice_fee_entries)+(SELECT count(*) FROM practice_fee_history)").fetch_one(&pool).await.unwrap();
+        assert_eq!(
+            fees, 0,
+            "fee upgrade must not fabricate approval, entries or change existing charges"
+        );
     }
     pool.close().await;
 }
