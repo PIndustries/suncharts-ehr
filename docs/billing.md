@@ -66,6 +66,13 @@ require review.
    it ready and explicitly submit through the clinic's active Claim.MD connection.
    A later payment does not rewrite a previously frozen claim snapshot.
 
+The encounter summary separates service charges, copay received, copay applied to
+charges and the posted account balance. A captured card copay is already received
+while awaiting allocation; draft charges are not an amount due. **Review and post
+charges** opens the review form without posting automatically. Receipts appear
+once; additional collection, processor activity, coverage snapshots and ledger
+controls remain available in expandable details.
+
 The selected encounter's revenue summary links its current claim and remittance
 evidence. **Insurance claims** also supports patient- and account-filtered lists.
 Review the claim response and post reviewed ERA evidence before determining the
