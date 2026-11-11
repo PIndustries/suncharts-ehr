@@ -371,3 +371,15 @@ ledger activity, patient liability, payment or claim submission.
 
 Returning from appointment card checkout resolves the opaque `copay_checkout` operation through a tenant-scoped, audited billing read. Authorized collection staff receive an automatic server reconciliation of an already-bound provider session, then return to that appointment's encounter billing step (or Insurance if no encounter exists). This return-specific refresh cannot create or retry creating a checkout. The query does not establish payment or cancellation: receipts and ledger effects still require verified provider evidence. Staff without full chart access see only the authorized payment status. Failed or uncertain checks retain a visible status/retry path; they never start another collection.
 If Connect sign-in is required, an explicit sign-in click retains only the opaque operation UUID in same-tab session storage for at most ten minutes. The callback consumes it once; sign-out clears it. No patient content, provider credentials, payment result or receipt data is stored there. Server authorization is repeated after sign-in, including when a different staff member or tenant signs in.
+
+Printed patient invoices and copay receipts use the practice identity and a
+readable print layout, with a discreet SunCharts footer. An invoice always keeps
+its saved practice name, service details and monetary snapshot. Its current
+practice logo is shown only when the saved practice name matches the current
+practice identity, and is identified as current branding; older invoices are not
+rewritten. Receipt copies use the current chart context as stated on the copy.
+Logos reuse only the server-approved immutable branding asset already present in
+the EHR, with an exact asset URL policy and no referrer. No patient identifiers,
+amounts or document content are added to an image request. Missing or mismatched
+logos fall back to the practice name. Test, refund, void and correction notices
+remain visible on printed copies.
