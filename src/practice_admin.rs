@@ -53,7 +53,7 @@ pub fn router() -> Router<State> {
 }
 // Require an owner browser session, including a live-verified delegated owner.
 // Clinical integration scopes never become identity-administration privileges.
-async fn owner(s: &State, h: &HeaderMap, write: bool) -> Result<Actor> {
+pub(crate) async fn owner(s: &State, h: &HeaderMap, write: bool) -> Result<Actor> {
     let a = s
         .browser
         .as_ref()
@@ -65,7 +65,11 @@ async fn owner(s: &State, h: &HeaderMap, write: bool) -> Result<Actor> {
     }
     Ok(a)
 }
-async fn locked<'a>(s: &'a State, a: &Actor, h: &HeaderMap) -> Result<Transaction<'a, Postgres>> {
+pub(crate) async fn locked<'a>(
+    s: &'a State,
+    a: &Actor,
+    h: &HeaderMap,
+) -> Result<Transaction<'a, Postgres>> {
     let mut tx = s
         .browser
         .as_ref()
@@ -83,7 +87,7 @@ async fn locked<'a>(s: &'a State, a: &Actor, h: &HeaderMap) -> Result<Transactio
     crate::partner_support::verify_owner_in_tx(&mut tx, a, h).await?;
     Ok(tx)
 }
-fn version(h: &HeaderMap) -> Result<i64> {
+pub(crate) fn version(h: &HeaderMap) -> Result<i64> {
     h.get(header::IF_MATCH)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix('"'))

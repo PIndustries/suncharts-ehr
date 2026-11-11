@@ -20,6 +20,31 @@ revision; original reports and delivery history retain their earlier identities.
 Keys are not shared across saved connections. Back up the credential master key
 as described in [operations](operations.md#credentials-and-backups).
 
+## Eligibility provider and tax identity
+
+An owner configures **Practice administration → Providers** and **Billing
+organizations**. Eligibility selects the saved provider NPI and billing tax
+identity; neither is fabricated from a patient record or a sample value. Tax IDs
+are encrypted under the credential master key and displayed only by their last
+four digits. Every change appends a masked, attributed revision. Deactivating an
+organization preserves prior requests and prevents new selection.
+
+The request pins both current directory versions. A disabled provider, foreign
+tenant identity or changed version requires review before submission. NPI
+validation checks format and checksum, not licensure or payer enrollment. The
+optional provider last name/organization-name field remains explicitly reviewed;
+a display name is not automatically split or substituted for a billing identity.
+
+Eligibility history separates Claim.MD system/request failure from a payer
+response. New failed checks retain HTTP status and bounded numeric diagnostic
+codes, without raw system-error text or credentials. Older failures whose details
+were not retained remain unexplained. HTTP403 may reflect an API rate restriction;
+it is not automatically an invalid-key diagnosis. Payer messages and returned
+benefits must be reviewed for service date and service type, and do not establish
+payment or automatically change a recorded copay. See the [Claim.MD response
+contract](https://docs.claim.md/docs/how-eligibility-responses-work-in-test-vs-production)
+and [API guide](https://docs.claim.md/docs/test-account-quickstart-guide).
+
 ## Server-configured routes
 
 Set `ENGINE_CLEARINGHOUSE_CONFIG` to a private JSON file for other adapters or

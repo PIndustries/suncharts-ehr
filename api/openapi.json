@@ -33609,6 +33609,390 @@
         ],
         "description": "Staff only with native billing view permission and billing.read OAuth scope when applicable. Tenant and patient-bound encounter lookup. Returns {quote,reason}. quote is null without an approved exact code/modifier/date/context match or after provider/facility version change. Amounts are one unit fee and complete unit-times-units line total. No price is fabricated and no financial state changes."
       }
+    },
+    "/api/v1/practice/billing-organizations": {
+      "get": {
+        "operationId": "listBillingOrganizations",
+        "summary": "List billing organizations",
+        "description": "Owner browser session only. At most100 tenant-scoped masked records; full tax IDs and ciphertext are never returned.",
+        "tags": [
+          "Practice administration"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; tenant-scoped attributed data, no credentials"
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant"
+          },
+          "409": {
+            "description": "State or version conflict"
+          },
+          "428": {
+            "description": "Current quoted resource version required"
+          },
+          "500": {
+            "description": "Atomic operation failed"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createBillingOrganization",
+        "summary": "Create reviewed billing tax identity",
+        "description": "Owner browser session only. Explicit actual nine-digit tax identity is encrypted under the instance credential master key; append-only masked history and audit commit atomically. Stable request_id replays matching unchanged creation; conflicting reuse fails.",
+        "tags": [
+          "Practice administration"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; tenant-scoped attributed data, no credentials"
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant"
+          },
+          "409": {
+            "description": "State or version conflict"
+          },
+          "428": {
+            "description": "Current quoted resource version required"
+          },
+          "500": {
+            "description": "Atomic operation failed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BillingOrganizationCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/practice/billing-organizations/{id}": {
+      "put": {
+        "operationId": "updateBillingOrganization",
+        "summary": "Update billing tax identity",
+        "description": "Owner browser session and current quoted version required. Omitted tax_id preserves the saved encrypted value; changing tax_id_type requires the actual replacement value. No historical request changes. request_id is not accepted for updates.",
+        "tags": [
+          "Practice administration"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; tenant-scoped attributed data, no credentials"
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant"
+          },
+          "409": {
+            "description": "State or version conflict"
+          },
+          "428": {
+            "description": "Current quoted resource version required"
+          },
+          "500": {
+            "description": "Atomic operation failed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BillingOrganizationChange"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^\"[1-9][0-9]*\"$"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/practice/billing-organizations/{id}/history": {
+      "get": {
+        "operationId": "billingOrganizationHistory",
+        "summary": "Review billing identity history",
+        "description": "Owner browser session only. Returns latest100 immutable attributed revisions with masked tax identity; no ciphertext or full tax IDs.",
+        "tags": [
+          "Practice administration"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; tenant-scoped attributed data, no credentials"
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant"
+          },
+          "409": {
+            "description": "State or version conflict"
+          },
+          "428": {
+            "description": "Current quoted resource version required"
+          },
+          "500": {
+            "description": "Atomic operation failed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/billing/claimmd/provider-defaults": {
+      "get": {
+        "operationId": "claimmdProviderDefaults",
+        "summary": "Read current provider and billing identity choices",
+        "description": "Staff only, trusted tenant. Active providers must have a checksum-valid NPI and enabled owner/clinician staff identity. Includes provider version, active masked billing_organizations with versions, facilities and unambiguous single-provider/facility default IDs. Directory membership does not prove payer enrollment; no tax ID is returned.",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; tenant-scoped attributed data, no credentials"
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant"
+          },
+          "409": {
+            "description": "State or version conflict"
+          },
+          "428": {
+            "description": "Current quoted resource version required"
+          },
+          "500": {
+            "description": "Atomic operation failed"
+          }
+        }
+      }
+    },
+    "/api/v1/patients/{patient}/coverages/{coverage}/claimmd-eligibility": {
+      "get": {
+        "operationId": "listClaimmdEligibility",
+        "summary": "Review saved eligibility evidence",
+        "description": "Staff only. Latest100 scoped checks with immutable requested identity/version and service-date snapshot. Newly recorded tax IDs are masked. Failed checks may carry response_snapshot.failure with kind,http_status,provider_codes; numeric codes alone are preserved, never raw system-error text. Historical failures without evidence remain unknown.",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; tenant-scoped attributed data, no credentials"
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant"
+          },
+          "409": {
+            "description": "State or version conflict"
+          },
+          "428": {
+            "description": "Current quoted resource version required"
+          },
+          "500": {
+            "description": "Atomic operation failed"
+          }
+        },
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "coverage",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      },
+      "post": {
+        "operationId": "requestClaimmdEligibility",
+        "summary": "Request real-time eligibility",
+        "description": "Scheduling-authorized staff only. Choose current provider and billing organization IDs+versions; server resolves and locks trusted active directory identity before reserving the request. Legacy explicit NPI/TIN remains supported. Service codes and procedure_code are mutually exclusive. Stable request_id prevents repeat provider submission; failed or pending replay requires review. Top-level Claim.MD rejection differs from payer messages in elig.error; no failed response implies uninsured status.",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; tenant-scoped attributed data, no credentials"
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant"
+          },
+          "409": {
+            "description": "State or version conflict"
+          },
+          "428": {
+            "description": "Current quoted resource version required"
+          },
+          "500": {
+            "description": "Atomic operation failed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimmdEligibilityRequest"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "coverage",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -51493,6 +51877,316 @@
           "linkage_reference"
         ],
         "description": "Reviewed received-secondary835 crossover linkage, mutually exclusive with coordination and source_history_id; frequency original, parent_id exact adjudicated primary. Requires current posted primary CLP19 and delivered primary details, current effective secondary coverage, and a staged/reconciled unbound original835 with exact payer, N1 PE XX billing NPI, original control, payer claim number, DTM472 service date, ordered service controls/codes/modifiers/charges and balanced paid/CAS. Secondary CLP2/20/4 supported. Creates tracking-only submitted record with frozen source evidence and external-control alias, never an outbound submission or ledger posting. Existing active same-payer originals and active source bindings block duplicates."
+      },
+      "BillingOrganizationChange": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "tax_id_type",
+          "active",
+          "reason"
+        ],
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "tax_id": {
+            "type": "string",
+            "pattern": "^[0-9]{9}$",
+            "writeOnly": true
+          },
+          "tax_id_type": {
+            "type": "string",
+            "enum": [
+              "E",
+              "S"
+            ]
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        }
+      },
+      "BillingOrganizationCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "tax_id_type",
+          "active",
+          "reason",
+          "request_id",
+          "tax_id"
+        ],
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "tax_id": {
+            "type": "string",
+            "pattern": "^[0-9]{9}$",
+            "writeOnly": true
+          },
+          "tax_id_type": {
+            "type": "string",
+            "enum": [
+              "E",
+              "S"
+            ]
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        }
+      },
+      "BillingOrganization": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "tax_id_type",
+          "tax_id_last4",
+          "active",
+          "version"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "tax_id_type": {
+            "type": "string",
+            "enum": [
+              "E",
+              "S"
+            ]
+          },
+          "tax_id_last4": {
+            "type": "string",
+            "pattern": "^[0-9]{4}$"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "ClaimmdEligibilityRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "request_id",
+          "service_date",
+          "insured_given_name",
+          "insured_family_name"
+        ],
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "service_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "service_codes": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          },
+          "procedure_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 10
+          },
+          "insured_given_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "insured_family_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "insured_middle_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          },
+          "insured_birth_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "insured_sex": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "F",
+              "M",
+              null
+            ]
+          },
+          "patient_sex": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "F",
+              "M",
+              null
+            ]
+          },
+          "provider_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "provider_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "billing_organization_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "billing_organization_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "provider_npi": {
+            "type": "string",
+            "pattern": "^[12][0-9]{9}$"
+          },
+          "provider_taxid": {
+            "type": "string",
+            "pattern": "^[0-9]{9}$",
+            "writeOnly": true
+          },
+          "provider_taxid_type": {
+            "type": "string",
+            "enum": [
+              "E",
+              "S"
+            ]
+          },
+          "provider_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200,
+            "description": "Explicitly reviewed provider last name or organization name if needed by the payer. Never inferred from a display name."
+          },
+          "provider_taxonomy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 10
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "provider_id",
+              "provider_version",
+              "billing_organization_id",
+              "billing_organization_version"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "provider_npi"
+                  ]
+                },
+                {
+                  "required": [
+                    "provider_taxid"
+                  ]
+                },
+                {
+                  "required": [
+                    "provider_taxid_type"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "required": [
+              "provider_npi",
+              "provider_taxid",
+              "provider_taxid_type"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "provider_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "provider_version"
+                  ]
+                },
+                {
+                  "required": [
+                    "billing_organization_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "billing_organization_version"
+                  ]
+                }
+              ]
+            }
+          }
+        ]
       }
     }
   }
