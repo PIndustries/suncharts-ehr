@@ -28,7 +28,7 @@ ctx.startClaimMdTracking=()=>{};ctx.claimMdClaimLifecycle=()=>'';
  const form={dataset:{request:'stable-request'},values,claimViewContext:ctx.claimContextSnapshot(),claimAccount:account};
  await ctx.saveClaimEditorForm(form,values);assert.equal(calls.filter(c=>c.path==='/api/v1/patients/patient/billing/accounts/account/claims').length,1);assert.match(node('encounter-claims-detail').innerHTML,/Claim review/);
  const action=node('claim-action');action.values={action:'ready',reason:'Reviewed ready'};
- handlers.submit[0]({target:action,preventDefault(){}});await ctx.pending;assert.equal(claim.status,'ready');assert.match(node('encounter-claims-detail').innerHTML,/Review Claim.MD submission/);assert.equal(ctx.chartSection,'visits');
+ handlers.submit[0]({target:action,preventDefault(){}});await ctx.pending;assert.equal(claim.status,'ready');assert.match(node('encounter-claims-detail').innerHTML,/Review & submit to Claim.MD/);assert.equal(ctx.chartSection,'visits');
  let busy=false;ctx.run=fn=>{if(busy)return;busy=true;ctx.pending=Promise.resolve().then(fn).finally(()=>busy=false);};
  const button={type:'button',dataset:{claimmdSubmit:'claim'},hasAttribute:name=>name==='data-claimmd-submit',closest:selector=>selector==='#encounter-claims'?{}:null};
  for(const handler of handlers.click)handler({target:{closest:selector=>['button','[data-claimmd-submit]'].includes(selector)?button:null},preventDefault(){},stopImmediatePropagation(){}});

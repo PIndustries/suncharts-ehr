@@ -21,9 +21,14 @@ unknown until explicitly reviewed; an empty allergy list is not an assertion of
 no known allergies. An empty native billing list does not establish that imported
 coverage, payments or balances do not exist.
 
+**Patients** returns to the patient directory. The directory stays visible when
+opening a chart; **Hide patients** and **Show patients** control its visibility.
+Encounter history combines appointments with their linked visits. Completed rows
+open the exact signed encounter rather than starting another visit.
+
 Open **Encounter** to continue the selected visit directly. The encounter picker
-changes the visit; its local steps are **Rooming**, **Note & ICD-10**,
-**Billing & claim**, **Orders & prescriptions**, **Files & voice**, and **Checkout & AVS**, subject
+changes the visit; its local steps are **Rooming**, **Notes & diagnoses (ICD-10)**,
+**Procedures (CPT/HCPCS) & billing**, **Orders & prescriptions**, **Files & voice**, and **Checkout & AVS**, subject
 to the staff member's permissions. Procedures and charges stay linked to that
 encounter. Claim preparation and review remain in that encounter; the practice
 claim queue and patient account summary provide cross-encounter views. Signing,
@@ -197,11 +202,13 @@ remain on the [roadmap](roadmap.md).
 
 ## Documents, file versions and voice
 
-**Files & voice** inside an encounter shows that encounter's linked files and
-shared ID, insurance and legal records. **Patient record → Shared documents**
-shows all loaded patient files. Category, status and text filters apply to loaded
-pages; use **Load more files** for additional records. Shared registration files
-are reused, not copied into each encounter.
+**Files & voice** separates **This encounter** from **Patient files**. Patient
+files include every unlinked document, regardless of its category. **Other
+encounters** expands files linked to other visits, with their original context.
+**Patient record → Shared documents** shows all loaded patient files. Category,
+status and text filters apply to loaded pages; use **Load more files** for
+additional records. Files retain their original links and are not copied into
+each encounter.
 
 Owners and clinicians can upload PDF, PNG, JPEG, UTF-8 plain text, DOCX, XLSX,
 MP3, WAV, Ogg, WebM and M4A files up to 10 MiB. Plain text is limited to 200,000

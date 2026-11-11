@@ -137,10 +137,26 @@ async function appointmentDetail(id){
 }
 async function loadSchedulePatients(){const page=await api('/api/v1/patients');schedulePatients=page.items;scheduleCursor=page.next_cursor;}
 function patientOptions(id){return schedulePatients.map(p=>`<option value="${p.id}" ${p.id===id?'selected':''}>${esc(p.family_name)}, ${esc(p.given_name)} · ${esc(p.mrn)}</option>`).join('');}
+function patientEncounterHistoryEntries(){
+ const appointments=workspace?.appointments||[],visits=workspace?.visits||[],byAppointment=new Map(appointments.map(a=>[a.id,a]));
+ const linked=new Set(visits.map(v=>v.appointment_id).filter(Boolean));
+ const entries=[...visits.map(visit=>({visit,appointment:byAppointment.get(visit.appointment_id)})),...appointments.filter(a=>!linked.has(a.id)).map(appointment=>({appointment}))];
+ const timestamp=entry=>Date.parse(entry.appointment?.starts_at||entry.visit?.created_at||entry.visit?.signed_at||'')||0;
+ return entries.sort((a,b)=>timestamp(b)-timestamp(a)||String(a.visit?.id||a.appointment.id).localeCompare(String(b.visit?.id||b.appointment.id)));
+}
+function patientEncounterHistoryRows(limit,compact=false){
+ const entries=patientEncounterHistoryEntries(),rows=Number.isInteger(limit)?entries.slice(0,limit):entries;
+ return rows.map(({visit:v,appointment:a})=>{
+  const providerId=a?.clinician_id||v?.clinician_id,provider=scheduleProviders.find(p=>p.id===providerId)?.label||(providerId===me.user_id?'You':'Assigned clinician');
+  const signed=v?.status==='signed',completed=a?.status==='completed',status=v?(signed?(completed?'Completed · Signed encounter':'Signed encounter'):'Encounter in progress'):scheduleLabel(a.status);
+  const when=a?.starts_at||v?.created_at||v?.signed_at;
+  const action=v?`<button type="button" class="quiet" data-visit="${esc(v.id)}">${signed?'Open completed encounter':'Continue encounter'}</button>`:a.status==='booked'&&canSchedule()?`<button type="button" data-check-in="${esc(a.id)}">Check in</button>`:a.status==='checked_in'&&((typeof isRoomingStaff==='function'&&isRoomingStaff())||(['owner','clinician'].includes(me.role)&&a.clinician_id===me.user_id))?`<button type="button" class="primary" data-start="${esc(a.id)}">Start encounter</button>`:'';
+  return `<div class="${compact?'chart-history-row':'timeline-row encounter-history-row'}${v?.id===activeVisit?.id?' selected-encounter':''}" ${v?`data-history-visit="${esc(v.id)}"`:`data-history-appointment="${esc(a.id)}"`}><div><strong>${esc(a?.title||'Office visit')}</strong><small>${when?esc(date(when)):'Service date unavailable'} · ${esc(status)}</small>${compact?'':`<small>${esc(provider)}${a?.category?' · '+esc(a.category):''}${a?.facility?' · '+esc(a.facility):''}${a?.room?' · Room '+esc(a.room):''}</small>${!v&&['completed','in_progress'].includes(a.status)?'<small>No encounter record is linked to this appointment.</small>':''}${v?.id===activeVisit?.id?'<small>Selected encounter</small>':''}`}</div>${action}</div>`;
+ }).join('')||'<p class="muted">No appointments or encounters recorded for this patient.</p>';
+}
 function patientAppointmentWorkspace(){
- const appointment=activeVisit?workspace.appointments.find(a=>a.id===activeVisit.appointment_id):null;
- const provider=a=>scheduleProviders.find(p=>p.id===a.clinician_id)?.label||(a.clinician_id===me.user_id?'You':'Assigned clinician');
- return `<section id="appointments-panel" class="panel patient-appointments"><div class="section-head"><div><h2>Appointments</h2><p class="muted">${appointment?esc(appointment.title)+' · '+esc(scheduleLabel(appointment.status)):'Book, check in and start an encounter'}</p></div>${canSchedule()?`<button type="button" data-chart-book="${esc(selected)}">Book appointment</button>`:''}</div>${appointment?`<dl class="patient-appointment-context"><div><dt>Provider</dt><dd>${esc(provider(appointment))}</dd></div><div><dt>Visit category</dt><dd>${esc(appointment.category)}</dd></div><div><dt>Facility / room</dt><dd>${esc([appointment.facility,appointment.room?'Room '+appointment.room:''].filter(Boolean).join(' · ')||'Not recorded')}</dd></div><div><dt>Scheduled</dt><dd>${esc(date(appointment.starts_at))}</dd></div></dl>`:''}<details ${activeVisit?'':'open'}><summary>Appointment history <span class="pill">${workspace.appointments.length} loaded</span></summary>${workspace.appointments.map(a=>`<div class="timeline-row"><div><b>${esc(a.title)}</b><small>${esc(date(a.starts_at))} · ${esc(scheduleLabel(a.status))}</small><small>${esc(provider(a))} · ${esc(a.category)}${a.facility?' · '+esc(a.facility):''}${a.room?' · Room '+esc(a.room):''}</small></div>${a.status==='booked'&&canSchedule()?`<button type="button" data-check-in="${esc(a.id)}">Check in</button>`:a.status==='checked_in'&&['owner','clinician'].includes(me.role)&&a.clinician_id===me.user_id?`<button type="button" class="primary" data-start="${esc(a.id)}">Start encounter</button>`:''}</div>`).join('')||'<p class="muted">No appointments recorded for this patient.</p>'}</details><div id="chart-booking-editor"></div></section>`;
+ const count=patientEncounterHistoryEntries().length;
+ return `<section id="appointments-panel" class="panel patient-appointments patient-encounter-history"><div class="section-head"><div><h2>Encounter history</h2><p class="muted">Appointments and clinical encounters in one timeline.</p></div>${canSchedule()?`<button type="button" data-chart-book="${esc(selected)}">Book appointment</button>`:''}</div><details id="patient-encounter-history" ${activeVisit?'':'open'}><summary>${activeVisit?'Choose an appointment or encounter':'Appointments & encounters'} <span class="pill">${count} loaded</span></summary>${patientEncounterHistoryRows()}</details><div id="chart-booking-editor"></div></section>`;
 }
 async function openPatientAppointmentEditor(patientId){
  if(!canSchedule()||selected!==patientId)throw new Error('Open the patient chart before booking an appointment.');

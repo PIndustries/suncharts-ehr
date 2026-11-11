@@ -1,0 +1,4 @@
+.claim-workflow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem;margin:1rem 0}
+.claim-workflow article{padding:1rem;border:1px solid var(--line,#d4dfe4);border-radius:.5rem;background:var(--panel,#fff)}
+.claim-workflow h3{margin:0 0 .5rem}.claim-workflow p{margin:.5rem 0 1rem;line-height:1.5}
+@media(max-width:1050px){.claim-workflow{grid-template-columns:1fr}}
