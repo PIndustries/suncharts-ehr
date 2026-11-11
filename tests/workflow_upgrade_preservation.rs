@@ -389,11 +389,65 @@ VALUES('10000000-0000-0000-0000-000000000001',gen_random_uuid(),'20000000-0000-0
             "existing payment settings remain unchanged"
         );
     }
+    // Exercise the actual deployed schema96 boundary with evidence introduced
+    // since schema88: immutable edited file bytes and a completed hosted receipt.
+    // These are synthetic rows in this disposable schema, never provider calls.
+    sqlx::raw_sql(r#"
+INSERT INTO patient_document_file_versions(tenant_id,document_id,patient_id,version,request_id,request_hash,filename,content_type,bytes,sha256,size_bytes,actor_id,reason)
+SELECT tenant_id,id,patient_id,2,gen_random_uuid(),repeat('4',64),'synthetic-edited.pdf','application/pdf',
+ convert_to(E'%PDF-1.4\nSynthetic retained edit\n%%EOF\n','UTF8'),
+ encode(sha256(convert_to(E'%PDF-1.4\nSynthetic retained edit\n%%EOF\n','UTF8')),'hex'),
+ octet_length(convert_to(E'%PDF-1.4\nSynthetic retained edit\n%%EOF\n','UTF8')),
+ '30000000-0000-0000-0000-000000000001','Historical synthetic edited file'
+FROM patient_documents;
+INSERT INTO payment_credentials(tenant_id,setting_id,revision,encrypted_config)
+SELECT tenant_id,id,1,decode('00112233','hex') FROM payment_settings;
+INSERT INTO copay_checkout_attempts(tenant_id,id,patient_id,appointment_id,setting_id,credential_revision,installation_id,provider_account_id,livemode,amount_cents,request_id,creation_hash,requested_by,reason,return_url,status,provider_session_id,provider_payment_intent,provider_charge_id,provider_captured_at,receipt_id)
+SELECT s.tenant_id,'a0000000-0000-0000-0000-000000000001',r.patient_id,r.appointment_id,s.id,1,
+ 'b0000000-0000-0000-0000-000000000001','acct_synthetic_legacy',false,r.amount_cents,gen_random_uuid(),repeat('5',64),r.actor_id,
+ 'Historical synthetic hosted receipt','https://example.test/?copay_checkout=synthetic','paid','cs_test_synthetic','pi_synthetic','ch_synthetic','2026-10-01T14:00:00Z',r.id
+FROM payment_settings s JOIN billing_copay_receipts r ON r.tenant_id=s.tenant_id;
+INSERT INTO copay_checkout_events(tenant_id,operation_id,version,actor_id,action)
+SELECT tenant_id,id,version,requested_by,'Historical synthetic verified capture' FROM copay_checkout_attempts;
+"#).execute(&pool).await.unwrap();
     let original_tables: Vec<String> = sqlx::query_scalar("SELECT tablename::text FROM pg_tables WHERE schemaname=current_schema() AND tablename<>'_sqlx_migrations' ORDER BY tablename").fetch_all(&pool).await.unwrap();
     let before_archive = snapshot_tables(&pool, &original_tables).await;
+    let migrations_96: Value = sqlx::query_scalar(
+        "SELECT jsonb_agg(to_jsonb(m) ORDER BY version) FROM _sqlx_migrations m WHERE version<=96",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    for table in [
+        "patient_document_file_versions",
+        "copay_checkout_attempts",
+        "copay_checkout_events",
+    ] {
+        assert_eq!(
+            before_archive[table].0.as_array().unwrap().len(),
+            1,
+            "schema96 fixture must contain {table}"
+        );
+    }
     for _ in 0..2 {
         through_revision(98).run(&pool).await.unwrap();
         assert_eq!(before_archive, snapshot_tables(&pool, &original_tables).await, "archive migration must preserve every existing patient, document, signed note and financial row");
+        let old_migrations: Value = sqlx::query_scalar("SELECT jsonb_agg(to_jsonb(m) ORDER BY version) FROM _sqlx_migrations m WHERE version<=96").fetch_one(&pool).await.unwrap();
+        assert_eq!(
+            migrations_96, old_migrations,
+            "schema96 migration history must remain identical"
+        );
+        let new_migrations: Vec<i64> = sqlx::query_scalar(
+            "SELECT version FROM _sqlx_migrations WHERE version>96 AND success ORDER BY version",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            new_migrations,
+            [97, 98],
+            "only the reviewed additive migrations may run"
+        );
         let events: i64 = sqlx::query_scalar("SELECT count(*) FROM patient_lifecycle_events")
             .fetch_one(&pool)
             .await
