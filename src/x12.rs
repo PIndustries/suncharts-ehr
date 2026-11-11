@@ -242,6 +242,7 @@ pub(crate) fn generate(
     let patient = &c.snapshot["patient"];
     let cov = &account["coverage_snapshot"]["coverage"]["content"];
     let payer = &account["coverage_snapshot"]["payer"]["content"];
+    crate::claim_cob::require_outbound(c)?;
     let coordination = crate::claim_cob::evidence(c)?;
     let priority = field(cov, "priority")?;
     if !matches!(

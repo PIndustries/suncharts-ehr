@@ -161,6 +161,47 @@ and [reviewing crossover and payer timing before submission](https://docs.claim.
 CMS identifies prior insurance in [837P loops 2320–2330G](https://www.cms.gov/Outreach-and-Education/MLN/WBT/MLN4462429-MLN-WBT-1500/1500/lesson04/23/index.html).
 These references do not establish payer enrollment or acceptance of a particular claim.
 
+### Received secondary crossover responses
+
+When the posted primary835 reports CLP19, **Review secondary billing** does not
+create another outbound claim. It offers an explicit link only after an actual
+secondary835 has been imported or retrieved. Until then, it shows that a verified
+secondary response is awaited; forwarding status alone does not identify its payer.
+
+The bounded linkage profile requires the retained original835 and current active
+secondary coverage with matching payer ID, N1 PE/XX billing NPI, original primary
+patient-control number, secondary payer claim number, DTM472 service date, and
+ordered original service controls, procedure/modifiers and charges. Paid and CAS
+totals must balance. CLP2, CLP20 and CLP4 secondary responses are supported; missing
+or differing evidence remains unlinked for review. A native delivered primary
+artifact and its current posted CLP19 source are still required. This does not
+infer provider identity from a deposit payee or infer a secondary destination from
+Medicare forwarding alone.
+
+After staff confirms the linkage, one tracking-only secondary record freezes both
+sources on the same account. Its API status `submitted` identifies received
+secondary evidence; the UI labels it **Crossover response received**, and SunCharts
+has not transmitted anything. The record cannot be marked ready, exported as a
+packet/CMS-1500/837, queued or marked delivered. Review the linked remittance and
+post it separately; creation itself does not change charges, payments or liability.
+A denied CLP4 with zero payment and no PR evidence neither creates new patient
+responsibility nor clears the prior balance. Patient invoices require explicit
+reviewed responsibility, including after a denial.
+
+The first posting must use the exact bound remittance row and source hash. Later
+corrections follow the existing reviewed reversal chain. Reverse an active secondary
+posting before withdrawing an incorrect crossover link, then resolve its non-void
+descendants before reversing the primary. An unposted withdrawn link retains its
+history; its still-unposted source can be linked again after clearing any saved
+match. A previously posted/reversed source is not silently reused as a fresh
+crossover. Request replay returns the same record, and active source/payer bindings
+cannot be duplicated.
+
+CMS documents the forwarding meanings of CLP19 and CLP20 in its
+[Medicare Remit Easy Print guide](https://www.cms.gov/Research-Statistics-Data-and-Systems/CMS-Information-Technology/AccesstoDataApplication/Downloads/Medicare-Remit-Easy-Print-User-Guide-Version44.pdf).
+The forwarding code is evidence of processing status, not proof of a particular
+secondary payer's receipt or payment.
+
 ## ERA posting
 
 1. Import an original 835 or open a retrieved provider report.

@@ -32900,7 +32900,7 @@
     "/api/v1/billing/claims/{id}/secondary-review": {
       "get": {
         "operationId": "reviewSecondaryClaim",
-        "description": "Read current primary adjudication, effective secondary policies, existing secondary claims and blockers before explicit same-account preparation. Authorized billing staff only; tenant-scoped audited read. No claim creation, provider call or ledger change.",
+        "description": "Read current primary adjudication, effective secondary policies, existing secondary claims and blockers before explicit same-account preparation. Authorized billing staff only; tenant-scoped audited read. No claim creation, provider call or ledger change. Posted primaryCLP19 returns bounded verified received-secondary835 candidates when available; never infers destination from forwarding status alone.",
         "parameters": [
           {
             "name": "id",
@@ -32956,6 +32956,13 @@
                       "type": "array",
                       "items": {
                         "type": "string"
+                      }
+                    },
+                    "crossover_candidates": {
+                      "type": "array",
+                      "description": "Present for primaryCLP19; unused received835 rows with exact trusted payer/provider/control/date/service evidence. Each includes coverage id/version, remittance id/version/row, payer name, trace/date/payee NPI and normalized claim row. Empty means no verified unused source is available. No source mutation.",
+                      "items": {
+                        "type": "object"
                       }
                     }
                   },
@@ -37507,6 +37514,9 @@
           },
           "coordination": {
             "$ref": "#/components/schemas/SecondaryCoordinationRequest"
+          },
+          "crossover": {
+            "$ref": "#/components/schemas/CrossoverTrackingRequest"
           }
         },
         "required": [
@@ -37585,6 +37595,14 @@
               "patient": {
                 "type": "object",
                 "description": "Frozen patient demographic evidence"
+              },
+              "financial_summary": {
+                "type": "object",
+                "description": "Ledger totals frozen at claim creation, including combined account balance; not an automatic patient responsibility determination."
+              },
+              "coordination_of_benefits": {
+                "type": "object",
+                "description": "Frozen primary coverage/details/adjudication/source, reviewed paid units and previously posted primary credits. Optional crossover object binds received secondary remittance id/version/row/hash, payee NPI, trace/date and row evidence. Presence of crossover makes the claim tracking-only with no packet, CMS1500, 837 or delivery."
               }
             },
             "required": [
@@ -37601,7 +37619,8 @@
               "rejected",
               "adjudicated",
               "void"
-            ]
+            ],
+            "description": "For received crossover tracking, submitted means received secondary response linked for review; no outbound delivery is implied. Adjudicated follows reviewed ERA posting; void may follow reviewed withdrawal."
           },
           "version": {
             "type": "integer",
@@ -37683,8 +37702,10 @@
               "record_rejection",
               "post",
               "reject",
-              "reverse"
-            ]
+              "reverse",
+              "withdraw_crossover"
+            ],
+            "description": "withdraw_crossover only withdraws submitted/accepted/rejected crossover tracking without an active ERA head or non-void descendant; history remains. Normal outbound/manual submission events are refused for tracking records."
           },
           "reason": {
             "type": "string",
@@ -38228,7 +38249,7 @@
       },
       "ClaimWorklist": {
         "type": "object",
-        "description": "Tenant-scoped claim summary page with patient_name, payer_name, total_cents and lifecycle; at most 100 items",
+        "description": "Tenant-scoped claim summary page with patient_name, payer_name, coverage_priority, total_cents, lifecycle and boolean crossover_tracking_only; at most100 items. Tracking-only submitted rows represent a received secondary response, not an EHR transmission.",
         "properties": {
           "items": {
             "type": "array",
@@ -51408,6 +51429,70 @@
         "type": "object",
         "readOnly": true,
         "description": "Server-generated immutable approved fee evidence. Includes schedule_id, entry_key, unit_amount_cents, expected_line_amount_cents, actual_line_amount_cents, units, service_date, context, approved schedule scope/source metadata, source entry, override_reason and recorded_by. Unchanged saved line evidence survives retirement and directory changes. Supplied client snapshots are discarded."
+      },
+      "CrossoverTrackingRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "coverage_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "primary_remittance_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "secondary_remittance_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "coverage_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "primary_claim_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "primary_remittance_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "secondary_remittance_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "primary_row_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "secondary_row_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "linkage_confirmed": {
+            "const": true
+          },
+          "linkage_reference": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "coverage_id",
+          "primary_remittance_id",
+          "secondary_remittance_id",
+          "coverage_version",
+          "primary_claim_version",
+          "primary_remittance_version",
+          "secondary_remittance_version",
+          "primary_row_index",
+          "secondary_row_index",
+          "linkage_confirmed",
+          "linkage_reference"
+        ],
+        "description": "Reviewed received-secondary835 crossover linkage, mutually exclusive with coordination and source_history_id; frequency original, parent_id exact adjudicated primary. Requires current posted primary CLP19 and delivered primary details, current effective secondary coverage, and a staged/reconciled unbound original835 with exact payer, N1 PE XX billing NPI, original control, payer claim number, DTM472 service date, ordered service controls/codes/modifiers/charges and balanced paid/CAS. Secondary CLP2/20/4 supported. Creates tracking-only submitted record with frozen source evidence and external-control alias, never an outbound submission or ledger posting. Existing active same-payer originals and active source bindings block duplicates."
       }
     }
   }
