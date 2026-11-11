@@ -403,7 +403,7 @@ function applyChartSection(){
  if($('encounter-revenue'))$('encounter-revenue').hidden=!(inEncounter&&hasVisit&&step==='charges'&&chartAreaEnabled('billing'));
  if($('encounter-orders-actions'))$('encounter-orders-actions').hidden=!(inEncounter&&hasVisit&&step==='orders'&&chartAreaEnabled('orders'));
  if($('encounter-progress')){$('encounter-progress').hidden=!inEncounter;if(inEncounter&&typeof refreshEncounterProgress==='function')refreshEncounterProgress();}
- const primary=['overview','visits','insurance'];
+ const primary=['overview','visits','insurance','documents'];
  if(typeof applyLabEncounterScope==='function')applyLabEncounterScope();
  if(typeof documentFileNavigationChanged==='function')documentFileNavigationChanged();
  document.querySelectorAll('.chart-tabs button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.chartSection===chartSection)));
@@ -411,8 +411,8 @@ function applyChartSection(){
  const context=$('record-context');if(context){context.hidden=!hasVisit||primary.includes(chartSection);context.innerHTML='<button type="button" data-chart-section="visits">← Return to selected encounter</button>';}
 }
 function chartNavigation(tabs){
- const available=new Map(tabs),main=[['overview','Overview'],['visits','Encounter'],['insurance','Insurance']].filter(([key])=>available.has(key)),mainKeys=new Set(main.map(([key])=>key));
- const names={billing:'Account summary',documents:'Shared documents',profile:'Demographics',clinical:'Problems, allergies & medications',history:'Surgical & dental history',care_pathways:'Practice workflows',functional_status:'Function & assessments',source:'Imported records'};
+ const available=new Map(tabs),main=[['overview','Overview'],['visits','Encounter'],['insurance','Insurance'],['documents','Files']].filter(([key])=>available.has(key)),mainKeys=new Set(main.map(([key])=>key));
+ const names={billing:'Account summary',profile:'Demographics',clinical:'Problems, allergies & medications',history:'Surgical & dental history',care_pathways:'Practice workflows',functional_status:'Function & assessments',source:'Imported records'};
  const records=tabs.filter(([key])=>!mainKeys.has(key)&&key!=='checkout');
  const button=([key,label])=>`<button type="button" data-chart-section="${key}" aria-pressed="${key===chartSection}">${esc(label)}</button>`;
  return `<nav class="chart-tabs patient-workspace-tabs" aria-label="Patient workspace"><div class="chart-tab-row chart-primary-tabs">${main.map(button).join('')}${records.length?`<details class="patient-record-navigation" id="patient-record-navigation"><summary>Patient record</summary><div>${records.map(([key,label])=>button([key,names[key]||label])).join('')}</div></details>`:''}</div></nav>`;
