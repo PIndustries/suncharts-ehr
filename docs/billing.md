@@ -368,3 +368,9 @@ provenance. Selecting manual pricing for a different code retains the entered
 amount; prior saved evidence remains in account history. Client-provided fee
 snapshots are never accepted as authority. Fee lookup and approval create no
 ledger activity, patient liability, payment or claim submission.
+
+### Native Stripe account summary
+
+Payment settings includes a read-only account summary for owners and existing authorized delegated administrators. It shows available and pending Stripe balances, payout/card readiness, and the latest ten payments and payouts. Live and test accounts are labeled separately. Account capability readiness does not enable live collection; the existing operator gates still apply.
+
+Requests go through the installation-bound SunCharts Connect broker. The server checks installation, tenant, account, mode and current credentials; the browser receives no Stripe keys, customer details, bank/card data or provider invoice links. Unavailable sections display as unavailable rather than zero. This account view does not post or reconcile patient ledger entries. Patient invoices and copay receipts remain in native patient billing.

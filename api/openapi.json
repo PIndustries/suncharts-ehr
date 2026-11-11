@@ -33993,6 +33993,162 @@
           }
         ]
       }
+    },
+    "/api/v1/billing/payments/operations": {
+      "get": {
+        "summary": "Read the connected Stripe account summary",
+        "description": "Owner-only, including existing authorized delegated-owner sessions. Read-only Connect broker calls bound to the current installation, tenant, Stripe account/mode and credential revision. Returns available/pending balances, capability readiness and latest ten payment/payout records with timestamps. Unavailable sections have status unavailable and data null; an empty successful list is distinct. No customer or card/bank data, Stripe invoice totals or provider URLs. This does not enable collection or reconcile patient balances. Response is no-store; stale/revoked identity or connection fails closed.",
+        "responses": {
+          "200": {
+            "description": "Versioned sanitized account activity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "contract_version",
+                    "installation_id",
+                    "remote_tenant_id",
+                    "account_id",
+                    "livemode",
+                    "checked_at",
+                    "limit",
+                    "setting_version",
+                    "account",
+                    "balance",
+                    "payments",
+                    "payouts"
+                  ],
+                  "properties": {
+                    "contract_version": {
+                      "type": "integer",
+                      "const": 1
+                    },
+                    "installation_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "remote_tenant_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "account_id": {
+                      "type": "string",
+                      "pattern": "^acct_[A-Za-z0-9_]+$"
+                    },
+                    "livemode": {
+                      "type": "boolean"
+                    },
+                    "checked_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "const": 10
+                    },
+                    "setting_version": {
+                      "type": "integer"
+                    },
+                    "account": {
+                      "type": "object",
+                      "properties": {
+                        "charges_enabled": {
+                          "type": "boolean"
+                        },
+                        "card_payments_active": {
+                          "type": "boolean"
+                        },
+                        "payouts_enabled": {
+                          "type": "boolean"
+                        },
+                        "details_submitted": {
+                          "type": "boolean"
+                        }
+                      }
+                    },
+                    "balance": {
+                      "type": "object",
+                      "required": [
+                        "status",
+                        "data"
+                      ],
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "available",
+                            "unavailable"
+                          ]
+                        },
+                        "data": {
+                          "type": [
+                            "object",
+                            "null"
+                          ]
+                        }
+                      }
+                    },
+                    "payments": {
+                      "type": "object",
+                      "required": [
+                        "status",
+                        "data"
+                      ],
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "available",
+                            "unavailable"
+                          ]
+                        },
+                        "data": {
+                          "type": [
+                            "object",
+                            "null"
+                          ]
+                        }
+                      }
+                    },
+                    "payouts": {
+                      "type": "object",
+                      "required": [
+                        "status",
+                        "data"
+                      ],
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "available",
+                            "unavailable"
+                          ]
+                        },
+                        "data": {
+                          "type": [
+                            "object",
+                            "null"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Owner permission required"
+          },
+          "409": {
+            "description": "Account setup or binding changed; refresh required"
+          },
+          "400": {
+            "description": "Provider unavailable or response could not be verified"
+          }
+        }
+      }
     }
   },
   "components": {

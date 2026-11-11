@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Test-mode hosted checkout. Processor evidence, never a browser return, controls the ledger.
+#[path = "payment_operations.rs"]
+mod operations;
 use crate::{
     auth::{Actor, Role},
     billing,
@@ -300,6 +302,7 @@ pub fn router() -> Router<State> {
             "/api/v1/billing/payments/settings/test",
             post(test_settings),
         )
+        .route("/api/v1/billing/payments/operations", get(operations::read))
         .route(
             "/api/v1/billing/payments/settings/activation",
             post(activate),
