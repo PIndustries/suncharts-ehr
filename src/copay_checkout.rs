@@ -604,10 +604,23 @@ async fn process_id(
     broker: &dyn Broker,
     policy: Policy,
 ) -> Result<()> {
+    process_id_mode(pool, a, id, broker, policy, true).await
+}
+// A browser return can reconcile an already-bound session, never create or
+// retry creating a Checkout session because a caller supplied its operation ID.
+async fn process_id_mode(
+    pool: &PgPool,
+    a: &Actor,
+    id: Uuid,
+    broker: &dyn Broker,
+    policy: Policy,
+    allow_create: bool,
+) -> Result<()> {
     let mut tx = pool.begin().await?;
     let attempt = load(&mut tx, a.tenant_id, id).await?;
     if !policy.permits(attempt.livemode)
         || ["expired", "refunded"].contains(&attempt.status.as_str())
+        || (!allow_create && attempt.provider_session_id.is_none())
     {
         return Ok(());
     }
@@ -640,7 +653,7 @@ async fn process_id(
             )
             .await
     };
-    let can_create = attempt.created_at > Utc::now() - chrono::Duration::hours(23);
+    let can_create = allow_create && attempt.created_at > Utc::now() - chrono::Duration::hours(23);
     let value = match fetched {
         Ok(v) if v.get("session") == Some(&Value::Null) => {
             if envelope(&attempt, &v).is_err() {
@@ -732,6 +745,11 @@ async fn process_id(
 }
 pub fn router() -> Router<State> {
     Router::new()
+        .route("/api/v1/billing/copay-checkouts/{id}", get(return_detail))
+        .route(
+            "/api/v1/billing/copay-checkouts/{id}/refresh",
+            post(return_refresh),
+        )
         .route(
             "/api/v1/patients/{p}/appointments/{a}/copay-checkouts",
             get(list).post(create),
@@ -744,6 +762,47 @@ pub fn router() -> Router<State> {
             "/api/v1/patients/{p}/appointments/{a}/copay-checkouts/{id}/refresh",
             post(refresh),
         )
+}
+async fn return_row(state: &State, a: &Actor, id: Uuid) -> Result<Attempt> {
+    a.staff()?;
+    crate::access_policies::require_native(state, a, "billing", "view").await?;
+    let pool = db(state)?;
+    let mut tx = pool.begin().await?;
+    let row = load(&mut tx, a.tenant_id, id).await?;
+    crate::postgres::audit(&mut tx, a, "billing.hosted_copay_read", id).await?;
+    tx.commit().await?;
+    Ok(row)
+}
+async fn return_detail(
+    a: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>> {
+    let row = return_row(&state, &a, id).await?;
+    Ok(Json(json!({"operation":row.public(Policy::current())})))
+}
+async fn return_refresh(
+    a: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>> {
+    Ok(Json(
+        return_refresh_with(&state, &a, id, &HttpBroker, Policy::current()).await?,
+    ))
+}
+async fn return_refresh_with(
+    state: &State,
+    a: &Actor,
+    id: Uuid,
+    broker: &dyn Broker,
+    policy: Policy,
+) -> Result<Value> {
+    a.scheduling()?;
+    crate::access_policies::require_native(state, a, "billing", "edit").await?;
+    return_row(state, a, id).await?;
+    process_id_mode(db(state)?, a, id, broker, policy, false).await?;
+    let row = return_row(state, a, id).await?;
+    Ok(json!({"operation":row.public(policy)}))
 }
 async fn create(
     a: Actor,

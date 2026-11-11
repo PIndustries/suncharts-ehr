@@ -66,6 +66,13 @@ require review.
    it ready and explicitly submit through the clinic's active Claim.MD connection.
    A later payment does not rewrite a previously frozen claim snapshot.
 
+The encounter summary separates service charges, copay received, copay applied to
+charges and the posted account balance. A captured card copay is already received
+while awaiting allocation; draft charges are not an amount due. **Review and post
+charges** opens the review form without posting automatically. Receipts appear
+once; additional collection, processor activity, coverage snapshots and ledger
+controls remain available in expandable details.
+
 The selected encounter's revenue summary links its current claim and remittance
 evidence. **Insurance claims** also supports patient- and account-filtered lists.
 Review the claim response and post reviewed ERA evidence before determining the
@@ -368,3 +375,48 @@ provenance. Selecting manual pricing for a different code retains the entered
 amount; prior saved evidence remains in account history. Client-provided fee
 snapshots are never accepted as authority. Fee lookup and approval create no
 ledger activity, patient liability, payment or claim submission.
+
+Returning from appointment card checkout resolves the opaque `copay_checkout` operation through a tenant-scoped, audited billing read. Authorized collection staff receive an automatic server reconciliation of an already-bound provider session, then return to that appointment's encounter billing step (or Insurance if no encounter exists). This return-specific refresh cannot create or retry creating a checkout. The query does not establish payment or cancellation: receipts and ledger effects still require verified provider evidence. Staff without full chart access see only the authorized payment status. Failed or uncertain checks retain a visible status/retry path; they never start another collection.
+If Connect sign-in is required, an explicit sign-in click retains only the opaque operation UUID in same-tab session storage for at most ten minutes. The callback consumes it once; sign-out clears it. No patient content, provider credentials, payment result or receipt data is stored there. Server authorization is repeated after sign-in, including when a different staff member or tenant signs in.
+
+Printed patient invoices and copay receipts use the practice identity and a
+readable print layout, with a discreet SunCharts footer. An invoice always keeps
+its saved practice name, service details and monetary snapshot. Its current
+practice logo is shown only when the saved practice name matches the current
+practice identity, and is identified as current branding; older invoices are not
+rewritten. Receipt copies use the current chart context as stated on the copy.
+Logos reuse only the server-approved immutable branding asset already present in
+the EHR, with an exact asset URL policy and no referrer. No patient identifiers,
+amounts or document content are added to an image request. Missing or mismatched
+logos fall back to the practice name. Test, refund, void and correction notices
+remain visible on printed copies.
+
+### Native billing overview
+
+Patient billing opens the practice-wide native invoice and copay overview. Copays
+appear before an encounter charge account exists. Recorded and test card activity
+are separate views. Totals include archived patients and cover every record in the
+selected view, independently of list pagination. Allocating a receipt is not another
+collection. Verified refunds reduce net received and usable unapplied credit;
+voided receipts, reversed allocations and payments needing reconciliation cannot
+supply usable credit.
+
+Only the latest invoice for each account contributes to the overview. Older
+invoice snapshots remain available and unchanged. Invoice amounts describe the
+explicitly reviewed patient responsibility at issuance; gross charges and account
+balances also contain payer amounts. If the account or ledger changes after an
+invoice, its current patient amount requires review and is excluded from the open
+invoice total. Viewing or printing a record never creates an invoice, collects a
+payment, or submits a claim.
+
+Billing-view staff can open receipts and invoices directly without permission to
+open the clinical chart. Claim status is loaded separately under the claims
+policy; a denied or unavailable claims service does not hide billing records.
+Claim submission, acceptance and crossover tracking are workflow evidence and do
+not establish payment or a settled patient balance.
+
+### Native Stripe account summary
+
+Payment settings includes a read-only account summary for owners and existing authorized delegated administrators. It shows available and pending Stripe balances, payout/card readiness, and the latest ten payments and payouts. Live and test accounts are labeled separately. Account capability readiness does not enable live collection; the existing operator gates still apply.
+
+Requests go through the installation-bound SunCharts Connect broker. The server checks installation, tenant, account, mode and current credentials; the browser receives no Stripe keys, customer details, bank/card data or provider invoice links. Unavailable sections display as unavailable rather than zero. This account view does not post or reconcile patient ledger entries. Patient invoices and copay receipts remain in native patient billing.

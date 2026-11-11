@@ -33993,6 +33993,482 @@
           }
         ]
       }
+    },
+    "/api/v1/billing/copay-checkouts/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getHostedCopayReturn",
+        "summary": "Resolve an authorized card-checkout return",
+        "description": "Authenticated staff billing-read lookup by opaque operation UUID. Tenant-scoped and audited; returns only the authorized saved operation, including its patient and appointment IDs. The return URL is not payment evidence.",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "billing.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current durable operation state; financial effects require verified provider evidence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "operation": {
+                      "$ref": "#/components/schemas/HostedCopayOperation"
+                    }
+                  },
+                  "required": [
+                    "operation"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input or unavailable/mismatched payment mode"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Billing permission denied"
+          },
+          "404": {
+            "description": "Tenant/patient/appointment-scoped record not found"
+          },
+          "409": {
+            "description": "Conflicting retry, pending collection, unsafe balance or over-limit history"
+          },
+          "500": {
+            "description": "Database/audit failure; mutation rolled back"
+          }
+        }
+      }
+    },
+    "/api/v1/billing/copay-checkouts/{id}/refresh": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "refreshHostedCopayReturn",
+        "summary": "Reconcile an existing checkout after browser return",
+        "description": "Billing-edit and native scheduling authorization are required. Retrieves only a previously bound provider session using the stored tenant/account/mode binding; never creates or retries creating a checkout. Missing session binding remains pending. Payment and refund ledger changes require independently verified provider evidence, never query parameters. Existing worker/manual retry behavior is unchanged.",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "billing.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current durable operation state; financial effects require verified provider evidence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "operation": {
+                      "$ref": "#/components/schemas/HostedCopayOperation"
+                    }
+                  },
+                  "required": [
+                    "operation"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input or unavailable/mismatched payment mode"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Billing permission denied"
+          },
+          "404": {
+            "description": "Tenant/patient/appointment-scoped record not found"
+          },
+          "409": {
+            "description": "Conflicting retry, pending collection, unsafe balance or over-limit history"
+          },
+          "500": {
+            "description": "Database/audit failure; mutation rolled back"
+          }
+        }
+      }
+    },
+    "/api/v1/billing/overview": {
+      "get": {
+        "operationId": "nativeBillingOverview",
+        "description": "Native account and receipt overview. Totals cover the whole selected mode, not just a page. Only the latest invoice per account is counted; any subsequent account/ledger changes require review, so its historical amount is excluded from current open totals. Receipts may exist before charge accounts. Voided records add no collected amount; usable credit excludes reversed or held allocations and verified refunds. No claims are returned: claim policy authorization remains separate.",
+        "security": [
+          {
+            "oauth2": [
+              "billing.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "mode",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "recorded",
+                "test"
+              ],
+              "default": "recorded"
+            }
+          },
+          {
+            "name": "accounts_after",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "copays_after",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Audited native billing read; no payment, invoice, allocation or provider mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingOverview"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Native billing view or billing.read denied"
+          },
+          "404": {
+            "description": "Tenant-scoped record not found"
+          },
+          "500": {
+            "description": "Read or audit failure"
+          }
+        }
+      }
+    },
+    "/api/v1/billing/invoices/{id}": {
+      "get": {
+        "operationId": "readNativePatientInvoice",
+        "description": "Read an immutable invoice without loading a clinical chart; billing view still required.",
+        "security": [
+          {
+            "oauth2": [
+              "billing.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Audited native billing read; no payment, invoice, allocation or provider mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientInvoice"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Native billing view or billing.read denied"
+          },
+          "404": {
+            "description": "Tenant-scoped record not found"
+          },
+          "500": {
+            "description": "Read or audit failure"
+          }
+        }
+      }
+    },
+    "/api/v1/billing/copay-receipts/{id}": {
+      "get": {
+        "operationId": "readNativeCopayReceiptCopy",
+        "description": "Read receipt evidence and minimal current patient/appointment identity for a print copy without clinical chart access. Original receipt is immutable; verified refunds and allocation status remain explicit.",
+        "security": [
+          {
+            "oauth2": [
+              "billing.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Audited native billing read; no payment, invoice, allocation or provider mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingCopayReceiptCopy"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Native billing view or billing.read denied"
+          },
+          "404": {
+            "description": "Tenant-scoped record not found"
+          },
+          "500": {
+            "description": "Read or audit failure"
+          }
+        }
+      }
+    },
+    "/api/v1/billing/payments/operations": {
+      "get": {
+        "summary": "Read the connected Stripe account summary",
+        "description": "Owner-only, including existing authorized delegated-owner sessions. Read-only Connect broker calls bound to the current installation, tenant, Stripe account/mode and credential revision. Returns available/pending balances, capability readiness and latest ten payment/payout records with timestamps. Unavailable sections have status unavailable and data null; an empty successful list is distinct. No customer or card/bank data, Stripe invoice totals or provider URLs. This does not enable collection or reconcile patient balances. Response is no-store; stale/revoked identity or connection fails closed.",
+        "responses": {
+          "200": {
+            "description": "Versioned sanitized account activity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "contract_version",
+                    "installation_id",
+                    "remote_tenant_id",
+                    "account_id",
+                    "livemode",
+                    "checked_at",
+                    "limit",
+                    "setting_version",
+                    "account",
+                    "balance",
+                    "payments",
+                    "payouts"
+                  ],
+                  "properties": {
+                    "contract_version": {
+                      "type": "integer",
+                      "const": 1
+                    },
+                    "installation_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "remote_tenant_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "account_id": {
+                      "type": "string",
+                      "pattern": "^acct_[A-Za-z0-9_]+$"
+                    },
+                    "livemode": {
+                      "type": "boolean"
+                    },
+                    "checked_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "const": 10
+                    },
+                    "setting_version": {
+                      "type": "integer"
+                    },
+                    "account": {
+                      "type": "object",
+                      "properties": {
+                        "charges_enabled": {
+                          "type": "boolean"
+                        },
+                        "card_payments_active": {
+                          "type": "boolean"
+                        },
+                        "payouts_enabled": {
+                          "type": "boolean"
+                        },
+                        "details_submitted": {
+                          "type": "boolean"
+                        }
+                      }
+                    },
+                    "balance": {
+                      "type": "object",
+                      "required": [
+                        "status",
+                        "data"
+                      ],
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "available",
+                            "unavailable"
+                          ]
+                        },
+                        "data": {
+                          "type": [
+                            "object",
+                            "null"
+                          ]
+                        }
+                      }
+                    },
+                    "payments": {
+                      "type": "object",
+                      "required": [
+                        "status",
+                        "data"
+                      ],
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "available",
+                            "unavailable"
+                          ]
+                        },
+                        "data": {
+                          "type": [
+                            "object",
+                            "null"
+                          ]
+                        }
+                      }
+                    },
+                    "payouts": {
+                      "type": "object",
+                      "required": [
+                        "status",
+                        "data"
+                      ],
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "available",
+                            "unavailable"
+                          ]
+                        },
+                        "data": {
+                          "type": [
+                            "object",
+                            "null"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Owner permission required"
+          },
+          "409": {
+            "description": "Account setup or binding changed; refresh required"
+          },
+          "400": {
+            "description": "Provider unavailable or response could not be verified"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -52186,6 +52662,500 @@
               ]
             }
           }
+        ]
+      },
+      "BillingOverviewAccount": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "patient_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "patient_name": {
+            "type": "string"
+          },
+          "mrn": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "service_date": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total_cents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "account_balance_cents": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "invoice_due_cents": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reviewed_responsibility_cents": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "invoice_credit_cents": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "format": "int64"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "payer_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "invoice_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "invoice_created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "invoice_needs_review": {
+            "type": "boolean"
+          },
+          "test_activity": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "patient_id",
+          "patient_name",
+          "mrn",
+          "status",
+          "service_date",
+          "created_at",
+          "version",
+          "total_cents",
+          "account_balance_cents",
+          "invoice_due_cents",
+          "reviewed_responsibility_cents",
+          "invoice_credit_cents",
+          "payer_name",
+          "invoice_id",
+          "invoice_created_at",
+          "invoice_needs_review",
+          "test_activity"
+        ]
+      },
+      "BillingOverviewCopay": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "patient_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "appointment_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "patient_name": {
+            "type": "string"
+          },
+          "mrn": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "occurred_on": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "amount_cents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "refunded_cents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "allocated_cents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "reversed_cents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "refunded_unapplied_cents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "usable_unapplied_cents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "net_received_cents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "voided": {
+            "type": "boolean"
+          },
+          "test_activity": {
+            "type": "boolean"
+          },
+          "needs_review": {
+            "type": "boolean"
+          },
+          "hosted_operation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "livemode": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hosted_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "patient_id",
+          "appointment_id",
+          "patient_name",
+          "mrn",
+          "method",
+          "occurred_on",
+          "created_at",
+          "amount_cents",
+          "refunded_cents",
+          "allocated_cents",
+          "reversed_cents",
+          "refunded_unapplied_cents",
+          "usable_unapplied_cents",
+          "net_received_cents",
+          "voided",
+          "test_activity",
+          "needs_review",
+          "hosted_operation_id",
+          "livemode",
+          "hosted_status"
+        ]
+      },
+      "BillingOverview": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "enum": [
+              "recorded",
+              "test"
+            ],
+            "type": "string"
+          },
+          "currency": {
+            "const": "USD",
+            "type": "string"
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "accounts": {
+                "type": "object",
+                "properties": {
+                  "accounts": {
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "latest_invoices": {
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "invoice_review_count": {
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "open_invoice_count": {
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "reviewed_patient_due_cents": {
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "posted_gross_cents": {
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "posted_account_balance_cents": {
+                    "type": "integer",
+                    "format": "int64"
+                  }
+                },
+                "required": [
+                  "accounts",
+                  "latest_invoices",
+                  "invoice_review_count",
+                  "open_invoice_count",
+                  "reviewed_patient_due_cents",
+                  "posted_gross_cents",
+                  "posted_account_balance_cents"
+                ]
+              },
+              "copays": {
+                "type": "object",
+                "properties": {
+                  "receipts": {
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "net_received_cents": {
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "usable_unapplied_cents": {
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "review_count": {
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "void_count": {
+                    "type": "integer",
+                    "format": "int64"
+                  }
+                },
+                "required": [
+                  "receipts",
+                  "net_received_cents",
+                  "usable_unapplied_cents",
+                  "review_count",
+                  "void_count"
+                ]
+              }
+            },
+            "required": [
+              "accounts",
+              "copays"
+            ]
+          },
+          "accounts": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "maxItems": 100,
+                "items": {
+                  "$ref": "#/components/schemas/BillingOverviewAccount"
+                }
+              },
+              "next_cursor": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "items",
+              "next_cursor"
+            ]
+          },
+          "copays": {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "maxItems": 100,
+                "items": {
+                  "$ref": "#/components/schemas/BillingOverviewCopay"
+                }
+              },
+              "next_cursor": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "items",
+              "next_cursor"
+            ]
+          },
+          "invoice_policy": {
+            "type": "string"
+          },
+          "collection_policy": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "currency",
+          "summary",
+          "accounts",
+          "copays",
+          "invoice_policy",
+          "collection_policy"
+        ]
+      },
+      "BillingCopayReceiptCopy": {
+        "type": "object",
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/CopayReceipt"
+          },
+          "context": {
+            "type": "object",
+            "properties": {
+              "patient": {
+                "type": "object",
+                "properties": {
+                  "given_name": {
+                    "type": "string"
+                  },
+                  "family_name": {
+                    "type": "string"
+                  },
+                  "mrn": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "given_name",
+                  "family_name",
+                  "mrn"
+                ]
+              },
+              "appointment": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "starts_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                },
+                "required": [
+                  "id",
+                  "starts_at"
+                ]
+              },
+              "practiceName": {
+                "type": "string"
+              },
+              "printedAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "patient",
+              "appointment",
+              "practiceName",
+              "printedAt"
+            ]
+          }
+        },
+        "required": [
+          "receipt",
+          "context"
         ]
       }
     }

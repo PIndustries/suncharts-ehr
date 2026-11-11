@@ -1077,6 +1077,16 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/billing-overview.js",
+            get(|| async {
+                web_asset(
+                    "billing-overview.js",
+                    "text/javascript; charset=utf-8",
+                    include_str!("../web/billing-overview.js"),
+                )
+            }),
+        )
+        .route(
             "/billing.js",
             get(|| async {
                 web_asset(

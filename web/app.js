@@ -17,6 +17,25 @@ function navigationMoreTools(items){
  const details=document.createElement('details');details.className='nav-more';const summary=document.createElement('summary');summary.textContent='More tools';const body=document.createElement('div');body.append(...['automation','aiReview','migration'].map(key=>items[key]).filter(Boolean));details.append(summary,body);return details;
 }
 
+// Only an opaque navigation ID may cross the explicit same-tab Connect sign-in.
+// Never store payment status, patient identifiers/content, or handoff credentials.
+function rememberHostedCopaySignInReturn(){
+ const id=new URLSearchParams(location.search).get('copay_checkout');
+ if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id||''))return;
+ try{sessionStorage.setItem('suncharts.copay-return',JSON.stringify({id,expires:Date.now()+600000}));}catch{}
+}
+function takeHostedCopaySignInReturn(){
+ try{
+  const raw=sessionStorage.getItem('suncharts.copay-return');sessionStorage.removeItem('suncharts.copay-return');const value=JSON.parse(raw||'null');
+  return value&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.id||'')&&Number.isFinite(value.expires)&&value.expires>Date.now()&&value.expires<=Date.now()+600000?value.id:null;
+ }catch{return null;}
+}
+function clearHostedCopaySignInReturn(){
+ try{sessionStorage.removeItem('suncharts.copay-return');}catch{}
+ const query=new URLSearchParams(location.search);if(!query.has('copay_checkout'))return;query.delete('copay_checkout');
+ history.replaceState(history.state,'',location.pathname+(query.size?'?'+query.toString():'')+location.hash);
+}
+
 // Connect delivers delegated support codes in the fragment so they never reach an HTTP log.
 // Remove it before making any request, then exchange through this EHR's same-origin server.
 async function acceptConnectLaunch(){
@@ -32,7 +51,12 @@ async function acceptConnectLaunch(){
   code=input.get('code');issuer=input.get('issuer');
   const requested=input.get('next');
   const next=requested==='claimmd'?'claimmd':requested==='care-pathways'?'workflow-studio':null;
-  history.replaceState(null,'',next?`/?open=${next}`:'/');
+  const returnQuery=new URLSearchParams();
+  if(next)returnQuery.set('open',next);
+  const savedCopayReturn=takeHostedCopaySignInReturn();
+  const copayReturn=new URLSearchParams(location.search).get('copay_checkout')??savedCopayReturn;
+  if(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(copayReturn||''))returnQuery.set('copay_checkout',copayReturn);
+  history.replaceState(null,'',returnQuery.size?'/?'+returnQuery.toString():'/');
   let issuerUrl;
   try{issuerUrl=new URL(issuer);}catch{throw new Error('This support sign-in link is invalid or incomplete.');}
   const loopback=issuerUrl.protocol==='http:'&&['127.0.0.1','::1'].includes(issuerUrl.hostname);
@@ -278,6 +302,9 @@ async function enter() {
   if(typeof finishConnectOnboarding==='function'&&await finishConnectOnboarding())return;
   if (new URLSearchParams(location.search).has('oauth_request')) { await showConsent(); return; }
   if (!selected) $('chart').innerHTML='<div class="panel empty"><span class="empty-mark" aria-hidden="true">⊕</span><h2>Open a patient chart</h2><p>Select a patient from the directory to review their record,<br>manage orders, or document an encounter.</p><div class="empty-shortcuts"><button type="button" data-open-schedule>View schedule</button></div></div>';
+  if(new URLSearchParams(location.search).has('copay_checkout')&&typeof openHostedCopayReturn==='function'){
+    await openHostedCopayReturn(new URLSearchParams(location.search).get('copay_checkout'));return;
+  }
   const paymentId=new URLSearchParams(location.search).get('payment_checkout');
   if(paymentId&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(paymentId)&&typeof openPaymentStatus==='function'){
     await showBillingQueue();await openPaymentStatus(paymentId);return;
@@ -311,20 +338,20 @@ function renderPatients() {
   $('patients').innerHTML=filtered.length ? filtered.map(p=>`<button class="patient-row ${p.id===selected?'selected':''}" data-patient="${esc(p.id)}">${esc(p.family_name)}, ${esc(p.given_name)}<small>${esc(p.mrn)} · ${esc(p.birth_date)}${p.archived?' · Archived':''}</small></button>`).join('') : '<p class="muted">No patients found.</p>';
   $('load-more').hidden=!cursor;
 }
-async function selectPatient(id, keepVisit) {
+async function selectPatient(id, keepVisit, stillCurrent=()=>true) {
   const openingIdentity=me;
   const openingGeneration=++patientWorkspaceGeneration;
   captureVisitDrafts();
   // Publish one complete chart only after every patient-scoped read succeeds.
   const next=await api(`/api/v1/patients/${id}/workspace`);
-  if(me!==openingIdentity||openingGeneration!==patientWorkspaceGeneration)return;
+  if(me!==openingIdentity||openingGeneration!==patientWorkspaceGeneration||!stillCurrent())return;
   const allowed=resource=>typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed(resource);
   const sourceAllowed=['clinical','billing','claims','migration'].every(allowed);
   const [history,clinical,labs,billing,payers,demographics]=await Promise.all([
     sourceAllowed?api(`/api/v1/patients/${id}/history`):Promise.resolve(null),api(`/api/v1/patients/${id}/clinical`),
     api(`/api/v1/patients/${id}/orders`),allowed('billing')?api(`/api/v1/patients/${id}/billing`):Promise.resolve(null),allowed('billing')?api('/api/v1/billing/payers'):Promise.resolve({items:[]}),api(`/api/v1/patients/${id}/demographics`)
   ]);
-  if(me!==openingIdentity||openingGeneration!==patientWorkspaceGeneration)return;
+  if(me!==openingIdentity||openingGeneration!==patientWorkspaceGeneration||!stillCurrent())return;
   captureVisitDrafts(); // Include edits made while the chart reads were in flight.
   next.history=history?.items??null;next.clinical=clinical;next.labs=labs;next.billing=billing;next.demographics=demographics;
   if(id!==selected){chartSection='overview';encounterSection=['nurse','medical_assistant'].includes(me?.role)?'intake':'documentation';}
@@ -588,7 +615,7 @@ function setPage(title) {
 function showTool(title) {
  if(typeof captureSupportDrafts==='function')captureSupportDrafts();
  const query=new URLSearchParams(location.search);
- const keep={open:({'Sun':'sun','Workflow Studio':'workflow-studio','Automation Center':'automation-center','Claim connections':'claimmd','Claim lifecycle':'claimmd','Clearinghouse':'claimmd'})[title],era_batch:title==='Claims & remittances',payment_checkout:title==='Payment review',payment_settings:title==='Payment settings'};
+ const keep={open:({'Sun':'sun','Workflow Studio':'workflow-studio','Automation Center':'automation-center','Claim connections':'claimmd','Claim lifecycle':'claimmd','Clearinghouse':'claimmd'})[title],era_batch:title==='Claims & remittances',payment_checkout:title==='Payment review',payment_settings:title==='Payment settings',copay_checkout:title==='Card payment status'};
  for(const key of Object.keys(keep))if(query.has(key)&&(!keep[key]||(key==='open'&&query.get(key)!==keep[key])))query.delete(key);
  const search=query.size?'?'+query.toString():'';
  if(search!==location.search)history.replaceState(null,'',location.pathname+search+location.hash);
@@ -692,6 +719,7 @@ document.addEventListener('submit',e=>{
   });
 });
 document.addEventListener('click',e=>{
+  if(e.target.closest?.('#connect-login')?.id==='connect-login'){rememberHostedCopaySignInReturn();return;}
   const button=e.target.closest('button');if(!button||(button.type==='submit' && button.form))return;
   if(button.dataset.action==='focus-amendment'){if(!busy)focusVisitAmendment();return;}
   if(button.dataset.action==='review-amendment-version'){if(!busy)reviewVisitAmendmentVersion(button);return;}
@@ -741,7 +769,7 @@ document.addEventListener('click',e=>{
     if(button.dataset.revoke){await api(`/api/v1/oauth/grants/${button.dataset.revoke}/revoke`,'POST');await showApps();notice('Connection access revoked.');return;}
     if(button.dataset.reconcile){const report=await api(`/api/v1/migrations/${button.dataset.reconcile}/reconcile`,'POST');await showMigrations();notice(report.ready_to_import?'Snapshot reconciled. Review the import before proceeding.':'Snapshot has unresolved counts or mappings.',!report.ready_to_import);return;}
     if(button.dataset.commit){if(!await confirmAction('Original clinical records will be preserved as history. This does not switch your active EHR.',{title:'Import reconciled records?',confirmLabel:'Import records',tone:'danger'}))return;await api(`/api/v1/migrations/${button.dataset.commit}/commit`,'POST',{digest:button.dataset.digest});await showMigrations();notice('Import completed. Clinical cutover remains separate.');return;}
-    if(button.id==='logout'){await api('/auth/logout','POST');signInScreen();return;}
+    if(button.id==='logout'){await api('/auth/logout','POST');clearHostedCopaySignInReturn();signInScreen();return;}
     if(button.id==='load-more'){const page=await api(typeof patientDirectoryQuery==='function'?patientDirectoryQuery(cursor):`/api/v1/patients?after=${encodeURIComponent(cursor)}`);patients.push(...page.items);cursor=page.next_cursor;renderPatients();return;}
     if(button.dataset.patient){await selectPatient(button.dataset.patient);return;}
     if(button.dataset.checkIn){await api(`/api/v1/appointments/${button.dataset.checkIn}/check-in`,'POST');await selectPatient(selected);showChartSection('visits');notice('Patient checked in.');return;}
