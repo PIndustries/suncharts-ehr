@@ -12,8 +12,8 @@ Registered name and birth-date corrections retain versioned, attributed revision
 Changing a contact destination invalidates its reminder verification and consent
 settings until staff reviews it again.
 
-The primary chart navigation is **Overview**, **Encounter**, **Insurance**,
-**Billing** and **Documents**. **Patient record** contains demographics,
+The primary chart navigation is **Overview**, **Encounter** and **Insurance**.
+**Patient record** contains shared documents, the account summary, demographics,
 longitudinal problems/allergies/medications, histories, prescribing, referrals,
 assessments, specialty care and imported records. These records remain available
 without competing with the current encounter's workflow. Empty lists remain
@@ -23,12 +23,25 @@ coverage, payments or balances do not exist.
 
 Open **Encounter** to continue the selected visit directly. The encounter picker
 changes the visit; its local steps are **Rooming**, **Note & ICD-10**,
-**Procedures & CPT**, **Orders & prescriptions**, and **Checkout & AVS**, subject
+**Billing & claim**, **Orders & prescriptions**, **Files & voice**, and **Checkout & AVS**, subject
 to the staff member's permissions. Procedures and charges stay linked to that
-encounter. Signing, posting charges, submitting a claim and completing checkout
+encounter. Claim preparation and review remain in that encounter; the practice
+claim queue and patient account summary provide cross-encounter views. Signing,
+posting charges, submitting a claim and completing checkout
 remain separate actions with their own readiness checks. **Insurance** shows
 coverage and the recorded plan copay for the selected appointment's service date;
 see [billing](billing.md) for receipts, patient invoices and claim follow-up.
+
+**Start encounter** selects an existing appointment or creates one from an explicit
+service date, time and duration. If booking or starting loses its response, continue
+the same request: the EHR reads the existing appointment/visit before progressing.
+The rooming view shows the available benefits for that service date. Starting an
+encounter does not automatically submit an eligibility request.
+
+Browser Back/Forward and the in-app Back control restore the patient, selected
+encounter, local step and supported worklist detail. History contains view
+identifiers, not clinical drafts or file bytes. Returning to a screen reloads it;
+it never repeats the preceding payment, claim submission or other mutation.
 
 ## Clinical lists
 
@@ -182,36 +195,96 @@ corrections after signing remain future work. Staff can review the most recent
 Reusable note templates, richer histories/exams and expanded nursing workflows
 remain on the [roadmap](roadmap.md).
 
-## Documents
+## Documents, file versions and voice
 
-Owners and clinicians can upload PDF, PNG or JPEG originals up to 10 MiB, with a
-title, category, optional document date and encounter link. Front-desk staff can
-upload and revise **ID / driver's license**, **Insurance card** and **Legal
-document** categories for registration. Both the existing and requested category
-must be within that set; changing a category cannot grant access to clinical
-document editing.
+**Files & voice** inside an encounter shows that encounter's linked files and
+shared ID, insurance and legal records. **Patient record → Shared documents**
+shows all loaded patient files. Category, status and text filters apply to loaded
+pages; use **Load more files** for additional records. Shared registration files
+are reused, not copied into each encounter.
 
-Choose **Preview** to view a supported PDF or image inside the patient chart;
-**Download** remains available. Preview and download both require authenticated
-staff access to the exact tenant, patient and document and commit a read audit
-before returning bytes. Preview responses prevent caching and content-type
-sniffing and restrict framing to the same origin. The service checks declared
-media type and file signatures; it does not scan for malware or validate a complete
-PDF/image structure. HTML, SVG and arbitrary external document URLs are not
-previewed. Uploading does not release a document to the patient or send it externally.
+Owners and clinicians can upload PDF, PNG, JPEG, UTF-8 plain text, DOCX, XLSX,
+MP3, WAV, Ogg, WebM and M4A files up to 10 MiB. Plain text is limited to 200,000
+bytes. Each upload has a title, category, optional document date and encounter
+link. Front-desk staff can manage **ID / driver's license**, **Insurance card**
+and **Legal document** categories. Both the old and new category must be allowed;
+reclassification cannot grant access to clinical document editing.
 
-Original file bytes, SHA-256 and upload attribution remain immutable. Authorized
-staff can revise metadata or mark a record archived/entered in error, using the current
-version and an attributed reason. Staff can inspect revision history and download
-preserved originals. There is no destructive deletion or original-file replacement;
-upload a separate record for a new file. The web editor retains selected files
-and unsaved metadata in the current tab, and requires comparison after conflicts.
-Files and drafts are cleared on sign-out and lost when the tab closes.
+Select a file to preview it within the encounter. PDF pages are rendered locally
+with the bundled PDF.js library; image and PDF annotations support highlights,
+rectangles and text notes. Marks appear as a saved overlay on the correct page.
+They do not alter or redact the underlying binary, and binary downloads do not
+flatten these overlays. Text documents can be edited directly. Supporting text
+documents do not replace or sign the encounter SOAP note. Audio uses explicit
+playback controls. Word and Excel editing requires the configured service below.
 
-Category/status filters apply to loaded pages; use **Load more documents** to
-inspect additional records. The API also accepts server-side category/status
-filters. Document storage is local PostgreSQL bytea; OCR, malware scanning,
-signature validation, consent execution and patient release remain unfinished.
+Original file bytes, SHA-256, filename and upload attribution remain immutable.
+**File version history** shows each appended working copy and annotation revision;
+version 1 always opens the original. **Metadata history** separately records title,
+category, encounter link and status changes. Saves require the current file or
+metadata version and an attributed reason. Concurrent edits return a conflict;
+review the latest saved file before explicitly retaining a draft against it.
+There is no destructive deletion or overwrite of earlier versions. Uploads,
+metadata, text and annotation drafts remain in this tab across navigation and
+are cleared on sign-out or tab closure.
+
+**Record voice note** requests microphone permission only after the user chooses
+it. **Stop recording** ends capture and allows local playback. **Use this recording**
+opens the regular upload form for review; **Upload document** is the action that
+stores it. Capture stops when leaving the file workspace, changing patient or
+encounter, hiding the page, or reaching ten minutes. Audio is limited to 10 MiB;
+clips exceeding that bound are discarded. A stopped clip remains in this tab
+until saved or explicitly discarded. Sign-out clears it. Recording does not send
+audio to Sun, create a transcript, or edit a signed clinical note.
+
+File reads, previews, downloads and saves require authenticated staff access to
+the exact tenant, patient and document and commit an audit event. Preview responses
+prevent caching and MIME sniffing and restrict framing to the same origin. The
+service checks declared MIME types and file signatures; it does not scan for
+malware or fully validate a PDF, image, audio or Office package. HTML, SVG and
+arbitrary external document URLs are not rendered. Storage is PostgreSQL bytea.
+OCR, malware scanning, signature validation, consent execution and patient release
+remain unfinished. Uploading alone does not release a file externally.
+
+### Word and Excel editor service
+
+Office sessions bind the document metadata revision as well as the patient, document and file version. Changing document details or its encounter link invalidates an open editor; reopen it to review the new context. Sessions created before this binding was added also require reopening. Original files and saved versions remain unchanged.
+
+The EHR integrates ONLYOFFICE Docs for native DOCX/XLSX viewing and editing. It
+is unconfigured by default; availability checks do not transfer a file. Provision
+a compatible Document Server and configure:
+
+- `ENGINE_OFFICE_ORIGIN`: the editor's exact HTTPS origin, without a path,
+  credentials, query or fragment.
+- `ENGINE_OFFICE_JWT_SECRET_FILE`: a private regular file containing the shared
+  JWT secret, at least 32 characters, matching the Document Server's secret.
+  Unix permissions must exclude access by group and other users.
+- `ENGINE_OFFICE_CALLBACK_ORIGIN`: optional; defaults to and must match the EHR
+  origin. The editor must reach that origin for scoped source downloads and saves.
+- `ENGINE_OFFICE_ALLOW_LOCAL_TEST=true`: development only; allows loopback HTTP
+  editor origins and `host.docker.internal` callbacks on the same port as the EHR.
+  Production ignores this exception and requires HTTPS.
+
+Opening the editor is explicit. The EHR supplies a signed, tenant/document/version
+bound session and rechecks staff authorization for source reads and callbacks.
+The service configuration must retain JWT validation. File transfer is limited
+to that configured editor; never substitute an arbitrary public viewer URL.
+The provider remains responsible for its own deployment, access, retention and
+licensing configuration.
+
+Use **Save to EHR**, then wait for the confirmed EHR file version. The editor's
+local save indicator alone is not confirmation. The EHR waits until pending edits
+reach the document service, requests a signed force-save operation, then accepts
+only the matching authenticated callback and appends a new file version. A late
+or uncertain save keeps the editor open and the original request identity available
+for retry. Later edits remain unsaved even if an earlier operation is confirmed.
+**Save & close** waits for confirmation; **Close without saving** requires explicit
+discard. Browser and in-app Back are blocked while the editor is open. Original
+uploads and prior versions remain intact.
+
+See the official [ONLYOFFICE integration flow](https://api.onlyoffice.com/docs/docs-api/get-started/how-it-works/opening-file/),
+[callback contract](https://api.onlyoffice.com/docs/docs-api/usage-api/callback-handler/)
+and [force-save command](https://api.onlyoffice.com/docs/docs-api/additional-api/command-service/forcesave/).
 
 ## Referrals
 
@@ -219,7 +292,11 @@ Clinicians create encounter-linked or standalone patient referrals with a
 recipient, requested service, clinical reason/summary and optional follow-up date.
 Choose active patient documents explicitly. Draft and ready referrals can be
 edited; editing a ready referral resets it to draft. Marking ready captures the
-selected document versions, metadata and hashes. Recording a sent milestone
+selected metadata and current file versions, hashes, and saved annotations.
+Delivery uses the exact reviewed file bytes. A later edit requires a new readiness
+review before sending. Saved annotations accompany each file as separate metadata;
+they are not flattened into its bytes. Existing packets without a file version
+retain their original-file binding and remain unchanged. Recording a sent milestone
 requires active documents unchanged since that review; sent content then locks.
 
 Manual sent, accepted, scheduled and completed milestones require staff-entered
@@ -241,7 +318,7 @@ and inspect the patient, recipient and document package. The review captures
 referral/destination versions and document hashes; changing the package requires
 another review. Enter a delivery reason, acknowledge the reviewed package, then
 choose **Send reviewed referral**. The durable job sends the referral details and
-selected original files. Closing the browser does not cancel a queued job.
+selected reviewed file versions. Closing the browser does not cancel a queued job.
 
 **Delivery status** shows queued, sending, gateway-accepted, unknown, not-sent or
 cancelled outcomes. Staff can cancel a job while it remains queued. A gateway

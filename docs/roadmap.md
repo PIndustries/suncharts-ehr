@@ -27,7 +27,7 @@ route is not evidence of a complete practice workflow.
 - Expanded staff permissions, invitations, recovery and MFA.
 - Electronic eligibility, fee schedules, responsibility allocation and statements.
 - Secondary/tertiary billing, broader claim profiles, denials/appeals and financial close.
-- Live payment collection and payout/dispute reconciliation.
+- Payout/fee and dispute reconciliation, terminals and recurring collection.
 - Enrolled clinical/financial partner testing with retained acceptance evidence.
 
 ## Interoperability and operations

@@ -529,6 +529,7 @@ async fn claim_detail(
     let c = claim_row(&mut tx, &a, id).await?;
     let issues = preflight(&c)?;
     let submission_defaults = claim_submission_defaults(&mut tx, &a, &c).await?;
+    let tracking = crate::retrieval::claim_tracking(&mut tx, &a, &c).await?;
     let artifact_generated: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM edi_submissions WHERE tenant_id=$1 AND claim_id=$2)",
     )
@@ -540,7 +541,7 @@ async fn claim_detail(
     tx.commit().await?;
     let transport = clearinghouse_transport(db(&s)?, a.tenant_id, artifact_generated).await?;
     Ok(Json(
-        json!({"claim":c,"preflight_issues":issues,"transport":transport,"submission_defaults":submission_defaults}),
+        json!({"claim":c,"preflight_issues":issues,"transport":transport,"submission_defaults":submission_defaults,"tracking":tracking}),
     ))
 }
 

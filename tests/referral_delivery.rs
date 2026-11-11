@@ -598,14 +598,14 @@ async fn in_flight_referral_mutations_are_blocked_until_verified_receipt_is_save
     assert_eq!(out["receipt"], "synthetic-receipt-1");
 }
 #[tokio::test]
-async fn original_document_bytes_are_delivered_and_expired_reviews_cannot_queue() {
+async fn legacy_original_packets_stay_frozen_after_file_edits_and_expired_reviews_cannot_queue() {
     use base64::{engine::general_purpose::STANDARD, Engine};
     let (db, a, _, p) = setup().await;
     let r = app(db.clone());
     let (url, server) = receiver(true).await;
     let d = configured(&db, &r, &a, &url).await;
-    let bytes = b"%PDF-1.4\nSynthetic document only\n%%EOF";
-    let(status,doc)=call(&r,&a,"POST",&format!("/api/v1/patients/{p}/documents"),json!({"request_id":Uuid::new_v4(),"filename":"synthetic-referral.pdf","content_type":"application/pdf","content_base64":STANDARD.encode(bytes),"content":{"title":"Synthetic referral summary","category":"referral","document_date":null,"visit_id":null,"notes":"","status":"active"},"reason":"Synthetic package fixture"}),None).await;
+    let bytes = b"Synthetic original referral text";
+    let(status,doc)=call(&r,&a,"POST",&format!("/api/v1/patients/{p}/documents"),json!({"request_id":Uuid::new_v4(),"filename":"synthetic-referral.txt","content_type":"text/plain","content_base64":STANDARD.encode(bytes),"content":{"title":"Synthetic referral summary","category":"referral","document_date":null,"visit_id":null,"notes":"","status":"active"},"reason":"Synthetic package fixture"}),None).await;
     assert_eq!(status, 200, "{doc}");
     let e = ready_documents(
         &r,
@@ -614,6 +614,17 @@ async fn original_document_bytes_are_delivered_and_expired_reviews_cannot_queue(
         vec![Uuid::parse_str(doc["id"].as_str().unwrap()).unwrap()],
     )
     .await;
+    // Model an already-reviewed pre-file-version packet without rewriting a
+    // historical revision or any queued delivery payload.
+    let mut legacy = e["attachment_snapshot"].clone();
+    legacy[0].as_object_mut().unwrap().remove("file_version");
+    legacy[0].as_object_mut().unwrap().remove("annotations");
+    sqlx::query("UPDATE referrals SET attachment_snapshot=$1 WHERE id=$2")
+        .bind(&legacy)
+        .bind(Uuid::parse_str(e["id"].as_str().unwrap()).unwrap())
+        .execute(&db)
+        .await
+        .unwrap();
     let preview = reviewed(&r, &a, p, &e, &d).await;
     assert_eq!(preview["manifest"]["total_bytes"], bytes.len());
     assert!(!preview.to_string().contains("content_base64"));
@@ -625,7 +636,19 @@ async fn original_document_bytes_are_delivered_and_expired_reviews_cannot_queue(
     let input = json!({"request_id":Uuid::new_v4(),"destination_id":d["id"],"destination_version":d["version"],"review_digest":preview["review_digest"],"reason":"Synthetic expired review"});
     assert_eq!(call(&r, &a, "POST", &path, input, Some(2)).await.0, 409);
     let preview = reviewed(&r, &a, p, &e, &d).await;
-    queued(&r, &a, p, &e, &d, &preview).await;
+    let (job, _) = queued(&r, &a, p, &e, &d, &preview).await;
+    let job_id = Uuid::parse_str(job["id"].as_str().unwrap()).unwrap();
+    let frozen: Value =
+        sqlx::query_scalar("SELECT payload FROM referral_delivery_jobs WHERE id=$1")
+            .bind(job_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert!(frozen["documents"][0]["metadata"]
+        .get("file_version")
+        .is_none());
+    let (status, changed) = call(&r,&a,"POST",&format!("/api/v1/patients/{p}/documents/{}/files",doc["id"].as_str().unwrap()),json!({"request_id":Uuid::new_v4(),"text_content":"Synthetic newer text, never substitute into historical packet","annotations":[],"reason":"Synthetic edit after old packet queued"}),Some(1)).await;
+    assert_eq!(status, 200, "{changed}");
     suncharts_engine::referral_delivery::process_one(&db)
         .await
         .unwrap();
@@ -637,6 +660,115 @@ async fn original_document_bytes_are_delivered_and_expired_reviews_cannot_queue(
         bytes
     );
     assert_eq!(payload["documents"][0]["metadata"]["sha256"], doc["sha256"]);
+    let after: Value = sqlx::query_scalar("SELECT payload FROM referral_delivery_jobs WHERE id=$1")
+        .bind(job_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(after, frozen);
+    assert_eq!(after["documents"][0]["metadata"], legacy[0]);
+}
+
+#[tokio::test]
+async fn new_referral_review_binds_current_file_and_rejects_edits_until_reviewed_again() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let (db, a, _, p) = setup().await;
+    let r = app(db.clone());
+    let (url, server) = receiver(true).await;
+    let destination = configured(&db, &r, &a, &url).await;
+    let (status, doc) = call(&r,&a,"POST",&format!("/api/v1/patients/{p}/documents"),json!({"request_id":Uuid::new_v4(),"filename":"synthetic-referral.txt","content_type":"text/plain","content_base64":STANDARD.encode("Synthetic original"),"content":{"title":"Synthetic working letter","category":"referral","document_date":null,"visit_id":null,"notes":"","status":"active"},"reason":"Synthetic initial upload"}),None).await;
+    assert_eq!(status, 200, "{doc}");
+    let file_path = format!(
+        "/api/v1/patients/{p}/documents/{}/files",
+        doc["id"].as_str().unwrap()
+    );
+    let (status, v2) = call(&r,&a,"POST",&file_path,json!({"request_id":Uuid::new_v4(),"text_content":"Synthetic reviewed version two","annotations":[],"reason":"Synthetic edit"}),Some(1)).await;
+    assert_eq!(status, 200, "{v2}");
+    let entry = ready_documents(
+        &r,
+        &a,
+        p,
+        vec![Uuid::parse_str(doc["id"].as_str().unwrap()).unwrap()],
+    )
+    .await;
+    assert_eq!(entry["attachment_snapshot"][0]["file_version"], 2);
+    assert_eq!(entry["attachment_snapshot"][0]["version"], 1);
+    assert_eq!(entry["attachment_snapshot"][0]["sha256"], v2["sha256"]);
+    let review = reviewed(&r, &a, p, &entry, &destination).await;
+    assert_eq!(review["manifest"]["documents"][0]["file_version"], 2);
+    let frozen_review: Value =
+        sqlx::query_scalar("SELECT payload FROM referral_delivery_previews WHERE digest=$1")
+            .bind(review["review_digest"].as_str().unwrap())
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        STANDARD
+            .decode(
+                frozen_review["documents"][0]["content_base64"]
+                    .as_str()
+                    .unwrap()
+            )
+            .unwrap(),
+        b"Synthetic reviewed version two"
+    );
+    let (status, v3) = call(&r,&a,"POST",&file_path,json!({"request_id":Uuid::new_v4(),"text_content":"Synthetic version three needs review","annotations":[],"reason":"Synthetic later edit"}),Some(2)).await;
+    assert_eq!(status, 200, "{v3}");
+    let delivery = format!(
+        "/api/v1/patients/{p}/referrals/{}/delivery",
+        entry["id"].as_str().unwrap()
+    );
+    assert_eq!(call(&r,&a,"POST",&delivery,json!({"request_id":Uuid::new_v4(),"destination_id":destination["id"],"destination_version":destination["version"],"review_digest":review["review_digest"],"reason":"Synthetic stale packet"}),Some(2)).await.0,409);
+    let actions = format!(
+        "/api/v1/patients/{p}/referrals/{}/actions",
+        entry["id"].as_str().unwrap()
+    );
+    assert_eq!(call(&r,&a,"POST",&actions,json!({"action":"sent","reason":"Synthetic stale manual review","evidence":"Synthetic"}),Some(2)).await.0,409);
+    assert_eq!(
+        call(
+            &r,
+            &a,
+            "POST",
+            &actions,
+            json!({"action":"draft","reason":"Review updated letter","evidence":""}),
+            Some(2)
+        )
+        .await
+        .0,
+        200
+    );
+    let (status, current) = call(
+        &r,
+        &a,
+        "POST",
+        &actions,
+        json!({"action":"ready","reason":"Reviewed version three","evidence":""}),
+        Some(3),
+    )
+    .await;
+    assert_eq!(status, 200, "{current}");
+    assert_eq!(current["attachment_snapshot"][0]["file_version"], 3);
+    let current_review = reviewed(&r, &a, p, &current, &destination).await;
+    queued(&r, &a, p, &current, &destination, &current_review).await;
+    assert!(suncharts_engine::referral_delivery::process_one(&db)
+        .await
+        .unwrap());
+    let (payload, _) = server.await.unwrap();
+    assert_eq!(payload["documents"][0]["metadata"]["file_version"], 3);
+    assert_eq!(payload["documents"][0]["metadata"]["sha256"], v3["sha256"]);
+    assert_eq!(
+        STANDARD
+            .decode(payload["documents"][0]["content_base64"].as_str().unwrap())
+            .unwrap(),
+        b"Synthetic version three needs review"
+    );
+    let preserved: Value =
+        sqlx::query_scalar("SELECT payload FROM referral_delivery_previews WHERE digest=$1")
+            .bind(review["review_digest"].as_str().unwrap())
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(preserved, frozen_review);
 }
 #[tokio::test]
 async fn delayed_receipt_resolves_recovered_lease_without_overwriting_operator_reconciliation() {

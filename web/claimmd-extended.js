@@ -55,12 +55,15 @@ function claimMdClaimActivityRows(records){
 }
 
 async function showClaimMdClaimActivity(claim){
- const lifecycle=$('claims-detail')?.querySelector('.claim-lifecycle');if(!lifecycle)return;
+ const context=typeof claimContextSnapshot==='function'?claimContextSnapshot():null,identity=me;
+ const lifecycle=(typeof claimWorkspaceHost==='function'?claimWorkspaceHost(context):$('claims-detail'))?.querySelector('.claim-lifecycle');if(!lifecycle)return;
+ const current=()=>identity===me&&(!context||claimContextCurrent(context))&&(typeof claimWorkspaceHost==='function'?claimWorkspaceHost(context):$('claims-detail'))?.querySelector('.claim-lifecycle')===lifecycle;
  const active=claimMdConnectionState?.active;
  if(!active?.id){lifecycle.insertAdjacentHTML('afterend','<section class="claimmd-claim-activity mapping-notice"><b>Claim.MD activity unavailable</b><p>Connect and verify Claim.MD in Integrations. Claim preparation and local ledger work remain available.</p></section>');return;}
  let account,extended;
  try{[account,extended]=await Promise.all([api(`/api/v1/billing/claimmd/${active.id}/operations`),api('/api/v1/billing/claimmd/operations')]);}
- catch(error){lifecycle.insertAdjacentHTML('afterend','<section class="claimmd-claim-activity mapping-notice"><b>Claim.MD evidence could not be loaded</b><p>The native claim remains available. Refresh this claim to try the provider evidence request again.</p></section>');return;}
+ catch(error){if(!current())return;lifecycle.insertAdjacentHTML('afterend','<section class="claimmd-claim-activity mapping-notice"><b>Claim.MD evidence could not be loaded</b><p>The native claim remains available. Refresh this claim to try the provider evidence request again.</p></section>');return;}
+ if(!current())return;
  const records=(account.records||[]).filter(record=>['modification','note','archive','uploaded_file'].includes(record.kind)&&claimMdClaimRecordMatches(record,claim));
  const appeals=(extended.operations||[]).filter(operation=>operation.kind==='appeal'&&operation.claim_id===claim.id);
  const eraDocuments=(extended.era_documents||[]).filter(document=>document.pcn&&[claim.control_number,claim.payer_control_number].filter(Boolean).includes(document.pcn));

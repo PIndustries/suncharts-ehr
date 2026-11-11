@@ -2,7 +2,7 @@
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const app=fs.readFileSync('web/app.js','utf8'),specialty=fs.readFileSync('web/specialty-workspace.js','utf8');
-const ids=['chart-overview','patient-next-action','patient-identity-panel','patient-demographics','clinical-lists','functional-status-panel','specialty-care-panel','encounter-progress','practice-admin-panel','patient-record-navigation','record-context','appointments-panel','visits-panel','visit-editor','encounter-intake','encounter-documentation','encounter-revenue','encounter-orders-actions','lab-workspace','insurance-workspace','billing-workspace','visit-checkout'];
+const ids=['chart-overview','patient-next-action','patient-identity-panel','patient-demographics','clinical-lists','functional-status-panel','specialty-care-panel','encounter-progress','practice-admin-panel','patient-record-navigation','record-context','appointments-panel','visits-panel','visit-editor','encounter-intake','encounter-documentation','encounter-revenue','encounter-orders-actions','documents-panel','lab-workspace','insurance-workspace','billing-workspace','visit-checkout'];
 const nodes=Object.fromEntries(ids.map(id=>[id,{id,hidden:true,innerHTML:'',open:false,classList:{toggle(){}}}])),notices=[],calls=[];
 let captured=0;
 const context=vm.createContext({console,Map,Set,Array,Object,Number,Date,
@@ -35,8 +35,8 @@ async function main(){
  // Primary tasks remain visible; supporting longitudinal areas share one record menu.
  let tabs=plain(evaluate('configuredChartTabs(Object.entries(chartTabLabels))'));tabs.splice(tabs.findIndex(([key])=>key==='billing'),0,['insurance','Insurance']);context.tabs=tabs;
  const html=evaluate('chartNavigation(tabs)'),primaryHtml=html.split('<details')[0];
- assert.deepEqual([...primaryHtml.matchAll(/data-chart-section="([^"]+)"/g)].map(match=>match[1]),['overview','visits','insurance','billing','documents']);
- assert.match(html,/<summary>Patient record<\/summary>/);
+ assert.deepEqual([...primaryHtml.matchAll(/data-chart-section="([^"]+)"/g)].map(match=>match[1]),['overview','visits','insurance']);
+ assert.match(html,/<summary>Patient record<\/summary>/);assert.match(html,/data-chart-section="billing"[^>]*>Account summary/);assert.match(html,/data-chart-section="documents"[^>]*>Shared documents/);
  assert.match(html,/data-chart-section="profile"[^>]*>Demographics/);
  assert.match(html,/data-chart-section="clinical"[^>]*>Problems, allergies &amp; medications/);
  assert.doesNotMatch(html,/data-chart-section="checkout"/,'checkout belongs to the selected encounter');
@@ -49,7 +49,7 @@ async function main(){
 
  evaluate(`activeVisit={id:'visit-1',appointment_id:'appt-1',clinician_id:'clinician-1',status:'in_progress',version:1,note:{subjective:'Retained note'},vitals:{}};workspace.visits=[activeVisit];chartSection='visits';encounterSection='documentation'`);
  const encounter=evaluate('encounterWorkflow()');
- assert.match(encounter,/id="encounter-picker"/);assert.match(encounter,/Note &amp; ICD-10|Note & ICD-10/);assert.match(encounter,/Procedures &amp; CPT|Procedures & CPT/);
+ assert.match(encounter,/id="encounter-picker"/);assert.match(encounter,/Note &amp; ICD-10|Note & ICD-10/);assert.match(encounter,/Billing &amp; claim|Billing & claim/);assert.match(encounter,/Files &amp; voice|Files & voice/);
  assert.doesNotMatch(encounter,/Open encounter|Continue encounter/,'selected encounter renders its local steps directly');
  evaluate('renderVisit(false)');assert.match(nodes['visit-editor'].innerHTML,/SOAP note/);assert.match(nodes['visit-editor'].innerHTML,/Retained note/);
  assert.equal(nodes['visit-editor'].hidden,false);assert.equal(nodes['encounter-documentation'].hidden,false);assert.equal(nodes['encounter-intake'].hidden,true);assert.equal(nodes['appointments-panel'].hidden,true);
@@ -57,7 +57,8 @@ async function main(){
  evaluate("setEncounterSection('charges')");assert.equal(nodes['encounter-revenue'].hidden,false);assert.equal(nodes['visit-editor'].hidden,true);
  evaluate("setEncounterSection('orders')");assert.equal(nodes['lab-workspace'].hidden,false);assert.equal(nodes['encounter-orders-actions'].hidden,false);assert.equal(nodes['encounter-revenue'].hidden,true);
  evaluate("setEncounterSection('checkout')");assert.equal(nodes['visit-checkout'].hidden,false);assert.equal(nodes['lab-workspace'].hidden,true);
- evaluate("showChartSection('documents');showChartSection('visits')");assert.equal(evaluate('encounterSection'),'checkout','returning from record review preserves the selected encounter step');
+ evaluate("setEncounterSection('files')");assert.equal(nodes['documents-panel'].hidden,false);assert.equal(nodes['visit-checkout'].hidden,true);
+ evaluate("showChartSection('documents');showChartSection('visits')");assert.equal(evaluate('encounterSection'),'files','returning from record review preserves the selected encounter step');
 
  // Hidden current steps cannot leave a blank encounter workspace.
  evaluate("encounterSection='charges';practiceWorkspaceSettings.content.chart_tabs=practiceWorkspaceSettings.content.chart_tabs.filter(key=>key!=='billing');applyChartSection()");

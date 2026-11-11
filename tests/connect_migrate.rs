@@ -5567,19 +5567,34 @@ fn receipt_ack_text(values: &[Value]) -> String {
 
 #[tokio::test]
 async fn claimmd_multipart_delivery_and_responseid_feed_preserve_structured_evidence() {
+    claimmd_status_link_fixture(false).await;
+}
+#[tokio::test]
+async fn claimmd_exact_receipt_automatically_links_status_without_posting_money() {
+    claimmd_status_link_fixture(true).await;
+}
+async fn claimmd_status_link_fixture(automatic: bool) {
     use std::sync::Mutex;
     let (r, db, a, _) = setup().await;
     let (c, p, out) = automated_fixture(&r, &a).await;
+    if automatic {
+        for service_date in ["2026-10-01", "2026-10-02"] {
+            sqlx::query("INSERT INTO claimmd_eligibility_checks(tenant_id,id,patient_id,coverage_id,request_id,creation_hash,route_key,request_snapshot,response_snapshot,status,actor_id,completed_at) SELECT tenant_id,$3,patient_id,(snapshot->'account'->'coverage_snapshot'->'coverage'->>'id')::uuid,$4,'synthetic-eligibility','provider-test',jsonb_build_object('request',jsonb_build_object('service_date',$5::text),'member_id',snapshot->'account'->'coverage_snapshot'->'coverage'->'content'->>'member_id','payerid',snapshot->'account'->'coverage_snapshot'->'payer'->'content'->>'payer_code'),jsonb_build_object('elig',jsonb_build_array()),'completed',$6,now() FROM ehr_claims WHERE tenant_id=$1 AND id=$2")
+                .bind(a.tenant_id).bind(c["id"].as_str().unwrap().parse::<Uuid>().unwrap()).bind(Uuid::new_v4()).bind(Uuid::new_v4()).bind(service_date).bind(a.sub).execute(&db).await.unwrap();
+        }
+    }
     let control = c["control_number"].clone();
     let control2 = control.clone();
     let cursors = Arc::new(Mutex::new(Vec::<String>::new()));
     let cc = cursors.clone();
+    let changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let server_changed = changed.clone();
     let gateway=Router::new().route("/services/upload/",axum::routing::post(move |h:HeaderMap,body:axum::body::Bytes|{let control=control.clone();async move{
         assert_eq!(h["accept"],"application/json");assert!(h["content-type"].to_str().unwrap().starts_with("multipart/form-data; boundary="));assert!(!h.contains_key("authorization"));let b=String::from_utf8(body.to_vec()).unwrap();assert!(b.contains("name=\"AccountKey\""));assert!(b.contains("synthetic-loopback-key"));assert!(b.contains("filename=\"claim_"));assert!(b.contains("\"claim_form\":\"1500\""));assert!(b.contains("\"remote_claimid\":"));assert!(!b.contains("ISA*00*"));
         axum::Json(json!({"claim":[{"pcn":control,"bill_npi":"1234567893","fileid":"123456","status":"A"}]}))
-    }})).route("/services/response/",axum::routing::post(move |h:HeaderMap,body:axum::body::Bytes|{let control=control2.clone();let cc=cc.clone();async move{
+    }})).route("/services/response/",axum::routing::post(move |h:HeaderMap,body:axum::body::Bytes|{let control=control2.clone();let cc=cc.clone();let changed=server_changed.clone();async move{
         assert_eq!(h["accept"],"application/json");let form:std::collections::HashMap<String,String>=url::form_urlencoded::parse(&body).into_owned().collect();assert_eq!(form["AccountKey"],"synthetic-loopback-key");cc.lock().unwrap().push(form["ResponseID"].clone());
-        axum::Json(json!({"last_responseid":"9","claim":[{"pcn":control,"bill_npi":"1234567893","bill_taxid":"000000001","ins_number":"SYNTHETIC-POLICY-01","payerid":"SYN-ONLY","total_charge":"125.50","fdos":"2026-10-01","fileid":"123456","claimmd_id":"456","senderid":"CLMMD","sender_name":"CLAIM.MD","sender_icn":"","status":"A","unknown_secret":"must-not-retain-unreviewed-field","messages":[{"responseid":9,"status":"A","mesgid":"ACK","message":"Acknowledged by synthetic Claim.MD"}]}]}))
+        axum::Json(json!({"last_responseid":"9","claim":[{"pcn":control,"bill_npi":"1234567893","bill_taxid":"000000001","ins_number":"SYNTHETIC-POLICY-01","payerid":"SYN-ONLY","total_charge":"125.50","fdos":"2026-10-01","fileid":if automatic {"123456"} else {"unknown-file"},"claimmd_id":"456","senderid":"CLMMD","sender_name":"CLAIM.MD","sender_icn":"","status":"A","unknown_secret":"must-not-retain-unreviewed-field","messages":[{"responseid":9,"status":"A","mesgid":"ACK","message":if changed.load(std::sync::atomic::Ordering::SeqCst){"Changed reused response"}else{"Acknowledged by synthetic Claim.MD"}}]}]}))
     }}));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -5619,56 +5634,93 @@ async fn claimmd_multipart_delivery_and_responseid_feed_preserve_structured_evid
     let cp = format!("/api/v1/billing/claims/{}", c["id"].as_str().unwrap());
     let (_, before) = schedule_call(&r, &a, "GET", &cp, Value::Null, None).await;
     assert_eq!(before["claim"]["status"], "submitted");
-    let body = json!({"action":"link_status_evidence","submission_id":out["id"],"submission_version":2,"claim_version":3,"reason":"Reviewed provider, payer, member, control, amount and date"});
-    let mut reader = a.clone();
-    reader.role = Role::ReadOnly;
-    assert_eq!(
-        schedule_call(
-            &r,
-            &reader,
-            "POST",
-            &format!("{path}/actions"),
-            body.clone(),
-            Some(1)
-        )
-        .await
-        .0,
-        403
-    );
-    let mut other = a.clone();
-    other.tenant_id = Uuid::new_v4();
-    assert_ne!(
-        schedule_call(
-            &r,
-            &other,
-            "POST",
-            &format!("{path}/actions"),
-            body.clone(),
-            Some(1)
-        )
-        .await
-        .0,
-        200
-    );
-    let (s, v) = schedule_call(
-        &r,
-        &a,
-        "POST",
-        &format!("{path}/actions"),
-        body.clone(),
-        Some(1),
-    )
-    .await;
-    assert_eq!(s, 200, "{v}");
-    assert_eq!(v["clinical_status_changed"], false);
-    assert_eq!(
-        schedule_call(&r, &a, "POST", &format!("{path}/actions"), body, Some(1))
+    if automatic {
+        assert_eq!(detail["report"]["native_id"], out["id"]);
+        assert_eq!(before["tracking"]["submissions"][0]["status"], "delivered");
+        assert_eq!(
+            before["tracking"]["reports"][0]["evidence"]["senderid"],
+            "CLMMD"
+        );
+        assert_eq!(before["tracking"]["remittance_posted"], false);
+        assert_eq!(
+            before["tracking"]["eligibility"]["service_date"],
+            "2026-10-01"
+        );
+        assert_eq!(
+            before["tracking"]["connections"][0]["last_result"],
+            "page_persisted"
+        );
+        let mut other = a.clone();
+        other.tenant_id = Uuid::new_v4();
+        assert_ne!(
+            schedule_call(&r, &other, "GET", &cp, Value::Null, None)
+                .await
+                .0,
+            200
+        );
+    } else {
+        let body = json!({"action":"link_status_evidence","submission_id":out["id"],"submission_version":2,"claim_version":3,"reason":"Reviewed provider, payer, member, control, amount and date"});
+        let mut reader = a.clone();
+        reader.role = Role::ReadOnly;
+        assert_eq!(
+            schedule_call(
+                &r,
+                &reader,
+                "POST",
+                &format!("{path}/actions"),
+                body.clone(),
+                Some(1)
+            )
             .await
             .0,
-        409
-    );
+            403
+        );
+        let mut other = a.clone();
+        other.tenant_id = Uuid::new_v4();
+        assert_ne!(
+            schedule_call(
+                &r,
+                &other,
+                "POST",
+                &format!("{path}/actions"),
+                body.clone(),
+                Some(1)
+            )
+            .await
+            .0,
+            200
+        );
+        let (s, v) = schedule_call(
+            &r,
+            &a,
+            "POST",
+            &format!("{path}/actions"),
+            body.clone(),
+            Some(1),
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(v["clinical_status_changed"], false);
+        assert_eq!(
+            schedule_call(&r, &a, "POST", &format!("{path}/actions"), body, Some(1))
+                .await
+                .0,
+            409
+        );
+    }
     let (_, after) = schedule_call(&r, &a, "GET", &cp, Value::Null, None).await;
     assert_eq!(before["claim"], after["claim"]);
+    if automatic {
+        let entries: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM billing_entries WHERE tenant_id=$1 AND kind='payment'",
+        )
+        .bind(a.tenant_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(entries, 0, "status A must not post payment");
+    }
+
     sqlx::query("UPDATE edi_connections SET next_poll_at=now() WHERE tenant_id=$1")
         .bind(a.tenant_id)
         .execute(&db)
@@ -5685,6 +5737,25 @@ async fn claimmd_multipart_delivery_and_responseid_feed_preserve_structured_evid
             .await
             .unwrap();
     assert_eq!(count, 1);
+    changed.store(true, std::sync::atomic::Ordering::SeqCst);
+    sqlx::query("UPDATE edi_connections SET next_poll_at=now() WHERE tenant_id=$1")
+        .bind(a.tenant_id)
+        .execute(&db)
+        .await
+        .unwrap();
+    assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .is_err());
+    let (_, retained) = schedule_call(&r, &a, "GET", &path, Value::Null, None).await;
+    assert!(!retained.to_string().contains("Changed reused response"));
+    let cursor: Option<String> = sqlx::query_scalar(
+        "SELECT page_token FROM edi_connections WHERE tenant_id=$1 AND route_key='provider-test'",
+    )
+    .bind(a.tenant_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(cursor.as_deref(), Some("9"));
     server.abort();
 }
 
@@ -5720,13 +5791,13 @@ async fn provider_discovery_audit_failure_retains_cursor_and_retries_without_los
         .execute(&db)
         .await
         .unwrap();
-    sqlx::query(
-        "UPDATE edi_connections SET lease_until=now()-interval '1 second' WHERE tenant_id=$1",
-    )
-    .bind(a.tenant_id)
-    .execute(&db)
-    .await
-    .unwrap();
+    let failure:(String,bool)=sqlx::query_as("SELECT last_result,lease_id IS NULL AND lease_until IS NULL FROM edi_connections WHERE tenant_id=$1").bind(a.tenant_id).fetch_one(&db).await.unwrap();
+    assert_eq!(failure, ("poll_failed_cursor_retained".into(), true));
+    sqlx::query("UPDATE edi_connections SET next_poll_at=now() WHERE tenant_id=$1")
+        .bind(a.tenant_id)
+        .execute(&db)
+        .await
+        .unwrap();
     assert!(suncharts_engine::retrieval::poll_one(&db, &config)
         .await
         .unwrap());

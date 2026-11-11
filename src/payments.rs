@@ -22,7 +22,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 const STRIPE: &str = "https://api.stripe.com/v1";
 const BROKER_ENV: &str = "ENGINE_PAYMENT_BROKER_URL";
-const LIVE_UNAVAILABLE: &str = "Live card payments are not available in this release. Test payments are disabled in production and cannot change patient balances. Stripe account setup remains available.";
+const LIVE_UNAVAILABLE: &str = "Direct checkout for posted charge accounts is unavailable in production. Appointment card copays have separate activation in Insurance. Test payments cannot change production balances.";
 
 fn test_payments_available() -> bool {
     test_payments_available_in(crate::DeploymentEnvironment::from_env())
@@ -64,7 +64,7 @@ fn valid_broker_token(v: &str) -> bool {
         && v.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
-fn broker_base() -> Result<String> {
+pub(crate) fn broker_base() -> Result<String> {
     // Managed payments are hosted by the same validated Connect origin.  A
     // dedicated broker origin remains available for split deployments, but a
     // managed EHR must not fail provisioning merely because that redundant
@@ -338,6 +338,7 @@ async fn read_settings(a: Actor, ExtractState(s): ExtractState<State>) -> Result
         "setting":row.map(|r|r.public()),
         "test_mode_only":true,
         "live_payments_available":false,
+        "hosted_copays_live_enabled":crate::copay_checkout::live_collection_enabled(),
         "test_payments_available":test_payments_available(),
         "collection_unavailable_reason":collection_unavailable_reason(),
         "connect_available":native_setup_url.is_some(),
@@ -680,7 +681,8 @@ async fn list(
     crate::postgres::audit(&mut tx, &a, "payment.account_read", id).await?;
     tx.commit().await?;
     Ok(Json(
-        json!({"items":items.iter().map(Payment::public).collect::<Vec<_>>(),"balance_cents":current,"reserved_cents":reserved,"available_cents":(current-reserved).max(0),"payments_enabled":test_payments_available()&&settings.as_ref().is_some_and(|(e,v,m)|*e&&*v&&m=="suncharts_connect"),"mode":settings.map(|(_,_,m)|m),"test_mode":true,"connect_required":true,"live_payments_available":false,"test_payments_available":test_payments_available(),"collection_unavailable_reason":collection_unavailable_reason()}),
+        json!({"items":items.iter().map(Payment::public).collect::<Vec<_>>(),"balance_cents":current,"reserved_cents":reserved,"available_cents":(current-reserved).max(0),"payments_enabled":test_payments_available()&&settings.as_ref().is_some_and(|(e,v,m)|*e&&*v&&m=="suncharts_connect"),"mode":settings.map(|(_,_,m)|m),"test_mode":true,"connect_required":true,"live_payments_available":false,
+        "hosted_copays_live_enabled":crate::copay_checkout::live_collection_enabled(),"test_payments_available":test_payments_available(),"collection_unavailable_reason":collection_unavailable_reason()}),
     ))
 }
 #[derive(Deserialize, Serialize)]

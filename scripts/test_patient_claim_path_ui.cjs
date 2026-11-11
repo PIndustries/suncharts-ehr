@@ -5,24 +5,10 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 const billing=fs.readFileSync('web/billing.js','utf8');
 const claims=fs.readFileSync('web/claims.js','utf8');
 
-assert.match(billing,/data-patient-claims>Review this patient’s claims/);
-assert.match(billing,/data-patient-create-claim aria-describedby="patient-claim-readiness"/);
-assert.match(billing,/data-new-billing aria-describedby="patient-claim-readiness">Prepare charge account/);
-assert.doesNotMatch(billing,/data-patient-create-claim[^>]*disabled/);
-assert.match(billing,/Add active coverage with a Claim\.MD payer ID, record charges, sign the visit and post the insured charge account to enable claim creation/);
-assert.match(billing,/const patientClaimAccounts=.*status==='posted'.*payer_code/);
-assert.match(billing,/if\(accounts\.length===1\)\{await beginClaim\(accounts\[0\]\.id\);return;\}/);
-assert.match(billing,/Choose charges for this claim/);
-assert.match(billing,/Nothing is sent until the claim is reviewed, marked ready and explicitly submitted through Claim\.MD/);
-assert.match(billing,/data-patient-create-claim'\)\)\{await beginPatientClaim\(\);return;\}/);
-assert.match(billing,/Insurance claim path/);
-assert.match(billing,/const patientPaymentAccounts=.*status==='posted'.*billBalance/);
-assert.match(billing,/function beginPatientPayment\(\)/);
-assert.match(billing,/data-patient-collect-copay/);
-assert.match(billing,/claim screen offers explicit native Claim\.MD submission when the clinic’s Claim\.MD connection is active/);
-assert.match(billing,/class="primary" data-new-claim="\$\{a\.id\}">Create insurance claim/);
-assert.match(billing,/data-patient-claims'\)\)\{await showClaimsWorkspace\(\);return;\}/);
-assert.match(claims,/if\(b\.dataset\.newClaim\)\{await beginClaim\(b\.dataset\.newClaim\);return;\}/);
+const summary=billing.slice(billing.indexOf('function renderBilling(){'),billing.indexOf('async function openEncounterBillingAccount('));
+assert.match(summary,/<h2>Account summary<\/h2>/);
+assert.doesNotMatch(summary,/data-patient-create-claim|data-new-billing|data-patient-claims/,'account summary must not launch a parallel billing workflow');
+assert.match(summary,/Open encounter billing/);
 assert.match(claims,/data-claimmd-submit/);
 
 const selector=billing.match(/const patientClaimAccounts=.*;\n/)[0].replace('const patientClaimAccounts=','globalThis.patientClaimAccounts=');
@@ -36,4 +22,14 @@ assert.deepEqual(Array.from(context.patientClaimAccounts({accounts:[
  account('newer','posted','2026-11-10','12345'),
 ]}),row=>row.id),['newer','older']);
 
-console.log('PASS patient Financials exposes the existing reviewed claim lifecycle and native Claim.MD submission path');
+async function verifyEncounterRouting(){
+ const calls=[],ctx={me:{user_id:'staff'},selected:'patient',workspace:{visits:[{id:'visit-one'},{id:'visit-two'}],billing:{accounts:[{id:'account-two',content:{visit_id:'visit-two'}},{id:'source-account',content:{visit_id:null}}]}},activeVisit:{id:'visit-one'},
+  selectPatient:async(patient,visit)=>{calls.push(['patient',patient,visit]);ctx.activeVisit={id:visit};},setEncounterSection:step=>calls.push(['step',step]),showBillingAccount:(id,activate)=>calls.push(['account',id,activate])};
+ const start=billing.indexOf('async function openEncounterBillingAccount('),end=billing.indexOf('async function beginPatientClaim(',start);vm.createContext(ctx);vm.runInContext(billing.slice(start,end),ctx);
+ await ctx.openEncounterBillingAccount('account-two');assert.deepEqual(calls,[['patient','patient','visit-two'],['step','charges'],['account','account-two',false]]);
+ calls.length=0;await ctx.openEncounterBillingAccount('source-account');assert.deepEqual(calls,[['account','source-account',undefined]],'source-only account must not invent an encounter');
+ calls.length=0;ctx.activeVisit={id:'visit-one'};ctx.selectPatient=async()=>{ctx.me={user_id:'different-staff'};ctx.activeVisit={id:'visit-two'};};await ctx.openEncounterBillingAccount('account-two');assert.deepEqual(calls,[],'late selection cannot open old billing under another sign-in');
+ await assert.rejects(()=>ctx.openEncounterBillingAccount('missing-account'),/unavailable/);
+ console.log('PASS aggregate account summary routes to owning encounter; historical sources and changed sessions remain isolated');
+}
+verifyEncounterRouting().catch(error=>{console.error(error);process.exitCode=1;});

@@ -75,8 +75,27 @@ impl BrowserAuth {
             self.check_origin(h)?;
         }
         let token = cookie(h).ok_or(Error::Unauthorized)?;
+        let actor = self.authenticate_hash(&hash(&token)).await?;
+        if h.contains_key("x-suncharts-staff-context") {
+            let mut values = h.get_all("x-suncharts-staff-context").iter();
+            let context = values.next().and_then(|v| v.to_str().ok());
+            let parsed = context
+                .and_then(|v| v.split_once(':'))
+                .and_then(|(tenant, user)| {
+                    Some((tenant.parse::<Uuid>().ok()?, user.parse::<Uuid>().ok()?))
+                });
+            if values.next().is_some() || parsed != Some((actor.tenant_id, actor.sub)) {
+                return Err(Error::Conflict(
+                    "Staff account changed. Sign in again to continue.",
+                ));
+            }
+        }
+        Ok(actor)
+    }
+    /// Revalidate a previously authenticated browser session without persisting its bearer token.
+    pub(crate) async fn authenticate_hash(&self, token_hash: &str) -> Result<Actor> {
         let row:Option<(Uuid,Uuid,String,String)>=sqlx::query_as("SELECT u.id,u.tenant_id,u.role,s.auth_method FROM browser_sessions s JOIN browser_users u ON u.id=s.user_id AND u.tenant_id=s.tenant_id WHERE s.token_hash=$1 AND s.expires_at>now() AND NOT u.disabled")
-            .bind(hash(&token)).fetch_optional(&self.db).await?;
+            .bind(token_hash).fetch_optional(&self.db).await?;
         let actor = if let Some((sub, tenant_id, role, method)) = row {
             if crate::connect_identity::connected(&self.db).await? && method != "break_glass" {
                 return Err(Error::Unauthorized);
@@ -94,28 +113,14 @@ impl BrowserAuth {
                 exp: now + 60,
             }
         } else if let Some(actor) =
-            crate::connect_identity::authenticate_staff(self, &token).await?
+            crate::connect_identity::authenticate_staff_hash(self, token_hash).await?
         {
             actor
         } else {
-            crate::partner_support::authenticate(self, &token)
+            crate::partner_support::authenticate_hash(self, token_hash)
                 .await?
                 .ok_or(Error::Unauthorized)?
         };
-        if h.contains_key("x-suncharts-staff-context") {
-            let mut values = h.get_all("x-suncharts-staff-context").iter();
-            let context = values.next().and_then(|v| v.to_str().ok());
-            let parsed = context
-                .and_then(|v| v.split_once(':'))
-                .and_then(|(tenant, user)| {
-                    Some((tenant.parse::<Uuid>().ok()?, user.parse::<Uuid>().ok()?))
-                });
-            if values.next().is_some() || parsed != Some((actor.tenant_id, actor.sub)) {
-                return Err(Error::Conflict(
-                    "Staff account changed. Sign in again to continue.",
-                ));
-            }
-        }
         Ok(actor)
     }
 }

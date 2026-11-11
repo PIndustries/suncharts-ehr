@@ -49,6 +49,7 @@ let chartSection='overview',encounterSection='documentation',patientDirectoryPre
 // Unsaved clinical edits live only in this tab, isolated by encounter and patient.
 const visitDrafts=new Map();
 function captureVisitDrafts(includeRooming=true){
+ if(typeof captureClaimDraft==='function')captureClaimDraft();
  if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();
  if(typeof capturePrescribingDraft==='function')capturePrescribingDraft();
  if(typeof capturePortalStaffDrafts==='function')capturePortalStaffDrafts();
@@ -96,10 +97,11 @@ async function api(path, method = 'GET', body, version) {
   if(me!==requestIdentity)throw new Error('Staff account changed. Sign in again to continue.');
   if(response.status===409&&data.message==='Staff account changed. Sign in again to continue.'){signInScreen();$('login-error').textContent=data.message;throw new Error(data.message);}
   if (response.status === 401) { signInScreen(); throw new Error('Please sign in to continue.'); }
-  if (!response.ok) throw new Error(data.message || (response.status === 409 ? 'This visit changed. Reload it before saving.' : 'Unable to complete this action. Please check your entries.'));
+  if (!response.ok) { const error=new Error(data.message || (response.status === 409 ? 'This visit changed. Reload it before saving.' : 'Unable to complete this action. Please check your entries.'));error.status=response.status;throw error; }
   return data;
 }
 function signInScreen() {
+  if(typeof clearClaimDrafts==='function')clearClaimDrafts();
   if(typeof clearBillingChargeDrafts==='function')clearBillingChargeDrafts();
   if(typeof clearWorkspaceAccessSession==='function')clearWorkspaceAccessSession();
   if(typeof clearStudioAccessSession==='function')clearStudioAccessSession();
@@ -222,15 +224,18 @@ function renderPatients() {
   $('load-more').hidden=!cursor;
 }
 async function selectPatient(id, keepVisit) {
+  const openingIdentity=me;
   captureVisitDrafts();
   // Publish one complete chart only after every patient-scoped read succeeds.
   const next=await api(`/api/v1/patients/${id}/workspace`);
+  if(me!==openingIdentity)return;
   const allowed=resource=>typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed(resource);
   const sourceAllowed=['clinical','billing','claims','migration'].every(allowed);
   const [history,clinical,labs,billing,payers,demographics]=await Promise.all([
     sourceAllowed?api(`/api/v1/patients/${id}/history`):Promise.resolve(null),api(`/api/v1/patients/${id}/clinical`),
     api(`/api/v1/patients/${id}/orders`),allowed('billing')?api(`/api/v1/patients/${id}/billing`):Promise.resolve(null),allowed('billing')?api('/api/v1/billing/payers'):Promise.resolve({items:[]}),api(`/api/v1/patients/${id}/demographics`)
   ]);
+  if(me!==openingIdentity)return;
   captureVisitDrafts(); // Include edits made while the chart reads were in flight.
   next.history=history?.items??null;next.clinical=clinical;next.labs=labs;next.billing=billing;next.demographics=demographics;
   if(id!==selected){chartSection='overview';encounterSection=['nurse','medical_assistant'].includes(me?.role)?'intake':'documentation';}
@@ -263,6 +268,7 @@ function renderChart() {
   const encounter=activeVisit?workspace.appointments.find(a=>a.id===activeVisit.appointment_id):null;
   $('chart').innerHTML=`<div class="chart-context"><div class="chart-header"><div class="avatar">${esc(p.given_name[0])}${esc(p.family_name[0])}</div><div class="patient-heading"><p class="chart-record-label">PATIENT CHART${preferred?' · Preferred name '+esc(preferred):''}</p><h2>${esc(p.family_name)}, ${esc(p.given_name)} <span class="chart-age">${age>=0?esc(age)+' years':''}</span></h2><p><span>MRN <b>${esc(p.mrn)}</b></span><span>DOB <b>${esc(p.birth_date)}</b></span></p></div><div class="chart-header-context">${activeVisit?`<span class="status-badge ${activeVisit.status==='signed'?'completed':'in_progress'}">${activeVisit.status==='signed'?'Signed encounter':'Active encounter'}</span><small>${esc(encounterDateLabel(activeVisit))}</small>`:'<span class="muted">Longitudinal record</span>'}</div><button class="quiet" data-action="reload" aria-label="Reload patient chart">↻ Refresh</button>${['owner','clinician','front_desk'].includes(me?.role)?`<button type="button" data-portal-access="${esc(selected)}">Patient portal</button>`:''}</div><div class="patient-safety ${allergies.length?'has-allergies':''}"><b>Allergies</b><span>${esc(allergyText)}</span></div>${chartNavigation(tabs)}</div>
   <div id="encounter-progress">${encounterWorkflow()}</div>
+  <div id="encounter-start-editor"></div>
   ${chartOverview()}
   <section id="patient-demographics"></section>
   <section id="functional-status-panel" class="panel" hidden></section>
@@ -286,10 +292,10 @@ function renderVisit(activate=true) {
   const vitalLabels={systolic_mm_hg:'Systolic BP (mmHg)',diastolic_mm_hg:'Diastolic BP (mmHg)',heart_rate_bpm:'Heart rate (bpm)',temperature_c:'Temperature (°C)',weight_kg:'Weight (kg)',height_cm:'Height (cm)',oxygen_saturation_pct:'Oxygen saturation (%)'};
   const amendments=workspace.amendments.filter(a=>a.visit_id===v.id);
   $('visit-editor').innerHTML=`<section class="panel"><div class="section-head"><h2>${signed?'Signed clinical record':'Visit documentation'}</h2><span class="pill ${signed?'signed':''}">${signed?'Signed':'In progress'}</span></div>${signed?`<div class="signed-notice">Signed ${esc(date(v.signed_at))}. Original documentation is preserved; corrections are added below.</div>`:''}
-  <p id="visit-draft-status" class="muted" role="status"></p><div id="encounter-intake"><div class="encounter-context-links"><button type="button" data-chart-section="insurance">Review insurance & copay</button><button type="button" data-chart-section="clinical">Review allergies & medications</button><button type="button" data-chart-section="documents">Review patient documents</button></div><div id="visit-rooming"></div><h3>Vitals</h3><form id="vitals-form" data-visit-id="${v.id}" data-version="${retained?.vitals?.version??v.version}"><div class="form-grid vitals-grid">${Object.entries(vitalLabels).map(([key,label])=>`<label>${label}<input name="${key}" type="number" step="${['systolic_mm_hg','diastolic_mm_hg','heart_rate_bpm'].includes(key)?'1':'any'}" required value="${esc(vitals[key])}" ${vitalsLocked?'disabled':''}></label>`).join('')}</div>${vitalsLocked?'':'<button type="submit">Save vitals</button>'}</form>
+  <p id="visit-draft-status" class="muted" role="status"></p><div id="encounter-intake"><div class="encounter-context-links"><button type="button" data-chart-section="insurance">Review insurance & copay</button><button type="button" data-chart-section="clinical">Review allergies & medications</button><button type="button" data-chart-section="documents">Review patient documents</button></div><div id="encounter-benefits" class="billing-section"></div><div id="visit-rooming"></div><h3>Vitals</h3><form id="vitals-form" data-visit-id="${v.id}" data-version="${retained?.vitals?.version??v.version}"><div class="form-grid vitals-grid">${Object.entries(vitalLabels).map(([key,label])=>`<label>${label}<input name="${key}" type="number" step="${['systolic_mm_hg','diastolic_mm_hg','heart_rate_bpm'].includes(key)?'1':'any'}" required value="${esc(vitals[key])}" ${vitalsLocked?'disabled':''}></label>`).join('')}</div>${vitalsLocked?'':'<button type="submit">Save vitals</button>'}</form>
   </div><div id="encounter-documentation"><section id="visit-diagnoses"></section><form id="note-form" data-visit-id="${v.id}" data-version="${retained?.note?.version??v.version}"><h3>SOAP note</h3><div class="form-grid note-grid">${['subjective','objective','assessment','plan'].map(key=>`<label>${key[0].toUpperCase()+key.slice(1)}<textarea name="${key}" required maxlength="10000" ${locked?'readonly':''}>${esc(note[key])}</textarea></label>`).join('')}</div>${locked?'':'<div class="actions"><button type="submit">Save note</button><button class="primary" type="button" data-action="sign">Sign encounter note</button><span class="muted">Save your note before signing. Then review procedures and charges, complete checkout, and submit the reviewed claim.</span></div>'}</form>
   ${signed?`<h3>Amendments</h3>${amendments.map(a=>`<div class="amendment"><p><b>${esc(a.reason)}</b></p><p class="note-text">${esc(a.text)}</p><small class="muted">Recorded ${esc(date(a.created_at))}</small></div>`).join('')||'<p class="muted">No amendments.</p>'}${writable?`<form id="amendment-form"><label>Reason<input name="reason" required maxlength="1000"></label><label>Correction<textarea name="text" required maxlength="10000"></textarea></label><div class="actions"><button type="submit">Sign & append amendment</button></div></form>`:''}`:''}${!writable?'<p class="muted">Documentation is read-only. Only the assigned clinician can save, sign or amend the note. Authorized rooming staff may record intake and vitals before signing.</p>':''}</div></section>`;
-  updateDraftStatus();refreshEncounterProgress();if(typeof renderRooming==='function')void renderRooming();if(typeof renderVisitDiagnoses==='function')void renderVisitDiagnoses();if(typeof renderVisitCheckout==='function')renderVisitCheckout();if(typeof renderEncounterRevenue==='function')void renderEncounterRevenue();renderEncounterOrderActions();applyChartSection();
+  updateDraftStatus();refreshEncounterProgress();if(typeof renderRooming==='function')void renderRooming();if(typeof renderVisitDiagnoses==='function')void renderVisitDiagnoses();if(typeof renderVisitCheckout==='function')renderVisitCheckout();if(typeof renderEncounterRevenue==='function')void renderEncounterRevenue();renderEncounterOrderActions();if(typeof renderEncounterStartBenefits==='function')void renderEncounterStartBenefits('encounter-benefits',revenueServiceDate(workspace.appointments.find(a=>a.id===v.appointment_id)));if(encounterSection==='files'&&typeof renderEncounterFiles==='function')void renderEncounterFiles();applyChartSection();
 }
 function renderHistory() {
   if(workspace.history===null)return;
@@ -299,14 +305,14 @@ function renderHistory() {
 }
 function encounterWorkflow(){
  const v=activeVisit,appointment=v?workspace.appointments.find(a=>a.id===v.appointment_id):workspace.appointments.find(a=>['checked_in','booked'].includes(a.status));
- if(!v)return `<section class="panel encounter-empty"><h2>Start the encounter</h2><p>Select the appointment below, review insurance and the copay, then check the patient in and start their encounter.</p><button type="button" data-chart-section="insurance">Review insurance & copay</button>${appointment?.status==='checked_in'&&(isRoomingStaff()||(['owner','clinician'].includes(me.role)&&appointment.clinician_id===me.user_id))?` <button type="button" class="primary" data-start="${esc(appointment.id)}">Start encounter</button>`:''}</section>`;
+ if(!v)return `<section class="panel encounter-empty"><h2>Start the encounter</h2><p>Start from an appointment or enter the service date and time for an unscheduled visit.</p>${typeof canStartEncounterFlow==='function'&&canStartEncounterFlow()?'<button type="button" class="primary" data-start-encounter-flow>Start encounter</button>':''}<button type="button" data-chart-section="insurance">Review insurance & copay</button>${appointment?.status==='checked_in'&&(isRoomingStaff()||(['owner','clinician'].includes(me.role)&&appointment.clinician_id===me.user_id))?` <button type="button" class="primary" data-start="${esc(appointment.id)}">Start encounter</button>`:''}</section>`;
  const steps=encounterSections();
  const runs=typeof patientPathways==='undefined'?[]:patientPathways.filter(item=>item.patient_id===selected&&item.status==='active'&&(!item.appointment_id||item.appointment_id===v.appointment_id));
- return `<section class="encounter-workspace-heading"><div class="section-head"><div><p class="eyebrow">SELECTED ENCOUNTER</p><h2>${esc(appointment?.title||'Office visit')}</h2><p class="muted">${esc(encounterDateLabel(v))} · ${v.status==='signed'?'Signed clinical record':'In progress'}</p></div><div class="encounter-selection"><label>Encounter<select id="encounter-picker">${workspace.visits.map(row=>`<option value="${esc(row.id)}" ${row.id===v.id?'selected':''}>${esc(encounterDateLabel(row))} · ${row.status==='signed'?'Signed':'In progress'}</option>`).join('')}</select></label>${runs.length&&chartAreaEnabled('care_pathways')?'<button type="button" data-chart-section="care_pathways">Practice workflow</button>':''}</div></div><nav class="encounter-step-tabs" aria-label="Encounter work">${steps.map(([key,label],index)=>`<button type="button" data-encounter-section="${key}" aria-pressed="${encounterSection===key}"><span>${index+1}</span>${label}</button>`).join('')}</nav></section>`;
+ return `<section class="encounter-workspace-heading"><div class="section-head"><div><p class="eyebrow">SELECTED ENCOUNTER</p><h2>${esc(appointment?.title||'Office visit')}</h2><p class="muted">${esc(encounterDateLabel(v))} · ${v.status==='signed'?'Signed clinical record':'In progress'}</p></div><div class="encounter-selection">${typeof canStartEncounterFlow==='function'&&canStartEncounterFlow()?'<button type="button" data-start-encounter-flow>+ New encounter</button>':''}<label>Encounter<select id="encounter-picker">${workspace.visits.map(row=>`<option value="${esc(row.id)}" ${row.id===v.id?'selected':''}>${esc(encounterDateLabel(row))} · ${row.status==='signed'?'Signed':'In progress'}</option>`).join('')}</select></label>${runs.length&&chartAreaEnabled('care_pathways')?'<button type="button" data-chart-section="care_pathways">Practice workflow</button>':''}</div></div><nav class="encounter-step-tabs" aria-label="Encounter work">${steps.map(([key,label],index)=>`<button type="button" data-encounter-section="${key}" aria-pressed="${encounterSection===key}"><span>${index+1}</span>${label}</button>`).join('')}</nav></section>`;
 }
 function encounterSections(){
  const canView=resource=>typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed(resource);
- return [['intake','Rooming'],['documentation','Note & ICD-10'],...(chartAreaEnabled('billing')&&canView('billing')?[['charges','Procedures & CPT']]:[]),...(chartAreaEnabled('orders')&&canView('clinical')?[['orders','Orders & prescriptions']]:[]),...(chartAreaEnabled('checkout')?[['checkout','Checkout & AVS']]:[])];
+ return [['intake','Rooming'],['documentation','Note & ICD-10'],...(chartAreaEnabled('billing')&&canView('billing')?[['charges','Billing & claim']]:[]),...(chartAreaEnabled('orders')&&canView('clinical')?[['orders','Orders & prescriptions']]:[]),...(chartAreaEnabled('documents')&&canView('clinical')?[['files','Files & voice']]:[]),...(chartAreaEnabled('checkout')?[['checkout','Checkout & AVS']]:[])];
 }
 function renderEncounterOrderActions(){
  const host=$('encounter-orders-actions');if(!host||!activeVisit)return;
@@ -317,6 +323,7 @@ function setEncounterSection(key){
  if(!encounterSections().some(([step])=>step===key))return;
  captureVisitDrafts();encounterSection=key;showChartSection('visits');
  if(key==='charges'&&typeof renderEncounterRevenue==='function')void renderEncounterRevenue();
+ if(key==='files'&&typeof renderEncounterFiles==='function')void renderEncounterFiles();
 }
 function refreshEncounterProgress(){if(workspace&&$('encounter-progress'))$('encounter-progress').innerHTML=encounterWorkflow();}
 function openEncounterStep(step){
@@ -356,7 +363,7 @@ function chartAreaEnabled(key){
 function patientSectionVisible(key){
  if(!chartAreaEnabled(key))return false;
  if(key===chartSection)return true;
- return chartSection==='visits'&&Boolean(activeVisit)&&((key==='orders'&&encounterSection==='orders')||(key==='checkout'&&encounterSection==='checkout'));
+ return chartSection==='visits'&&Boolean(activeVisit)&&((key==='orders'&&encounterSection==='orders')||(key==='checkout'&&encounterSection==='checkout')||(key==='documents'&&encounterSection==='files'));
 }
 function applyChartSection(){
  if(!chartAreaEnabled(chartSection))chartSection='overview';
@@ -371,22 +378,23 @@ function applyChartSection(){
  if($('encounter-revenue'))$('encounter-revenue').hidden=!(inEncounter&&hasVisit&&step==='charges'&&chartAreaEnabled('billing'));
  if($('encounter-orders-actions'))$('encounter-orders-actions').hidden=!(inEncounter&&hasVisit&&step==='orders'&&chartAreaEnabled('orders'));
  if($('encounter-progress')){$('encounter-progress').hidden=!inEncounter;if(inEncounter&&typeof refreshEncounterProgress==='function')refreshEncounterProgress();}
- const primary=['overview','visits','insurance','billing','documents'];
+ const primary=['overview','visits','insurance'];
  if(typeof applyLabEncounterScope==='function')applyLabEncounterScope();
+ if(typeof documentFileNavigationChanged==='function')documentFileNavigationChanged();
  document.querySelectorAll('.chart-tabs button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.chartSection===chartSection)));
  const record=$('patient-record-navigation');if(record){record.classList.toggle('active',!primary.includes(chartSection));if(primary.includes(chartSection))record.open=false;}
  const context=$('record-context');if(context){context.hidden=!hasVisit||primary.includes(chartSection);context.innerHTML='<button type="button" data-chart-section="visits">← Return to selected encounter</button>';}
 }
 function chartNavigation(tabs){
- const available=new Map(tabs),main=[['overview','Overview'],['visits','Encounter'],['insurance','Insurance'],['billing','Billing'],['documents','Documents']].filter(([key])=>available.has(key)),mainKeys=new Set(main.map(([key])=>key));
- const names={profile:'Demographics',clinical:'Problems, allergies & medications',history:'Surgical & dental history',care_pathways:'Practice workflows',functional_status:'Function & assessments',source:'Imported records'};
+ const available=new Map(tabs),main=[['overview','Overview'],['visits','Encounter'],['insurance','Insurance']].filter(([key])=>available.has(key)),mainKeys=new Set(main.map(([key])=>key));
+ const names={billing:'Account summary',documents:'Shared documents',profile:'Demographics',clinical:'Problems, allergies & medications',history:'Surgical & dental history',care_pathways:'Practice workflows',functional_status:'Function & assessments',source:'Imported records'};
  const records=tabs.filter(([key])=>!mainKeys.has(key)&&key!=='checkout');
  const button=([key,label])=>`<button type="button" data-chart-section="${key}" aria-pressed="${key===chartSection}">${esc(label)}</button>`;
  return `<nav class="chart-tabs patient-workspace-tabs" aria-label="Patient workspace"><div class="chart-tab-row chart-primary-tabs">${main.map(button).join('')}${records.length?`<details class="patient-record-navigation" id="patient-record-navigation"><summary>Patient record</summary><div>${records.map(([key,label])=>button([key,names[key]||label])).join('')}</div></details>`:''}</div></nav>`;
 }
 function patientWorkflowActions(){
  const v=activeVisit,appointment=v?workspace.appointments.find(a=>a.id===v.appointment_id):workspace.appointments.find(a=>['checked_in','booked'].includes(a.status));
- let action='<button type="button" class="primary" data-chart-section="visits">Appointments & encounters</button>',detail='Review the patient record, then select an appointment to begin care.';
+ let action=typeof canStartEncounterFlow==='function'&&canStartEncounterFlow()?'<button type="button" class="primary" data-start-encounter-flow>Start encounter</button>':'<button type="button" class="primary" data-chart-section="visits">Appointments & encounters</button>',detail='Review insurance, then start from an appointment or enter the service date and time.';
  if(v){action=`<button type="button" class="primary" data-chart-section="visits">${v.status==='signed'?'Review encounter':'Continue encounter'}</button>`;detail=`${encounterDateLabel(v)} · ${v.status==='signed'?'Review procedures, checkout and billing for this visit.':'Continue the selected visit, diagnoses and procedures.'}`;}
  else if(appointment?.status==='checked_in'&&(isRoomingStaff()||(['owner','clinician'].includes(me?.role)&&appointment.clinician_id===me.user_id))){action=`<button type="button" class="primary" data-start="${esc(appointment.id)}">Start encounter</button>`;detail='The patient is checked in and ready for their encounter.';}
  else if(appointment?.status==='booked'&&['owner','clinician','front_desk'].includes(me?.role)){action=`<button type="button" class="primary" data-check-in="${esc(appointment.id)}">Check in patient</button>`;detail='Review insurance and copay before starting the visit.';}
@@ -410,6 +418,7 @@ function showChartSection(key){
  if(key==='orders'&&activeVisit&&chartSection==='visits'){encounterSection='orders';key='visits';}
  chartSection=key;applyChartSection();
  if(key==='insurance'&&typeof renderPatientInsurance==='function')void renderPatientInsurance();
+ if(key==='documents'&&typeof renderEncounterFiles==='function')renderEncounterFiles();
 }
 
 const formData=f=>Object.fromEntries(new FormData(f));
@@ -509,7 +518,7 @@ function returnSunToChat(){
  }else{sunPanelView='chat';mountSunWorkspace();}
  return true;
 }
-async function showClinical() {captureVisitDrafts();showTool('Patients & encounters');$('tools').innerHTML='<p class="muted" role="status">Loading patient directory…</p>';const page=await api('/api/v1/patients');patients=page.items;cursor=page.next_cursor;renderPatients();$('tools').replaceChildren();$('tools').hidden=true;$('clinical-workspace').hidden=false;$('new-patient').hidden=!canRegisterPatient();$('toggle-directory').hidden=false;}
+async function showClinical() {const openingIdentity=me;captureVisitDrafts();showTool('Patients & encounters');$('tools').innerHTML='<p class="muted" role="status">Loading patient directory…</p>';const page=await api('/api/v1/patients');if(me!==openingIdentity)return;patients=page.items;cursor=page.next_cursor;renderPatients();$('tools').replaceChildren();$('tools').hidden=true;$('clinical-workspace').hidden=false;$('new-patient').hidden=!canRegisterPatient();$('toggle-directory').hidden=false;}
 const scopeNames={'clinical.read':'Read clinical records','clinical.write':'Update records using your clinical permissions','billing.read':'Read insurance and billing records','billing.write':'Update insurance and local billing records','events.read':'Receive record-change notices','migration.manage':'Stage and import EHR exports','offline_access':'Stay connected while you are away'};
 async function showConsent() {
   const id=new URLSearchParams(location.search).get('oauth_request');
@@ -573,7 +582,7 @@ document.addEventListener('click',e=>{
   if(button.dataset.encounterStep){openEncounterStep(button.dataset.encounterStep);return;}
   if(button.id==='nav-toggle'){const open=$('sidebar').classList.toggle('menu-open');button.setAttribute('aria-expanded',String(open));button.setAttribute('aria-label',open?'Close navigation':'Open navigation');return;}
   if(button.closest('#edi-tool')||button.dataset.ediClaim)return;
-  if(button.closest('#claims-tool')||button.dataset.newClaim||button.dataset.mapClaim)return;
+  if(button.closest('#claims-tool')||button.closest('#encounter-claims')||button.dataset.newClaim||button.dataset.mapClaim)return;
   if(button.closest('#billing-workspace')||button.closest('#billing-tool')||button.dataset.mapBilling)return;
   if(button.closest('#schedule-workspace')||button.dataset.mapAppointment)return;
   if(button.closest('#patient-demographics'))return;

@@ -307,12 +307,16 @@ async fn attachment_snapshot(
     a: &Actor,
     p: Uuid,
     ids: &[Uuid],
+    reviewed: Option<&Value>,
 ) -> Result<Value> {
     let mut out = Vec::new();
     let mut sorted = ids.to_vec();
     sorted.sort();
     for id in sorted {
-        out.push(crate::documents::validate_link(tx, a.tenant_id, p, id).await?);
+        let previous = reviewed
+            .and_then(Value::as_array)
+            .and_then(|items| items.iter().find(|item| item["id"] == id.to_string()));
+        out.push(crate::documents::validate_reviewed_link(tx, a.tenant_id, p, id, previous).await?);
     }
     Ok(json!(out))
 }
@@ -390,7 +394,7 @@ async fn create(
         tx.commit().await?;
         return Ok(response(e));
     }
-    attachment_snapshot(&mut tx, &a, p, &v.content.document_ids).await?;
+    attachment_snapshot(&mut tx, &a, p, &v.content.document_ids, None).await?;
     let q=format!("INSERT INTO referrals(tenant_id,id,patient_id,visit_id,request_id,create_request,content,created_by,updated_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$8) RETURNING {FIELDS}");
     let e = sqlx::query_as(&q)
         .bind(a.tenant_id)
@@ -429,7 +433,7 @@ async fn update(
     }
     crate::referral_delivery::ensure_unreserved(&mut tx, a.tenant_id, id).await?;
     context(&mut tx, &a, p, v.visit_id).await?;
-    attachment_snapshot(&mut tx, &a, p, &v.content.document_ids).await?;
+    attachment_snapshot(&mut tx, &a, p, &v.content.document_ids, None).await?;
     let q=format!("UPDATE referrals SET visit_id=$4,content=$5,status='draft',attachment_snapshot=NULL,version=version+1,updated_by=$6,updated_at=now() WHERE tenant_id=$1 AND patient_id=$2 AND id=$3 RETURNING {FIELDS}");
     let e = sqlx::query_as(&q)
         .bind(a.tenant_id)
@@ -483,7 +487,18 @@ async fn action(
     let documents: Content = serde_json::from_value(old.content.clone())
         .map_err(|_| Error::Invalid("invalid stored referral"))?;
     let snapshot = if v.action == "ready" || v.action == "sent" {
-        let current = attachment_snapshot(&mut tx, &a, p, &documents.document_ids).await?;
+        let current = attachment_snapshot(
+            &mut tx,
+            &a,
+            p,
+            &documents.document_ids,
+            if v.action == "sent" {
+                old.attachment_snapshot.as_ref()
+            } else {
+                None
+            },
+        )
+        .await?;
         if v.action == "sent" && old.attachment_snapshot.as_ref() != Some(&current) {
             return Err(Error::Conflict(
                 "referral attachments changed; return to draft and review readiness again",

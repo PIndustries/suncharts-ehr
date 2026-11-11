@@ -11,7 +11,7 @@ const fields={
 };
 for(const prefix of ['billing','subscriber','patient','payer'])for(const key of ['line1','line2','city','state','postal_code'])fields[`${prefix}_${key}`]='SYNTHETIC';
 const context={
- console,crypto:{randomUUID:()=>`request-${calls.length}`},
+ console,me:{user_id:'synthetic-clinician'},crypto:{randomUUID:()=>`request-${calls.length}`},
  document:{addEventListener:()=>{}},
  FormData:class{constructor(){return Object.entries(fields)}},
  claimsBase:'/api/v1/billing/claims',claimCurrent:{id:'synthetic-claim',version:7},

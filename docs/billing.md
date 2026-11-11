@@ -28,10 +28,11 @@ require review.
    copay** records confirmed cash, check or an external payment already received.
    Supply its amount, date, method, reference and evidence; check/external receipts
    require a reference. This can happen before an encounter or posted account
-   exists. Recording a receipt does not charge a card. Live card capture is
-   unavailable; hosted test payments are limited to development with synthetic data.
+   exists. Recording a receipt does not charge a card. **Collect card copay** uses
+   the separately configured hosted checkout described below; test-mode collections
+   are limited to development with synthetic data.
 2. Open the encounter, document the visit and ICD-10 diagnoses, and enter its
-   procedures and charges under **Procedures & CPT**. Review diagnosis links,
+   procedures and charges under the encounter’s **Billing & claim** step. Review diagnosis links,
    quantities and full line totals before signing and posting. Posting applies
    available copay credit from this appointment to its account. A receipt recorded
    after posting can apply immediately. Pending processor attempts reserve amounts;
@@ -73,8 +74,8 @@ alone does not complete this work.
 
 Patient invoice snapshots are independent of Stripe account setup. They are not
 Stripe-hosted invoices or automatic collection requests. Online invoice delivery,
-automatic responsibility allocation and live card capture remain unavailable in
-this EHR workflow.
+and automatic responsibility allocation remain unavailable. Hosted appointment
+copay collection is a separate operation with its own receipt and reconciliation.
 
 ## Encounter diagnosis links
 
@@ -146,54 +147,75 @@ Unsupported financial segments, unrecognized recovery chains and mismatched sour
 links require review. Local parser support is not proof that every payer's 835
 profile is accepted.
 
-## Hosted test payments
+## Hosted appointment copays
+
+The encounter's **Billing & claim** step and pre-visit **Insurance** tab can open
+Stripe-hosted Checkout for a reviewed appointment copay before charges exist.
+The appointment, patient, optional coverage snapshot, amount, installation,
+credential revision, Stripe account and test/live mode are bound to that attempt.
+Only opaque identifiers and generic payment descriptions are sent to the broker;
+clinical notes, diagnoses and MRNs are not Checkout line items.
+
+Live collection is disabled by default. It requires the EHR operator setting
+`ENGINE_HOSTED_COPAY_LIVE_ENABLED=true`, the Connect operator setting
+`SUNCHARTS_CONNECT_LIVE_CHECKOUT=enabled`, and a verified charge-capable live
+account. These flags do not complete Stripe onboarding or attest to deployment
+acceptance. Test mode is always blocked in production, including reconciliation
+and allocation of old test receipts. Development test receipts are marked TEST.
+
+The background worker reconciles durable attempts after browser closure and
+process restart. Opening Checkout, returning from Stripe or receiving an uncertain
+response does not create a payment. The server retrieves the exact original
+account's Checkout Session, PaymentIntent and captured charge, checks their
+identity, amount, currency, mode and capture timestamp, then creates one immutable
+receipt with audited allocation. An exact retried request reuses its operation;
+conflicting retries fail. Uncertain creations retry only inside the verified
+23-hour provider idempotency window and otherwise require review.
+
+A captured copay remains unapplied until eligible encounter charges are posted.
+Its receipt is allocated once, without treating the gross insured charge as final
+patient responsibility. Verified cumulative refunds consume unapplied credit
+first and append reversals to prior allocations when needed. Duplicate evidence
+cannot post twice. The receipt retains the processor capture date; refund ledger
+dates reflect reconciliation because the broker supplies cumulative refunded
+amounts rather than individual refund timestamps. Disputed or inconsistent
+provider evidence stays in review.
+
+Issue a managed refund in the connected Stripe account, then refresh the original
+attempt or allow the worker to reconcile it. This EHR protocol does not initiate
+managed refunds. Manual receipt voids and ledger reversals cannot alter hosted
+funds. Existing ledger entries and saved invoices are never overwritten.
+
+## Payment account setup
 
 Payment settings use an authenticated SunCharts Payments connection backed by
-Stripe Connect. **Live charges are disabled.** Test collection is available only
-in development with synthetic patients. When `ENGINE_ENVIRONMENT=production`,
-the EHR blocks test-payment activation, creation, refunds, and ledger
-reconciliation. Historical payment evidence and account setup remain available;
-simulated processor funds cannot reduce production patient balances. A correctly bound live Stripe account may display business, charge and payout readiness after a refresh. This authenticates the connection only and does not enable live collection.
-
-For a connected installation, configure the clinic payment account from the
-native SunCharts EHR billing experience. SunCharts Connect owns the Stripe
-platform secret and brokers onboarding and Checkout creation/retrieval. The EHR
-reconciles retrieved evidence; managed refund and webhook delivery contracts are
-not yet supported. The clinic never enters a Stripe API key,
-installation ID, or broker token in the EHR. Only Stripe-hosted identity and
-bank verification opens outside the EHR, then returns to the clinic payment
-account. Staff refreshes account status and explicitly activates test checkout
-from the native billing experience. If status refresh fails or Stripe still needs
-information, choose **Continue Stripe setup** to resume the clinic-scoped setup
-page. This action stays available even when a previous refresh did not return an
-onboarding link. Complete verification, return to the EHR and refresh again.
+Stripe Connect. Connect owns the platform secret and brokers clinic onboarding.
+The clinic never enters a Stripe API key, installation ID or broker token in the
+EHR. If status refresh fails or Stripe needs more information, **Continue Stripe
+setup** resumes the clinic-scoped setup page even when the failed refresh did not
+return an onboarding link. Complete Stripe's verification, return to the EHR and
+refresh again. Charge capability and bank-payout capability are displayed
+separately; connection alone does not establish either.
 
 Managed payments use the verified Connect origin unless an operator supplies
-`ENGINE_PAYMENT_BROKER_URL`. They require a verified installation and
-completed clinic enrollment. Authorized clinic owners, delegated partner
-administrators, and platform administrators manage the clinic-scoped account
-from the EHR. Stripe onboarding is used only for required identity and bank
-verification; selecting the option alone does not enable collection.
+`ENGINE_PAYMENT_BROKER_URL`. A verified installation and completed clinic enrollment
+are required. Authorized clinic owners and delegated administrators manage the
+clinic-scoped account from the EHR.
 
-Create a hosted Checkout Session from a posted account using its current version,
-a stable request UUID and an integer USD amount within the available balance.
-Enter the reviewed copay or patient responsibility explicitly; the account
-balance can include insurer responsibility and is not used as a default payment
-amount. Pending attempts reserve their amounts. Card details are entered on Stripe-hosted
-Checkout. The EHR sends generic payment details and opaque identifiers, not clinical
-notes, diagnoses, names or MRNs.
+## Legacy posted-account test payments
 
-A browser return never posts payment. Server retrieval or a verified signed webhook
-checks processor identity, amount, currency, test mode and confirmed payment/refund
-evidence before accounting. Duplicate evidence cannot post twice. Uncertain requests
-retain their original identity; after the provider idempotency window they require
-reconciliation rather than a new request.
+The older posted-account payment routes remain test-only. Their explicit test
+activation is separate from hosted appointment copays. Production blocks test
+activation, creation, refunds and reconciliation. Read-only historical evidence
+and onboarding remain available. A correctly bound live account can display
+readiness without enabling this older payment path.
 
-Own-account mode supports native test refunds and session expiration. The managed
-broker currently supports Checkout creation/retrieval and external-refund
-reconciliation, so issue managed refunds in the connected Stripe account and
-refresh the original attempt. Manual ledger reversals do not refund a card charge.
+Create a test session from a posted account using its current version, a stable
+request UUID and a reviewed USD amount within its available balance. The full
+account balance may include insurer responsibility and is not a default patient
+payment. Own-account mode supports test refunds and session expiration; the
+managed legacy broker supports creation/retrieval and external-refund evidence.
 
-Live collection, disputes, payout/fee reconciliation, multiple currencies,
-terminals and recurring charges remain unsupported. See [operations](operations.md)
-for credential backups and [the API](../api/openapi.json) for exact contracts.
+Payout/fee reconciliation, dispute resolution, multiple currencies, terminals and
+recurring charges remain unsupported. See [operations](operations.md) for
+credential backups and [the API](../api/openapi.json) for the separate contracts.

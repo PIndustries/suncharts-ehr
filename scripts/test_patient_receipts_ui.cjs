@@ -21,6 +21,6 @@ const voided=ctx.copayReceiptDocument({...receipt,voided:true},context);assert.m
 const corrected=ctx.copayReceiptDocument({...receipt,allocated_cents:2500,reversed_cents:2500},context);assert.match(corrected,/Receipt with corrected allocation/);assert.match(corrected,/does not establish that a refund was issued/);assert(!corrected.includes('Remaining unapplied credit'));
 const missingAppointment=ctx.copayReceiptDocument(receipt,{...context,appointment:null});assert.match(missingAppointment,/Appointment reference:/);assert.match(missingAppointment,/appointment-old/);
 assert.throws(()=>ctx.showCopayReceipt('missing'),/unavailable/);ctx.workspace.billing.copays=[{...receipt,patient_id:'other'}];assert.throws(()=>ctx.showCopayReceipt('receipt-old'),/current patient/);
-const button={dataset:{},hasAttribute:name=>name==='data-print-copay'};handlers.click.at(-1)({target:{closest:()=>button},preventDefault(){}});assert.equal(ctx.printed,true);
+const button={dataset:{},closest:()=>null,hasAttribute:name=>name==='data-print-copay'};for(const listener of handlers.click)listener({target:{closest:selector=>selector==='button'?button:null},preventDefault(){}});assert.equal(ctx.printed,true);
 assert.match(ctx.copayReceiptMarkup([receipt]),/View \/ print receipt/);
 console.log('PASS receipt preview/printing, exact appointment context, current-patient isolation, escaped output, historic correction labels, no staff-note disclosure');

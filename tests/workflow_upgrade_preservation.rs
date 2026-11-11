@@ -276,5 +276,85 @@ END $$;
         .unwrap();
         assert_eq!(balance, 2000, "historical copay must not be applied twice");
     }
+    // Existing manual receipts and older invoice formats must not become hosted
+    // checkout operations, be reallocated, or be rewritten when schema 92 lands.
+    sqlx::raw_sql(
+        r#"
+INSERT INTO billing_copay_receipts(tenant_id,id,patient_id,appointment_id,amount_cents,method,reference,occurred_on,reason,request_id,creation_hash,actor_id)
+VALUES('10000000-0000-0000-0000-000000000001',gen_random_uuid(),'20000000-0000-0000-0000-000000000001','40000000-0000-0000-0000-000000000001',1000,'external','SYN-EXTERNAL-RECEIPT','2026-10-01','Historical external payment',gen_random_uuid(),repeat('2',64),'30000000-0000-0000-0000-000000000001');
+INSERT INTO patient_invoice_snapshots(tenant_id,id,patient_id,account_id,request_id,creation_hash,account_version,snapshot,actor_id)
+VALUES('10000000-0000-0000-0000-000000000001',gen_random_uuid(),'20000000-0000-0000-0000-000000000001','70000000-0000-0000-0000-000000000001',gen_random_uuid(),repeat('3',64),5,'{"gross_charges_cents":15000,"responsibility_cents":5000,"patient_credit_cents":3000,"amount_due_cents":2000,"currency":"USD"}','30000000-0000-0000-0000-000000000001');
+"#,
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let tables_91: Vec<String> = sqlx::query_scalar(
+        "SELECT tablename::text FROM pg_tables WHERE schemaname=current_schema()
+         AND tablename<>'_sqlx_migrations' ORDER BY tablename",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let before_hosted = snapshot_tables(&pool, &tables_91).await;
+    assert_eq!(
+        before_hosted["billing_copay_receipts"]
+            .0
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        before_hosted["patient_invoice_snapshots"]
+            .0
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    for _ in 0..2 {
+        through_revision(92).run(&pool).await.unwrap();
+        assert_eq!(before_hosted, snapshot_tables(&pool, &tables_91).await);
+        for table in [
+            "copay_checkout_attempts",
+            "copay_checkout_events",
+            "copay_checkout_refund_events",
+            "copay_checkout_refund_allocations",
+        ] {
+            let count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(
+                count, 0,
+                "hosted checkout upgrade must not backfill {table}"
+            );
+        }
+    }
+    let tables_92: Vec<String> = sqlx::query_scalar(
+        "SELECT tablename::text FROM pg_tables WHERE schemaname=current_schema()
+         AND tablename<>'_sqlx_migrations' ORDER BY tablename",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let before_files = snapshot_tables(&pool, &tables_92).await;
+    for _ in 0..2 {
+        through_revision(95).run(&pool).await.unwrap();
+        assert_eq!(
+            before_files,
+            snapshot_tables(&pool, &tables_92).await,
+            "file version upgrade must preserve original bytes, metadata and all financial rows"
+        );
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM patient_document_file_versions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "original documents must not be rewritten or backfilled as new versions"
+        );
+    }
     pool.close().await;
 }

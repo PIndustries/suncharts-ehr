@@ -30,3 +30,19 @@ console.log('PASS stored provider and facility identity is reusable without inve
 const history=context.claimmdEligibilityHistory([{status:'completed',created_at:'2026-11-05',actor_id:'staff-1',response_snapshot:{elig:[{eligid:'synthetic-eligibility',insurance_plan:'Plan <unsafe>',benefit:[{benefit_description:'Coverage <active>',benefit_coverage_description:'Active Coverage',benefit_amount:'0'}]}]}}]);
 assert.match(history,/Plan &lt;unsafe&gt;/);assert.match(history,/Coverage &lt;active&gt;/);assert.doesNotMatch(history,/<unsafe>/);assert.match(history,/synthetic-eligibility/);
 console.log('PASS structured eligibility results and audit attribution render safely');
+
+const benefits={status:'completed',response_snapshot:{elig:[{insurance_plan:'Synthetic plan',benefit:[
+ {benefit_coverage_code:'B',benefit_code:'98',benefit_description:'Office visit',benefit_amount:'35',inplan_network:'Y',benefit_notes:'SPECIALIST <unsafe>',benefit_period_description:'Visit'},
+ {benefit_coverage_code:'B',benefit_code:'98',benefit_amount:'0',inplan_network:'N'},
+ {benefit_coverage_code:'A',benefit_percent:'50',inplan_network:'N'},
+ {benefit_coverage_code:'C',benefit_amount:'1500.50',benefit_period_description:'Remaining',benefit_level_description:'Individual'},
+ {benefit_coverage_code:'1',benefit_coverage_description:'Active Coverage'}]}]}};
+const summary=context.claimmdBenefitSummary(benefits);
+for(const text of ['$35.00','$0.00','50%','$1,500.50','Remaining','Individual','Office visit','In network','Out of network','SPECIALIST &lt;unsafe&gt;','Not returned'])assert.ok(summary.includes(text),text);
+assert.doesNotMatch(summary,/5000%|<unsafe>/);
+assert.equal(context.claimmdBenefitSummary({...benefits,status:'failed'}),'');
+assert.equal(context.claimmdBenefitValue({benefit_amount:null,benefit_percent:null}),'Not returned');
+assert.equal(context.claimmdBenefitValue({benefit_amount:'malformed',benefit_percent:'101'}),'Not returned');
+assert.equal(context.claimmdBenefitValue({benefit_percent:'0.5'}),'0.5%','provider percentages are already percent units, never multiplied');
+assert.match(summary,/do not change the recorded copay/);
+console.log('PASS benefits preserve dollar and percent units, zero amounts, service/network/period context and uncertainty');

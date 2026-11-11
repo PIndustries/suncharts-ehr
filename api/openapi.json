@@ -12206,6 +12206,10 @@
                     "broker_available": {
                       "type": "boolean",
                       "description": "A valid payment broker origin is configured; this does not establish payment account readiness."
+                    },
+                    "hosted_copays_live_enabled": {
+                      "type": "boolean",
+                      "description": "EHR operator gate for the distinct appointment hosted-copay protocol. Account readiness and the Connect gate are also required; does not enable legacy posted-account live payments."
                     }
                   }
                 }
@@ -18188,7 +18192,7 @@
             }
           }
         },
-        "description": "Owner/clinician may upload any supported category. Front desk may upload identity, insurance or legal only. Decoded PDF/PNG/JPEG limited to 10 MiB; MIME and magic are validated, not a malware scan or complete file validation. JSON body limited to 15 MiB. Original bytes, SHA-256 and uploader are immutable; metadata revisions are separate. Exact request retries are idempotent. Uploading does not release to patients or send externally."
+        "description": "Owner/clinician may upload any supported category. Front desk may upload identity, insurance or legal only. Nonempty decoded files are limited to 10 MiB; UTF-8 text to 200,000 bytes. MIME and signatures are checked, not full file validation or malware scanning. Office packages remain opaque ZIP containers and cannot be rendered on the EHR origin. JSON body is limited to 15 MiB. Original bytes, filename, SHA-256 and uploader are immutable; metadata and working-file versions are separate. Exact retries are idempotent. Uploading alone does not release files to patients or send externally."
       }
     },
     "/api/v1/patients/{patient}/documents/{id}": {
@@ -18472,6 +18476,54 @@
                 }
               },
               "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/mpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/wav": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/ogg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/webm": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
                 "schema": {
                   "type": "string",
                   "format": "binary"
@@ -31218,6 +31270,42 @@
                   "type": "string",
                   "format": "binary"
                 }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/mpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/wav": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/ogg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/webm": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
               }
             },
             "headers": {
@@ -31284,7 +31372,7 @@
             "description": "Atomic operation failed"
           }
         },
-        "description": "Staff-only, tenant/patient/document scoped PDF, PNG or JPEG bytes. The preview audit commits before bytes are returned. Inline disposition uses a generated document-ID filename; no-store, nosniff, same-origin framing/resource policy and restrictive default-src 'none' CSP prevent active document embedding. No arbitrary remote URL or HTML/SVG preview is supported."
+        "description": "Staff-only, tenant/patient/document scoped original PDF, PNG, JPEG, plain-text or audio bytes. Office files require a separately configured editor or authenticated download; HTML/SVG and remote URLs are never previewed. Audit commits before response. Inline generated filename, no-store, nosniff, same-origin resource/framing policy and restrictive CSP. This endpoint returns the original binary without later annotation overlays."
       }
     },
     "/api/v1/patients/{p}/billing/copays": {
@@ -31543,6 +31631,1256 @@
             "description": "Quoted current posted account version."
           }
         ]
+      }
+    },
+    "/api/v1/patients/{p}/appointments/{a}/copay-checkouts": {
+      "parameters": [
+        {
+          "name": "p",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "a",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "listHostedAppointmentCopays",
+        "summary": "List appointment card attempts and collection availability",
+        "description": "Billing-read staff. Returns at most 100 attempts; excessive history requires review rather than silent truncation. Availability is verified against configured account readiness and environment gates.",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "billing.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current durable operation state; financial effects require verified provider evidence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "maxItems": 100,
+                      "items": {
+                        "$ref": "#/components/schemas/HostedCopayOperation"
+                      }
+                    },
+                    "availability": {
+                      "type": "object",
+                      "properties": {
+                        "available": {
+                          "type": "boolean"
+                        },
+                        "livemode": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "reason": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "available",
+                        "livemode",
+                        "reason"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "items",
+                    "availability"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input or unavailable/mismatched payment mode"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Billing permission denied"
+          },
+          "404": {
+            "description": "Tenant/patient/appointment-scoped record not found"
+          },
+          "409": {
+            "description": "Conflicting retry, pending collection, unsafe balance or over-limit history"
+          },
+          "500": {
+            "description": "Database/audit failure; mutation rolled back"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createHostedAppointmentCopay",
+        "summary": "Collect an appointment copay with Stripe-hosted Checkout",
+        "description": "Billing-write staff. Reserve a same-patient appointment attempt before provider I/O. Binds installation, credential revision, Stripe account, mode, amount and optional coverage snapshot immutably. Exact request retry returns the original attempt; conflicting reuse fails. Test mode is blocked in production. Live mode requires both the EHR and Connect operator gates. Pending/uncertain attempts retain their identity; recovery retries only within the verified 23-hour window. This can precede encounter charges.",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "billing.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current durable operation state; financial effects require verified provider evidence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "operation": {
+                      "$ref": "#/components/schemas/HostedCopayOperation"
+                    }
+                  },
+                  "required": [
+                    "operation"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input or unavailable/mismatched payment mode"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Billing permission denied"
+          },
+          "404": {
+            "description": "Tenant/patient/appointment-scoped record not found"
+          },
+          "409": {
+            "description": "Conflicting retry, pending collection, unsafe balance or over-limit history"
+          },
+          "500": {
+            "description": "Database/audit failure; mutation rolled back"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HostedCopayInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/patients/{p}/appointments/{a}/copay-checkouts/{id}": {
+      "parameters": [
+        {
+          "name": "p",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "a",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getHostedAppointmentCopay",
+        "summary": "Read an appointment card attempt",
+        "description": "Tenant, patient and appointment scoped. Does not reconcile or infer payment from a browser return.",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "billing.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current durable operation state; financial effects require verified provider evidence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "operation": {
+                      "$ref": "#/components/schemas/HostedCopayOperation"
+                    }
+                  },
+                  "required": [
+                    "operation"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input or unavailable/mismatched payment mode"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Billing permission denied"
+          },
+          "404": {
+            "description": "Tenant/patient/appointment-scoped record not found"
+          },
+          "409": {
+            "description": "Conflicting retry, pending collection, unsafe balance or over-limit history"
+          },
+          "500": {
+            "description": "Database/audit failure; mutation rolled back"
+          }
+        }
+      }
+    },
+    "/api/v1/patients/{p}/appointments/{a}/copay-checkouts/{id}/refresh": {
+      "parameters": [
+        {
+          "name": "p",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "a",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "refreshHostedAppointmentCopay",
+        "summary": "Retrieve and reconcile the original card attempt",
+        "description": "Billing-write staff. Uses the original immutable broker/account/mode binding. Confirmed captured funds create one receipt; allocations and cumulative refund deltas commit with audit atomically. Disputed, inconsistent, ambiguous or unsupported evidence enters review. The background worker also reconciles due attempts without an open browser. No refund is initiated here.",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "billing.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current durable operation state; financial effects require verified provider evidence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "operation": {
+                      "$ref": "#/components/schemas/HostedCopayOperation"
+                    }
+                  },
+                  "required": [
+                    "operation"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input or unavailable/mismatched payment mode"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Billing permission denied"
+          },
+          "404": {
+            "description": "Tenant/patient/appointment-scoped record not found"
+          },
+          "409": {
+            "description": "Conflicting retry, pending collection, unsafe balance or over-limit history"
+          },
+          "500": {
+            "description": "Database/audit failure; mutation rolled back"
+          }
+        }
+      }
+    },
+    "/api/v1/documents/office-availability": {
+      "get": {
+        "summary": "Office editor availability",
+        "operationId": "office_get_office_editor_availability",
+        "tags": [
+          "Documents"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Confirmed server state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "editor_origin": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "reason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "available",
+                    "editor_origin",
+                    "reason"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Expired or invalid session or signature"
+          },
+          "403": {
+            "description": "Current actor or resource access denied"
+          },
+          "409": {
+            "description": "Version or request binding conflict"
+          }
+        }
+      }
+    },
+    "/api/v1/patients/{patient}/documents/{id}/office-sessions": {
+      "post": {
+        "summary": "Open scoped Office editor",
+        "operationId": "office_post_open_scoped_office_editor",
+        "tags": [
+          "Documents"
+        ],
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Confirmed server state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OfficeEditorSession"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Expired or invalid session or signature"
+          },
+          "403": {
+            "description": "Current actor or resource access denied"
+          },
+          "409": {
+            "description": "Version or request binding conflict"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OfficeEditorSessionCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/patients/{patient}/documents/{id}/office-sessions/{session}": {
+      "get": {
+        "summary": "Read confirmed Office save status",
+        "operationId": "office_get_read_confirmed_office_save_status",
+        "tags": [
+          "Documents"
+        ],
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "session",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Confirmed server state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OfficeEditorSession"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Expired or invalid session or signature"
+          },
+          "403": {
+            "description": "Current actor or resource access denied"
+          },
+          "409": {
+            "description": "Version or request binding conflict"
+          }
+        }
+      }
+    },
+    "/api/v1/patients/{patient}/documents/{id}/office-sessions/{session}/save": {
+      "post": {
+        "summary": "Request operation bound Office save",
+        "operationId": "office_post_request_operation_bound_office_save",
+        "tags": [
+          "Documents"
+        ],
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "session",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Confirmed server state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OfficeEditorSession"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Expired or invalid session or signature"
+          },
+          "403": {
+            "description": "Current actor or resource access denied"
+          },
+          "409": {
+            "description": "Version or request binding conflict"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OfficeEditorSave"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/office/source/{session}": {
+      "get": {
+        "summary": "Read scoped immutable Office source",
+        "operationId": "office_get_read_scoped_immutable_office_source",
+        "tags": [
+          "Documents"
+        ],
+        "parameters": [
+          {
+            "name": "session",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Short-lived signed capability bound to this exact Office session and route purpose."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated immutable DOCX or XLSX bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Expired or invalid session or signature"
+          },
+          "403": {
+            "description": "Current actor or resource access denied"
+          },
+          "409": {
+            "description": "Version or request binding conflict"
+          }
+        }
+      }
+    },
+    "/api/v1/office/callback/{session}": {
+      "post": {
+        "summary": "Confirm signed Office save callback",
+        "operationId": "office_post_confirm_signed_office_save_callback",
+        "tags": [
+          "Documents"
+        ],
+        "parameters": [
+          {
+            "name": "session",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Short-lived signed capability bound to this exact Office session and route purpose."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Confirmed server state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "integer",
+                      "enum": [
+                        0,
+                        1
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Expired or invalid session or signature"
+          },
+          "403": {
+            "description": "Current actor or resource access denied"
+          },
+          "409": {
+            "description": "Version or request binding conflict"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/patients/{patient}/documents/{id}/files": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "patient",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "listDocumentFileVersions",
+        "summary": "List immutable file version history",
+        "tags": [
+          "Documents"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Audited result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentFileVersionPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid format, annotation, reason or decoded size"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or clinical scope denied"
+          },
+          "404": {
+            "description": "File version not found within tenant/patient/document"
+          },
+          "409": {
+            "description": "Stale file version, lifecycle state or request identity conflict"
+          },
+          "500": {
+            "description": "Atomic operation failed"
+          }
+        }
+      },
+      "post": {
+        "operationId": "appendDocumentFileVersion",
+        "summary": "Append a text, binary or annotation working copy",
+        "tags": [
+          "Documents"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Audited result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentFileVersion"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid format, annotation, reason or decoded size"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or clinical scope denied"
+          },
+          "404": {
+            "description": "File version not found within tenant/patient/document"
+          },
+          "409": {
+            "description": "Stale file version, lifecycle state or request identity conflict"
+          },
+          "500": {
+            "description": "Atomic operation failed"
+          },
+          "428": {
+            "description": "Current quoted file version required"
+          },
+          "413": {
+            "description": "JSON body exceeds 15 MiB"
+          }
+        },
+        "parameters": [
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^\"[0-9]+\"$"
+            },
+            "description": "Quoted current file_version. Independent of document metadata version."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocumentFileSave"
+              }
+            }
+          }
+        },
+        "description": "Owner/clinician may append active documents; front desk is limited to the existing identity/insurance/legal category. Parent row locking serializes file saves with metadata changes. Successful copies and audits commit together. No signature or encounter-note amendment is implied."
+      }
+    },
+    "/api/v1/patients/{patient}/documents/{id}/files/{version}": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "patient",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "in": "path",
+          "name": "version",
+          "required": true,
+          "schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "readDocumentFileVersion",
+        "summary": "Read an immutable file version and annotations",
+        "tags": [
+          "Documents"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Audited result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentFileVersion"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid format, annotation, reason or decoded size"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or clinical scope denied"
+          },
+          "404": {
+            "description": "File version not found within tenant/patient/document"
+          },
+          "409": {
+            "description": "Stale file version, lifecycle state or request identity conflict"
+          },
+          "500": {
+            "description": "Atomic operation failed"
+          }
+        }
+      }
+    },
+    "/api/v1/patients/{patient}/documents/{id}/files/{version}/preview": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "patient",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "in": "path",
+          "name": "version",
+          "required": true,
+          "schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "previewDocumentFileVersion",
+        "summary": "Preview authenticated immutable file version",
+        "tags": [
+          "Documents"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Original bytes for in-chart preview; no-store and inline disposition",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/mpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/wav": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/ogg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/webm": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "no-store"
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "inline; generated document-ID filename"
+              },
+              "X-Content-Type-Options": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "nosniff"
+              },
+              "X-Frame-Options": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "SAMEORIGIN"
+              },
+              "Content-Security-Policy": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "default-src 'none'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'"
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "no-referrer"
+              },
+              "Cross-Origin-Resource-Policy": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "same-origin"
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Record not found in tenant/patient"
+          },
+          "409": {
+            "description": "Version, state or request identity conflict"
+          },
+          "500": {
+            "description": "Atomic operation failed"
+          }
+        },
+        "description": "Staff-only read scoped by tenant, patient, document and exact file version. Version 1 is the original. The audit commits before bytes return. Generated safe filename, no-store and nosniff; same-origin framing and restrictive CSP. Annotation overlays are returned separately in version metadata and are not flattened into these bytes. Office packages cannot be previewed here; use a configured Office session."
+      }
+    },
+    "/api/v1/patients/{patient}/documents/{id}/files/{version}/download": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "patient",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "in": "path",
+          "name": "version",
+          "required": true,
+          "schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "downloadDocumentFileVersion",
+        "summary": "Download authenticated immutable file version",
+        "tags": [
+          "Documents"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/mpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/wav": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/ogg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/webm": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "audio/mp4": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Record not found in tenant/patient"
+          },
+          "409": {
+            "description": "Version, state or request identity conflict"
+          },
+          "500": {
+            "description": "Atomic operation failed"
+          }
+        },
+        "description": "Staff-only read scoped by tenant, patient, document and exact file version. Version 1 is the original. The audit commits before bytes return. Generated safe filename, no-store and nosniff; same-origin framing and restrictive CSP. Annotation overlays are returned separately in version metadata and are not flattened into these bytes."
       }
     }
   },
@@ -35550,8 +36888,17 @@
             "maxItems": 100
           },
           "transport": {
-            "type": "string",
-            "maxLength": 300
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Configured clearinghouse routes, artifact availability and retrieval health; unrelated to Connect WSS."
+          },
+          "tracking": {
+            "$ref": "#/components/schemas/ClaimTracking"
+          },
+          "submission_defaults": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Structured review defaults from claim and chart; does not submit a claim."
           }
         },
         "required": [
@@ -42088,13 +43435,22 @@
             "enum": [
               "application/pdf",
               "image/png",
-              "image/jpeg"
+              "image/jpeg",
+              "text/plain",
+              "audio/mpeg",
+              "audio/wav",
+              "audio/ogg",
+              "audio/webm",
+              "audio/mp4",
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             ]
           },
           "content_base64": {
             "type": "string",
             "format": "byte",
-            "maxLength": 13981016
+            "maxLength": 13981016,
+            "description": "Nonempty decoded file up to 10 MiB. text/plain must be valid UTF-8 without unsupported controls and at most 200,000 bytes; all other supported formats are checked by file signature, not complete structure or malware scanning."
           },
           "content": {
             "$ref": "#/components/schemas/DocumentContent"
@@ -42188,6 +43544,11 @@
               "null"
             ],
             "description": "Current display name/email when available; uploaded_by preserves stable attribution."
+          },
+          "file_version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Latest immutable working-file version, separate from metadata version. Version 1 is always the original upload."
           }
         },
         "required": [
@@ -42202,7 +43563,8 @@
           "uploaded_by",
           "updated_by",
           "uploaded_at",
-          "updated_at"
+          "updated_at",
+          "file_version"
         ]
       },
       "PatientDocumentPage": {
@@ -47628,6 +48990,40 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          "hosted_checkout": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "livemode": {
+                "type": "boolean"
+              },
+              "status": {
+                "enum": [
+                  "creating",
+                  "open",
+                  "paid",
+                  "expired",
+                  "needs_review",
+                  "refunded"
+                ]
+              },
+              "refunded_cents": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "refunded_unapplied_cents": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "description": "Present for processor-verified hosted receipts. Manual void/reversal is rejected; verified provider refunds govern their accounting. Test receipts cannot be allocated in production."
           }
         },
         "required": [
@@ -47995,6 +49391,714 @@
           "reason"
         ],
         "description": "Stored ledger content, including server-attributed receipt or provider evidence. Unlike NewBillingEntry, it is not accepted as a write payload."
+      },
+      "HostedCopayOperation": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "patient_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "appointment_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "amount_cents": {
+            "type": "integer",
+            "minimum": 50,
+            "maximum": 100000000
+          },
+          "currency": {
+            "const": "USD"
+          },
+          "livemode": {
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "creating",
+              "open",
+              "paid",
+              "expired",
+              "needs_review",
+              "refunded"
+            ]
+          },
+          "checkout_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "description": "Available only for an open attempt permitted in this environment."
+          },
+          "receipt_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "refunded_cents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "captured_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "last_result": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "patient_id",
+          "appointment_id",
+          "request_id",
+          "amount_cents",
+          "currency",
+          "livemode",
+          "status",
+          "checkout_url",
+          "receipt_id",
+          "refunded_cents",
+          "version",
+          "created_at",
+          "captured_at",
+          "last_result"
+        ],
+        "description": "Immutable appointment/payment binding with durable reconciliation state. Receipt creation requires independently retrieved account/mode-bound captured charge evidence. Browser return and Checkout opening never count as payment."
+      },
+      "HostedCopayInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "coverage_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "amount_cents": {
+            "type": "integer",
+            "minimum": 50,
+            "maximum": 100000000
+          },
+          "livemode": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "request_id",
+          "amount_cents",
+          "livemode",
+          "reason"
+        ]
+      },
+      "ClaimTracking": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "submissions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "technical_status": {
+                  "type": "string"
+                },
+                "payer_outcome": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "id",
+                "status",
+                "technical_status",
+                "payer_outcome",
+                "created_at"
+              ]
+            }
+          },
+          "reports": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "submission_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "received_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "evidence": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "description": "Canonical allowlisted Claim.MD response fields, including senderid, sender_name, response_time, status and message. Acknowledgment is not payer acceptance or payment."
+                }
+              },
+              "required": [
+                "id",
+                "submission_id",
+                "received_at",
+                "evidence"
+              ]
+            }
+          },
+          "connections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "route_key": {
+                  "type": "string"
+                },
+                "paused": {
+                  "type": "boolean"
+                },
+                "last_poll_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "last_success_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "next_poll_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "last_result": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "route_key",
+                "paused",
+                "last_poll_at",
+                "last_success_at",
+                "next_poll_at",
+                "last_result"
+              ]
+            }
+          },
+          "eligibility": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "status": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "completed_at": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "date-time"
+                  },
+                  "service_date": {
+                    "type": "string",
+                    "format": "date"
+                  }
+                },
+                "required": [
+                  "status",
+                  "created_at",
+                  "completed_at",
+                  "service_date"
+                ]
+              }
+            ]
+          },
+          "remittance_posted": {
+            "type": "boolean"
+          },
+          "external_submission_recorded": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "submissions",
+          "reports",
+          "connections",
+          "eligibility",
+          "remittance_posted",
+          "external_submission_recorded"
+        ],
+        "description": "Read-only evidence scoped to the exact tenant and claim. Eligibility matches frozen coverage, member, payer and service date. Remittance posting does not imply zero balance. No GET triggers provider calls or accounting changes."
+      },
+      "OfficeEditorSession": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "saving",
+              "saved",
+              "needs_review",
+              "closed"
+            ]
+          },
+          "current_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "save_request_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "editor_origin": {
+            "type": "string"
+          },
+          "config": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Exact server-signed ONLYOFFICE configuration. Token, scoped source URL and callback capability are sensitive and must not be logged."
+          }
+        },
+        "required": [
+          "session_id",
+          "status",
+          "current_version",
+          "save_request_id",
+          "last_error",
+          "expires_at"
+        ],
+        "description": "Scoped to the current authenticated browser session, patient, document, immutable base file version and document metadata revision. A metadata or encounter-link change requires reopening the editor. Only a matching save_request_id with status saved confirms an EHR save."
+      },
+      "OfficeEditorSessionCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "base_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "view",
+              "edit"
+            ]
+          }
+        },
+        "required": [
+          "request_id",
+          "base_version",
+          "mode"
+        ]
+      },
+      "OfficeEditorSave": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expected_version": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "request_id",
+          "expected_version"
+        ]
+      },
+      "DocumentFileAnnotation": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "highlight",
+              "rectangle",
+              "note"
+            ]
+          },
+          "x": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "y": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "width": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1
+          },
+          "height": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 2000,
+            "default": ""
+          },
+          "color": {
+            "type": "string",
+            "enum": [
+              "yellow",
+              "blue",
+              "red"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "page",
+          "kind",
+          "x",
+          "y",
+          "width",
+          "height",
+          "color"
+        ],
+        "description": "Normalized top-left page rectangle; x+width and y+height must not exceed 1. IDs must be unique in the version. PDF page numbers start at 1; images require page 1. Stored overlays are displayed by the file viewer and do not modify or redact the underlying binary."
+      },
+      "DocumentFileVersionSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "filename": {
+            "type": "string"
+          },
+          "content_type": {
+            "type": "string",
+            "enum": [
+              "application/pdf",
+              "image/png",
+              "image/jpeg",
+              "text/plain",
+              "audio/mpeg",
+              "audio/wav",
+              "audio/ogg",
+              "audio/webm",
+              "audio/mp4",
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ]
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10485760
+          },
+          "actor_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "actor_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "annotation_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 500
+          }
+        },
+        "required": [
+          "version",
+          "filename",
+          "content_type",
+          "sha256",
+          "size_bytes",
+          "actor_id",
+          "created_at",
+          "reason",
+          "actor_label",
+          "annotation_count"
+        ]
+      },
+      "DocumentFileVersion": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "filename": {
+            "type": "string"
+          },
+          "content_type": {
+            "type": "string",
+            "enum": [
+              "application/pdf",
+              "image/png",
+              "image/jpeg",
+              "text/plain",
+              "audio/mpeg",
+              "audio/wav",
+              "audio/ogg",
+              "audio/webm",
+              "audio/mp4",
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ]
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10485760
+          },
+          "actor_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "annotations": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "$ref": "#/components/schemas/DocumentFileAnnotation"
+            }
+          },
+          "text_content": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200000,
+            "description": "Only populated for text/plain. Other file bytes require the authenticated preview/download endpoints."
+          }
+        },
+        "required": [
+          "version",
+          "filename",
+          "content_type",
+          "sha256",
+          "size_bytes",
+          "actor_id",
+          "created_at",
+          "reason",
+          "annotations",
+          "text_content"
+        ],
+        "description": "Immutable working copy, original version 1, or an appended version. Metadata versioning is independent; actor and reason are retained per saved copy."
+      },
+      "DocumentFileVersionPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 101,
+            "items": {
+              "$ref": "#/components/schemas/DocumentFileVersionSummary"
+            }
+          },
+          "latest_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "latest_version",
+          "truncated"
+        ],
+        "description": "Latest 100 appended versions descending, followed by preserved original version 1. truncated indicates older appended versions were omitted."
+      },
+      "DocumentFileSave": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "text_content": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 200000,
+            "description": "Only for a text/plain original, limited to 200,000 UTF-8 bytes. Cannot be combined with non-null content_base64."
+          },
+          "content_base64": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "byte",
+            "maxLength": 13981016,
+            "description": "Optional new binary of the same MIME type, 1 byte to 10 MiB. Omit both content fields to retain the chosen base bytes while changing annotations."
+          },
+          "annotations": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "$ref": "#/components/schemas/DocumentFileAnnotation"
+            }
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "request_id",
+          "annotations",
+          "reason"
+        ],
+        "description": "Append a working-file version using If-Match of the current FILE version, not metadata version. Original and prior copies are immutable. Exact retries replay their existing version; changed content with the same request ID or a stale file version conflicts. Only active documents accept saves. Annotation overlays are allowed only on PDF/PNG/JPEG."
       }
     }
   }

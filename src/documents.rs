@@ -35,7 +35,7 @@ const CATEGORIES: &[&str] = &[
     "other",
 ];
 const REGISTRATION_CATEGORIES: &[&str] = &["identity", "insurance", "legal"];
-fn write_document(a: &Actor, category: &str) -> Result<()> {
+pub(super) fn write_document(a: &Actor, category: &str) -> Result<()> {
     if matches!(a.role, Role::Owner | Role::Clinician)
         || (matches!(a.role, Role::FrontDesk) && REGISTRATION_CATEGORIES.contains(&category))
     {
@@ -98,8 +98,9 @@ struct Document {
     updated_by: Uuid,
     uploaded_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    file_version: i64,
 }
-const FIELDS:&str="id,patient_id,version,content,filename,content_type,sha256,size_bytes,uploaded_by,(SELECT coalesce(nullif(u.display_name,''),u.email) FROM browser_users u WHERE u.tenant_id=patient_documents.tenant_id AND u.id=patient_documents.uploaded_by) AS uploader_label,updated_by,uploaded_at,updated_at";
+const FIELDS:&str="id,patient_id,version,content,filename,content_type,sha256,size_bytes,uploaded_by,(SELECT coalesce(nullif(u.display_name,''),u.email) FROM browser_users u WHERE u.tenant_id=patient_documents.tenant_id AND u.id=patient_documents.uploaded_by) AS uploader_label,updated_by,uploaded_at,updated_at,(SELECT coalesce(max(f.version),1) FROM patient_document_file_versions f WHERE f.tenant_id=patient_documents.tenant_id AND f.document_id=patient_documents.id) AS file_version";
 pub fn routes() -> Router<State> {
     Router::new()
         .route(
@@ -124,7 +125,9 @@ pub fn routes() -> Router<State> {
             "/api/v1/patients/{patient}/documents/{id}/preview",
             get(preview),
         )
+        .merge(files::routes())
 }
+pub(crate) mod files;
 fn db(s: &State) -> Result<&sqlx::PgPool> {
     Ok(&s.browser.as_ref().ok_or(Error::NotFound)?.db)
 }
@@ -196,6 +199,71 @@ pub(crate) async fn validate_link(
         )),
         None => Err(Error::NotFound),
     }
+}
+
+/// Capture the current immutable file alongside independently versioned metadata.
+/// The parent row share lock serializes this review with file-version appends.
+pub(crate) async fn validate_current_link(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    patient: Uuid,
+    id: Uuid,
+) -> Result<Value> {
+    let mut value = validate_link(tx, tenant, patient, id).await?;
+    let file: Option<Value> = sqlx::query_scalar("SELECT jsonb_build_object('file_version',version,'filename',filename,'content_type',content_type,'sha256',sha256,'size_bytes',size_bytes,'annotations',annotations) FROM patient_document_file_versions WHERE tenant_id=$1 AND patient_id=$2 AND document_id=$3 ORDER BY version DESC LIMIT 1")
+        .bind(tenant).bind(patient).bind(id).fetch_optional(&mut **tx).await?;
+    if let Some(file) = file {
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(file.as_object().unwrap().clone());
+    } else {
+        value["file_version"] = json!(1);
+        value["annotations"] = json!([]);
+    }
+    Ok(value)
+}
+
+/// Legacy reviewed packets retain their exact original-file contract. New
+/// packets must still match the latest reviewed file before delivery is queued.
+pub(crate) async fn validate_reviewed_link(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    patient: Uuid,
+    id: Uuid,
+    reviewed: Option<&Value>,
+) -> Result<Value> {
+    if reviewed.is_some_and(|v| v.get("file_version").is_none()) {
+        validate_link(tx, tenant, patient, id).await
+    } else {
+        validate_current_link(tx, tenant, patient, id).await
+    }
+}
+
+pub(crate) async fn linked_file_bytes(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    patient: Uuid,
+    id: Uuid,
+    metadata: &Value,
+) -> Result<Vec<u8>> {
+    let version = match metadata.get("file_version") {
+        None => 1,
+        Some(v) => v
+            .as_i64()
+            .filter(|v| *v > 0)
+            .ok_or(Error::Invalid("invalid referral file version"))?,
+    };
+    let bytes: Vec<u8> = sqlx::query_scalar("SELECT bytes FROM patient_documents WHERE tenant_id=$1 AND patient_id=$2 AND id=$3 AND $4=1 UNION ALL SELECT bytes FROM patient_document_file_versions WHERE tenant_id=$1 AND patient_id=$2 AND document_id=$3 AND version=$4")
+        .bind(tenant).bind(patient).bind(id).bind(version).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)?;
+    if metadata["sha256"] != format!("{:x}", Sha256::digest(&bytes))
+        || metadata["size_bytes"] != json!(bytes.len())
+    {
+        return Err(Error::Conflict(
+            "referral file differs from reviewed attachment",
+        ));
+    }
+    Ok(bytes)
 }
 
 fn response(v: Document) -> Response {
@@ -299,18 +367,43 @@ fn file_bytes(v: &Upload) -> Result<Vec<u8>> {
     if bytes.is_empty() || bytes.len() > MAX_BYTES {
         return Err(Error::Invalid("document must contain 1 byte to 10 MiB"));
     }
-    let magic = match v.content_type.as_str() {
+    validate_file_type(&v.content_type, &bytes)?;
+    Ok(bytes)
+}
+pub(super) fn validate_file_type(content_type: &str, bytes: &[u8]) -> Result<()> {
+    let magic = match content_type {
         "application/pdf" => bytes.starts_with(b"%PDF-") && bytes.windows(5).any(|v| v == b"%%EOF"),
         "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
         "image/jpeg" => bytes.starts_with(b"\xff\xd8\xff") && bytes.ends_with(b"\xff\xd9"),
+        "text/plain" => {
+            bytes.len() <= 200_000
+                && std::str::from_utf8(bytes).is_ok_and(|s| {
+                    !s.chars()
+                        .any(|c| c.is_control() && !['\n', '\r', '\t'].contains(&c))
+                })
+        }
+        "audio/mpeg" => {
+            bytes.starts_with(b"ID3")
+                || (bytes.len() > 2 && bytes[0] == 0xff && bytes[1] & 0xe0 == 0xe0)
+        }
+        "audio/wav" => bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE"),
+        "audio/ogg" => bytes.starts_with(b"OggS"),
+        "audio/webm" => bytes.starts_with(b"\x1a\x45\xdf\xa3"),
+        "audio/mp4" => bytes.get(4..8) == Some(b"ftyp"),
+        // Office packages stay opaque binary files. Never render their XML/HTML
+        // on this origin; only a separately configured Office editor may open them.
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => {
+            bytes.starts_with(b"PK\x03\x04")
+        }
         _ => false,
     };
     if !magic {
         return Err(Error::Invalid(
-            "only PDF, PNG or JPEG with matching file signatures are accepted",
+            "file content does not match a supported document or audio format",
         ));
     }
-    Ok(bytes)
+    Ok(())
 }
 async fn revision(
     tx: &mut Transaction<'_, Postgres>,
@@ -456,6 +549,16 @@ async fn document_file(a: Actor, s: State, p: Uuid, id: Uuid, inline: bool) -> R
         "application/pdf" => "pdf",
         "image/png" => "png",
         "image/jpeg" => "jpg",
+        "text/plain" => "txt",
+        "audio/mpeg" => "mp3",
+        "audio/wav" => "wav",
+        "audio/ogg" => "ogg",
+        "audio/webm" => "webm",
+        "audio/mp4" => "m4a",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" if !inline => {
+            "docx"
+        }
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if !inline => "xlsx",
         _ => {
             return Err(Error::Invalid(
                 "document format cannot be previewed or downloaded",

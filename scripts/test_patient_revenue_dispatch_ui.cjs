@@ -2,7 +2,7 @@
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const handlers={},node={hidden:false,classList:{add(){},remove(){}}},calls=[];
-const ctx={console,Date,Intl,URLSearchParams,busy:false,me:{role:'owner'},selected:'patient',chartSection:'visits',activeVisit:{id:'visit'},workspace:{appointments:[],billing:{accounts:[{id:'account',version:2}],coverages:[{id:'coverage',content:{}}]}},window:{},$:()=>node,document:{addEventListener:(name,handler)=>(handlers[name]??=[]).push(handler),querySelectorAll:()=>[],documentElement:node},notice:message=>calls.push(['notice',message])};
+const ctx={console,Date,Intl,URLSearchParams,busy:false,me:{role:'owner'},selected:'patient',chartSection:'visits',activeVisit:{id:'visit'},workspace:{appointments:[],billing:{accounts:[{id:'account',version:2,content:{visit_id:'visit'}}],coverages:[{id:'coverage',content:{}}]}},window:{},$:()=>node,document:{addEventListener:(name,handler)=>(handlers[name]??=[]).push(handler),querySelectorAll:()=>[],documentElement:node},notice:message=>calls.push(['notice',message])};
 vm.createContext(ctx);
 const app=fs.readFileSync('web/app.js','utf8');
 vm.runInContext(app.slice(app.indexOf('async function run(action)'),app.indexOf('async function enter()')),ctx);
@@ -17,15 +17,18 @@ ctx.eligibilityState=()=>({items:new Map()});
 ctx.openClaimmdEligibility=async c=>calls.push(['eligibility-open',c.id]);
 ctx.showClaimsWorkspace=async()=>calls.push(['claims']);
 ctx.showClaim=async id=>calls.push(['claim',id]);
+ctx.showEncounterClaim=async (id,account)=>calls.push(['encounter-claim',id,account]);
 ctx.showEra=async id=>calls.push(['era',id]);
 ctx.editAccountDiagnosisLinks=async()=>calls.push(['diagnosis-links']);
 ctx.editOrderDiagnosisLinks=async()=>calls.push(['order-diagnosis-links']);
 ctx.editLabOrder=()=>calls.push(['new-order']);
+ctx.openHostedCopayEditor=async id=>calls.push(['hosted-copay',id]);
+ctx.refreshHostedCopay=async (appointment,id)=>calls.push(['hosted-refresh',appointment,id]);
 ctx.api=async(...args)=>{calls.push(['api',...args]);return {applied_cents:2500};};
 ctx.selectPatient=async()=>{};ctx.showChartSection=()=>{};ctx.setEncounterSection=()=>{};
-async function click(attribute,value='',parent='#encounter-revenue'){
+async function click(attribute,value='',parent='#encounter-revenue',extra={}){
  const key=attribute.slice(5).replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase());
- const button={type:'button',dataset:{[key]:value},hasAttribute:name=>name===attribute,closest:selector=>selector===parent?{}:null};
+ const button={type:'button',dataset:{[key]:value,...extra},hasAttribute:name=>name===attribute,closest:selector=>selector===parent?{}:null};
  const event={target:{closest:selector=>selector==='button'||selector===`[${attribute}]`?button:null},preventDefault(){}};
  const start=calls.length;
  // Browser listeners run synchronously in registration order. Awaiting each
@@ -37,8 +40,10 @@ async function click(attribute,value='',parent='#encounter-revenue'){
 }
 (async()=>{
  assert.deepEqual(await click('data-copay-receipt','receipt','#insurance-workspace'),[['receipt','receipt']]);
+ assert.deepEqual(await click('data-collect-card-copay','appointment','#insurance-workspace'),[['hosted-copay','appointment']]);
+ assert.deepEqual(await click('data-refresh-hosted-copay','operation','#insurance-workspace',{appointment:'appointment'}),[['hosted-refresh','appointment','operation']]);
  assert.deepEqual(await click('data-eligibility-report','coverage','#insurance-workspace'),[['eligibility-load','coverage'],['eligibility-open','coverage']]);
- assert.deepEqual(await click('data-revenue-claim','claim'),[['claims'],['claim','claim']]);
+ assert.deepEqual(await click('data-revenue-claim','claim'),[['encounter-claim','claim','account']]);
  assert.deepEqual(await click('data-revenue-remittance','remittance'),[['claims'],['era','remittance']]);
  assert.deepEqual(await click('data-revenue-invoice','account'),[['invoice']]);
  assert.deepEqual(await click('data-revenue-invoices','account'),[['invoices']]);
