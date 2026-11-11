@@ -258,6 +258,7 @@ fn status_account(binding: &Binding, value: &Value, policy: Policy) -> Result<(S
         || value["checkout_contract_version"] != 1
         || value["hosted_checkout_enabled"] != true
         || value["charges_enabled"] != true
+        || value["card_payments_active"] != true
         || value["details_submitted"] != true
         || !policy.permits(mode)
     {

@@ -26,6 +26,7 @@ struct FakeState {
     recovery_value: Option<Value>,
     omit_recovery: bool,
     omit_session: bool,
+    card_capability_override: Option<Value>,
 }
 struct FakeBroker {
     installation: Uuid,
@@ -72,7 +73,7 @@ impl Broker for FakeBroker {
         state.calls += 1;
         if path == "/status" {
             return Ok(
-                json!({"installation_id":self.installation,"remote_tenant_id":binding.tenant,"account_id":"acct_synthetic","livemode":self.live,"checkout_contract_version":1,"hosted_checkout_enabled":true,"charges_enabled":true,"details_submitted":true}),
+                json!({"installation_id":self.installation,"remote_tenant_id":binding.tenant,"account_id":"acct_synthetic","livemode":self.live,"checkout_contract_version":1,"hosted_checkout_enabled":true,"charges_enabled":true,"card_payments_active":state.card_capability_override.clone().unwrap_or(json!(true)),"details_submitted":true}),
             );
         }
         if method == Method::POST {
@@ -838,4 +839,46 @@ async fn shared_broker_fixture_matches_the_emitted_request_and_verified_capture(
     assert_eq!(capture.charge.as_deref(), Some("ch_contract"));
     assert_eq!(capture.captured_at.unwrap().timestamp(), 1_735_689_600);
     assert!(!identifier("acct_", "acct_"));
+}
+
+#[tokio::test]
+async fn transfers_only_or_unknown_card_capability_cannot_reserve_a_copay() {
+    let (pool, a, patient, appointment, _) = setup().await;
+    let broker = FakeBroker::new(false);
+    for proof in [Value::Null, json!(false), json!("active")] {
+        broker.state.lock().unwrap().card_capability_override = Some(proof);
+        let error = create_with(
+            &pool,
+            &a,
+            patient,
+            appointment,
+            input(false),
+            "http://127.0.0.1:8099",
+            &broker,
+            policy(false),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("not enabled"));
+        assert_eq!(count(&pool, "copay_checkout_attempts").await, 0);
+        assert_eq!(count(&pool, "billing_copay_receipts").await, 0);
+        assert_eq!(broker.state.lock().unwrap().posts, 0);
+    }
+    broker.state.lock().unwrap().card_capability_override = Some(json!(true));
+    let attempt = create_with(
+        &pool,
+        &a,
+        patient,
+        appointment,
+        input(false),
+        "http://127.0.0.1:8099",
+        &broker,
+        policy(false),
+    )
+    .await
+    .unwrap();
+    assert_eq!(attempt.status, "open");
+    assert_eq!(broker.state.lock().unwrap().posts, 1);
+    pool.close().await;
 }

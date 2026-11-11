@@ -356,5 +356,38 @@ VALUES('10000000-0000-0000-0000-000000000001',gen_random_uuid(),'20000000-0000-0
             "original documents must not be rewritten or backfilled as new versions"
         );
     }
+    sqlx::query("INSERT INTO payment_settings(tenant_id,id,mode,charges_enabled,details_submitted,provider_account_id) VALUES('10000000-0000-0000-0000-000000000001',gen_random_uuid(),'suncharts_connect',true,true,'acct_synthetic_legacy')")
+        .execute(&pool).await.unwrap();
+    let prior_settings: Value = sqlx::query_scalar("SELECT to_jsonb(s) FROM payment_settings s")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let other_tables: Vec<String> = sqlx::query_scalar("SELECT tablename::text FROM pg_tables WHERE schemaname=current_schema() AND tablename NOT IN ('_sqlx_migrations','payment_settings') ORDER BY tablename")
+        .fetch_all(&pool).await.unwrap();
+    let before_card_capability = snapshot_tables(&pool, &other_tables).await;
+    for _ in 0..2 {
+        through_revision(96).run(&pool).await.unwrap();
+        assert_eq!(
+            before_card_capability,
+            snapshot_tables(&pool, &other_tables).await
+        );
+        let settings: Value = sqlx::query_scalar("SELECT to_jsonb(s) FROM payment_settings s")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            settings["card_payments_active"], false,
+            "never infer card capability from historical charge readiness"
+        );
+        let mut original_fields = settings;
+        original_fields
+            .as_object_mut()
+            .unwrap()
+            .remove("card_payments_active");
+        assert_eq!(
+            prior_settings, original_fields,
+            "existing payment settings remain unchanged"
+        );
+    }
     pool.close().await;
 }

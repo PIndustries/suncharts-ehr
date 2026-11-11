@@ -127,8 +127,8 @@ send an appeal or establish a bank settlement.
 
 ### Multi-transaction files
 
-Files support ASCII up to 48,000 bytes, 1–20 transaction sets, at most 30 claim rows
-and 120 PLB pairs per transaction. Multiple groups/interchanges with separate
+Files support ASCII up to 1 MiB, 1–100 transaction sets, at most 1,000 claim rows
+and 1,000 PLB pairs per transaction, with a 100,000-segment file limit. Multiple groups/interchanges with separate
 delimiters and unwrapped ST/SE sequences are supported. Envelope counts and control
 identities are validated; parse errors reject the entire import.
 
@@ -143,8 +143,21 @@ be posted independently. Undo processes transactions and rows in reverse order;
 later dependent corrections must be undone first. SHA-256 and request identities
 prevent duplicate import while preserving exact retries.
 
-Unsupported financial segments, unrecognized recovery chains and mismatched source
-links require review. Local parser support is not proof that every payer's 835
+AMT, QTY, TS2, TS3, MIA and MOA supplemental fields are retained with their
+claim/service scope for review. Their amounts do not create additional ledger
+entries or bypass CLP/CAS/SVC and BPR balancing. Unknown segments, malformed
+supplemental values, unrecognized recovery chains and mismatched source links
+remain blocked. Payer identity uses a unique Loop 1000A REF*2U; an explicit legacy
+N1*PR qualifier PI is supported when REF*2U is absent. Plan identifiers (XV) and
+payee/claim references never substitute for a payer ID, and conflicting payer IDs
+are rejected.
+
+A valid settlement may leave a patient credit backed by existing net patient
+payments/credits. It never adds PR as a second charge. The remittance displays the
+current account credit; a new reviewed invoice displays the credit at issuance.
+Insurer overpayment beyond those patient credits remains blocked. All claim rows
+and provider adjustments still require review before atomic posting; this release
+does not enable partial posting or automatic posting. Local parser support is not proof that every payer's 835
 profile is accepted.
 
 ## Hosted appointment copays
@@ -158,8 +171,9 @@ clinical notes, diagnoses and MRNs are not Checkout line items.
 
 Live collection is disabled by default. It requires the EHR operator setting
 `ENGINE_HOSTED_COPAY_LIVE_ENABLED=true`, the Connect operator setting
-`SUNCHARTS_CONNECT_LIVE_CHECKOUT=enabled`, and a verified charge-capable live
-account. These flags do not complete Stripe onboarding or attest to deployment
+`SUNCHARTS_CONNECT_LIVE_CHECKOUT=enabled`, and a verified live account whose Stripe `card_payments` capability is active.
+General charge readiness alone does not establish card acceptance; existing
+settings require a fresh account-status check. These flags do not complete Stripe onboarding or attest to deployment
 acceptance. Test mode is always blocked in production, including reconciliation
 and allocation of old test receipts. Development test receipts are marked TEST.
 

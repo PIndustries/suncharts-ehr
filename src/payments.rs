@@ -184,6 +184,7 @@ fn verified_test_account(config: &Credentials, tenant: Uuid, value: &Value) -> O
         let bound = bound_connect_status(config, tenant, value)?;
         if bound["livemode"] != false
             || bound["charges_enabled"] != true
+            || bound["card_payments_active"] != true
             || bound["details_submitted"] != true
         {
             return None;
@@ -204,6 +205,7 @@ struct Settings {
     last_test_result: Option<String>,
     onboarding_url: Option<String>,
     charges_enabled: bool,
+    card_payments_active: bool,
     payouts_enabled: bool,
     details_submitted: bool,
     requirements_currently_due: Value,
@@ -212,7 +214,7 @@ struct Settings {
 }
 impl Settings {
     fn public(&self) -> Value {
-        json!({"id":self.id,"mode":self.mode,"enabled":self.enabled,"verified":self.verified,"provider_account_id":self.provider_account_id,"last_test_at":self.last_test_at,"last_test_result":self.last_test_result,"version":self.version,"test_mode":true,"credentials_configured":true,"onboarding_url":self.onboarding_url.as_deref().and_then(safe_onboarding_url),"charges_enabled":self.charges_enabled,"payouts_enabled":self.payouts_enabled,"details_submitted":self.details_submitted,"requirements_currently_due":self.requirements_currently_due,"requirements_past_due":self.requirements_past_due})
+        json!({"id":self.id,"mode":self.mode,"enabled":self.enabled,"verified":self.verified,"provider_account_id":self.provider_account_id,"last_test_at":self.last_test_at,"last_test_result":self.last_test_result,"version":self.version,"test_mode":true,"credentials_configured":true,"onboarding_url":self.onboarding_url.as_deref().and_then(safe_onboarding_url),"charges_enabled":self.charges_enabled,"card_payments_active":self.card_payments_active,"payouts_enabled":self.payouts_enabled,"details_submitted":self.details_submitted,"requirements_currently_due":self.requirements_currently_due,"requirements_past_due":self.requirements_past_due})
     }
 }
 #[derive(Clone, Serialize, sqlx::FromRow)]
@@ -441,7 +443,7 @@ async fn save_settings(
     );
     let encrypted =
         crate::provider_settings::seal_secret(db(&s)?, a.tenant_id, id, "payments", &raw).await?;
-    sqlx::query("INSERT INTO payment_settings(tenant_id,id,mode) VALUES($1,$2,$3) ON CONFLICT(tenant_id) DO UPDATE SET mode=$3,credential_revision=payment_settings.credential_revision+1,enabled=false,verified=false,provider_account_id=NULL,last_test_at=NULL,last_test_result=NULL,onboarding_url=NULL,charges_enabled=false,payouts_enabled=false,details_submitted=false,requirements_currently_due='[]'::jsonb,requirements_past_due='[]'::jsonb,version=payment_settings.version+1,updated_at=now()").bind(a.tenant_id).bind(id).bind(v.mode).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO payment_settings(tenant_id,id,mode) VALUES($1,$2,$3) ON CONFLICT(tenant_id) DO UPDATE SET mode=$3,credential_revision=payment_settings.credential_revision+1,enabled=false,verified=false,provider_account_id=NULL,last_test_at=NULL,last_test_result=NULL,onboarding_url=NULL,charges_enabled=false,card_payments_active=false,payouts_enabled=false,details_submitted=false,requirements_currently_due='[]'::jsonb,requirements_past_due='[]'::jsonb,version=payment_settings.version+1,updated_at=now()").bind(a.tenant_id).bind(id).bind(v.mode).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO payment_credentials(tenant_id,setting_id,revision,encrypted_config) VALUES($1,$2,$3,$4)").bind(a.tenant_id).bind(id).bind(revision).bind(encrypted).execute(&mut *tx).await?;
     setting_event(&mut tx, &a, id, "credentials_saved_disabled").await?;
     let result = setting(&mut tx, a.tenant_id).await?;
@@ -580,6 +582,7 @@ async fn test_settings(
         None
     };
     let charges_enabled = connect_status.is_some_and(|v| v["charges_enabled"] == true);
+    let card_payments_active = connect_status.is_some_and(|v| v["card_payments_active"] == true);
     let payouts_enabled = connect_status.is_some_and(|v| v["payouts_enabled"] == true);
     let details_submitted = connect_status.is_some_and(|v| v["details_submitted"] == true);
     let currently_due = connect_status
@@ -598,7 +601,7 @@ async fn test_settings(
         })
         .filter(Value::is_array)
         .unwrap_or_else(|| json!([]));
-    sqlx::query("UPDATE payment_settings SET verified=$2,enabled=false,provider_account_id=$3,last_test_at=now(),last_test_result=$4,onboarding_url=$5,charges_enabled=$6,payouts_enabled=$7,details_submitted=$8,requirements_currently_due=$9,requirements_past_due=$10,version=version+1,updated_at=now() WHERE tenant_id=$1").bind(a.tenant_id).bind(verified.is_some()).bind(&provider_account).bind(if processor_livemode==Some(true){"live_connection_verified"}else if verified.is_some(){"test_account_verified"}else if bound_installation{"owner_setup_required"}else{"connection_not_verified"}).bind(&onboarding).bind(charges_enabled).bind(payouts_enabled).bind(details_submitted).bind(currently_due).bind(past_due).execute(&mut *tx).await?;
+    sqlx::query("UPDATE payment_settings SET verified=$2,enabled=false,provider_account_id=$3,last_test_at=now(),last_test_result=$4,onboarding_url=$5,charges_enabled=$6,payouts_enabled=$7,details_submitted=$8,requirements_currently_due=$9,requirements_past_due=$10,card_payments_active=$11,version=version+1,updated_at=now() WHERE tenant_id=$1").bind(a.tenant_id).bind(verified.is_some()).bind(&provider_account).bind(if processor_livemode==Some(true){"live_connection_verified"}else if verified.is_some(){"test_account_verified"}else if bound_installation{"owner_setup_required"}else{"connection_not_verified"}).bind(&onboarding).bind(charges_enabled).bind(payouts_enabled).bind(details_submitted).bind(currently_due).bind(past_due).bind(card_payments_active).execute(&mut *tx).await?;
     setting_event(
         &mut tx,
         &a,
@@ -1415,7 +1418,7 @@ mod tests {
             broker_token: None,
         };
         let mut status = json!({"installation_id":installation,"remote_tenant_id":tenant,
-            "livemode":true,"account_id":"acct_synthetic","charges_enabled":true,
+            "livemode":true,"account_id":"acct_synthetic","charges_enabled":true,"card_payments_active":true,
             "details_submitted":true,"payouts_enabled":true,
             "requirements":{"currently_due":[],"past_due":[]}});
         assert!(bound_connect_status(&config, tenant, &status).is_some());
@@ -1425,6 +1428,14 @@ mod tests {
             verified_test_account(&config, tenant, &status).as_deref(),
             Some("acct_synthetic")
         );
+        status["card_payments_active"] = json!(false);
+        assert!(verified_test_account(&config, tenant, &status).is_none());
+        status
+            .as_object_mut()
+            .unwrap()
+            .remove("card_payments_active");
+        assert!(verified_test_account(&config, tenant, &status).is_none());
+        status["card_payments_active"] = json!(true);
         status["charges_enabled"] = json!(false);
         assert!(bound_connect_status(&config, tenant, &status).is_some());
         assert!(verified_test_account(&config, tenant, &status).is_none());

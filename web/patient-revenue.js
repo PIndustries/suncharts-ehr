@@ -186,6 +186,13 @@ function hostedCopayStateFor(appointment){
  return hostedCopayState.items.get(appointment);
 }
 function currentHostedCopayState(state){return selected===state.patient&&me===state.identity&&hostedCopayState.items.get(state.appointment)===state;}
+function hostedCopayView(){
+ const editor=typeof billingEditorHost==='function'?billingEditorHost():null;
+ return {patient:selected,identity:me,section:chartSection,visit:typeof activeVisit==='undefined'?null:activeVisit?.id,step:typeof encounterSection==='undefined'?null:encounterSection,appointment:revenueAppointment()?.id,editor,editorChild:editor?.firstChild};
+}
+function currentHostedCopayView(view,checkEditor=true){
+ return selected===view.patient&&me===view.identity&&chartSection===view.section&&(typeof activeVisit==='undefined'?null:activeVisit?.id)===view.visit&&(typeof encounterSection==='undefined'?null:encounterSection)===view.step&&revenueAppointment()?.id===view.appointment&&(!checkEditor||!view.editor||typeof billingEditorHost==='function'&&billingEditorHost()===view.editor&&view.editor.firstChild===view.editorChild);
+}
 function hostedCopayBase(state){return `/api/v1/patients/${encodeURIComponent(state.patient)}/appointments/${encodeURIComponent(state.appointment)}/copay-checkouts`;}
 function safeHostedCopayUrl(value){try{const url=new URL(value);return url.protocol==='https:'&&url.hostname==='checkout.stripe.com'&&!url.username&&!url.password&&!url.port?url.href:null;}catch{return null;}}
 function hostedCopayOperationMarkup(operation){
@@ -210,7 +217,7 @@ function hostedCopayPanel(appointment,id){
  return appointment&&billingCan('create')?`<section id="${id}" data-appointment="${esc(appointment.id)}" class="billing-section">${hostedCopayMarkup(hostedCopayStateFor(appointment.id))}</section>`:'';
 }
 async function openHostedCopayEditor(appointmentId){
- const state=await loadHostedCopays(appointmentId,true);if(!state||!currentHostedCopayState(state))return;
+ const view=hostedCopayView(),state=await loadHostedCopays(appointmentId,true);if(!state||!currentHostedCopayState(state)||!currentHostedCopayView(view))return;
  if(!state.availability?.available||typeof state.availability.livemode!=='boolean'||state.uncertain||state.items.some(item=>['creating','open','needs_review'].includes(item.status))){paintHostedCopayState(state);notice('Review the current card payment status before collecting another copay.',true);return;}
  const appointment=(workspace.appointments||[]).find(item=>item.id===appointmentId);if(!appointment||['cancelled','canceled','no_show'].includes(appointment.status))throw new Error('Choose an active appointment for card collection.');
  insuranceAppointmentSelection.set(selected,appointmentId);showChartSection('insurance');
@@ -222,12 +229,13 @@ function acceptHostedCopayOperation(state,operation){
  state.items=[operation,...state.items.filter(item=>item.id!==operation.id)];state.uncertain=false;state.retry=null;state.error=false;state.loadedAt=Date.now();paintHostedCopayState(state);
 }
 async function refreshHostedCopay(appointment,id){
- const state=hostedCopayStateFor(appointment),operation=state.items.find(item=>item.id===id);if(!operation)throw new Error('Refresh the appointment’s card payment list first.');
+ const view=hostedCopayView(),state=hostedCopayStateFor(appointment),operation=state.items.find(item=>item.id===id);if(!operation)throw new Error('Refresh the appointment’s card payment list first.');
  const data=await api(`${hostedCopayBase(state)}/${encodeURIComponent(id)}/refresh`,'POST',{});if(!currentHostedCopayState(state))return;
  acceptHostedCopayOperation(state,data.operation);
+ if(!currentHostedCopayView(view))return;
  if(data.operation.receipt_id){
   const section=chartSection,visit=typeof activeVisit!=='undefined'?activeVisit?.id:null;
-  await selectPatient(state.patient,visit);if(!currentHostedCopayState(state))return;showChartSection(section);if(section==='visits'&&typeof setEncounterSection==='function')setEncounterSection('charges');
+  await selectPatient(state.patient,visit);if(!currentHostedCopayState(state)||!currentHostedCopayView(view,false))return;showChartSection(section);if(section==='visits'&&typeof setEncounterSection==='function')setEncounterSection('charges');
  }
 }
 document.addEventListener('click',event=>{
@@ -235,8 +243,8 @@ document.addEventListener('click',event=>{
  if(button.dataset.collectCardCopay){event.preventDefault();run(()=>openHostedCopayEditor(button.dataset.collectCardCopay));return;}
  if(button.dataset.retryHostedCopay){event.preventDefault();run(async()=>{const state=hostedCopayStateFor(button.dataset.retryHostedCopay);if(!state.uncertain||!state.retry)throw new Error('Refresh the current card payment status.');await createHostedCopay(state,state.retry);});return;}
  if(button.dataset.refreshHostedCopay){event.preventDefault();run(()=>refreshHostedCopay(button.dataset.appointment,button.dataset.refreshHostedCopay));return;}
- if(button.dataset.hostedCopayReceipt){event.preventDefault();run(async()=>{const state=hostedCopayStateFor(button.dataset.appointment),receipt=button.dataset.hostedCopayReceipt;if(!state.items.some(item=>item.receipt_id===receipt))throw new Error('Refresh this appointment’s card payments first.');const section=chartSection;await selectPatient(state.patient,typeof activeVisit!=='undefined'?activeVisit?.id:null);if(!currentHostedCopayState(state))return;showChartSection(section);showCopayReceipt(receipt);});return;}
- if(button.dataset.refreshHostedCopayList){event.preventDefault();run(async()=>{const state=await loadHostedCopays(button.dataset.refreshHostedCopayList,true);if(!state||!currentHostedCopayState(state)||!state.items.some(item=>item.receipt_id))return;const section=chartSection;await selectPatient(state.patient,typeof activeVisit!=='undefined'?activeVisit?.id:null);if(currentHostedCopayState(state))showChartSection(section);});}
+ if(button.dataset.hostedCopayReceipt){event.preventDefault();run(async()=>{const view=hostedCopayView(),state=hostedCopayStateFor(button.dataset.appointment),receipt=button.dataset.hostedCopayReceipt;if(!state.items.some(item=>item.receipt_id===receipt))throw new Error('Refresh this appointment’s card payments first.');const section=chartSection;await selectPatient(state.patient,typeof activeVisit!=='undefined'?activeVisit?.id:null);if(!currentHostedCopayState(state)||!currentHostedCopayView(view,false))return;showChartSection(section);showCopayReceipt(receipt);});return;}
+ if(button.dataset.refreshHostedCopayList){event.preventDefault();run(async()=>{const view=hostedCopayView(),state=await loadHostedCopays(button.dataset.refreshHostedCopayList,true);if(!state||!currentHostedCopayState(state)||!currentHostedCopayView(view)||!state.items.some(item=>item.receipt_id))return;const section=chartSection;await selectPatient(state.patient,typeof activeVisit!=='undefined'?activeVisit?.id:null);if(currentHostedCopayState(state)&&currentHostedCopayView(view,false))showChartSection(section);});}
 });
 document.addEventListener('submit',event=>{
  const form=event.target;if(form.id!=='hosted-copay-form')return;event.preventDefault();
@@ -250,8 +258,10 @@ document.addEventListener('submit',event=>{
 
 async function createHostedCopay(state,body){
  if(!currentHostedCopayState(state))return;
- let response;try{response=await api(hostedCopayBase(state),'POST',body);}catch(error){state.uncertain=true;state.retry=body;paintHostedCopayState(state);throw error;}
+ const view=hostedCopayView();
+ let response;try{response=await api(hostedCopayBase(state),'POST',body);}catch(error){state.uncertain=true;state.retry=body;paintHostedCopayState(state);if(!currentHostedCopayView(view))return;throw error;}
  if(!currentHostedCopayState(state))return;acceptHostedCopayOperation(state,response.operation);
+ if(!currentHostedCopayView(view))return;
  openBillingEditor('');
  $('insurance-hosted-copay')?.scrollIntoView({block:'center'});
  notice(response.operation.status==='open'?'Secure checkout is ready. Open the card checkout link, then refresh payment status.':response.operation.receipt_id?'Payment evidence is available. Review its receipt and current status.':'The payment request is being reconciled. Refresh its status before collecting again.');

@@ -9,7 +9,7 @@ use crate::{
     State,
 };
 use axum::{
-    extract::{Path, State as ExtractState},
+    extract::{DefaultBodyLimit, Path, State as ExtractState},
     http::HeaderMap,
     routing::{get, post},
     Json,
@@ -80,8 +80,16 @@ fn versions(rows: &[Remittance]) -> Vec<Version> {
 }
 pub fn router() -> axum::Router<State> {
     axum::Router::new()
-        .route("/api/v1/billing/era-batches", get(list).post(import))
-        .route("/api/v1/billing/era-batches/preview", post(preview))
+        .route(
+            "/api/v1/billing/era-batches",
+            get(list)
+                .post(import)
+                .layer(DefaultBodyLimit::max(4 * crate::era835::MAX_FILE_BYTES)),
+        )
+        .route(
+            "/api/v1/billing/era-batches/preview",
+            post(preview).layer(DefaultBodyLimit::max(4 * crate::era835::MAX_FILE_BYTES)),
+        )
         .route("/api/v1/billing/era-batches/{id}", get(detail))
         .route("/api/v1/billing/era-batches/{id}/actions", post(action))
 }

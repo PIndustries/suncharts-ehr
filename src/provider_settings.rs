@@ -311,7 +311,9 @@ async fn load_scope(pool: &PgPool, tenant: Option<Uuid>) -> Result<Config> {
         config.routes.retain(|r| r.tenant_id == tenant);
     }
 
-    let rows:Vec<Setting>=sqlx::query_as("SELECT * FROM edi_provider_settings WHERE enabled AND verified AND ($1::uuid IS NULL OR tenant_id=$1) ORDER BY tenant_id,id LIMIT 51").bind(tenant).fetch_all(pool).await?;
+    // Runtime configuration spans all tenants; a per-list UI limit must not
+    // disable every worker once the deployment reaches its 51st connection.
+    let rows:Vec<Setting>=sqlx::query_as("SELECT * FROM edi_provider_settings WHERE enabled AND verified AND ($1::uuid IS NULL OR tenant_id=$1) ORDER BY tenant_id,id").bind(tenant).fetch_all(pool).await?;
     if !rows.is_empty() {
         let key = existing_key()?;
         for r in rows {

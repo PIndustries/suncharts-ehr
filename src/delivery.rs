@@ -70,9 +70,6 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         let mut keys = std::collections::HashSet::new();
         let mut credentials = std::collections::HashSet::new();
-        if self.routes.len() > 50 {
-            return Err(Error::Invalid("too many gateway routes"));
-        }
         for r in &self.routes {
             crate::stedi::validate(r)?;
             if matches!(r.adapter, Adapter::Stedi | Adapter::ClaimMd) {
@@ -298,6 +295,13 @@ async fn queue(
             "artifact already has an active or completed delivery job",
         ));
     }
+    let config = crate::provider_settings::load_for_tenant(db(&s)?, a.tenant_id).await?;
+    if config
+        .route(a.tenant_id, &v.route_key)
+        .is_some_and(|route| route.adapter == Adapter::ClaimMd)
+    {
+        crate::claimmd::preflight(&out)?;
+    }
     let jid = Uuid::new_v4();
     sqlx::query("INSERT INTO edi_delivery_jobs (tenant_id,id,submission_id,route_key,requested_by,request_id,creation_hash) VALUES ($1,$2,$3,$4,$5,$6,$7)").bind(a.tenant_id).bind(jid).bind(id).bind(&v.route_key).bind(a.sub).bind(v.request_id).bind(hash).execute(&mut *tx).await?;
     let j = event(
@@ -499,6 +503,10 @@ pub async fn process_one(pool: &PgPool, config: &Config) -> Result<bool> {
         && token.as_ref().is_none_or(|v| v.trim().is_empty())
     {
         "credential_unavailable"
+    } else if route.is_some_and(|r| r.adapter == Adapter::ClaimMd)
+        && crate::claimmd::preflight(&out).is_err()
+    {
+        "claimmd_preflight_failed_before_transmission_review_original_claim_profile"
     } else if out.status != "prepared"
         || c.status != "ready"
         || c.version != out.claim_version

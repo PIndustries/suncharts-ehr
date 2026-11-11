@@ -6773,6 +6773,282 @@ async fn claimmd_era_pagination_keeps_fixed_base_until_all_pages_are_durable() {
     task.abort();
 }
 
+#[tokio::test]
+async fn realistic_era_preserves_patient_credit_without_double_billing_and_replay_is_atomic() {
+    let (r, db, a, _) = setup().await;
+    let (p, payer, b, c) = claim_fixture(&r, &a).await;
+    let cp = format!("/api/v1/billing/claims/{}", c["id"].as_str().unwrap());
+    let bp = format!(
+        "/api/v1/patients/{}/billing/accounts/{}",
+        p["id"].as_str().unwrap(),
+        b["id"].as_str().unwrap()
+    );
+    let (s, receipt) = schedule_call(&r, &a, "POST", &format!("{bp}/entries"), json!({"request_id":Uuid::new_v4(),"kind":"payment","amount_cents":3000,"party":"patient","method":"external","reference":"SYN-COPAY-30","occurred_on":"2026-10-01","reason":"Actual synthetic patient payment before adjudication"}), Some(2)).await;
+    assert_eq!(s, 200, "{receipt}");
+    for (version, action) in [
+        (1, "ready"),
+        (2, "record_submission"),
+        (3, "record_acceptance"),
+    ] {
+        let (s, result) = schedule_call(&r, &a, "POST", &format!("{cp}/actions"), json!({"action":action,"reason":"Synthetic reviewed payer evidence","reference":"SYN-ACK","event_date":"2026-10-01","payer_control_number":"SYN-PCN"}), Some(version)).await;
+        assert_eq!(s, 200, "{result}");
+    }
+    let raw = claimmd_835(&c, "SYN-CREDIT-ERA")
+        .replace(
+            "N1*PR*Synthetic Payer*PI*SYN-ONLY~",
+            "N1*PR*Synthetic Payer*XV*PLAN-123~REF*2U*SYN-ONLY~N1*PE*Practice*XX*1234567893~",
+        )
+        .replace("CAS*CO*", "MOA*80*0*N1~AMT*AU*100~QTY*CA*1~CAS*CO*");
+    let prefix = raw.split("SE*").next().unwrap();
+    let raw = format!(
+        "{prefix}SE*{}*0001~",
+        prefix.split('~').filter(|v| !v.is_empty()).count() + 1
+    );
+    let input = json!({"request_id":Uuid::new_v4(),"payer_id":payer["id"],"format":"x12_835","original_text":raw,"reason":"Review full payer evidence and supplemental data"});
+    let (s, era) = schedule_call(
+        &r,
+        &a,
+        "POST",
+        "/api/v1/billing/remittances",
+        input.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{era}");
+    assert_eq!(era["document"]["payer_code"], "SYN-ONLY");
+    assert_eq!(era["document"]["supplemental"].as_array().unwrap().len(), 3);
+    let ep = format!(
+        "/api/v1/billing/remittances/{}",
+        era["id"].as_str().unwrap()
+    );
+    let (s, review) = schedule_call(&r, &a, "PUT", &format!("{ep}/matches"), json!({"matches":[{"row_index":0,"claim_id":c["id"],"claim_version":4,"account_version":3,"writeoff_adjustments":[0]}],"reason":"Patient paid30; finalPR20 leaves10credit"}), Some(1)).await;
+    assert_eq!(s, 200, "{review}");
+    assert_eq!(review["issues"], json!([]));
+    let action = json!({"action":"post","reason":"Reviewed insurer payment and CO with patient credit retained"});
+    let path = format!("{ep}/actions");
+    let (one, two) = tokio::join!(
+        schedule_call(&r, &a, "POST", &path, action.clone(), Some(2)),
+        schedule_call(&r, &a, "POST", &path, action, Some(2))
+    );
+    assert!(
+        (one.0 == 200 && two.0 == 409) || (one.0 == 409 && two.0 == 200),
+        "{one:?} {two:?}"
+    );
+    let account = Uuid::parse_str(b["id"].as_str().unwrap()).unwrap();
+    let effects: Vec<(String,i64)> = sqlx::query_as("SELECT kind,effect_cents FROM billing_entries WHERE tenant_id=$1 AND account_id=$2 ORDER BY effect_cents")
+        .bind(a.tenant_id).bind(account).fetch_all(&db).await.unwrap();
+    assert_eq!(
+        effects,
+        vec![
+            ("payment".into(), -8000),
+            ("payment".into(), -3000),
+            ("adjustment_credit".into(), -2550)
+        ]
+    );
+    assert_eq!(12550 + effects.iter().map(|(_, v)| v).sum::<i64>(), -1000);
+    let (s, current) = schedule_call(&r, &a, "GET", &ep, Value::Null, None).await;
+    assert_eq!(s, 200, "{current}");
+    assert_eq!(
+        current["postings"][0]["current_account_balance_cents"],
+        -1000
+    );
+    let (s, invoice) = schedule_call(&r,&a,"POST",&format!("{bp}/invoices"),json!({"request_id":Uuid::new_v4(),"responsibility_cents":2000,"reason":"Final reviewed PR with actual copay credit"}),Some(4)).await;
+    assert_eq!(s, 200, "{invoice}");
+    assert_eq!(invoice["snapshot"]["amount_due_cents"], 0);
+    assert_eq!(invoice["snapshot"]["credit_balance_cents"], 1000);
+    let (s, replay) =
+        schedule_call(&r, &a, "POST", "/api/v1/billing/remittances", input, None).await;
+    assert_eq!(s, 200, "{replay}");
+    assert_eq!(replay["id"], era["id"]);
+    let (s, reversed) = schedule_call(&r,&a,"POST",&path,json!({"action":"reverse","reason":"Synthetic verified reversal preserves original receipt and invoice"}),Some(3)).await;
+    assert_eq!(s, 200, "{reversed}");
+    let net:i64=sqlx::query_scalar("SELECT sum(effect_cents)::bigint FROM billing_entries WHERE tenant_id=$1 AND account_id=$2").bind(a.tenant_id).bind(account).fetch_one(&db).await.unwrap();
+    assert_eq!(net, -3000);
+    let saved: Value = sqlx::query_scalar(
+        "SELECT snapshot FROM patient_invoice_snapshots WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(Uuid::parse_str(invoice["id"].as_str().unwrap()).unwrap())
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(saved, invoice["snapshot"]);
+}
+
+#[tokio::test]
+async fn era_large_file_routes_accept_bounded_files_and_unmatched_claims_cannot_partially_post() {
+    let (r, db, a, _) = setup().await;
+    let (_, payer, _, c) = claim_fixture(&r, &a).await;
+    let mut raw = "ST*835*1~BPR*I*64000*C*CHK************20261001~TRN*1*SYN-LARGE~N1*PR*Synthetic~REF*2U*SYN-ONLY~".to_string();
+    for i in 0..800 {
+        raw.push_str(&format!("CLP*SYN-{i}*1*125.50*80*20*CI*PAYER-{i}~CAS*CO*45*25.50~CAS*PR*1*20~AMT*AU*100~QTY*CA*1~"));
+    }
+    raw.push_str(&format!(
+        "SE*{}*1~",
+        raw.split('~').filter(|v| !v.is_empty()).count() + 1
+    ));
+    assert!(raw.len() > 64 * 1024);
+    let (s, preview) = schedule_call(
+        &r,
+        &a,
+        "POST",
+        "/api/v1/billing/era-batches/preview",
+        json!({"original_text":raw}),
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{preview}");
+    assert_eq!(
+        preview["parts"][0]["document"]["claims"]
+            .as_array()
+            .unwrap()
+            .len(),
+        800
+    );
+    let (s,era)=schedule_call(&r,&a,"POST","/api/v1/billing/remittances",json!({"request_id":Uuid::new_v4(),"payer_id":payer["id"],"format":"x12_835","original_text":raw,"reason":"Large original remittance is staged without losing rows"}),None).await;
+    assert_eq!(s, 200, "{era}");
+    let ep = format!(
+        "/api/v1/billing/remittances/{}",
+        era["id"].as_str().unwrap()
+    );
+    let (s, review)=schedule_call(&r,&a,"PUT",&format!("{ep}/matches"),json!({"matches":[{"row_index":0,"claim_id":c["id"],"claim_version":1,"account_version":2,"writeoff_adjustments":[0]}],"reason":"Incomplete mapping must remain reviewable with no partial ledger"}),Some(1)).await;
+    assert_eq!(s, 200, "{review}");
+    assert_eq!(review["remittance"]["status"], "staged");
+    assert!(review["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|i| i.as_str().unwrap().contains("Every remittance claim")));
+    assert_eq!(
+        schedule_call(
+            &r,
+            &a,
+            "POST",
+            &format!("{ep}/actions"),
+            json!({"action":"post","reason":"Cannot skip unmatched claims"}),
+            Some(2)
+        )
+        .await
+        .0,
+        409
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM billing_entries")
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn era_credit_exception_does_not_allow_unbacked_insurer_overpayment() {
+    let (r, db, a, _) = setup().await;
+    let (p, payer, b, c) = claim_fixture(&r, &a).await;
+    let bp = format!(
+        "/api/v1/patients/{}/billing/accounts/{}",
+        p["id"].as_str().unwrap(),
+        b["id"].as_str().unwrap()
+    );
+    let (s,entry)=schedule_call(&r,&a,"POST",&format!("{bp}/entries"),json!({"request_id":Uuid::new_v4(),"kind":"payment","amount_cents":3000,"party":"insurer","method":"external","reference":"SYN-PRIOR-INSURER","occurred_on":"2026-10-01","reason":"Prior insurer payment must not masquerade as patient credit"}),Some(2)).await;
+    assert_eq!(s, 200, "{entry}");
+    let cp = format!(
+        "/api/v1/billing/claims/{}/actions",
+        c["id"].as_str().unwrap()
+    );
+    for (version, action) in [(1, "ready"), (2, "record_submission")] {
+        let(s,result)=schedule_call(&r,&a,"POST",&cp,json!({"action":action,"reason":"Synthetic reviewed provider evidence","reference":"SYN-ACK","event_date":"2026-10-01"}),Some(version)).await;
+        assert_eq!(s, 200, "{result}");
+    }
+    let(s,era)=schedule_call(&r,&a,"POST","/api/v1/billing/remittances",json!({"request_id":Uuid::new_v4(),"payer_id":payer["id"],"format":"normalized","document":era_document(&c),"reason":"Balanced source still overpays insurer ledger"}),None).await;
+    assert_eq!(s, 200, "{era}");
+    let ep = format!(
+        "/api/v1/billing/remittances/{}",
+        era["id"].as_str().unwrap()
+    );
+    let(s,review)=schedule_call(&r,&a,"PUT",&format!("{ep}/matches"),json!({"matches":[{"row_index":0,"claim_id":c["id"],"claim_version":3,"account_version":3,"writeoff_adjustments":[0]}],"reason":"Existing insurer money cannot authorize patient credit"}),Some(1)).await;
+    assert_eq!(s, 200, "{review}");
+    assert_eq!(review["remittance"]["status"], "staged");
+    assert!(review["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v.as_str().unwrap().contains("existing patient credits")));
+    assert_eq!(
+        schedule_call(
+            &r,
+            &a,
+            "POST",
+            &format!("{ep}/actions"),
+            json!({"action":"post","reason":"Must remain blocked"}),
+            Some(2)
+        )
+        .await
+        .0,
+        409
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM billing_entries")
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn era_provider_review_capacity_matches_the_parser_without_posting_money() {
+    let (r, db, a, _) = setup().await;
+    let payer = billing_payer(&r, &a).await;
+    let adjustments: Vec<Value> = (0..1000)
+        .map(|i| plb("FB", &format!("SYN-{i}"), if i % 2 == 0 { 1 } else { -1 }))
+        .collect();
+    let document = json!({"payer_code":"SYN-ONLY","trace":"SYN-LARGE-PLB","payment_date":"2026-10-01","total_paid_cents":0,"currency":"USD","claims":[],"provider_adjustments":adjustments});
+    let(s,era)=schedule_call(&r,&a,"POST","/api/v1/billing/remittances",json!({"request_id":Uuid::new_v4(),"payer_id":payer["id"],"format":"normalized","document":document,"reason":"Bounded large provider-only settlement"}),None).await;
+    assert_eq!(s, 200, "{era}");
+    let decisions: Vec<Value> = (0..1000)
+        .map(|i| json!({"index":i,"category":"forward_balance","original_remittance_id":null}))
+        .collect();
+    let body = json!({"decisions":decisions,"reason":"Review every retained provider adjustment"});
+    assert!(serde_json::to_vec(&body).unwrap().len() > 64 * 1024);
+    let (s, result) = schedule_call(
+        &r,
+        &a,
+        "PUT",
+        &format!(
+            "/api/v1/billing/remittances/{}/provider-adjustments",
+            era["id"].as_str().unwrap()
+        ),
+        body,
+        Some(1),
+    )
+    .await;
+    assert_eq!(s, 200, "{result}");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT jsonb_array_length(decisions)::bigint FROM era_provider_reviews"
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap(),
+        1000
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM billing_entries")
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM era_provider_entries")
+            .fetch_one(&db)
+            .await
+            .unwrap(),
+        0
+    );
+}
+
 async fn posted_era_fixture(r: &Router, a: &Actor) -> (Value, Value, Value, Value) {
     let (p, payer, _b, c) = claim_fixture(r, a).await;
     let cp = format!("/api/v1/billing/claims/{}", c["id"].as_str().unwrap());
@@ -7788,6 +8064,160 @@ async fn practice_worklist_follows_saved_encounters_without_cross_tenant_or_pati
     assert_eq!(work["has_more"], true);
 }
 
+async fn assert_claimmd_corrections_rejected_before_queue(
+    r: &Router,
+    db: &PgPool,
+    a: &Actor,
+    setting: &Value,
+    patient: &Value,
+    account: &Value,
+    original: &Value,
+) {
+    let original_control = original["control_number"].as_str().unwrap();
+    assert_eq!(original_control.len(), 17);
+    assert!(original_control.bytes().all(|v| v.is_ascii_alphanumeric()));
+    // Existing production identifiers must not be shortened or remapped.
+    let legacy_id = Uuid::new_v4();
+    let legacy_control = format!("SC{}", Uuid::new_v4().simple());
+    sqlx::query("INSERT INTO ehr_claims(tenant_id,id,patient_id,account_id,payer_id,control_number,frequency,content,snapshot,status,request_id,creation_hash) SELECT tenant_id,$3,patient_id,account_id,payer_id,$4,'original',content,snapshot,'void',$5,'synthetic-legacy' FROM ehr_claims WHERE tenant_id=$1 AND id=$2")
+        .bind(a.tenant_id).bind(Uuid::parse_str(original["id"].as_str().unwrap()).unwrap()).bind(legacy_id).bind(&legacy_control).bind(Uuid::new_v4()).execute(db).await.unwrap();
+    let cp = format!(
+        "/api/v1/billing/claims/{}/actions",
+        original["id"].as_str().unwrap()
+    );
+    for (version, action) in [
+        (1, "ready"),
+        (2, "record_submission"),
+        (3, "record_rejection"),
+    ] {
+        let (status, result) = schedule_call(r,a,"POST",&cp,json!({"action":action,"reason":"Synthetic correction preflight fixture","reference":"SYN-REJECTION","event_date":"2026-10-01","payer_control_number":"SYN-PAYER-CONTROL"}),Some(version)).await;
+        assert_eq!(status, 200, "{result}");
+    }
+    for frequency in ["replacement", "void_request"] {
+        let path = format!(
+            "/api/v1/patients/{}/billing/accounts/{}/claims",
+            patient["id"].as_str().unwrap(),
+            account["id"].as_str().unwrap()
+        );
+        let (status, claim) = schedule_call(r,a,"POST",&path,json!({"request_id":Uuid::new_v4(),"frequency":frequency,"parent_id":original["id"],"content":claim_content(),"reason":"Synthetic correction"}),Some(2)).await;
+        assert_eq!(status, 200, "{claim}");
+        let cp = format!("/api/v1/billing/claims/{}", claim["id"].as_str().unwrap());
+        let (status, ready) = schedule_call(
+            r,
+            a,
+            "POST",
+            &format!("{cp}/actions"),
+            json!({"action":"ready","reason":"Reviewed synthetic correction"}),
+            Some(1),
+        )
+        .await;
+        assert_eq!(status, 200, "{ready}");
+        let (status, submission) = schedule_call(r,a,"POST",&format!("{cp}/837p"),json!({"request_id":Uuid::new_v4(),"partner_id":setting["partner_id"],"partner_version":1,"details":edi_details(),"reason":"Review immutable correction artifact"}),Some(2)).await;
+        assert_eq!(status, 200, "{submission}");
+        let queue = format!(
+            "/api/v1/billing/submissions/{}/delivery",
+            submission["id"].as_str().unwrap()
+        );
+        let (status, error) = schedule_call(r,a,"POST",&queue,json!({"request_id":Uuid::new_v4(),"route_key":setting["route_key"],"reason":"Must fail before provider delivery"}),Some(1)).await;
+        assert_eq!(status, 400, "{error}");
+        assert!(
+            error.to_string().contains("original claims only"),
+            "{error}"
+        );
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM edi_delivery_jobs WHERE tenant_id=$1 AND submission_id=$2",
+        )
+        .bind(a.tenant_id)
+        .bind(Uuid::parse_str(submission["id"].as_str().unwrap()).unwrap())
+        .fetch_one(db)
+        .await
+        .unwrap();
+        assert_eq!(
+            count, 0,
+            "unsupported corrections must not reserve a delivery job"
+        );
+        // Simulate a job queued by an older client before its Claim.MD route
+        // was configured. Worker validation must stop before leasing/network.
+        let legacy = queue_provider(r, a, &submission).await;
+        let config = provider_config(
+            a,
+            &json!({"id":setting["partner_id"]}),
+            "claim_md",
+            "http://127.0.0.1:9/services/upload/",
+            "http://127.0.0.1:9",
+        );
+        suncharts_engine::delivery::process_one(db, &config)
+            .await
+            .unwrap();
+        let jp = format!(
+            "/api/v1/billing/delivery/jobs/{}",
+            legacy["id"].as_str().unwrap()
+        );
+        let (_, blocked) = schedule_call(r, a, "GET", &jp, Value::Null, None).await;
+        assert_eq!(blocked["job"]["status"], "blocked");
+        assert_eq!(
+            blocked["job"]["attempts"], 0,
+            "no provider transmission attempted"
+        );
+        assert!(blocked["job"]["last_result"]
+            .as_str()
+            .unwrap()
+            .contains("preflight_failed_before_transmission"));
+        let (status, result) = schedule_call(
+            r,
+            a,
+            "POST",
+            &format!("{jp}/actions"),
+            json!({"action":"cancel","reason":"Discard untransmitted synthetic fixture"}),
+            blocked["job"]["version"].as_i64(),
+        )
+        .await;
+        assert_eq!(status, 200, "{result}");
+        let (status, result) = schedule_call(
+            r,
+            a,
+            "POST",
+            &format!("{cp}/actions"),
+            json!({"action":"void_draft","reason":"Release untransmitted synthetic correction"}),
+            Some(2),
+        )
+        .await;
+        assert_eq!(status, 200, "{result}");
+    }
+    let (_, retained) = schedule_call(
+        r,
+        a,
+        "GET",
+        cp.trim_end_matches("/actions"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(
+        retained["claim"]["control_number"], original_control,
+        "corrections never rewrite the prior claim identifier"
+    );
+    let (_, legacy) = schedule_call(
+        r,
+        a,
+        "GET",
+        &format!("/api/v1/billing/claims/{legacy_id}"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(legacy["claim"]["control_number"], legacy_control);
+    assert_eq!(legacy_control.len(), 34);
+    assert!(sqlx::query(
+        "UPDATE ehr_claims SET control_number='REWRITTEN' WHERE tenant_id=$1 AND id=$2"
+    )
+    .bind(a.tenant_id)
+    .bind(legacy_id)
+    .execute(db)
+    .await
+    .is_err());
+}
+
 #[tokio::test]
 async fn native_claimmd_settings_encrypt_secrets_and_scope_runtime_activation() {
     let (r, db, a, _) = setup().await;
@@ -7928,7 +8358,7 @@ async fn native_claimmd_settings_encrypt_secrets_and_scope_runtime_activation() 
     .await;
     assert_eq!(connection["connected"], true);
     assert_eq!(connection["active"]["usage"], "T");
-    let (_, _, _, claim) = claim_fixture_kind(&r, &a, true).await;
+    let (patient, _, account, claim) = claim_fixture_kind(&r, &a, true).await;
     let (_, detail) = schedule_call(
         &r,
         &a,
@@ -7955,6 +8385,52 @@ async fn native_claimmd_settings_encrypt_secrets_and_scope_runtime_activation() 
     .await;
     assert_eq!(outside_connection["configured"], false);
     config.validate().unwrap();
+    assert_claimmd_corrections_rejected_before_queue(
+        &r, &db, &a, &saved, &patient, &account, &claim,
+    )
+    .await;
+    // A deployment-wide connection count is not a per-tenant UI limit. These
+    // synthetic credentials never contact a provider; verification is fixture evidence.
+    for index in 0..55 {
+        let mut tenant = a.clone();
+        tenant.tenant_id = Uuid::new_v4();
+        let mut request = request.clone();
+        request["account_key"] = json!(format!("synthetic-scale-key-{index}"));
+        let (status, created) = schedule_call(&r, &tenant, "POST", base, request, None).await;
+        assert_eq!(status, 200, "{created}");
+        sqlx::query("UPDATE edi_provider_settings SET enabled=true,verified=true WHERE tenant_id=$1 AND id=$2").bind(tenant.tenant_id).bind(Uuid::parse_str(created["id"].as_str().unwrap()).unwrap()).execute(&db).await.unwrap();
+    }
+    let scaled = suncharts_engine::provider_settings::load(&db)
+        .await
+        .unwrap();
+    assert_eq!(
+        scaled.routes.len(),
+        56,
+        "load every verified connection, including those beyond the former global limit"
+    );
+    suncharts_engine::retrieval::sync(&db, &scaled)
+        .await
+        .unwrap();
+    let connections: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM edi_connections WHERE route_key<>'provider-test'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(connections, 56);
+    let (_, scoped) = schedule_call(
+        &r,
+        &a,
+        "GET",
+        "/api/v1/billing/delivery/routes",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(
+        scoped["items"].as_array().unwrap().len(),
+        1,
+        "tenant route discovery remains scoped"
+    );
     suncharts_engine::retrieval::sync(&db, &config)
         .await
         .unwrap();

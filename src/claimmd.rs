@@ -70,7 +70,7 @@ fn professional_json(out: &Submission) -> Result<Value> {
     let claim = &out.claim_snapshot;
     if required(claim, "frequency")? != "original" {
         return Err(Error::Invalid(
-            "Claim.MD native JSON corrections require a separately reviewed mapping",
+            "Claim.MD native submission supports original claims only; replacement (7) and void (8) claims require a separately reviewed submission route",
         ));
     }
     let content = &claim["content"];
@@ -208,6 +208,10 @@ fn professional_json(out: &Submission) -> Result<Value> {
     }
     native.insert("charge".into(), Value::Array(charges));
     Ok(json!({"fileid":out.id.to_string(),"claim":[Value::Object(native)]}))
+}
+
+pub(crate) fn preflight(out: &Submission) -> Result<()> {
+    professional_json(out).map(|_| ())
 }
 
 pub(crate) async fn upload(r: &Route, out: &Submission) -> Result<Option<String>> {
@@ -399,8 +403,9 @@ async fn era_request(r: &Route, service: &str, fields: Vec<(&str, String)>) -> R
     if response.status() != 200 {
         return Err(Error::Invalid("Claim.MD ERA HTTP failure"));
     }
-    let v: Value = serde_json::from_slice(&stedi::bytes(response, 1048576).await?)
-        .map_err(|_| Error::Invalid("invalid Claim.MD ERA response"))?;
+    let v: Value =
+        serde_json::from_slice(&stedi::bytes(response, 4 * crate::era835::MAX_FILE_BYTES).await?)
+            .map_err(|_| Error::Invalid("invalid Claim.MD ERA response"))?;
     if v.get("error").is_some() {
         return Err(Error::Invalid("Claim.MD ERA account error"));
     }
@@ -525,7 +530,9 @@ pub(crate) async fn era_input(r: &Route, remote: &str) -> Result<String> {
         .ok_or(Error::Invalid("ERA requires one original 835"))?;
     let raw = data[0]
         .as_str()
-        .filter(|v| v.is_ascii() && !v.trim().is_empty() && v.len() <= 48000)
+        .filter(|v| {
+            v.is_ascii() && !v.trim().is_empty() && v.len() <= crate::era835::MAX_FILE_BYTES
+        })
         .ok_or(Error::Invalid("ERA original missing or unsupported"))?;
     Ok(raw.into())
 }
@@ -577,5 +584,19 @@ mod tests {
         assert_eq!(claim["charge"][0]["mod1"], "25");
         assert_eq!(claim["charge"][0]["mod2"], "95");
         assert!(value.get("AccountKey").is_none());
+    }
+
+    #[test]
+    fn native_preflight_rejects_corrections_without_provider_io() {
+        let mut out = submission();
+        assert!(preflight(&out).is_ok());
+        for frequency in ["replacement", "void_request"] {
+            out.claim_snapshot["frequency"] = json!(frequency);
+            let error = preflight(&out).unwrap_err().to_string();
+            assert!(error.contains("original claims only"), "{error}");
+        }
+        out.claim_snapshot["frequency"] = json!("original");
+        out.details["billing_address"]["city"] = json!("");
+        assert!(preflight(&out).is_err());
     }
 }

@@ -94,6 +94,6 @@ document.addEventListener('submit',event=>{
   if(selected!==patientId||me!==identity)return;
   if(typeof updateInsuranceEligibility==='function')updateInsuranceEligibility(coverageId,history);
   if($('claimmd-eligibility-form')!==form)return;
-  $('claimmd-eligibility-history').innerHTML=claimmdEligibilityHistory(history.items);if(result||history.items?.some(check=>check.request_snapshot?.request?.request_id===body.request_id&&check.status==='failed'))form.dataset.request=crypto.randomUUID();if(requestError)throw requestError;notice(`Eligibility response ${result.status}.`);
+  $('claimmd-eligibility-history').innerHTML=claimmdEligibilityHistory(history.items);if(result||history.items?.some(check=>check.request_snapshot?.request?.request_id===body.request_id&&['failed','completed'].includes(check.status)))form.dataset.request=crypto.randomUUID();if(requestError)throw requestError;notice(`Eligibility response ${result.status}.`);
  });
 },true);

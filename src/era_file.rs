@@ -31,8 +31,8 @@ struct Envelope {
     group: Option<Group>,
 }
 pub fn parse(raw: &str) -> Result<Vec<Part>> {
-    if !raw.is_ascii() || raw.len() > 48000 || raw.trim().is_empty() {
-        return Err(Error::Invalid("ERA file requires ASCII up to 48000 bytes"));
+    if !raw.is_ascii() || raw.len() > era835::MAX_FILE_BYTES || raw.trim().is_empty() {
+        return Err(Error::Invalid("ERA file requires ASCII up to 1 MiB"));
     }
     let mut parts = vec![];
     let mut cursor = 0;
@@ -75,7 +75,7 @@ pub fn parse(raw: &str) -> Result<Vec<Part>> {
         let fields: Vec<&str> = raw[cursor..end - 1].split(delimiters.0).collect();
         let f = |i: usize| fields.get(i).copied().unwrap_or("");
         segments += 1;
-        if segments > 4000 {
+        if segments > era835::MAX_SEGMENTS {
             return Err(Error::Invalid("ERA file segment limit exceeded"));
         }
         match f(0) {
@@ -133,8 +133,8 @@ pub fn parse(raw: &str) -> Result<Vec<Part>> {
             }
             "SE" => {
                 let begin = start.take().ok_or(Error::Invalid("SE without ST"))?;
-                if parts.len() >= 20 {
-                    return Err(Error::Invalid("ERA file supports up to 20 transactions"));
+                if parts.len() >= era835::MAX_TRANSACTIONS {
+                    return Err(Error::Invalid("ERA file supports up to 100 transactions"));
                 }
                 let original_text = raw[begin..end].to_owned();
                 let document = era835::parse_transaction(&original_text, Some(delimiters))?;
@@ -236,6 +236,11 @@ mod tests {
         }
         assert!(parse(&(tx("1") + &tx("1"))).is_err());
         assert!(parse(&(tx("1") + "garbage")).is_err());
-        assert!(parse(&(0..21).map(|n| tx(&n.to_string())).collect::<String>()).is_err());
+        assert!(parse(
+            &(0..=era835::MAX_TRANSACTIONS)
+                .map(|n| tx(&n.to_string()))
+                .collect::<String>()
+        )
+        .is_err());
     }
 }

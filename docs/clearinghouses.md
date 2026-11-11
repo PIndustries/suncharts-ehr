@@ -27,7 +27,9 @@ legacy environment-managed routes. Never put keys in that file: route entries
 reference environment-variable names. The web workspace shows safe route metadata,
 pause/resume, polling and retrieved evidence.
 
-A file has `{"routes": [...]}` with at most 50 entries. Keys are unique per tenant.
+A file has `{"routes": [...]}` and is bounded to 64 KB. Keys are unique per tenant.
+Enabled database connections are loaded across all tenants without a global
+50-connection cutoff; account binding and credential uniqueness still apply.
 Bind each actual provider account/mailbox to one route and tenant. API credentials
 cannot be shared across configured routes; SFTP host/port/user combinations are
 also unique. Different tenants must use separately authorized provider accounts.
@@ -87,6 +89,13 @@ Claim.MD's `status: A` does not automatically mean payer acceptance. Known respo
 fields and each message are retained as canonical JSON, not converted to X12 or
 claimed to be a byte-for-byte copy of the complete provider page. Unknown fields
 are excluded. This adapter does not synthesize 277CAs or ERA payments from messages.
+
+New claims receive an alphanumeric patient control number of at most 17 characters;
+existing identifiers and their response matching remain unchanged. Claim.MD's
+native submission currently supports original claims only. Replacement (frequency
+7) and void (frequency 8) artifacts are rejected before queueing on a configured
+Claim.MD route. Older queued unsupported artifacts are held before transmission,
+with a deterministic preflight result, rather than an uncertain delivery result.
 
 The background poller attaches response evidence only when a delivered submission
 on the same tenant, route and partner has the exact Claim.MD file receipt and

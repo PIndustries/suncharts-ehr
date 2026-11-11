@@ -9,7 +9,7 @@ use crate::{
     State,
 };
 use axum::{
-    extract::{Path, State as ExtractState},
+    extract::{DefaultBodyLimit, Path, State as ExtractState},
     http::HeaderMap,
     routing::{get, post},
     Json, Router,
@@ -147,7 +147,9 @@ pub fn router() -> Router<State> {
     Router::new()
         .route(
             "/api/v1/billing/remittances/{id}/provider-adjustments",
-            get(detail).put(review),
+            get(detail)
+                .put(review)
+                .layer(DefaultBodyLimit::max(crate::era835::MAX_FILE_BYTES)),
         )
         .route("/api/v1/billing/recoupments", get(cases))
         .route(
@@ -196,7 +198,7 @@ async fn review(
     a.scheduling()?;
     crate::model::text(&v.reason, 1000)?;
     let version = crate::expected(&h)?;
-    if v.decisions.len() > 120 {
+    if v.decisions.len() > crate::era835::MAX_PROVIDER_ADJUSTMENTS {
         return Err(Error::Invalid("too many PLB decisions"));
     }
     let mut tx = s

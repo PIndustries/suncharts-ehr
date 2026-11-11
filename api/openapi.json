@@ -6938,7 +6938,7 @@
       },
       "post": {
         "operationId": "importRemittance",
-        "description": "Stage idempotent normalized JSON or bounded single-transaction ASCII 835 (48 KB, 30 claims). Original evidence immutable. Duplicate payer/trace is blocked. Unsupported/unbalanced data cannot post. Optional remote_report_id enforces the exact retrieved 835 and links original evidence atomically. Matching/posting remain separate.",
+        "description": "Stage idempotent normalized JSON or bounded single-transaction ASCII 835 (1 MiB, 1,000 claims, 1,000 PLB pairs). Original evidence is immutable. Duplicate payer/trace is blocked. Supported supplemental evidence is retained without adding ledger amounts; unknown/unbalanced data cannot post. Optional remote_report_id binds the exact retrieved 835. Matching and posting remain explicit whole-remittance operations.",
         "parameters": [],
         "security": [
           {
@@ -9479,7 +9479,7 @@
                   "original_text": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 48000
+                    "maxLength": 1048576
                   }
                 }
               }
@@ -28196,7 +28196,7 @@
       "post": {
         "operationId": "createWorkflowDispatch",
         "summary": "Submit a workflow node for explicit native-operation review",
-        "description": "Creates a tenant-scoped, idempotent work item only when the active pathway step is ready, integration-aware, and configured for manual approval. The step moves to awaiting_approval. No native scheduling mutation, provider transmission or model call occurs until a separate authorized reviewer approves this dispatch. Communication nodes and Claude/Erebine nodes create downstream drafts only; those drafts retain their own approval/send gates. Empty input on a configured AI node resolves only its explicit source_field from this run\u2019s immutable definition and context. Original AI input stays local and is omitted from dispatch responses; an authorized reviewer must prepare and approve a privacy preview before execution. Eligibility and payment nodes use the configured native provider paths. A payment request creates test-mode checkout and waits for processor-confirmed payment plus ledger evidence; eligibility completion does not approve benefits. Patient-form issuance also has a direct versioned intake-packet endpoint.",
+        "description": "Creates a tenant-scoped, idempotent work item only when the active pathway step is ready, integration-aware, and configured for manual approval. The step moves to awaiting_approval. No native scheduling mutation, provider transmission or model call occurs until a separate authorized reviewer approves this dispatch. Communication nodes and Claude/Erebine nodes create downstream drafts only; those drafts retain their own approval/send gates. Empty input on a configured AI node resolves only its explicit source_field from this run’s immutable definition and context. Original AI input stays local and is omitted from dispatch responses; an authorized reviewer must prepare and approve a privacy preview before execution. Eligibility and payment nodes use the configured native provider paths. A payment request creates test-mode checkout and waits for processor-confirmed payment plus ledger evidence; eligibility completion does not approve benefits. Patient-form issuance also has a direct versioned intake-packet endpoint.",
         "parameters": [
           {
             "name": "instance",
@@ -28411,7 +28411,7 @@
                   "privacy_preview_id": {
                     "type": "string",
                     "format": "uuid",
-                    "description": "Required for approve on AI dispatches; must be this reviewer\u2019s current bound preview."
+                    "description": "Required for approve on AI dispatches; must be this reviewer’s current bound preview."
                   },
                   "privacy_approved": {
                     "type": "boolean",
@@ -37111,7 +37111,7 @@
             "items": {
               "$ref": "#/components/schemas/EraClaim"
             },
-            "maxItems": 30,
+            "maxItems": 1000,
             "minItems": 0
           },
           "issues": {
@@ -37120,14 +37120,33 @@
               "type": "string",
               "maxLength": 300
             },
-            "maxItems": 100
+            "maxItems": 100000
           },
           "provider_adjustments": {
             "type": "array",
-            "maxItems": 120,
+            "maxItems": 1000,
             "default": [],
             "items": {
               "$ref": "#/components/schemas/ProviderAdjustment"
+            }
+          },
+          "payer_identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EraPayerIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Omitted for historical normalized documents; existing evidence and hashes are not rewritten."
+          },
+          "supplemental": {
+            "type": "array",
+            "maxItems": 100000,
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/EraSupplementalEvidence"
             }
           }
         },
@@ -37174,7 +37193,7 @@
               "string",
               "null"
             ],
-            "maxLength": 48000
+            "maxLength": 1048576
           },
           "source_history_id": {
             "type": [
@@ -37210,7 +37229,7 @@
           "row_index": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 29
+            "maximum": 999
           },
           "claim_id": {
             "type": "string",
@@ -37247,7 +37266,7 @@
               "null"
             ],
             "minimum": 0,
-            "maximum": 29,
+            "maximum": 999,
             "description": "Zero-based original posted claim row required for CLP22"
           },
           "correction_of_remittance_id": {
@@ -37264,7 +37283,7 @@
               "null"
             ],
             "minimum": 0,
-            "maximum": 29,
+            "maximum": 999,
             "description": "Zero-based reversal row; pair with correction_of_remittance_id."
           }
         },
@@ -37285,7 +37304,7 @@
             "items": {
               "$ref": "#/components/schemas/EraMatch"
             },
-            "maxItems": 30
+            "maxItems": 1000
           },
           "reason": {
             "type": "string",
@@ -37345,7 +37364,7 @@
             "items": {
               "$ref": "#/components/schemas/EraMatch"
             },
-            "maxItems": 30
+            "maxItems": 1000
           },
           "source_history_id": {
             "type": [
@@ -37380,16 +37399,22 @@
             "items": {
               "type": "string",
               "maxLength": 300
-            },
-            "maxItems": 100
+            }
           },
           "postings": {
             "type": "array",
             "items": {
               "type": "object",
-              "description": "Immutable account/claim/PR/selected CO posting evidence"
+              "description": "Immutable account/claim/PR/selected CO posting evidence plus an explicitly current account balance projection; negative means patient credit.",
+              "properties": {
+                "current_account_balance_cents": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Current charges plus net ledger, computed when read. A negative value is a patient credit. This projection does not modify original posting evidence or saved invoice snapshots."
+                }
+              }
             },
-            "maxItems": 30
+            "maxItems": 1000
           },
           "ready_to_post": {
             "type": "boolean"
@@ -37490,8 +37515,7 @@
             "items": {
               "type": "string",
               "maxLength": 300
-            },
-            "maxItems": 100
+            }
           }
         },
         "required": [
@@ -39437,7 +39461,7 @@
           "index": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 119
+            "maximum": 999
           },
           "category": {
             "type": "string",
@@ -39469,7 +39493,7 @@
         "properties": {
           "decisions": {
             "type": "array",
-            "maxItems": 120,
+            "maxItems": 1000,
             "items": {
               "$ref": "#/components/schemas/ProviderSettlementDecision"
             }
@@ -39735,13 +39759,13 @@
           "original_text": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 48000,
-            "description": "Exact original ASCII 835 file, up to 20 transaction sets; multiple groups/interchanges or unwrapped transactions."
+            "maxLength": 1048576,
+            "description": "Exact original ASCII 835 file, up to 1 MiB, 100 transaction sets and 100,000 segments; multiple groups/interchanges or unwrapped transactions."
           },
           "payer_ids": {
             "type": "array",
             "minItems": 1,
-            "maxItems": 20,
+            "maxItems": 100,
             "items": {
               "type": "string",
               "format": "uuid"
@@ -39807,7 +39831,7 @@
           "versions": {
             "type": "array",
             "minItems": 1,
-            "maxItems": 20,
+            "maxItems": 100,
             "items": {
               "$ref": "#/components/schemas/EraBatchVersion"
             },
@@ -41501,6 +41525,10 @@
             "items": {
               "type": "string"
             }
+          },
+          "card_payments_active": {
+            "type": "boolean",
+            "description": "True only after a bound provider status explicitly confirms the Stripe card_payments capability is active. General charges_enabled alone is insufficient. Existing settings default false until refreshed."
           }
         }
       },
@@ -50099,6 +50127,82 @@
           "reason"
         ],
         "description": "Append a working-file version using If-Match of the current FILE version, not metadata version. Original and prior copies are immutable. Exact retries replay their existing version; changed content with the same request ID or a stale file version conflicts. Only active documents accept saves. Annotation overlays are allowed only on PDF/PNG/JPEG."
+      },
+      "EraPayerIdentity": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "n1_qualifier",
+          "n1_identifier",
+          "additional_payer_id"
+        ],
+        "properties": {
+          "n1_qualifier": {
+            "type": "string",
+            "maxLength": 3
+          },
+          "n1_identifier": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "additional_payer_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 100
+          }
+        },
+        "description": "Retained payer-loop source identifiers. Unique REF*2U resolves the payer code; a different XV plan ID is preserved separately. Explicit legacy PI may resolve only when 2U is absent; contradictory PI/2U or multiple different 2U IDs are rejected. Payee/claim REF segments never determine payer identity."
+      },
+      "EraSupplementalEvidence": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "segment",
+          "elements",
+          "claim_index",
+          "service_index"
+        ],
+        "properties": {
+          "segment": {
+            "enum": [
+              "AMT",
+              "QTY",
+              "TS2",
+              "TS3",
+              "MIA",
+              "MOA"
+            ]
+          },
+          "elements": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 24,
+            "items": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          "claim_index": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 999
+          },
+          "service_index": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 99
+          }
+        },
+        "description": "Retained informational elements without segment tag, in original order, scoped to zero-based claim/service or provider summary. Segment-specific shape and numeric values are validated. No extra payment, PR charge or adjustment is generated from these fields. CLP/CAS/SVC/BPR balancing remains mandatory."
       }
     }
   }
