@@ -5,7 +5,7 @@
 let encounterStartIdentity;
 const encounterStartOperations=new Map();
 function encounterStartSession(){if(encounterStartIdentity!==me){encounterStartOperations.clear();encounterStartIdentity=me;}}
-function canStartEncounterFlow(){return ['owner','clinician'].includes(me?.role);}
+function canStartEncounterFlow(){return ['owner','clinician'].includes(me?.role)&&!workspace?.patient?.archived;}
 function encounterStartCurrent(op){return selected===op.patient&&me===op.identity;}
 function requireEncounterStartContext(op){if(!encounterStartCurrent(op))throw new Error('Patient or sign-in changed. Return to the original chart to continue starting this encounter.');}
 function encounterStartAppointments(){return (workspace.appointments||[]).filter(a=>a.patient_id===selected&&a.clinician_id===me.user_id&&['booked','checked_in','in_progress'].includes(a.status));}
@@ -33,6 +33,7 @@ async function openEncounterStartFlow(){
  // Refresh before offering an unscheduled start, so an existing encounter is visible.
  const fresh=await api(`/api/v1/patients/${patient}/workspace`);if(selected!==patient||me!==identity)return;
  if(fresh.patient?.id!==patient)throw new Error('The appointment response does not match this chart.');
+ workspace.patient.archived=fresh.patient.archived;if(fresh.patient.archived)throw new Error('Restore this archived patient before starting a new encounter.');
  workspace.appointments=fresh.appointments;workspace.visits=fresh.visits;
  showChartSection('visits');
  const host=$('encounter-start-editor');if(!host)throw new Error('Open the patient encounter workspace before starting.');

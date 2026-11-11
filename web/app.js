@@ -128,6 +128,7 @@ function signInScreen() {
   if(typeof clearSupportSession==='function')clearSupportSession();
   if(typeof clearConnectionStatusSession==='function')clearConnectionStatusSession();
   if(typeof clearPatientIdentitySession==='function')clearPatientIdentitySession();
+  if(typeof clearPatientLifecycleSession==='function')clearPatientLifecycleSession();
   if(typeof clearReferralDeliverySession==='function')clearReferralDeliverySession();
   if(typeof clearDocumentsSession==='function')clearDocumentsSession();
   if(typeof clearReferralSession==='function')clearReferralSession();
@@ -197,7 +198,7 @@ async function enter() {
   if($('nav-admin'))$('nav-admin').hidden=me.role!=='owner';
   if(typeof applyWorkspaceAccessVisibility==='function')applyWorkspaceAccessVisibility();
   if(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('clinical')){
-    const page=await api('/api/v1/patients'); patients=page.items; cursor=page.next_cursor;
+    const page=await api(typeof patientDirectoryQuery==='function'?patientDirectoryQuery():'/api/v1/patients'); patients=page.items; cursor=page.next_cursor;
   }else{patients=[];cursor=null;}
   renderPatients();
   if(me.role==='partner_support')notice('Delegated partner support session. Clinical and administrative changes are disabled.');
@@ -234,7 +235,7 @@ function renderPatients() {
   const q=$('search').value.trim().toLowerCase();
   const filtered=patients.filter(p=>`${p.given_name} ${p.family_name} ${p.mrn}`.toLowerCase().includes(q));
   $('patient-count').textContent=patients.length;
-  $('patients').innerHTML=filtered.length ? filtered.map(p=>`<button class="patient-row ${p.id===selected?'selected':''}" data-patient="${esc(p.id)}">${esc(p.family_name)}, ${esc(p.given_name)}<small>${esc(p.mrn)} · ${esc(p.birth_date)}</small></button>`).join('') : '<p class="muted">No patients found.</p>';
+  $('patients').innerHTML=filtered.length ? filtered.map(p=>`<button class="patient-row ${p.id===selected?'selected':''}" data-patient="${esc(p.id)}">${esc(p.family_name)}, ${esc(p.given_name)}<small>${esc(p.mrn)} · ${esc(p.birth_date)}${p.archived?' · Archived':''}</small></button>`).join('') : '<p class="muted">No patients found.</p>';
   $('load-more').hidden=!cursor;
 }
 async function selectPatient(id, keepVisit) {
@@ -274,6 +275,7 @@ async function openPatientEncounter(id){
 
 const date = s => new Date(s).toLocaleString(undefined,{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
 function renderChart() {
+  if(typeof capturePatientLifecycleDraft==='function')capturePatientLifecycleDraft();
   if(typeof capturePatientIdentityDraft==='function')capturePatientIdentityDraft();
   if(typeof captureReferralDeliveryDraft==='function')captureReferralDeliveryDraft();
   if(typeof captureDocumentDraft==='function')captureDocumentDraft();
@@ -293,6 +295,7 @@ function renderChart() {
   const birth=new Date(p.birth_date+'T12:00:00'),now=new Date();let age=now.getFullYear()-birth.getFullYear();if(now.getMonth()<birth.getMonth()||(now.getMonth()===birth.getMonth()&&now.getDate()<birth.getDate()))age--;
   const encounter=activeVisit?workspace.appointments.find(a=>a.id===activeVisit.appointment_id):null;
   $('chart').innerHTML=`<div class="chart-context"><div class="chart-header"><div class="avatar">${esc(p.given_name[0])}${esc(p.family_name[0])}</div><div class="patient-heading"><p class="chart-record-label">PATIENT CHART${preferred?' · Preferred name '+esc(preferred):''}</p><h2>${esc(p.family_name)}, ${esc(p.given_name)} <span class="chart-age">${age>=0?esc(age)+' years':''}</span></h2><p><span>MRN <b>${esc(p.mrn)}</b></span><span>DOB <b>${esc(p.birth_date)}</b></span></p></div><div class="chart-header-context">${activeVisit?`<span class="status-badge ${activeVisit.status==='signed'?'completed':'in_progress'}">${activeVisit.status==='signed'?'Signed encounter':'Active encounter'}</span><small>${esc(encounterDateLabel(activeVisit))}</small>`:'<span class="muted">Longitudinal record</span>'}</div><button class="quiet" data-action="reload" aria-label="Reload patient chart">↻ Refresh</button>${['owner','clinician','front_desk'].includes(me?.role)?`<button type="button" data-portal-access="${esc(selected)}">Patient portal</button>`:''}</div><div class="patient-safety ${allergies.length?'has-allergies':''}"><b>Allergies</b><span>${esc(allergyText)}</span></div>${chartNavigation(tabs)}</div>
+  <section id="patient-lifecycle" class="panel"></section>
   <div id="encounter-progress">${encounterWorkflow()}</div>
   <div id="encounter-start-editor"></div>
   ${chartOverview()}
@@ -306,7 +309,7 @@ function renderChart() {
   <section id="encounter-orders-actions" class="panel" hidden></section>
   <div id="visit-checkout"><div class="panel"><h2>Checkout & after-visit summary</h2><p>Select an encounter from Encounters to review its handoff and follow-up.</p></div></div>
   ${patientAppointmentWorkspace()}`;
-  if(typeof renderPrescribing==='function')void renderPrescribing(); renderClinical(); renderLabs(); renderBilling(); renderHistory(); if(typeof renderHealthHistory==='function')void renderHealthHistory(); if(typeof renderImmunizations==='function')void renderImmunizations(); if(typeof renderDocuments==='function')void renderDocuments(); if(typeof renderPatientIdentity==='function')void renderPatientIdentity(); if(typeof renderReferrals==='function')void renderReferrals(); if(typeof renderDemographics==='function')renderDemographics(selected,workspace.demographics); if(typeof renderSpecialtyPatientWorkspace==='function')void renderSpecialtyPatientWorkspace(); if(typeof renderCarePathways==='function'&&(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('workflows')))void renderCarePathways(); if(typeof renderPatientInsurance==='function')void renderPatientInsurance(); if(activeVisit) renderVisit(false); applyChartSection();
+  if(typeof renderPrescribing==='function')void renderPrescribing(); renderClinical(); renderLabs(); renderBilling(); renderHistory(); if(typeof renderHealthHistory==='function')void renderHealthHistory(); if(typeof renderImmunizations==='function')void renderImmunizations(); if(typeof renderDocuments==='function')void renderDocuments(); if(typeof renderPatientIdentity==='function')void renderPatientIdentity(); if(typeof renderPatientLifecycle==='function')void renderPatientLifecycle(); if(typeof renderReferrals==='function')void renderReferrals(); if(typeof renderDemographics==='function')renderDemographics(selected,workspace.demographics); if(typeof renderSpecialtyPatientWorkspace==='function')void renderSpecialtyPatientWorkspace(); if(typeof renderCarePathways==='function'&&(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('workflows')))void renderCarePathways(); if(typeof renderPatientInsurance==='function')void renderPatientInsurance(); if(activeVisit) renderVisit(false); applyChartSection();
 }
 function canRegisterPatient(){return ['owner','clinician','front_desk'].includes(me?.role)&&(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('clinical','create'));}
 function isRoomingStaff(){return ['nurse','medical_assistant'].includes(me?.role);}
@@ -330,6 +333,7 @@ function renderHistory() {
 }
 function encounterWorkflow(){
  const v=activeVisit,appointment=v?workspace.appointments.find(a=>a.id===v.appointment_id):workspace.appointments.find(a=>['checked_in','booked'].includes(a.status));
+ if(!v&&workspace.patient?.archived)return '<section class="panel encounter-empty"><h2>Archived patient chart</h2><p>Review existing encounter history, or restore the patient before starting a new encounter.</p></section>';
  if(!v)return `<section class="panel encounter-empty"><h2>Start the encounter</h2><p>Start from an appointment or enter the service date and time for an unscheduled visit.</p>${typeof canStartEncounterFlow==='function'&&canStartEncounterFlow()?'<button type="button" class="primary" data-start-encounter-flow>Start encounter</button>':''}<button type="button" data-chart-section="insurance">Review insurance & copay</button>${appointment?.status==='checked_in'&&(isRoomingStaff()||(['owner','clinician'].includes(me.role)&&appointment.clinician_id===me.user_id))?` <button type="button" class="primary" data-start="${esc(appointment.id)}">Start encounter</button>`:''}</section>`;
  const steps=encounterSections();
  const runs=typeof patientPathways==='undefined'?[]:patientPathways.filter(item=>item.patient_id===selected&&item.status==='active'&&(!item.appointment_id||item.appointment_id===v.appointment_id));
@@ -418,6 +422,7 @@ function chartNavigation(tabs){
  return `<nav class="chart-tabs patient-workspace-tabs" aria-label="Patient workspace"><div class="chart-tab-row chart-primary-tabs">${main.map(button).join('')}${records.length?`<details class="patient-record-navigation" id="patient-record-navigation"><summary>Patient record</summary><div>${records.map(([key,label])=>button([key,names[key]||label])).join('')}</div></details>`:''}</div></nav>`;
 }
 function patientWorkflowActions(){
+ if(workspace.patient?.archived&&!activeVisit)return '<section class="patient-next-action"><div><b>Archived patient chart</b><p>Review the encounter history below. Restore the patient to book or start a new visit.</p></div></section>';
  const v=activeVisit,appointment=v?workspace.appointments.find(a=>a.id===v.appointment_id):workspace.appointments.find(a=>['checked_in','booked'].includes(a.status));
  let action=typeof canStartEncounterFlow==='function'&&canStartEncounterFlow()?'<button type="button" class="primary" data-start-encounter-flow>Start encounter</button>':'<button type="button" class="primary" data-chart-section="visits">Appointments & encounters</button>',detail='Review insurance, then start from an appointment or enter the service date and time.';
  if(v){action=`<button type="button" class="primary" data-chart-section="visits">${v.status==='signed'?'Review encounter':'Continue encounter'}</button>`;detail=`${encounterDateLabel(v)} · ${v.status==='signed'?'Review procedures, checkout and billing for this visit.':'Continue the selected visit, diagnoses and procedures.'}`;}
@@ -549,7 +554,7 @@ async function showClinical() {
  selected=undefined;activeVisit=undefined;workspace=undefined;chartSection='overview';
  $('chart').innerHTML=patientDirectoryLanding();setPatientDirectoryVisible(true);
  $('tools').innerHTML='<p class="muted" role="status">Loading patient directory…</p>';
- const page=await api('/api/v1/patients');if(me!==openingIdentity||openingGeneration!==patientWorkspaceGeneration)return;
+ const page=await api(typeof patientDirectoryQuery==='function'?patientDirectoryQuery():'/api/v1/patients');if(me!==openingIdentity||openingGeneration!==patientWorkspaceGeneration)return;
  patients=page.items;cursor=page.next_cursor;renderPatients();$('tools').replaceChildren();$('tools').hidden=true;
  $('clinical-workspace').hidden=false;$('new-patient').hidden=!canRegisterPatient();$('toggle-directory').hidden=false;
  $('search')?.focus({preventScroll:true});
@@ -658,7 +663,7 @@ document.addEventListener('click',e=>{
     if(button.dataset.reconcile){const report=await api(`/api/v1/migrations/${button.dataset.reconcile}/reconcile`,'POST');await showMigrations();notice(report.ready_to_import?'Snapshot reconciled. Review the import before proceeding.':'Snapshot has unresolved counts or mappings.',!report.ready_to_import);return;}
     if(button.dataset.commit){if(!await confirmAction('Original clinical records will be preserved as history. This does not switch your active EHR.',{title:'Import reconciled records?',confirmLabel:'Import records',tone:'danger'}))return;await api(`/api/v1/migrations/${button.dataset.commit}/commit`,'POST',{digest:button.dataset.digest});await showMigrations();notice('Import completed. Clinical cutover remains separate.');return;}
     if(button.id==='logout'){await api('/auth/logout','POST');signInScreen();return;}
-    if(button.id==='load-more'){const page=await api(`/api/v1/patients?after=${encodeURIComponent(cursor)}`);patients.push(...page.items);cursor=page.next_cursor;renderPatients();return;}
+    if(button.id==='load-more'){const page=await api(typeof patientDirectoryQuery==='function'?patientDirectoryQuery(cursor):`/api/v1/patients?after=${encodeURIComponent(cursor)}`);patients.push(...page.items);cursor=page.next_cursor;renderPatients();return;}
     if(button.dataset.patient){await selectPatient(button.dataset.patient);return;}
     if(button.dataset.checkIn){await api(`/api/v1/appointments/${button.dataset.checkIn}/check-in`,'POST');await selectPatient(selected);showChartSection('visits');notice('Patient checked in.');return;}
     if(button.dataset.start){const v=await api('/api/v1/visits','POST',{appointment_id:button.dataset.start});await selectPatient(selected,v.id);return;}
@@ -683,6 +688,6 @@ $('search').addEventListener('input',renderPatients);
 document.addEventListener('DOMContentLoaded',()=>connectLaunchAcceptance.then(()=>enter()).catch(error=>{signInScreen();if(error.message!=='Please sign in to continue.')$('login-error').textContent=error.message;}),{once:true});
 
 document.addEventListener('input',e=>{if(e.target.closest?.('#note-form,#vitals-form'))captureVisitDrafts();});
-window.addEventListener('beforeunload',e=>{captureVisitDrafts();if((typeof billingChargeHasDrafts==='function'&&billingChargeHasDrafts())||(typeof prescribingHaveDrafts==='function'&&prescribingHaveDrafts())||(typeof portalStaffHasDrafts==='function'&&portalStaffHasDrafts())||(typeof supportHasDrafts==='function'&&supportHasDrafts())||(typeof patientIdentityHasDrafts==='function'&&patientIdentityHasDrafts())||(typeof referralDeliveryHasDrafts==='function'&&referralDeliveryHasDrafts())||(typeof documentsHaveDrafts==='function'&&documentsHaveDrafts())||(typeof referralHasDrafts==='function'&&referralHasDrafts())||(typeof orderDiagnosisLinkDrafts!=='undefined'&&orderDiagnosisLinkDrafts.size)||(typeof accountDiagnosisLinkDrafts!=='undefined'&&accountDiagnosisLinkDrafts.size)||(typeof healthHistoryHasDrafts==='function'&&healthHistoryHasDrafts())||(typeof immunizationHasDrafts==='function'&&immunizationHasDrafts())||visitDrafts.size||(typeof visitDiagnosisDrafts!=='undefined'&&visitDiagnosisDrafts.size)||(typeof roomingDrafts!=='undefined'&&roomingDrafts.size)||(typeof checkoutDrafts!=='undefined'&&checkoutDrafts.size)){e.preventDefault();e.returnValue='';}});
+window.addEventListener('beforeunload',e=>{captureVisitDrafts();if((typeof patientLifecycleHasDrafts==='function'&&patientLifecycleHasDrafts())||(typeof billingChargeHasDrafts==='function'&&billingChargeHasDrafts())||(typeof prescribingHaveDrafts==='function'&&prescribingHaveDrafts())||(typeof portalStaffHasDrafts==='function'&&portalStaffHasDrafts())||(typeof supportHasDrafts==='function'&&supportHasDrafts())||(typeof patientIdentityHasDrafts==='function'&&patientIdentityHasDrafts())||(typeof referralDeliveryHasDrafts==='function'&&referralDeliveryHasDrafts())||(typeof documentsHaveDrafts==='function'&&documentsHaveDrafts())||(typeof referralHasDrafts==='function'&&referralHasDrafts())||(typeof orderDiagnosisLinkDrafts!=='undefined'&&orderDiagnosisLinkDrafts.size)||(typeof accountDiagnosisLinkDrafts!=='undefined'&&accountDiagnosisLinkDrafts.size)||(typeof healthHistoryHasDrafts==='function'&&healthHistoryHasDrafts())||(typeof immunizationHasDrafts==='function'&&immunizationHasDrafts())||visitDrafts.size||(typeof visitDiagnosisDrafts!=='undefined'&&visitDiagnosisDrafts.size)||(typeof roomingDrafts!=='undefined'&&roomingDrafts.size)||(typeof checkoutDrafts!=='undefined'&&checkoutDrafts.size)){e.preventDefault();e.returnValue='';}});
 
 document.addEventListener('change',event=>{if(event.target.id!=='encounter-picker')return;const id=event.target.value;run(()=>openPatientEncounter(id));});

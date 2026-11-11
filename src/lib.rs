@@ -55,6 +55,7 @@ pub mod office;
 pub mod partner_scheduling;
 pub mod partner_support;
 pub mod patient_identity;
+pub mod patient_lifecycle;
 pub mod patient_portal;
 pub mod payments;
 pub mod postgres;
@@ -348,6 +349,7 @@ pub fn app(state: State) -> Router {
         .merge(referrals::routes())
         .merge(referral_delivery::routes())
         .merge(patient_identity::routes())
+        .merge(patient_lifecycle::routes())
         .merge(patient_portal::router())
         .merge(prescribing::router())
         .merge(erx_setup::router())
@@ -775,6 +777,16 @@ pub fn app(state: State) -> Router {
         .route(
             "/sun.css",
             get(|| async { web_asset("sun.css", "text/css", include_str!("../web/sun.css")) }),
+        )
+        .route(
+            "/patient-lifecycle.js",
+            get(|| async {
+                web_asset(
+                    "patient-lifecycle.js",
+                    "text/javascript; charset=utf-8",
+                    include_str!("../web/patient-lifecycle.js"),
+                )
+            }),
         )
         .route(
             "/patient-identity.js",
@@ -1291,13 +1303,15 @@ async fn headers(
 #[serde(deny_unknown_fields)]
 struct PatientQuery {
     after: Option<Uuid>,
+    #[serde(default)]
+    status: patient_lifecycle::PatientStatus,
 }
 async fn patients(
     a: Actor,
     ExtractState(s): ExtractState<State>,
     axum::extract::Query(q): axum::extract::Query<PatientQuery>,
 ) -> Result<Json<PatientPage>> {
-    Ok(Json(s.backend.patients(&a, q.after).await?))
+    Ok(Json(s.backend.patients(&a, q.after, q.status).await?))
 }
 async fn workspace(
     a: Actor,

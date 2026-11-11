@@ -336,6 +336,20 @@
               "format": "uuid"
             },
             "description": "Cursor returned by the previous page; 50 patients per page."
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "active",
+                "archived",
+                "all"
+              ],
+              "default": "active"
+            },
+            "description": "Directory status filter. Archived patients retain direct chart and record access."
           }
         ],
         "responses": {
@@ -32979,6 +32993,154 @@
           }
         }
       }
+    },
+    "/api/v1/patients/{id}/lifecycle": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "readPatientLifecycle",
+        "summary": "Read patient archive status and attributed history",
+        "tags": [
+          "Patients"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientLifecycle"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Current quoted lifecycle version."
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Record not found in tenant"
+          },
+          "409": {
+            "description": "Stale version or invalid state"
+          },
+          "500": {
+            "description": "Atomic operation failed"
+          }
+        }
+      },
+      "put": {
+        "operationId": "updatePatientLifecycle",
+        "summary": "Archive or restore a patient chart with an audited reason",
+        "tags": [
+          "Patients"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientLifecycle"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Current quoted lifecycle version."
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Record not found in tenant"
+          },
+          "409": {
+            "description": "Stale version or invalid state"
+          },
+          "500": {
+            "description": "Atomic operation failed"
+          },
+          "428": {
+            "description": "Current quoted version required"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatientLifecycleChange"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^\"[0-9]+\"$"
+            }
+          }
+        ],
+        "description": "Owner, clinician or front desk with clinical edit permission may archive or restore using the current quoted If-Match. Status, reason and audit commit atomically. Existing records are never deleted or rewritten. Archived charts cannot start new appointments or encounters until restored; direct records remain accessible. Stale versions return 409."
+      }
     }
   },
   "components": {
@@ -34079,6 +34241,10 @@
           "birth_date": {
             "type": "string",
             "format": "date"
+          },
+          "archived": {
+            "type": "boolean",
+            "description": "Current append-only chart archive status on native patient directory and workspace responses. Historical identity snapshots may omit it."
           }
         },
         "required": [
@@ -50367,6 +50533,96 @@
           "crossover_reference",
           "paid_units"
         ]
+      },
+      "PatientLifecycleChange": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "archived",
+          "reason"
+        ],
+        "properties": {
+          "archived": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Nonblank reason without control characters; recorded with actor and time."
+          }
+        }
+      },
+      "PatientLifecycle": {
+        "type": "object",
+        "required": [
+          "patient_id",
+          "version",
+          "archived",
+          "can_manage",
+          "history",
+          "history_truncated"
+        ],
+        "properties": {
+          "patient_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Starts at 1 for an active chart without lifecycle events."
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "can_manage": {
+            "type": "boolean"
+          },
+          "history": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "required": [
+                "version",
+                "archived",
+                "reason",
+                "actor_id",
+                "created_at"
+              ],
+              "properties": {
+                "version": {
+                  "type": "integer",
+                  "minimum": 2
+                },
+                "archived": {
+                  "type": "boolean"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "actor_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "actor_label": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "history_truncated": {
+            "type": "boolean"
+          }
+        }
       }
     }
   }

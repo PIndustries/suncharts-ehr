@@ -389,5 +389,19 @@ VALUES('10000000-0000-0000-0000-000000000001',gen_random_uuid(),'20000000-0000-0
             "existing payment settings remain unchanged"
         );
     }
+    let original_tables: Vec<String> = sqlx::query_scalar("SELECT tablename::text FROM pg_tables WHERE schemaname=current_schema() AND tablename<>'_sqlx_migrations' ORDER BY tablename").fetch_all(&pool).await.unwrap();
+    let before_archive = snapshot_tables(&pool, &original_tables).await;
+    for _ in 0..2 {
+        through_revision(98).run(&pool).await.unwrap();
+        assert_eq!(before_archive, snapshot_tables(&pool, &original_tables).await, "archive migration must preserve every existing patient, document, signed note and financial row");
+        let events: i64 = sqlx::query_scalar("SELECT count(*) FROM patient_lifecycle_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            events, 0,
+            "existing patients must remain active without fabricated history"
+        );
+    }
     pool.close().await;
 }

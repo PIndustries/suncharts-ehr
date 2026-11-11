@@ -9,7 +9,12 @@ use uuid::Uuid;
 
 #[async_trait]
 pub trait ClinicalBackend: Send + Sync {
-    async fn patients(&self, actor: &Actor, after: Option<Uuid>) -> Result<PatientPage>;
+    async fn patients(
+        &self,
+        actor: &Actor,
+        after: Option<Uuid>,
+        status: crate::patient_lifecycle::PatientStatus,
+    ) -> Result<PatientPage>;
     async fn workspace(&self, actor: &Actor, id: Uuid) -> Result<Workspace>;
     async fn create_patient(&self, actor: &Actor, input: NewPatient) -> Result<Patient>;
     async fn patient(&self, actor: &Actor, id: Uuid) -> Result<Patient>;

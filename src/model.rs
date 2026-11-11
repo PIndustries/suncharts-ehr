@@ -27,6 +27,9 @@ pub fn text(value: &str, max: usize) -> Result<()> {
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct Patient {
+    /// Derived from append-only lifecycle events; existing identity rows remain intact.
+    #[sqlx(default)]
+    pub archived: bool,
     pub id: Uuid,
     pub mrn: String,
     pub given_name: String,
