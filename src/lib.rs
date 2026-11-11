@@ -1087,6 +1087,26 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/patient-billing-workspace.js",
+            get(|| async {
+                web_asset(
+                    "patient-billing-workspace.js",
+                    "text/javascript; charset=utf-8",
+                    include_str!("../web/patient-billing-workspace.js"),
+                )
+            }),
+        )
+        .route(
+            "/patient-billing-workspace.css",
+            get(|| async {
+                web_asset(
+                    "patient-billing-workspace.css",
+                    "text/css; charset=utf-8",
+                    include_str!("../web/patient-billing-workspace.css"),
+                )
+            }),
+        )
+        .route(
             "/billing.js",
             get(|| async {
                 web_asset(

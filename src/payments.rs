@@ -2,6 +2,8 @@
 //! Test-mode hosted checkout. Processor evidence, never a browser return, controls the ledger.
 #[path = "payment_operations.rs"]
 mod operations;
+#[path = "patient_payment_profile.rs"]
+mod patient_profile;
 use crate::{
     auth::{Actor, Role},
     billing,
@@ -303,6 +305,18 @@ pub fn router() -> Router<State> {
             post(test_settings),
         )
         .route("/api/v1/billing/payments/operations", get(operations::read))
+        .route(
+            "/api/v1/billing/patients/{id}/payment-profile",
+            get(patient_profile::read),
+        )
+        .route(
+            "/api/v1/billing/patients/{id}/payment-setups",
+            post(patient_profile::setup::create),
+        )
+        .route(
+            "/api/v1/billing/payment-setups/{id}",
+            get(patient_profile::setup::read),
+        )
         .route(
             "/api/v1/billing/payments/settings/activation",
             post(activate),

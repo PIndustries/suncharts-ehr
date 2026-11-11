@@ -350,8 +350,11 @@ async fn overview_and_document_reads_enforce_billing_policy_and_oauth_scope_with
         "/api/v1/billing/copay-receipts/{}",
         receipt["id"].as_str().unwrap()
     );
+    let patient_invoices = format!("/api/v1/billing/patients/{p}/invoices");
     for (path, expected) in [
         ("/api/v1/billing/overview", StatusCode::OK),
+        ("/api/v1/billing/patients", StatusCode::OK),
+        (patient_invoices.as_str(), StatusCode::OK),
         (endpoint.as_str(), StatusCode::OK),
         ("/api/v1/billing/claims", StatusCode::FORBIDDEN),
         ("/api/v1/patients", StatusCode::FORBIDDEN),
@@ -393,6 +396,150 @@ async fn overview_and_document_reads_enforce_billing_policy_and_oauth_scope_with
             .await
             .0,
         StatusCode::INTERNAL_SERVER_ERROR
+    );
+    db.close().await;
+}
+
+#[tokio::test]
+async fn patient_billing_hub_filters_search_and_invoice_history_without_cross_patient_totals() {
+    let (db, a, p, appointment) = setup().await;
+    let r = app(db.clone());
+    add_receipt(&r, &a, p, appointment, 2500).await;
+    let account = posted_account(&db, &r, &a, p, appointment).await;
+    let path = format!(
+        "/api/v1/patients/{p}/billing/accounts/{}/invoices",
+        account["id"].as_str().unwrap()
+    );
+    let mut saved = Vec::new();
+    for responsibility in [5000, 3000] {
+        let (status,row)=call(&r,&a,"POST",&path,json!({"request_id":Uuid::new_v4(),"responsibility_cents":responsibility,"reason":"Synthetic patient invoice review"}),Some(2)).await;
+        assert_eq!(status, StatusCode::OK, "{row}");
+        saved.push(row);
+    }
+    let other = Uuid::new_v4();
+    let other_appointment = Uuid::new_v4();
+    sqlx::query("INSERT INTO patients(tenant_id,id,mrn,given_name,family_name,birth_date) VALUES($1,$2,'SYN-OTHER','Bailey','Synthetic','1991-01-01')").bind(a.tenant_id).bind(other).execute(&db).await.unwrap();
+    sqlx::query("INSERT INTO appointments(tenant_id,id,patient_id,clinician_id,starts_at,ends_at,status) VALUES($1,$2,$3,$4,'2026-10-25T15:00:00Z','2026-10-25T15:30:00Z','checked_in')").bind(a.tenant_id).bind(other_appointment).bind(other).bind(a.sub).execute(&db).await.unwrap();
+    add_receipt(&r, &a, other, other_appointment, 7500).await;
+    sqlx::query("INSERT INTO patient_lifecycle_events(tenant_id,patient_id,version,archived,reason,actor_id) VALUES($1,$2,2,true,'Synthetic archived chart retains billing',$3)").bind(a.tenant_id).bind(p).bind(a.sub).execute(&db).await.unwrap();
+    let selected = overview(&r, &a, &format!("?patient_id={p}")).await;
+    assert_eq!(selected["patient"]["id"], p.to_string());
+    assert_eq!(selected["patient"]["archived"], true);
+    assert_eq!(selected["summary"]["copays"]["net_received_cents"], 2500);
+    assert_eq!(
+        selected["summary"]["accounts"]["reviewed_patient_due_cents"],
+        500
+    );
+    let other_data = overview(&r, &a, &format!("?patient_id={other}")).await;
+    assert_eq!(other_data["summary"]["copays"]["net_received_cents"], 7500);
+    assert_eq!(other_data["summary"]["accounts"]["latest_invoices"], 0);
+    let (status, patients) = call(
+        &r,
+        &a,
+        "GET",
+        "/api/v1/billing/patients?q=SYN-CHECKOUT",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(patients["items"].as_array().unwrap().len(), 1);
+    assert_eq!(patients["items"][0]["id"], p.to_string());
+    assert_eq!(patients["items"][0]["archived"], true);
+    assert!(patients["items"][0].get("birth_date").is_none());
+    let (_, literal) = call(
+        &r,
+        &a,
+        "GET",
+        "/api/v1/billing/patients?q=%25",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(literal["items"], json!([]), "search wildcards are literal");
+    let (_, first) = call(
+        &r,
+        &a,
+        "GET",
+        "/api/v1/billing/patients?limit=1",
+        Value::Null,
+        None,
+    )
+    .await;
+    let (_, second) = call(
+        &r,
+        &a,
+        "GET",
+        &format!(
+            "/api/v1/billing/patients?limit=1&after={}",
+            first["next_cursor"].as_str().unwrap()
+        ),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_ne!(first["items"][0]["id"], second["items"][0]["id"]);
+    assert_eq!(second["next_cursor"], Value::Null);
+    let history = format!("/api/v1/billing/patients/{p}/invoices");
+    let (status, newest) = call(
+        &r,
+        &a,
+        "GET",
+        &format!("{history}?limit=1"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(newest["items"][0]["id"], saved[1]["id"]);
+    assert_eq!(newest["items"][0]["is_latest"], true);
+    let (_, older) = call(
+        &r,
+        &a,
+        "GET",
+        &format!(
+            "{history}?limit=1&after={}",
+            newest["next_cursor"].as_str().unwrap()
+        ),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(older["items"][0]["id"], saved[0]["id"]);
+    assert_eq!(older["items"][0]["snapshot"], saved[0]["snapshot"]);
+    assert_eq!(older["items"][0]["is_latest"], false);
+    let (_, test_mode) = call(
+        &r,
+        &a,
+        "GET",
+        &format!("{history}?mode=test"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(test_mode["items"], json!([]));
+    let mut foreign = a.clone();
+    foreign.tenant_id = Uuid::new_v4();
+    for target in [history, format!("/api/v1/billing/overview?patient_id={p}")] {
+        assert_eq!(
+            call(&r, &foreign, "GET", &target, Value::Null, None)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(
+        call(
+            &r,
+            &a,
+            "GET",
+            "/api/v1/billing/patients?limit=101",
+            Value::Null,
+            None
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
     );
     db.close().await;
 }

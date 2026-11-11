@@ -1,5 +1,33 @@
 # Billing, claims and remittances
 
+## Patient billing workspace
+
+Open **Patient billing** from the main navigation for the practice worklist, or
+the patient's **Billing** tab for that patient's records. The shared workspace
+groups Overview, Invoices, Payments, Payment methods, and Subscriptions & plans.
+The billing patient selector uses billing permissions and does not require opening
+the clinical chart. Archived patients remain searchable so historical invoices and
+receipts remain accessible. Native clinic records and TEST card activity are
+separate views; linked Stripe customer records always show their configured mode.
+
+Native invoices retain their issuance snapshot; only the latest reviewed invoice
+per encounter contributes to the reviewed amount due. Later ledger changes require
+review. The Stripe invoice and subscription lists are separate provider records,
+not additional native encounter charges. An unavailable provider section is not a
+zero balance or an empty customer record.
+
+**Add payment method** opens Stripe-hosted setup after explicit permission to save
+a card for patient-present use. No card number is entered or stored in the EHR.
+This step does not collect a payment or authorize recurring charges. The EHR binds
+the request to the patient, practice installation, Stripe account and mode before
+calling Connect. A verified SetupIntent and attached payment method establish
+completion; returning from the browser alone does not. An interrupted setup keeps
+its original request identifier. **Check setup status** only retrieves evidence;
+an explicit retry reuses the same request within its bounded retry window. A
+different credential/account binding or expired unresolved request requires review.
+Reading the profile never creates a Stripe customer. A previous one-time copay
+does not by itself establish a reusable saved card.
+
 ## Coverage and accounts
 
 Open the patient's **Insurance** tab to review coverage, subscriber/member details,

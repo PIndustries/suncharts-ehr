@@ -28210,7 +28210,7 @@
       "post": {
         "operationId": "createWorkflowDispatch",
         "summary": "Submit a workflow node for explicit native-operation review",
-        "description": "Creates a tenant-scoped, idempotent work item only when the active pathway step is ready, integration-aware, and configured for manual approval. The step moves to awaiting_approval. No native scheduling mutation, provider transmission or model call occurs until a separate authorized reviewer approves this dispatch. Communication nodes and Claude/Erebine nodes create downstream drafts only; those drafts retain their own approval/send gates. Empty input on a configured AI node resolves only its explicit source_field from this run\u2019s immutable definition and context. Original AI input stays local and is omitted from dispatch responses; an authorized reviewer must prepare and approve a privacy preview before execution. Eligibility and payment nodes use the configured native provider paths. A payment request creates test-mode checkout and waits for processor-confirmed payment plus ledger evidence; eligibility completion does not approve benefits. Patient-form issuance also has a direct versioned intake-packet endpoint.",
+        "description": "Creates a tenant-scoped, idempotent work item only when the active pathway step is ready, integration-aware, and configured for manual approval. The step moves to awaiting_approval. No native scheduling mutation, provider transmission or model call occurs until a separate authorized reviewer approves this dispatch. Communication nodes and Claude/Erebine nodes create downstream drafts only; those drafts retain their own approval/send gates. Empty input on a configured AI node resolves only its explicit source_field from this run’s immutable definition and context. Original AI input stays local and is omitted from dispatch responses; an authorized reviewer must prepare and approve a privacy preview before execution. Eligibility and payment nodes use the configured native provider paths. A payment request creates test-mode checkout and waits for processor-confirmed payment plus ledger evidence; eligibility completion does not approve benefits. Patient-form issuance also has a direct versioned intake-packet endpoint.",
         "parameters": [
           {
             "name": "instance",
@@ -28425,7 +28425,7 @@
                   "privacy_preview_id": {
                     "type": "string",
                     "format": "uuid",
-                    "description": "Required for approve on AI dispatches; must be this reviewer\u2019s current bound preview."
+                    "description": "Required for approve on AI dispatches; must be this reviewer’s current bound preview."
                   },
                   "privacy_approved": {
                     "type": "boolean",
@@ -34184,6 +34184,15 @@
               "maximum": 100,
               "default": 50
             }
+          },
+          {
+            "name": "patient_id",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Scope all aggregate totals and pages to this tenant patient, including archived charts."
           }
         ],
         "responses": {
@@ -34466,6 +34475,355 @@
           },
           "400": {
             "description": "Provider unavailable or response could not be verified"
+          }
+        }
+      }
+    },
+    "/api/v1/billing/patients": {
+      "get": {
+        "operationId": "searchBillingPatients",
+        "description": "Minimal tenant-scoped patient directory for billing-authorized staff. Includes archived patients; no clinical record access or birth dates. Search is literal and paginated.",
+        "security": [
+          {
+            "oauth2": [
+              "billing.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 120
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Audited native billing read; no payment, invoice, allocation or provider mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingPatientPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Native billing view or billing.read denied"
+          },
+          "404": {
+            "description": "Tenant-scoped record not found"
+          },
+          "500": {
+            "description": "Read or audit failure"
+          }
+        }
+      }
+    },
+    "/api/v1/billing/patients/{id}/invoices": {
+      "get": {
+        "operationId": "listPatientInvoiceHistory",
+        "description": "All immutable native invoices for the selected tenant patient, with current review and latest-copy markers. No amounts are recomputed or changed.",
+        "security": [
+          {
+            "oauth2": [
+              "billing.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "recorded",
+                "test"
+              ],
+              "default": "recorded"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Audited native billing read; no payment, invoice, allocation or provider mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingPatientInvoicePage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Native billing view or billing.read denied"
+          },
+          "404": {
+            "description": "Tenant-scoped record not found"
+          },
+          "500": {
+            "description": "Read or audit failure"
+          }
+        }
+      }
+    },
+    "/api/v1/billing/patients/{id}/payment-profile": {
+      "get": {
+        "summary": "Read this patient’s verified Stripe profile",
+        "description": "Billing view permission required. Server binds tenant, patient, installation, Stripe account/mode and credential revision. GET never creates a customer. Returns masked card summaries, separately recorded Stripe invoices/subscriptions and an unresolved local setup reference. Independent pages contain at most twenty entries. Unavailable sections have null data. No provider credentials or clinical details. No-store.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "methods_after",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "invoices_after",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "subscriptions_after",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Verified profile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "contract_version": {
+                      "type": "integer",
+                      "const": 1
+                    },
+                    "installation_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "remote_tenant_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "patient_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "account_id": {
+                      "type": "string"
+                    },
+                    "livemode": {
+                      "type": "boolean"
+                    },
+                    "checked_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "customer": {
+                      "type": "object"
+                    },
+                    "payment_methods": {
+                      "type": "object",
+                      "description": "status not_created, unavailable or available; available data has items, has_more and next_cursor"
+                    },
+                    "invoices": {
+                      "type": "object",
+                      "description": "status not_created, unavailable or available; available data has items, has_more and next_cursor"
+                    },
+                    "subscriptions": {
+                      "type": "object",
+                      "description": "status not_created, unavailable or available; available data has items, has_more and next_cursor"
+                    },
+                    "setup_available": {
+                      "type": "boolean"
+                    },
+                    "active_setup": {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "contract_version",
+                    "installation_id",
+                    "remote_tenant_id",
+                    "patient_id",
+                    "account_id",
+                    "livemode",
+                    "checked_at",
+                    "customer",
+                    "payment_methods",
+                    "invoices",
+                    "subscriptions",
+                    "setup_available",
+                    "active_setup"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/billing/patients/{id}/payment-setups": {
+      "post": {
+        "summary": "Reserve explicitly consented hosted card setup",
+        "description": "Billing create plus scheduling role required. Reserves exact patient/account/mode/installation/credentials and consent actor before broker I/O. Patient-present card saving does not authorize recurring charges. Retry only the same request UUID within the bounded 23-hour window; unknown outcomes remain reserved. No card fields or financial ledger mutation. Return URL is generated server-side.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "request_id",
+                  "consent"
+                ],
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "consent": {
+                    "type": "boolean",
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Fresh minimized provider evidence; never a payment or ledger entry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientPaymentSetup"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/billing/payment-setups/{id}": {
+      "get": {
+        "summary": "Verify an existing hosted card setup",
+        "description": "Billing view required. Resolves only the reserved patient/account/credentials, retrieves existing provider evidence and updates the audited local projection. Never creates a customer, setup or payment. A browser return is not proof of completion.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fresh minimized provider evidence; never a payment or ledger entry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientPaymentSetup"
+                }
+              }
+            }
           }
         }
       }
@@ -53080,6 +53438,16 @@
           },
           "collection_policy": {
             "type": "string"
+          },
+          "patient": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BillingPatient"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -53089,7 +53457,8 @@
           "accounts",
           "copays",
           "invoice_policy",
-          "collection_policy"
+          "collection_policy",
+          "patient"
         ]
       },
       "BillingCopayReceiptCopy": {
@@ -53156,6 +53525,213 @@
         "required": [
           "receipt",
           "context"
+        ]
+      },
+      "BillingPatient": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "given_name",
+          "family_name",
+          "mrn",
+          "archived"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "given_name": {
+            "type": "string"
+          },
+          "family_name": {
+            "type": "string"
+          },
+          "mrn": {
+            "type": "string"
+          },
+          "archived": {
+            "type": "boolean"
+          }
+        }
+      },
+      "BillingPatientPage": {
+        "type": "object",
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/BillingPatient"
+            }
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "BillingPatientInvoicePage": {
+        "type": "object",
+        "required": [
+          "items",
+          "next_cursor",
+          "patient",
+          "mode"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/PatientInvoice"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "account_status": {
+                      "type": "string"
+                    },
+                    "needs_review": {
+                      "type": "boolean"
+                    },
+                    "is_latest": {
+                      "type": "boolean"
+                    },
+                    "test_activity": {
+                      "type": "boolean"
+                    },
+                    "patient_name": {
+                      "type": "string"
+                    },
+                    "mrn": {
+                      "type": "string"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "patient": {
+            "$ref": "#/components/schemas/BillingPatient"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "recorded",
+              "test"
+            ]
+          }
+        }
+      },
+      "PatientPaymentSetup": {
+        "type": "object",
+        "properties": {
+          "contract_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "installation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "remote_tenant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "patient_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "livemode": {
+            "type": "boolean"
+          },
+          "checked_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "customer_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "creating",
+              "open",
+              "pending",
+              "succeeded",
+              "expired",
+              "needs_review"
+            ]
+          },
+          "session": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Verified hosted Checkout ID/URL, SetupIntent ID/status and payment method ID only. No card credentials."
+          },
+          "retry_safe_until": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "recovery_required": {
+            "type": "boolean"
+          },
+          "retry_allowed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "contract_version",
+          "installation_id",
+          "remote_tenant_id",
+          "patient_id",
+          "account_id",
+          "livemode",
+          "checked_at",
+          "request_id",
+          "customer_id",
+          "status",
+          "session",
+          "retry_safe_until",
+          "recovery_required",
+          "retry_allowed"
         ]
       }
     }
