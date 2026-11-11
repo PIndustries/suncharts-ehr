@@ -171,7 +171,7 @@ document.addEventListener('click',event=>{
  if(button.dataset.revenueInvoice||button.dataset.revenueInvoices){event.preventDefault();billingSelected=button.dataset.revenueInvoice||button.dataset.revenueInvoices;run(async()=>{if(button.dataset.revenueInvoice)patientInvoiceEditor();else await showPatientInvoices();});return;}
  if(button.dataset.copayReceipt){event.preventDefault();run(async()=>showCopayReceipt(button.dataset.copayReceipt));return;}
  if(button.hasAttribute('data-print-copay')){event.preventDefault();$('copay-receipt-frame').contentWindow.focus();$('copay-receipt-frame').contentWindow.print();return;}
- if(button.dataset.copayAccount){event.preventDefault();showBillingAccount(button.dataset.copayAccount);return;}
+ if(button.dataset.copayAccount){event.preventDefault();run(()=>openEncounterBillingAccount(button.dataset.copayAccount));return;}
  if(button.hasAttribute('data-record-copay')){event.preventDefault();openCopayReceiptEditor(button.dataset.recordCopay);return;}
  if(button.hasAttribute('data-encounter-charges')){event.preventDefault();openEncounterCharges();return;}
  if(button.dataset.copayVoid){event.preventDefault();openBillingEditor(`<form id="copay-void-form" data-receipt="${esc(button.dataset.copayVoid)}"><h3>Correct an unapplied receipt</h3><p>This voids the recorded receipt. It does not refund cash, a check or an external card payment.</p><label>Correction reason<input name="reason" required maxlength="1000"></label><button type="submit">Void recorded receipt</button></form>`);return;}

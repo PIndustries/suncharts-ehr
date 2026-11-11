@@ -22,6 +22,7 @@ const hosted=ctx.encounterHostedCopayMarkup(state);assert(hosted.indexOf('data-c
 assert.equal(calls.some(c=>c[1]==='POST'),false,'render must never post charges or create card/claim actions');
 node('encounter-billing-detail').innerHTML='REASON DRAFT';const button={dataset:{revenueAccount:'account'},hasAttribute:()=>false};for(const handler of handlers.click)handler({target:{closest:()=>button},preventDefault(){}});
 assert.equal(node('encounter-charge-details').open,true);assert.equal(node('encounter-billing-detail').innerHTML,'REASON DRAFT','review disclosure preserves an already-open reason');assert.equal(calls.filter(c=>c[1]==='POST').length,0);
+let receiptAccount=null;ctx.openEncounterBillingAccount=id=>{receiptAccount=id;};const ledgerButton={dataset:{copayAccount:'account'},hasAttribute:()=>false};for(const handler of handlers.click)handler({target:{closest:()=>ledgerButton},preventDefault(){}});assert.equal(receiptAccount,'account','receipt ledger link uses the encounter-preserving account navigation');
 // Only server-verified receipts contribute to received totals; an open checkout contributes zero.
 ctx.workspace.billing.copays=[];assert.match(ctx.encounterRevenueSummary(account),/Copay received<\/span><strong>\$0.00/);
 const pending={...state,items:[{...operation,status:'open',receipt_id:null,checkout_url:'https://checkout.stripe.com/c/pay/example'}]};assert.match(ctx.encounterHostedCopayMarkup(pending),/Awaiting card payment/);assert.doesNotMatch(ctx.encounterHostedCopayMarkup(pending),/Card payment captured/);
