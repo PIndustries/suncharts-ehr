@@ -14,6 +14,7 @@ pub mod builtin_connectors;
 pub mod ca277;
 pub mod care_pathways;
 pub mod checkout;
+mod claim_cob;
 pub mod claimmd;
 pub mod claimmd_eligibility;
 pub mod claimmd_extended;

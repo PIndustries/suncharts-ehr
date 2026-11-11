@@ -79,7 +79,12 @@ copay collection is a separate operation with its own receipt and reconciliation
 
 ## Encounter diagnosis links
 
-Save an order or charge account as a draft linked to a native visit, then choose
+When entering charges, select saved encounter diagnoses inline on each procedure.
+Selections copy codes for explicit review; new procedures have no default diagnosis
+association. These copied codes are not provenance links and do not follow later
+encounter edits. Existing manual codes remain available.
+
+For versioned provenance, save an order or charge account as a draft linked to a native visit, then choose
 **Link encounter diagnoses**. Select the saved encounter diagnoses supporting the
 order or each charge line and record a reason. The server checks both the draft
 version and encounter version before capturing diagnosis IDs, codes, descriptions
@@ -111,8 +116,50 @@ identities; an HTTP success or mailbox transfer is not payer acceptance.
 
 The current generator has a restricted professional-claim profile. It does not
 provide complete payer companion-guide coverage, institutional/dental claims,
-secondary/tertiary coordination, denials/appeals or enrolled payer acceptance.
+tertiary coordination, Medicare-as-secondary/MSP profiles, denials/appeals or
+enrolled payer acceptance. The bounded commercial secondary profile is described below.
 See `src/x12.rs` and the API contract for accepted fields and validation errors.
+
+## Secondary insurance on the same encounter
+
+Record each service once. Effective primary, secondary and tertiary policies are
+shown together in encounter billing; the account retains its original posted
+primary policy. After the primary claim is adjudicated and its remittance posted,
+open **Review secondary billing** on that primary claim. Select the effective
+secondary policy, review primary service paid units, and explicitly record the
+EOB crossover and payer submission-timing review. The draft secondary claim uses
+the same account and original services, while freezing its own payer/subscriber
+identity and the primary payment, adjustments, control number and remittance date.
+Preparing a claim creates no ledger charge, patient liability or payment.
+
+This path requires a native delivered primary electronic artifact and an active,
+posted primary 835 row with exact ordered service controls and balanced charges,
+payment and CAS adjustments. CLP19 means the primary payer reports forwarding the
+claim and blocks another outbound secondary claim. Missing or unsupported evidence
+remains a review blocker. Existing secondary originals must be opened or corrected;
+they cannot be duplicated. Reversal of primary adjudication is blocked while a
+non-void downstream secondary claim depends on it.
+
+The supported 837P secondary profile is a commercial destination (filing indicator
+CI), with 2320/2330 prior-payer identity and 2430 service adjudication. Primary and
+secondary payer IDs are frozen separately; the primary is not sent again. Native
+Claim.MD submission still requires explicit review and queuing. Secondary CMS-1500
+preview is unavailable and is refused rather than rendering incomplete other-payer
+fields; the frozen JSON evidence and reviewed electronic artifact remain available.
+Manual/external primary adjudication, tertiary claims and MSP destinations require
+separate supported workflows and are not inferred by this path.
+
+Post the secondary payment to the same account. OA23 and other prior-payer impact
+remain evidence; PR does not create another charge. Already-posted primary CO
+credits are visible in remittance review. Selecting a secondary CO adjustment with
+the same reason and service scope as a posted primary credit is refused for review,
+even when the remaining balance could absorb it. Determine the final patient share
+from the reviewed secondary response before issuing a patient invoice.
+
+Claim.MD documents using the [same submission API for secondary claims](https://docs.claim.md/docs/is-there-a-separate-api-for-submitting-secondary-claims)
+and [reviewing crossover and payer timing before submission](https://docs.claim.md/docs/how-do-i-handle-secondary-and-tertiary-claims).
+CMS identifies prior insurance in [837P loops 2320–2330G](https://www.cms.gov/Outreach-and-Education/MLN/WBT/MLN4462429-MLN-WBT-1500/1500/lesson04/23/index.html).
+These references do not establish payer enrollment or acceptance of a particular claim.
 
 ## ERA posting
 

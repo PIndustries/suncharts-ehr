@@ -242,10 +242,19 @@ pub(crate) fn generate(
     let patient = &c.snapshot["patient"];
     let cov = &account["coverage_snapshot"]["coverage"]["content"];
     let payer = &account["coverage_snapshot"]["payer"]["content"];
-    if field(cov, "priority")? != "primary" || field(&account["content"], "currency")? != "USD" {
+    let coordination = crate::claim_cob::evidence(c)?;
+    let priority = field(cov, "priority")?;
+    if !matches!(
+        (priority, coordination.is_some()),
+        ("primary", false) | ("secondary", true)
+    ) || field(&account["content"], "currency")? != "USD"
+    {
         return Err(Error::Invalid(
-            "initial 837P profile supports primary USD coverage only",
+            "837P requires primary coverage or a reviewed native secondary COB packet in USD",
         ));
+    }
+    if coordination.is_some() && d.filing_indicator != "CI" {
+        return Err(Error::Invalid("this secondary profile supports commercial destinations; Medicare/Medicaid secondary requires its broader payer-specific profile"));
     }
     let relationship = field(cov, "relationship")?;
     let self_patient = relationship == "self";
@@ -398,7 +407,7 @@ pub(crate) fn generate(
     ]));
     st.push(seg(&[
         "SBR",
-        "P",
+        if coordination.is_some() { "S" } else { "P" },
         if self_patient { "18" } else { "" },
         &group,
         &plan,
@@ -483,6 +492,9 @@ pub(crate) fn generate(
         "XX",
         &content.rendering_npi,
     );
+    if let Some(evidence) = &coordination {
+        secondary_header(&mut st, evidence, account)?;
+    }
     let mut sum = 0i64;
     for (i, l) in lines.iter().enumerate() {
         let system = field(l, "code_system")?;
@@ -542,6 +554,37 @@ pub(crate) fn generate(
             &service.format("%Y%m%d").to_string(),
         ]));
         st.push(seg(&["REF", "6R", &(i + 1).to_string()]));
+        if let Some(evidence) = &coordination {
+            let previous = &evidence.adjudication.services[i];
+            let payer = field(&evidence.primary_coverage["payer"]["content"], "payer_code")?;
+            st.push(seg(&[
+                "SVD",
+                payer,
+                &decimal(previous.paid_cents),
+                &previous.code,
+                "",
+                &evidence.paid_units[i].to_string(),
+            ]));
+            for adjustment in evidence
+                .adjudication
+                .adjustments
+                .iter()
+                .filter(|a| a.service_index == Some(i))
+            {
+                st.push(seg(&[
+                    "CAS",
+                    &adjustment.group,
+                    &adjustment.reason_code,
+                    &decimal(adjustment.amount_cents),
+                ]));
+            }
+            st.push(seg(&[
+                "DTP",
+                "573",
+                "D8",
+                &evidence.payment_date.format("%Y%m%d").to_string(),
+            ]));
+        }
     }
     if sum != total {
         return Err(Error::Invalid("service charges differ from claim total"));
@@ -560,6 +603,105 @@ pub(crate) fn generate(
         group_control: gc,
         transaction_control: tc,
     })
+}
+
+// Sources: Claim.MD secondary-claim guidance, CMS 837P other-insurance loops,
+// and Medicare contractor COB data mapping. This bounded profile retains native
+// primary adjudication; it is not a payer companion-guide certification.
+fn secondary_header(
+    out: &mut Vec<String>,
+    e: &crate::claim_cob::Evidence,
+    account: &Value,
+) -> Result<()> {
+    let lines = account["content"]["lines"]
+        .as_array()
+        .ok_or(Error::Invalid("missing secondary services"))?;
+    crate::claim_cob::validate_adjudication(
+        &e.adjudication,
+        account["total_cents"]
+            .as_i64()
+            .ok_or(Error::Invalid("invalid secondary total"))?,
+        &account["content"],
+        &e.paid_units,
+    )?;
+    if lines.len() != e.adjudication.services.len()
+        || !e.not_forwarded_confirmed
+        || !e.payer_timing_reviewed
+        || e.crossover_reference.trim().is_empty()
+        || e.payment_date > Utc::now().date_naive()
+    {
+        return Err(Error::Invalid(
+            "review frozen secondary crossover and payment evidence",
+        ));
+    }
+    let policy = &e.primary_coverage["coverage"]["content"];
+    let payer = &e.primary_coverage["payer"]["content"];
+    let d = &e.primary_details;
+    if field(policy, "priority")? != "primary" || !d.benefits_assigned || !d.release_authorized {
+        return Err(Error::Invalid(
+            "primary insurance and assignment evidence required",
+        ));
+    }
+    let relation = match field(policy, "relationship")? {
+        "self" => "18",
+        "spouse" => "01",
+        "child" => "19",
+        _ => {
+            return Err(Error::Invalid(
+                "unsupported primary subscriber relationship",
+            ))
+        }
+    };
+    for a in [&d.subscriber_address, &d.payer_address] {
+        a.validate()?;
+    }
+    let filing = element(&d.filing_indicator, 2, 2)?;
+    let group = element(field(policy, "group_number")?, 0, 50)?;
+    let plan = element(field(policy, "plan_name")?, 0, 60)?;
+    out.push(seg(&[
+        "SBR", "P", relation, &group, &plan, "", "", "", "", &filing,
+    ]));
+    for adjustment in e
+        .adjudication
+        .adjustments
+        .iter()
+        .filter(|a| a.service_index.is_none())
+    {
+        out.push(seg(&[
+            "CAS",
+            &adjustment.group,
+            &adjustment.reason_code,
+            &decimal(adjustment.amount_cents),
+        ]));
+    }
+    out.push(seg(&["AMT", "D", &decimal(e.adjudication.paid_cents)]));
+    out.push(seg(&["OI", "", "", "Y", "", "", "Y"]));
+    nm(
+        out,
+        "IL",
+        "1",
+        &element(&d.subscriber_family_name, 1, 35)?,
+        &element(&d.subscriber_given_name, 1, 35)?,
+        "MI",
+        &element(field(policy, "member_id")?, 1, 80)?,
+    );
+    address(out, &d.subscriber_address);
+    nm(
+        out,
+        "PR",
+        "2",
+        &element(field(payer, "name")?, 1, 60)?,
+        "",
+        "PI",
+        &element(field(payer, "payer_code")?, 1, 80)?,
+    );
+    address(out, &d.payer_address);
+    out.push(seg(&[
+        "REF",
+        "F8",
+        &element(&e.adjudication.payer_control_number, 1, 50)?,
+    ]));
+    Ok(())
 }
 
 /// Narrow 999 transaction-level review; 277CA is retained for explicit per-claim review.
@@ -963,5 +1105,76 @@ mod tests {
             acknowledgment(&bad, "x12_999", "000000042", "42", "0001").unwrap()["outcome"],
             "needs_review"
         );
+    }
+    #[test]
+    fn secondary_loops_preserve_payers_services_and_diagnosis_pointers() {
+        let mut c = claim();
+        let d = details();
+        let now = "2026-10-23T12:34:00Z".parse().unwrap();
+        let primary_coverage = c.snapshot["account"]["coverage_snapshot"].clone();
+        c.snapshot["account"]["content"]["lines"] = json!([
+            {"code_system":"CPT","code":"99213","modifiers":"25,95","units":2,"amount_cents":7000},
+            {"code_system":"CPT","code":"97110","modifiers":"","units":1,"amount_cents":5550}
+        ]);
+        c.content["line_diagnosis_pointers"] = json!([[1, 2], [2]]);
+        c.snapshot["account"]["coverage_snapshot"]["coverage"]["content"]["priority"] =
+            json!("secondary");
+        c.snapshot["account"]["coverage_snapshot"]["payer"]["content"]["payer_code"] =
+            json!("SYN-secondary");
+        let mut primary_details = details();
+        primary_details.filing_indicator = "MB".into();
+        c.snapshot["coordination_of_benefits"] = json!({
+            "primary_claim_id":UuidForTest::id(),"primary_claim_version":5,
+            "remittance_id":UuidForTest::id(),"remittance_version":3,"row_index":0,
+            "payment_date":"2026-10-02","trace":"SYN-TRACE","primary_coverage":primary_coverage,
+            "primary_details":primary_details,"paid_units":[2,1],"primary_credits":[],
+            "crossover_reference":"Synthetic EOB reviewed","not_forwarded_confirmed":true,"payer_timing_reviewed":true,
+            "adjudication":{"control_number":"SYN-PRIMARY","payer_control_number":"SYN-PCN","status":"1","patient_name":"Quinn Synthetic","charged_cents":12550,"paid_cents":8550,"patient_responsibility_cents":4000,
+                "services":[{"code":"HC:99213:25:95","charged_cents":7000,"paid_cents":5000,"line_control":"1"},{"code":"HC:97110","charged_cents":5550,"paid_cents":3550,"line_control":"2"}],
+                "adjustments":[{"group":"PR","reason_code":"2","amount_cents":2000,"service_index":0},{"group":"PR","reason_code":"2","amount_cents":2000,"service_index":1}]}
+        });
+        let generated = generate(&c, &partner(), &d, None, 42, now).unwrap();
+        let segments: Vec<Vec<&str>> = generated
+            .payload
+            .split('~')
+            .filter(|v| !v.is_empty())
+            .map(|s| s.split('*').collect())
+            .collect();
+        let sv1: Vec<_> = segments.iter().filter(|s| s[0] == "SV1").collect();
+        assert_eq!(sv1.len(), 2);
+        assert_eq!(sv1[0][7], "1:2");
+        assert_eq!(sv1[1][7], "2");
+        assert_eq!(segments.iter().filter(|s| s[0] == "CLM").count(), 1);
+        let sbr: Vec<_> = segments.iter().filter(|s| s[0] == "SBR").collect();
+        assert_eq!((sbr[0][1], sbr[0][9]), ("S", "CI"));
+        assert_eq!((sbr[1][1], sbr[1][9]), ("P", "MB"));
+        let payers: Vec<_> = segments
+            .iter()
+            .filter(|s| s[0] == "NM1" && s[1] == "PR")
+            .collect();
+        assert_eq!(payers[0][9], "SYN-secondary");
+        assert_eq!(payers[1][9], "SYN-payer");
+        assert!(generated
+            .payload
+            .contains("SVD*SYN-payer*50.00*HC:99213:25:95**2~CAS*PR*2*20.00~DTP*573*D8*20261002~"));
+        assert!(generated
+            .payload
+            .contains("SVD*SYN-payer*35.50*HC:97110**1~CAS*PR*2*20.00~DTP*573*D8*20261002~"));
+        assert_eq!(generated.payload.matches("REF*F8*SYN-PCN").count(), 1);
+        for (path, value) in [("status", json!("19")), ("paid_cents", json!(8551))] {
+            let mut bad = c.clone();
+            bad.snapshot["coordination_of_benefits"]["adjudication"][path] = value;
+            assert!(generate(&bad, &partner(), &d, None, 43, now).is_err());
+        }
+        let mut bad = c.clone();
+        bad.snapshot["coordination_of_benefits"]["adjudication"]["services"][1]["line_control"] =
+            json!("1");
+        assert!(generate(&bad, &partner(), &d, None, 43, now).is_err());
+        let mut bad = c.clone();
+        bad.snapshot["coordination_of_benefits"]["paid_units"] = json!([2]);
+        assert!(generate(&bad, &partner(), &d, None, 43, now).is_err());
+        let mut unsupported = details();
+        unsupported.filing_indicator = "MB".into();
+        assert!(generate(&c, &partner(), &unsupported, None, 43, now).is_err());
     }
 }

@@ -325,6 +325,7 @@ async fn generate(
             "generate 837P from the current ready claim",
         ));
     }
+    crate::claim_cob::validate_current(&mut tx, &a, &c).await?;
     let p = partner(&mut tx, &a, v.partner_id).await?;
     let pc: PartnerContent =
         serde_json::from_value(p.content.clone()).map_err(|_| Error::Invalid("invalid partner"))?;

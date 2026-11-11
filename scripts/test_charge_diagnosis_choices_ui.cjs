@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const handlers={},nodes={},rows=[],ctx={console,selected:'patient',me:{role:'owner'},workspace:{billing:{coverages:[]}},document:{addEventListener:(name,fn)=>(handlers[name]??=[]).push(fn)},$:id=>nodes[id],esc:v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;'),human:v=>v,notice(){},run:fn=>fn()};
+vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/billing.js','utf8'),ctx);let captured=0;ctx.captureBillingChargeDraft=()=>captured++;
+const form={dataset:{patient:'patient'},elements:{visit_id:{value:'visit-a'}},querySelectorAll:()=>rows};nodes['billing-account-form']=form;
+const field={value:'MANUAL'},host={innerHTML:''},row={querySelector:selector=>selector==='[name="diagnoses"]'?field:host};rows.push(row);
+const diagnoses=[{id:'d1',code:'G24.3',display:'Synthetic diagnosis A'},{id:'d2',code:'G25.9',display:'Synthetic diagnosis B'}];
+const change=(code,checked)=>{const target={dataset:{chargeDiagnosis:code},checked,hasAttribute:name=>name==='data-charge-diagnosis',closest:selector=>selector==='#billing-account-form'?form:selector==='.billing-charge-row'?row:null};handlers.change.forEach(fn=>fn({target}));};
+(async()=>{
+ ctx.api=async()=>({version:4,diagnoses});await ctx.loadChargeEncounterDiagnoses(form);
+ assert.match(host.innerHTML,/G24.3/);assert.match(host.innerHTML,/Synthetic diagnosis B/);assert.doesNotMatch(host.innerHTML,/ checked/,'new procedures must not automatically assert diagnosis associations');assert.equal(field.value,'MANUAL');
+ change('G24.3',true);assert.equal(field.value,'MANUAL, G24.3');change('G24.3',true);assert.equal(field.value,'MANUAL, G24.3','selection cannot duplicate existing code');change('G25.9',true);assert.equal(field.value,'MANUAL, G24.3, G25.9');change('G24.3',false);assert.equal(field.value,'MANUAL, G25.9');assert.ok(captured>=4);
+ form.dataset.draftReadOnly='true';ctx.renderChargeEncounterDiagnoses(form);assert.match(host.innerHTML,/data-charge-diagnosis="G24.3" disabled/);change('G24.3',true);assert.equal(field.value,'MANUAL, G25.9');delete form.dataset.draftReadOnly;
+ const newHost={innerHTML:''};rows.push({querySelector:selector=>selector==='[name="diagnoses"]'?{value:''}:newHost});ctx.renderChargeEncounterDiagnoses(form);assert.match(newHost.innerHTML,/G24.3/);assert.doesNotMatch(newHost.innerHTML,/ checked/);
+ let resolve;ctx.api=()=>new Promise(r=>resolve=r);const old=ctx.loadChargeEncounterDiagnoses(form);form.elements.visit_id.value='visit-b';ctx.api=async()=>({version:1,diagnoses:[{code:'Z00.00',display:'Visit B saved diagnosis'}]});await ctx.loadChargeEncounterDiagnoses(form);resolve({version:5,diagnoses});await old;assert.match(host.innerHTML,/Visit B/);assert.doesNotMatch(host.innerHTML,/G24.3/,'late prior-visit data cannot publish into a different encounter');
+ ctx.api=()=>new Promise(r=>resolve=r);const foreign=ctx.loadChargeEncounterDiagnoses(form);ctx.me={role:'owner'};host.innerHTML='NEW SESSION';resolve({diagnoses});await foreign;assert.equal(host.innerHTML,'NEW SESSION');
+ ctx.api=async()=>{throw Error('synthetic error')};await ctx.loadChargeEncounterDiagnoses(form);assert.match(host.innerHTML,/could not be loaded/);assert.equal(field.value,'MANUAL, G25.9','failed history never clears entered codes');
+ ctx.workspace.billing.coverages=[{id:'s',content:{priority:'secondary',payer_id:'s',member_id:'SYN-S',status:'active',effective_date:'2026-01-01'}},{id:'expired',content:{priority:'primary',payer_id:'old',status:'active',effective_date:'2025-01-01',end_date:'2025-12-31'}},{id:'p',content:{priority:'primary',payer_id:'p',member_id:'SYN-P',status:'active',effective_date:'2026-01-01'}}];vm.runInContext("billingPayers=[{id:'s',content:{name:'Synthetic secondary'}},{id:'p',content:{name:'Synthetic primary'}}]",ctx);
+ const coverage=ctx.billingCoverageOrderMarkup('2026-10-25','p');assert.ok(coverage.indexOf('Synthetic primary')<coverage.indexOf('Synthetic secondary'));assert.doesNotMatch(coverage,/expired/);assert.match(coverage,/do not add another charge line or account/);assert.match(coverage,/crossover/);
+ let linkedMarkup;ctx.openBillingEditor=html=>linkedMarkup=html;ctx.accountEditor({id:'linked',diagnosis_snapshot:{visit_version:3,lines:[]}});assert.match(linkedMarkup,/Review \/ clear diagnosis links/);assert.doesNotMatch(linkedMarkup,/<form/);
+ console.log('PASS reviewed inline encounter diagnosis reuse, manual-code preservation, no default association, stale visit/session isolation, and ordered multiple coverage without duplicated charges');
+})().catch(error=>{console.error(error);process.exitCode=1;});

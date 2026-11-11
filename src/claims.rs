@@ -114,6 +114,8 @@ struct NewClaim {
     frequency: String,
     content: ClaimContent,
     reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    coordination: Option<crate::claim_cob::Request>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -347,6 +349,16 @@ pub(crate) fn preflight(c: &Claim) -> Result<Vec<String>> {
     {
         issues.push("Every charge line requires 1 to 4 valid diagnosis pointers".into());
     }
+    let priority = c.snapshot["account"]["coverage_snapshot"]["coverage"]["content"]["priority"]
+        .as_str()
+        .unwrap_or("");
+    let coordination = crate::claim_cob::evidence(c)?;
+    if priority == "secondary" && coordination.is_none() {
+        issues.push("Secondary billing requires reviewed primary adjudication on the same account; open the adjudicated primary claim and choose Review secondary billing".into());
+    }
+    if priority == "tertiary" {
+        issues.push("Tertiary electronic claim coordination is not supported".into());
+    }
     let payer = &c.snapshot["account"]["coverage_snapshot"]["payer"]["content"];
     if payer["payer_code"].as_str().unwrap_or("").trim().is_empty() {
         issues.push("Claim.MD payer ID is missing from the frozen payer mapping. Open the charge account and payer mapping, add the correct Claim.MD payer ID, then post a new insured account before preparing the electronic claim".into());
@@ -371,6 +383,10 @@ pub fn router() -> Router<State> {
         .route("/api/v1/billing/claims/{id}/packet", get(packet))
         .route("/api/v1/billing/claims/{id}/cms1500", get(cms1500))
         .route("/api/v1/billing/claims/{id}/history", get(claim_history))
+        .route(
+            "/api/v1/billing/claims/{id}/secondary-review",
+            get(secondary_review),
+        )
         .route(
             "/api/v1/billing/remittances",
             get(remittances)
@@ -403,7 +419,7 @@ async fn claims(
 ) -> Result<Json<Value>> {
     a.staff()?;
     let mut tx = db(&s)?.begin().await?;
-    let mut rows:Vec<Value>=sqlx::query_scalar("SELECT (to_jsonb(c)-'tenant_id'-'creation_hash'-'request_id'-'content'-'snapshot')||jsonb_build_object('patient_name',p.family_name||', '||p.given_name,'total_cents',c.snapshot->'account'->'total_cents','payer_name',c.snapshot->'account'->'coverage_snapshot'->'payer'->'content'->>'name','synthetic_test',coalesce((c.content->>'synthetic_test')::boolean,false)) FROM ehr_claims c JOIN patients p ON p.tenant_id=c.tenant_id AND p.id=c.patient_id WHERE c.tenant_id=$1 AND ($2::uuid IS NULL OR c.id>$2) AND ($3::uuid IS NULL OR c.patient_id=$3) AND ($4::uuid IS NULL OR c.account_id=$4) ORDER BY c.id LIMIT 101").bind(a.tenant_id).bind(q.after).bind(q.patient_id).bind(q.account_id).fetch_all(&mut *tx).await?;
+    let mut rows:Vec<Value>=sqlx::query_scalar("SELECT (to_jsonb(c)-'tenant_id'-'creation_hash'-'request_id'-'content'-'snapshot')||jsonb_build_object('patient_name',p.family_name||', '||p.given_name,'total_cents',c.snapshot->'account'->'total_cents','payer_name',c.snapshot->'account'->'coverage_snapshot'->'payer'->'content'->>'name','coverage_priority',c.snapshot->'account'->'coverage_snapshot'->'coverage'->'content'->>'priority','synthetic_test',coalesce((c.content->>'synthetic_test')::boolean,false)) FROM ehr_claims c JOIN patients p ON p.tenant_id=c.tenant_id AND p.id=c.patient_id WHERE c.tenant_id=$1 AND ($2::uuid IS NULL OR c.id>$2) AND ($3::uuid IS NULL OR c.patient_id=$3) AND ($4::uuid IS NULL OR c.account_id=$4) ORDER BY c.id LIMIT 101").bind(a.tenant_id).bind(q.after).bind(q.patient_id).bind(q.account_id).fetch_all(&mut *tx).await?;
     let next = if rows.len() > 100 {
         rows.truncate(100);
         rows.last().map(|r| r["id"].clone())
@@ -443,11 +459,36 @@ async fn create_claim(
         }
         return Ok(Json(claim_row(&mut tx, &a, id).await?));
     }
-    let b = account(&mut tx, &a, id, Some(p)).await?;
+    let mut b = account(&mut tx, &a, id, Some(p)).await?;
     if b.status != "posted" || b.version != version {
         return Err(Error::Conflict(
             "create a claim from the current posted billing account",
         ));
+    }
+    let mut coordination = None;
+    if let Some(input) = &v.coordination {
+        if v.frequency != "original" || v.source_history_id.is_some() {
+            return Err(Error::Invalid(
+                "secondary coordination starts one original claim from native adjudication",
+            ));
+        }
+        let primary = claim_row(
+            &mut tx,
+            &a,
+            v.parent_id.ok_or(Error::Invalid(
+                "primary claim required for secondary billing",
+            ))?,
+        )
+        .await?;
+        coordination = Some(crate::claim_cob::prepare(&mut tx, &a, &primary, &mut b, input).await?);
+    } else if let Some(parent) = v.parent_id {
+        let prior = claim_row(&mut tx, &a, parent).await?;
+        if let Some(evidence) = crate::claim_cob::evidence(&prior)? {
+            crate::claim_cob::validate_current(&mut tx, &a, &prior).await?;
+            b.coverage_snapshot = Some(prior.snapshot["account"]["coverage_snapshot"].clone());
+            b.content["coverage_id"] = prior.snapshot["account"]["content"]["coverage_id"].clone();
+            coordination = Some(evidence);
+        }
     }
     let payer_id: Uuid = serde_json::from_value(
         b.coverage_snapshot
@@ -458,6 +499,7 @@ async fn create_claim(
     .map_err(|_| Error::Invalid("invalid payer snapshot"))?;
     match (v.frequency.as_str(), v.parent_id) {
         ("original", None) => {}
+        ("original", Some(_)) if v.coordination.is_some() => {}
         ("original", Some(parent)) => {
             let prior = claim_row(&mut tx, &a, parent).await?;
             if prior.account_id != id
@@ -484,8 +526,11 @@ async fn create_claim(
             ))
         }
     }
-    let prior_original:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM ehr_claims WHERE tenant_id=$1 AND account_id=$2 AND frequency='original' AND status<>'void')").bind(a.tenant_id).bind(id).fetch_one(&mut *tx).await?;
-    if v.frequency == "original" && v.parent_id.is_none() && prior_original {
+    let prior_original:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM ehr_claims WHERE tenant_id=$1 AND account_id=$2 AND payer_id=$3 AND frequency='original' AND status<>'void')").bind(a.tenant_id).bind(id).bind(payer_id).fetch_one(&mut *tx).await?;
+    if v.frequency == "original"
+        && (v.parent_id.is_none() || v.coordination.is_some())
+        && prior_original
+    {
         return Err(Error::Conflict(
             "create a linked replacement rather than another original claim",
         ));
@@ -523,12 +568,30 @@ async fn create_claim(
             .await?
             .1
     );
+    let mut snapshot = json!({"account":b,"patient":patient,"financial_summary":ledger});
+    if let Some(evidence) = coordination {
+        snapshot["coordination_of_benefits"] = json!(evidence);
+    }
     let claim = Uuid::new_v4();
     let control_number = new_control_number(claim, v.content.synthetic_test);
-    sqlx::query("INSERT INTO ehr_claims (tenant_id,id,patient_id,account_id,payer_id,control_number,frequency,parent_id,content,snapshot,request_id,creation_hash,source_history_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)").bind(a.tenant_id).bind(claim).bind(p).bind(id).bind(payer_id).bind(control_number).bind(v.frequency).bind(v.parent_id).bind(json!(v.content)).bind(json!({"account":b,"patient":patient,"financial_summary":ledger})).bind(v.request_id).bind(digest).bind(v.source_history_id).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO ehr_claims (tenant_id,id,patient_id,account_id,payer_id,control_number,frequency,parent_id,content,snapshot,request_id,creation_hash,source_history_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)").bind(a.tenant_id).bind(claim).bind(p).bind(id).bind(payer_id).bind(control_number).bind(v.frequency).bind(v.parent_id).bind(json!(v.content)).bind(snapshot).bind(v.request_id).bind(digest).bind(v.source_history_id).execute(&mut *tx).await?;
     let c = revision(&mut tx, &a, claim, &v.reason, json!({"transport":"none"})).await?;
     tx.commit().await?;
     Ok(Json(c))
+}
+async fn secondary_review(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>> {
+    a.scheduling()?;
+    let mut tx = db(&s)?.begin().await?;
+    let primary = claim_row(&mut tx, &a, id).await?;
+    let account = account(&mut tx, &a, primary.account_id, Some(primary.patient_id)).await?;
+    let result = crate::claim_cob::review(&mut tx, &a, &primary, &account).await?;
+    crate::postgres::audit(&mut tx, &a, "claim.secondary_review", id).await?;
+    tx.commit().await?;
+    Ok(Json(result))
 }
 async fn claim_detail(
     a: Actor,
@@ -758,6 +821,7 @@ async fn claim_action(
     crate::delivery::ensure_claim_unreserved(&mut tx, &a, id).await?;
     let status = match (v.action.as_str(), c.status.as_str()) {
         ("ready", "draft") => {
+            crate::claim_cob::validate_current(&mut tx, &a, &c).await?;
             if !preflight(&c)?.is_empty() {
                 return Err(Error::Conflict(
                     "resolve claim preflight issues before releasing the packet",
@@ -855,6 +919,9 @@ fn review_money(cents: Option<i64>) -> String {
 }
 // A records review of frozen claim evidence, never a paper-submission form.
 fn render_cms1500_review(c: &Claim) -> Result<String> {
+    if crate::claim_cob::evidence(c)?.is_some() {
+        return Err(Error::Conflict("secondary coordination is available in the electronic 837P and frozen claim evidence; a secondary CMS-1500 review is not yet supported"));
+    }
     let content: ClaimContent = serde_json::from_value(c.content.clone())
         .map_err(|_| Error::Invalid("invalid claim content"))?;
     let account = &c.snapshot["account"];
@@ -1242,6 +1309,7 @@ pub(crate) async fn review_row(
                 m.row_index + 1
             ));
         }
+        let coordination = crate::claim_cob::evidence(&c)?;
         let mut sum = 0i64;
         let mut selected = std::collections::HashSet::new();
         for index in &m.writeoff_adjustments {
@@ -1253,6 +1321,12 @@ pub(crate) async fn review_row(
                 return Err(Error::Invalid(
                     "only distinct, reviewed CO adjustments can become credits",
                 ));
+            }
+            if coordination
+                .as_ref()
+                .is_some_and(|e| crate::claim_cob::repeats_primary_credit(e, adjustment))
+            {
+                issues.push(format!("Row {}: this contractual adjustment matches an already-posted primary credit; retain prior-payer impact as evidence instead of crediting it again", m.row_index + 1));
             }
             sum += adjustment.amount_cents;
         }
