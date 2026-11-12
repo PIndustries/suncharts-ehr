@@ -343,3 +343,4 @@ body{font-size:13px;line-height:1.45;letter-spacing:0}button,input,select{min-he
 
 .chart-header-contact{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;margin:6px 0 0;font-size:13px}
 .chart-header-contact b{font-weight:600}
+.billing-setup{margin:12px 0}.billing-setup h3{margin:0 0 4px}.billing-setup ul{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:8px}.billing-setup li{list-style:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px}.billing-setup li small{flex:1 1 180px;color:var(--muted)}
