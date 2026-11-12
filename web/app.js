@@ -456,7 +456,7 @@ function renderChart() {
   const preferred=workspace.demographics?.content?.preferred_name;
   const birth=new Date(p.birth_date+'T12:00:00'),now=new Date();let age=now.getFullYear()-birth.getFullYear();if(now.getMonth()<birth.getMonth()||(now.getMonth()===birth.getMonth()&&now.getDate()<birth.getDate()))age--;
   const encounter=activeVisit?workspace.appointments.find(a=>a.id===activeVisit.appointment_id):null;
-  $('chart').innerHTML=`<div class="chart-context"><div class="chart-header"><div class="avatar">${esc(p.given_name[0])}${esc(p.family_name[0])}</div><div class="patient-heading"><p class="chart-record-label">PATIENT CHART${preferred?' · Preferred name '+esc(preferred):''}</p><h2>${esc(p.family_name)}, ${esc(p.given_name)} <span class="chart-age">${age>=0?esc(age)+' years':''}</span></h2><p><span>MRN <b>${esc(p.mrn)}</b></span><span>DOB <b>${esc(p.birth_date)}</b></span></p></div><div class="chart-header-context">${activeVisit?`<span class="status-badge ${activeVisit.status==='signed'?'completed':'in_progress'}">${activeVisit.status==='signed'?'Signed encounter':'Active encounter'}</span><small>${esc(encounterDateLabel(activeVisit))}</small>`:'<span class="muted">Longitudinal record</span>'}</div>${chartAreaEnabled('profile')?'<button type="button" data-chart-section="profile">Contact details</button>':''}<button class="quiet" data-action="reload" aria-label="Reload patient chart">↻ Refresh</button>${['owner','clinician','front_desk'].includes(me?.role)?`<button type="button" data-portal-access="${esc(selected)}">Patient portal</button>`:''}</div><div class="patient-safety ${allergies.length?'has-allergies':''}"><b>Allergies</b><span>${esc(allergyText)}</span></div>${chartNavigation(tabs)}</div>
+  $('chart').innerHTML=`<div class="chart-context"><div class="chart-header"><div class="avatar">${esc(p.given_name[0])}${esc(p.family_name[0])}</div><div class="patient-heading"><p class="chart-record-label">PATIENT CHART${preferred?' · Preferred name '+esc(preferred):''}</p><h2>${esc(p.family_name)}, ${esc(p.given_name)} <span class="chart-age">${age>=0?esc(age)+' years':''}</span></h2><p><span>MRN <b>${esc(p.mrn)}</b></span><span>DOB <b>${esc(p.birth_date)}</b></span></p>${chartHeaderContact()}</div><div class="chart-header-context">${activeVisit?`<span class="status-badge ${activeVisit.status==='signed'?'completed':'in_progress'}">${activeVisit.status==='signed'?'Signed encounter':'Active encounter'}</span><small>${esc(encounterDateLabel(activeVisit))}</small>`:'<span class="muted">Longitudinal record</span>'}</div>${chartAreaEnabled('profile')?'<button type="button" data-chart-section="profile">Contact details</button>':''}<button class="quiet" data-action="reload" aria-label="Reload patient chart">↻ Refresh</button>${['owner','clinician','front_desk'].includes(me?.role)?`<button type="button" data-portal-access="${esc(selected)}">Patient portal</button>`:''}</div><div class="patient-safety ${allergies.length?'has-allergies':''}"><b>Allergies</b><span>${esc(allergyText)}</span></div>${chartNavigation(tabs)}</div>
   <section id="patient-lifecycle" class="panel"></section>
   <div id="encounter-progress">${encounterWorkflow()}</div>
   <div id="encounter-start-editor"></div>
@@ -547,6 +547,11 @@ function refreshPatientChartContext(){
  if(chartSection==='insurance'){host.innerHTML=`<span class="status-badge">Insurance review</span><small>${appointment?esc(appointment.title||'Appointment')+' · '+esc(date(appointment.starts_at)):'Select an appointment below'}</small>`;return;}
  host.innerHTML=activeVisit?`<span class="status-badge ${activeVisit.status==='signed'?'completed':'in_progress'}">${activeVisit.status==='signed'?'Signed encounter':'Active encounter'}</span><small>${esc(encounterDateLabel(activeVisit))}</small>`:'<span class="muted">Longitudinal record</span>';
 }
+function chartHeaderContact(){
+ if(typeof workspaceResourceAllowed==='function'&&!workspaceResourceAllowed('clinical'))return '';
+ const contact=workspace.demographics?.content||{};
+ return `<p class="chart-header-contact"><span>Phone <b data-chart-contact="phone">${esc(contact.phone||'Not recorded')}</b></span><span>Email <b data-chart-contact="email">${esc(contact.email||'Not recorded')}</b></span>${chartAreaEnabled('documents')?'<button type="button" class="text-button" data-patient-intakes-open>Intake forms</button>':''}</p>`;
+}
 function chartContactSummary(){
  if(typeof workspaceResourceAllowed==='function'&&!workspaceResourceAllowed('clinical'))return '';
  const contact=workspace.demographics?.content||{},canDetails=chartAreaEnabled('profile');
@@ -554,7 +559,7 @@ function chartContactSummary(){
 }
 function refreshChartContactSummary(){
  const chart=$('chart'),contact=workspace.demographics?.content||{};
- for(const key of ['phone','email']){const value=chart?.querySelector(`[data-chart-contact="${key}"]`);if(value)value.textContent=contact[key]||'Not recorded';}
+ for(const key of ['phone','email']){const selector=`[data-chart-contact="${key}"]`,values=chart?.querySelectorAll?[...chart.querySelectorAll(selector)]:[chart?.querySelector(selector)];for(const value of values)if(value)value.textContent=contact[key]||'Not recorded';}
  const label=chart?.querySelector('.chart-record-label');
  if(label)label.textContent='PATIENT CHART'+(contact.preferred_name?' · Preferred name '+contact.preferred_name:'');
 }

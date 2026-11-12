@@ -191,15 +191,14 @@ async function loadPatientBillingProfile(s,request){
 }
 function patientBillingProfileMarkup(data,tab,s){
  const label=tab==='methods'?'Cards on file':tab==='subscriptions'?'Memberships & recurring services':'Stripe customer invoices',key=patientBillingProfileKey(tab),section=data[key];
- const mode=data.livemode===false?'<p class="copay-mode-label">Stripe Sandbox account</p>':'<p class="muted">Connected live Stripe account</p>';
- let html=`<h3>${label}</h3>${mode}<p class="muted">${tab==='methods'?'Cards this patient has saved for future visits.':tab==='subscriptions'?'Recurring charges set up for this patient.':'Invoices sent to this patient through Stripe.'}${data.checked_at?' Updated '+esc(date(data.checked_at))+'.':''}</p>`;
+ let html=`<h3>${label}</h3><p class="muted">${tab==='methods'?'Cards this patient has saved for future visits.':tab==='subscriptions'?'Recurring charges set up for this patient.':'Invoices sent to this patient through Stripe.'}${data.checked_at?' Updated '+esc(date(data.checked_at))+'.':''}</p>`;
  if(data.customer?.status==='creating')html+='<p role="status">The customer link is being prepared. Refresh to check its verified state.</p>';
  if(section?.status==='not_created')html+=`<p>${tab==='methods'?'No card on file yet. Paying a copay does not save the card.':tab==='subscriptions'?'No subscriptions yet.':'No Stripe invoices yet.'}</p>`;
  else if(section?.status!=='available'||!Array.isArray(section.data?.items))html+='<p role="status">These Stripe customer records are unavailable. The number of records is unknown.</p><button type="button" data-hub-profile-refresh>Retry Stripe records</button>';
  else{
   const items=tab==='subscriptions'&&s?.memberships?section.data.items.filter(item=>!s.memberships.some(m=>m.subscription_id===item.id)):section.data.items;
   const rows=items.map(item=>{
-   if(tab==='methods')return `<article class="patient-billing-card"><h4>${esc(human(item.brand||'Card'))} ending ${esc(item.last4||'—')}</h4><p>Expires ${esc(item.exp_month)}/${esc(item.exp_year)}</p></article>`;
+   if(tab==='methods')return `<article class="patient-billing-card payment-card"><span class="payment-card-brand">${esc(human(item.brand||'Card'))}</span><strong class="payment-card-number">•••• ${esc(item.last4||'••••')}</strong><small>Expires ${esc(String(item.exp_month).padStart(2,'0'))}/${esc(item.exp_year)}</small></article>`;
    if(tab==='subscriptions')return `<article class="patient-billing-card"><h4>${esc(human(item.status||'Status unavailable'))}</h4>${(item.items||[]).map(line=>`<p>${patientBillingAmount(line.unit_amount,item.currency)} per unit${line.interval?' every '+esc(line.interval_count||1)+' '+esc(line.interval):''} · quantity ${esc(line.quantity??'Not recorded')}</p><small>Current period: ${esc(patientBillingProviderDate(line.current_period_start))} – ${esc(patientBillingProviderDate(line.current_period_end))}</small>`).join('')}${item.cancel_at_period_end?'<p>Cancellation scheduled at period end.</p>':''}</article>`;
    return `<article class="patient-billing-card"><h4>${esc(human(item.status||'Status unavailable'))}</h4><p>Remaining ${patientBillingAmount(item.amount_remaining,item.currency)} · Paid ${patientBillingAmount(item.amount_paid,item.currency)}</p><p>Total ${patientBillingAmount(item.total,item.currency)}</p><small>Created ${esc(patientBillingProviderDate(item.created))}${item.due_date?' · Due '+esc(patientBillingProviderDate(item.due_date)):''}</small></article>`;
   }).join('');
@@ -209,7 +208,7 @@ function patientBillingProfileMarkup(data,tab,s){
  }
  if(tab==='methods'){
   html+=patientBillingSetupMarkup(s);
-  if(!patientBillingSetupFor(s)&&data.setup_available&&typeof billingCan==='function'&&billingCan('create'))html+='<button type="button" class="primary" data-hub-add-method>Save a card on file</button>';
+  if(!patientBillingSetupFor(s)&&data.setup_available&&typeof billingCan==='function'&&billingCan('create'))html+='<div class="actions"><button type="button" class="primary" data-hub-add-method>Add card</button><button type="button" data-hub-add-method-link>Send the patient a link</button></div><p class="muted">The patient enters the card on Stripe’s page and agrees there to keep it on file. Nothing is charged.</p>';
   else if(!data.setup_available)html+='<p class="muted">Hosted card setup is not available for the configured account. Existing saved methods remain listed above.</p>';
  }else if(tab==='subscriptions'&&typeof loadPatientPaymentPlans!=='function')html+='<section class="billing-section"><h3>Encounter payment plans</h3><p>Encounter balances and saved invoices are available in Overview and Invoices. Creating a fixed-balance installment plan is not available in this workspace yet.</p></section>';
  return html;
@@ -223,18 +222,24 @@ function patientBillingSetupFor(s){
 function patientBillingCheckoutUrl(value){
  try{const u=new URL(value);return u.protocol==='https:'&&u.hostname==='checkout.stripe.com'&&!u.port&&!u.username&&!u.password?u.href:null;}catch{return null;}
 }
+function patientBillingSetupMailto(s,url){
+ // Opens the staff member's own mail program with the secure Stripe link; nothing is sent by the EHR.
+ const email=typeof workspace!=='undefined'&&typeof selected!=='undefined'&&selected===s.patientId?workspace?.demographics?.content?.email:'';
+ const to=/^[^\s@<>?&]+@[^\s@<>?&]+\.[^\s@<>?&]+$/.test(email||'')?email:'';
+ return 'mailto:'+encodeURIComponent(to).replace('%40','@')+'?subject='+encodeURIComponent('Save your card on file')+'&body='+encodeURIComponent('Please use this secure Stripe link to save your card on file with our practice. Nothing is charged.\n\n'+url);
+}
 function patientBillingSetupMarkup(s){
  const op=patientBillingSetupFor(s);if(!op)return '';
  const labels={creating:'Getting Stripe ready…',open:'Enter the card on Stripe',pending:'Waiting for Stripe to confirm the card',succeeded:'Card saved',expired:'This card link expired',needs_review:'Stripe needs to review this card',unknown:'Checking with Stripe…'};
  const url=['open','pending'].includes(op.status)?patientBillingCheckoutUrl(op.session?.url):null;
- return `<section class="mapping-notice" aria-live="polite"><h4>${esc(labels[op.status]||labels.unknown)}</h4><p>${op.status==='succeeded'?'The card is on file for this patient.':op.status==='expired'?'Start again to get a new link.':'Nothing is charged. The card shows here once Stripe confirms it.'}</p>${op.error?`<p role="status">${esc(op.error)}</p>`:''}${url?`<a class="button primary" href="${esc(url)}" rel="noreferrer" referrerpolicy="no-referrer">Open Stripe</a>`:''}${['succeeded','expired'].includes(op.status)?'':`<button type="button" data-hub-setup-refresh>${url?'Card entered — check now':'Check again'}</button>`}${op.retry_allowed&&Number.isFinite(Date.parse(op.retry_safe_until))&&Date.parse(op.retry_safe_until)>Date.now()&&typeof billingCan==='function'&&billingCan('create')?'<button type="button" data-hub-setup-retry>Try again</button>':''}${['succeeded','expired'].includes(op.status)?'<button type="button" data-hub-setup-dismiss>Done</button>':''}</section>`;
+ return `<section class="mapping-notice" aria-live="polite"><h4>${esc(labels[op.status]||labels.unknown)}</h4><p>${op.status==='succeeded'?'The card is on file for this patient.':op.status==='expired'?'Start again to get a new link.':'Nothing is charged. The card shows here once Stripe confirms it.'}</p>${op.error?`<p role="status">${esc(op.error)}</p>`:''}${url?`<a class="button primary" href="${esc(url)}" rel="noreferrer" referrerpolicy="no-referrer">Open Stripe</a><a class="button" href="${esc(patientBillingSetupMailto(s,url))}">Email link to patient</a><button type="button" data-hub-setup-copy>Copy link</button>`:''}${['succeeded','expired'].includes(op.status)?'':`<button type="button" data-hub-setup-refresh>${url?'Card entered — check now':'Check again'}</button>`}${op.retry_allowed&&Number.isFinite(Date.parse(op.retry_safe_until))&&Date.parse(op.retry_safe_until)>Date.now()&&typeof billingCan==='function'&&billingCan('create')?'<button type="button" data-hub-setup-retry>Try again</button>':''}${['succeeded','expired'].includes(op.status)?'<button type="button" data-hub-setup-dismiss>Done</button>':''}</section>`;
 }
 function patientBillingShowSetupConsent(s){
  if(!patientBillingCurrent(s)||s.tab!=='methods'||!s.profile?.setup_available||!billingCan('create')||patientBillingSetupFor(s))return;
  const target=patientBillingProfileTarget(s);target.insertAdjacentHTML('beforeend','<form id="patient-billing-setup-form"><h4>Save a card on file</h4><p>The patient types their card into Stripe’s secure page. Nothing is charged now.</p><label class="check"><input type="checkbox" name="consent" required> The patient agrees to keep this card on file for future visits.</label><div class="actions"><button type="submit" class="primary">Continue to Stripe</button><button type="button" data-hub-setup-cancel>Cancel</button></div></form>');
  target.querySelector('[data-hub-add-method]')?.remove();target.querySelector('input[name="consent"]')?.focus();
 }
-async function patientBillingCreateSetup(s,existing){
+async function patientBillingCreateSetup(s,existing,openNow=false){
  if(!patientBillingCurrent(s)||s.tab!=='methods'||!billingCan('create')||!s.profile?.setup_available)return;
  const prior=patientBillingSetupFor(s);if(existing?(prior!==existing||!existing.retry_allowed||!(Date.parse(existing.retry_safe_until)>Date.now())):Boolean(prior))return;
  const requestId=existing?.request_id||crypto.randomUUID(),op={...existing,request_id:requestId,patient_id:s.patientId,status:'creating',retry_safe_until:existing?.retry_safe_until||new Date(Date.now()+23*60*60*1000).toISOString()};
@@ -244,6 +249,9 @@ async function patientBillingCreateSetup(s,existing){
   if(me!==s.identity)return;
   if(result.request_id!==requestId||result.patient_id!==s.patientId)throw new Error('The setup response did not match this patient and request.');
   patientBillingSetups.set(s.patientId,result);
+  // Add card goes straight to Stripe; the status box remains for when the patient returns.
+  const stripe=openNow&&result.status==='open'?patientBillingCheckoutUrl(result.session?.url):null;
+  if(stripe&&patientBillingCurrent(s)&&typeof location!=='undefined'&&typeof location.assign==='function'){location.assign(stripe);return;}
  }catch(error){if(me===s.identity)patientBillingSetups.set(s.patientId,{...op,status:'unknown',retry_allowed:false,error:error.message||'The setup response was not received. Check this request before starting another.'});}
  if(patientBillingCurrent(s)&&s.tab==='methods'&&patientBillingProfileTarget(s)===target)target.innerHTML=patientBillingProfileMarkup(s.profile,'methods',s);
 }
@@ -331,7 +339,9 @@ document.addEventListener('click',event=>{
  else if(d.hubPatientNext)void searchPatientBillingPatients(s,s.searchQuery||'',d.hubPatientNext);
  else if(button.hasAttribute('data-hub-refresh')){s.native=null;run(()=>loadPatientBillingTab(s));}
  else if(button.hasAttribute('data-hub-profile-refresh'))run(()=>loadPatientBillingProfile(s,s.panelRequest));
- else if(button.hasAttribute('data-hub-add-method'))patientBillingShowSetupConsent(s);
+ else if(button.hasAttribute('data-hub-add-method'))run(()=>patientBillingCreateSetup(s,undefined,true));
+ else if(button.hasAttribute('data-hub-add-method-link'))run(()=>patientBillingCreateSetup(s));
+ else if(button.hasAttribute('data-hub-setup-copy')){const link=patientBillingCheckoutUrl(patientBillingSetupFor(s)?.session?.url);if(link&&navigator.clipboard?.writeText)run(async()=>{await navigator.clipboard.writeText(link);button.textContent='Link copied';});}
  else if(button.hasAttribute('data-hub-setup-cancel')){patientBillingProfileTarget(s).innerHTML=patientBillingProfileMarkup(s.profile,'methods',s);}
  else if(button.hasAttribute('data-hub-setup-refresh'))run(()=>patientBillingRefreshSetup(s));
  else if(button.hasAttribute('data-hub-setup-retry'))run(()=>patientBillingCreateSetup(s,patientBillingSetupFor(s)));
