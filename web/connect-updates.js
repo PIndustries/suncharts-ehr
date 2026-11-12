@@ -22,7 +22,7 @@ function renderConnectNotifications(){
 function showConnectReplyToast(ticket){
  const host=$('service-notification-toast');if(!host||!connectUpdateUuid(ticket))return;
  host.hidden=false;host.className='service-notification-toast';
- host.innerHTML=`<p>New SunCharts support reply received.</p><div class="actions"><button type="button" data-connect-notification-open="${esc(ticket)}">Open reply</button><button type="button" data-connect-notification-dismiss>Dismiss</button></div>`;
+ host.innerHTML=`<p>New support reply received.</p><div class="actions"><button type="button" data-connect-notification-open="${esc(ticket)}">Open reply</button><button type="button" data-connect-notification-dismiss>Dismiss</button></div>`;
 }
 function applyConnectNotifications(snapshot){
  const value=validConnectNotifications(snapshot);if(!value)return;

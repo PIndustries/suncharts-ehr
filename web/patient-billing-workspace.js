@@ -266,7 +266,7 @@ async function changePatientBillingTab(tab){
  const preview=s.host.querySelector('#patient-billing-preview');preview.hidden=true;preview.replaceChildren();
  await loadPatientBillingTab(s);
 }
-async function showPatientBillingDocument(kind,id){
+async function showPatientBillingDocument(kind,id,options={}){
  const s=patientBillingWorkspace;if(!patientBillingCurrent(s))return;
  const host=s.host.querySelector('#patient-billing-preview'),request=Symbol();host.billingRequest=request;host.hidden=false;host.innerHTML='<p role="status">Loading saved document…</p>';
  try{
@@ -274,6 +274,11 @@ async function showPatientBillingDocument(kind,id){
   if(!patientBillingCurrent(s)||host.billingRequest!==request||s.host.querySelector('#patient-billing-preview')!==host)return;
   const returnedPatient=kind==='invoice'?data.patient_id:data.receipt?.patient_id;
   if(s.patientId&&returnedPatient!==s.patientId)throw new Error('This document does not belong to the selected patient.');
+  if(kind==='receipt'){
+   if(data.receipt?.id!==id||!data.context?.patient||options.appointmentId&&data.receipt.appointment_id!==options.appointmentId||data.context.appointment&&data.context.appointment.id!==data.receipt.appointment_id)throw new Error('This receipt does not match the selected appointment.');
+   renderCopayReceiptCard(host,data.receipt,data.context,()=>patientBillingCurrent(s)&&host.billingRequest===request&&s.host.querySelector('#patient-billing-preview')===host);
+   const close=document.createElement('button');close.type='button';close.setAttribute('data-hub-preview-close','');close.textContent='Close receipt';host.append(close);return;
+  }
   host.innerHTML=`<div class="section-head"><h3>${kind==='invoice'?'Saved patient invoice':'Copay receipt'}</h3><div class="actions"><button type="button" data-hub-print>Print / save PDF</button><button type="button" data-hub-preview-close>Close preview</button></div></div><p class="muted">Saved record · viewing does not collect payment.</p>`;
   const frame=document.createElement('iframe');frame.id='patient-billing-print-frame';frame.title=kind==='invoice'?'Patient invoice print preview':'Copay receipt print preview';frame.className='avs-print-frame';frame.setAttribute('sandbox','allow-same-origin allow-modals');frame.srcdoc=kind==='invoice'?patientInvoiceDocument(data):copayReceiptDocument(data.receipt,data.context);host.append(frame);host.scrollIntoView({block:'start'});
  }catch(error){if(patientBillingCurrent(s)&&host.billingRequest===request)host.innerHTML=`<p role="alert">${esc(error.message||'Saved document is unavailable.')}</p>`;}
