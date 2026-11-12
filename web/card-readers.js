@@ -79,7 +79,7 @@ function mountCardReaders(connection,current){
   return list;
  };
  // Stripe may report the same load failure more than once; showing the message is repeatable.
- function failed(){if(current()){const host=$('card-reader-status');if(host)host.innerHTML=cardReaderFailure(cardReaderLoadFailure);}}
+ function failed(event){if(!current())return;const host=$('card-reader-status');if(!host)return;const detail=String(event?.error?.message||'').trim().slice(0,300);host.innerHTML=cardReaderFailure(cardReaderLoadFailure)+(detail?`<p class="muted">Stripe said: ${esc(detail)}</p>`:'');if(detail&&typeof console!=='undefined')console.warn('Card reader ordering:',event?.error?.type||'',detail);}
  shop.setOnLoadError?.(failed);
  // A finished checkout adds an order, so the list below is drawn again.
  shop.setOnCheckoutFinished?.(()=>{if(current()&&$('card-reader-orders')===ordersHost)ordersHost.replaceChildren(orders());});
