@@ -48,7 +48,7 @@ function harness(){
  denied.ctx.api=async()=>({items:[{id:'wrong-date',status:'completed',created_at:'2026-11-11T00:00:00Z',request_snapshot:{request:{service_date:'2026-11-09'}}},{id:'correct-date',status:'completed',created_at:'2026-11-10T00:00:00Z',request_snapshot:{request:{service_date:'2026-11-10'}}}]});
  await denied.ctx.renderEncounterStartBenefits('encounter-benefits','2026-11-10');assert.match(denied.node('encounter-benefits').innerHTML,/BENEFITS:correct-date/);assert.match(denied.node('encounter-benefits').innerHTML,/\$25\.00/);assert.doesNotMatch(denied.node('encounter-benefits').innerHTML,/BENEFITS:wrong-date/);
  let resolve;denied.ctx.api=()=>new Promise(r=>resolve=r);const pending=denied.ctx.renderEncounterStartBenefits('encounter-benefits','2026-11-10');denied.ctx.selected='other';denied.node('encounter-benefits').innerHTML='OTHER CHART';resolve({items:[]});await pending;assert.equal(denied.node('encounter-benefits').innerHTML,'OTHER CHART');
- const absent=harness();await absent.ctx.renderEncounterStartBenefits('encounter-benefits','2026-11-10');assert.match(absent.node('encounter-benefits').innerHTML,/does not establish that the patient is uninsured/);
+ const absent=harness();await absent.ctx.renderEncounterStartBenefits('encounter-benefits','2026-11-10');assert.match(absent.node('encounter-benefits').innerHTML,/No insurance on file for this visit date/);
  const rejected=harness(),rejectedForm=Object.assign(rejected.node('encounter-start-form'),rejected.form),field={disabled:false},submit={textContent:''};
  rejectedForm.querySelectorAll=()=>[field];rejectedForm.querySelector=()=>submit;
  rejected.ctx.api=async()=>{const error=new Error('Synthetic schedule conflict');error.status=409;throw error;};
