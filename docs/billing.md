@@ -459,6 +459,10 @@ schedule, invoice identity and consent remain unchanged; a newer responsibility
 review requires a new invoice and plan. Plans do not schedule automatic charges
 or authorize off-session use of a saved card.
 
+The schedule editor shows the earliest allowed due date using the server's UTC
+date, which can be the next calendar day locally. Dates must fall within the
+five-year limit. Validation preserves entered dates for staff to correct.
+
 An authorized billing operator confirms the patient is present and the exact
 current amount before opening each Stripe-hosted checkout. The server rechecks
 that amount against the installment and remaining reviewed balance. Only one

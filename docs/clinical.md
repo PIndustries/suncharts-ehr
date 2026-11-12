@@ -14,8 +14,9 @@ settings until staff reviews it again.
 
 The primary chart navigation is **Overview**, **Encounter**, **Insurance**,
 **Billing** and **Files**. Files opens all patient documents without selecting an encounter.
-The Overview contact card displays the recorded phone and email. **Contact details**
-in the chart header opens the same contact and demographics record.
+The Overview contact card displays the recorded phone and email and updates after
+a successful contact save without reloading the chart. **Contact details** in the
+chart header opens the same contact and demographics record.
 **Patient record** contains **Contact & demographics**,
 longitudinal problems/allergies/medications, histories, prescribing, referrals,
 assessments, specialty care and imported records. These records remain available
