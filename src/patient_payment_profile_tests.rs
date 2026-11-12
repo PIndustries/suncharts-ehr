@@ -72,6 +72,9 @@ impl Source for Fake {
                 out[key] = json!({"status":"available","data":{"items":[],"has_more":false,"next_cursor":null}});
             }
         } else {
+            if mode == "not_received" && method == Method::GET {
+                return Err(Error::NotFound);
+            }
             if method == Method::POST {
                 let v = body.unwrap();
                 assert_eq!(v["consent"], true);
@@ -88,7 +91,10 @@ impl Source for Fake {
                 }
                 *self.request.lock().unwrap() = Some(request);
                 *self.patient.lock().unwrap() = Some(patient);
-                if mode == "lost" {
+                if mode == "refused" {
+                    return Err(Error::Conflict("Synthetic explicit broker refusal"));
+                }
+                if mode == "lost" || mode == "not_received" {
                     return Err(Error::Invalid("Synthetic transport lost response"));
                 }
             }
@@ -297,6 +303,54 @@ impl Fixture {
             assert_eq!(n, 0, "{table}");
         }
     }
+}
+#[tokio::test]
+async fn setup_lost_before_broker_is_recoverable_but_explicit_refusal_is_not() {
+    let f = Fixture::new().await;
+    let request = Uuid::new_v4();
+    let create = format!("/api/v1/billing/patients/{}/payment-setups", f.patient);
+    let read = format!("/api/v1/billing/payment-setups/{request}");
+    let input = json!({"request_id":request,"consent":true});
+    f.fake.set("not_received");
+    assert_eq!(
+        f.call("POST", &create, input.clone(), false, None).await.0,
+        400
+    );
+    let (code, value) = f.call("GET", &read, Value::Null, false, None).await;
+    assert_eq!(code, 200, "{value}");
+    assert_eq!(value["retry_allowed"], true);
+    assert_eq!(value["provider_status"], "not_found");
+    assert!(value["session"].is_null());
+    let evidence: Option<Value> = sqlx::query_scalar(
+        "SELECT provider_evidence FROM patient_payment_setups WHERE request_id=$1",
+    )
+    .bind(request)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert!(
+        evidence.is_none(),
+        "local recovery must not fabricate verified evidence"
+    );
+    f.fake.set("refused");
+    assert_eq!(
+        f.call("POST", &create, input.clone(), false, None).await.0,
+        409
+    );
+    f.fake.set("not_received");
+    assert_eq!(f.call("GET", &read, Value::Null, false, None).await.0, 404);
+    assert_eq!(f.call("POST", &create, input, false, None).await.0, 409);
+    assert_eq!(
+        f.fake
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(m, _)| *m == Method::POST)
+            .count(),
+        2
+    );
+    f.untouched().await;
 }
 #[tokio::test]
 async fn setup_lost_response_resumes_exact_request_and_never_posts_money() {

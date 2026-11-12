@@ -335,11 +335,40 @@ async fn complete(
     op: &Setup,
     raw: Result<Value>,
 ) -> Result<Response> {
+    let lookup = method == Method::GET;
     let actor = fresh_actor(a, s, h, method, path, action).await?;
     let mut tx = db(s)?.begin().await?;
     c.unchanged(&mut tx, a).await?;
     let current = load(&mut tx, a.tenant_id, op.request_id).await?;
     current.check(c)?;
+    // An EHR reservation can commit before a request reaches Connect. A lookup
+    // which finds no broker reservation is not proof of success or a new create.
+    // Offer only the original consented UUID inside the bounded retry window.
+    if lookup && matches!(&raw, Err(Error::NotFound)) && current.provider_evidence.is_none() {
+        let deadline = current.created_at + chrono::Duration::hours(23);
+        let retry = deadline > Utc::now()
+            && current.requested_by == a.sub
+            && actor.scheduling().is_ok()
+            && crate::access_policies::require_native(s, &actor, "billing", "create")
+                .await
+                .is_ok();
+        let value = json!({"contract_version":1,"installation_id":c.installation,
+            "remote_tenant_id":a.tenant_id,"patient_id":c.patient,"account_id":c.account,
+            "livemode":c.live,"checked_at":Utc::now(),"request_id":current.request_id,
+            "customer_id":null,"session":null,"status":if deadline>Utc::now(){"creating"}else{"needs_review"},
+            "retry_safe_until":deadline,"recovery_required":deadline<=Utc::now(),"retry_allowed":retry,
+            "provider_status":"not_found","error":"No setup session was found. Retry this same request to continue; no card has been verified."});
+        crate::postgres::audit(
+            &mut tx,
+            a,
+            "payment.patient_setup_recovery_checked",
+            op.request_id,
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok(response(value));
+    }
+    let refused = !lookup && matches!(&raw, Err(Error::Conflict(_)));
     let evidence = raw.and_then(|v| clean_setup(c, a.tenant_id, &current, &v));
     match evidence {
         Ok(mut value) => {
@@ -365,6 +394,12 @@ async fn complete(
         Err(error) => {
             if !current.terminal() {
                 sqlx::query("UPDATE patient_payment_setups SET status='needs_review',version=version+1,updated_at=now() WHERE tenant_id=$1 AND request_id=$2").bind(a.tenant_id).bind(op.request_id).execute(&mut *tx).await?;
+                if refused && current.provider_evidence.is_none() {
+                    sqlx::query("UPDATE patient_payment_setups SET provider_evidence=$3 WHERE tenant_id=$1 AND request_id=$2")
+                        .bind(a.tenant_id).bind(op.request_id)
+                        .bind(json!({"recovery_required":true,"source":"broker_refusal"}))
+                        .execute(&mut *tx).await?;
+                }
                 crate::postgres::audit(
                     &mut tx,
                     a,

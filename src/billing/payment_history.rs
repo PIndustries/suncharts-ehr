@@ -21,6 +21,13 @@ const ROWS: &str = r#"WITH rows AS (
  FROM payment_attempts p JOIN billing_accounts b ON b.tenant_id=p.tenant_id AND b.id=p.account_id
  WHERE p.tenant_id=$1 AND b.patient_id=$2
  UNION ALL
+ SELECT 'invoice_checkout',o.id,o.created_at,o.account_id,b.content->>'visit_id',NULL::uuid,
+ CASE WHEN o.provider_captured_at IS NOT NULL THEN o.amount_cents END,o.refunded_cents,
+ CASE WHEN o.provider_captured_at IS NOT NULL AND o.paid_entry_id IS NULL THEN o.amount_cents-o.refunded_cents ELSE 0 END,
+ o.paid_entry_id IS NOT NULL,coalesce(o.provider_charge_id,o.id::text),o.status,NOT o.livemode,NULL::uuid
+ FROM invoice_checkout_attempts o JOIN billing_accounts b ON b.tenant_id=o.tenant_id AND b.id=o.account_id
+ WHERE o.tenant_id=$1 AND o.patient_id=$2 AND b.patient_id=$2
+ UNION ALL
  SELECT 'recorded_payment',e.id,e.created_at,e.account_id,b.content->>'visit_id',NULL::uuid,
  -e.effect_cents,0,0,true,e.content->>'reference',
  CASE WHEN EXISTS(SELECT 1 FROM billing_entries reversal WHERE reversal.tenant_id=e.tenant_id AND reversal.reverses_id=e.id) THEN 'reversed' ELSE 'recorded' END,
@@ -101,7 +108,9 @@ async fn read(
         .await?;
     // A void or unresolved receipt must not advertise spendable credit.
     for row in &mut rows {
-        if ["voided", "needs_review"].contains(&row["status"].as_str().unwrap_or_default()) {
+        if row["kind"] == "copay"
+            && ["voided", "needs_review"].contains(&row["status"].as_str().unwrap_or_default())
+        {
             row["unapplied_cents"] = json!(0);
         }
     }

@@ -1099,6 +1099,16 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/patient-payment-plans.js",
+            get(|| async {
+                web_asset(
+                    "patient-payment-plans.js",
+                    "text/javascript; charset=utf-8",
+                    include_str!("../web/patient-payment-plans.js"),
+                )
+            }),
+        )
+        .route(
             "/patient-billing-workspace.css",
             get(|| async {
                 web_asset(

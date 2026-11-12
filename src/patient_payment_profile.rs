@@ -45,7 +45,7 @@ impl Source for HttpSource {
             broker_base()?
         );
         let mut call = crate::stedi::client()?
-            .request(method, url)
+            .request(method.clone(), url)
             .bearer_auth(token);
         if let Some(body) = body {
             call = call.json(&body);
@@ -55,7 +55,15 @@ impl Source for HttpSource {
                 "Patient payment request is uncertain. Keep this request and refresh its status.",
             )
         })?;
+        if reply.status() == reqwest::StatusCode::NOT_FOUND && method == Method::GET {
+            return Err(Error::NotFound);
+        }
         if !reply.status().is_success() {
+            if reply.status().is_client_error() && method == Method::POST {
+                return Err(Error::Conflict(
+                    "The payment service declined this setup request. Refresh its status before further action.",
+                ));
+            }
             return Err(Error::Invalid(
                 "Patient payment service is unavailable. No patient balance was changed.",
             ));

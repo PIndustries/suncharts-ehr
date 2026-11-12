@@ -34990,6 +34990,345 @@
           }
         }
       }
+    },
+    "/api/v1/billing/patients/{patient}/installment-plans": {
+      "get": {
+        "summary": "List finite invoice-bound plans and reviewed invoice eligibility",
+        "tags": [
+          "Billing"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated tenant-scoped result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientInstallmentPlanList"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Billing permission required"
+          },
+          "409": {
+            "description": "Responsibility, version, reservation or idempotency conflict"
+          }
+        },
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      },
+      "post": {
+        "summary": "Create an immutable finite patient-present installment agreement",
+        "tags": [
+          "Billing"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated tenant-scoped result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientInstallmentPlan"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Billing permission required"
+          },
+          "409": {
+            "description": "Responsibility, version, reservation or idempotency conflict"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatientInstallmentCreateRequest"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Quoted current account version for plan creation, or plan version for checkout."
+          },
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/billing/patients/{patient}/installment-plans/preview": {
+      "post": {
+        "summary": "Validate exact finite schedule against current reviewed patient responsibility",
+        "tags": [
+          "Billing"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated tenant-scoped result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientInstallmentPreview"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Billing permission required"
+          },
+          "409": {
+            "description": "Responsibility, version, reservation or idempotency conflict"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatientInstallmentPreviewRequest"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/billing/patients/{patient}/installment-plans/{plan}": {
+      "get": {
+        "summary": "Read invoice-bound plan, current eligibility and collection evidence",
+        "tags": [
+          "Billing"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated tenant-scoped result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientInstallmentPlan"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Billing permission required"
+          },
+          "409": {
+            "description": "Responsibility, version, reservation or idempotency conflict"
+          }
+        },
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "plan",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/billing/patients/{patient}/installment-plans/{plan}/installments/{number}/checkout": {
+      "post": {
+        "summary": "Explicit patient-present checkout for the exact displayed collectible amount",
+        "tags": [
+          "Billing"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated tenant-scoped result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientInstallmentCheckoutResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Billing permission required"
+          },
+          "409": {
+            "description": "Responsibility, version, reservation or idempotency conflict"
+          },
+          "503": {
+            "description": "collection_unavailable: explicit live activation is off or test collection is forbidden in production"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatientInstallmentCheckoutRequest"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Quoted current account version for plan creation, or plan version for checkout."
+          },
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "plan",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 60
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/billing/invoice-checkouts/{id}": {
+      "get": {
+        "summary": "Resolve authorized invoice collection without creating a checkout",
+        "tags": [
+          "Billing"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated tenant-scoped result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvoiceCheckoutResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Billing permission required"
+          },
+          "409": {
+            "description": "Responsibility, version, reservation or idempotency conflict"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/billing/invoice-checkouts/{id}/refresh": {
+      "post": {
+        "summary": "Retrieve and reconcile an already-bound session; never creates a checkout",
+        "tags": [
+          "Billing"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated tenant-scoped result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvoiceCheckoutResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Billing permission required"
+          },
+          "409": {
+            "description": "Responsibility, version, reservation or idempotency conflict"
+          },
+          "503": {
+            "description": "collection_unavailable: explicit live activation is off or test collection is forbidden in production"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -53878,6 +54217,16 @@
           },
           "retry_allowed": {
             "type": "boolean"
+          },
+          "provider_status": {
+            "type": "string",
+            "enum": [
+              "not_found"
+            ],
+            "description": "Local recovery response only: no broker setup reservation found. This is not verified payment-method evidence."
+          },
+          "error": {
+            "type": "string"
           }
         },
         "required": [
@@ -53895,6 +54244,581 @@
           "retry_safe_until",
           "recovery_required",
           "retry_allowed"
+        ]
+      },
+      "PatientInstallmentScheduleItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "due_on",
+          "amount_cents"
+        ],
+        "properties": {
+          "due_on": {
+            "type": "string",
+            "format": "date"
+          },
+          "amount_cents": {
+            "type": "integer",
+            "minimum": 50,
+            "maximum": 100000000
+          }
+        }
+      },
+      "PatientInstallmentPreviewRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "invoice_id",
+          "livemode",
+          "installments"
+        ],
+        "properties": {
+          "invoice_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "livemode": {
+            "type": "boolean"
+          },
+          "installments": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 60,
+            "items": {
+              "$ref": "#/components/schemas/PatientInstallmentScheduleItem"
+            }
+          }
+        }
+      },
+      "PatientInstallmentCreateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "invoice_id",
+          "livemode",
+          "installments",
+          "request_id",
+          "reason",
+          "consent"
+        ],
+        "properties": {
+          "invoice_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "livemode": {
+            "type": "boolean"
+          },
+          "installments": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 60,
+            "items": {
+              "$ref": "#/components/schemas/PatientInstallmentScheduleItem"
+            }
+          },
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "consent": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          }
+        }
+      },
+      "PatientInstallmentCheckoutRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "request_id",
+          "amount_cents",
+          "patient_present",
+          "reason"
+        ],
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "amount_cents": {
+            "type": "integer",
+            "minimum": 50,
+            "maximum": 100000000
+          },
+          "patient_present": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        }
+      },
+      "InvoiceCheckoutOperation": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "patient_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "plan_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "installment_number": {
+            "type": "integer"
+          },
+          "amount_cents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "currency": {
+            "const": "usd",
+            "type": "string"
+          },
+          "livemode": {
+            "type": "boolean"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "creating",
+              "open",
+              "paid",
+              "expired",
+              "needs_review",
+              "refunded"
+            ]
+          },
+          "checkout_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uri"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "paid_entry_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "captured_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "refunded_cents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unapplied_cents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "last_result": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "version": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "request_id",
+          "patient_id",
+          "account_id",
+          "plan_id",
+          "reason",
+          "installment_number",
+          "amount_cents",
+          "currency",
+          "livemode",
+          "status",
+          "checkout_url",
+          "paid_entry_id",
+          "captured_at",
+          "refunded_cents",
+          "unapplied_cents",
+          "last_result",
+          "version",
+          "created_at"
+        ]
+      },
+      "PatientInstallmentCollectionItem": {
+        "type": "object",
+        "properties": {
+          "number": {
+            "type": "integer"
+          },
+          "due_on": {
+            "type": "string",
+            "format": "date"
+          },
+          "amount_cents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "collected_cents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "collectible_cents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "pending"
+            ]
+          }
+        },
+        "required": [
+          "number",
+          "due_on",
+          "amount_cents",
+          "collected_cents",
+          "collectible_cents",
+          "status"
+        ]
+      },
+      "PatientInstallmentPlan": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "patient_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "invoice_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "complete",
+              "needs_review"
+            ]
+          },
+          "livemode": {
+            "type": "boolean"
+          },
+          "total_cents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "responsibility_cents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "patient_credit_cents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "remaining_cents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "blocked_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "installments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PatientInstallmentCollectionItem"
+            }
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InvoiceCheckoutOperation"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "autopay": {
+            "type": "boolean",
+            "const": false
+          }
+        },
+        "required": [
+          "id",
+          "request_id",
+          "patient_id",
+          "account_id",
+          "invoice_id",
+          "reason",
+          "version",
+          "status",
+          "livemode",
+          "total_cents",
+          "responsibility_cents",
+          "patient_credit_cents",
+          "remaining_cents",
+          "blocked_reason",
+          "installments",
+          "attempts",
+          "created_at",
+          "autopay"
+        ]
+      },
+      "PatientInstallmentPreview": {
+        "type": "object",
+        "properties": {
+          "invoice_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "invoice_created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "account_version": {
+            "type": "integer"
+          },
+          "responsibility_cents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "patient_credit_cents": {
+            "type": "integer"
+          },
+          "remaining_cents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "currency": {
+            "type": "string",
+            "const": "usd"
+          },
+          "livemode": {
+            "type": "boolean"
+          },
+          "eligible": {
+            "type": "boolean"
+          },
+          "blocked_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "installments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "number": {
+                  "type": "integer"
+                },
+                "due_on": {
+                  "type": "string",
+                  "format": "date"
+                },
+                "amount_cents": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "number",
+                "due_on",
+                "amount_cents"
+              ]
+            }
+          },
+          "autopay": {
+            "type": "boolean",
+            "const": false
+          }
+        },
+        "required": [
+          "invoice_id",
+          "invoice_created_at",
+          "account_id",
+          "account_version",
+          "responsibility_cents",
+          "patient_credit_cents",
+          "remaining_cents",
+          "currency",
+          "livemode",
+          "eligible",
+          "blocked_reason",
+          "installments",
+          "autopay"
+        ]
+      },
+      "PatientInstallmentPlanList": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PatientInstallmentPlan"
+            }
+          },
+          "eligible_invoices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PatientInstallmentPreview"
+            }
+          },
+          "availability": {
+            "type": "object",
+            "properties": {
+              "available": {
+                "type": "boolean"
+              },
+              "livemode": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "reason": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "available",
+              "livemode",
+              "reason"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "eligible_invoices",
+          "availability"
+        ]
+      },
+      "PatientInstallmentCheckoutResult": {
+        "type": "object",
+        "properties": {
+          "plan": {
+            "$ref": "#/components/schemas/PatientInstallmentPlan"
+          },
+          "operation": {
+            "$ref": "#/components/schemas/InvoiceCheckoutOperation"
+          }
+        },
+        "required": [
+          "plan",
+          "operation"
+        ]
+      },
+      "InvoiceCheckoutResult": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "$ref": "#/components/schemas/InvoiceCheckoutOperation"
+          }
+        },
+        "required": [
+          "operation"
         ]
       }
     }

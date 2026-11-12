@@ -233,6 +233,25 @@ async fn call(
     )
 }
 
+async fn payment_history(state: &State, a: &Actor, patient: Uuid) -> Value {
+    let token = jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        a,
+        &jsonwebtoken::EncodingKey::from_secret(state.secret.as_bytes()),
+    )
+    .unwrap();
+    let req = Request::builder()
+        .uri(format!(
+            "/api/v1/billing/patients/{patient}/payment-history?mode=test"
+        ))
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = crate::app(state.clone()).oneshot(req).await.unwrap();
+    assert_eq!(response.status(), 200);
+    serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
+}
+
 async fn posted_account(
     pool: &PgPool,
     a: &Actor,
@@ -469,6 +488,11 @@ async fn finite_invoice_collections_recover_once_and_append_refunds_without_rewr
     assert_eq!(financial(&pool, &a, account).await, (1000, 1000));
     assert_eq!(count(&pool, "billing_entries").await, 2);
     assert_eq!(count(&pool, "invoice_checkout_refunds").await, 1);
+    let history = payment_history(&s, &a, patient).await;
+    assert_eq!(history["items"].as_array().unwrap().len(), 1);
+    assert_eq!(history["items"][0]["refunded_cents"], 500);
+    assert_eq!(history["items"][0]["unapplied_cents"], 0);
+    assert_eq!(history["items"][0]["ledger_recorded"], true);
     assert_eq!(row(&pool, &a, op).await.provider_captured_at, before);
     assert_eq!(
         read_plan(&pool, &a, patient, pid).await["remaining_cents"],
@@ -498,7 +522,7 @@ async fn finite_invoice_collections_recover_once_and_append_refunds_without_rewr
 
 #[tokio::test]
 async fn invoice_collection_pauses_changed_responsibility_and_retains_late_capture_unapplied() {
-    let (pool, a, patient, account, invoice, _) = fixture().await;
+    let (pool, a, patient, account, invoice, state) = fixture().await;
     let broker = FakeBroker::new(false);
     let p = create_with(
         &pool,
@@ -550,6 +574,14 @@ async fn invoice_collection_pauses_changed_responsibility_and_retains_late_captu
     assert!(r.provider_captured_at.is_some());
     assert!(r.paid_entry_id.is_none());
     assert_eq!(r.public(policy(false))["unapplied_cents"], 1500);
+    let history = payment_history(&state, &a, patient).await;
+    let items = history["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["kind"], "invoice_checkout");
+    assert_eq!(items[0]["received_cents"], 1500);
+    assert_eq!(items[0]["unapplied_cents"], 1500);
+    assert_eq!(items[0]["ledger_recorded"], false);
+    assert_eq!(items[0]["status"], "needs_review");
     assert_eq!(financial(&pool, &a, account).await, (0, 0));
     assert_eq!(count(&pool, "billing_entries").await, 1);
     let current = read_plan(&pool, &a, patient, pid).await;
@@ -575,6 +607,10 @@ async fn invoice_collection_pauses_changed_responsibility_and_retains_late_captu
     assert_eq!(row(&pool, &a, op).await.status, "refunded");
     assert_eq!(financial(&pool, &a, account).await, (0, 0));
     assert_eq!(count(&pool, "invoice_checkout_refunds").await, 1);
+    let history = payment_history(&state, &a, patient).await;
+    assert_eq!(history["items"].as_array().unwrap().len(), 1);
+    assert_eq!(history["items"][0]["refunded_cents"], 1500);
+    assert_eq!(history["items"][0]["unapplied_cents"], 0);
 }
 
 #[tokio::test]
