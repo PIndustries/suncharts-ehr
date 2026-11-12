@@ -4,6 +4,8 @@
 mod operations;
 #[path = "patient_payment_profile.rs"]
 mod patient_profile;
+#[path = "payment_reader_orders.rs"]
+mod reader_orders;
 use crate::{
     auth::{Actor, Role},
     billing,
@@ -305,6 +307,10 @@ pub fn router() -> Router<State> {
             post(test_settings),
         )
         .route("/api/v1/billing/payments/operations", get(operations::read))
+        .route(
+            "/api/v1/billing/payments/readers/hardware-session",
+            post(reader_orders::create),
+        )
         .route(
             "/api/v1/billing/membership-prices",
             get(patient_profile::memberships::prices)

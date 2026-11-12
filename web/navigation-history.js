@@ -11,7 +11,7 @@
   'nav-apps':'showApps','nav-migration':'showMigrations','nav-workflows':'showWorkflowStudio',
   'nav-automation':'showAutomationCenter','nav-ai-review':'showAiReviewWorkspace'
  };
- const detailMethods={claim:'showClaim',era:'showEra',eraBatch:'showEraBatch',payment:'openPaymentStatus',paymentSettings:'openPaymentSettings',support:'showSupportTicket',portal:'showPortalThread'};
+ const detailMethods={claim:'showClaim',era:'showEra',eraBatch:'showEraBatch',payment:'openPaymentStatus',paymentSettings:'openPaymentSettings',cardReaders:'openCardReaders',support:'showSupportTicket',portal:'showPortalThread'};
  const screenMethods={sun:'showSunPage',support:'showSupportTickets',connect:'showConnectServices',inbox:'showIntegrationInbox',outbound:'showOutboundWorkspace',previsit:'showPrevisit',reminders:'showReminderWorkspace'};
  const identity=()=>typeof me==='undefined'||!me?null:[me.tenant_id,me.user_id,me.role].join(':');
  let hadSession=false,generation=0,depth=0,restoring=false,current=null,pendingRoute=null,queued=null,restoreRunning=false,bouncing=false;
@@ -26,7 +26,7 @@
  const navSlugs={'nav-practice':'home','nav-schedule':'schedule','nav-followup':'work-queue','nav-portal':'inbox','nav-clinical':'patients','nav-labs':'orders','nav-specialty':'specialty','nav-referrals':'referrals','nav-billing':'billing','nav-claims':'claims','nav-edi':'claim-connections','nav-admin':'practice','nav-apps':'integrations','nav-migration':'data-import','nav-workflows':'workflow-studio','nav-automation':'automation','nav-ai-review':'ai-review'};
  const slugNavs=Object.fromEntries(Object.entries(navSlugs).map(([nav,slug])=>[slug,nav]));
  const screenSlugs={sun:'sun',support:'support',connect:'connect-services',inbox:'messages',outbound:'outbound',previsit:'intake',reminders:'reminders'};
- const detailSlugs={claim:'claims',era:'remittances',eraBatch:'remittance-batches',payment:'payments',paymentSettings:'payment-settings',support:'support',portal:'inbox'};
+ const detailSlugs={claim:'claims',era:'remittances',eraBatch:'remittance-batches',payment:'payments',paymentSettings:'payment-settings',cardReaders:'card-readers',support:'support',portal:'inbox'};
  const sectionSlugs={overview:'overview',visits:'encounter',insurance:'insurance',billing:'billing',documents:'files',orders:'orders',profile:'record',clinical:'clinical',care_pathways:'care-pathways',prescribing:'prescriptions',referrals:'referrals'};
  const billingTabs=['overview','invoices','payments','methods','subscriptions'];
  const uuid=value=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
@@ -66,6 +66,7 @@
   const detail=invert(detailSlugs,head);
   if(detail&&uuid(second))return {view:'detail',kind:detail,id:second};
   if(head==='payment-settings')return {view:'detail',kind:'paymentSettings',id:null};
+  if(head==='card-readers'&&!second)return {view:'detail',kind:'cardReaders',id:null};
   if(slugNavs[head]&&!second)return {view:'tool',nav:slugNavs[head]};
   const screen=invert(screenSlugs,head);
   if(screen&&!second)return {view:'screen',kind:screen,...(screen==='inbox'?{channel:'communications'}:screen==='outbound'?{channel:'ringcentral'}:{})};
@@ -212,7 +213,7 @@
  for(const name of ['showClinical','selectPatient','showChartSection','setEncounterSection','renderVisit','showBillingAccount','showOrder','showEncounterClaim','beginClaim','openDocumentFile'])wrap(name,()=>patientRoute());
  for(const [nav,name] of Object.entries(toolsByNav))if(name!=='showClinical')wrap(name,()=>({view:'tool',nav}));
  for(const [kind,name] of Object.entries(screenMethods))wrap(name,args=>({view:'screen',kind,...(kind==='inbox'?{channel:args[0]||'communications'}:kind==='outbound'?{channel:args[0]||'ringcentral'}:kind==='reminders'?{filter:typeof reminderFilter==='undefined'?'due':reminderFilter}:{})}));
- for(const [kind,name] of Object.entries(detailMethods))wrap(name,args=>({view:'detail',kind,id:kind==='paymentSettings'?null:args[0]}));
+ for(const [kind,name] of Object.entries(detailMethods))wrap(name,args=>({view:'detail',kind,id:['paymentSettings','cardReaders'].includes(kind)?null:args[0]}));
  const originalSignIn=window.signInScreen;
  if(typeof originalSignIn==='function')window.signInScreen=function(...args){generation++;depth=0;current=null;pendingRoute=null;queued=null;backControl();
   // After a session ends, the previous person's screen address must not open for the next person.

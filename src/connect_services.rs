@@ -6,17 +6,19 @@ use crate::{
     State,
 };
 use axum::{
-    extract::{Path, State as ExtractState},
-    http::HeaderMap,
+    body::Bytes,
+    extract::{DefaultBodyLimit, Path, Query, State as ExtractState},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{
         sse::{Event, KeepAlive},
-        IntoResponse, Sse,
+        IntoResponse, Response, Sse,
     },
     routing::{get, post},
     Json, Router,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 fn db(s: &State) -> Result<&PgPool> {
@@ -133,6 +135,14 @@ pub fn router() -> Router<State> {
         )
         .route("/api/v1/connect/services/tickets/{id}", get(ticket))
         .route("/api/v1/connect/services/tickets/{id}/replies", post(reply))
+        .route(
+            "/api/v1/connect/services/support-files",
+            post(upload_support_file).layer(DefaultBodyLimit::max(SUPPORT_FILE_MAX)),
+        )
+        .route(
+            "/api/v1/connect/services/support-files/{file}",
+            get(support_file),
+        )
 }
 #[derive(sqlx::FromRow)]
 struct Health {
@@ -446,6 +456,20 @@ async fn request_at(
     path: &str,
     body: Option<&Value>,
 ) -> Result<Value> {
+    request_extras_at(base, installation, key, method, path, body, false).await
+}
+/// `extras` marks a support message that carries links or files. A Connect
+/// release that predates them refuses the unknown fields while parsing (422),
+/// before anything is stored, so the caller may resend the plain message.
+async fn request_extras_at(
+    base: &str,
+    installation: Uuid,
+    key: &str,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<&Value>,
+    extras: bool,
+) -> Result<Value> {
     let mut req = crate::stedi::client()?
         .request(
             method,
@@ -459,6 +483,20 @@ async fn request_at(
         .send()
         .await
         .map_err(|_| Error::Invalid("SunCharts service is unavailable"))?;
+    if extras && response.status() == StatusCode::UNPROCESSABLE_ENTITY {
+        return Err(Error::Conflict(SUPPORT_EXTRAS_UNAVAILABLE));
+    }
+    // Connect refuses a file that is unknown to it or already on another message.
+    if extras
+        && matches!(
+            response.status(),
+            StatusCode::BAD_REQUEST | StatusCode::CONFLICT
+        )
+    {
+        return Err(Error::Invalid(
+            "Support could not accept what was attached. Remove the files, add them again and send.",
+        ));
+    }
     if !response.status().is_success() {
         return Err(Error::Invalid(
             "SunCharts service rejected this request; verify installation access and readiness",
@@ -611,25 +649,24 @@ async fn support(
     let (_, key) = pinned(tx, a.tenant_id, r.id, r.credential_revision).await?;
     Ok((r, key))
 }
-async fn support_call(
+/// Opens the support gate for one call. A write first commits a local
+/// reservation of its request ID, path and content digest, so a retry is
+/// either the same request or refused, and then re-checks the installation.
+async fn support_session(
     a: &Actor,
     s: &State,
-    method: reqwest::Method,
-    path: &str,
-    body: Option<&Value>,
-    action: &str,
-) -> Result<Value> {
+    write: bool,
+    reservation: Option<(Uuid, &str, String)>,
+) -> Result<(
+    Transaction<'static, Postgres>,
+    Setting,
+    crate::provider_settings::Secret,
+)> {
     staff(a)?;
     let mut tx = db(s)?.begin().await?;
     lock(&mut tx, a).await?;
-    let (r, key) = support(&mut tx, a, method == reqwest::Method::POST).await?;
-    if method == reqwest::Method::POST {
-        let body = body.ok_or(Error::Invalid("missing support request"))?;
-        let request = body["request_id"]
-            .as_str()
-            .and_then(|v| Uuid::parse_str(v).ok())
-            .ok_or(Error::Invalid("missing support request identity"))?;
-        let digest = crate::oauth::hash(&body.to_string());
+    let (r, key) = support(&mut tx, a, write).await?;
+    if let Some((request, path, digest)) = reservation {
         let previous:Option<(Uuid,i64,String,String)>=sqlx::query_as("SELECT setting_id,credential_revision,path,body_hash FROM connect_support_requests WHERE tenant_id=$1 AND request_id=$2").bind(a.tenant_id).bind(request).fetch_optional(&mut *tx).await?;
         if let Some(previous) = previous {
             if previous != (r.id, r.credential_revision, path.to_owned(), digest.clone()) {
@@ -644,23 +681,53 @@ async fn support_call(
         tx.commit().await?;
         tx = db(s)?.begin().await?;
         lock(&mut tx, a).await?;
-        let (current, _) = support(&mut tx, a, method == reqwest::Method::POST).await?;
+        let (current, _) = support(&mut tx, a, write).await?;
         if current.id != r.id || current.credential_revision != r.credential_revision {
             return Err(Error::Conflict(
                 "service installation changed before request delivery",
             ));
         }
     }
-    let value = request_at(
+    Ok((tx, r, key))
+}
+async fn support_call(
+    a: &Actor,
+    s: &State,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<&Value>,
+    action: &str,
+    linked: &[Uuid],
+) -> Result<Value> {
+    staff(a)?;
+    let write = method == reqwest::Method::POST;
+    let reservation = if write {
+        let body = body.ok_or(Error::Invalid("missing support request"))?;
+        let request = body["request_id"]
+            .as_str()
+            .and_then(|v| Uuid::parse_str(v).ok())
+            .ok_or(Error::Invalid("missing support request identity"))?;
+        Some((request, path, crate::oauth::hash(&body.to_string())))
+    } else {
+        None
+    };
+    let extras = body.is_some_and(|b| b.get("links").is_some() || b.get("attachments").is_some());
+    let (mut tx, r, key) = support_session(a, s, write, reservation).await?;
+    let value = request_extras_at(
         &crate::connect_onboarding::cloud_origin()?,
         r.installation_id,
         key.expose(),
         method,
         path,
         body,
+        extras,
     )
     .await?;
     crate::postgres::audit(&mut tx, a, action, r.id).await?;
+    // One event per record whose label left the practice with this message.
+    for record in linked {
+        crate::postgres::audit(&mut tx, a, "connect.support_record_linked", *record).await?;
+    }
     tx.commit().await?;
     Ok(value)
 }
@@ -673,6 +740,7 @@ async fn tickets(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json<
             "/tickets",
             None,
             "connect.support_listed",
+            &[],
         )
         .await?,
     ))
@@ -690,9 +758,134 @@ async fn ticket(
             &format!("/tickets/{id}"),
             None,
             "connect.support_read",
+            &[],
         )
         .await?,
     ))
+}
+const SUPPORT_FILE_MAX: usize = 10 * 1024 * 1024;
+const SUPPORT_FILE_TYPES: [&str; 7] = [
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "application/pdf",
+    "text/plain",
+    "text/csv",
+];
+const SUPPORT_LINKS_MAX: usize = 10;
+const SUPPORT_ATTACHMENTS_MAX: usize = 5;
+const SUPPORT_EXTRAS_UNAVAILABLE: &str = "Support cannot receive attached records or files yet.";
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum SupportLinkKind {
+    Patient,
+    Visit,
+    Claim,
+}
+impl SupportLinkKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Patient => "patient",
+            Self::Visit => "visit",
+            Self::Claim => "claim",
+        }
+    }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SupportLink {
+    kind: SupportLinkKind,
+    id: Uuid,
+}
+/// Labels identify a record to support staff without carrying a patient name.
+fn support_link_label(kind: SupportLinkKind, detail: &str, mrn: &str) -> String {
+    let label = match kind {
+        SupportLinkKind::Patient => format!("MRN {mrn}"),
+        SupportLinkKind::Visit => format!("Visit {detail} · MRN {mrn}"),
+        SupportLinkKind::Claim => format!("Claim {detail} · MRN {mrn}"),
+    };
+    // One line, at most 200 characters.
+    label
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(200)
+        .collect()
+}
+/// Every link must name a record of the caller's own practice that the caller
+/// may view. The label is built here; a label sent by the browser is refused.
+async fn support_links(
+    a: &Actor,
+    s: &State,
+    links: &[SupportLink],
+) -> Result<(Vec<Value>, Vec<Uuid>)> {
+    staff(a)?;
+    if links.len() > SUPPORT_LINKS_MAX {
+        return Err(Error::Invalid(
+            "Attach up to 10 patients, visits or claims.",
+        ));
+    }
+    let missing = Error::Invalid("An attached patient, visit or claim could not be found.");
+    let (mut out, mut ids) = (Vec::new(), Vec::<(SupportLinkKind, Uuid)>::new());
+    for link in links {
+        if ids.contains(&(link.kind, link.id)) {
+            continue;
+        }
+        let resource = if link.kind == SupportLinkKind::Claim {
+            "claims"
+        } else {
+            "clinical"
+        };
+        crate::access_policies::require_native(s, a, resource, "view").await?;
+        let found: Option<(String, String)> = match link.kind {
+            SupportLinkKind::Patient => sqlx::query_as("SELECT ''::text,mrn FROM patients WHERE tenant_id=$1 AND id=$2"),
+            SupportLinkKind::Visit => sqlx::query_as("SELECT to_char(ap.starts_at AT TIME ZONE coalesce((SELECT booking_timezone FROM previsit_booking_profiles WHERE tenant_id=$1 LIMIT 1),'UTC'),'YYYY-MM-DD'),p.mrn FROM visits v JOIN appointments ap ON ap.tenant_id=v.tenant_id AND ap.id=v.appointment_id JOIN patients p ON p.tenant_id=v.tenant_id AND p.id=v.patient_id WHERE v.tenant_id=$1 AND v.id=$2"),
+            SupportLinkKind::Claim => sqlx::query_as("SELECT c.control_number,p.mrn FROM ehr_claims c JOIN patients p ON p.tenant_id=c.tenant_id AND p.id=c.patient_id WHERE c.tenant_id=$1 AND c.id=$2"),
+        }
+        .bind(a.tenant_id)
+        .bind(link.id)
+        .fetch_optional(db(s)?)
+        .await?;
+        let Some((detail, mrn)) = found else {
+            return Err(missing);
+        };
+        out.push(json!({"kind":link.kind.name(),"id":link.id,"label":support_link_label(link.kind,&detail,&mrn)}));
+        ids.push((link.kind, link.id));
+    }
+    Ok((out, ids.into_iter().map(|(_, id)| id).collect()))
+}
+fn support_attachments(files: &[Uuid]) -> Result<Vec<Uuid>> {
+    let mut out = Vec::new();
+    for file in files {
+        if !out.contains(file) {
+            out.push(*file);
+        }
+    }
+    if out.len() > SUPPORT_ATTACHMENTS_MAX {
+        return Err(Error::Invalid("Up to 5 files per message."));
+    }
+    Ok(out)
+}
+/// Empty lists are left out, so a plain message is byte-for-byte what earlier
+/// builds sent and a Connect release without links and files still accepts it.
+fn support_extras(body: &mut Value, links: Vec<Value>, attachments: &[Uuid]) {
+    if !links.is_empty() {
+        body["links"] = json!(links);
+    }
+    if !attachments.is_empty() {
+        body["attachments"] = json!(attachments);
+    }
+}
+fn support_response(result: Result<Value>) -> Result<Response> {
+    match result {
+        Ok(value) => Ok(Json(value).into_response()),
+        Err(Error::Conflict(m)) if m == SUPPORT_EXTRAS_UNAVAILABLE => Ok((
+            StatusCode::CONFLICT,
+            Json(json!({"error":"support_attachments_unavailable","message":m})),
+        )
+            .into_response()),
+        Err(error) => Err(error),
+    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -700,50 +893,341 @@ struct TicketCreate {
     request_id: Uuid,
     subject: String,
     message: String,
+    #[serde(default)]
+    links: Vec<SupportLink>,
+    #[serde(default)]
+    attachments: Vec<Uuid>,
 }
 async fn create_ticket(
     a: Actor,
     ExtractState(s): ExtractState<State>,
     Json(v): Json<TicketCreate>,
-) -> Result<Json<Value>> {
+) -> Result<Response> {
     crate::model::text(&v.subject, 160)?;
     crate::model::text(&v.message, 4000)?;
-    Ok(Json(
+    let (links, linked) = support_links(&a, &s, &v.links).await?;
+    let attachments = support_attachments(&v.attachments)?;
+    let mut body = json!({"request_id":v.request_id,"subject":v.subject,"message":v.message});
+    support_extras(&mut body, links, &attachments);
+    support_response(
         support_call(
             &a,
             &s,
             reqwest::Method::POST,
             "/tickets",
-            Some(&json!({"request_id":v.request_id,"subject":v.subject,"message":v.message})),
+            Some(&body),
             "connect.support_created",
+            &linked,
         )
-        .await?,
-    ))
+        .await,
+    )
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Reply {
     request_id: Uuid,
     message: String,
+    #[serde(default)]
+    links: Vec<SupportLink>,
+    #[serde(default)]
+    attachments: Vec<Uuid>,
 }
 async fn reply(
     a: Actor,
     ExtractState(s): ExtractState<State>,
     Path(id): Path<Uuid>,
     Json(v): Json<Reply>,
-) -> Result<Json<Value>> {
+) -> Result<Response> {
     crate::model::text(&v.message, 4000)?;
-    Ok(Json(
+    let (links, linked) = support_links(&a, &s, &v.links).await?;
+    let attachments = support_attachments(&v.attachments)?;
+    let mut body = json!({"request_id":v.request_id,"message":v.message});
+    support_extras(&mut body, links, &attachments);
+    support_response(
         support_call(
             &a,
             &s,
             reqwest::Method::POST,
             &format!("/tickets/{id}/replies"),
-            Some(&json!({"request_id":v.request_id,"message":v.message})),
+            Some(&body),
             "connect.support_replied",
+            &linked,
         )
-        .await?,
-    ))
+        .await,
+    )
+}
+fn support_file_type(h: &HeaderMap) -> Result<&'static str> {
+    let sent = h
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(';').next())
+        .map(|v| v.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    SUPPORT_FILE_TYPES
+        .iter()
+        .copied()
+        .find(|t| *t == sent)
+        .ok_or(Error::Invalid(
+            "That type of file can't be attached. Use an image, PDF, text or CSV file.",
+        ))
+}
+/// `X-Filename` is percent-encoded UTF-8. Path separators and control
+/// characters never reach storage or a download header.
+fn support_filename(h: &HeaderMap) -> Result<String> {
+    let invalid = Error::Invalid("File names must be 1 to 200 characters.");
+    let Some(raw) = h.get("x-filename").map(|v| v.as_bytes()) else {
+        return Err(invalid);
+    };
+    let (mut out, mut i) = (Vec::with_capacity(raw.len()), 0);
+    while i < raw.len() {
+        if raw[i] == b'%' {
+            let Some(byte) = raw
+                .get(i + 1..i + 3)
+                .filter(|v| v.iter().all(u8::is_ascii_hexdigit))
+                .and_then(|v| std::str::from_utf8(v).ok())
+                .and_then(|v| u8::from_str_radix(v, 16).ok())
+            else {
+                return Err(invalid);
+            };
+            out.push(byte);
+            i += 3;
+        } else {
+            out.push(raw[i]);
+            i += 1;
+        }
+    }
+    let Ok(name) = String::from_utf8(out) else {
+        return Err(invalid);
+    };
+    let name: String = name
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '/' | '\\') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 200 {
+        return Err(invalid);
+    }
+    Ok(name.to_owned())
+}
+fn encode_filename(name: &str) -> String {
+    name.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+fn file_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|_| Error::Invalid("SunCharts service is unavailable"))
+}
+async fn upload_file_at(
+    base: &str,
+    installation: Uuid,
+    key: &str,
+    request: Uuid,
+    content_type: &str,
+    filename: &str,
+    body: Bytes,
+) -> Result<Value> {
+    let size = body.len();
+    let response = file_client()?
+        .post(format!(
+            "{base}/api/v1/ehr-services/installations/{installation}/support-files?request_id={request}"
+        ))
+        .bearer_auth(key)
+        .header(reqwest::header::CONTENT_TYPE, content_type)
+        .header("x-filename", encode_filename(filename))
+        .body(body)
+        .send()
+        .await
+        .map_err(|_| Error::Invalid("SunCharts service is unavailable"))?;
+    match response.status() {
+        // The route does not exist on a Connect release without support files.
+        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED => {
+            return Err(Error::Conflict(SUPPORT_EXTRAS_UNAVAILABLE))
+        }
+        StatusCode::CONFLICT => {
+            return Err(Error::Conflict(
+                "This file changed after it was added. Remove it and add it again.",
+            ))
+        }
+        StatusCode::PAYLOAD_TOO_LARGE => {
+            return Err(Error::Invalid("That file is larger than 10 MB."))
+        }
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => {
+            return Err(Error::Invalid("That type of file can't be attached."))
+        }
+        status if !status.is_success() => {
+            return Err(Error::Invalid(
+                "SunCharts support did not accept this file.",
+            ))
+        }
+        _ => {}
+    }
+    let bytes = crate::stedi::bytes(response, 16384).await?;
+    let v: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| Error::Invalid("invalid SunCharts service response"))?;
+    let id = v["id"]
+        .as_str()
+        .and_then(|v| Uuid::parse_str(v).ok())
+        .ok_or(Error::Invalid("invalid SunCharts service response"))?;
+    Ok(
+        json!({"id":id,"filename":v["filename"].as_str().unwrap_or(filename),"content_type":v["content_type"].as_str().unwrap_or(content_type),"size":v["size"].as_u64().unwrap_or(size as u64)}),
+    )
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SupportFileUpload {
+    request_id: Uuid,
+}
+async fn upload_support_file(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Query(q): Query<SupportFileUpload>,
+    h: HeaderMap,
+    body: Bytes,
+) -> Result<Response> {
+    staff(&a)?;
+    let content_type = support_file_type(&h)?;
+    let filename = support_filename(&h)?;
+    if body.is_empty() {
+        return Err(Error::Invalid("That file is empty."));
+    }
+    if body.len() > SUPPORT_FILE_MAX {
+        return Err(Error::Invalid("That file is larger than 10 MB."));
+    }
+    let digest = crate::oauth::hash(&format!(
+        "{content_type}\n{filename}\n{:x}",
+        Sha256::digest(&body)
+    ));
+    let (mut tx, r, key) =
+        support_session(&a, &s, true, Some((q.request_id, "/support-files", digest))).await?;
+    let result = upload_file_at(
+        &crate::connect_onboarding::cloud_origin()?,
+        r.installation_id,
+        key.expose(),
+        q.request_id,
+        content_type,
+        &filename,
+        body,
+    )
+    .await;
+    if result.is_ok() {
+        crate::postgres::audit(&mut tx, &a, "connect.support_file_uploaded", r.id).await?;
+        tx.commit().await?;
+    }
+    support_response(result)
+}
+/// Returns the stored type, a safe download header and the bytes. Images are
+/// the only files a browser may show in place; everything else downloads.
+async fn download_file_at(
+    base: &str,
+    installation: Uuid,
+    key: &str,
+    file: Uuid,
+) -> Result<(&'static str, String, Vec<u8>)> {
+    let response = file_client()?
+        .get(format!(
+            "{base}/api/v1/ehr-services/installations/{installation}/support-files/{file}"
+        ))
+        .bearer_auth(key)
+        .send()
+        .await
+        .map_err(|_| Error::Invalid("SunCharts service is unavailable"))?;
+    if response.status() == StatusCode::NOT_FOUND {
+        return Err(Error::NotFound);
+    }
+    if !response.status().is_success() {
+        return Err(Error::Invalid(
+            "SunCharts support could not return this file.",
+        ));
+    }
+    let text = |name: reqwest::header::HeaderName| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let sent = text(reqwest::header::CONTENT_TYPE);
+    let sent = sent
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let content_type = SUPPORT_FILE_TYPES
+        .iter()
+        .copied()
+        .find(|t| *t == sent)
+        .unwrap_or("application/octet-stream");
+    let disposition = text(reqwest::header::CONTENT_DISPOSITION);
+    let mut disposition = if disposition.starts_with("attachment")
+        && disposition.len() <= 1000
+        && disposition.bytes().all(|b| (0x20..0x7f).contains(&b))
+    {
+        disposition
+    } else {
+        "attachment".to_owned()
+    };
+    if content_type.starts_with("image/") {
+        disposition.replace_range(.."attachment".len(), "inline");
+    }
+    let bytes = crate::stedi::bytes(response, SUPPORT_FILE_MAX).await?;
+    Ok((content_type, disposition, bytes))
+}
+async fn support_file(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(file): Path<Uuid>,
+) -> Result<Response> {
+    let (mut tx, r, key) = support_session(&a, &s, false, None).await?;
+    let (content_type, disposition, bytes) = download_file_at(
+        &crate::connect_onboarding::cloud_origin()?,
+        r.installation_id,
+        key.expose(),
+        file,
+    )
+    .await?;
+    crate::postgres::audit(&mut tx, &a, "connect.support_file_read", r.id).await?;
+    tx.commit().await?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, HeaderValue::from_static(content_type)),
+            (
+                header::CONTENT_DISPOSITION,
+                HeaderValue::from_str(&disposition)
+                    .unwrap_or(HeaderValue::from_static("attachment")),
+            ),
+            (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+            (
+                header::X_CONTENT_TYPE_OPTIONS,
+                HeaderValue::from_static("nosniff"),
+            ),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                HeaderValue::from_static("default-src 'none'; sandbox"),
+            ),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 pub(crate) async fn managed_send(
     installation: Uuid,
@@ -833,6 +1317,18 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     async fn endpoint(status: u16, response: Value) -> (String, tokio::task::JoinHandle<String>) {
+        endpoint_raw(
+            status,
+            "Content-Type: application/json",
+            response.to_string().into_bytes(),
+        )
+        .await
+    }
+    async fn endpoint_raw(
+        status: u16,
+        headers: &'static str,
+        body: Vec<u8>,
+    ) -> (String, tokio::task::JoinHandle<String>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let task = tokio::spawn(async move {
@@ -860,8 +1356,17 @@ mod tests {
                     }
                 }
             }
-            let body = response.to_string();
-            stream.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 {status} Test\r\n{headers}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            stream.write_all(&body).await.unwrap();
             String::from_utf8(bytes).unwrap()
         });
         (base, task)
@@ -966,5 +1471,275 @@ mod tests {
                 .is_err()
         );
         task.await.unwrap();
+    }
+    fn headers(pairs: &[(&'static str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (name, value) in pairs {
+            h.insert(*name, HeaderValue::from_str(value).unwrap());
+        }
+        h
+    }
+    #[test]
+    fn support_links_and_files_are_bounded_and_labelled_without_names() {
+        assert_eq!(
+            support_link_label(SupportLinkKind::Patient, "", "SYN-1"),
+            "MRN SYN-1"
+        );
+        assert_eq!(
+            support_link_label(SupportLinkKind::Visit, "2026-11-01", "SYN-1"),
+            "Visit 2026-11-01 · MRN SYN-1"
+        );
+        assert_eq!(
+            support_link_label(SupportLinkKind::Claim, "SC0001", "SYN-1"),
+            "Claim SC0001 · MRN SYN-1"
+        );
+        assert_eq!(
+            support_link_label(SupportLinkKind::Claim, &"9".repeat(400), "SYN-1")
+                .chars()
+                .count(),
+            200
+        );
+        // The browser names a record; it never supplies the label.
+        let id = Uuid::new_v4();
+        let v: TicketCreate = serde_json::from_value(json!({"request_id":id,"subject":"S","message":"M","links":[{"kind":"claim","id":id}],"attachments":[id]})).unwrap();
+        assert!(v.links[0].kind == SupportLinkKind::Claim && v.attachments == [id]);
+        assert!(serde_json::from_value::<TicketCreate>(json!({"request_id":id,"subject":"S","message":"M","links":[{"kind":"claim","id":id,"label":"Example, Patient"}]})).is_err());
+        assert!(serde_json::from_value::<Reply>(
+            json!({"request_id":id,"message":"M","links":[{"kind":"chart","id":id}]})
+        )
+        .is_err());
+        let plain: Reply = serde_json::from_value(json!({"request_id":id,"message":"M"})).unwrap();
+        assert!(plain.links.is_empty() && plain.attachments.is_empty());
+        // A plain message is forwarded exactly as before; lists appear only when used.
+        let mut body = json!({"request_id":id,"message":"M"});
+        support_extras(&mut body, vec![], &[]);
+        assert_eq!(body, json!({"request_id":id,"message":"M"}));
+        support_extras(
+            &mut body,
+            vec![json!({"kind":"patient","id":id,"label":"MRN SYN-1"})],
+            &[id],
+        );
+        assert_eq!(
+            body,
+            json!({"request_id":id,"message":"M","links":[{"kind":"patient","id":id,"label":"MRN SYN-1"}],"attachments":[id]})
+        );
+        let files: Vec<Uuid> = (0..6).map(|_| Uuid::new_v4()).collect();
+        assert_eq!(support_attachments(&files[..5]).unwrap(), files[..5]);
+        assert_eq!(support_attachments(&[id, id]).unwrap(), [id]);
+        assert!(support_attachments(&files).is_err());
+        assert_eq!(
+            support_file_type(&headers(&[("content-type", "Image/PNG; charset=binary")])).unwrap(),
+            "image/png"
+        );
+        for refused in ["image/svg+xml", "text/html", "application/zip", ""] {
+            assert!(support_file_type(&headers(&[("content-type", refused)])).is_err());
+        }
+        assert!(support_file_type(&HeaderMap::new()).is_err());
+        assert_eq!(
+            support_filename(&headers(&[(
+                "x-filename",
+                "Eligibility%20r%C3%A9sum%C3%A9.pdf"
+            )]))
+            .unwrap(),
+            "Eligibility résumé.pdf"
+        );
+        assert_eq!(
+            support_filename(&headers(&[("x-filename", "..%2Fetc%2Fpasswd%0A")])).unwrap(),
+            ".._etc_passwd_"
+        );
+        for refused in ["", "%20", "%zz", "%4", "%ff%fe", &"a".repeat(201)] {
+            assert!(support_filename(&headers(&[("x-filename", refused)])).is_err());
+        }
+        assert!(support_filename(&HeaderMap::new()).is_err());
+        assert!(support_filename(&headers(&[("x-filename", &"%C3%A9".repeat(200))])).is_ok());
+        assert_eq!(
+            encode_filename("Eligibility résumé.pdf"),
+            "Eligibility%20r%C3%A9sum%C3%A9.pdf"
+        );
+    }
+    #[tokio::test]
+    async fn support_files_and_links_http_contract() {
+        let installation = Uuid::new_v4();
+        let request = Uuid::new_v4();
+        let file = Uuid::new_v4();
+        let (base, task) = endpoint(
+            200,
+            json!({"id":file,"filename":"scan 1.png","content_type":"image/png","size":9,"sha256":"not forwarded"}),
+        )
+        .await;
+        let saved = upload_file_at(
+            &base,
+            installation,
+            "scs_inst_fixture",
+            request,
+            "image/png",
+            "scan 1.png",
+            Bytes::from_static(b"synthetic"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            saved,
+            json!({"id":file,"filename":"scan 1.png","content_type":"image/png","size":9})
+        );
+        let http = task.await.unwrap();
+        assert!(http.starts_with(&format!(
+            "POST /api/v1/ehr-services/installations/{installation}/support-files?request_id={request} "
+        )));
+        let lower = http.to_ascii_lowercase();
+        assert!(lower.contains("authorization: bearer scs_inst_fixture"));
+        assert!(lower.contains("content-type: image/png"));
+        assert!(lower.contains("x-filename: scan%201.png"));
+        assert!(http.ends_with("\r\n\r\nsynthetic"));
+        // A Connect release without the route: the message can still go without files.
+        for status in [404, 405] {
+            let (base, task) = endpoint(status, json!({"error":"not_found"})).await;
+            assert!(matches!(
+                upload_file_at(&base, installation, "scs_inst_fixture", request, "image/png", "a.png", Bytes::from_static(b"x")).await,
+                Err(Error::Conflict(m)) if m == SUPPORT_EXTRAS_UNAVAILABLE
+            ));
+            task.await.unwrap();
+        }
+        for (status, expected) in [
+            (413, "That file is larger than 10 MB."),
+            (415, "That type of file can't be attached."),
+        ] {
+            let (base, task) = endpoint(status, json!({"error":"refused"})).await;
+            assert!(matches!(
+                upload_file_at(&base, installation, "scs_inst_fixture", request, "image/png", "a.png", Bytes::from_static(b"x")).await,
+                Err(Error::Invalid(m)) if m == expected
+            ));
+            task.await.unwrap();
+        }
+        for status in [400, 409] {
+            let (base, task) = endpoint(status, json!({"error":"refused"})).await;
+            assert!(matches!(
+                request_extras_at(&base, installation, "scs_inst_fixture", reqwest::Method::POST, "/tickets", Some(&json!({"request_id":request,"message":"M","attachments":[file]})), true).await,
+                Err(Error::Invalid(m)) if m.starts_with("Support could not accept")
+            ));
+            task.await.unwrap();
+        }
+        assert_eq!(
+            support_link_label(SupportLinkKind::Claim, "SC\n1", "SYN\t1"),
+            "Claim SC 1 · MRN SYN 1"
+        );
+        let (base, task) = endpoint(409, json!({"error":"conflict"})).await;
+        assert!(matches!(
+            upload_file_at(&base, installation, "scs_inst_fixture", request, "image/png", "a.png", Bytes::from_static(b"x")).await,
+            Err(Error::Conflict(m)) if m != SUPPORT_EXTRAS_UNAVAILABLE
+        ));
+        task.await.unwrap();
+        let (base, task) = endpoint(200, json!({"id":"not-a-file"})).await;
+        assert!(upload_file_at(
+            &base,
+            installation,
+            "scs_inst_fixture",
+            request,
+            "image/png",
+            "a.png",
+            Bytes::from_static(b"x")
+        )
+        .await
+        .is_err());
+        task.await.unwrap();
+        // Images may be shown in place; other files and unknown types only download.
+        let (base, task) = endpoint_raw(
+            200,
+            "Content-Type: image/png\r\nContent-Disposition: attachment; filename=\"scan 1.png\"",
+            b"\x89PNG synthetic".to_vec(),
+        )
+        .await;
+        let (kind, disposition, bytes) =
+            download_file_at(&base, installation, "scs_inst_fixture", file)
+                .await
+                .unwrap();
+        assert_eq!(
+            (kind, disposition.as_str(), bytes.as_slice()),
+            (
+                "image/png",
+                "inline; filename=\"scan 1.png\"",
+                &b"\x89PNG synthetic"[..]
+            )
+        );
+        let http = task.await.unwrap();
+        assert!(http.starts_with(&format!(
+            "GET /api/v1/ehr-services/installations/{installation}/support-files/{file} "
+        )));
+        assert!(http
+            .to_ascii_lowercase()
+            .contains("authorization: bearer scs_inst_fixture"));
+        let (base, task) = endpoint_raw(
+            200,
+            "Content-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"report.pdf\"",
+            b"%PDF".to_vec(),
+        )
+        .await;
+        let (kind, disposition, _) =
+            download_file_at(&base, installation, "scs_inst_fixture", file)
+                .await
+                .unwrap();
+        assert_eq!(
+            (kind, disposition.as_str()),
+            ("application/pdf", "attachment; filename=\"report.pdf\"")
+        );
+        task.await.unwrap();
+        let (base, task) = endpoint_raw(
+            200,
+            "Content-Type: text/html\r\nContent-Disposition: inline",
+            b"<script>".to_vec(),
+        )
+        .await;
+        let (kind, disposition, _) =
+            download_file_at(&base, installation, "scs_inst_fixture", file)
+                .await
+                .unwrap();
+        assert_eq!(
+            (kind, disposition.as_str()),
+            ("application/octet-stream", "attachment")
+        );
+        task.await.unwrap();
+        let (base, task) = endpoint(404, json!({"error":"not_found"})).await;
+        assert!(matches!(
+            download_file_at(&base, installation, "scs_inst_fixture", file).await,
+            Err(Error::NotFound)
+        ));
+        task.await.unwrap();
+        // Unknown-field refusal means an earlier Connect only when links or files were sent.
+        let body = json!({"request_id":request,"message":"M","attachments":[file]});
+        let (base, task) = endpoint(422, json!({})).await;
+        assert!(matches!(
+            request_extras_at(&base, installation, "scs_inst_fixture", reqwest::Method::POST, "/tickets", Some(&body), true).await,
+            Err(Error::Conflict(m)) if m == SUPPORT_EXTRAS_UNAVAILABLE
+        ));
+        let http = task.await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(http.split("\r\n\r\n").nth(1).unwrap()).unwrap(),
+            body
+        );
+        let (base, task) = endpoint(422, json!({})).await;
+        assert!(matches!(
+            request_at(
+                &base,
+                installation,
+                "scs_inst_fixture",
+                reqwest::Method::POST,
+                "/tickets",
+                Some(&json!({"request_id":request,"message":"M"}))
+            )
+            .await,
+            Err(Error::Invalid(_))
+        ));
+        task.await.unwrap();
+        let unavailable =
+            support_response(Err(Error::Conflict(SUPPORT_EXTRAS_UNAVAILABLE))).unwrap();
+        assert_eq!(unavailable.status(), StatusCode::CONFLICT);
+        let bytes = axum::body::to_bytes(unavailable.into_body(), 4096)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap()["error"],
+            "support_attachments_unavailable"
+        );
+        assert!(support_response(Err(Error::Conflict("other"))).is_err());
     }
 }

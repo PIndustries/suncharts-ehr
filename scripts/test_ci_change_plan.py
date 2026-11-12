@@ -33,6 +33,7 @@ class ChangePlanTest(unittest.TestCase):
             [
                 "connect_onboarding",
                 "connect_services_workflow",
+                "connect_support_attachments",
                 "partner_support_sso",
                 "patient_portal",
             ],

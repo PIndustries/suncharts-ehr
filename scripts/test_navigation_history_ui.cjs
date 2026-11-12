@@ -28,7 +28,7 @@ function fixture(billingHub=false){
  ctx.showChartSection=section=>{ctx.captureVisitDrafts();ctx.chartSection=section;};
  ctx.setEncounterSection=step=>{ctx.captureVisitDrafts();ctx.encounterSection=step;ctx.showChartSection('visits');};
  ctx.renderVisit=()=>{ctx.chartSection='visits';};ctx.showBillingAccount=id=>{ctx.billingSelected=id;};ctx.showOrder=id=>{ctx.labSelected=id;};
- ctx.showClaim=async id=>{await ctx.api(`/claims/${id}`);ctx.detail=['claim',id];};ctx.showEra=async id=>{await ctx.api(`/eras/${id}`);ctx.detail=['era',id];};ctx.openPaymentStatus=async id=>{ctx.showTool('Billing');await ctx.api(`/payments/${id}`);ctx.detail=['payment',id];};ctx.openPaymentSettings=async()=>{ctx.showTool('Billing');await ctx.api('/payment-settings');ctx.detail=['settings'];};
+ ctx.showClaim=async id=>{await ctx.api(`/claims/${id}`);ctx.detail=['claim',id];};ctx.showEra=async id=>{await ctx.api(`/eras/${id}`);ctx.detail=['era',id];};ctx.openPaymentStatus=async id=>{ctx.showTool('Billing');await ctx.api(`/payments/${id}`);ctx.detail=['payment',id];};ctx.openPaymentSettings=async()=>{ctx.showTool('Billing');await ctx.api('/payment-settings');ctx.detail=['settings'];};ctx.openCardReaders=async()=>{ctx.showTool('Card readers');ctx.detail=['card-readers'];};
  ctx.encounterClaimRoute=()=>!nodes['clinical-workspace'].hidden&&ctx.chartSection==='visits'&&ctx.encounterSection==='charges'?ctx.claimRoute||null:null;
  ctx.showEncounterClaim=async(id,account)=>{ctx.setEncounterSection('charges');await ctx.showClaim(id);ctx.claimRoute={account,claim:id};};
  ctx.beginClaim=async account=>{ctx.setEncounterSection('charges');await ctx.api(`/accounts/${account}`);ctx.claimRoute={account,claim:null};};
@@ -134,6 +134,13 @@ test('every screen has a readable address and a pasted address opens that screen
  assert.doesNotMatch(JSON.stringify(f.entries()),/[A-Z][a-z]+, [A-Z][a-z]+/,'addresses and history carry no names');
  f=fixture();c=f.ctx;c.location.hash='#/claims';await c.enter();await f.settle();assert.equal(c.page,'Claims');assert.equal(c.mutations,0);
  f=fixture();c=f.ctx;c.location.hash='#/not-a-screen/../../x';await c.enter();await f.settle();assert.equal(c.mutations,0);assert.notEqual(c.page,'Claims');
+});
+test('Card readers has its own address and reopens from it without changing anything',async()=>{
+ let f=fixture(),c=f.ctx;c.me.role='owner';await c.enter();
+ await c.run(()=>c.openCardReaders());assert.equal(c.location.hash,'#/card-readers');assert.deepEqual(f.route(),{view:'detail',kind:'cardReaders',id:null});
+ await c.run(()=>c.showClaimsWorkspace());f.history.back();await f.settle();assert.equal(c.location.hash,'#/card-readers');assert.equal(c.page,'Card readers');assert.deepEqual(c.detail,['card-readers']);
+ f=fixture();c=f.ctx;c.me.role='owner';c.location.hash='#/card-readers';await c.enter();await f.settle();assert.equal(c.page,'Card readers');assert.deepEqual(c.detail,['card-readers']);assert.equal(c.mutations,0);
+ f=fixture();c=f.ctx;c.location.hash='#/card-readers/extra';await c.enter();await f.settle();assert.notEqual(c.page,'Card readers');
 });
 
 (async()=>{let failed=0;for(const [name,fn] of tests){try{await fn();console.log('PASS '+name);}catch(error){failed++;console.error('FAIL '+name+'\n'+error.message);}}if(failed)process.exitCode=1;})().catch(error=>{console.error(error);process.exitCode=1;});
