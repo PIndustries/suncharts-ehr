@@ -35796,6 +35796,57 @@
           }
         }
       }
+    },
+    "/api/v1/patients/{patient}/intake-packets": {
+      "get": {
+        "operationId": "listPatientIntakePackets",
+        "summary": "List retained patient intake forms across all appointment dates and statuses",
+        "description": "Requires staff clinical-view access. Audited patient- and tenant-scoped metadata only: packet identity/version/status, immutable template revision name, appointment context, submitted/reviewed times, response-presence flag, and all-history counts. No answers, attestation, access token or token hash. Existing packet detail reads authorize answer access separately. Does not change review status or chart data.",
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Packet cursor belonging to this patient; newest-issued ordering is stable."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 25
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "{patient_id,items,next_cursor,summary:{total,submitted,reviewed}}; Cache-Control: no-store."
+          },
+          "400": {
+            "description": "Invalid page limit or cursor outside this patient."
+          },
+          "403": {
+            "description": "Clinical-view access is not granted."
+          },
+          "404": {
+            "description": "Patient is not in the authorized tenant."
+          }
+        }
+      }
     }
   },
   "components": {

@@ -7,7 +7,7 @@ use crate::{
     State,
 };
 use axum::{
-    extract::{Path, State as ExtractState},
+    extract::{Path, Query, State as ExtractState},
     http::{header, HeaderMap, Method, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -90,6 +90,10 @@ pub fn router() -> Router<State> {
         )
         .route("/api/v1/previsit/templates", post(save_template))
         .route("/api/v1/previsit/readiness", get(readiness))
+        .route(
+            "/api/v1/patients/{patient}/intake-packets",
+            get(patient_packets),
+        )
         .route(
             "/api/v1/appointments/{id}/intake-packet",
             post(issue_packet),
@@ -970,6 +974,58 @@ async fn readiness(actor: Actor, ExtractState(state): ExtractState<State>) -> Re
     crate::postgres::audit(&mut tx, &actor, "previsit.readiness_read", actor.tenant_id).await?;
     tx.commit().await?;
     Ok(Json(json!({"items":rows})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PatientIntakePage {
+    after: Option<Uuid>,
+    limit: Option<i64>,
+}
+async fn patient_packets(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(patient): Path<Uuid>,
+    Query(page): Query<PatientIntakePage>,
+) -> Result<Response> {
+    actor.staff()?;
+    crate::access_policies::require_native(&state, &actor, "clinical", "view").await?;
+    let limit = page.limit.unwrap_or(25);
+    if !(1..=100).contains(&limit) {
+        return Err(Error::Invalid(
+            "intake page limit must be between 1 and 100",
+        ));
+    }
+    let mut tx = db(&state)?.begin().await?;
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM patients WHERE tenant_id=$1 AND id=$2)")
+            .bind(actor.tenant_id)
+            .bind(patient)
+            .fetch_one(&mut *tx)
+            .await?;
+    if !exists {
+        return Err(Error::NotFound);
+    }
+    let cursor: Option<(DateTime<Utc>, Uuid)> = if let Some(after) = page.after {
+        Some(sqlx::query_as("SELECT created_at,id FROM previsit_intake_packets WHERE tenant_id=$1 AND patient_id=$2 AND id=$3")
+            .bind(actor.tenant_id).bind(patient).bind(after).fetch_optional(&mut *tx).await?.ok_or(Error::Invalid("intake page cursor does not belong to this patient"))?)
+    } else {
+        None
+    };
+    let counts: (i64,i64,i64) = sqlx::query_as("SELECT count(*),count(*) FILTER(WHERE status='submitted'),count(*) FILTER(WHERE status='reviewed') FROM previsit_intake_packets WHERE tenant_id=$1 AND patient_id=$2")
+        .bind(actor.tenant_id).bind(patient).fetch_one(&mut *tx).await?;
+    let mut rows: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('packet_id',p.id,'packet_version',p.version,'status',p.status,'created_at',p.created_at,'submitted_at',p.submitted_at,'reviewed_at',p.reviewed_at,'appointment_id',p.appointment_id,'appointment_title',a.title,'appointment_status',a.status,'starts_at',a.starts_at,'workflow_step_key',p.workflow_step_key,'workflow_definition_version',p.workflow_definition_version,'template_name',coalesce(r.name,'Workflow intake form'),'has_response',EXISTS(SELECT 1 FROM previsit_intake_responses x WHERE x.tenant_id=p.tenant_id AND x.packet_id=p.id)) FROM previsit_intake_packets p JOIN appointments a ON a.tenant_id=p.tenant_id AND a.id=p.appointment_id AND a.patient_id=p.patient_id LEFT JOIN previsit_intake_template_revisions r ON r.tenant_id=p.tenant_id AND r.template_id=p.template_id AND r.version=p.template_version WHERE p.tenant_id=$1 AND p.patient_id=$2 AND ($3::timestamptz IS NULL OR (p.created_at,p.id)<($3,$4)) ORDER BY p.created_at DESC,p.id DESC LIMIT $5")
+        .bind(actor.tenant_id).bind(patient).bind(cursor.map(|c|c.0)).bind(cursor.map(|c|c.1)).bind(limit+1).fetch_all(&mut *tx).await?;
+    let has_more = rows.len() > limit as usize;
+    rows.truncate(limit as usize);
+    let next_cursor = if has_more {
+        rows.last().map(|r| r["packet_id"].clone())
+    } else {
+        None
+    };
+    crate::postgres::audit(&mut tx, &actor, "previsit.patient_packets_read", patient).await?;
+    tx.commit().await?;
+    Ok(([(header::CACHE_CONTROL,"no-store")],Json(json!({"patient_id":patient,"items":rows,"next_cursor":next_cursor,"summary":{"total":counts.0,"submitted":counts.1,"reviewed":counts.2}}))).into_response())
 }
 
 async fn packet_detail(
