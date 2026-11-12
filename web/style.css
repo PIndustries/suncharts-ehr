@@ -339,3 +339,4 @@ body{font-size:13px;line-height:1.45;letter-spacing:0}button,input,select{min-he
 
 .insurance-workflow-stages button:hover{text-decoration:underline}.insurance-workflow-stage h3{scroll-margin-top:calc(var(--shell-topbar,42px) + var(--shell-header,62px) + 16px)}
 .timeline-row a.button.primary{background:var(--blue);color:#fff;border-color:var(--blue)}.timeline-row a.button.primary:hover{background:#114967;color:#fff;border-color:#114967}.timeline-row a.button.primary:focus-visible{outline:2px solid var(--focus,#247fa5);outline-offset:3px}
+:root[data-theme=dark] .timeline-row a.button.primary{background:#81d9d1;border-color:#81d9d1;color:#10282d}:root[data-theme=dark] .timeline-row a.button.primary:hover{background:#a3e9e2;border-color:#a3e9e2;color:#10282d}
