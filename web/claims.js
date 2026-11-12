@@ -141,7 +141,7 @@ async function showClaim(id){
 }
 function claimChargeDiagnosisDefaults(account){
  const diagnosisCodes=[],pointers=(account.content.lines||[]).map(line=>{
-  const codes=[...new Set((Array.isArray(line.diagnosis_codes)?line.diagnosis_codes:[]).filter(code=>typeof code==='string'&&code.trim()).map(code=>code.trim()))];
+  const saved=(Array.isArray(line.diagnosis_codes)?line.diagnosis_codes:[]).filter(code=>typeof code==='string'&&code.trim()),codes=typeof diagnosisCodeList==='function'?diagnosisCodeList(saved.flatMap(code=>code.split(','))):[...new Set(saved.map(code=>code.trim()))];
   return codes.map(code=>{let index=diagnosisCodes.indexOf(code);if(index<0){index=diagnosisCodes.length;diagnosisCodes.push(code);}return index+1;});
  });
  return {diagnosis_codes:diagnosisCodes,line_diagnosis_pointers:pointers};
