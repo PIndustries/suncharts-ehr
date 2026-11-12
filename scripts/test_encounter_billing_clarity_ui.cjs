@@ -12,7 +12,7 @@ ctx.loadHostedCopays=()=>{};
 const operation={id:'checkout',appointment_id:'appt',patient_id:'patient',amount_cents:2500,livemode:false,status:'paid',receipt_id:'receipt',created_at:'2026-11-11T14:00:00Z'};
 const state=ctx.hostedCopayStateFor('appt');state.items=[operation];state.availability={available:true,livemode:false};
 ctx.renderEncounterRevenue();let html=node('encounter-revenue').innerHTML;
-assert.match(html,/Service charges<\/span><strong>\$200.00/);assert.match(html,/Copay received · includes TEST<\/span><strong>\$25.00/);
+assert.match(html,/Service charges<\/span><strong>\$200.00/);assert.match(html,/Copay received · Stripe Sandbox<\/span><strong>\$25.00/);
 assert.match(html,/Copay applied to charges<\/span><strong>Not posted/);assert.match(html,/Open account balance<\/span><strong>Not posted/);
 assert.match(html,/Draft charges are not an amount due/);assert.match(html,/Card payment captured · awaiting charge allocation/);
 assert.equal((html.match(/class="primary"/g)||[]).length,1);assert.match(html,/class="primary" data-revenue-account="account">Review and post charges/);
