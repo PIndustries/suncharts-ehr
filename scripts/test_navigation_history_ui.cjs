@@ -126,4 +126,14 @@ test('patient billing hub Back restores exact selected patient/tab using reads a
  assert.deepEqual(c.hubRoute,{patient:'billing-only-patient',tab:'methods',mode:'test',surface:'global'});assert.ok(f.calls.slice(prior).every(call=>call[0]==='GET'&&call[1].startsWith('/billing/')),'global billing history never loads clinical chart');assert.equal(c.mutations,0);assert.doesNotMatch(JSON.stringify(f.entries()),/UNSAVED SYNTHETIC SOAP/);
 });
 
+test('every screen has a readable address and a pasted address opens that screen with reads only',async()=>{
+ let f=fixture(),c=f.ctx;await c.enter();
+ await c.run(()=>c.showClaimsWorkspace());assert.equal(c.location.hash,'#/claims');
+ await c.run(()=>c.showBillingQueue());assert.equal(c.location.hash,'#/billing');
+ f.history.back();await f.settle();assert.equal(c.location.hash,'#/claims');assert.equal(c.page,'Claims');
+ assert.doesNotMatch(JSON.stringify(f.entries()),/[A-Z][a-z]+, [A-Z][a-z]+/,'addresses and history carry no names');
+ f=fixture();c=f.ctx;c.location.hash='#/claims';await c.enter();await f.settle();assert.equal(c.page,'Claims');assert.equal(c.mutations,0);
+ f=fixture();c=f.ctx;c.location.hash='#/not-a-screen/../../x';await c.enter();await f.settle();assert.equal(c.mutations,0);assert.notEqual(c.page,'Claims');
+});
+
 (async()=>{let failed=0;for(const [name,fn] of tests){try{await fn();console.log('PASS '+name);}catch(error){failed++;console.error('FAIL '+name+'\n'+error.message);}}if(failed)process.exitCode=1;})().catch(error=>{console.error(error);process.exitCode=1;});

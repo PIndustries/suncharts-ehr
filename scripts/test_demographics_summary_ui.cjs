@@ -20,7 +20,7 @@ function saved(content={}){return {version:1,content:{phone:'202-555-0101',email
  let f=fixture();await f.edit();const requests=[];f.c.api=async(...args)=>{requests.push(args);return saved();};await f.submit();
  assert.equal(requests.length,1);assert.equal(requests[0][1],'PUT');assert.equal(requests[0][3],0);
  assert.equal(f.nodes.phone.textContent,'202-555-0101');assert.equal(f.nodes.email.textContent,'audit.journey@example.test');assert.equal(f.nodes.label.textContent,'PATIENT CHART · Preferred name Synthetic preferred');
- assert.equal(f.nodes.intake.textContent,'1 intake form · 1 submitted awaiting review');assert.equal(f.c.chartSection,'profile');assert.equal(f.c.workspace.demographics.version,1);assert.match(f.host.innerHTML,/Saved profile · revision 1/);
+ assert.equal(f.nodes.intake.textContent,'1 intake form · 1 submitted awaiting review');assert.equal(f.c.chartSection,'profile');assert.equal(f.c.workspace.demographics.version,1);assert.match(f.host.innerHTML,/Blank fields have not been collected yet/);
  console.log('PASS saved contact immediately updates existing Overview and preferred-name header without chart reload or intake reset');
 
  f=fixture();await f.edit();f.c.api=async()=>saved({phone:null,email:'<img src=x onerror=alert(1)>',preferred_name:null});await f.submit();
