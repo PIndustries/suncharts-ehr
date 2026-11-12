@@ -262,6 +262,38 @@ fn web_asset(name: &'static str, content_type: &'static str, embedded: &'static 
 }
 
 #[cfg(test)]
+mod content_security_policy_tests {
+    use super::{branding::InstanceBranding, with_office_origin};
+
+    #[test]
+    fn document_editor_origin_joins_the_single_frame_directive() {
+        let branding = InstanceBranding {
+            display_name: "Synthetic Clinic".into(),
+            logo_url: None,
+            managed: true,
+        };
+        let office = Some("https://office.example.test");
+        let general = with_office_origin(branding.content_security_policy(), office);
+        assert!(general.ends_with("; frame-src 'self' https://office.example.test"));
+        assert!(general.contains("script-src 'self' https://office.example.test;"));
+        assert!(!general.contains("stripe"));
+        let workspace = with_office_origin(branding.workspace_content_security_policy(), office);
+        assert_eq!(workspace.matches("frame-src").count(), 1);
+        assert!(workspace.contains(
+            "frame-src 'self' https://office.example.test https://connect-js.stripe.com https://js.stripe.com;"
+        ));
+        assert!(workspace.contains(
+            "script-src 'self' https://office.example.test https://connect-js.stripe.com https://js.stripe.com;"
+        ));
+        assert!(workspace.contains("connect-src 'self' https://office.example.test;"));
+        assert_eq!(
+            with_office_origin(branding.workspace_content_security_policy(), None),
+            branding.workspace_content_security_policy()
+        );
+    }
+}
+
+#[cfg(test)]
 mod login_presentation_tests {
     use super::{
         branding::InstanceBranding, render_index, DeploymentEnvironment, LoginPresentation,
@@ -443,6 +475,16 @@ pub fn app(state: State) -> Router {
                     "payments.js",
                     "application/javascript",
                     include_str!("../web/payments.js"),
+                )
+            }),
+        )
+        .route(
+            "/card-readers.js",
+            get(|| async {
+                web_asset(
+                    "card-readers.js",
+                    "application/javascript",
+                    include_str!("../web/card-readers.js"),
                 )
             }),
         )
@@ -1329,6 +1371,9 @@ async fn headers(
     req: axum::extract::Request,
     next: Next,
 ) -> Response {
+    // Only the staff workspace page hosts Stripe's card reader ordering views, so only that
+    // document's policy names Stripe origins. Patient-facing pages keep the strict policy.
+    let workspace = req.uri().path() == "/";
     let mut r = next.run(req).await;
     r.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -1336,16 +1381,15 @@ async fn headers(
         "x-content-type-options",
         HeaderValue::from_static("nosniff"),
     );
-    let mut policy = branding::InstanceBranding::from_env().content_security_policy();
-    if let Some(origin) = office::configured_origin(&state) {
-        policy = policy
-            .replace("script-src 'self'", &format!("script-src 'self' {origin}"))
-            .replace(
-                "connect-src 'self'",
-                &format!("connect-src 'self' {origin}"),
-            );
-        policy.push_str(&format!("; frame-src 'self' {origin}"));
-    }
+    let branding = branding::InstanceBranding::from_env();
+    let policy = with_office_origin(
+        if workspace {
+            branding.workspace_content_security_policy()
+        } else {
+            branding.content_security_policy()
+        },
+        office::configured_origin(&state).as_deref(),
+    );
     if !r.headers().contains_key(header::CONTENT_SECURITY_POLICY) {
         if let Ok(value) = HeaderValue::from_str(&policy) {
             r.headers_mut()
@@ -1363,6 +1407,26 @@ async fn headers(
         ),
     );
     r
+}
+
+/// Adds the configured document editor origin. A policy has one `frame-src` directive: browsers
+/// ignore a repeated directive, so the origin joins an existing one instead of adding a second.
+fn with_office_origin(policy: String, origin: Option<&str>) -> String {
+    let Some(origin) = origin else {
+        return policy;
+    };
+    let mut policy = policy
+        .replace("script-src 'self'", &format!("script-src 'self' {origin}"))
+        .replace(
+            "connect-src 'self'",
+            &format!("connect-src 'self' {origin}"),
+        );
+    if policy.contains("frame-src 'self'") {
+        policy = policy.replace("frame-src 'self'", &format!("frame-src 'self' {origin}"));
+    } else {
+        policy.push_str(&format!("; frame-src 'self' {origin}"));
+    }
+    policy
 }
 
 #[derive(serde::Deserialize)]

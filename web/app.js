@@ -273,6 +273,7 @@ function signInScreen() {
   if(typeof clearStudioAccessSession==='function')clearStudioAccessSession();
   if(typeof clearStudioWorkspaceSession==='function')clearStudioWorkspaceSession();
   if(typeof clearSunSession==='function')clearSunSession();
+  if(typeof clearCardReadersSession==='function')clearCardReadersSession();
  if(typeof clearTerminologySession==='function')clearTerminologySession();
   if(typeof clearSunEventsSession==='function')clearSunEventsSession();
   if(typeof clearPrescribingSession==='function')clearPrescribingSession();

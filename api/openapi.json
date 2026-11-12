@@ -34610,6 +34610,65 @@
         }
       }
     },
+    "/api/v1/billing/payments/readers/hardware-session": {
+      "post": {
+        "summary": "Open card reader ordering for the practice owner",
+        "description": "Owner-only, including existing authorized delegated-owner sessions; staff with a custom access policy also need billing edit. Asks SunCharts Connect for a short-lived Stripe session limited to the Terminal hardware shop and the practice's hardware orders, bound to the current installation, tenant, Stripe account/mode and credential revision. Readers are ordered from, shipped by and billed by Stripe. Takes no payment and changes no patient balance. `status` is `ready` (with the values the browser passes to Stripe Connect.js), `not_connected` when the practice has not finished payment account setup, or `unavailable` when reader ordering is not set up on SunCharts Connect. The session secret is never stored, logged or audited. Response is no-store; stale/revoked identity or connection fails closed.",
+        "responses": {
+          "200": {
+            "description": "Reader ordering state for this practice",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ready",
+                        "not_connected",
+                        "unavailable"
+                      ]
+                    },
+                    "client_secret": {
+                      "type": "string",
+                      "description": "Present only when status is ready. Short-lived; pass to Stripe Connect.js and do not store."
+                    },
+                    "publishable_key": {
+                      "type": "string",
+                      "pattern": "^pk_(test|live)_[A-Za-z0-9_]+$",
+                      "description": "Present only when status is ready."
+                    },
+                    "livemode": {
+                      "type": "boolean",
+                      "description": "Present only when status is ready."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "SunCharts Connect or Stripe did not confirm the request; nothing was ordered"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Practice owner access required"
+          },
+          "409": {
+            "description": "Payment account changed while the request was in progress"
+          },
+          "500": {
+            "description": "Read or audit failure"
+          }
+        }
+      }
+    },
     "/api/v1/billing/patients": {
       "get": {
         "operationId": "searchBillingPatients",

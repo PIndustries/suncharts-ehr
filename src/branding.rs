@@ -143,20 +143,47 @@ impl InstanceBranding {
     }
 
     pub(crate) fn content_security_policy(&self) -> String {
-        const PREFIX: &str = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:";
+        self.policy(false)
+    }
+
+    /// Policy for the staff workspace page only. It adds exactly the origins Stripe documents
+    /// for Connect.js (card reader ordering): scripts and frames from `connect-js.stripe.com`
+    /// and `js.stripe.com`, images from `*.stripe.com`, and the hash of Stripe's empty style
+    /// element. See "CSP and HTTP header requirements" in
+    /// https://docs.stripe.com/connect/get-started-connect-embedded-components
+    pub(crate) fn workspace_content_security_policy(&self) -> String {
+        self.policy(true)
+    }
+
+    fn policy(&self, stripe_connect: bool) -> String {
+        const STRIPE: &str = " https://connect-js.stripe.com https://js.stripe.com";
+        const STRIPE_STYLE: &str = " 'sha256-0hAheEzaMe6uXIKV4EehS9pu1am1lj/KnnzrOYqckXk='";
+        const STRIPE_IMAGES: &str = " https://*.stripe.com";
         const SUFFIX: &str = "; worker-src 'self'; media-src 'self' blob:; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
-        let source = self.logo_url.as_deref().and_then(|value| {
-            let connect = crate::connect_onboarding::cloud_origin().ok()?;
-            if valid_logo_url(value, &connect) {
-                Some(Url::parse(&connect).ok()?.origin().ascii_serialization())
-            } else {
-                None
-            }
-        });
-        source.map_or_else(
-            || format!("{PREFIX}{SUFFIX}"),
-            |origin| format!("{PREFIX} {origin}{SUFFIX}"),
-        )
+        let logo = self
+            .logo_url
+            .as_deref()
+            .and_then(|value| {
+                let connect = crate::connect_onboarding::cloud_origin().ok()?;
+                if valid_logo_url(value, &connect) {
+                    Some(Url::parse(&connect).ok()?.origin().ascii_serialization())
+                } else {
+                    None
+                }
+            })
+            .map(|origin| format!(" {origin}"))
+            .unwrap_or_default();
+        let (scripts, styles, images, frames) = if stripe_connect {
+            (
+                STRIPE,
+                STRIPE_STYLE,
+                STRIPE_IMAGES,
+                format!("; frame-src 'self'{STRIPE}"),
+            )
+        } else {
+            ("", "", "", String::new())
+        };
+        format!("default-src 'self'; script-src 'self'{scripts}; style-src 'self'{styles}; connect-src 'self'; img-src 'self' data:{logo}{images}{frames}{SUFFIX}")
     }
 }
 
@@ -212,5 +239,47 @@ mod tests {
         assert!(approved
             .content_security_policy()
             .contains("img-src 'self' data: https://connect.suncharts.app;"));
+    }
+
+    #[test]
+    fn only_the_workspace_policy_allows_the_documented_stripe_connect_origins() {
+        let branding = InstanceBranding {
+            display_name: "Synthetic Clinic".into(),
+            logo_url: None,
+            managed: true,
+        };
+        let general = branding.content_security_policy();
+        assert_eq!(
+            general,
+            "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; worker-src 'self'; media-src 'self' blob:; frame-ancestors 'none'; form-action 'self'; base-uri 'none'"
+        );
+        assert!(!general.contains("stripe"));
+        let workspace = branding.workspace_content_security_policy();
+        for directive in [
+            "script-src 'self' https://connect-js.stripe.com https://js.stripe.com;",
+            "style-src 'self' 'sha256-0hAheEzaMe6uXIKV4EehS9pu1am1lj/KnnzrOYqckXk=';",
+            "connect-src 'self';",
+            "img-src 'self' data: https://*.stripe.com;",
+            "frame-src 'self' https://connect-js.stripe.com https://js.stripe.com;",
+            "frame-ancestors 'none'",
+            "base-uri 'none'",
+        ] {
+            assert!(workspace.contains(directive), "{directive}");
+        }
+        assert!(!workspace.contains("unsafe-inline") && !workspace.contains("unsafe-eval"));
+        assert_eq!(workspace.matches("frame-src").count(), 1);
+        assert_eq!(
+            workspace.matches("https://").count(),
+            5,
+            "no origin beyond the five documented entries"
+        );
+        let approved = InstanceBranding {
+            display_name: "Synthetic Clinic".into(),
+            logo_url: Some("https://connect.suncharts.app/api/v1/managed-ehr/branding/assets/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into()),
+            managed: true,
+        };
+        assert!(approved
+            .workspace_content_security_policy()
+            .contains("img-src 'self' data: https://connect.suncharts.app https://*.stripe.com;"));
     }
 }

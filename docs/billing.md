@@ -368,6 +368,34 @@ Managed payments use the verified Connect origin unless an operator supplies
 are required. Authorized clinic owners and delegated administrators manage the
 clinic-scoped account from the EHR.
 
+## Card reader ordering
+
+The practice owner can open **Card readers** from the payment account screen or
+from **Practice administration** (address `#/card-readers`). The page shows two
+Stripe views: **Order a reader**, where the practice buys a reader from Stripe, and
+**Your orders**, where it follows shipping, returns and warranty claims. Readers
+are ordered from Stripe, shipped to the practice and billed by Stripe. This screen
+does not take patient payments on a reader.
+
+`POST /api/v1/billing/payments/readers/hardware-session` is owner-only. The EHR
+asks SunCharts Connect for a short-lived Stripe session limited to those two views
+of the practice's own connected account, and answers `ready`, `not_connected`
+(payment account setup is not finished) or `unavailable` (reader ordering is not
+set up on SunCharts Connect). The session secret goes to the owner's browser once
+and is never stored, logged or audited; each opening is audited as
+`payment.reader_order_session_opened`.
+
+Stripe's Connect.js is loaded from `https://connect-js.stripe.com/v1.0/connect.js`
+only when the owner opens this page. The Content Security Policy of the staff
+workspace page alone names the origins Stripe documents for it
+(`connect-js.stripe.com` and `js.stripe.com` for scripts and frames, `*.stripe.com`
+for images, and the hash of Stripe's empty style element). Patient portal and
+intake pages keep the stricter policy. Signing out ends the Stripe session.
+
+Operators: SunCharts Connect needs `SUNCHARTS_STRIPE_PUBLISHABLE_KEY`, and the
+platform's Stripe Dashboard must have "Terminal hardware shop configurations"
+enabled under Connect settings.
+
 ## Legacy posted-account test payments
 
 The older posted-account payment routes remain test-only. Their explicit test

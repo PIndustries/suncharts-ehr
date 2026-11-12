@@ -768,10 +768,43 @@ async fn standalone_browser_sessions_require_origin_and_revoke_on_logout() {
         401
     );
     let gui = router
+        .clone()
         .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert_eq!(gui.status(), 200);
+    // Only the staff workspace page may load Stripe's card reader ordering views.
+    let policy = gui.headers()["content-security-policy"].to_str().unwrap();
+    assert!(
+        policy.contains("script-src 'self' https://connect-js.stripe.com https://js.stripe.com;")
+    );
+    assert!(
+        policy.contains("frame-src 'self' https://connect-js.stripe.com https://js.stripe.com;")
+    );
+    assert!(policy.contains("frame-ancestors 'none'"));
+    assert!(!gui.headers().contains_key("cross-origin-opener-policy"));
+    for (path, content_type) in [
+        ("/patient-portal", "text/html"),
+        ("/card-readers.js", "application/javascript"),
+        ("/api/v1/patients", "application/json"),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert!(response.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with(content_type));
+        assert!(
+            !response.headers()["content-security-policy"]
+                .to_str()
+                .unwrap()
+                .contains("stripe"),
+            "{path}"
+        );
+    }
     db.close().await;
 }
 

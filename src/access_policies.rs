@@ -298,6 +298,7 @@ fn action(method: &Method, path: &str) -> Option<Action> {
                 "check-in",
                 "commit",
                 "complete",
+                "hardware-session",
                 "install",
                 "models",
                 "preview",
@@ -974,6 +975,17 @@ mod tests {
         flags.get_mut("clinical").unwrap().create = false;
         assert!(!permitted(&flags, &Method::POST, "/api/v1/patients"));
         assert!(permitted(&flags, &Method::POST, "/api/v1/visits/{id}/sign"));
+        assert!(permitted(
+            &flags,
+            &Method::POST,
+            "/api/v1/billing/payments/readers/hardware-session"
+        ));
+        flags.get_mut("billing").unwrap().edit = false;
+        assert!(!permitted(
+            &flags,
+            &Method::POST,
+            "/api/v1/billing/payments/readers/hardware-session"
+        ));
         flags.get_mut("clinical").unwrap().delete = false;
         assert!(!permitted(
             &flags,
