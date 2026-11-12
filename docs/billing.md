@@ -32,7 +32,13 @@ does not by itself establish a reusable saved card.
 
 Open the patient's **Insurance** tab to review coverage, subscriber/member details,
 effective dates and the recorded plan copay for the selected appointment. Choose
-the appointment explicitly when reviewing a different service date. Coverage
+the appointment explicitly when reviewing a different service date. The selected
+appointment stays visible above **Review insurance**, **Collect copay** and
+**Continue encounter**. Each action uses that appointment; selecting it does not
+change a different clinical encounter or its signed documentation. Current primary,
+secondary and tertiary coverage stay visible together, while inactive and prior
+coverage are available in history. Check-in keeps this appointment selected;
+an existing signed visit offers **Review signed encounter**. Coverage
 verification is a staff attestation, separate from a native Claim.MD eligibility
 response. The latest eligibility check shows its request date, service date and
 status; **View eligibility report** opens the retained structured response.
@@ -307,6 +313,17 @@ General charge readiness alone does not establish card acceptance; existing
 settings require a fresh account-status check. These flags do not complete Stripe onboarding or attest to deployment
 acceptance. Test mode is always blocked in production, including reconciliation
 and allocation of old test receipts. Development test receipts are marked TEST.
+The development screen identifies Stripe Sandbox requests explicitly: these use
+Stripe's API and test cards without moving real funds. A pending checkout offers
+**Continue to Stripe checkout**; a captured payment offers its receipt. **Check
+payment status** reconciles the bound attempt with the processor. Additional card
+collection is available separately after a receipt is recorded.
+
+Hosted Checkout supports card entry on a computer or phone. It does not turn a
+phone into a contactless reader. Tap to Pay and WisePOS readers require a Stripe
+Terminal integration, which is not implemented here. Stripe's standalone
+[Dashboard mobile app](https://support.stripe.com/questions/stripe-dashboard-mobile-app-on-iphone-and-android)
+excludes accounts using the Express Dashboard and does not show test data.
 
 The background worker reconciles durable attempts after browser closure and
 process restart. Opening Checkout, returning from Stripe or receiving an uncertain
@@ -458,6 +475,10 @@ Each installment has an exact cent amount and increasing due date. The original
 schedule, invoice identity and consent remain unchanged; a newer responsibility
 review requires a new invoice and plan. Plans do not schedule automatic charges
 or authorize off-session use of a saved card.
+
+The schedule editor shows the earliest allowed due date using the server's UTC
+date, which can be the next calendar day locally. Dates must fall within the
+five-year limit. Validation preserves entered dates for staff to correct.
 
 An authorized billing operator confirms the patient is present and the exact
 current amount before opening each Stripe-hosted checkout. The server rechecks

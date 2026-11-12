@@ -541,10 +541,22 @@ function encounterDateLabel(v){
  const timestamp=workspace.appointments.find(a=>a.id===v.appointment_id)?.starts_at||v.signed_at||v.created_at;
  return timestamp?date(timestamp):'Encounter date not recorded';
 }
+function refreshPatientChartContext(){
+ const host=$('chart')?.querySelector?.('.chart-header-context');if(!host)return;
+ const appointment=chartSection==='insurance'&&typeof revenueAppointment==='function'?revenueAppointment():null;
+ if(chartSection==='insurance'){host.innerHTML=`<span class="status-badge">Insurance review</span><small>${appointment?esc(appointment.title||'Appointment')+' · '+esc(date(appointment.starts_at)):'Select an appointment below'}</small>`;return;}
+ host.innerHTML=activeVisit?`<span class="status-badge ${activeVisit.status==='signed'?'completed':'in_progress'}">${activeVisit.status==='signed'?'Signed encounter':'Active encounter'}</span><small>${esc(encounterDateLabel(activeVisit))}</small>`:'<span class="muted">Longitudinal record</span>';
+}
 function chartContactSummary(){
  if(typeof workspaceResourceAllowed==='function'&&!workspaceResourceAllowed('clinical'))return '';
  const contact=workspace.demographics?.content||{},canDetails=chartAreaEnabled('profile');
- return `<section class="panel chart-summary-section patient-contact-summary"><div class="section-head"><h2>Contact details</h2>${canDetails?'<button type="button" class="text-button" data-chart-section="profile">View / edit contact</button>':''}</div><dl><div><dt>Phone</dt><dd>${esc(contact.phone||'Not recorded')}</dd></div><div><dt>Email</dt><dd>${esc(contact.email||'Not recorded')}</dd></div></dl><div class="chart-summary-footer"><span id="patient-intake-summary" role="status">Loading patient intake forms…</span>${chartAreaEnabled('documents')?'<button type="button" class="text-button" data-patient-intakes-open>View submitted intake forms</button>':''}</div></section>`;
+ return `<section class="panel chart-summary-section patient-contact-summary"><div class="section-head"><h2>Contact details</h2>${canDetails?'<button type="button" class="text-button" data-chart-section="profile">View / edit contact</button>':''}</div><dl><div><dt>Phone</dt><dd data-chart-contact="phone">${esc(contact.phone||'Not recorded')}</dd></div><div><dt>Email</dt><dd data-chart-contact="email">${esc(contact.email||'Not recorded')}</dd></div></dl><div class="chart-summary-footer"><span id="patient-intake-summary" role="status">Loading patient intake forms…</span>${chartAreaEnabled('documents')?'<button type="button" class="text-button" data-patient-intakes-open>View submitted intake forms</button>':''}</div></section>`;
+}
+function refreshChartContactSummary(){
+ const chart=$('chart'),contact=workspace.demographics?.content||{};
+ for(const key of ['phone','email']){const value=chart?.querySelector(`[data-chart-contact="${key}"]`);if(value)value.textContent=contact[key]||'Not recorded';}
+ const label=chart?.querySelector('.chart-record-label');
+ if(label)label.textContent='PATIENT CHART'+(contact.preferred_name?' · Preferred name '+contact.preferred_name:'');
 }
 function chartOverview(){
  const items=workspace.clinical.items,active=e=>e.content.status==='active'&&!['refuted','entered_in_error'].includes(e.content.verification),problems=items.filter(e=>e.kind==='problem'&&active(e)),meds=items.filter(e=>e.kind==='medication'&&active(e));
@@ -584,6 +596,7 @@ function applyChartSection(){
  document.querySelectorAll('.chart-tabs button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.chartSection===chartSection)));
  const record=$('patient-record-navigation');if(record){record.classList.toggle('active',!primary.includes(chartSection));if(primary.includes(chartSection))record.open=false;}
  const context=$('record-context');if(context){context.hidden=!hasVisit||primary.includes(chartSection);context.innerHTML='<button type="button" data-chart-section="visits">← Return to selected encounter</button>';}
+ if(typeof refreshPatientChartContext==='function')refreshPatientChartContext();
  if(chartSection==='billing'&&typeof renderPatientBillingChart==='function')void renderPatientBillingChart();
 }
 function chartNavigation(tabs){

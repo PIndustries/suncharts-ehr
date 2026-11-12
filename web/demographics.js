@@ -17,9 +17,11 @@ async function renderDemographics(patientId, profile=undefined) {
  return html;
 }
 async function showPatientDemographics(patientId) {
+ const identity=me,chartWorkspace=workspace,target=$('patient-demographics');
  const profile=await api(`/api/v1/patients/${patientId}/demographics`);
- if(selected!==patientId)return;
+ if(selected!==patientId||me!==identity||workspace!==chartWorkspace||$('patient-demographics')!==target)return;
  workspace.demographics=profile;await renderDemographics(patientId,profile);
+ if(typeof refreshChartContactSummary==='function')refreshChartContactSummary();
 }
 function demographicsEdit() {
  if(!demographicsView||demographicsView.patientId!==selected)return;
@@ -37,15 +39,17 @@ document.addEventListener('click',event=>{
 document.addEventListener('submit',async event=>{
  if(event.target.id!=='demographics-form')return;
  event.preventDefault();if(event.target.dataset.saving==='true')return;if(!demographicsView||selected!==demographicsView.patientId)return;
- const form=event.target,{patientId,profile}=demographicsView,data=Object.fromEntries(new FormData(form)),content={};
+ const form=event.target,view=demographicsView,{patientId,profile}=view,identity=me,chartWorkspace=workspace,target=$('patient-demographics'),data=Object.fromEntries(new FormData(form)),content={};
+ const sameChart=()=>selected===patientId&&me===identity&&workspace===chartWorkspace&&$('patient-demographics')===target;
+ const current=()=>sameChart()&&demographicsView===view&&form.isConnected;
  for(const [key]of demographicsFields)content[key]=data[key]||null;
  content.administrative_gender=data.administrative_gender||null;
  content.address=Object.fromEntries(['line1','line2','city','region','postal_code','country'].map(k=>[k,data['address_'+k]||null]));
  content.emergency_contact=Object.fromEntries(['name','relationship','phone'].map(k=>[k,data['emergency_'+k]||null]));
- form.dataset.saving='true';const controls=Array.from(form.querySelectorAll('button'));controls.forEach(b=>{b.disabled=true;});
+ form.dataset.saving='true';const controls=Array.from(form.querySelectorAll('button,input,select,textarea'));controls.forEach(b=>{b.disabled=true;});
  try {
   const saved=await api(`/api/v1/patients/${patientId}/demographics`,'PUT',{content,reason:data.reason},profile.version);
-  if(selected===patientId){workspace.demographics=saved;await renderDemographics(patientId,saved);notice('Contact details saved.');}
- }catch(error){if(selected===patientId&&form.isConnected){const box=form.querySelector('[data-demographics-error]');box.textContent=error.message+' Your edits remain here. If the outcome is uncertain, reload before saving again.';box.hidden=false;}}
+  if(current()){workspace.demographics=saved;await renderDemographics(patientId,saved);if(!sameChart())return;if(typeof refreshChartContactSummary==='function')refreshChartContactSummary();notice('Contact details saved.');}
+ }catch(error){if(current()){const box=form.querySelector('[data-demographics-error]');box.textContent=error.message+' Your edits remain here. If the outcome is uncertain, reload before saving again.';box.hidden=false;}}
  finally{delete form.dataset.saving;controls.forEach(b=>{if(b.isConnected)b.disabled=false;});}
 });
