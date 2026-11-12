@@ -14,15 +14,66 @@
  const detailMethods={claim:'showClaim',era:'showEra',eraBatch:'showEraBatch',payment:'openPaymentStatus',paymentSettings:'openPaymentSettings',support:'showSupportTicket',portal:'showPortalThread'};
  const screenMethods={sun:'showSunPage',support:'showSupportTickets',connect:'showConnectServices',inbox:'showIntegrationInbox',outbound:'showOutboundWorkspace',previsit:'showPrevisit',reminders:'showReminderWorkspace'};
  const identity=()=>typeof me==='undefined'||!me?null:[me.tenant_id,me.user_id,me.role].join(':');
- let generation=0,depth=0,restoring=false,current=null,pendingRoute=null,queued=null,restoreRunning=false,bouncing=false;
+ let hadSession=false,generation=0,depth=0,restoring=false,current=null,pendingRoute=null,queued=null,restoreRunning=false,bouncing=false;
  const initial=history.state?.[tag];let initialPending=Boolean(initial);
  history.scrollRestoration='manual';
  const url=()=>location.pathname+location.search;
  const position=()=>({x:Math.max(0,Math.round(window.scrollX||0)),y:Math.max(0,Math.round(window.scrollY||0))});
  const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+ // Readable addresses: every screen has a #/… address made only of screen names and opaque record
+ // identifiers, so Back, Forward, reload and bookmarks land on the same screen. No names, MRNs or
+ // clinical content ever enter the address.
+ const navSlugs={'nav-practice':'home','nav-schedule':'schedule','nav-followup':'work-queue','nav-portal':'inbox','nav-clinical':'patients','nav-labs':'orders','nav-specialty':'specialty','nav-referrals':'referrals','nav-billing':'billing','nav-claims':'claims','nav-edi':'claim-connections','nav-admin':'practice','nav-apps':'integrations','nav-migration':'data-import','nav-workflows':'workflow-studio','nav-automation':'automation','nav-ai-review':'ai-review'};
+ const slugNavs=Object.fromEntries(Object.entries(navSlugs).map(([nav,slug])=>[slug,nav]));
+ const screenSlugs={sun:'sun',support:'support',connect:'connect-services',inbox:'messages',outbound:'outbound',previsit:'intake',reminders:'reminders'};
+ const detailSlugs={claim:'claims',era:'remittances',eraBatch:'remittance-batches',payment:'payments',paymentSettings:'payment-settings',support:'support',portal:'inbox'};
+ const sectionSlugs={overview:'overview',visits:'encounter',insurance:'insurance',billing:'billing',documents:'files',orders:'orders',profile:'record',clinical:'clinical',care_pathways:'care-pathways',prescribing:'prescriptions',referrals:'referrals'};
+ const billingTabs=['overview','invoices','payments','methods','subscriptions'];
+ const uuid=value=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+ const invert=(map,value)=>Object.keys(map).find(key=>map[key]===value);
+ function address(route){
+  if(!route)return '';
+  if(route.view==='tool')return navSlugs[route.nav]?'#/'+navSlugs[route.nav]:'';
+  if(route.view==='patient'){
+   if(!uuid(route.patient))return '#/patients';
+   let path='#/patients/'+route.patient+'/'+(sectionSlugs[route.section]||'overview');
+   if(route.section==='visits'&&uuid(route.visit))path+='/'+route.visit+(/^[a-z-]{1,30}$/.test(route.step||'')?'/'+route.step:'');
+   if(route.section==='billing'&&billingTabs.includes(route.billing?.tab))path+='/'+route.billing.tab;
+   return path;
+  }
+  if(route.view==='patientBilling')return '#/billing'+(uuid(route.billing?.patient)?'/patients/'+route.billing.patient:'')+(billingTabs.includes(route.billing?.tab)?'/'+route.billing.tab:'');
+  if(route.view==='screen')return screenSlugs[route.kind]?'#/'+screenSlugs[route.kind]:'';
+  if(route.view==='detail')return detailSlugs[route.kind]?'#/'+detailSlugs[route.kind]+(uuid(route.id)?'/'+route.id:''):'';
+  return '';
+ }
+ function routeFromAddress(hash){
+  if(typeof hash!=='string'||!hash.startsWith('#/')||hash.length>200)return null;
+  const parts=hash.slice(2).split('/').filter(Boolean);if(!parts.length||parts.some(part=>!/^[a-z0-9-]{1,40}$/i.test(part)))return null;
+  const [head,second,third,fourth,fifth]=parts;
+  if(head==='patients'){
+   if(!second)return {view:'tool',nav:'nav-clinical'};
+   if(!uuid(second))return null;
+   const section=invert(sectionSlugs,third||'overview');if(!section)return null;
+   const route={view:'patient',patient:second,visit:null,section,step:'documentation',appointment:null,claim:null,billing:null,file:null,account:null,order:null};
+   if(section==='visits'&&uuid(fourth)){route.visit=fourth;if(fifth)route.step=fifth;}
+   if(section==='billing')route.billing={patient:second,tab:billingTabs.includes(fourth)?fourth:'overview',surface:'chart',plan:null};
+   return route;
+  }
+  if(head==='billing'&&(second==='patients'||billingTabs.includes(second))){
+   const patient=second==='patients'&&uuid(third)?third:null,tab=second==='patients'?fourth:second;
+   return {view:'patientBilling',billing:{patient,tab:billingTabs.includes(tab)?tab:'overview',surface:'global',plan:null}};
+  }
+  const detail=invert(detailSlugs,head);
+  if(detail&&uuid(second))return {view:'detail',kind:detail,id:second};
+  if(head==='payment-settings')return {view:'detail',kind:'paymentSettings',id:null};
+  if(slugNavs[head]&&!second)return {view:'tool',nav:slugNavs[head]};
+  const screen=invert(screenSlugs,head);
+  if(screen&&!second)return {view:'screen',kind:screen,...(screen==='inbox'?{channel:'communications'}:screen==='outbound'?{channel:'ringcentral'}:{})};
+  return null;
+ }
  function state(route,scroll=position()){return {version,identity:identity(),route,scroll,url:url(),index:current?.index||0};}
  function backControl(){const button=$('workspace-back');if(button){button.hidden=!current||!(current.index>0);button.disabled=restoring;}}
- function replace(value){history.replaceState({...history.state,[tag]:value},'',value.url);}
+ function replace(value){history.replaceState({...history.state,[tag]:value},'',value.url+address(value.route));}
  function capturePosition(){
   if(restoring||depth||!current||current.identity!==identity())return;
   current={...current,scroll:position()};replace(current);
@@ -53,7 +104,7 @@
   if(!current||current.identity!==next.identity){replace(next);current=next;backControl();return;}
   if(same(current.route,route)){current={...next,scroll:current.scroll};replace(current);backControl();return;}
   // Older screens replace URL parameters. Preserve the prior entry before pushing.
-  next.index=(current.index||0)+1;const nextUrl=next.url;replace(current);history.pushState({...history.state,[tag]:next},'',nextUrl);current=next;backControl();
+  next.index=(current.index||0)+1;const nextUrl=next.url;replace(current);history.pushState({...history.state,[tag]:next},'',nextUrl+address(next.route));current=next;backControl();
  }
  function wrap(name,route){
   const original=window[name];if(typeof original!=='function')return;
@@ -63,7 +114,9 @@
    const finish=()=>{
     release();if(started!==generation||(actor!==identity()&&name!=='enter'&&!(name==='run'&&!actor)))return;
     if(route){const value=route(args);if(value)pendingRoute=value;}
-    if(name==='enter'&&initialPending){initialPending=false;if(initial.identity===identity()&&initial.version===version&&initial.url===url()){queued=initial;void drain();return;}}remember();
+    if(name==='enter'&&initialPending){initialPending=false;if(initial.identity===identity()&&initial.version===version&&initial.url===url()){queued=initial;void drain();return;}}
+    if(name==='enter'){hadSession=true;if(openAddress())return;}
+    remember();
    };
    let result;try{result=original.apply(this,args);}catch(error){release();throw error;}
    if(result&&typeof result.then==='function')return result.then(value=>{finish();return value;},error=>{release();throw error;});
@@ -139,6 +192,13 @@
    }
   }finally{restoring=false;restoreRunning=false;remember();backControl();}
  }
+ // Open the screen named by the address bar: a bookmark, a pasted link, or an edited address.
+ function openAddress(){
+  const route=routeFromAddress(location.hash);if(!route||!identity())return false;
+  if(current&&same(current.route,route))return false;
+  queued={version,identity:identity(),route,scroll:{x:0,y:0},url:url(),index:current?.index||0};void drain();return true;
+ }
+ window.addEventListener('hashchange',()=>{if(!restoring&&!depth)openAddress();});
  // A browser Back/Forward action reads saved data; it never repeats a form submission.
  window.addEventListener('popstate',event=>{
   if(bouncing){bouncing=false;return;}
@@ -154,7 +214,9 @@
  for(const [kind,name] of Object.entries(screenMethods))wrap(name,args=>({view:'screen',kind,...(kind==='inbox'?{channel:args[0]||'communications'}:kind==='outbound'?{channel:args[0]||'ringcentral'}:kind==='reminders'?{filter:typeof reminderFilter==='undefined'?'due':reminderFilter}:{})}));
  for(const [kind,name] of Object.entries(detailMethods))wrap(name,args=>({view:'detail',kind,id:kind==='paymentSettings'?null:args[0]}));
  const originalSignIn=window.signInScreen;
- if(typeof originalSignIn==='function')window.signInScreen=function(...args){generation++;depth=0;current=null;pendingRoute=null;queued=null;backControl();return originalSignIn.apply(this,args);};
+ if(typeof originalSignIn==='function')window.signInScreen=function(...args){generation++;depth=0;current=null;pendingRoute=null;queued=null;backControl();
+  // After a session ends, the previous person's screen address must not open for the next person.
+  if(hadSession&&location.hash.startsWith('#/'))history.replaceState(null,'',url());return originalSignIn.apply(this,args);};
  document.addEventListener('change',event=>{if(event.target.id==='insurance-appointment')remember();});
  // Keep the position current without adding history entries while the user reads.
  let scrollPending=false;
