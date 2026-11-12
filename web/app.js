@@ -95,7 +95,8 @@ async function acceptConnectLaunch(){
  // reject the browser's initial GET before JavaScript can consume the fragment.
  // The legacy acceptance path remains supported for existing launch links.
  const identity=location.pathname==='/api/v1/connect/identity/accept'||location.pathname==='/';
- if((!support&&!identity)||!location.hash)return false;
+ // A screen address (#/claims, #/patients/…) is not a Connect launch; leave it for navigation.
+ if((!support&&!identity)||!location.hash||location.hash.startsWith('#/'))return false;
  let code,issuer;
  try{
   const input=new URLSearchParams(location.hash.slice(1));
