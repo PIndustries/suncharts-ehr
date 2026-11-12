@@ -12,9 +12,9 @@ ctx.loadHostedCopays=()=>{};
 const operation={id:'checkout',appointment_id:'appt',patient_id:'patient',amount_cents:2500,livemode:false,status:'paid',receipt_id:'receipt',created_at:'2026-11-11T14:00:00Z'};
 const state=ctx.hostedCopayStateFor('appt');state.items=[operation];state.availability={available:true,livemode:false};
 ctx.renderEncounterRevenue();let html=node('encounter-revenue').innerHTML;
-assert.match(html,/Service charges<\/span><strong>\$200.00/);assert.match(html,/Copay received · Stripe Sandbox<\/span><strong>\$25.00/);
-assert.match(html,/Copay applied to charges<\/span><strong>Not posted/);assert.match(html,/Open account balance<\/span><strong>Not posted/);
-assert.match(html,/Draft charges are not an amount due/);assert.match(html,/Card payment captured · awaiting charge allocation/);
+assert.match(html,/Charges<\/span><strong>\$200.00/);assert.match(html,/Paid by patient<\/span><strong>\$25.00/);
+assert.match(html,/Applied to this visit<\/span><strong>Not posted/);assert.match(html,/Balance<\/span><strong>Not posted/);
+assert.match(html,/Edit CPT/);assert.match(html,/Card payment captured · not yet applied to charges/);
 assert.equal((html.match(/class="primary"/g)||[]).length,1);assert.match(html,/class="primary" data-revenue-account="account">Review and post charges/);
 assert.equal((html.match(/data-copay-receipt="receipt"/g)||[]).length,1);assert.doesNotMatch(html,/data-hosted-copay-receipt="receipt"/);
 assert.doesNotMatch(html,/<details[^>]*id="encounter-charge-details"[^>]* open/);
@@ -24,7 +24,7 @@ node('encounter-billing-detail').innerHTML='REASON DRAFT';const button={dataset:
 assert.equal(node('encounter-charge-details').open,true);assert.equal(node('encounter-billing-detail').innerHTML,'REASON DRAFT','review disclosure preserves an already-open reason');assert.equal(calls.filter(c=>c[1]==='POST').length,0);
 let receiptAccount=null;ctx.openEncounterBillingAccount=id=>{receiptAccount=id;};const ledgerButton={dataset:{copayAccount:'account'},hasAttribute:()=>false};for(const handler of handlers.click)handler({target:{closest:()=>ledgerButton},preventDefault(){}});assert.equal(receiptAccount,'account','receipt ledger link uses the encounter-preserving account navigation');
 // Only server-verified receipts contribute to received totals; an open checkout contributes zero.
-ctx.workspace.billing.copays=[];assert.match(ctx.encounterRevenueSummary(account),/Copay received<\/span><strong>\$0.00/);
+ctx.workspace.billing.copays=[];assert.match(ctx.encounterRevenueSummary(account),/Paid by patient<\/span><strong>\$0.00/);
 const pending={...state,items:[{...operation,status:'open',receipt_id:null,checkout_url:'https://checkout.stripe.com/c/pay/example'}]};assert.match(ctx.encounterHostedCopayMarkup(pending),/Awaiting card payment/);assert.doesNotMatch(ctx.encounterHostedCopayMarkup(pending),/Card payment captured/);
 // Net refunds and reversal/hold warnings remain explicit; unrelated ledger rows cannot affect this encounter.
 ctx.workspace.billing.copays=[{...receipt,hosted_checkout:{...receipt.hosted_checkout,refunded_cents:1000,status:'needs_review'}}];
@@ -37,7 +37,7 @@ ctx.billingCan=()=>false;html=ctx.encounterRevenueStatusMarkup(posted,{loaded:tr
 // Exercise the actual account renderer: encounter details contain no duplicate claim/invoice totals/actions.
 const billing=fs.readFileSync('web/billing.js','utf8');vm.runInContext(billing.slice(billing.indexOf('function showBillingAccount('),billing.indexOf('function coveragePayerOptions(')),ctx);
 Object.assign(ctx,{billingDetailHost:()=>node('encounter-billing-detail'),chargeTable:()=>'<table>services</table>',billingChargeDraftRecovery:()=>'',accountDiagnosisSummary:()=>'',accountDiagnosisDraftRecovery:()=>'',billingField:()=>'<input name="reason" required>',entrySum:()=>0,billBalance:()=>20000,ledgerKind:String});
-ctx.billingCan=()=>true;ctx.showBillingAccount('account',false);html=node('encounter-billing-detail').innerHTML;assert.doesNotMatch(html,/billing-totals/);assert.match(html,/name="reason" required/);assert.match(html,/id="billing-account-action"/);assert.match(html,/Posting freezes charges and coverage/);assert.match(html,/<details class="encounter-account-record"><summary>Payments/);
+ctx.billingCan=()=>true;ctx.showBillingAccount('account',false);html=node('encounter-billing-detail').innerHTML;assert.doesNotMatch(html,/billing-totals/);assert.match(html,/name="reason" required/);assert.match(html,/id="billing-account-action"/);assert.match(html,/Posting locks the charges/);assert.match(html,/<details class="encounter-account-record"><summary>Payments/);
 node('encounter-charge-details').open=false;ctx.showBillingAccount('account',false);assert.equal(node('encounter-charge-details').open,false,'background rendering leaves details collapsed');ctx.showBillingAccount('account',false,true);assert.equal(node('encounter-charge-details').open,true,'explicit account navigation reveals the account');
 ctx.workspace.billing.accounts=[posted];ctx.showBillingAccount('account',false);html=node('encounter-billing-detail').innerHTML;assert.doesNotMatch(html,/data-build-patient-invoice|data-patient-invoices|data-new-claim/);assert.match(html,/data-new-ledger/);
 ctx.chartSection='billing';ctx.showBillingAccount('account',false);assert.match(node('encounter-billing-detail').innerHTML,/billing-totals/);assert.match(node('encounter-billing-detail').innerHTML,/data-build-patient-invoice/,'standalone account controls are unchanged');

@@ -16,7 +16,7 @@ async function renderEncounterStartBenefits(hostId,serviceDate){
  host.dataset.serviceDate=serviceDate;
  const heading=`<h3>Insurance & benefits · ${esc(serviceDate)}</h3>`;
  if(!workspace.billing){host.innerHTML=heading+'<p class="muted">Insurance details are unavailable with the current access. Confirm benefits with authorized billing staff.</p>';return;}
- if(!coverage){host.innerHTML=heading+'<p>No active primary coverage is recorded for this service date. Coverage is unknown; this does not establish that the patient is uninsured.</p><button type="button" data-chart-section="insurance">Review insurance</button>';return;}
+ if(!coverage){host.innerHTML=heading+'<p>No insurance on file for this visit date.</p><button type="button" data-chart-section="insurance">Review insurance</button>';return;}
  const summary=heading+`<p><b>${esc(payerName(coverage.content.payer_id))}</b> · ${esc(coverage.content.plan_name||'Plan name not recorded')}</p><p>Recorded plan copay: <b>${coverage.content.copay_cents==null?'Not recorded':money(coverage.content.copay_cents)}</b>. Review the payer benefits and visit type before collecting.</p><button type="button" data-chart-section="insurance">Review coverage & copay</button>`;
  host.innerHTML=summary+'<p class="muted">Loading recorded eligibility benefits…</p>';
  try{
