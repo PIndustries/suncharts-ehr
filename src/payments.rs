@@ -2,6 +2,8 @@
 //! Test-mode hosted checkout. Processor evidence, never a browser return, controls the ledger.
 #[path = "payment_operations.rs"]
 mod operations;
+#[path = "patient_payment_profile.rs"]
+mod patient_profile;
 use crate::{
     auth::{Actor, Role},
     billing,
@@ -303,6 +305,39 @@ pub fn router() -> Router<State> {
             post(test_settings),
         )
         .route("/api/v1/billing/payments/operations", get(operations::read))
+        .route(
+            "/api/v1/billing/membership-prices",
+            get(patient_profile::memberships::prices)
+                .post(patient_profile::memberships::create_price),
+        )
+        .route(
+            "/api/v1/billing/membership-prices/{id}",
+            get(patient_profile::memberships::read_price),
+        )
+        .route(
+            "/api/v1/billing/patients/{id}/memberships",
+            get(patient_profile::memberships::list).post(patient_profile::memberships::create),
+        )
+        .route(
+            "/api/v1/billing/memberships/{id}",
+            get(patient_profile::memberships::read),
+        )
+        .route(
+            "/api/v1/billing/patients/{id}/memberships/{subscription}/cancel-at-period-end",
+            post(patient_profile::memberships::cancel),
+        )
+        .route(
+            "/api/v1/billing/patients/{id}/payment-profile",
+            get(patient_profile::read),
+        )
+        .route(
+            "/api/v1/billing/patients/{id}/payment-setups",
+            post(patient_profile::setup::create),
+        )
+        .route(
+            "/api/v1/billing/payment-setups/{id}",
+            get(patient_profile::setup::read),
+        )
         .route(
             "/api/v1/billing/payments/settings/activation",
             post(activate),
@@ -751,6 +786,13 @@ pub(crate) async fn create_native(
         if status != "posted" || account_version != version {
             return Err(Error::Conflict(
                 "payment requires the current posted account version",
+            ));
+        }
+        let invoice_pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM invoice_checkout_attempts WHERE tenant_id=$1 AND account_id=$2 AND status IN ('creating','open','needs_review'))")
+            .bind(a.tenant_id).bind(id).fetch_one(&mut *tx).await?;
+        if invoice_pending {
+            return Err(Error::Conflict(
+                "reconcile the existing invoice collection before starting another payment",
             ));
         }
         let current = balance(&mut tx, a.tenant_id, id).await?;

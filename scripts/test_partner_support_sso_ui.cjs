@@ -8,7 +8,7 @@ assert.match(source,/const connectLaunchAcceptance=acceptConnectLaunch\(\);/,'fr
 assert.match(source,/me\.delegated_role==='partner_admin'[\s\S]*?'Partner administrator \(delegated\)'/,'delegated partner administrators have an attributable UI label');
 function fixture(hash,pathname='/api/v1/connect/support/accept'){
  const calls=[],location={pathname,hash},history={replaceState(_a,_b,path){location.pathname=path;location.hash='';}};
- const context={URL,URLSearchParams,JSON,Error,location,history,takeHostedCopaySignInReturn:()=>null,fetch:async(...args)=>{calls.push(args);assert.equal(location.hash,'','fragment must be cleared before exchange');return {ok:true,json:async()=>({kind:'staff'})};}};
+ const context={URL,URLSearchParams,JSON,Error,location,history,takeHostedCopaySignInReturn:()=>null,takePatientPaymentSetupSignInReturn:()=>null,takePatientMembershipSignInReturn:()=>null,takeInvoiceCheckoutSignInReturn:()=>null,fetch:async(...args)=>{calls.push(args);assert.equal(location.hash,'','fragment must be cleared before exchange');return {ok:true,json:async()=>({kind:'staff'})};}};
  vm.createContext(context);vm.runInContext(fn,context);return {context,calls};
 }
 (async()=>{

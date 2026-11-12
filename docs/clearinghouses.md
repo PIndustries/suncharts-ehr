@@ -128,12 +128,24 @@ Claim.MD route. Older queued unsupported artifacts are held before transmission,
 with a deterministic preflight result, rather than an uncertain delivery result.
 
 The background poller attaches response evidence only when a delivered submission
-on the same tenant, route and partner has the exact Claim.MD file receipt and
+on the same tenant, route and partner has the exact Claim.MD file receipt or
+provider `claimmd_id` receipt and
 matching frozen control number, billing NPI, tax ID, member, payer, amount and
 service date. Missing or ambiguous matches remain in the response inbox for
 review; imported records are not automatically linked. Reused response IDs with
 changed content fail the poll without advancing its cursor. Attachment appends
 submission history and does not change the claim's adjudication state or ledger.
+
+An upload response must identify exactly one claim with its frozen patient control
+number and billing NPI. Numeric file receipts remain supported; if the file ID is
+empty, a valid numeric `claimmd_id` can establish receipt instead. The `claimid`
+field can echo the sender's control number and is not used as this provider ID.
+A processing rejection still establishes delivery when those identities match;
+it does not establish payer acceptance. Missing or mismatched receipt identifiers
+leave delivery uncertain and require reconciliation before another send.
+For primary claims, the documented `amount_paid` field reflects frozen patient
+payments without reducing gross service charges. Historical claims without that
+financial evidence omit the field rather than assuming zero.
 
 Claim detail includes `tracking`: delivery and external-submission evidence,
 linked responses, matching-date eligibility status, active remittance posting,

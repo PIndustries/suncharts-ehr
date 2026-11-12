@@ -12,9 +12,11 @@ Registered name and birth-date corrections retain versioned, attributed revision
 Changing a contact destination invalidates its reminder verification and consent
 settings until staff reviews it again.
 
-The primary chart navigation is **Overview**, **Encounter**, **Insurance** and
-**Files**. Files opens all patient documents without selecting an encounter.
-**Patient record** contains the account summary, demographics,
+The primary chart navigation is **Overview**, **Encounter**, **Insurance**,
+**Billing** and **Files**. Files opens all patient documents without selecting an encounter.
+The Overview contact card displays the recorded phone and email. **Contact details**
+in the chart header opens the same contact and demographics record.
+**Patient record** contains **Contact & demographics**,
 longitudinal problems/allergies/medications, histories, prescribing, referrals,
 assessments, specialty care and imported records. These records remain available
 without competing with the current encounter's workflow. Empty lists remain
@@ -227,6 +229,16 @@ show the appointment title and date when available, in both the list and preview
 status and text filters apply to loaded pages; use **Load more files** for
 additional records. Files retain their original links and are not copied into
 each encounter.
+
+**Patient intake forms** appears separately from uploads in Files and Files & voice.
+It lists issued forms across the patient's full history, including checked-in,
+completed and older appointments, with their original appointment date and status.
+The Overview also links directly to submitted forms and shows the number awaiting
+review. **Load older forms** pages through the retained records. Opening a packet
+uses the existing authorized intake detail view; it does not mark answers reviewed,
+copy them into the chart or alter the submitted response. Clinical-view permission
+is required. The separate upcoming-readiness worklist keeps its short scheduling
+window and is not the patient's intake archive.
 
 Owners and clinicians can upload PDF, PNG, JPEG, UTF-8 plain text, DOCX, XLSX,
 MP3, WAV, Ogg, WebM and M4A files up to 10 MiB. Plain text is limited to 200,000

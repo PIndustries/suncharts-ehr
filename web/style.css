@@ -315,3 +315,14 @@ body{font-size:13px;line-height:1.45;letter-spacing:0}button,input,select{min-he
 
 /* Keep encounter claim review focused while preserving the billing controls and drafts. */
 #encounter-revenue:has(> #encounter-claims:not([hidden])) > :not(#encounter-claims){display:none}
+
+/* Chart menus must remain outside the rounded header rather than being clipped. */
+.chart-context{overflow:visible}
+.patient-record-navigation>div{max-height:min(65vh,500px);overflow-y:auto;overscroll-behavior:contain}
+.patient-contact-summary dl{display:grid;gap:12px;margin:0}
+.patient-contact-summary dl div{min-width:0}
+.patient-contact-summary dt{font-size:11px;color:var(--muted);font-weight:700}
+.patient-contact-summary dd{margin:4px 0 0;overflow-wrap:anywhere}
+.patient-contact-summary .chart-summary-footer{display:grid;gap:8px}
+#patient-intake-panel:focus{outline:2px solid var(--blue);outline-offset:3px}
+@media(max-width:800px){.patient-record-navigation[open]{flex-basis:100%;margin-left:0}.patient-record-navigation>div{position:static;min-width:0;max-width:none;width:100%;box-shadow:none}}

@@ -117,7 +117,21 @@ fn professional_json(out: &Submission) -> Result<Value> {
     ] {
         native.insert(key.into(), json!(value));
     }
-    native.insert("balance_due".into(), json!(money(total)?));
+    // Claim.MD's professional field contract uses amount_paid for primary
+    // patient payments. Gross service charges must not be reduced by the copay.
+    // Older frozen claims without financial evidence do not assert a zero payment.
+    if let Some(financial) = snapshot.get("financial_summary").filter(|v| !v.is_null()) {
+        let paid = financial["patient_payments_cents"]
+            .as_i64()
+            .filter(|n| (0..=100000000000).contains(n))
+            .ok_or(Error::Invalid(
+                "Claim.MD patient payment evidence is invalid",
+            ))?;
+        native.insert(
+            "amount_paid".into(),
+            json!(format!("{}.{:02}", paid / 100, paid % 100)),
+        );
+    }
     native.insert("total_charge".into(), json!(money(total)?));
     native.insert("payer_order".into(), json!("Primary"));
     if let Some(date) = content["subscriber_birth_date"]
@@ -130,7 +144,7 @@ fn professional_json(out: &Submission) -> Result<Value> {
         native.insert("ins_group".into(), json!(group));
     }
     for (source, target) in [("patient_sex", "pat_sex"), ("subscriber_sex", "ins_sex")] {
-        if let Some(sex @ ("M" | "F")) = details[source].as_str() {
+        if let Some(sex @ ("M" | "F" | "U")) = details[source].as_str() {
             native.insert(target.into(), json!(sex));
         }
     }
@@ -233,6 +247,36 @@ pub(crate) async fn upload(r: &Route, out: &Submission) -> Result<Option<String>
     }
     let v: Value = serde_json::from_slice(&stedi::bytes(response, 65536).await?)
         .map_err(|_| Error::Invalid("invalid Claim.MD upload response"))?;
+    upload_receipt(&v, out)
+}
+
+fn file_receipt_id(value: &Value) -> Option<&str> {
+    value.as_str().filter(|value| {
+        !value.is_empty()
+            && value.len() <= 40
+            && value.bytes().all(|c| c.is_ascii_digit())
+            && value.bytes().any(|c| c != b'0')
+    })
+}
+
+fn claim_receipt_id(value: &Value) -> Option<String> {
+    id(value).filter(|value| value.parse::<u64>().is_ok_and(|value| value > 0))
+}
+
+/// `claimid` may echo the submitter's control. Only `claimmd_id` identifies the
+/// provider claim when a processed/rejected upload has no assigned file ID.
+pub(crate) fn receipt_references(evidence: &Value) -> Vec<String> {
+    let mut references = Vec::new();
+    if let Some(id) = file_receipt_id(&evidence["fileid"]) {
+        references.push(format!("claimmd-file:{id}"));
+    }
+    if let Some(id) = claim_receipt_id(&evidence["claimmd_id"]) {
+        references.push(format!("claimmd-claim:{id}"));
+    }
+    references
+}
+
+fn upload_receipt(v: &Value, out: &Submission) -> Result<Option<String>> {
     if v.get("error").is_some() {
         return Ok(None);
     }
@@ -248,12 +292,13 @@ pub(crate) async fn upload(r: &Route, out: &Submission) -> Result<Option<String>
     {
         return Ok(None);
     }
-    let id = c["fileid"]
-        .as_str()
-        .filter(|v| !v.is_empty() && v.len() <= 40 && v.bytes().all(|c| c.is_ascii_digit()))
-        .ok_or(Error::Invalid("Claim.MD file receipt missing"))?;
-    // Acknowledged by Claim.MD is transport evidence, never inferred payer acceptance.
-    Ok(Some(format!("claimmd-file:{id}")))
+    let reference = receipt_references(c)
+        .into_iter()
+        .next()
+        .ok_or(Error::Invalid("Claim.MD file or claim receipt missing"))?;
+    // Processing rejection is still confirmed delivery. Neither receipt kind
+    // means payer acceptance, adjudication or payment.
+    Ok(Some(reference))
 }
 fn id(v: &Value) -> Option<String> {
     v.as_str()
@@ -601,6 +646,101 @@ mod tests {
         assert_eq!(claim["charge"][0]["mod1"], "25");
         assert_eq!(claim["charge"][0]["mod2"], "95");
         assert!(value.get("AccountKey").is_none());
+    }
+
+    #[test]
+    fn documented_unknown_sex_is_preserved_instead_of_omitted() {
+        // Claim.MD Professional Claim Form Overview accepts M, F and U for
+        // patient/subscriber sex. Unknown is explicit, not a missing field.
+        for sex in ["M", "F", "U"] {
+            let mut out = submission();
+            out.details["patient_sex"] = json!(sex);
+            out.details["subscriber_sex"] = json!(sex);
+            let value = professional_json(&out).unwrap();
+            assert_eq!(value["claim"][0]["pat_sex"], sex);
+            assert_eq!(value["claim"][0]["ins_sex"], sex);
+        }
+    }
+
+    #[test]
+    fn native_primary_claim_reports_copay_without_reducing_gross_charges() {
+        let mut out = submission();
+        out.claim_snapshot["snapshot"]["financial_summary"] =
+            json!({"patient_payments_cents":2500,"open_balance_cents":10050});
+        let value = professional_json(&out).unwrap();
+        let claim = &value["claim"][0];
+        assert_eq!(claim["total_charge"], "125.50");
+        assert_eq!(claim["charge"][0]["charge"], "125.50");
+        assert_eq!(claim["amount_paid"], "25.00");
+        assert!(
+            claim.get("balance_due").is_none(),
+            "Only documented Claim.MD financial fields are emitted"
+        );
+        out.claim_snapshot["snapshot"]["financial_summary"]["patient_payments_cents"] = json!(0);
+        assert_eq!(
+            professional_json(&out).unwrap()["claim"][0]["amount_paid"],
+            "0.00"
+        );
+        for value in [json!(-1), json!("2500"), Value::Null] {
+            out.claim_snapshot["snapshot"]["financial_summary"]["patient_payments_cents"] = value;
+            assert!(
+                preflight(&out).is_err(),
+                "Malformed frozen payment evidence must not be guessed"
+            );
+        }
+        assert!(professional_json(&submission()).unwrap()["claim"][0]
+            .get("amount_paid")
+            .is_none());
+    }
+
+    #[test]
+    fn processed_rejection_uses_provider_claim_id_without_inventing_file_receipt() {
+        // Sanitized real response shape: claimid echoes our PCN, claimmd_id is
+        // numeric, and a rejected claim may have empty fileid and batchid.
+        let mut response: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/claimmd/rejected-upload.json"
+        ))
+        .unwrap();
+        let out = submission();
+        assert_eq!(
+            upload_receipt(&response, &out).unwrap().as_deref(),
+            Some("claimmd-claim:902000001")
+        );
+        assert_eq!(response["claim"][0]["status"], "R");
+        response["claim"][0]["fileid"] = json!("123456");
+        assert_eq!(
+            upload_receipt(&response, &out).unwrap().as_deref(),
+            Some("claimmd-file:123456"),
+            "Existing file receipts retain their format and preference"
+        );
+        response["claim"][0]["fileid"] = json!("");
+        for invalid in [
+            Value::Null,
+            json!(""),
+            json!("0"),
+            json!("000"),
+            json!(-1),
+            json!("902abc"),
+            json!("18446744073709551616"),
+        ] {
+            response["claim"][0]["claimmd_id"] = invalid;
+            assert!(upload_receipt(&response, &out).is_err());
+        }
+        response["claim"][0]["claimmd_id"] = json!(902000001);
+        assert!(upload_receipt(&response, &out).unwrap().is_some());
+        for field in ["pcn", "bill_npi"] {
+            let mut wrong = response.clone();
+            wrong["claim"][0][field] = json!("another-claim");
+            assert!(upload_receipt(&wrong, &out).unwrap().is_none());
+        }
+        let mut extra = response.clone();
+        extra["claim"]
+            .as_array_mut()
+            .unwrap()
+            .push(response["claim"][0].clone());
+        assert!(upload_receipt(&extra, &out).is_err());
+        response["error"] = json!({"error_code":"1"});
+        assert!(upload_receipt(&response, &out).unwrap().is_none());
     }
 
     #[test]

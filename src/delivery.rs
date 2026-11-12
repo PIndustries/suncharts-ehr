@@ -666,7 +666,7 @@ pub async fn process_one(pool: &PgPool, config: &Config) -> Result<bool> {
         return Ok(true);
     }
     if let Some(r) = receipt {
-        delivered(&mut tx,&a,&now,&r.receipt_reference,json!({"submission_id":r.submission_id,"payload_sha256":r.payload_sha256,"receipt_reference":r.receipt_reference,"status":r.status,"adapter":route.adapter,"proof":match route.adapter {Adapter::Stedi=>"matching_patient_control_receipt",Adapter::ClaimMd=>"matching_claim_file_receipt",Adapter::OfficeAllySftp|Adapter::AvailitySftp=>"ssh_sftp_write_and_rename",Adapter::Gateway=>"matching_payload_hash_receipt"}}),"Transport confirmed artifact receipt").await?;
+        delivered(&mut tx,&a,&now,&r.receipt_reference,json!({"submission_id":r.submission_id,"payload_sha256":r.payload_sha256,"receipt_reference":r.receipt_reference,"status":r.status,"adapter":route.adapter,"proof":match route.adapter {Adapter::Stedi=>"matching_patient_control_receipt",Adapter::ClaimMd=>"matching_claim_or_file_receipt",Adapter::OfficeAllySftp|Adapter::AvailitySftp=>"ssh_sftp_write_and_rename",Adapter::Gateway=>"matching_payload_hash_receipt"}}),"Transport confirmed artifact receipt").await?;
         if let Some(ack) = provider_ack {
             crate::retrieval::initial_ack(&mut tx, &a, &route, &ack, out.id).await?;
         }

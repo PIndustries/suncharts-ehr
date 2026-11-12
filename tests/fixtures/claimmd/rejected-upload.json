@@ -1,0 +1,28 @@
+{
+  "messages": "Received 1 claims in file: synthetic-claim.json",
+  "claim": [
+    {
+      "batchid": "",
+      "bill_npi": "1234567893",
+      "bill_taxid": "000000001",
+      "claimid": "SYN-CONTROL",
+      "claimmd_id": "902000001",
+      "fdos": "2026-10-01",
+      "fileid": "",
+      "filename": "synthetic-claim.json",
+      "ins_number": "SYNTHETIC-POLICY-01",
+      "payerid": "SYN-ONLY",
+      "pcn": "SYN-CONTROL",
+      "remote_claimid": "SYN-CONTROL",
+      "sender_icn": "",
+      "sender_name": "CLAIM.MD",
+      "senderid": "CLMMD",
+      "status": "R",
+      "total_charge": "125.50",
+      "messages": [
+        {"fields":"payerid","mesgid":"ERPR1","message":"Invalid or Unsupported PayerID [SYN-ONLY] ","status":"R"},
+        {"fields":"pat_sex","mesgid":"ER01","message":"Patient Sex is required.","status":"R"}
+      ]
+    }
+  ]
+}

@@ -1,5 +1,33 @@
 # Billing, claims and remittances
 
+## Patient billing workspace
+
+Open **Patient billing** from the main navigation for the practice worklist, or
+the patient's **Billing** tab for that patient's records. The shared workspace
+groups Overview, Invoices, Payments, Payment methods, and Subscriptions & plans.
+The billing patient selector uses billing permissions and does not require opening
+the clinical chart. Archived patients remain searchable so historical invoices and
+receipts remain accessible. Native clinic records and TEST card activity are
+separate views; linked Stripe customer records always show their configured mode.
+
+Native invoices retain their issuance snapshot; only the latest reviewed invoice
+per encounter contributes to the reviewed amount due. Later ledger changes require
+review. The Stripe invoice and subscription lists are separate provider records,
+not additional native encounter charges. An unavailable provider section is not a
+zero balance or an empty customer record.
+
+**Add payment method** opens Stripe-hosted setup after explicit permission to save
+a card for patient-present use. No card number is entered or stored in the EHR.
+This step does not collect a payment or authorize recurring charges. The EHR binds
+the request to the patient, practice installation, Stripe account and mode before
+calling Connect. A verified SetupIntent and attached payment method establish
+completion; returning from the browser alone does not. An interrupted setup keeps
+its original request identifier. **Check setup status** only retrieves evidence;
+an explicit retry reuses the same request within its bounded retry window. A
+different credential/account binding or expired unresolved request requires review.
+Reading the profile never creates a Stripe customer. A previous one-time copay
+does not by itself establish a reusable saved card.
+
 ## Coverage and accounts
 
 Open the patient's **Insurance** tab to review coverage, subscriber/member details,
@@ -420,3 +448,95 @@ not establish payment or a settled patient balance.
 Payment settings includes a read-only account summary for owners and existing authorized delegated administrators. It shows available and pending Stripe balances, payout/card readiness, and the latest ten payments and payouts. Live and test accounts are labeled separately. Account capability readiness does not enable live collection; the existing operator gates still apply.
 
 Requests go through the installation-bound SunCharts Connect broker. The server checks installation, tenant, account, mode and current credentials; the browser receives no Stripe keys, customer details, bank/card data or provider invoice links. Unavailable sections display as unavailable rather than zero. This account view does not post or reconcile patient ledger entries. Patient invoices and copay receipts remain in native patient billing.
+
+### Finite patient-present installments
+
+A finite plan records an agreed schedule against the latest immutable patient
+invoice, using reviewed patient responsibility less recorded patient credit. It
+never treats gross service charges or the combined payer balance as patient debt.
+Each installment has an exact cent amount and increasing due date. The original
+schedule, invoice identity and consent remain unchanged; a newer responsibility
+review requires a new invoice and plan. Plans do not schedule automatic charges
+or authorize off-session use of a saved card.
+
+An authorized billing operator confirms the patient is present and the exact
+current amount before opening each Stripe-hosted checkout. The server rechecks
+that amount against the installment and remaining reviewed balance. Only one
+unresolved collection may exist for an account. An uncertain creation keeps its
+original request identity; a browser return or status refresh can retrieve an
+already-bound session but cannot create another checkout. Production live
+collection uses the existing explicit activation gate and remains unavailable
+when that gate is off.
+
+Only independently retrieved, account- and mode-bound capture evidence appends a
+patient payment entry. Repeated reconciliation does not add another payment.
+Verified cumulative refunds append dated observations and matching debit entries;
+original payments and invoices are never rewritten. If payer activity, a newer
+invoice or another financial change invalidates responsibility while checkout is
+open, captured funds remain visible as unapplied and needing review. Polling does
+not silently allocate those funds after a later edit. Test and clinic payment
+activity cannot be mixed. Billing-view access is sufficient to inspect plans and
+collections without opening clinical records; new collections and reconciliation
+retain their separate write permissions and audit events.
+
+### Patient billing workspace
+
+The chart's **Billing** tab and the practice-wide **Patient billing** selector use
+the same workspace: Overview, Invoices, Payments, Payment methods, and
+Subscriptions & plans. Encounter charge editing and insurance claim preparation
+remain attached to the exact encounter. Billing-only staff can read permitted
+patient billing records without opening the clinical chart.
+
+Native invoices preserve their issued snapshots. The Payments tab distinguishes
+copay receipts, account payments, recorded ledger payments, and invoice installment
+collections; an allocated copay is not counted as a second payment. Unverified
+attempts do not display a received amount. Stripe customer invoices and subscriptions
+are separate records and do not replace native patient responsibility or post money
+to the patient ledger merely because a subscription is active.
+
+**Payment methods** lists only verified customer-attached methods. An earlier copay
+does not establish a reusable saved card. Adding a method requires explicit consent
+and a secure Stripe setup page. **Memberships & recurring services** uses immutable,
+owner-approved USD prices and a separate recurring authorization on hosted checkout.
+**Encounter payment plans** divides one reviewed invoice's remaining patient amount
+into a finite schedule. Each collection requires patient-present consent to the
+exact displayed amount; it does not authorize automatic future charges.
+
+Uncertain hosted operations retain their original request identifiers for status
+checks and explicit safe retries. Returning from checkout never establishes payment
+or membership success. Unsaved form text and proposed schedules stay only in the
+current browser tab's memory, scoped to the signed-in identity and patient. Restoring
+a draft requires fresh consent and, for a payment schedule, a new server preview.
+
+### Recurring memberships
+
+Practice owners can approve a fixed USD recurring price with a name, amount,
+cadence and approval reason. Approved prices are immutable. Authorized billing
+staff select a plan and explicitly initiate patient-present enrollment; the
+patient then reviews its amount, renewal frequency and cancellation terms in
+Stripe-hosted Checkout and accepts separate recurring-payment authorization.
+Saving a card alone does not authorize enrollment or future recurring charges.
+An active or unfinished enrollment for the same patient and price prevents an
+accidental replacement enrollment.
+
+Native membership operations retain the exact patient, installation, connected
+account, mode, credential revision and original request. Pending operations
+remain discoverable after reload. Refresh only retrieves evidence; an explicit
+retry keeps the original request and frozen terms, within the bounded recovery
+window. An uncertain operation must not be replaced with a new request ID.
+Verified memberships expose their current status and cancellation date.
+Cancellation schedules the end of the paid period without an immediate refund
+or proration. A previous cancellation cannot silently cancel a membership again
+after it has been resumed externally.
+
+Memberships are separate from encounter receivables, insurer claims, copays and
+patient invoices. Membership activity does not generate patient ledger credits
+or mark an encounter invoice paid. Existing externally created subscriptions
+remain read-only in the patient processor profile; native cancellation requires
+a verified native membership mapping.
+
+New live membership creation is off by default. Activation requires the explicit
+EHR operator flag `ENGINE_LIVE_MEMBERSHIPS_ENABLED=enabled` and the corresponding
+Connect membership activation. Existing live subscriptions remain readable.
+Production refuses test-mode creation even if live membership activation is set.
+No operator flag is enabled by installing this feature.
