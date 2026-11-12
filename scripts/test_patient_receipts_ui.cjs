@@ -75,7 +75,7 @@ const deferred=()=>{let resolve;return {promise:new Promise(r=>resolve=r),resolv
  for(const renderer of [f.ctx.copayReceiptCardMarkup,f.ctx.copayReceiptDocument]){
   const voided=renderer({...receipt,voided:true},f.context);assert.match(voided,/Voided/);assert.match(voided,/Original recorded amount/);assert(!voided.includes('Unapplied credit'));
   const corrected=renderer({...receipt,allocated_cents:2500,reversed_cents:2500},f.context);assert.match(corrected,/does not establish that a refund was issued/);assert(!corrected.includes('Unapplied credit'));
-  const refunded=renderer({...receipt,hosted_checkout:{...receipt.hosted_checkout,refunded_cents:500}},f.context);assert.match(refunded,/\$20\.00/);assert.match(refunded,/refund/i);
+  const refunded=renderer({...receipt,hosted_checkout:{...receipt.hosted_checkout,refunded_cents:500}},f.context);assert.match(refunded,/\$20\.00/);assert.match(refunded,/refund/i);assert.match(refunded,/Original charge allocations/);
   assert.match(renderer({...receipt,hosted_checkout:{...receipt.hosted_checkout,status:'needs_review'}},f.context),/reconciliation/);
   assert.match(renderer(receipt,{...f.context,appointment:null}),/appointment-old/);
  }
