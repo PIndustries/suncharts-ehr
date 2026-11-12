@@ -91,10 +91,33 @@ function captureSupportDrafts(){
 }
 function clearSupportSession(){supportNavigationGeneration++;supportRequestGeneration++;supportLiveGeneration++;supportDrafts.clear();}
 function supportHasDrafts(){rememberSupportForm($('support-create-form'));rememberSupportForm($('support-reply-form'));return supportDrafts.size>0;}
-function supportProviderLabel(ticket){const provider=ticket?.support_provider;return provider&&typeof provider==='object'?(typeof provider.display_name==='string'&&provider.display_name.trim()?'Support provider: '+provider.display_name.trim().slice(0,200):'Assigned support provider'):'SunCharts support';}
-function supportMessageAuthor(message){const provider=message.support_provider;if(message.actor_kind==='partner'||provider){const name=typeof message.author_label==='string'&&message.author_label.trim()?message.author_label.trim():typeof provider?.display_name==='string'&&provider.display_name.trim()?provider.display_name.trim():'Support provider';return name==='Support provider'?name:name.slice(0,200)+' · Support provider';}if(message.actor_kind==='platform'||message.author==='support')return typeof message.author_label==='string'&&message.author_label.trim()?message.author_label.trim().slice(0,200):'SunCharts support';return message.actor_kind==='installation'?'Practice':message.author_kind||message.author_role||'Practice';}
+function supportLabel(value){return typeof value==='string'?value.trim().slice(0,200):'';}
+function supportProviderLabel(ticket){const provider=ticket?.support_provider;return provider&&typeof provider==='object'?'Assigned partner: '+(supportLabel(provider.display_name)||'Partner support'):'SunCharts support';}
+function supportRoutingSummary(data){
+ const ticket=data.ticket||data,shared=data.shared_support===true||ticket.shared_support===true,provider=ticket.support_provider||data.support_provider;
+ if(!shared)return 'Follow your support requests and replies here.';
+ if(provider)return `Sent to ${supportLabel(provider.display_name)||'your assigned partner'}. Your practice, this partner and SunCharts staff work in the same conversation.`;
+ return 'SunCharts staff handle these requests. Your practice can reply and follow updates here.';
+}
+function supportMessageRole(message){
+ if(['installation','partner','platform'].includes(message.actor_kind))return message.actor_kind;
+ // Legacy replies identify support staff, but provider metadata alone is never an author identity.
+ if(!message.actor_kind&&message.author==='support')return 'platform';
+ if(!message.actor_kind&&message.author==='installation')return 'installation';
+ return 'unknown';
+}
+function supportMessageAuthor(message){
+ const role=supportMessageRole(message);
+ if(role==='partner')return supportLabel(message.author_label)||supportLabel(message.support_provider?.display_name)||'Partner team';
+ if(role==='platform')return supportLabel(message.author_label)||'SunCharts support';
+ return role==='installation'?'Practice':'Support participant';
+}
+function supportMessageHeader(message){
+ const role=supportMessageRole(message),badge={installation:'Practice',partner:'Partner',platform:'SunCharts',unknown:'Participant'}[role],name=supportMessageAuthor(message),partner=role==='partner'?supportLabel(message.support_provider?.display_name):'';
+ return `<header class="support-message-header"><span class="support-role support-role-${role}">${badge}</span>${name!==badge?`<b>${esc(name)}</b>`:''}${partner&&partner!==name?`<span class="support-partner-name">${esc(partner)}</span>`:''}<time>${esc(date(message.created_at))}</time></header>`;
+}
 function supportTicketRows(data){return (data.items||[]).map(t=>`<tr><td>${esc(t.subject)}<small>${esc(supportProviderLabel(t))}</small></td><td>${esc(scheduleLabel(t.status))}</td><td>${esc(date(t.updated_at||t.created_at))}</td><td><button type="button" data-support-ticket="${esc(t.id)}">Open request</button></td></tr>`).join('')||'<tr><td colspan="4">No support requests for this installation.</td></tr>';}
-function supportMessageRows(data){const t=data.ticket||data;return `${(data.messages_has_more||t.messages_has_more)?'<p class="notice">Showing the latest 200 messages. Earlier conversation history is retained in SunCharts.</p>':''}${(data.messages||t.messages||[]).map(m=>`<article class="billing-section" data-support-message="${esc(m.id||'')}"><b>${esc(supportMessageAuthor(m))}</b><small> · ${esc(date(m.created_at))}</small><p class="support-message-body">${esc(m.message||m.body||'')}</p></article>`).join('')||'<p class="muted">No conversation messages returned.</p>'}`;}
+function supportMessageRows(data){const t=data.ticket||data;return `${(data.messages_has_more||t.messages_has_more)?'<p class="notice">Showing the latest 200 messages. Earlier conversation history is retained in SunCharts.</p>':''}${(data.messages||t.messages||[]).map(m=>`<article class="billing-section" data-support-message="${esc(m.id||'')}">${supportMessageHeader(m)}<p class="support-message-body">${esc(m.message||m.body||'')}</p></article>`).join('')||'<p class="muted">No conversation messages returned.</p>'}`;}
 function supportReplyForm(t){
  const draft=supportDrafts.get(t.id),closed=t.status==='closed';
  if(closed&&!draft?.message)return '<p>This request is closed. Start a new request if you need further help.</p>';
@@ -105,7 +128,7 @@ async function showSupportTickets(){
  const data=await api(`${connectServicesApi}/tickets`);
  if(me!==identity||generation!==supportRequestGeneration||navigation!==supportNavigationGeneration)return;
  const draft=supportDrafts.get('new');showTool('Support tickets');
- $('tools').innerHTML=`<section id="support-tickets-workspace"><div class="section-head"><div><h2>Practice support</h2><p class="muted">SunCharts Connect support requests</p></div><button type="button" data-connect-services>Connect services</button></div><p class="mapping-notice">For installation, account and service issues. Keep patient names, chart details, credentials and other sensitive information out of support messages. No clinical records or attachments are added automatically.</p><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Request</th><th>Status</th><th>Updated</th><th></th></tr></thead><tbody class="support-ticket-rows">${supportTicketRows(data)}</tbody></table></div><p data-support-list-limit ${data.has_more?'':'hidden'}>Showing the 100 most recently updated requests. Older requests remain in the SunCharts support queue.</p><form id="support-create-form" class="billing-section" data-request="${esc(draft?.request_id||crypto.randomUUID())}"><h3>New support request</h3><label>Subject<input name="subject" value="${esc(draft?.subject||'')}" required maxlength="160" autocomplete="off"></label><label>Describe the issue<textarea name="message" required maxlength="4000" rows="5">${esc(draft?.message||'')}</textarea></label><label class="review-ack"><input name="reviewed" type="checkbox" required ${draft?.reviewed==='on'?'checked':''}> I reviewed this message and removed patient information and credentials.</label><button type="submit">Send support request</button></form></section>`;
+ $('tools').innerHTML=`<section id="support-tickets-workspace"><div class="section-head"><div><h2>Practice support</h2><p class="muted" data-support-routing>${esc(supportRoutingSummary(data))}</p></div><button type="button" data-connect-services>Connect services</button></div><p class="mapping-notice">For installation, account and service issues. Keep patient names, chart details, credentials and other sensitive information out of support messages. No clinical records or attachments are added automatically.</p><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Request</th><th>Status</th><th>Updated</th><th></th></tr></thead><tbody class="support-ticket-rows">${supportTicketRows(data)}</tbody></table></div><p data-support-list-limit ${data.has_more?'':'hidden'}>Showing the 100 most recently updated requests. Older requests remain in the SunCharts support queue.</p><form id="support-create-form" class="billing-section" data-request="${esc(draft?.request_id||crypto.randomUUID())}"><h3>New support request</h3><label>Subject<input name="subject" value="${esc(draft?.subject||'')}" required maxlength="160" autocomplete="off"></label><label>Describe the issue<textarea name="message" required maxlength="4000" rows="5">${esc(draft?.message||'')}</textarea></label><label class="review-ack"><input name="reviewed" type="checkbox" required ${draft?.reviewed==='on'?'checked':''}> I reviewed this message and removed patient information and credentials.</label><button type="submit">Send support request</button></form></section>`;
  void refreshSupportViews({resource_id:''}).catch(()=>{});
 }
 async function showSupportTicket(id){
@@ -113,7 +136,7 @@ async function showSupportTicket(id){
  const data=await api(`${connectServicesApi}/tickets/${id}`),t=data.ticket||data;
  if(me!==identity||generation!==supportRequestGeneration||navigation!==supportNavigationGeneration)return;
  showTool('Support tickets');
- $('tools').innerHTML=`<section id="support-ticket-detail" data-ticket="${esc(id)}"><div class="section-head"><div><h2 data-support-subject>${esc(t.subject)}</h2><p data-support-status>${esc(scheduleLabel(t.status))}</p><p data-support-provider>${esc(supportProviderLabel(t))}</p></div><button type="button" data-support-tickets>All requests</button></div><div class="support-messages">${supportMessageRows(data)}</div><div class="support-reply-area">${supportReplyForm(t)}</div></section>`;
+ $('tools').innerHTML=`<section id="support-ticket-detail" data-ticket="${esc(id)}"><div class="section-head"><div><h2 data-support-subject>${esc(t.subject)}</h2><p data-support-status>${esc(scheduleLabel(t.status))}</p><p data-support-provider>${esc(supportProviderLabel(t))}</p><p class="muted" data-support-routing>${esc(supportRoutingSummary(data))}</p></div><button type="button" data-support-tickets>All requests</button></div><div class="support-messages">${supportMessageRows(data)}</div><div class="support-reply-area">${supportReplyForm(t)}</div></section>`;
  if(typeof refreshSupportViews==='function')void refreshSupportViews({resource_id:id}).catch(()=>{});
  if(typeof markConnectTicketRead==='function'&&document.visibilityState!=='hidden')void markConnectTicketRead(id,(data.messages||t.messages||[]).map(message=>message.id));
 }
@@ -127,6 +150,7 @@ async function refreshSupportViews(change){
   detail.querySelector('[data-support-subject]').textContent=t.subject;
   detail.querySelector('[data-support-status]').textContent=scheduleLabel(t.status);
   const providerLabel=detail.querySelector('[data-support-provider]');if(providerLabel)providerLabel.textContent=supportProviderLabel(t);
+  const routing=detail.querySelector('[data-support-routing]');if(routing)routing.textContent=supportRoutingSummary(data);
   detail.querySelector('.support-messages').innerHTML=supportMessageRows(data);
   const form=$('support-reply-form'),area=detail.querySelector('.support-reply-area');
   if(t.status==='closed'){
@@ -142,7 +166,8 @@ async function refreshSupportViews(change){
  }else if(list){
   const data=await api(`${connectServicesApi}/tickets`);
   if(me!==identity||navigation!==supportNavigationGeneration||generation!==supportLiveGeneration||$('support-tickets-workspace')!==list||!list.isConnected)return;
-  // Only the worklist changes: a new request being drafted keeps its DOM and request ID.
+  // Update routing and worklist only; the request draft keeps its DOM and request ID.
+  const routing=list.querySelector('[data-support-routing]');if(routing)routing.textContent=supportRoutingSummary(data);
   list.querySelector('.support-ticket-rows').innerHTML=supportTicketRows(data);
   const limit=list.querySelector('[data-support-list-limit]');if(limit)limit.hidden=!data.has_more;
  }
