@@ -242,6 +242,13 @@ fn action(method: &Method, path: &str) -> Option<Action> {
         Method::PUT | Method::PATCH => Some(Action::Edit),
         Method::DELETE => Some(Action::Delete),
         Method::POST => {
+            if path.starts_with("/api/v1/billing/patients/")
+                && (path.ends_with("/installment-plans")
+                    || (path.contains("/installment-plans/") && path.ends_with("/checkout")))
+            {
+                return Some(Action::Create);
+            }
+
             if path.starts_with("/api/v1/patients/") && path.contains("/documents/") {
                 if path.ends_with("/office-sessions") {
                     return Some(Action::View);
@@ -901,6 +908,30 @@ async fn assign(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn invoice_installment_permissions_are_billing_only_and_explicit() {
+        for path in [
+            "/api/v1/billing/patients/{}/installment-plans",
+            "/api/v1/billing/patients/{}/installment-plans/{}/installments/{}/checkout",
+        ] {
+            assert_eq!(action(&Method::POST, path), Some(Action::Create));
+            assert_eq!(resources(path), Some(vec!["billing"]));
+        }
+        assert_eq!(
+            action(
+                &Method::POST,
+                "/api/v1/billing/patients/{}/installment-plans/preview"
+            ),
+            Some(Action::Edit)
+        );
+        assert_eq!(
+            action(
+                &Method::POST,
+                "/api/v1/billing/invoice-checkouts/{}/refresh"
+            ),
+            Some(Action::Edit)
+        );
+    }
     #[test]
     fn one_time_connect_handoffs_replace_stale_browser_sessions() {
         assert!(public_callback("/api/v1/connect/identity/accept"));

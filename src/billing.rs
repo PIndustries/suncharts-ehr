@@ -825,7 +825,7 @@ async fn new_entry(
             .reverses_id
             .ok_or(Error::Invalid("select the entry to reverse"))?;
         let managed: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM era_posting_entries WHERE tenant_id=$1 AND entry_id=$2) OR EXISTS(SELECT 1 FROM payment_ledger_links WHERE tenant_id=$1 AND entry_id=$2) OR EXISTS(SELECT 1 FROM billing_copay_allocations x JOIN copay_checkout_attempts o ON o.tenant_id=x.tenant_id AND o.receipt_id=x.receipt_id WHERE x.tenant_id=$1 AND x.entry_id=$2) OR EXISTS(SELECT 1 FROM copay_checkout_refund_allocations WHERE tenant_id=$1 AND entry_id=$2)",
+            "SELECT EXISTS(SELECT 1 FROM era_posting_entries WHERE tenant_id=$1 AND entry_id=$2) OR EXISTS(SELECT 1 FROM payment_ledger_links WHERE tenant_id=$1 AND entry_id=$2) OR EXISTS(SELECT 1 FROM billing_copay_allocations x JOIN copay_checkout_attempts o ON o.tenant_id=x.tenant_id AND o.receipt_id=x.receipt_id WHERE x.tenant_id=$1 AND x.entry_id=$2) OR EXISTS(SELECT 1 FROM copay_checkout_refund_allocations WHERE tenant_id=$1 AND entry_id=$2) OR EXISTS(SELECT 1 FROM invoice_checkout_attempts WHERE tenant_id=$1 AND paid_entry_id=$2) OR EXISTS(SELECT 1 FROM invoice_checkout_refunds WHERE tenant_id=$1 AND entry_id=$2)",
         )
         .bind(a.tenant_id)
         .bind(original)
@@ -1140,7 +1140,7 @@ pub(crate) async fn patient_ledger_totals(
     tenant: Uuid,
     account: Uuid,
 ) -> Result<(i64, i64)> {
-    Ok(sqlx::query_as("SELECT coalesce(-sum(e.effect_cents),0)::bigint,coalesce(-sum(e.effect_cents) FILTER (WHERE e.kind='payment' OR (e.kind='reversal' AND original.kind='payment') OR (e.kind='adjustment_debit' AND (e.content->>'managed_payment_id' IS NOT NULL OR e.content->>'hosted_copay_operation_id' IS NOT NULL))),0)::bigint FROM billing_entries e LEFT JOIN billing_entries original ON original.tenant_id=e.tenant_id AND original.account_id=e.account_id AND original.id=e.reverses_id WHERE e.tenant_id=$1 AND e.account_id=$2 AND CASE WHEN e.kind='reversal' THEN original.content->>'party' ELSE e.content->>'party' END='patient'")
+    Ok(sqlx::query_as("SELECT coalesce(-sum(e.effect_cents),0)::bigint,coalesce(-sum(e.effect_cents) FILTER (WHERE e.kind='payment' OR (e.kind='reversal' AND original.kind='payment') OR (e.kind='adjustment_debit' AND (e.content->>'managed_payment_id' IS NOT NULL OR e.content->>'hosted_copay_operation_id' IS NOT NULL OR e.content->>'invoice_checkout_operation_id' IS NOT NULL))),0)::bigint FROM billing_entries e LEFT JOIN billing_entries original ON original.tenant_id=e.tenant_id AND original.account_id=e.account_id AND original.id=e.reverses_id WHERE e.tenant_id=$1 AND e.account_id=$2 AND CASE WHEN e.kind='reversal' THEN original.content->>'party' ELSE e.content->>'party' END='patient'")
         .bind(tenant).bind(account).fetch_one(&mut **tx).await?)
 }
 

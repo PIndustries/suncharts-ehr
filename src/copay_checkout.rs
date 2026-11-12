@@ -20,12 +20,12 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 #[derive(Clone, Copy)]
-struct Policy {
-    production: bool,
-    live_enabled: bool,
+pub(crate) struct Policy {
+    pub(crate) production: bool,
+    pub(crate) live_enabled: bool,
 }
 impl Policy {
-    fn current() -> Self {
+    pub(crate) fn current() -> Self {
         Self {
             production: matches!(
                 crate::DeploymentEnvironment::from_env(),
@@ -35,7 +35,7 @@ impl Policy {
                 == Ok("true"),
         }
     }
-    fn permits(self, live: bool) -> bool {
+    pub(crate) fn permits(self, live: bool) -> bool {
         if live {
             self.live_enabled
         } else {
@@ -49,7 +49,7 @@ pub(crate) fn live_collection_enabled() -> bool {
 fn db(state: &State) -> Result<&PgPool> {
     Ok(&state.browser.as_ref().ok_or(Error::NotFound)?.db)
 }
-fn identifier(value: &str, prefix: &str) -> bool {
+pub(crate) fn identifier(value: &str, prefix: &str) -> bool {
     value.starts_with(prefix)
         && value.len() > prefix.len()
         && value.len() <= 255
@@ -90,7 +90,7 @@ async fn credentials(
     Ok(config)
 }
 #[async_trait]
-trait Broker: Send + Sync {
+pub(crate) trait Broker: Send + Sync {
     async fn installation(
         &self,
         pool: &PgPool,
@@ -107,13 +107,13 @@ trait Broker: Send + Sync {
         body: Option<Value>,
     ) -> Result<Value>;
 }
-struct HttpBroker;
+pub(crate) struct HttpBroker;
 #[derive(Clone, Copy)]
-struct Binding {
-    tenant: Uuid,
-    setting: Uuid,
-    revision: i64,
-    installation: Uuid,
+pub(crate) struct Binding {
+    pub(crate) tenant: Uuid,
+    pub(crate) setting: Uuid,
+    pub(crate) revision: i64,
+    pub(crate) installation: Uuid,
 }
 #[async_trait]
 impl Broker for HttpBroker {
@@ -240,7 +240,11 @@ struct Create {
     livemode: bool,
     reason: String,
 }
-async fn current_binding(pool: &PgPool, tenant: Uuid, broker: &dyn Broker) -> Result<Binding> {
+pub(crate) async fn current_binding(
+    pool: &PgPool,
+    tenant: Uuid,
+    broker: &dyn Broker,
+) -> Result<Binding> {
     let (setting,revision):(Uuid,i64)=sqlx::query_as("SELECT id,credential_revision FROM payment_settings WHERE tenant_id=$1 AND mode='suncharts_connect'").bind(tenant).fetch_optional(pool).await?.ok_or(Error::Invalid("connect a payment account first"))?;
     Ok(Binding {
         tenant,
@@ -249,7 +253,11 @@ async fn current_binding(pool: &PgPool, tenant: Uuid, broker: &dyn Broker) -> Re
         installation: broker.installation(pool, tenant, setting, revision).await?,
     })
 }
-fn status_account(binding: &Binding, value: &Value, policy: Policy) -> Result<(String, bool)> {
+pub(crate) fn status_account(
+    binding: &Binding,
+    value: &Value,
+    policy: Policy,
+) -> Result<(String, bool)> {
     let mode = value["livemode"]
         .as_bool()
         .ok_or(Error::Invalid("payment account mode is unknown"))?;
@@ -340,7 +348,7 @@ async fn create_with(
     } else {
         None
     };
-    let unresolved:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM copay_checkout_attempts WHERE tenant_id=$1 AND appointment_id=$2 AND status IN ('creating','open','needs_review') AND receipt_id IS NULL)").bind(a.tenant_id).bind(appointment).fetch_one(&mut *tx).await?;
+    let unresolved:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM copay_checkout_attempts WHERE tenant_id=$1 AND appointment_id=$2 AND status IN ('creating','open','needs_review') AND receipt_id IS NULL) OR EXISTS(SELECT 1 FROM invoice_checkout_attempts x JOIN billing_accounts b ON b.tenant_id=x.tenant_id AND b.id=x.account_id JOIN visits v ON v.tenant_id=b.tenant_id AND v.id=b.visit_id WHERE x.tenant_id=$1 AND v.appointment_id=$2 AND x.status IN ('creating','open','needs_review'))").bind(a.tenant_id).bind(appointment).fetch_one(&mut *tx).await?;
     if unresolved {
         return Err(Error::Conflict(
             "review the existing copay checkout before starting another",
@@ -365,17 +373,53 @@ async fn create_with(
     let mut tx = pool.begin().await?;
     load(&mut tx, a.tenant_id, id).await
 }
-struct Verified {
-    session: String,
-    url: Option<String>,
-    paid: bool,
-    expired: bool,
-    intent: Option<String>,
-    charge: Option<String>,
-    refunded: i64,
-    captured_at: Option<DateTime<Utc>>,
+pub(crate) struct EvidenceBinding {
+    pub(crate) tenant_id: Uuid,
+    pub(crate) id: Uuid,
+    pub(crate) installation_id: Uuid,
+    pub(crate) provider_account_id: String,
+    pub(crate) livemode: bool,
+    pub(crate) amount_cents: i64,
+    pub(crate) currency: String,
+    pub(crate) provider_session_id: Option<String>,
+    pub(crate) provider_payment_intent: Option<String>,
+    pub(crate) provider_charge_id: Option<String>,
+    pub(crate) provider_captured_at: Option<DateTime<Utc>>,
+}
+impl Attempt {
+    fn evidence_binding(&self) -> EvidenceBinding {
+        EvidenceBinding {
+            tenant_id: self.tenant_id,
+            id: self.id,
+            installation_id: self.installation_id,
+            provider_account_id: self.provider_account_id.clone(),
+            livemode: self.livemode,
+            amount_cents: self.amount_cents,
+            currency: self.currency.clone(),
+            provider_session_id: self.provider_session_id.clone(),
+            provider_payment_intent: self.provider_payment_intent.clone(),
+            provider_charge_id: self.provider_charge_id.clone(),
+            provider_captured_at: self.provider_captured_at,
+        }
+    }
 }
 fn envelope<'a>(attempt: &Attempt, value: &'a Value) -> Result<&'a Value> {
+    envelope_bound(&attempt.evidence_binding(), value)
+}
+fn verify(attempt: &Attempt, value: &Value) -> Result<Verified> {
+    verify_bound(&attempt.evidence_binding(), value)
+}
+pub(crate) struct Verified {
+    pub(crate) session: String,
+    pub(crate) url: Option<String>,
+    pub(crate) paid: bool,
+    pub(crate) expired: bool,
+    pub(crate) intent: Option<String>,
+    pub(crate) charge: Option<String>,
+    pub(crate) refunded: i64,
+    pub(crate) captured_at: Option<DateTime<Utc>>,
+}
+pub(crate) fn envelope_bound<'a>(attempt: &EvidenceBinding, value: &'a Value) -> Result<&'a Value> {
     if value["contract_version"] != 1
         || value["installation_id"] != attempt.installation_id.to_string()
         || value["remote_tenant_id"] != attempt.tenant_id.to_string()
@@ -391,8 +435,8 @@ fn envelope<'a>(attempt: &Attempt, value: &'a Value) -> Result<&'a Value> {
         .get("session")
         .ok_or(Error::Invalid("payment session field is missing"))
 }
-fn verify(attempt: &Attempt, value: &Value) -> Result<Verified> {
-    let v = envelope(attempt, value)?;
+pub(crate) fn verify_bound(attempt: &EvidenceBinding, value: &Value) -> Result<Verified> {
+    let v = envelope_bound(attempt, value)?;
     let session = v["id"]
         .as_str()
         .filter(|s| {

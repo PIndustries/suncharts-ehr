@@ -448,3 +448,33 @@ not establish payment or a settled patient balance.
 Payment settings includes a read-only account summary for owners and existing authorized delegated administrators. It shows available and pending Stripe balances, payout/card readiness, and the latest ten payments and payouts. Live and test accounts are labeled separately. Account capability readiness does not enable live collection; the existing operator gates still apply.
 
 Requests go through the installation-bound SunCharts Connect broker. The server checks installation, tenant, account, mode and current credentials; the browser receives no Stripe keys, customer details, bank/card data or provider invoice links. Unavailable sections display as unavailable rather than zero. This account view does not post or reconcile patient ledger entries. Patient invoices and copay receipts remain in native patient billing.
+
+### Finite patient-present installments
+
+A finite plan records an agreed schedule against the latest immutable patient
+invoice, using reviewed patient responsibility less recorded patient credit. It
+never treats gross service charges or the combined payer balance as patient debt.
+Each installment has an exact cent amount and increasing due date. The original
+schedule, invoice identity and consent remain unchanged; a newer responsibility
+review requires a new invoice and plan. Plans do not schedule automatic charges
+or authorize off-session use of a saved card.
+
+An authorized billing operator confirms the patient is present and the exact
+current amount before opening each Stripe-hosted checkout. The server rechecks
+that amount against the installment and remaining reviewed balance. Only one
+unresolved collection may exist for an account. An uncertain creation keeps its
+original request identity; a browser return or status refresh can retrieve an
+already-bound session but cannot create another checkout. Production live
+collection uses the existing explicit activation gate and remains unavailable
+when that gate is off.
+
+Only independently retrieved, account- and mode-bound capture evidence appends a
+patient payment entry. Repeated reconciliation does not add another payment.
+Verified cumulative refunds append dated observations and matching debit entries;
+original payments and invoices are never rewritten. If payer activity, a newer
+invoice or another financial change invalidates responsibility while checkout is
+open, captured funds remain visible as unapplied and needing review. Polling does
+not silently allocate those funds after a later edit. Test and clinic payment
+activity cannot be mixed. Billing-view access is sufficient to inspect plans and
+collections without opening clinical records; new collections and reconciliation
+retain their separate write permissions and audit events.

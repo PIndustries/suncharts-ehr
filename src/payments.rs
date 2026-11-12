@@ -767,6 +767,13 @@ pub(crate) async fn create_native(
                 "payment requires the current posted account version",
             ));
         }
+        let invoice_pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM invoice_checkout_attempts WHERE tenant_id=$1 AND account_id=$2 AND status IN ('creating','open','needs_review'))")
+            .bind(a.tenant_id).bind(id).fetch_one(&mut *tx).await?;
+        if invoice_pending {
+            return Err(Error::Conflict(
+                "reconcile the existing invoice collection before starting another payment",
+            ));
+        }
         let current = balance(&mut tx, a.tenant_id, id).await?;
         let reserved:i64=sqlx::query_scalar("SELECT coalesce(sum(amount_cents),0)::bigint FROM payment_attempts WHERE tenant_id=$1 AND account_id=$2 AND status IN ('creating','open','needs_review') AND paid_entry_id IS NULL").bind(a.tenant_id).bind(id).fetch_one(&mut *tx).await?;
         if v.amount_cents > current - reserved {

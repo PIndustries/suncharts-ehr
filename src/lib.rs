@@ -46,6 +46,7 @@ pub mod fhir;
 pub mod gmail_referral_adapter;
 pub mod health_history;
 pub mod immunizations;
+pub mod installments;
 pub mod instance_integrations;
 pub mod labs;
 pub mod managed_connect;
@@ -379,6 +380,7 @@ pub fn app(state: State) -> Router {
         .merge(care_pathways::routes())
         .merge(payments::router())
         .merge(copay_checkout::router())
+        .merge(installments::router())
         .merge(claims::router())
         .merge(checkout::router())
         .merge(era_batches::router())
