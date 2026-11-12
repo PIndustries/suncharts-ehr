@@ -48,6 +48,9 @@ fn clean_setup(c: &Context, tenant: Uuid, op: &Setup, raw: &Value) -> Result<Val
     if raw["request_id"] != op.request_id.to_string() {
         return Err(invalid());
     }
+    if raw.get("session").is_none() || raw.get("customer_id").is_none() {
+        return Err(invalid());
+    }
     let status = choice_field(
         raw,
         "status",
@@ -236,6 +239,15 @@ async fn create_with(
             tx.commit().await?;
             return Ok(response(op.provider_evidence.ok_or_else(invalid)?));
         }
+        if op
+            .provider_evidence
+            .as_ref()
+            .is_some_and(|v| v["recovery_required"] == true)
+        {
+            return Err(Error::Conflict(
+                "Card setup requires connection review before retrying.",
+            ));
+        }
         if Utc::now() >= op.created_at + chrono::Duration::hours(23) {
             return Err(Error::Conflict(
                 "Card setup needs review. Refresh this request; do not create a replacement.",
@@ -323,7 +335,7 @@ async fn complete(
     op: &Setup,
     raw: Result<Value>,
 ) -> Result<Response> {
-    fresh_actor(a, s, h, method, path, action).await?;
+    let actor = fresh_actor(a, s, h, method, path, action).await?;
     let mut tx = db(s)?.begin().await?;
     c.unchanged(&mut tx, a).await?;
     let current = load(&mut tx, a.tenant_id, op.request_id).await?;
@@ -335,10 +347,12 @@ async fn complete(
                 serde_json::from_value(value["retry_safe_until"].clone()).map_err(|_| invalid())?;
             value["retry_allowed"] = json!(
                 value["session"].is_null()
+                    && value["status"] == "creating"
+                    && value["recovery_required"] == false
                     && deadline > Utc::now()
                     && current.requested_by == a.sub
-                    && a.scheduling().is_ok()
-                    && crate::access_policies::require_native(s, a, "billing", "create")
+                    && actor.scheduling().is_ok()
+                    && crate::access_policies::require_native(s, &actor, "billing", "create")
                         .await
                         .is_ok()
             );

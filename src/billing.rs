@@ -20,6 +20,8 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 #[path = "billing/overview.rs"]
 mod overview;
+#[path = "billing/payment_history.rs"]
+mod payment_history;
 
 fn db(s: &State) -> Result<&sqlx::PgPool> {
     Ok(&s.browser.as_ref().ok_or(Error::NotFound)?.db)
@@ -471,6 +473,7 @@ async fn account_links(
 pub fn router() -> Router<State> {
     Router::new()
         .merge(overview::router())
+        .merge(payment_history::router())
         .route("/api/v1/billing/payers", get(payers).post(new_payer))
         .route(
             "/api/v1/patients/{p}/billing/accounts/{id}/invoices",

@@ -97,20 +97,26 @@ impl Source for Fake {
             let complete = mode == "succeeded";
             out["request_id"] = json!(request);
             out["customer_id"] = json!("cus_synthetic");
-            out["status"] = json!(if mode == "creating" {
+            out["status"] = json!(if mode == "review" {
+                "needs_review"
+            } else if mode == "creating" || mode == "missing_session" {
                 "creating"
             } else if complete {
                 "succeeded"
             } else {
                 "open"
             });
-            out["session"] = if mode == "creating" {
+            out["session"] = if mode == "creating" || mode == "review" || mode == "missing_session"
+            {
                 Value::Null
             } else {
                 json!({"id":"cs_test_synthetic","url":if complete{Value::Null}else{json!("https://checkout.stripe.com/c/pay/synthetic#stripe-fragment")},"status":if complete{"complete"}else{"open"},"setup_intent_id":if complete{json!("seti_synthetic")}else{Value::Null},"setup_intent_status":if complete{json!("succeeded")}else{Value::Null},"payment_method_id":if complete{json!("pm_synthetic")}else{Value::Null},"client_secret":"must-not-leak"})
             };
             out["retry_safe_until"] = json!(Utc::now() + chrono::Duration::hours(23));
-            out["recovery_required"] = json!(false);
+            out["recovery_required"] = json!(mode == "review");
+            if mode == "missing_session" {
+                out.as_object_mut().unwrap().remove("session");
+            }
         }
         if mode == "wrongpatient" {
             out["patient_id"] = json!(Uuid::new_v4());
@@ -491,5 +497,43 @@ async fn setup_cross_binding_and_missing_consent_never_create() {
         before + 1,
         "only account status, no setup request after credential replacement"
     );
+    f.untouched().await;
+}
+
+#[tokio::test]
+async fn broker_review_blocks_retry_even_with_future_deadline_and_missing_session_is_invalid() {
+    let f = Fixture::new().await;
+    let request = Uuid::new_v4();
+    let input = json!({"request_id":request,"consent":true});
+    let create = format!("/api/v1/billing/patients/{}/payment-setups", f.patient);
+    let read = format!("/api/v1/billing/payment-setups/{request}");
+    f.fake.set("missing_session");
+    assert_eq!(
+        f.call("POST", &create, input.clone(), false, None).await.0,
+        400
+    );
+    f.fake.set("review");
+    let (code, v) = f.call("GET", &read, Value::Null, false, None).await;
+    assert_eq!(code, 200, "{v}");
+    assert_eq!(v["retry_allowed"], false);
+    assert_eq!(v["status"], "needs_review");
+    let before = f
+        .fake
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(m, _)| *m == Method::POST)
+        .count();
+    assert_eq!(f.call("POST", &create, input, false, None).await.0, 409);
+    let after = f
+        .fake
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(m, _)| *m == Method::POST)
+        .count();
+    assert_eq!(before, after);
     f.untouched().await;
 }

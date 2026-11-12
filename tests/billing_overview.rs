@@ -560,7 +560,7 @@ async fn native_billing_overview_browser_fixture() {
     let url = url::Url::parse(&std::env::var("TEST_DATABASE_URL").unwrap()).unwrap();
     assert_eq!(url.host_str(), Some("127.0.0.1"));
     assert_eq!(url.port(), Some(55589));
-    assert_eq!(url.path(), "/claim_tracking_test");
+    assert_eq!(url.path(), "/patient_billing_gateway_261111");
     let (db, a, p, appointment) = setup().await;
     let seed = app(db.clone());
     let first = add_receipt(&seed, &a, p, appointment, 2500).await;
@@ -604,7 +604,7 @@ async fn native_billing_overview_browser_fixture() {
     .await
     .unwrap();
     sqlx::query("INSERT INTO payment_credentials(tenant_id,setting_id,revision,encrypted_config) VALUES($1,$2,1,'synthetic-not-provider-credentials'::bytea)").bind(a.tenant_id).bind(setting).execute(&db).await.unwrap();
-    sqlx::query("INSERT INTO copay_checkout_attempts(tenant_id,id,patient_id,appointment_id,setting_id,credential_revision,installation_id,provider_account_id,livemode,amount_cents,request_id,creation_hash,requested_by,reason,return_url,status,receipt_id) VALUES($1,$2,$3,$4,$5,1,$6,'acct_local_synthetic',false,2500,$7,'synthetic',$8,'Local browser evidence only','http://127.0.0.1:55618/','paid',$9)").bind(a.tenant_id).bind(Uuid::new_v4()).bind(test_patient).bind(test_appointment).bind(setting).bind(Uuid::new_v4()).bind(Uuid::new_v4()).bind(a.sub).bind(Uuid::parse_str(test_receipt["id"].as_str().unwrap()).unwrap()).execute(&db).await.unwrap();
+    sqlx::query("INSERT INTO copay_checkout_attempts(tenant_id,id,patient_id,appointment_id,setting_id,credential_revision,installation_id,provider_account_id,livemode,amount_cents,request_id,creation_hash,requested_by,reason,return_url,status,receipt_id) VALUES($1,$2,$3,$4,$5,1,$6,'acct_local_synthetic',false,2500,$7,'synthetic',$8,'Local browser evidence only','http://127.0.0.1:55628/','paid',$9)").bind(a.tenant_id).bind(Uuid::new_v4()).bind(test_patient).bind(test_appointment).bind(setting).bind(Uuid::new_v4()).bind(Uuid::new_v4()).bind(a.sub).bind(Uuid::parse_str(test_receipt["id"].as_str().unwrap()).unwrap()).execute(&db).await.unwrap();
     let recorded = overview(&seed, &a, "").await;
     assert_eq!(recorded["summary"]["copays"]["receipts"], 3);
     assert_eq!(recorded["summary"]["copays"]["net_received_cents"], 7500);
@@ -634,9 +634,9 @@ async fn native_billing_overview_browser_fixture() {
         allow_legacy_gateway: false,
         issuer: "suncharts".into(),
         audience: "suncharts-engine".into(),
-        browser: Some(BrowserAuth::new(db, "http://127.0.0.1:55618".into()).unwrap()),
+        browser: Some(BrowserAuth::new(db, "http://127.0.0.1:55628".into()).unwrap()),
     });
-    let directory = std::path::Path::new("/private/tmp/suncharts-billing-overview-browser");
+    let directory = std::path::Path::new("/private/tmp/suncharts-patient-billing-browser");
     std::fs::create_dir_all(directory).unwrap();
     std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
     let mut file = std::fs::OpenOptions::new()
@@ -646,12 +646,12 @@ async fn native_billing_overview_browser_fixture() {
         .open(directory.join("browser-auth.json"))
         .unwrap();
     use std::io::Write;
-    file.write_all(json!({"origin":"http://127.0.0.1:55618","email":email,"password":password,"role":"billing-view only; clinical and claims denied","first_receipt":first["id"],"synthetic_only":true,"provider_calls":0}).to_string().as_bytes()).unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:55618")
+    file.write_all(json!({"origin":"http://127.0.0.1:55628","email":email,"password":password,"role":"billing-view only; clinical and claims denied","first_receipt":first["id"],"synthetic_only":true,"provider_calls":0}).to_string().as_bytes()).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:55628")
         .await
         .unwrap();
     println!(
-        "Synthetic billing overview ready at http://127.0.0.1:55618; protected login file written."
+        "Synthetic billing overview ready at http://127.0.0.1:55628; protected login file written."
     );
     axum::serve(listener, router)
         .with_graceful_shutdown(async {
@@ -659,4 +659,94 @@ async fn native_billing_overview_browser_fixture() {
         })
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn payment_history_lists_each_receipt_once_and_keeps_direct_payment_evidence() {
+    let (db, a, p, appointment) = setup().await;
+    let r = app(db.clone());
+    let receipt = add_receipt(&r, &a, p, appointment, 2500).await;
+    let account = posted_account(&db, &r, &a, p, appointment).await;
+    let path = format!(
+        "/api/v1/patients/{p}/billing/accounts/{}/entries",
+        account["id"].as_str().unwrap()
+    );
+    let(status,entry)=call(&r,&a,"POST",&path,json!({"request_id":Uuid::new_v4(),"kind":"payment","amount_cents":1000,"reverses_id":null,"party":"patient","method":"cash","reference":"SYNTHETIC-DIRECT","occurred_on":Utc::now().date_naive(),"reason":"Synthetic confirmed cash payment"}),Some(2)).await;
+    assert_eq!(status, StatusCode::OK, "{entry}");
+    let history = format!("/api/v1/billing/patients/{p}/payment-history");
+    let (status, first) = call(
+        &r,
+        &a,
+        "GET",
+        &format!("{history}?limit=1"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(first["items"].as_array().unwrap().len(), 1);
+    let cursor = first["next_cursor"].as_str().unwrap();
+    let (status, second) = call(
+        &r,
+        &a,
+        "GET",
+        &format!("{history}?after={cursor}&limit=1"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert!(second["next_cursor"].is_null());
+    let mut rows = first["items"].as_array().unwrap().clone();
+    rows.extend(second["items"].as_array().unwrap().clone());
+    assert_eq!(
+        rows.len(),
+        2,
+        "allocated copay has no duplicate direct ledger payment"
+    );
+    let copay = rows.iter().find(|x| x["kind"] == "copay").unwrap();
+    assert_eq!(copay["id"], receipt["id"]);
+    assert_eq!(copay["received_cents"], 2500);
+    assert_eq!(copay["unapplied_cents"], 0);
+    assert_eq!(copay["ledger_recorded"], true);
+    let direct = rows
+        .iter()
+        .find(|x| x["kind"] == "recorded_payment")
+        .unwrap();
+    assert_eq!(direct["id"], entry["id"]);
+    assert_eq!(direct["received_cents"], 1000);
+    assert_eq!(direct["status"], "recorded");
+    let (status, test) = call(
+        &r,
+        &a,
+        "GET",
+        &format!("{history}?mode=test"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(test["items"], json!([]));
+    let(status,reversal)=call(&r,&a,"POST",&path,json!({"request_id":Uuid::new_v4(),"kind":"reversal","amount_cents":null,"reverses_id":entry["id"],"party":"patient","method":"none","reference":"SYNTHETIC-CORRECTION","occurred_on":Utc::now().date_naive(),"reason":"Synthetic recording correction, no processor refund"}),Some(3)).await;
+    assert_eq!(status, StatusCode::OK, "{reversal}");
+    let (status, list) = call(&r, &a, "GET", &history, Value::Null, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list["items"].as_array().unwrap().len(), 2);
+    let direct = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["kind"] == "recorded_payment")
+        .unwrap();
+    assert_eq!(direct["status"], "reversed");
+    assert_eq!(
+        direct["refunded_cents"], 0,
+        "a correction is not a verified card refund"
+    );
+    let mut other = a.clone();
+    other.tenant_id = Uuid::new_v4();
+    assert_eq!(
+        call(&r, &other, "GET", &history, Value::Null, None).await.0,
+        StatusCode::NOT_FOUND
+    );
 }

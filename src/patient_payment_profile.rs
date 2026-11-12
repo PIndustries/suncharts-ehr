@@ -332,7 +332,7 @@ async fn fresh_actor(
     method: Method,
     path: &str,
     action: &str,
-) -> Result<()> {
+) -> Result<Actor> {
     let mut parts = axum::http::Request::builder()
         .method(method)
         .uri(path)
@@ -349,7 +349,8 @@ async fn fresh_actor(
     if action == "create" {
         current.scheduling()?;
     }
-    crate::access_policies::require_native(s, &current, "billing", action).await
+    crate::access_policies::require_native(s, &current, "billing", action).await?;
+    Ok(current)
 }
 fn response(value: Value) -> Response {
     (
@@ -416,15 +417,7 @@ async fn read_with(
     for kind in ["payment_methods", "invoices", "subscriptions"] {
         out[kind] = clean_section(&raw[kind], kind)?;
     }
-    out["setup_available"] = json!(
-        raw["setup_available"].as_bool().ok_or_else(invalid)?
-            && !c.archived
-            && a.scheduling().is_ok()
-            && crate::access_policies::require_native(&s, &a, "billing", "create")
-                .await
-                .is_ok()
-    );
-    fresh_actor(
+    let current = fresh_actor(
         &a,
         &s,
         &h,
@@ -433,6 +426,14 @@ async fn read_with(
         "view",
     )
     .await?;
+    out["setup_available"] = json!(
+        raw["setup_available"].as_bool().ok_or_else(invalid)?
+            && !c.archived
+            && current.scheduling().is_ok()
+            && crate::access_policies::require_native(&s, &current, "billing", "create")
+                .await
+                .is_ok()
+    );
     let mut tx = db(&s)?.begin().await?;
     c.unchanged(&mut tx, &a).await?;
     let active:Option<Value>=sqlx::query_scalar("SELECT jsonb_build_object('request_id',request_id,'status',status) FROM patient_payment_setups WHERE tenant_id=$1 AND patient_id=$2 AND status IN ('creating','open','pending','needs_review') ORDER BY created_at DESC LIMIT 1").bind(a.tenant_id).bind(patient).fetch_optional(&mut *tx).await?;

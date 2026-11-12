@@ -34827,6 +34827,169 @@
           }
         }
       }
+    },
+    "/api/v1/billing/patients/{id}/payment-history": {
+      "get": {
+        "summary": "Read patient payment sources once across encounters",
+        "description": "Billing view permission. Allocations and managed-payment ledger links are excluded from standalone entries so each collection appears once. Copay receipts, legacy test account-checkout attempts and directly recorded patient payments retain their evidence and status. Null received amounts mean unverified, not zero. Reversed, void and needs-review states remain visible. Read-only history does not move money or recompute liability.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "recorded",
+                "test"
+              ],
+              "default": "recorded"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Opaque kind:uuid cursor from the previous response"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Patient-scoped payment history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "patient_id",
+                    "mode",
+                    "currency",
+                    "items",
+                    "next_cursor"
+                  ],
+                  "properties": {
+                    "patient_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "mode": {
+                      "type": "string"
+                    },
+                    "currency": {
+                      "const": "USD"
+                    },
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "enum": [
+                              "copay",
+                              "account_payment",
+                              "recorded_payment",
+                              "invoice_checkout"
+                            ]
+                          },
+                          "id": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "received_cents": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "refunded_cents": {
+                            "type": "integer"
+                          },
+                          "unapplied_cents": {
+                            "type": "integer"
+                          },
+                          "ledger_recorded": {
+                            "type": "boolean"
+                          },
+                          "test_activity": {
+                            "type": "boolean"
+                          },
+                          "status": {
+                            "type": "string"
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "account_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "format": "uuid"
+                          },
+                          "visit_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "format": "uuid"
+                          },
+                          "appointment_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "format": "uuid"
+                          },
+                          "receipt_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "format": "uuid"
+                          },
+                          "reference": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        }
+                      }
+                    },
+                    "next_cursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
