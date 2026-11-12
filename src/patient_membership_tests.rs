@@ -67,7 +67,7 @@ impl Source for Fake {
             };
             let mut out = self.envelope(patient);
             let mut items = Vec::new();
-            if mode == "active_list" && patient.is_some() {
+            if let Some(patient) = patient.filter(|_| mode == "active_list") {
                 let requests:Vec<Uuid>=sqlx::query_scalar("SELECT request_id FROM patient_membership_operations WHERE tenant_id=$1 AND patient_id=$2 AND kind='membership' ORDER BY request_id").bind(self.tenant).bind(patient).fetch_all(&self.pool).await?;
                 for request in requests {
                     let proof = self
@@ -76,7 +76,7 @@ impl Source for Fake {
                             Method::GET,
                             &format!(
                                 "/patient-billing/{}/membership-checkouts/{request}",
-                                patient.unwrap()
+                                patient
                             ),
                             None,
                         )
