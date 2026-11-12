@@ -71,8 +71,12 @@ require review.
    available copay credit from this appointment to its account. A receipt recorded
    after posting can apply immediately. Pending processor attempts reserve amounts;
    allocation never exceeds the available account balance.
-3. **View / print receipt** produces a patient copy with the received amount,
-   method, reference, linked appointment and current allocation state. Unapplied
+3. **View / print receipt** opens a compact branded receipt in the linked
+   encounter's Billing section. Before an encounter exists, or without clinical
+   access, it opens the patient's Billing → Payments workspace instead. Open
+   insurance edits must be saved or canceled before leaving that form. The receipt
+   shows the received amount, method, reference, exact appointment and current
+   allocation state; **Print / save PDF** explicitly opens its printable copy. Unapplied
    credit remains visible until charges exist. **Apply recorded copay credit**
    allocates eligible remaining credit from the posted account. An unallocated
    receipt can be corrected by voiding its record; this does not refund money.

@@ -26,4 +26,12 @@
 .patient-billing-card h4{margin:0 0 8px}
 .patient-billing-card p{margin:7px 0}
 #patient-billing-preview{border-top:1px solid var(--line);margin-top:24px;padding-top:20px}
+.copay-receipt-card{max-width:740px;margin:16px 0;padding:24px;border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--text);scroll-margin-top:24px}
+.copay-receipt-card header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid var(--line)}
+.copay-receipt-card header img{width:64px;height:64px;object-fit:contain;background:#fff;border-radius:6px}
+.copay-receipt-card header>div{flex:1;min-width:160px}.copay-receipt-card header p,.copay-receipt-card h3{margin:0}.copay-receipt-card header p{color:var(--muted);font-size:.85rem;margin-bottom:4px}
+.copay-receipt-amount{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:20px 0;flex-wrap:wrap}.copay-receipt-amount span{display:block}.copay-receipt-amount strong{display:block;font-size:2.2rem;line-height:1.3;font-variant-numeric:tabular-nums}.copay-receipt-status{padding:7px 12px;border-radius:20px;background:var(--accent);color:var(--blue);font-weight:700}
+.copay-receipt-card dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin:20px 0}.copay-receipt-card dt{font-size:.8rem;color:var(--muted)}.copay-receipt-card dd{margin:4px 0 0;overflow-wrap:anywhere}.copay-receipt-card dd small{display:block;color:var(--muted);margin-top:4px}.copay-receipt-card details{font-size:.8rem;overflow-wrap:anywhere}.copay-receipt-card footer{border-top:1px solid var(--line);margin-top:20px;padding-top:12px;color:var(--muted);font-size:.8rem}.copay-receipt-card footer p{margin:5px 0}
+.copay-print-source{position:absolute;width:1px;height:1px;border:0;left:-10000px;pointer-events:none}
+@media(max-width:600px){.copay-receipt-card{padding:16px}.copay-receipt-card dl{grid-template-columns:1fr}.copay-receipt-card header button{width:100%}}
 @media(max-width:800px){.patient-billing-header,.patient-billing-scope{display:block}.patient-billing-header>.actions{margin-top:12px}.patient-billing-totals{grid-template-columns:1fr}.patient-billing-search-row{flex-wrap:wrap}.patient-billing-scope p{margin-top:8px}.patient-billing-tabs button{padding:12px}}
