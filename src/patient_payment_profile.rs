@@ -8,6 +8,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use std::collections::HashSet;
+#[path = "patient_memberships.rs"]
+pub(super) mod memberships;
 #[path = "patient_payment_profile_setup.rs"]
 pub(super) mod setup;
 

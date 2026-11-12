@@ -306,6 +306,27 @@ pub fn router() -> Router<State> {
         )
         .route("/api/v1/billing/payments/operations", get(operations::read))
         .route(
+            "/api/v1/billing/membership-prices",
+            get(patient_profile::memberships::prices)
+                .post(patient_profile::memberships::create_price),
+        )
+        .route(
+            "/api/v1/billing/membership-prices/{id}",
+            get(patient_profile::memberships::read_price),
+        )
+        .route(
+            "/api/v1/billing/patients/{id}/memberships",
+            get(patient_profile::memberships::list).post(patient_profile::memberships::create),
+        )
+        .route(
+            "/api/v1/billing/memberships/{id}",
+            get(patient_profile::memberships::read),
+        )
+        .route(
+            "/api/v1/billing/patients/{id}/memberships/{subscription}/cancel-at-period-end",
+            post(patient_profile::memberships::cancel),
+        )
+        .route(
             "/api/v1/billing/patients/{id}/payment-profile",
             get(patient_profile::read),
         )

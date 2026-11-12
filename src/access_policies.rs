@@ -250,6 +250,15 @@ fn action(method: &Method, path: &str) -> Option<Action> {
                 return Some(Action::Create);
             }
 
+
+            if path.starts_with("/api/v1/billing/") && path.ends_with("/cancel-at-period-end") {
+                return Some(Action::Edit);
+            }
+            if path.starts_with("/api/v1/billing/")
+                && (path.ends_with("/membership-prices") || path.ends_with("/memberships"))
+            {
+                return Some(Action::Create);
+            }
             if path.starts_with("/api/v1/patients/") && path.contains("/documents/") {
                 if path.ends_with("/office-sessions") {
                     return Some(Action::View);

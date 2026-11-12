@@ -507,3 +507,36 @@ checks and explicit safe retries. Returning from checkout never establishes paym
 or membership success. Unsaved form text and proposed schedules stay only in the
 current browser tab's memory, scoped to the signed-in identity and patient. Restoring
 a draft requires fresh consent and, for a payment schedule, a new server preview.
+
+### Recurring memberships
+
+Practice owners can approve a fixed USD recurring price with a name, amount,
+cadence and approval reason. Approved prices are immutable. Authorized billing
+staff select a plan and explicitly initiate patient-present enrollment; the
+patient then reviews its amount, renewal frequency and cancellation terms in
+Stripe-hosted Checkout and accepts separate recurring-payment authorization.
+Saving a card alone does not authorize enrollment or future recurring charges.
+An active or unfinished enrollment for the same patient and price prevents an
+accidental replacement enrollment.
+
+Native membership operations retain the exact patient, installation, connected
+account, mode, credential revision and original request. Pending operations
+remain discoverable after reload. Refresh only retrieves evidence; an explicit
+retry keeps the original request and frozen terms, within the bounded recovery
+window. An uncertain operation must not be replaced with a new request ID.
+Verified memberships expose their current status and cancellation date.
+Cancellation schedules the end of the paid period without an immediate refund
+or proration. A previous cancellation cannot silently cancel a membership again
+after it has been resumed externally.
+
+Memberships are separate from encounter receivables, insurer claims, copays and
+patient invoices. Membership activity does not generate patient ledger credits
+or mark an encounter invoice paid. Existing externally created subscriptions
+remain read-only in the patient processor profile; native cancellation requires
+a verified native membership mapping.
+
+New live membership creation is off by default. Activation requires the explicit
+EHR operator flag `ENGINE_LIVE_MEMBERSHIPS_ENABLED=enabled` and the corresponding
+Connect membership activation. Existing live subscriptions remain readable.
+Production refuses test-mode creation even if live membership activation is set.
+No operator flag is enabled by installing this feature.
