@@ -5,6 +5,7 @@ const source=fs.readFileSync('web/patient-payment-plans.js','utf8');
 const patient='11111111-1111-4111-8111-111111111111',request='22222222-2222-4222-8222-222222222222',operation='33333333-3333-4333-8333-333333333333';
 function fixture(){
  const nodes={},calls=[],handlers={},identity={tenant_id:'tenant',user_id:'owner',role:'owner'};
+ const clock=class extends Date{constructor(...args){super(...(args.length?args:['2026-11-12T02:23:00Z']));}static now(){return new Date('2026-11-12T02:23:00Z').getTime();}};
  const node=id=>nodes[id]={id,innerHTML:'',isConnected:true,hidden:false,querySelector:selector=>nodes[selector.slice(1)]||null,querySelectorAll:()=>[],replaceChildren(){this.innerHTML='';},scrollIntoView(){},insertAdjacentHTML(_where,html){this.innerHTML+=html;}};
  for(const id of ['patient-billing-memberships','patient-billing-installments','patient-billing-profile-section','installment-plan-review','installment-collection','tools','membership-return','invoice-checkout-return'])node(id);
  const host=node('hub');
@@ -16,6 +17,7 @@ function fixture(){
  const op={id:operation,request_id:request,patient_id:patient,plan_id:plan.id,account_id:plan.account_id,installment_number:1,amount_cents:250,livemode:false,status:'open',checkout_url:'https://checkout.stripe.com/c/pay/cs_test_synthetic',paid_entry_id:null,refunded_cents:0,unapplied_cents:0,version:1,reason:'Agreed synthetic collection'};
  ctx.api=async(path,method='GET',body,version)=>{calls.push([path,method,body,version]);if(path.includes('/invoice-checkouts/'))return {operation:op};if(path.endsWith('/checkout'))return {plan:{...plan,attempts:[op]},operation:op};if(path.endsWith('/preview'))return {...invoice,installments:body.installments.map((r,i)=>({...r,number:i+1})),autopay:false};if(path.includes('/installment-plans'))return method==='POST'?plan:{items:[plan],eligible_invoices:[invoice],availability:{available:true,livemode:false}};if(path.includes('/membership-prices'))return method==='POST'?{price:{...price,request_id:request}}:{items:[price],creation_available:true};if(path.endsWith('/cancel-at-period-end'))return {patient_id:patient,request_id:request,subscription:{id:'sub_one',cancel_at_period_end:true}};const membership={request_id:request,price,status:'open',session:{url:'https://checkout.stripe.com/c/pay/cs_test_synthetic'},retry_allowed:false,subscription_id:'sub_one',subscription_status:'active'};return path.includes('/memberships/')||method==='POST'?{patient_id:patient,membership}:{patient_id:patient,livemode:false,items:[],creation_available:true};};
  vm.createContext(ctx);vm.runInContext(source,ctx);
+ ctx.Date=clock;
  const enrollment={elements:{consent:{checked:true},price_id:{value:price.id}}};
  const collection={dataset:{plan:plan.id,version:'1',number:'1',amount:'250'},elements:{patient_present:{checked:true},reason:{value:op.reason}}};
  return {ctx,s,nodes,calls,handlers,price,invoice,plan,op,enrollment,collection};
@@ -40,11 +42,48 @@ const mutations=f=>f.calls.filter(call=>call[1]==='POST');
  f=fixture();c=f.ctx;const schedule=[{due_on:'2026-11-30',amount_cents:250},{due_on:'2026-12-30',amount_cents:250}];
  const form={dataset:{invoice:'invoice-one'},elements:{invoice_id:{value:'invoice-one'}},querySelectorAll:()=>schedule.map(row=>({querySelector:q=>({value:q.includes('due_on')?row.due_on:(row.amount_cents/100).toFixed(2)})}))};await c.previewInstallmentPlan(f.s,form);assert.equal(mutations(f).length,1);assert.match(mutations(f)[0][0],/\/preview$/);assert.equal(mutations(f)[0][2].livemode,false);assert.match(f.nodes['installment-plan-review'].innerHTML,/No automatic card charges/);
  const confirm={elements:{consent:{checked:true},reason:{value:'Patient reviewed finite schedule'}}};await c.createInstallmentPlan(f.s,confirm,false);assert.equal(mutations(f).length,2);assert.equal(mutations(f)[1][3],5,'optimistic account version comes from server preview');assert.equal(mutations(f)[1][2].request_id,request);assert.ok(!f.calls.some(call=>String(call[0]).endsWith('/checkout')));
+ // At Chicago Nov11 evening the unchanged server rule already uses Nov12 UTC.
+ f=fixture();c=f.ctx;
+ assert.equal(c.installmentDueDateBounds().earliest,'2026-11-12');
+ assert.match(c.installmentPlanForm(f.s),/min="2026-11-12"/);
+ assert.match(c.installmentPlanForm(f.s),/today in UTC.*tomorrow in your local time/);
+ let firstDue='2026-11-11';const localSchedule={dataset:{invoice:f.invoice.invoice_id},elements:{invoice_id:{value:f.invoice.invoice_id}},querySelectorAll:()=>[{querySelector:q=>({value:q.includes('due_on')?firstDue:'2.50'})},{querySelector:q=>({value:q.includes('due_on')?'2026-12-12':'2.50'})}]};
+ await assert.rejects(c.previewInstallmentPlan(f.s,localSchedule),/on or after 2026-11-12.*UTC/);assert.equal(mutations(f).length,0);assert.equal(firstDue,'2026-11-11','invalid dates are explained, never silently changed');
+ firstDue='2026-11-12';await c.previewInstallmentPlan(f.s,localSchedule);assert.equal(mutations(f).length,1);assert.equal(mutations(f)[0][2].installments[0].due_on,'2026-11-12');
+ const earliestForm={elements:{invoice_id:{value:f.invoice.invoice_id},count:{value:'2'},first_due:{value:'2026-11-11'}}};
+ assert.throws(()=>c.divideInstallmentSchedule(f.s,earliestForm),/on or after 2026-11-12.*UTC/);
+ assert.throws(()=>c.validateInstallmentDueDates([{due_on:'2031-11-13'}]),/five-year scheduling limit/);
+ // An invoice with an existing immutable plan is not a missing responsibility review.
+ f.s.eligibleInvoices=[{...f.invoice,eligible:false,existing_plan_id:f.plan.id}];
+ assert.match(c.installmentPlanForm(f.s),/All reviewed invoices already have payment plans/);
+ assert.doesNotMatch(c.installmentPlanForm(f.s),/Review the patient’s responsibility|id="installment-preview-form"/);
+ f.s.eligibleInvoices.push({...f.invoice,invoice_id:'another-invoice'});assert.match(c.installmentPlanForm(f.s),/id="installment-preview-form"/);
+ f.s.eligibleInvoices=[];f.s.installmentPlans=[];assert.match(c.installmentPlanForm(f.s),/Review the patient’s responsibility/);
  // Creating the plan never collects; collecting requires fresh patient-present consent.
  f=fixture();c=f.ctx;f.collection.elements.patient_present.checked=false;await c.createInstallmentCheckout(f.s,f.collection);assert.equal(mutations(f).length,0);f.collection.elements.patient_present.checked=true;await c.createInstallmentCheckout(f.s,f.collection);assert.equal(mutations(f).length,1);assert.equal(mutations(f)[0][3],1);assert.equal(mutations(f)[0][2].patient_present,true);assert.equal(mutations(f)[0][2].amount_cents,250,'collection sends the exact amount the patient reviewed');assert.match(f.nodes['patient-billing-installments'].innerHTML,/No patient ledger capture is confirmed/);
  // Return refresh can retrieve only the existing operation, never create Checkout.
  f=fixture();c=f.ctx;await c.openInvoiceCheckoutReturn(operation);assert.deepEqual(f.calls.filter(call=>call[0].startsWith('/api/')).map(call=>[call[1],call[0]]),[['GET','/api/v1/billing/invoice-checkouts/'+operation],['POST','/api/v1/billing/invoice-checkouts/'+operation+'/refresh']]);assert.equal(f.calls.find(call=>call[0]==='open-hub')[1].patientId,patient);assert.equal(f.calls.find(call=>call[0]==='open-hub')[1].planId,'plan-one');assert.equal(f.op.paid_entry_id,null);
  f=fixture();c=f.ctx;await c.openPatientMembershipReturn(request);assert.equal(mutations(f).length,0);assert.equal(f.calls.find(call=>call[0]==='open-hub')[1].tab,'subscriptions');
+ // A successful return excludes an already-enrolled price without claiming the catalog is empty.
+ f=fixture();c=f.ctx;const returnApi=c.api,activeMembership={request_id:request,price:f.price,status:'active',subscription_status:'active',subscription_id:'sub_one'};
+ c.api=async(path,...args)=>path==='/api/v1/billing/memberships/'+request?{patient_id:patient,membership:activeMembership}:path.endsWith('/memberships')?{patient_id:patient,livemode:false,items:[activeMembership],creation_available:true}:returnApi(path,...args);
+ c.showPatientBillingWorkspace=async()=>{await c.loadPatientMemberships(f.s,1);return f.s;};
+ await c.openPatientMembershipReturn(request);
+ assert.match(f.nodes['patient-billing-memberships'].innerHTML,/already has a membership for each approved active price/);
+ assert.doesNotMatch(f.nodes['patient-billing-memberships'].innerHTML,/No approved active membership prices|id="patient-membership-form"/);
+ await assert.rejects(c.createPatientMembership(f.s,f.enrollment),/existing membership/);assert.equal(mutations(f).length,0);
+ // Unknown, paginated, failed and confirmed-empty catalog states remain distinct.
+ f=fixture();c=f.ctx;delete f.s.membershipPrices;
+ assert.match(c.membershipSelectionForm(f.s),/have not been loaded/);
+ assert.doesNotMatch(c.membershipSelectionForm(f.s),/No approved active membership prices/);
+ f.s.membershipPrices=[];assert.match(c.membershipSelectionForm(f.s),/No approved active membership prices/);
+ f.s.membershipPricesNext='next';assert.match(c.membershipSelectionForm(f.s),/loaded results/);
+ assert.doesNotMatch(c.membershipSelectionForm(f.s),/No approved active membership prices/);
+ f.s.membershipPrices=[f.price];f.s.memberships=[{...activeMembership,status:'canceled'}];f.s.membershipPricesNext=null;
+ assert.match(c.membershipSelectionForm(f.s),/id="patient-membership-form"/);
+ const malformedApi=c.api;c.api=(path,...args)=>path==='/api/v1/billing/membership-prices'?Promise.resolve({creation_available:true}):malformedApi(path,...args);
+ await c.loadPatientMemberships(f.s,1);assert.match(f.nodes['patient-billing-memberships'].innerHTML,/Approved prices are unavailable/);
+ assert.doesNotMatch(f.nodes['patient-billing-memberships'].innerHTML,/No approved active membership prices/);
  f=fixture();c=f.ctx;c.api=()=>new Promise(r=>finish=r);const returning=c.openInvoiceCheckoutReturn(operation);c.me={tenant_id:'other',role:'owner'};finish({operation:f.op});await returning;assert.ok(!f.calls.some(call=>call[0]==='open-hub'));assert.equal(mutations(f).length,0);
  // Drafts are memory-only, scoped to the patient and authenticated identity; consent is never restored.
  f=fixture();c=f.ctx;
