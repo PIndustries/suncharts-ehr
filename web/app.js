@@ -95,7 +95,8 @@ async function acceptConnectLaunch(){
  // reject the browser's initial GET before JavaScript can consume the fragment.
  // The legacy acceptance path remains supported for existing launch links.
  const identity=location.pathname==='/api/v1/connect/identity/accept'||location.pathname==='/';
- if((!support&&!identity)||!location.hash)return false;
+ // A screen address (#/claims, #/patients/…) is not a Connect launch; leave it for navigation.
+ if((!support&&!identity)||!location.hash||location.hash.startsWith('#/'))return false;
  let code,issuer;
  try{
   const input=new URLSearchParams(location.hash.slice(1));
@@ -886,3 +887,32 @@ document.addEventListener('input',e=>{if(e.target.closest?.('#note-form,#vitals-
 window.addEventListener('beforeunload',e=>{captureVisitDrafts();if(visitAmendmentsHaveDrafts()||(typeof patientPaymentPlansHaveDrafts==='function'&&patientPaymentPlansHaveDrafts())||(typeof patientLifecycleHasDrafts==='function'&&patientLifecycleHasDrafts())||(typeof billingChargeHasDrafts==='function'&&billingChargeHasDrafts())||(typeof prescribingHaveDrafts==='function'&&prescribingHaveDrafts())||(typeof portalStaffHasDrafts==='function'&&portalStaffHasDrafts())||(typeof supportHasDrafts==='function'&&supportHasDrafts())||(typeof patientIdentityHasDrafts==='function'&&patientIdentityHasDrafts())||(typeof referralDeliveryHasDrafts==='function'&&referralDeliveryHasDrafts())||(typeof documentsHaveDrafts==='function'&&documentsHaveDrafts())||(typeof referralHasDrafts==='function'&&referralHasDrafts())||(typeof orderDiagnosisLinkDrafts!=='undefined'&&orderDiagnosisLinkDrafts.size)||(typeof accountDiagnosisLinkDrafts!=='undefined'&&accountDiagnosisLinkDrafts.size)||(typeof healthHistoryHasDrafts==='function'&&healthHistoryHasDrafts())||(typeof immunizationHasDrafts==='function'&&immunizationHasDrafts())||visitDrafts.size||(typeof visitDiagnosisDrafts!=='undefined'&&visitDiagnosisDrafts.size)||(typeof roomingDrafts!=='undefined'&&roomingDrafts.size)||(typeof checkoutDrafts!=='undefined'&&checkoutDrafts.size)){e.preventDefault();e.returnValue='';}});
 
 document.addEventListener('change',event=>{if(event.target.id!=='encounter-picker')return;const id=event.target.value;run(()=>openPatientEncounter(id));});
+
+// Change notes never block saving. Every save is already recorded with who made it and when, so
+// the note is optional: note fields are not required, most are tucked away, and a standard note is
+// filled in when one is left blank. Notes that carry meaning for staff (cancelling, rescheduling,
+// appeals, archiving, revoking, closing) stay visible but are still optional.
+(()=>{
+ if(typeof document==='undefined'||typeof document.querySelectorAll!=='function'||typeof MutationObserver!=='function')return;
+ const selector='input[name="reason"],textarea[name="reason"]';
+ const keepVisible=/cancel|reschedul|appeal|archiv|revok|close|reopen|refund|void/i;
+ function prepare(field){
+  if(field.dataset.optionalNote)return;field.dataset.optionalNote='1';
+  field.removeAttribute('required');field.removeAttribute('minlength');
+  const label=field.closest('label');
+  if(label&&keepVisible.test(label.textContent||'')){if(!field.placeholder)field.placeholder='Optional';return;}
+  const holder=label&&label.querySelectorAll('input,textarea,select').length===1?label:field;
+  holder.hidden=true;holder.style.display='none';
+ }
+ function prepareAll(root){if(root.matches?.(selector))prepare(root);root.querySelectorAll?.(selector).forEach(prepare);}
+ function standardNote(form,button){
+  const action=(button?.textContent||form.querySelector('button[type="submit"],button:not([type])')?.textContent||'Saved').trim().replace(/\s+/g,' ').slice(0,80);
+  return `${action||'Saved'} - no note entered`;
+ }
+ function fill(form,button){form?.querySelectorAll?.(selector).forEach(field=>{if(!field.value.trim())field.value=standardNote(form,button);});}
+ // Runs before the browser validates and before any form handler reads the note.
+ document.addEventListener('click',event=>{const button=event.target.closest?.('button,input[type="submit"]');const form=button?.form||button?.closest?.('form');if(form&&(button.type||'submit')==='submit')fill(form,button);},true);
+ document.addEventListener('submit',event=>fill(event.target,event.submitter),true);
+ const start=()=>{prepareAll(document.body);new MutationObserver(records=>{for(const record of records)for(const node of record.addedNodes)if(node.nodeType===1)prepareAll(node);}).observe(document.body,{childList:true,subtree:true});};
+ if(document.body)start();else document.addEventListener('DOMContentLoaded',start);
+})();
