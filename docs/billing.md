@@ -478,3 +478,32 @@ not silently allocate those funds after a later edit. Test and clinic payment
 activity cannot be mixed. Billing-view access is sufficient to inspect plans and
 collections without opening clinical records; new collections and reconciliation
 retain their separate write permissions and audit events.
+
+### Patient billing workspace
+
+The chart's **Billing** tab and the practice-wide **Patient billing** selector use
+the same workspace: Overview, Invoices, Payments, Payment methods, and
+Subscriptions & plans. Encounter charge editing and insurance claim preparation
+remain attached to the exact encounter. Billing-only staff can read permitted
+patient billing records without opening the clinical chart.
+
+Native invoices preserve their issued snapshots. The Payments tab distinguishes
+copay receipts, account payments, recorded ledger payments, and invoice installment
+collections; an allocated copay is not counted as a second payment. Unverified
+attempts do not display a received amount. Stripe customer invoices and subscriptions
+are separate records and do not replace native patient responsibility or post money
+to the patient ledger merely because a subscription is active.
+
+**Payment methods** lists only verified customer-attached methods. An earlier copay
+does not establish a reusable saved card. Adding a method requires explicit consent
+and a secure Stripe setup page. **Memberships & recurring services** uses immutable,
+owner-approved USD prices and a separate recurring authorization on hosted checkout.
+**Encounter payment plans** divides one reviewed invoice's remaining patient amount
+into a finite schedule. Each collection requires patient-present consent to the
+exact displayed amount; it does not authorize automatic future charges.
+
+Uncertain hosted operations retain their original request identifiers for status
+checks and explicit safe retries. Returning from checkout never establishes payment
+or membership success. Unsaved form text and proposed schedules stay only in the
+current browser tab's memory, scoped to the signed-in identity and patient. Restoring
+a draft requires fresh consent and, for a payment schedule, a new server preview.
