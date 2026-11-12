@@ -330,9 +330,13 @@ pub(crate) fn preflight(c: &Claim) -> Result<Vec<String>> {
     if !p.billing_provider_name.trim().is_empty()
         && crate::x12::element(&p.billing_provider_name, 1, 60).is_err()
     {
-        issues.push(format!("Billing provider name {plain}, up to 60 characters"));
+        issues.push(format!(
+            "Billing provider name {plain}, up to 60 characters"
+        ));
     }
-    if let Some(payer) = c.snapshot["account"]["coverage_snapshot"]["payer"]["content"]["name"].as_str() {
+    if let Some(payer) =
+        c.snapshot["account"]["coverage_snapshot"]["payer"]["content"]["name"].as_str()
+    {
         if crate::x12::element(payer, 1, 60).is_err() {
             issues.push(format!("Payer name {plain}, up to 60 characters"));
         }
