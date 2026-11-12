@@ -102,13 +102,14 @@ function startConnectUpdates(identity){
 document.addEventListener('click',event=>{
  const button=event.target.closest?.('button');if(!button)return;
  if(button.hasAttribute('data-connect-notifications-toggle')){event.preventDefault();connectNotificationsOpen=!connectNotificationsOpen;renderConnectNotifications();return;}
- if(button.hasAttribute('data-connect-support-open')){event.preventDefault();connectNotificationsOpen=false;renderConnectNotifications();if(typeof showSupportTickets==='function')run(()=>showSupportTickets());return;}
+ if(button.hasAttribute('data-connect-support-open')){event.preventDefault();connectNotificationsOpen=false;renderConnectNotifications();if(typeof openSupportFromHere==='function')run(()=>openSupportFromHere());else if(typeof showSupportTickets==='function')run(()=>showSupportTickets());return;}
  if(button.hasAttribute('data-connect-notifications-close')){event.preventDefault();connectNotificationsOpen=false;renderConnectNotifications();$('shell-service-notifications')?.querySelector('[data-connect-notifications-toggle]')?.focus();return;}
  if(button.hasAttribute('data-connect-notification-dismiss')){event.preventDefault();const toast=$('service-notification-toast');if(toast)toast.hidden=true;return;}
  if(button.hasAttribute('data-connect-notifications-read')){event.preventDefault();run(()=>markConnectNotificationIds(connectNotifications.items.map(item=>item.id)));return;}
  if(button.dataset.connectNotificationOpen){
   event.preventDefault();const ticket=button.dataset.connectNotificationOpen;if(!connectUpdateUuid(ticket))return;
   connectNotificationsOpen=false;renderConnectNotifications();const toast=$('service-notification-toast');if(toast)toast.hidden=true;
+  if(typeof supportSuggestContext==='function')supportSuggestContext(ticket);
   run(()=>showSupportTicket(ticket));
  }
 },true);

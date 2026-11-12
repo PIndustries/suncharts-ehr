@@ -39,5 +39,12 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
  f.run("patchReminderCard(card,{...delivered,version:1,status:'accepted'})");assert.equal(parts['[data-reminder-status]'].textContent,'delivered','late response cannot regress delivery evidence');
  // A response for a navigated-away appointment must not patch the new patient context.
  const extras=node();extras.querySelectorAll=()=>[card];f.nodes['appointment-extras']=extras;delete f.nodes['reminders-workspace'];delete f.nodes['support-tickets-workspace'];f.c.scheduleSelected='appointment-a';f.c.api=()=>new Promise(r=>resolve=r);const switched=f.run(`refreshReminderViews({resource_id:'${ticket}'})`);f.c.scheduleSelected='appointment-b';resolve({reminder:{id:ticket,appointment_id:'appointment-a',version:3,status:'failed'}});await switched;assert.equal(parts['[data-reminder-status]'].textContent,'delivered');
+ // The header Support panel opens a request with what is on screen; opening a reply only offers it.
+ {
+  const g=fixture(),opened=[];g.c.openSupportFromHere=async()=>{opened.push('new');};g.c.supportSuggestContext=ticket=>opened.push('suggest:'+ticket);g.c.showSupportTicket=async ticket=>{opened.push('open:'+ticket);};g.c.showSupportTickets=async()=>{opened.push('list');};
+  const press=attributes=>{const button={dataset:attributes.dataset||{},hasAttribute:name=>(attributes.names||[]).includes(name)};for(const handler of g.events.click)handler({target:{closest:()=>button},preventDefault(){}});};
+  press({names:['data-connect-support-open']});await g.c.pending;assert.deepEqual(opened,['new']);
+  const ticket='11111111-1111-4111-8111-111111111111';press({dataset:{connectNotificationOpen:ticket}});await g.c.pending;assert.deepEqual(opened,['new','suggest:'+ticket,'open:'+ticket]);
+ }
  console.log('PASS live service UI: SSE baseline/replay, exact-message unread acknowledgment, role/logout isolation, accessible notifications, support drafts/closed conversations, request UUIDs, reminder reason/history/version and navigation guards');
 })().catch(error=>{console.error(error);process.exitCode=1;});

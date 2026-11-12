@@ -14091,6 +14091,137 @@
         }
       }
     },
+    "/api/v1/connect/services/support-files": {
+      "post": {
+        "summary": "Staff: add a file to attach to a support message",
+        "description": "Raw file bytes, 1 byte to 10 MB. Content-Type is one of image/png, image/jpeg, image/gif, image/webp, application/pdf, text/plain or text/csv. X-Filename is the percent-encoded UTF-8 file name, at most 200 characters decoded. Repeating a request_id with the same file returns the same result. 409 with error support_attachments_unavailable means the connected SunCharts service does not accept files yet.",
+        "operationId": "connect_services_post_support_files",
+        "tags": [
+          "SunCharts Connect services"
+        ],
+        "responses": {
+          "200": {
+            "description": "File stored for one support message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupportFile"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Role not permitted"
+          },
+          "404": {
+            "description": "Scoped resource not found"
+          },
+          "409": {
+            "description": "Stale version, unavailable service or changed idempotent content"
+          }
+        },
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "X-Filename",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "image/png": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/jpeg": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/gif": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/webp": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "application/pdf": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "text/csv": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/connect/services/support-files/{file}": {
+      "get": {
+        "summary": "Staff: read a file attached to a support message of this installation",
+        "operationId": "connect_services_get_support_files_file",
+        "tags": [
+          "SunCharts Connect services"
+        ],
+        "responses": {
+          "200": {
+            "description": "File bytes; never cached. Images are served inline, other files as downloads."
+          },
+          "403": {
+            "description": "Role not permitted"
+          },
+          "404": {
+            "description": "Scoped resource not found"
+          },
+          "409": {
+            "description": "Stale version, unavailable service or changed idempotent content"
+          }
+        },
+        "parameters": [
+          {
+            "name": "file",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
     "/api/v1/connect/status": {
       "get": {
         "summary": "Staff: read local SunCharts authorization and managed-service health snapshot",
@@ -45476,6 +45607,23 @@
           "message": {
             "type": "string",
             "maxLength": 4000
+          },
+          "links": {
+            "type": "array",
+            "maxItems": 10,
+            "description": "Records of this practice to attach. The server checks each one and writes its label (medical record number, visit date or claim number; never a patient name).",
+            "items": {
+              "$ref": "#/components/schemas/SupportLink"
+            }
+          },
+          "attachments": {
+            "type": "array",
+            "maxItems": 5,
+            "description": "Files added through support-files that are not yet on a message.",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
           }
         }
       },
@@ -45494,6 +45642,72 @@
           "message": {
             "type": "string",
             "maxLength": 4000
+          },
+          "links": {
+            "type": "array",
+            "maxItems": 10,
+            "description": "Records of this practice to attach. The server checks each one and writes its label (medical record number, visit date or claim number; never a patient name).",
+            "items": {
+              "$ref": "#/components/schemas/SupportLink"
+            }
+          },
+          "attachments": {
+            "type": "array",
+            "maxItems": 5,
+            "description": "Files added through support-files that are not yet on a message.",
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        }
+      },
+      "SupportLink": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "id"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "patient",
+              "visit",
+              "claim"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "SupportFile": {
+        "type": "object",
+        "required": [
+          "id",
+          "filename",
+          "content_type",
+          "size"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "filename": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10485760
           }
         }
       },
