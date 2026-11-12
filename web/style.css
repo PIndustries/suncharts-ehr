@@ -328,8 +328,8 @@ body{font-size:13px;line-height:1.45;letter-spacing:0}button,input,select{min-he
 @media(max-width:800px){.patient-record-navigation[open]{flex-basis:100%;margin-left:0}.patient-record-navigation>div{position:static;min-width:0;max-width:none;width:100%;box-shadow:none}}
 
 /* Appointment insurance workflow: one service context, supporting records on demand. */
-.insurance-appointment-context{padding:18px;background:#f5f8fa;border:1px solid var(--line);border-radius:8px}.insurance-appointment-context label{max-width:680px}.insurance-appointment-context p{margin:8px 0 0}
-.insurance-workflow-stages{display:flex;gap:20px;list-style:none;padding:20px 0;margin:0;flex-wrap:wrap}.insurance-workflow-stages button{display:flex;color:inherit;border:0;background:transparent;padding:0;gap:8px;align-items:center;font-weight:600}.insurance-workflow-stages button>span{display:grid;place-items:center;width:26px;height:26px;background:var(--blue);color:#fff;border-radius:50%;font-size:12px}
+.insurance-appointment-context{padding:18px;background:var(--surface-soft,#f5f8fa);border:1px solid var(--line);border-radius:8px}.insurance-appointment-context label{max-width:680px}.insurance-appointment-context p{margin:8px 0 0}
+.insurance-workflow-stages{display:flex;gap:20px;list-style:none;padding:20px 0;margin:0;flex-wrap:wrap}.insurance-workflow-stages button{display:flex;color:inherit;border:0;background:transparent;padding:0;gap:8px;align-items:center;font-weight:600}.insurance-workflow-stages button>span{display:grid;place-items:center;width:26px;height:26px;background:var(--accent);color:var(--blue);border-radius:50%;font-size:12px}
 .insurance-workflow-stage{border-top:1px solid var(--line);padding:22px 0}.insurance-workflow-stage>h3,.insurance-workflow-stage>.section-head h3{margin:0 0 14px}.insurance-workflow-stage .billing-section{margin-top:0}.insurance-supporting-records{margin:18px 0}.insurance-supporting-records>summary,.patient-record-management>summary{cursor:pointer;color:var(--muted);font-weight:600;padding:8px 0}.insurance-supporting-records[open]>summary,.patient-record-management[open]>summary{margin-bottom:12px}
 @media(max-width:700px){.insurance-workflow-stages{gap:10px;font-size:12px}.insurance-workflow-stage>.section-head{align-items:flex-start;flex-direction:column}.insurance-workflow-stage .timeline-row{align-items:flex-start;flex-direction:column;gap:12px}}
 
@@ -338,4 +338,4 @@ body{font-size:13px;line-height:1.45;letter-spacing:0}button,input,select{min-he
 .copay-mode-label{font-size:12px;color:var(--muted);margin:8px 0 12px;line-height:1.5}
 
 .insurance-workflow-stages button:hover{text-decoration:underline}.insurance-workflow-stage h3{scroll-margin-top:calc(var(--shell-topbar,42px) + var(--shell-header,62px) + 16px)}
-.timeline-row a.button.primary{background:var(--blue);color:#fff;border-color:var(--blue)}.timeline-row a.button.primary:hover{background:#114967;color:#fff;border-color:#114967}.timeline-row a.button.primary:focus-visible{outline:2px solid #247fa5;outline-offset:3px}
+.timeline-row a.button.primary{background:var(--blue);color:#fff;border-color:var(--blue)}.timeline-row a.button.primary:hover{background:#114967;color:#fff;border-color:#114967}.timeline-row a.button.primary:focus-visible{outline:2px solid var(--focus,#247fa5);outline-offset:3px}

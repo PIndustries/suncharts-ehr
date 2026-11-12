@@ -61,7 +61,7 @@ const count=(s,needle)=>s.split(needle).length-1;
  assert.match(ctx.patientLifecycleMarkup(active),/<details class="patient-record-management" >/) ;
  assert.doesNotMatch(ctx.patientLifecycleMarkup({...active,archived:true}),/patient-record-management/);assert.match(ctx.patientLifecycleMarkup({...active,archived:true}),/Archived patient chart/);
  vm.runInContext("patientLifecycleDrafts.set('patient',{reason:'Synthetic reason',confirmed:false,archived:true,version:1})",ctx);assert.match(ctx.patientLifecycleMarkup(active),/<details class="patient-record-management" open>/);assert.match(ctx.patientLifecycleMarkup(active),/Synthetic reason/);
- const css=fs.readFileSync('web/style.css','utf8');assert.match(css,/\.chart-context\{position:relative;top:auto\}/,'chart header no longer covers the workflow while scrolling');
+ const css=fs.readFileSync('web/style.css','utf8');assert.match(css,/insurance-appointment-context\{[^}]*background:var\(--surface-soft,#f5f8fa\)/);assert.match(css,/insurance-workflow-stages button>span\{[^}]*background:var\(--accent\);color:var\(--blue\)/);assert.match(css,/a\.button\.primary:focus-visible\{outline:2px solid var\(--focus,#247fa5\)/);assert.match(css,/\.chart-context\{position:relative;top:auto\}/,'chart header no longer covers the workflow while scrolling');
  assert(calls.every(([,method])=>method==='GET'));
  const emptyState={...oldState,items:[],uncertain:false,retry:null};assert.doesNotMatch(ctx.encounterHostedCopayMarkup(emptyState),/class="primary"/);
  // Execute the guided action with a different clinical encounter active. It must stay on A.
