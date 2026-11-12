@@ -250,7 +250,6 @@ fn action(method: &Method, path: &str) -> Option<Action> {
                 return Some(Action::Create);
             }
 
-
             if path.starts_with("/api/v1/billing/") && path.ends_with("/cancel-at-period-end") {
                 return Some(Action::Edit);
             }

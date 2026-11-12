@@ -35329,6 +35329,473 @@
           }
         ]
       }
+    },
+    "/api/v1/billing/membership-prices": {
+      "get": {
+        "summary": "List approved membership prices",
+        "description": "Billing view; bounded catalog page plus durable pending price recovery. Only the initiating authorized Owner receives its original approval input.",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fresh minimized account-bound evidence; no encounter ledger mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "contract_version": {
+                      "const": 1
+                    },
+                    "installation_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "remote_tenant_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "account_id": {
+                      "type": "string"
+                    },
+                    "livemode": {
+                      "type": "boolean"
+                    },
+                    "checked_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "items": {
+                      "type": "array",
+                      "maxItems": 20,
+                      "items": {
+                        "$ref": "#/components/schemas/PatientMembershipPrice"
+                      }
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    },
+                    "next_cursor": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "pending_operations": {
+                      "type": "array",
+                      "maxItems": 20,
+                      "items": {
+                        "$ref": "#/components/schemas/PatientMembershipPending"
+                      }
+                    },
+                    "creation_available": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "contract_version",
+                    "installation_id",
+                    "remote_tenant_id",
+                    "account_id",
+                    "livemode",
+                    "checked_at",
+                    "items",
+                    "has_more",
+                    "next_cursor",
+                    "pending_operations",
+                    "creation_available"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Approve a fixed recurring membership price",
+        "description": "Owner and billing create. Immutable fixed USD price/cadence and explicit approval reason. Default-off live membership gate. Same request ID recovers uncertain creation.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Fresh minimized account-bound evidence; no encounter ledger mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientMembershipPriceResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "amount_cents": {
+                    "type": "integer",
+                    "minimum": 50,
+                    "maximum": 100000000
+                  },
+                  "currency": {
+                    "const": "usd"
+                  },
+                  "interval": {
+                    "enum": [
+                      "day",
+                      "week",
+                      "month",
+                      "year"
+                    ]
+                  },
+                  "interval_count": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 365
+                  },
+                  "approved": {
+                    "const": true
+                  },
+                  "approval_reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "request_id",
+                  "name",
+                  "amount_cents",
+                  "currency",
+                  "interval",
+                  "interval_count",
+                  "approved",
+                  "approval_reason"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/billing/membership-prices/{id}": {
+      "get": {
+        "summary": "Refresh a reserved membership price",
+        "description": "Read-only broker retrieval for an existing tenant-scoped local request. Never creates or retries a provider price.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fresh minimized account-bound evidence; no encounter ledger mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientMembershipPriceResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/billing/patients/{id}/memberships": {
+      "get": {
+        "summary": "Read native memberships and pending operations",
+        "description": "Billing view; exact patient/tenant/installation/account/mode and current credentials. Pages are bounded to twenty entries. Pending request inputs only belong to the authorized initiator.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fresh minimized account-bound evidence; no encounter ledger mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "contract_version": {
+                      "const": 1
+                    },
+                    "installation_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "remote_tenant_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "account_id": {
+                      "type": "string"
+                    },
+                    "livemode": {
+                      "type": "boolean"
+                    },
+                    "checked_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "patient_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "items": {
+                      "type": "array",
+                      "maxItems": 20,
+                      "items": {
+                        "$ref": "#/components/schemas/PatientMembership"
+                      }
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    },
+                    "next_cursor": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "pending_operations": {
+                      "type": "array",
+                      "maxItems": 20,
+                      "items": {
+                        "$ref": "#/components/schemas/PatientMembershipPending"
+                      }
+                    },
+                    "creation_available": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "contract_version",
+                    "installation_id",
+                    "remote_tenant_id",
+                    "account_id",
+                    "livemode",
+                    "checked_at",
+                    "patient_id",
+                    "items",
+                    "has_more",
+                    "next_cursor",
+                    "pending_operations",
+                    "creation_available"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Start hosted membership enrollment",
+        "description": "Scheduling role and billing create, active patient, explicit consent. Hosted Checkout separately records patient recurring authorization against immutable approved price and terms. Does not change encounter invoices or ledger.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fresh minimized account-bound evidence; no encounter ledger mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientMembershipResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "price_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "consent": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "request_id",
+                  "price_id",
+                  "consent"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/billing/memberships/{id}": {
+      "get": {
+        "summary": "Refresh a native membership operation",
+        "description": "Retrieves an existing enrollment or cancellation by immutable local request ID. GET never retries provider writes. Retry permission is bounded to the original actor, input and nonextended deadline.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fresh minimized account-bound evidence; no encounter ledger mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/PatientMembershipResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PatientMembershipCancellation"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/billing/patients/{id}/memberships/{subscription}/cancel-at-period-end": {
+      "post": {
+        "summary": "Schedule native membership cancellation",
+        "description": "Scheduling role and billing edit; verified native subscription mapping required. Stable request ID; cancels only at period end with no proration or refund. No new collection flag is enabled.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "subscription",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^sub_[A-Za-z0-9]+$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fresh minimized account-bound evidence; no encounter ledger mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientMembershipCancellation"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "expected_cancel_at_period_end": {
+                    "const": false
+                  }
+                },
+                "required": [
+                  "request_id",
+                  "expected_cancel_at_period_end"
+                ]
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -54819,6 +55286,422 @@
         },
         "required": [
           "operation"
+        ]
+      },
+      "PatientMembershipPrice": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "provider_price_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "amount_cents": {
+            "type": "integer",
+            "minimum": 50,
+            "maximum": 100000000
+          },
+          "currency": {
+            "const": "usd"
+          },
+          "interval": {
+            "enum": [
+              "day",
+              "week",
+              "month",
+              "year"
+            ]
+          },
+          "interval_count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 365
+          },
+          "status": {
+            "enum": [
+              "creating",
+              "active",
+              "inactive",
+              "approved",
+              "needs_review",
+              "unavailable"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "request_id",
+          "provider_price_id",
+          "name",
+          "amount_cents",
+          "currency",
+          "interval",
+          "interval_count",
+          "status",
+          "created_at"
+        ]
+      },
+      "PatientMembership": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "price": {
+            "$ref": "#/components/schemas/PatientMembershipPrice"
+          },
+          "terms": {
+            "type": "string"
+          },
+          "customer_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "creating",
+              "open",
+              "active",
+              "pending",
+              "canceled",
+              "expired",
+              "needs_review"
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "type": "object",
+                "description": "Verified hosted Checkout id/url/status, explicit authorization_accepted and sanitized subscription. No card data or client secret."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subscription_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subscription_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cancel_at_period_end": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "current_period_end": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "retry_safe_until": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "recovery_required": {
+            "type": "boolean"
+          },
+          "retry_allowed": {
+            "type": "boolean"
+          },
+          "cancellation_available": {
+            "type": "boolean",
+            "description": "List-only capability: verified local membership mapping and current scheduling/billing-edit permission."
+          }
+        },
+        "required": [
+          "request_id",
+          "price",
+          "terms",
+          "customer_id",
+          "status",
+          "session",
+          "subscription_id",
+          "subscription_status",
+          "cancel_at_period_end",
+          "current_period_end",
+          "created_at",
+          "retry_safe_until",
+          "recovery_required",
+          "retry_allowed"
+        ]
+      },
+      "PatientMembershipPending": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "enum": [
+              "price",
+              "membership",
+              "cancel"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "retry_safe_until": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "retry_allowed": {
+            "type": "boolean"
+          },
+          "request": {
+            "anyOf": [
+              {
+                "type": "object",
+                "description": "Original accepted input for the same currently authorized initiating actor only. No credentials, return URL or account binding."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "request_id",
+          "kind",
+          "status",
+          "retry_safe_until",
+          "retry_allowed",
+          "request"
+        ]
+      },
+      "PatientMembershipPriceResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "contract_version": {
+            "const": 1
+          },
+          "installation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "remote_tenant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "livemode": {
+            "type": "boolean"
+          },
+          "checked_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "price": {
+            "$ref": "#/components/schemas/PatientMembershipPrice"
+          },
+          "retry_safe_until": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "recovery_required": {
+            "type": "boolean"
+          },
+          "retry_allowed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "contract_version",
+          "installation_id",
+          "remote_tenant_id",
+          "account_id",
+          "livemode",
+          "checked_at",
+          "price",
+          "retry_safe_until",
+          "recovery_required",
+          "retry_allowed"
+        ]
+      },
+      "PatientMembershipResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "contract_version": {
+            "const": 1
+          },
+          "installation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "remote_tenant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "livemode": {
+            "type": "boolean"
+          },
+          "checked_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "patient_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "membership": {
+            "$ref": "#/components/schemas/PatientMembership"
+          }
+        },
+        "required": [
+          "contract_version",
+          "installation_id",
+          "remote_tenant_id",
+          "account_id",
+          "livemode",
+          "checked_at",
+          "patient_id",
+          "membership"
+        ]
+      },
+      "PatientMembershipCancellation": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "contract_version": {
+            "const": 1
+          },
+          "installation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "remote_tenant_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "livemode": {
+            "type": "boolean"
+          },
+          "checked_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "patient_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "membership_request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "enum": [
+              "scheduled",
+              "canceled",
+              "pending",
+              "needs_review"
+            ]
+          },
+          "subscription": {
+            "type": "object",
+            "description": "Sanitized subscription from this verified native membership."
+          },
+          "retry_safe_until": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "recovery_required": {
+            "type": "boolean"
+          },
+          "retry_allowed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "contract_version",
+          "installation_id",
+          "remote_tenant_id",
+          "account_id",
+          "livemode",
+          "checked_at",
+          "patient_id",
+          "request_id",
+          "membership_request_id",
+          "status",
+          "subscription",
+          "retry_safe_until",
+          "recovery_required",
+          "retry_allowed"
         ]
       }
     }

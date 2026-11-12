@@ -218,7 +218,7 @@ async function patientBillingCreateSetup(s,existing){
   if(me!==s.identity)return;
   if(result.request_id!==requestId||result.patient_id!==s.patientId)throw new Error('The setup response did not match this patient and request.');
   patientBillingSetups.set(s.patientId,result);
- }catch(error){if(me===s.identity)patientBillingSetups.set(s.patientId,{...op,status:'unknown',retry_allowed:true,error:error.message||'The setup response was not received. Check this request before starting another.'});}
+ }catch(error){if(me===s.identity)patientBillingSetups.set(s.patientId,{...op,status:'unknown',retry_allowed:false,error:error.message||'The setup response was not received. Check this request before starting another.'});}
  if(patientBillingCurrent(s)&&s.tab==='methods'&&patientBillingProfileTarget(s)===target)target.innerHTML=patientBillingProfileMarkup(s.profile,'methods',s);
 }
 async function patientBillingRefreshSetup(s){
