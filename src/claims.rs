@@ -323,6 +323,24 @@ pub(crate) fn preflight(c: &Claim) -> Result<Vec<String>> {
     if !npi(&p.billing_npi) || !npi(&p.rendering_npi) {
         issues.push("Billing and rendering NPIs require valid check digits".into());
     }
+    // The 837P carries these names as X12 elements. Catch characters the file cannot hold
+    // (long dashes, accents, curly quotes) here, before the claim is released, instead of
+    // failing later when the file is generated.
+    let plain = "can only use plain letters, numbers and basic punctuation (no long dashes, accents or curly quotes)";
+    if !p.billing_provider_name.trim().is_empty()
+        && crate::x12::element(&p.billing_provider_name, 1, 60).is_err()
+    {
+        issues.push(format!(
+            "Billing provider name {plain}, up to 60 characters"
+        ));
+    }
+    if let Some(payer) =
+        c.snapshot["account"]["coverage_snapshot"]["payer"]["content"]["name"].as_str()
+    {
+        if crate::x12::element(payer, 1, 60).is_err() {
+            issues.push(format!("Payer name {plain}, up to 60 characters"));
+        }
+    }
     if p.tax_id.len() != 9 || !p.tax_id.bytes().all(|b| b.is_ascii_digit()) {
         issues.push("Tax ID must contain nine digits".into());
     }
