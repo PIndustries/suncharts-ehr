@@ -35,3 +35,8 @@
 .copay-print-source{position:absolute;width:1px;height:1px;border:0;left:-10000px;pointer-events:none}
 @media(max-width:600px){.copay-receipt-card{padding:16px}.copay-receipt-card dl{grid-template-columns:1fr}.copay-receipt-card header button{width:100%}}
 @media(max-width:800px){.patient-billing-header,.patient-billing-scope{display:block}.patient-billing-header>.actions{margin-top:12px}.patient-billing-totals{grid-template-columns:1fr}.patient-billing-search-row{flex-wrap:wrap}.patient-billing-scope p{margin-top:8px}.patient-billing-tabs button{padding:12px}}
+
+.payment-card{display:flex;flex-direction:column;gap:10px;min-height:118px;max-width:300px;border-radius:12px;background:linear-gradient(135deg,color-mix(in srgb,var(--accent,#5fd0c0) 16%,transparent),transparent 70%)}
+.payment-card-brand{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.payment-card-number{font-size:20px;letter-spacing:.06em;font-variant-numeric:tabular-nums}
+.payment-card small{margin-top:auto;color:var(--muted)}
