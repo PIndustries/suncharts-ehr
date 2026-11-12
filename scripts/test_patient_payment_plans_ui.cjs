@@ -76,6 +76,17 @@ const mutations=f=>f.calls.filter(call=>call[1]==='POST');
    waiting[0]({items:[f.plan],eligible_invoices:[],availability:{available:true,livemode:false}});await older;assert.equal(f.s.installmentPlans[0].remaining_cents,250);
   }
  }
+ // Per-operation status reads must not undo a newer section result or cancellation.
+ f=fixture();c=f.ctx;let oldStatus;const statusApi=c.api;
+ c.api=(path,...args)=>path==='/api/v1/billing/memberships/'+request?new Promise(resolve=>oldStatus=resolve):path.endsWith('/memberships')?Promise.resolve({patient_id:patient,livemode:false,items:[{request_id:request,price:f.price,status:'active',cancel_at_period_end:true}],creation_available:true}):statusApi(path,...args);
+ const staleStatus=c.refreshPatientMembership(f.s,request);await c.loadPatientMemberships(f.s,1);
+ oldStatus({patient_id:patient,membership:{request_id:request,price:f.price,status:'active',cancel_at_period_end:false}});await staleStatus;
+ assert.equal(f.s.memberships[0].cancel_at_period_end,true,'older per-operation GET cannot undo newer cancellation evidence');
+ for(const read of ['refreshPatientMembership','refreshMembershipOperation','refreshMembershipPrice']){
+  f=fixture();c=f.ctx;let resolveRead;c.api=()=>new Promise(resolve=>resolveRead=resolve);const pendingRead=c[read](f.s,request);f.s.planRequest++;
+  resolveRead({patient_id:patient,membership:{request_id:request,price:f.price,status:'open'},price:{...f.price,request_id:request}});await pendingRead;
+  assert.equal(f.s.memberships.length,0,'a replaced subscriptions section ignores '+read);
+ }
  // Reload discovery uses the server's original pending operation, never a replacement UUID.
  f=fixture();c=f.ctx;const originalPending=c.api;
  c.api=async(path,method='GET',body,...rest)=>{

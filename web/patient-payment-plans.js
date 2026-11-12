@@ -132,6 +132,7 @@ async function createPatientMembership(s,form,existing){
   if((s.memberships||[]).some(op=>op.price?.id===price.id&&!['expired','canceled'].includes(op.status)))throw new Error('Review the existing membership for this price before starting another.');
   body={request_id:crypto.randomUUID(),price_id:price.id,consent:true};
  }
+ s.membershipRead=(s.membershipRead||0)+1;
  const pending={request_id:body.request_id,status:'creating',input:body,price:s.membershipPrices?.find(p=>p.id===body.price_id),retry_safe_until:existing?.retry_safe_until||new Date(Date.now()+23*3600000).toISOString()};membershipRequests.set(s.patientId,pending);renderPatientMembershipPanel(s);
  try{
   const data=await api(`/api/v1/billing/patients/${encodeURIComponent(s.patientId)}/memberships`,'POST',body);
@@ -139,9 +140,15 @@ async function createPatientMembership(s,form,existing){
  }catch(error){if(me===s.identity)membershipRequests.set(s.patientId,{...pending,status:'unknown',retry_allowed:true,error:error.message||'No response was received. Check the original request before trying again.'});}
  if(patientBillingCurrent(s)&&s.tab==='subscriptions')renderPatientMembershipPanel(s);
 }
+function beginMembershipStatusRead(s){
+ const host=s.host.querySelector('#patient-billing-memberships'),request=s.planRequest;
+ const generation=s.membershipRead=(s.membershipRead||0)+1;
+ return ()=>host&&patientPlansCurrent(s,host,request)&&s.membershipRead===generation;
+}
 async function refreshPatientMembership(s,id){
+ const current=beginMembershipStatusRead(s);
  const data=await api('/api/v1/billing/memberships/'+encodeURIComponent(id));
- if(!patientBillingCurrent(s)||s.tab!=='subscriptions')return;
+ if(!current())return;
  const op=checkedMembership(data,s,id),prior=membershipCurrentRequest(s);membershipRequests.set(s.patientId,{...op,...(prior?.request_id===id&&prior.input?{input:prior.input}:{})});
  const index=(s.memberships||[]).findIndex(item=>item.request_id===id);if(index>=0)s.memberships[index]=op;else(s.memberships??=[]).unshift(op);renderPatientMembershipPanel(s);
 }
@@ -151,6 +158,7 @@ async function approveMembershipPrice(s,form){
  const body=old?.body||{request_id:crypto.randomUUID(),name:form.elements.name.value.trim(),amount_cents:cents(form.elements.amount.value),currency:'usd',interval:form.elements.interval.value,interval_count:Number(form.elements.interval_count.value),approved:true,approval_reason:form.elements.approval_reason.value.trim()};
  if(!body.name||!body.approval_reason||body.amount_cents<50||body.amount_cents>100000000||!Number.isInteger(body.interval_count)||body.interval_count<1||body.interval_count>({day:365,week:52,month:12,year:1}[body.interval]||0))throw new Error('Review the fixed price, interval and approval reason.');
  if(old&&(!old.body||!old.retry_allowed||Date.now()>=old.deadline))throw new Error('This price request needs review. Refresh the catalog; do not create a second request.');
+ s.membershipRead=(s.membershipRead||0)+1;
  membershipPriceRequests.set(me.tenant_id,{request_id:body.request_id,body,deadline:old?.deadline||Date.now()+23*3600000,retry_allowed:true});renderPatientMembershipPanel(s);
  try{
   const result=await api('/api/v1/billing/membership-prices','POST',body);
@@ -163,7 +171,8 @@ function patientMembershipPendingMarkup(s){
  return (s.membershipPending||[]).filter(op=>op.kind==='cancel'||(op.kind==='membership'&&!(s.memberships||[]).some(item=>item.request_id===op.request_id)&&membershipCurrentRequest(s)?.request_id!==op.request_id)).map(op=>`<section class="mapping-notice"><h4>${op.kind==='cancel'?'Pending cancellation':'Pending enrollment request'}</h4><p>${esc(human(op.status))}. Review the original request; a new request is not needed.</p><button type="button" data-membership-operation-check="${esc(op.request_id)}">Check original request</button>${op.retry_allowed&&op.request&&Date.parse(op.retry_safe_until)>Date.now()?`<button type="button" data-membership-operation-retry="${esc(op.request_id)}">Retry original request</button>`:''}</section>`).join('');
 }
 async function refreshMembershipPrice(s,id){
- const result=await api('/api/v1/billing/membership-prices/'+encodeURIComponent(id));if(!patientBillingCurrent(s)||s.tab!=='subscriptions')return;
+ const current=beginMembershipStatusRead(s);
+ const result=await api('/api/v1/billing/membership-prices/'+encodeURIComponent(id));if(!current())return;
  if(result.price?.request_id!==id)throw new Error('The price result did not match the original request.');
  const old=membershipPriceRequests.get(me.tenant_id);
  if(result.price.status==='active'||result.price.provider_price_id)membershipPriceRequests.delete(me.tenant_id);
@@ -171,7 +180,8 @@ async function refreshMembershipPrice(s,id){
  await loadPatientMemberships(s,s.planRequest);
 }
 async function refreshMembershipOperation(s,id){
- const result=await api('/api/v1/billing/memberships/'+encodeURIComponent(id));if(!patientBillingCurrent(s)||s.tab!=='subscriptions')return;
+ const current=beginMembershipStatusRead(s);
+ const result=await api('/api/v1/billing/memberships/'+encodeURIComponent(id));if(!current())return;
  if(result.patient_id!==s.patientId||(result.membership?.request_id||result.request_id)!==id)throw new Error('The result did not match the selected patient and original request.');
  if(result.membership)membershipRequests.set(s.patientId,result.membership);
  await loadPatientMemberships(s,s.planRequest);
@@ -189,6 +199,7 @@ async function cancelPatientMembership(s,id,pending){
  if(pending&&(!pending.retry_allowed||Date.parse(pending.retry_safe_until)<=Date.now()))return;
  if(!await confirmAction(`${op?.price?.name||'This membership'} will end after its paid period. This does not issue an immediate refund.`,{title:'Cancel membership at period end?',confirmLabel:pending?'Retry original cancellation':'Schedule cancellation'}))return;
  if(!patientBillingCurrent(s)||s.tab!=='subscriptions'||(!pending&&s.memberships?.find(item=>item.request_id===id)!==op)||!billingCan('edit'))return;
+ s.membershipRead=(s.membershipRead||0)+1;
  membershipSession();const key=s.patientId+':'+subscription,request=pending?.request_id||membershipCancelRequests.get(key)||crypto.randomUUID();membershipCancelRequests.set(key,request);
  const body={request_id:request,expected_cancel_at_period_end:false};
  try{
