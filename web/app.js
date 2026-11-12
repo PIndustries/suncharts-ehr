@@ -541,6 +541,12 @@ function encounterDateLabel(v){
  const timestamp=workspace.appointments.find(a=>a.id===v.appointment_id)?.starts_at||v.signed_at||v.created_at;
  return timestamp?date(timestamp):'Encounter date not recorded';
 }
+function refreshPatientChartContext(){
+ const host=$('chart')?.querySelector?.('.chart-header-context');if(!host)return;
+ const appointment=chartSection==='insurance'&&typeof revenueAppointment==='function'?revenueAppointment():null;
+ if(chartSection==='insurance'){host.innerHTML=`<span class="status-badge">Insurance review</span><small>${appointment?esc(appointment.title||'Appointment')+' · '+esc(date(appointment.starts_at)):'Select an appointment below'}</small>`;return;}
+ host.innerHTML=activeVisit?`<span class="status-badge ${activeVisit.status==='signed'?'completed':'in_progress'}">${activeVisit.status==='signed'?'Signed encounter':'Active encounter'}</span><small>${esc(encounterDateLabel(activeVisit))}</small>`:'<span class="muted">Longitudinal record</span>';
+}
 function chartContactSummary(){
  if(typeof workspaceResourceAllowed==='function'&&!workspaceResourceAllowed('clinical'))return '';
  const contact=workspace.demographics?.content||{},canDetails=chartAreaEnabled('profile');
@@ -590,6 +596,7 @@ function applyChartSection(){
  document.querySelectorAll('.chart-tabs button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.chartSection===chartSection)));
  const record=$('patient-record-navigation');if(record){record.classList.toggle('active',!primary.includes(chartSection));if(primary.includes(chartSection))record.open=false;}
  const context=$('record-context');if(context){context.hidden=!hasVisit||primary.includes(chartSection);context.innerHTML='<button type="button" data-chart-section="visits">← Return to selected encounter</button>';}
+ if(typeof refreshPatientChartContext==='function')refreshPatientChartContext();
  if(chartSection==='billing'&&typeof renderPatientBillingChart==='function')void renderPatientBillingChart();
 }
 function chartNavigation(tabs){
