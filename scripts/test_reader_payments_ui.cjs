@@ -12,26 +12,30 @@ function fixture(readers=[frontDesk]){
  const appointment={id:'appt',patient_id:'patient',status:'checked_in',title:'Synthetic visit',starts_at:'2026-11-12T14:00:00Z'};
  const ctx={console,Date,Intl,URL,encodeURIComponent,crypto:{randomUUID:()=> 'stable-request'},me:{role:'front_desk'},selected:'patient',chartSection:'insurance',activeVisit:{id:'visit',appointment_id:'appt'},
   workspace:{patient:{id:'patient',given_name:'Synthetic',family_name:'Patient'},appointments:[appointment],visits:[{id:'visit',appointment_id:'appt'}],billing:{accounts:[],entries:[],copays:[],coverages:[{id:'coverage',content:{priority:'primary',status:'active',effective_date:'2026-01-01',copay_cents:2500}}]}},
-  document:{addEventListener:(name,fn)=>(handlers[name]??=[]).push(fn),documentElement:{dataset:{}},querySelector:()=>null},$:id=>nodes[id]??null,esc:s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),date:String,human:String,money:n=>`$${(n/100).toFixed(2)}`,dollars:n=>(n/100).toFixed(2),cents:n=>Math.round(Number(n)*100),billingCan:()=>true,invoicePaymentMethod:String,
-  openBillingEditor:html=>{ctx.editor=html;if(html.includes('id="reader-payment-live"'))nodes['reader-payment-live']={innerHTML:''};else delete nodes['reader-payment-live'];},
-  showChartSection:section=>ctx.chartSection=section,notice:(...args)=>calls.push(['notice',...args]),run:fn=>ctx.pending=fn(),selectPatient:async(...args)=>calls.push(['selectPatient',...args]),
+  document:{addEventListener:(name,fn)=>(handlers[name]??=[]).push(fn),documentElement:{dataset:{}},querySelector:selector=>selector==='.sidebar-source .preview'?ctx.preview:null},$:id=>nodes[id]??null,esc:s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),date:String,human:String,money:n=>`$${(n/100).toFixed(2)}`,dollars:n=>(n/100).toFixed(2),cents:n=>Math.round(Number(n)*100),billingCan:()=>true,invoicePaymentMethod:String,
+  // The reader form must never use the shared editor or change the chart section.
+  openBillingEditor:html=>{ctx.editor=html;calls.push(['openBillingEditor']);},
+  showChartSection:section=>{ctx.chartSection=section;calls.push(['showChartSection',section]);},preview:{textContent:'Development preview · Synthetic data only'},notice:(...args)=>calls.push(['notice',...args]),run:fn=>ctx.pending=fn(),selectPatient:async(...args)=>calls.push(['selectPatient',...args]),
   FormData:class{constructor(form){return Object.entries(form.values)[Symbol.iterator]();}},
   setTimeout:(fn,ms)=>{timers.push({fn,ms});return timers.length;},clearTimeout:id=>{if(timers[id-1])timers[id-1].cleared=true;},
   localStorage:{getItem:key=>store.get(key)??null,setItem:(key,value)=>store.set(key,value)},
   availability:{available:true,livemode:false,reason:null},readers:{status:'ready',readers,can_manage:false,payments_available:true},
   // The copay list, the reader list, and whatever the test queues for the payment itself.
   api:async(...args)=>{calls.push(args);if(args[0]===readersPath)return ctx.readers;if(args[0]===base&&!args[1])return {items:ctx.items||[],availability:ctx.availability};if(typeof ctx.next==='function')return ctx.next(...args);return {operation:ctx.next};}};
+ // One slot directly under each copay panel; whatever is drawn there is what staff see in place.
+ for(const id of ['encounter-hosted-copay-reader','insurance-hosted-copay-reader'])nodes[id]={id,_html:'',scrolled:0,get innerHTML(){return this._html;},set innerHTML(html){this._html=html;if(html.includes('id="reader-payment-live"'))nodes['reader-payment-live']={innerHTML:''};else delete nodes['reader-payment-live'];},scrollIntoView(){this.scrolled++;}};
  ctx.window=ctx;vm.createContext(ctx);
  const billing=fs.readFileSync('web/billing.js','utf8');vm.runInContext(billing.slice(billing.indexOf('function patientPrintBranding('),billing.indexOf('function patientInvoiceDocument(')),ctx);
  vm.runInContext(fs.readFileSync('web/patient-revenue.js','utf8'),ctx);vm.runInContext(fs.readFileSync('web/card-readers.js','utf8'),ctx);
- const click=dataset=>{for(const handler of handlers.click)handler({target:{closest:selector=>selector==='button'?{dataset,hasAttribute:name=>name in dataset}:null},preventDefault(){}});return ctx.pending;};
+ const click=(dataset,panel)=>{for(const handler of handlers.click)handler({target:{closest:selector=>selector==='button'?{dataset,hasAttribute:name=>name in dataset,closest:()=>panel?{id:panel}:null}:null},preventDefault(){}});return ctx.pending;};
+ const slot=(id='insurance-hosted-copay-reader')=>nodes[id].innerHTML;
  const submit=form=>{for(const handler of handlers.submit)handler({target:form,preventDefault(){}});return ctx.pending;};
  // The next scheduled status read, as the two-second timer would run it.
  const tick=async next=>{ctx.next=next;const timer=timers.filter(t=>!t.cleared).at(-1);assert.ok(timer,'a status read is scheduled');assert.equal(timer.ms,2000);timer.cleared=true;await timer.fn();};
  const waiting=()=>timers.filter(t=>!t.cleared).length;
  const live=()=>nodes['reader-payment-live']?.innerHTML??'';
- const form=(values={})=>({id:'reader-copay-form',dataset:{patient:'patient',appointment:'appt',coverage:'coverage',request:'stable-request',livemode:'false'},values:{amount:'25.00',reviewed:'on',reader:'tmr_front',...values}});
- return {ctx,handlers,nodes,calls,timers,store,click,submit,tick,waiting,live,form};
+ const form=(values={},panel='')=>({id:'reader-copay-form',dataset:{panel,patient:'patient',appointment:'appt',coverage:'coverage',request:'stable-request',livemode:'false'},values:{amount:'25.00',reader:'tmr_front',...values}});
+ return {ctx,handlers,nodes,calls,timers,store,click,submit,tick,waiting,live,form,slot};
 }
 const tests=[];const test=(name,fn)=>tests.push([name,fn]);
 
@@ -44,31 +48,31 @@ test('the reader button sits beside the card link and is left out until card pay
 });
 test('with no reader set up the owner is taken to Card readers and other staff are told who to ask',async()=>{
  let f=fixture([]),c=f.ctx,opened=0;c.openCardReaders=async()=>{opened++;};
- await assert.rejects(f.click({readerCopay:'appt'}),/No card reader is set up yet\. Ask the practice owner to add one\./);assert.equal(opened,0);assert.equal(c.editor,undefined);
- f=fixture([]);c=f.ctx;c.me={role:'owner'};c.openCardReaders=async()=>{opened++;};await f.click({readerCopay:'appt'});assert.equal(opened,1);assert.equal(c.editor,undefined,'no payment form without a reader');
+ await assert.rejects(f.click({readerCopay:'appt'}),/No card reader is set up yet\. Ask the practice owner to add one\./);assert.equal(opened,0);assert.equal(f.slot(),'');
+ f=fixture([]);c=f.ctx;c.me={role:'owner'};c.openCardReaders=async()=>{opened++;};await f.click({readerCopay:'appt'});assert.equal(opened,1);assert.equal(f.slot(),'','no payment form without a reader');
  f=fixture();c=f.ctx;c.readers={status:'ready',readers:[frontDesk],payments_available:false};await assert.rejects(f.click({readerCopay:'appt'}),/not available for this practice yet/);
  f=fixture();c=f.ctx;c.readers={status:'not_connected',readers:[]};await assert.rejects(f.click({readerCopay:'appt'}),/not available for this practice yet/);
 });
 test('the form shows the amount and the reader, and remembers the last reader used on this computer',async()=>{
  let f=fixture(),c=f.ctx;await f.click({readerCopay:'appt'});
- assert.match(c.editor,/<form id="reader-copay-form" data-patient="patient" data-appointment="appt" data-coverage="coverage" data-livemode="false" data-request="stable-request"><h3>Take card payment on reader<\/h3>/);
- assert.match(c.editor,/Recorded plan copay: \$25\.00\./);assert.match(c.editor,/<label>Copay amount \(USD\)<input name="amount" required inputmode="decimal" value="25.00">/);
- assert.match(c.editor,/<input type="hidden" name="reader" value="tmr_front"><p>Reader: <b>Front desk<\/b><\/p>/,'one reader needs no choice');
- assert.match(c.editor,/<button type="submit" class="primary">Take payment<\/button>/);assert.match(c.editor,/Test payment/);
+ assert.match(f.slot(),/<form id="reader-copay-form" class="billing-section" data-panel="" data-patient="patient" data-appointment="appt" data-coverage="coverage" data-livemode="false" data-request="stable-request"><h3>Take card payment on reader<\/h3>/);
+ assert.match(f.slot(),/Recorded plan copay: \$25\.00\./);assert.match(f.slot(),/<label>Copay amount \(USD\)<input name="amount" required inputmode="decimal" value="25.00">/);
+ assert.match(f.slot(),/<input type="hidden" name="reader" value="tmr_front"><p>Reader: <b>Front desk<\/b><\/p>/,'one reader needs no choice');
+ assert.match(f.slot(),/<button type="submit" class="primary">Take payment<\/button>/);assert.match(f.slot(),/Test payment/);
  f=fixture([frontDesk,back]);c=f.ctx;await f.click({readerCopay:'appt'});
- assert.match(c.editor,/<label>Reader<select name="reader" required><option value="tmr_front" selected>Front desk<\/option><option value="tmr_back" >Back office<\/option><\/select><\/label>/);
+ assert.match(f.slot(),/<label>Reader<select name="reader" required><option value="tmr_front" selected>Front desk<\/option><option value="tmr_back" >Back office<\/option><\/select><\/label>/);
  c.next={...op,reader_id:'tmr_back'};await f.submit(f.form({reader:'tmr_back'}));
  const sent=f.calls.find(call=>call[1]==='POST');
- same(sent,[base,'POST',{request_id:'stable-request',amount_cents:2500,coverage_id:'coverage',livemode:false,reason:'Reviewed appointment copay before card reader collection',reader_id:'tmr_back'}]);
+ same(sent,[base,'POST',{request_id:'stable-request',amount_cents:2500,coverage_id:'coverage',livemode:false,reason:'Appointment copay taken on card reader',reader_id:'tmr_back'}]);
  assert.equal(f.store.get('suncharts.cardReader'),'tmr_back');
  assert.match(f.live(),/Waiting for card on Back office/);
  c.stopReaderPayment();c.hostedCopayStateFor('appt').items=[];c.items=[];await f.click({readerCopay:'appt'});
- assert.match(c.editor,/<option value="tmr_front" >Front desk<\/option><option value="tmr_back" selected>Back office<\/option>/,'the last reader used is offered first');
- await assert.rejects(f.submit(f.form({reviewed:undefined})),/Review the copay amount/);await assert.rejects(f.submit(f.form({reader:''})),/Choose a card reader/);
+ assert.match(f.slot(),/<option value="tmr_front" >Front desk<\/option><option value="tmr_back" selected>Back office<\/option>/,'the last reader used is offered first');
+ await assert.rejects(f.submit(f.form({reader:''})),/Choose a card reader/);
 });
 test('the status area follows the payment from waiting to approved and shows the receipt step',async()=>{
  const f=fixture(),c=f.ctx;await f.click({readerCopay:'appt'});c.next=op;await f.submit(f.form());
- assert.equal(c.editor,'<div id="reader-payment-live"></div>');
+ assert.equal(f.slot(),'<div id="reader-payment-live"></div>');
  let html=f.live();
  assert.match(html,/<h3>Card payment on reader<\/h3><p>\$25\.00 · Test payment<\/p><p role="status" aria-live="polite"><b>Waiting for card on Front desk<\/b><\/p>/);
  assert.match(html,/<button type="button" data-reader-payment-cancel>Cancel<\/button>/);assert.doesNotMatch(html,/Try again|receipt/);
@@ -99,7 +103,7 @@ test('declined, cancelled, timed out and offline each say so and offer the next 
   assert.doesNotMatch(c.hostedCopayMarkup(c.hostedCopayStateFor('appt')),/Checkout expired/,'the panel uses the reader wording too');
   // Try again opens a fresh form with a new request; the closed payment is never reused.
   c.crypto.randomUUID=()=>'second-request';c.items=[{...op,status:'expired',last_result:result}];await f.click({readerPaymentAgain:''});
-  assert.match(c.editor,/<form id="reader-copay-form"[^>]*data-request="second-request"/);
+  assert.match(f.slot(),/<form id="reader-copay-form"[^>]*data-request="second-request"/);
  }
  // A payment that started closed (reader offline when it was sent) is shown at once.
  const f=fixture(),c=f.ctx;await f.click({readerCopay:'appt'});c.next={...op,status:'expired',last_result:'reader_offline'};await f.submit(f.form());
@@ -137,8 +141,51 @@ test('leaving the screen or signing out stops the display, and a lost answer kee
  c.next=op;await f.click({retryHostedCopay:'appt'});const posts=f.calls.filter(call=>call[1]==='POST'&&call[0]===base);
  assert.equal(posts.length,2);assert.equal(posts[0][2].request_id,posts[1][2].request_id,'the retry is the same request, never a second payment');assert.equal(posts[1][2].reader_id,'tmr_front');
 });
+
+test('the form and the live status stay on the screen and under the copay controls that were pressed',async()=>{
+ // From the encounter billing step: nothing moves to the Insurance tab, nothing uses the shared editor.
+ let f=fixture(),c=f.ctx;c.chartSection='visits';await f.click({readerCopay:'appt'},'encounter-hosted-copay');
+ assert.match(f.slot('encounter-hosted-copay-reader'),/<form id="reader-copay-form" class="billing-section" data-panel="encounter-hosted-copay"/);
+ assert.equal(f.slot('insurance-hosted-copay-reader'),'');assert.equal(f.nodes['encounter-hosted-copay-reader'].scrolled,1,'the form is scrolled into view');
+ c.next=op;await f.submit(f.form({},'encounter-hosted-copay'));
+ assert.equal(f.slot('encounter-hosted-copay-reader'),'<div id="reader-payment-live"></div>','the live status replaces the form in the same place');
+ assert.match(f.live(),/Waiting for card on Front desk/);assert.equal(f.slot('insurance-hosted-copay-reader'),'');
+ await f.tick({...op,status:'paid',last_result:'provider_verified',receipt_id:'receipt'});assert.match(f.live(),/<b>Approved<\/b>/);
+ assert.equal(c.chartSection,'visits');assert.equal(c.editor,undefined);
+ assert.equal(f.calls.some(call=>['showChartSection','openBillingEditor','selectPatient'].includes(call[0])),false,'the page and the tab never change');
+ // From the Insurance "Collect copay" step the same thing happens under that panel.
+ f=fixture();c=f.ctx;await f.click({readerCopay:'appt'},'insurance-hosted-copay');
+ assert.match(f.slot('insurance-hosted-copay-reader'),/data-panel="insurance-hosted-copay"/);assert.equal(f.slot('encounter-hosted-copay-reader'),'');
+ c.next=op;await f.submit(f.form({},'insurance-hosted-copay'));assert.equal(f.slot('insurance-hosted-copay-reader'),'<div id="reader-payment-live"></div>');
+ assert.equal(f.calls.some(call=>['showChartSection','openBillingEditor'].includes(call[0])),false);
+ // The slot is part of the panel markup, directly after the copay section.
+ assert.match(c.hostedCopayPanel({id:'appt'},'encounter-hosted-copay'),/<\/section><div id="encounter-hosted-copay-reader"><\/div>$/);
+ assert.match(c.hostedCopayPanel({id:'appt'},'insurance-hosted-copay'),/<\/section><div id="insurance-hosted-copay-reader"><\/div>$/);
+ // Cancel on the form clears only that slot.
+ f=fixture();await f.click({readerCopay:'appt'},'insurance-hosted-copay');f.click({closeReaderCopay:'insurance-hosted-copay'});assert.equal(f.slot('insurance-hosted-copay-reader'),'');
+});
+test('Try again keeps the amount that was just attempted, and nothing has to be ticked or typed',async()=>{
+ const f=fixture(),c=f.ctx;c.chartSection='visits';await f.click({readerCopay:'appt'},'encounter-hosted-copay');
+ const first=f.slot('encounter-hosted-copay-reader');
+ assert.doesNotMatch(first,/type="checkbox"|review-ack|I reviewed|name="reason"/,'no confirmation box or reason field');
+ assert.equal((first.match(/ required/g)||[]).length,1,'only the amount is required: '+first);
+ c.next={...op,amount_cents:1000};await f.submit(f.form({amount:'10.00'},'encounter-hosted-copay'));
+ const sent=f.calls.find(call=>call[1]==='POST');assert.equal(sent[2].amount_cents,1000);assert.equal(sent[2].reason,'Appointment copay taken on card reader');assert.equal('reviewed' in sent[2],false);
+ await f.tick({...op,amount_cents:1000,status:'expired',last_result:'reader_declined'});assert.match(f.live(),/Declined - try another card/);
+ c.items=[{...op,amount_cents:1000,status:'expired',last_result:'reader_declined'}];await f.click({readerPaymentAgain:''});
+ const again=f.slot('encounter-hosted-copay-reader');
+ assert.match(again,/<input name="amount" required inputmode="decimal" value="10.00">/,'the attempted $10.00, not the $25.00 plan copay');
+ assert.match(again,/Recorded plan copay: \$25\.00\./);assert.match(again,/data-panel="encounter-hosted-copay"/,'and in the same place');
+});
+test('test payments are labelled Test payment on a preview build and not at all on production',async()=>{
+ for(const [mark,shown] of [['Development preview · Synthetic data only',true],['Production environment',false],[null,false]]){
+  const f=fixture(),c=f.ctx;c.preview=mark?{textContent:mark}:null;c.items=[];await c.loadHostedCopays('appt',true);
+  const pages=[c.hostedCopayMarkup(c.hostedCopayStateFor('appt'))];await f.click({readerCopay:'appt'});pages.push(f.slot());c.next=op;await f.submit(f.form());pages.push(f.live());
+  for(const page of pages){assert.equal(page.includes('Test payment'),shown,String(mark)+': '+page.slice(0,200));assert.doesNotMatch(page,/Sandbox/);}
+ }
+});
 test('everything staff read is plain and short',async()=>{
- const f=fixture([frontDesk,back]),c=f.ctx;await f.click({readerCopay:'appt'});const pages=[c.editor];
+ const f=fixture([frontDesk,back]),c=f.ctx;await f.click({readerCopay:'appt'});const pages=[f.slot()];
  c.next=op;await f.submit(f.form());pages.push(f.live());
  for(const next of [{...op,last_result:'reader_offline'},{...op,last_result:'reader_finishing'},{...op,status:'paid',receipt_id:'receipt'}]){await f.tick(next);pages.push(f.live());}
  for(const result of ['reader_declined','reader_cancelled','reader_timed_out','reader_offline','reader_in_use','reader_unavailable','reader_failed']){c.readerPaymentLive={operation:{...op,status:'expired',last_result:result}};pages.push(c.readerPaymentMarkup(c.readerPaymentLive));}
