@@ -258,6 +258,9 @@ fn action(method: &Method, path: &str) -> Option<Action> {
             {
                 return Some(Action::Create);
             }
+            if path == "/api/v1/practice/document-storage/move" {
+                return Some(Action::Edit);
+            }
             if path.starts_with("/api/v1/patients/") && path.contains("/documents/") {
                 if path.ends_with("/office-sessions") {
                     return Some(Action::View);
@@ -1116,6 +1119,24 @@ mod tests {
             &Method::PUT,
             "/api/v1/practice/workspace-settings"
         ));
+    }
+    #[test]
+    fn document_storage_routes_are_practice_view_and_edit() {
+        let (status, start) = (
+            "/api/v1/practice/document-storage",
+            "/api/v1/practice/document-storage/move",
+        );
+        let mut flags = defaults();
+        assert!(permitted(&flags, &Method::GET, status));
+        assert!(permitted(&flags, &Method::POST, start));
+        flags.get_mut("practice").unwrap().edit = false;
+        assert!(permitted(&flags, &Method::GET, status));
+        assert!(!permitted(&flags, &Method::POST, start));
+        flags.get_mut("practice").unwrap().view = false;
+        assert!(!permitted(&flags, &Method::GET, status));
+        let denied = normalized(&BTreeMap::new());
+        assert!(!permitted(&denied, &Method::GET, status));
+        assert!(!permitted(&denied, &Method::POST, start));
     }
     #[test]
     fn policy_defaults_are_deny_and_cannot_remove_view_under_write() {

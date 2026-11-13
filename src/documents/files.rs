@@ -27,6 +27,20 @@ struct Save {
     reason: String,
 }
 #[derive(sqlx::FromRow)]
+struct FileRow {
+    version: i64,
+    filename: String,
+    content_type: String,
+    storage: String,
+    bytes: Option<Vec<u8>>,
+    object_key: Option<String>,
+    sha256: String,
+    size_bytes: i64,
+    annotations: Value,
+    actor_id: Uuid,
+    created_at: DateTime<Utc>,
+    reason: String,
+}
 struct FileVersion {
     version: i64,
     filename: String,
@@ -39,7 +53,7 @@ struct FileVersion {
     created_at: DateTime<Utc>,
     reason: String,
 }
-const SELECT_VERSION: &str = "SELECT version,filename,content_type,bytes,sha256,size_bytes,annotations,actor_id,created_at,reason FROM patient_document_file_versions WHERE tenant_id=$1 AND patient_id=$2 AND document_id=$3 AND version=$4 UNION ALL SELECT 1,filename,content_type,bytes,sha256,size_bytes,'[]'::jsonb,uploaded_by,uploaded_at,coalesce(create_request->>'reason','Original upload') FROM patient_documents WHERE tenant_id=$1 AND patient_id=$2 AND id=$3 AND $4=1";
+const SELECT_VERSION: &str = "SELECT version,filename,content_type,storage,bytes,object_key,sha256,size_bytes,annotations,actor_id,created_at,reason FROM patient_document_file_versions WHERE tenant_id=$1 AND patient_id=$2 AND document_id=$3 AND version=$4 UNION ALL SELECT 1,filename,content_type,storage,bytes,object_key,sha256,size_bytes,'[]'::jsonb,uploaded_by,uploaded_at,coalesce(create_request->>'reason','Original upload') FROM patient_documents WHERE tenant_id=$1 AND patient_id=$2 AND id=$3 AND $4=1";
 pub(super) fn routes() -> Router<State> {
     Router::new()
         .route("/vendor/pdfjs/standard_fonts/{name}", get(standard_font))
@@ -64,19 +78,46 @@ pub(super) fn routes() -> Router<State> {
 }
 async fn load(
     tx: &mut Transaction<'_, Postgres>,
+    store: &DocumentStore,
     a: &Actor,
     p: Uuid,
     id: Uuid,
     version: i64,
 ) -> Result<FileVersion> {
-    sqlx::query_as(SELECT_VERSION)
+    let row: FileRow = sqlx::query_as(SELECT_VERSION)
         .bind(a.tenant_id)
         .bind(p)
         .bind(id)
         .bind(version)
         .fetch_optional(&mut **tx)
         .await?
-        .ok_or(Error::NotFound)
+        .ok_or(Error::NotFound)?;
+    let bytes = store
+        .load(
+            a.tenant_id,
+            id,
+            row.version,
+            Stored {
+                storage: row.storage,
+                bytes: row.bytes,
+                object_key: row.object_key,
+                sha256: row.sha256.clone(),
+                size_bytes: row.size_bytes,
+            },
+        )
+        .await?;
+    Ok(FileVersion {
+        version: row.version,
+        filename: row.filename,
+        content_type: row.content_type,
+        bytes,
+        sha256: row.sha256,
+        size_bytes: row.size_bytes,
+        annotations: row.annotations,
+        actor_id: row.actor_id,
+        created_at: row.created_at,
+        reason: row.reason,
+    })
 }
 fn public(v: &FileVersion) -> Value {
     json!({"version":v.version,"filename":v.filename,"content_type":v.content_type,"sha256":v.sha256,"size_bytes":v.size_bytes,"annotations":v.annotations,"actor_id":v.actor_id,"created_at":v.created_at,"reason":v.reason,"text_content":if v.content_type=="text/plain" {std::str::from_utf8(&v.bytes).ok()} else {None}})
@@ -106,7 +147,7 @@ async fn read(
 ) -> Result<Json<Value>> {
     a.staff()?;
     let mut tx = db(&s)?.begin().await?;
-    let v = load(&mut tx, &a, p, id, version).await?;
+    let v = load(&mut tx, store(&s)?, &a, p, id, version).await?;
     audit(&mut tx, &a, "patient.document.file_read", id).await?;
     tx.commit().await?;
     Ok(Json(public(&v)))
@@ -151,12 +192,13 @@ async fn save(
 ) -> Result<Json<Value>> {
     let expected = crate::expected(&headers)?;
     let mut tx = db(&s)?.begin().await?;
-    let saved = save_in_transaction(&mut tx, &a, p, id, expected, v).await?;
+    let saved = save_in_transaction(&mut tx, store(&s)?, &a, p, id, expected, v).await?;
     tx.commit().await?;
     Ok(Json(saved))
 }
 async fn save_in_transaction(
     tx: &mut Transaction<'_, Postgres>,
+    store: &DocumentStore,
     a: &Actor,
     p: Uuid,
     id: Uuid,
@@ -171,7 +213,7 @@ async fn save_in_transaction(
             "only active documents accept new file versions",
         ));
     }
-    let base = load(tx, a, p, id, expected).await?;
+    let base = load(tx, store, a, p, id, expected).await?;
     validate_annotations(&v.annotations, &base.content_type)?;
     if v.text_content.is_some() && v.content_base64.is_some() {
         return Err(Error::Invalid(
@@ -213,7 +255,7 @@ async fn save_in_transaction(
                 "request ID already used for another file version",
             ));
         }
-        let saved = load(tx, a, p, id, version).await?;
+        let saved = load(tx, store, a, p, id, version).await?;
         audit(tx, a, "patient.document.file_replayed", id).await?;
         return Ok(public(&saved));
     }
@@ -225,9 +267,25 @@ async fn save_in_transaction(
             "file changed; review the latest version before saving",
         ));
     }
-    sqlx::query("INSERT INTO patient_document_file_versions(tenant_id,document_id,patient_id,version,request_id,request_hash,filename,content_type,bytes,sha256,size_bytes,annotations,actor_id,reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
-        .bind(a.tenant_id).bind(id).bind(p).bind(current+1).bind(v.request_id).bind(request_hash).bind(base.filename).bind(base.content_type).bind(&bytes).bind(hash).bind(bytes.len() as i64).bind(annotations).bind(a.sub).bind(v.reason.trim()).execute(&mut **tx).await?;
-    let saved = load(tx, a, p, id, current + 1).await?;
+    // A replay returned above. The version number is fixed under the parent
+    // row lock, so the sealed file is stored and confirmed before its row.
+    let object_key = if store.is_remote() {
+        Some(
+            store
+                .save(a.tenant_id, id, current + 1, &hash, &bytes, false)
+                .await?,
+        )
+    } else {
+        None
+    };
+    let inserted = sqlx::query("INSERT INTO patient_document_file_versions(tenant_id,document_id,patient_id,version,request_id,request_hash,filename,content_type,bytes,sha256,size_bytes,annotations,actor_id,reason,storage,object_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)")
+        .bind(a.tenant_id).bind(id).bind(p).bind(current+1).bind(v.request_id).bind(request_hash).bind(base.filename).bind(base.content_type).bind(object_key.is_none().then_some(&bytes[..])).bind(hash).bind(bytes.len() as i64).bind(annotations).bind(a.sub).bind(v.reason.trim()).bind(if object_key.is_some() { "s3" } else { "database" }).bind(&object_key).execute(&mut **tx).await;
+    if let (Err(_), Some(key)) = (&inserted, &object_key) {
+        // Harmless: nothing refers to it and it is never listed.
+        eprintln!("file version was not recorded; stored object {key} is unreferenced");
+    }
+    inserted?;
+    let saved = load(tx, store, a, p, id, current + 1).await?;
     audit(tx, a, "patient.document.file_saved", id).await?;
     Ok(public(&saved))
 }
@@ -242,13 +300,14 @@ pub(crate) struct OfficeSource {
 }
 pub(crate) async fn office_source(
     tx: &mut Transaction<'_, Postgres>,
+    store: &DocumentStore,
     a: &Actor,
     p: Uuid,
     id: Uuid,
     version: i64,
 ) -> Result<OfficeSource> {
     a.staff()?;
-    let file = load(tx, a, p, id, version).await?;
+    let file = load(tx, store, a, p, id, version).await?;
     if !file
         .content_type
         .starts_with("application/vnd.openxmlformats")
@@ -266,8 +325,10 @@ pub(crate) async fn office_source(
         version: file.version,
     })
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn append_office_file(
     tx: &mut Transaction<'_, Postgres>,
+    store: &DocumentStore,
     a: &Actor,
     p: Uuid,
     id: Uuid,
@@ -275,7 +336,7 @@ pub(crate) async fn append_office_file(
     request_id: Uuid,
     bytes: Vec<u8>,
 ) -> Result<Value> {
-    let source = load(tx, a, p, id, expected).await?;
+    let source = load(tx, store, a, p, id, expected).await?;
     if !source
         .content_type
         .starts_with("application/vnd.openxmlformats")
@@ -286,6 +347,7 @@ pub(crate) async fn append_office_file(
     }
     save_in_transaction(
         tx,
+        store,
         a,
         p,
         id,
@@ -325,7 +387,7 @@ async fn file(
 ) -> Result<Response> {
     a.staff()?;
     let mut tx = db(&s)?.begin().await?;
-    let v = load(&mut tx, &a, p, id, version).await?;
+    let v = load(&mut tx, store(&s)?, &a, p, id, version).await?;
     let office = v.content_type.starts_with("application/vnd.openxmlformats");
     if inline && office {
         return Err(Error::Invalid(

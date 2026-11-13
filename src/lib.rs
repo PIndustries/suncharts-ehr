@@ -32,6 +32,10 @@ pub mod connector_catalog;
 pub mod copay_checkout;
 pub mod delivery;
 pub mod demographics;
+pub mod document_storage;
+pub mod document_store;
+#[cfg(test)]
+mod document_store_tests;
 pub mod documents;
 pub mod era835;
 pub mod era_batches;
@@ -132,11 +136,16 @@ async fn readiness(ExtractState(state): ExtractState<State>) -> impl IntoRespons
         .fetch_one(&auth.db)
         .await
     {
-        Ok(1) => (
-            StatusCode::OK,
-            Json(crate::managed_connect::readiness(&auth.db).await),
-        )
-            .into_response(),
+        Ok(1) => {
+            let mut body = crate::managed_connect::readiness(&auth.db).await;
+            // Reported for operators only. A brief file storage outage must not
+            // take the whole server out of rotation; affected requests fail cleanly.
+            body["document_store"] = serde_json::json!({
+                "mode": auth.documents.mode(),
+                "reachable": auth.documents.reachable(),
+            });
+            (StatusCode::OK, Json(body)).into_response()
+        }
         _ => (StatusCode::SERVICE_UNAVAILABLE, "database unavailable").into_response(),
     }
 }
@@ -383,6 +392,7 @@ pub fn app(state: State) -> Router {
         .merge(gmail_referral_adapter::router())
         .merge(ringcentral_adapter::router())
         .merge(documents::routes())
+        .merge(document_storage::router())
         .merge(office::router())
         .merge(referrals::routes())
         .merge(referral_delivery::routes())
@@ -659,6 +669,16 @@ pub fn app(state: State) -> Router {
                     "specialty-workspace.js",
                     "application/javascript",
                     include_str!("../web/specialty-workspace.js"),
+                )
+            }),
+        )
+        .route(
+            "/document-storage.js",
+            get(|| async {
+                web_asset(
+                    "document-storage.js",
+                    "application/javascript",
+                    include_str!("../web/document-storage.js"),
                 )
             }),
         )

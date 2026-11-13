@@ -28,6 +28,8 @@ use uuid::Uuid;
 
 pub struct BrowserAuth {
     pub db: PgPool,
+    /// Where patient file bytes are kept. Defaults to the database.
+    pub documents: Arc<crate::document_store::DocumentStore>,
     origin: String,
     secure: bool,
     attempts: Mutex<(Instant, u32)>,
@@ -38,6 +40,13 @@ impl BrowserAuth {
         &self.origin
     }
     pub fn new(db: PgPool, origin: String) -> std::result::Result<Arc<Self>, &'static str> {
+        Self::with_document_store(db, origin, crate::document_store::DocumentStore::database())
+    }
+    pub fn with_document_store(
+        db: PgPool,
+        origin: String,
+        documents: Arc<crate::document_store::DocumentStore>,
+    ) -> std::result::Result<Arc<Self>, &'static str> {
         let url = url::Url::parse(&origin).map_err(|_| "invalid browser origin")?;
         let secure = url.scheme() == "https";
         let local = matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"));
@@ -53,6 +62,7 @@ impl BrowserAuth {
         }
         Ok(Arc::new(Self {
             db,
+            documents,
             origin: url.origin().ascii_serialization(),
             secure,
             attempts: Mutex::new((Instant::now(), 0)),

@@ -288,8 +288,15 @@ async fn binary(
     let id: Uuid = raw.parse().map_err(|_| Error::NotFound)?;
     let db = &s.browser.as_ref().ok_or(Error::NotFound)?.db;
     let mut tx = db.begin().await.map_err(Error::from)?;
-    let (mime, bytes): (String, Vec<u8>) = sqlx::query_as(
-        "SELECT content_type,bytes FROM patient_documents WHERE tenant_id=$1 AND id=$2",
+    let (mime, storage, bytes, object_key, sha256, size_bytes): (
+        String,
+        String,
+        Option<Vec<u8>>,
+        Option<String>,
+        String,
+        i64,
+    ) = sqlx::query_as(
+        "SELECT content_type,storage,bytes,object_key,sha256,size_bytes FROM patient_documents WHERE tenant_id=$1 AND id=$2",
     )
     .bind(a.tenant_id)
     .bind(id)
@@ -297,6 +304,20 @@ async fn binary(
     .await
     .map_err(Error::from)?
     .ok_or(Error::NotFound)?;
+    let bytes = crate::documents::store(&s)?
+        .load(
+            a.tenant_id,
+            id,
+            1,
+            crate::document_store::Stored {
+                storage,
+                bytes,
+                object_key,
+                sha256,
+                size_bytes,
+            },
+        )
+        .await?;
     let accept = h
         .get(header::ACCEPT)
         .map(|v| {

@@ -2,6 +2,7 @@
 //! Immutable document originals with attributed, versioned metadata.
 use crate::{
     auth::{Actor, Role},
+    document_store::{DocumentStore, Stored},
     error::{Error, Result},
     model::text,
     postgres::audit,
@@ -131,6 +132,10 @@ pub(crate) mod files;
 fn db(s: &State) -> Result<&sqlx::PgPool> {
     Ok(&s.browser.as_ref().ok_or(Error::NotFound)?.db)
 }
+/// Where this server keeps patient file bytes.
+pub(crate) fn store(s: &State) -> Result<&DocumentStore> {
+    Ok(&s.browser.as_ref().ok_or(Error::NotFound)?.documents)
+}
 async fn patient(tx: &mut Transaction<'_, Postgres>, a: &Actor, p: Uuid) -> Result<()> {
     let exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM patients WHERE tenant_id=$1 AND id=$2)")
@@ -242,6 +247,7 @@ pub(crate) async fn validate_reviewed_link(
 
 pub(crate) async fn linked_file_bytes(
     tx: &mut Transaction<'_, Postgres>,
+    store: &DocumentStore,
     tenant: Uuid,
     patient: Uuid,
     id: Uuid,
@@ -254,8 +260,22 @@ pub(crate) async fn linked_file_bytes(
             .filter(|v| *v > 0)
             .ok_or(Error::Invalid("invalid referral file version"))?,
     };
-    let bytes: Vec<u8> = sqlx::query_scalar("SELECT bytes FROM patient_documents WHERE tenant_id=$1 AND patient_id=$2 AND id=$3 AND $4=1 UNION ALL SELECT bytes FROM patient_document_file_versions WHERE tenant_id=$1 AND patient_id=$2 AND document_id=$3 AND version=$4")
+    let (storage, bytes, object_key, sha256, size_bytes): (String, Option<Vec<u8>>, Option<String>, String, i64) = sqlx::query_as("SELECT storage,bytes,object_key,sha256,size_bytes FROM patient_documents WHERE tenant_id=$1 AND patient_id=$2 AND id=$3 AND $4=1 UNION ALL SELECT storage,bytes,object_key,sha256,size_bytes FROM patient_document_file_versions WHERE tenant_id=$1 AND patient_id=$2 AND document_id=$3 AND version=$4")
         .bind(tenant).bind(patient).bind(id).bind(version).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)?;
+    let bytes = store
+        .load(
+            tenant,
+            id,
+            version,
+            Stored {
+                storage,
+                bytes,
+                object_key,
+                sha256,
+                size_bytes,
+            },
+        )
+        .await?;
     if metadata["sha256"] != format!("{:x}", Sha256::digest(&bytes))
         || metadata["size_bytes"] != json!(bytes.len())
     {
@@ -456,26 +476,50 @@ async fn upload(
         tx.commit().await?;
         return Ok(response(v));
     }
-    let q=format!("INSERT INTO patient_documents(tenant_id,id,patient_id,request_id,create_request,content,filename,content_type,bytes,sha256,size_bytes,uploaded_by,updated_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12) RETURNING {FIELDS}");
-    let entry = sqlx::query_as(&q)
-        .bind(a.tenant_id)
-        .bind(Uuid::new_v4())
-        .bind(p)
-        .bind(v.request_id)
-        .bind(original)
-        .bind(json!(v.content))
-        .bind(v.filename)
-        .bind(v.content_type)
-        .bind(&bytes)
-        .bind(hash)
-        .bind(bytes.len() as i64)
-        .bind(a.sub)
-        .fetch_one(&mut *tx)
-        .await?;
-    revision(&mut tx, &a, &entry, &v.reason).await?;
-    audit(&mut tx, &a, "patient.document.upload", entry.id).await?;
-    tx.commit().await?;
-    Ok(response(entry))
+    // Only a first-time upload reaches this point; a replay returned above
+    // without touching file storage. The sealed file is stored and confirmed
+    // before the row that refers to it exists.
+    let id = Uuid::new_v4();
+    let documents = store(&s)?;
+    let object_key = if documents.is_remote() {
+        Some(
+            documents
+                .save(a.tenant_id, id, 1, &hash, &bytes, false)
+                .await?,
+        )
+    } else {
+        None
+    };
+    let recorded = async {
+        let q=format!("INSERT INTO patient_documents(tenant_id,id,patient_id,request_id,create_request,content,filename,content_type,bytes,sha256,size_bytes,uploaded_by,updated_by,storage,object_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,$13,$14) RETURNING {FIELDS}");
+        let entry: Document = sqlx::query_as(&q)
+            .bind(a.tenant_id)
+            .bind(id)
+            .bind(p)
+            .bind(v.request_id)
+            .bind(original)
+            .bind(json!(v.content))
+            .bind(v.filename)
+            .bind(v.content_type)
+            .bind(object_key.is_none().then_some(&bytes[..]))
+            .bind(&hash)
+            .bind(bytes.len() as i64)
+            .bind(a.sub)
+            .bind(if object_key.is_some() { "s3" } else { "database" })
+            .bind(&object_key)
+            .fetch_one(&mut *tx)
+            .await?;
+        revision(&mut tx, &a, &entry, &v.reason).await?;
+        audit(&mut tx, &a, "patient.document.upload", entry.id).await?;
+        tx.commit().await?;
+        Ok::<_, Error>(entry)
+    }
+    .await;
+    if let (Err(_), Some(key)) = (&recorded, &object_key) {
+        // Harmless: nothing refers to it and it is never listed or reused.
+        eprintln!("document upload was not recorded; stored object {key} is unreferenced");
+    }
+    Ok(response(recorded?))
 }
 async fn update(
     a: Actor,
@@ -565,14 +609,28 @@ async fn document_file(a: Actor, s: State, p: Uuid, id: Uuid, inline: bool) -> R
             ))
         }
     };
-    let bytes: Vec<u8> = sqlx::query_scalar(
-        "SELECT bytes FROM patient_documents WHERE tenant_id=$1 AND patient_id=$2 AND id=$3",
+    let (storage, bytes, object_key): (String, Option<Vec<u8>>, Option<String>) = sqlx::query_as(
+        "SELECT storage,bytes,object_key FROM patient_documents WHERE tenant_id=$1 AND patient_id=$2 AND id=$3",
     )
     .bind(a.tenant_id)
     .bind(p)
     .bind(id)
     .fetch_one(&mut *tx)
     .await?;
+    let bytes = store(&s)?
+        .load(
+            a.tenant_id,
+            id,
+            1,
+            Stored {
+                storage,
+                bytes,
+                object_key,
+                sha256: v.sha256.clone(),
+                size_bytes: v.size_bytes,
+            },
+        )
+        .await?;
     audit(
         &mut tx,
         &a,

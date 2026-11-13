@@ -89,6 +89,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(|_| "engine database migration failed")?;
     suncharts_engine::browser::bootstrap(&db).await?;
+    // Fail closed: a half-configured or unreachable file store stops startup
+    // rather than accepting uploads it cannot keep. Settings are named, never
+    // printed.
+    let documents = match suncharts_engine::document_store::DocumentStore::from_env(&db).await {
+        Ok(store) => store,
+        Err(reason) => {
+            eprintln!("Refusing to start: patient file storage is not usable: {reason}");
+            return Err(reason.into());
+        }
+    };
+    eprintln!(
+        "Patient file storage: new files are kept in {}",
+        if documents.is_remote() {
+            "encrypted file storage (bucket reachable)"
+        } else {
+            "the database"
+        }
+    );
     tokio::spawn(suncharts_engine::managed_connect::run(db.clone()));
     tokio::spawn(suncharts_engine::workflow_triggers::run(db.clone()));
     tokio::spawn(suncharts_engine::reminders::run(db.clone()));
@@ -96,7 +114,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(suncharts_engine::installments::run(db.clone()));
     tokio::spawn(suncharts_engine::reader_payments::run(db.clone()));
     tokio::spawn(suncharts_engine::connect_updates::run(db.clone()));
-    tokio::spawn(suncharts_engine::referral_delivery::run(db.clone()));
+    tokio::spawn(suncharts_engine::referral_delivery::run(
+        db.clone(),
+        documents.clone(),
+    ));
     tokio::spawn(suncharts_engine::gmail_referral_adapter::run(db.clone()));
     tokio::spawn(suncharts_engine::ringcentral_adapter::run(db.clone()));
     tokio::spawn(suncharts_engine::automation_event_runtime::run_retention(
@@ -118,9 +139,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
         tokio::spawn(suncharts_engine::delivery::run(db.clone(), delivery_config));
     }
-    let browser = suncharts_engine::browser::BrowserAuth::new(
+    let browser = suncharts_engine::browser::BrowserAuth::with_document_store(
         db.clone(),
         env::var("ENGINE_PUBLIC_URL").unwrap_or_else(|_| "http://127.0.0.1:8090".into()),
+        documents,
     )?;
     let state = State {
         backend: Arc::new(PostgresBackend(db)),

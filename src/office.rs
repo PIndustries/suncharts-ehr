@@ -315,7 +315,15 @@ async fn create(
         return Err(Error::Unauthorized);
     }
     let mut tx = db(&s)?.begin().await?;
-    let file = files::office_source(&mut tx, &current, p, id, v.base_version).await?;
+    let file = files::office_source(
+        &mut tx,
+        crate::documents::store(&s)?,
+        &current,
+        p,
+        id,
+        v.base_version,
+    )
+    .await?;
     let (category,metadata_version):(Value,i64)=sqlx::query_as("SELECT content,version FROM patient_documents WHERE tenant_id=$1 AND patient_id=$2 AND id=$3 FOR SHARE").bind(a.tenant_id).bind(p).bind(id).fetch_one(&mut *tx).await?;
     if v.mode == "edit" {
         crate::documents::write_document(&current, category["category"].as_str().unwrap_or(""))?;
@@ -394,8 +402,15 @@ async fn source(
     let v = session(db(&s)?, sid, &c).await?;
     let a = current_actor(&s, &v, false).await?;
     let mut tx = db(&s)?.begin().await?;
-    let file =
-        files::office_source(&mut tx, &a, v.patient_id, v.document_id, v.base_version).await?;
+    let file = files::office_source(
+        &mut tx,
+        crate::documents::store(&s)?,
+        &a,
+        v.patient_id,
+        v.document_id,
+        v.base_version,
+    )
+    .await?;
     tx.commit().await?;
     let mut r = (
         [
@@ -737,10 +752,10 @@ async fn callback_with_config(
   if state=="complete"&&hash.as_deref()==Some(&digest){return Ok(());}
   if state!="pending"||expected!=locked.current_version||locked.expires_at<=Utc::now(){return Err(Error::Conflict("Office save version changed"));}
   verify_editable(&mut tx,&actor,&locked).await?;
-  let original=files::office_source(&mut tx,&actor,v.patient_id,v.document_id,expected).await?;
+  let original=files::office_source(&mut tx,crate::documents::store(&s)?,&actor,v.patient_id,v.document_id,expected).await?;
   let filetype=if original.content_type.ends_with("wordprocessingml.document"){"docx"}else{"xlsx"};
   if body["filetype"]!=filetype{return Err(Error::Invalid("Office returned a different file format"));}
-  let saved_version=if original.sha256==format!("{:x}",Sha256::digest(&bytes)){expected}else{files::append_office_file(&mut tx,&actor,v.patient_id,v.document_id,expected,operation,bytes).await?["version"].as_i64().ok_or(Error::Invalid("Office version missing"))?};
+  let saved_version=if original.sha256==format!("{:x}",Sha256::digest(&bytes)){expected}else{files::append_office_file(&mut tx,crate::documents::store(&s)?,&actor,v.patient_id,v.document_id,expected,operation,bytes).await?["version"].as_i64().ok_or(Error::Invalid("Office version missing"))?};
   sqlx::query("UPDATE office_editor_saves SET status='complete',callback_hash=$2,saved_version=$3 WHERE id=$1").bind(operation).bind(&digest).bind(saved_version).execute(&mut *tx).await?;
   sqlx::query("UPDATE office_editor_sessions SET status='saved',current_version=$2,last_error=NULL WHERE id=$1").bind(sid).bind(saved_version).execute(&mut *tx).await?;
   audit(&mut tx,&actor,"patient.document.office_saved",v.document_id).await?;tx.commit().await?;Ok(())

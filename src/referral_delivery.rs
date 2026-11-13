@@ -341,6 +341,7 @@ struct PreviewInput {
 }
 async fn package(
     tx: &mut Transaction<'_, Postgres>,
+    store: &crate::document_store::DocumentStore,
     a: &Actor,
     p: Uuid,
     id: Uuid,
@@ -365,7 +366,8 @@ async fn package(
             .and_then(|items| items.iter().find(|item| item["id"] == id.to_string()));
         let metadata =
             crate::documents::validate_reviewed_link(tx, a.tenant_id, p, id, reviewed).await?;
-        let bytes = crate::documents::linked_file_bytes(tx, a.tenant_id, p, id, &metadata).await?;
+        let bytes =
+            crate::documents::linked_file_bytes(tx, store, a.tenant_id, p, id, &metadata).await?;
         total += bytes.len();
         if total > MAX_PACKAGE {
             return Err(Error::Invalid("referral package attachments exceed20MiB"));
@@ -393,7 +395,8 @@ async fn preview(
 ) -> Result<Json<Value>> {
     a.clinical()?;
     let mut tx = db(&s)?.begin().await?;
-    let (version, payload, manifest) = package(&mut tx, &a, p, id).await?;
+    let (version, payload, manifest) =
+        package(&mut tx, crate::documents::store(&s)?, &a, p, id).await?;
     let d = destination(&mut tx, a.tenant_id, v.destination_id, true).await?;
     if !d.enabled {
         return Err(Error::Conflict("referral destination is disabled"));
@@ -515,7 +518,8 @@ async fn queue(
         tx.commit().await?;
         return Ok(Json(old.public()));
     }
-    let (version, payload, manifest) = package(&mut tx, &a, p, id).await?;
+    let (version, payload, manifest) =
+        package(&mut tx, crate::documents::store(&s)?, &a, p, id).await?;
     if version != expected {
         return Err(Error::Conflict("referral changed; review delivery again"));
     }
@@ -670,6 +674,13 @@ fn valid_receipt(s: &str) -> Result<()> {
 }
 /// One durable attempt. A lease abandoned during transport becomes uncertain, never blindly retried.
 pub async fn process_one(pool: &PgPool) -> Result<bool> {
+    process_one_with(pool, &crate::document_store::DocumentStore::database()).await
+}
+/// As [`process_one`], reading attachments from the given file store.
+pub async fn process_one_with(
+    pool: &PgPool,
+    store: &crate::document_store::DocumentStore,
+) -> Result<bool> {
     let mut tx = pool.begin().await?;
     let recover:Option<(Uuid,Uuid)>=sqlx::query_as("SELECT tenant_id,id FROM referral_delivery_jobs WHERE status='sending' AND lease_until<now() ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1").fetch_optional(&mut *tx).await?;
     if let Some((tenant, id)) = recover {
@@ -700,11 +711,16 @@ pub async fn process_one(pool: &PgPool) -> Result<bool> {
     let a = j.actor()?;
     let d = destination(&mut tx, j.tenant_id, j.destination_id, true).await?;
     let authorized:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM browser_users WHERE tenant_id=$1 AND id=$2 AND NOT disabled AND role IN ('owner','clinician'))").bind(j.tenant_id).bind(j.actor_id).fetch_one(&mut *tx).await?;
-    let package_current = match package(&mut tx, &a, j.patient_id, j.referral_id).await {
+    let package_current = match package(&mut tx, store, &a, j.patient_id, j.referral_id).await {
         Ok((version, payload, manifest)) => {
             version == j.referral_version && payload == j.payload && manifest == j.manifest
         }
-        Err(Error::Conflict(_) | Error::Invalid(_) | Error::NotFound) => false,
+        // An attachment that fails its integrity check is never sent. A file
+        // store outage is not one of these: it returns below and the job stays
+        // queued for the next pass.
+        Err(Error::Conflict(_) | Error::Invalid(_) | Error::NotFound | Error::Integrity(_)) => {
+            false
+        }
         Err(e) => return Err(e),
     };
     if !authorized || !package_current || !d.enabled || d.version != j.destination_version {
@@ -807,11 +823,11 @@ async fn send(j: &Job) -> Transport {
     }
     Transport::Uncertain
 }
-pub async fn run(pool: PgPool) {
+pub async fn run(pool: PgPool, store: std::sync::Arc<crate::document_store::DocumentStore>) {
     let mut tick = tokio::time::interval(Duration::from_secs(2));
     loop {
         tick.tick().await;
-        if process_one(&pool).await.is_err() {
+        if process_one_with(&pool, &store).await.is_err() {
             eprintln!("Referral delivery unavailable; durable request retained")
         }
     }

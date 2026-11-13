@@ -171,6 +171,19 @@ pub(crate) async fn credential_storage_ready(pool: &PgPool) -> Result<bool> {
     let saved:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM edi_provider_settings) OR EXISTS(SELECT 1 FROM payment_credentials) OR EXISTS(SELECT 1 FROM reminder_credentials) OR EXISTS(SELECT 1 FROM connect_service_credentials) OR EXISTS(SELECT 1 FROM connect_onboarding_intents) OR EXISTS(SELECT 1 FROM referral_delivery_destinations WHERE encrypted_credential IS NOT NULL) OR EXISTS(SELECT 1 FROM erx_setup_requests) OR EXISTS(SELECT 1 FROM erx_connections WHERE encrypted_credentials IS NOT NULL) OR EXISTS(SELECT 1 FROM erx_prescribers WHERE encrypted_credentials IS NOT NULL) OR EXISTS(SELECT 1 FROM erx_setup_history WHERE encrypted_credentials IS NOT NULL) OR EXISTS(SELECT 1 FROM scheduling_webhook_subscriptions) OR EXISTS(SELECT 1 FROM instance_integration_credentials) OR EXISTS(SELECT 1 FROM practice_billing_organizations)").fetch_one(pool).await?;
     Ok(!saved || existing_key().is_ok())
 }
+/// Master key for sealing patient files. It is created only on an install that
+/// has nothing sealed yet; once anything depends on it, a missing key is an
+/// error so a fresh key can never silently orphan stored files.
+pub(crate) async fn document_master_key(pool: &PgPool) -> Result<Zeroizing<Vec<u8>>> {
+    if key_path().exists() {
+        return master_key();
+    }
+    let stored: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM patient_documents WHERE storage='s3') OR EXISTS(SELECT 1 FROM patient_document_file_versions WHERE storage='s3')").fetch_one(pool).await?;
+    if stored || !credential_storage_ready(pool).await? {
+        return existing_key();
+    }
+    master_key()
+}
 pub(crate) async fn seal_secret(
     pool: &PgPool,
     tenant: Uuid,
