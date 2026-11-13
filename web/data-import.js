@@ -28,10 +28,10 @@ function importPatients(job){
 }
 function importJobCard(j){
  const errors=j.report?.errors||[],issues=[...new Set(errors.map(e=>importIssueLabels[e.error]||'This file has a problem. Upload a fresh copy.'))],ready=j.status==='reconciled'&&j.report?.ready_to_import===true;
- return `<div class="migration-job" data-import-card="${esc(j.id)}"><div class="section-head"><h3>${esc(j.manifest.source_revision)}</h3><span class="pill">${esc(importStatusLabels[j.status]||j.status)}</span></div><p class="muted">${Object.entries(j.manifest.expected_counts).filter(([,n])=>n).map(([k,n])=>importCount(n,k)).join(' · ')}</p>${issues.length?`<div class="notice error"><b>This file cannot be imported yet.</b><ul>${issues.slice(0,8).map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>`:''}${importPatients(j)}<div class="actions">${j.status==='collecting'?`<button type="button" data-reconcile="${esc(j.id)}">Check again</button>`:''}${j.status==='reconciled'?`<button type="button" class="primary" data-commit="${esc(j.id)}" data-digest="${esc(j.digest)}" ${ready?'':'disabled'}>Import records</button>`:''}</div>${j.status==='imported'?'<p class="muted">Imported records show on each chart as records from the previous system.</p>':''}</div>`;
+ return `<div class="migration-job" data-import-card="${esc(j.id)}"><div class="section-head"><h3>${esc(j.manifest.source_revision)}</h3><span class="pill">${esc(importStatusLabels[j.status]||j.status)}</span></div><p class="muted">${Object.entries(j.manifest.expected_counts).filter(([,n])=>n).map(([k,n])=>importCount(n,k)).join(' · ')}</p>${issues.length?`<div class="notice error"><b>This file cannot be imported yet.</b><ul>${issues.slice(0,8).map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>`:''}${importPatients(j)}<div class="actions">${j.status==='collecting'?`<button type="button" data-reconcile="${esc(j.id)}">Check again</button>`:''}${j.status==='reconciled'?`<button type="button" class="primary" data-commit="${esc(j.id)}" data-digest="${esc(j.digest)}" ${ready?'':'disabled'}>Import records</button>`:''}</div>${j.status==='imported'?'<p class="muted">Imported records show on each chart as records from the previous system.</p>'+importFilesSection(j):''}</div>`;
 }
 async function showMigrations(){
- const jobs=await api('/api/v1/migrations');showTool('Data import');
+ const jobs=await api('/api/v1/migrations');importJobsShown=jobs.items;showTool('Data import');
  $('tools').innerHTML=`<div id="data-import"><p class="eyebrow">BRING YOUR RECORDS WITH YOU</p><h2>Data import</h2><p>Bring in patient records from your previous system. Upload the import file, check the patients it found, then import.</p><form id="migration-form"><label>Import file<input name="package" type="file" accept="application/json,.json" required></label><div class="actions"><button class="primary" type="submit">Upload and check</button></div></form><h3>Your imports</h3>${jobs.items.map(importJobCard).join('')||'<p class="muted">Nothing uploaded yet.</p>'}</div>`;
 }
 async function uploadMigration(form){
@@ -54,6 +54,91 @@ async function importCommit(button){
  const message=`${importPeople(attached,'patient goes','patients go')} onto charts you already have. ${importPeople(created,'new chart is','new charts are')} created. This cannot be undone.`;
  if(!await confirmAction(message,{title:'Import these records?',confirmLabel:'Import records'}))return;
  await api(`/api/v1/migrations/${button.dataset.commit}/commit`,'POST',{digest:button.dataset.digest});await showMigrations();notice('Records imported.');
+}
+
+// --- files from the previous system ----------------------------------------------------------
+// The owner picks the folder prepared by `scripts/import_ccda.py files`. Its list says which
+// patient each file belongs to; every file is read only when its turn comes and is saved under
+// a fixed request ID, so choosing the same folder again adds nothing twice.
+const importFileTypes=['application/pdf','image/png','image/jpeg','text/plain'];
+const importFilesState={};
+let importJobsShown=[];
+const importFilesWord=n=>n===1?'file':'files';
+function importFilesStatus(id){
+ const s=importFilesState[id];if(!s)return '';
+ if(s.problem)return `<p class="notice error" role="status">${esc(s.problem)}</p>`;
+ const failed=s.failed.length,line=`${s.done} of ${s.total} uploaded`;
+ if(s.running)return `<p role="status" aria-live="polite"><b>${line}</b>${failed?` · ${failed} could not be added so far`:''}. Keep this page open until it finishes.</p>`;
+ if(!failed)return `<p class="notice" role="status"><b>${line}.</b> The files are on each patient's chart, under Files.</p>`;
+ return `<div class="notice error" role="status"><b>${line}. ${failed} ${importFilesWord(failed)} could not be added.</b><ul>${s.failed.slice(0,50).map(f=>`<li>${esc(f.entry.original_name||f.entry.upload_name||'File')}: ${esc(f.reason)}</li>`).join('')}${failed>50?`<li>And ${failed-50} more.</li>`:''}</ul><div class="actions"><button type="button" data-import-files-retry="${esc(id)}">Try the failed ones again</button></div></div>`;
+}
+function importFilesSection(job){
+ const running=importFilesState[job.id]?.running;
+ return `<section class="import-files"><h4>Add files from the previous system</h4><p class="muted">Letters, scans and pictures from the previous system go onto each patient's chart, under Files. Choose the files folder prepared for this import.</p><div class="form-grid"><label>Files folder<input type="file" webkitdirectory multiple data-import-files-input></label><label>Or open the folder and select every file in it<input type="file" multiple data-import-files-input></label></div><div class="actions"><button type="button" class="primary" data-import-files-add="${esc(job.id)}" ${running?'disabled':''}>Add files</button></div><div id="import-files-status-${esc(job.id)}">${importFilesStatus(job.id)}</div></section>`;
+}
+function importFilesShow(id){
+ const host=$('import-files-status-'+id);if(host)host.innerHTML=importFilesStatus(id);
+ const add=document.querySelector?.(`[data-import-files-add="${id}"]`);if(add)add.disabled=!!importFilesState[id]?.running;
+}
+function importFilesProblem(id,message){importFilesState[id]={problem:message,failed:[],done:0,total:0,running:false};importFilesShow(id);}
+async function importFilesBase64(buffer){
+ const bytes=new Uint8Array(buffer);let binary='';
+ for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode.apply(null,bytes.subarray(i,i+0x8000));
+ return btoa(binary);
+}
+async function importFilesDigest(buffer){
+ if(typeof crypto==='undefined'||!crypto.subtle)return null;
+ return [...new Uint8Array(await crypto.subtle.digest('SHA-256',buffer))].map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+// Read the chosen folder's list and match every file to a chart. Nothing is uploaded here.
+async function importFilesChoose(job,chosen){
+ const id=job.id;if(importFilesState[id]?.running)return;
+ const files=new Map();for(const file of chosen)files.set(file.name,file);
+ const list=files.get('files-manifest.json');
+ if(!files.size)return importFilesProblem(id,'Choose the files folder first.');
+ if(!list)return importFilesProblem(id,'This is not the files folder prepared for this import. Choose the folder that was prepared for you.');
+ let manifest;try{manifest=JSON.parse(await list.text());}catch{manifest=null;}
+ const valid=e=>e&&typeof e==='object'&&/^[0-9a-f]{64}\.(pdf|png|jpg|txt)$/.test(e.file||'')&&importFileTypes.includes(e.content_type)&&typeof e.source_patient_id==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(e.request_id||'')&&e.file.startsWith(e.sha256+'.')&&Number.isInteger(e.size);
+ if(!manifest||!Array.isArray(manifest.files)||!manifest.files.every(valid))return importFilesProblem(id,'This files folder is damaged. Ask for it to be prepared again.');
+ if(manifest.source_instance!==job.source_instance)return importFilesProblem(id,'This files folder was prepared for a different import. Choose the folder prepared for this import.');
+ if(!manifest.files.length)return importFilesProblem(id,'This files folder is empty.');
+ importFilesState[id]={files,charts:null,total:manifest.files.length,done:0,failed:[],running:false};
+ await importFilesRun(id,manifest.files);
+}
+async function importFilesSend(state,entry){
+ const chart=state.charts.get(entry.source_patient_id);if(!chart)throw new Error('This patient has no chart from this import.');
+ const file=state.files.get(entry.file);if(!file)throw new Error('This file was not in the folder you chose.');
+ if(file.size!==entry.size)throw new Error('This file is damaged. Ask for the folder to be prepared again.');
+ const buffer=await file.arrayBuffer(),digest=await importFilesDigest(buffer);
+ if(digest&&digest!==entry.sha256)throw new Error('This file is damaged. Ask for the folder to be prepared again.');
+ const body={request_id:entry.request_id,filename:entry.upload_name||entry.original_name||entry.file,content_type:entry.content_type,content_base64:await importFilesBase64(buffer),reason:'Imported from the previous record system',
+  content:{title:entry.title||'Imported file',category:entry.category||'other',document_date:null,visit_id:null,notes:entry.notes||'Imported from the previous record system.',status:'active'}};
+ try{await api(`/api/v1/patients/${chart}/documents`,'POST',body);}
+ catch(error){
+  // The chart already holds this file from an earlier run (the same request saved before).
+  if(error.status===409)return;
+  if(!error.status&&/sign in/i.test(error.message||''))throw Object.assign(new Error('You were signed out. Sign in and try again.'),{stop:true});
+  throw new Error(error.status===413?'This file is too large.':error.status?'The chart did not accept this file.':'The connection was interrupted.');
+ }
+}
+// Upload one file at a time, keep going past a failure, and list the failures at the end.
+async function importFilesRun(id,entries){
+ const state=importFilesState[id];if(!state||state.running)return;
+ state.running=true;state.failed=[];importFilesShow(id);
+ try{
+  if(!state.charts){const links=await api(`/api/v1/migrations/${id}/patient-links`);state.charts=new Map(links.items.map(l=>[l.source_patient_id,l.patient_id]));}
+  let stopped=null;
+  for(const entry of entries){
+   if(stopped){state.failed.push({entry,reason:stopped});continue;}
+   try{await importFilesSend(state,entry);state.done+=1;}
+   catch(error){state.failed.push({entry,reason:error.message});if(error.stop)stopped=error.message;}
+   importFilesShow(id);
+  }
+ }catch{state.failed=entries.map(entry=>({entry,reason:'The connection was interrupted.'}));}
+ finally{state.running=false;}
+ importFilesShow(id);
+ const failed=state.failed.length;
+ notice(failed?`${state.done} of ${state.total} files uploaded. ${failed} could not be added.`:`${state.done} of ${state.total} files uploaded.`,failed>0);
 }
 
 // --- on the chart --------------------------------------------------------------------------
@@ -104,6 +189,9 @@ document.addEventListener('click',event=>{
  const d=button.dataset;
  if(d.useContact){run(()=>importedContactUse(button));return;}
  if(d.reconcileAll){run(()=>importedListAccept(d.reconcileAll));return;}
+ if(d.importFilesAdd){const job=importJobsShown.find(j=>j.id===d.importFilesAdd),inputs=button.closest('.import-files')?.querySelectorAll('[data-import-files-input]')||[];if(job)importFilesChoose(job,[...inputs].flatMap(input=>[...(input.files||[])])).catch(error=>notice(error.message,true));return;}
+ if(d.importFilesRetry){const state=importFilesState[d.importFilesRetry];if(state&&!state.running)importFilesRun(d.importFilesRetry,state.failed.map(f=>f.entry)).catch(error=>notice(error.message,true));return;}
+ // Adding files runs on its own so the rest of the page stays usable while it works.
  // "Check again" and "Import records" run through the shared handler in app.js.
  if(d.importSource&&(d.importAttach||button.hasAttribute('data-import-create'))){run(async()=>{await api(`/api/v1/migrations/${d.importJob}/patient-decisions`,'POST',d.importAttach?{source_id:d.importSource,action:'attach',patient_id:d.importAttach}:{source_id:d.importSource,action:'create'});await showMigrations();});}
 });

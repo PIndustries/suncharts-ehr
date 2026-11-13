@@ -498,5 +498,78 @@ class AttachmentTest(unittest.TestCase):
                 import_ccda.Api("https://example.invalid", "")
 
 
+class FilesFolderTest(unittest.TestCase):
+    def test_files_folder_holds_upload_ready_files_and_a_manifest_matching_the_command_line_upload(self):
+        with Export() as fixture:
+            fixture.standard()
+            packages, private, report = fixture.collect()
+            import_ccda.write_outputs(fixture.work, packages, private, report, "synthetic-emr")
+            out = fixture.work.parent / "files"
+            original, import_ccda.to_jpeg = import_ccda.to_jpeg, lambda raw, suffix, work: JPEG
+            try:
+                with contextlib.redirect_stdout(io.StringIO()) as printed:
+                    import_ccda.main(["files", "--export-dir", str(fixture.export), "--work-dir", str(fixture.work), "--out-dir", str(out)])
+                first = (out / "files-manifest.json").read_bytes()
+                with contextlib.redirect_stdout(io.StringIO()):
+                    import_ccda.main(["files", "--export-dir", str(fixture.export), "--work-dir", str(fixture.work), "--out-dir", str(out)])
+                bodies = {}
+                for plan in private["attachments"]:
+                    body = import_ccda.prepare_upload(plan, import_ccda.Archive(fixture.export / plan["archive"]).read(plan["member"], import_ccda.MAX_FILE_BYTES), fixture.work)
+                    bodies[body["request_id"]] = body
+            finally:
+                import_ccda.to_jpeg = original
+            self.assertEqual(json.loads(printed.getvalue()), {"files": {"ready": 6}})
+            self.assertNotIn("Synthetic", printed.getvalue())
+            self.assertEqual(first, (out / "files-manifest.json").read_bytes(), "a second run writes the same folder")
+            self.assertEqual(os.stat(out).st_mode & 0o777, 0o700)
+            manifest = json.loads(first)
+            self.assertEqual((manifest["format"], manifest["source_instance"]), ("suncharts-import-files/1", "synthetic-emr"))
+            self.assertEqual(len(manifest["files"]), 6)
+            names = sorted(p.name for p in out.iterdir())
+            # Two re-encoded images are the same bytes here, so they share one stored file.
+            self.assertEqual(names, sorted({e["file"] for e in manifest["files"]} | {"files-manifest.json"}))
+            for name in names:
+                self.assertRegex(name, r"^([0-9a-f]{64}\.(pdf|png|jpg|txt)|files-manifest\.json)$")
+                self.assertEqual(os.stat(out / name).st_mode & 0o777, 0o600)
+            for entry in manifest["files"]:
+                self.assertEqual(set(entry), {"file", "source_patient_id", "original_name", "upload_name", "content_type", "category", "size", "sha256", "request_id", "title", "notes"})
+                raw = (out / entry["file"]).read_bytes()
+                self.assertEqual((hashlib.sha256(raw).hexdigest(), len(raw)), (entry["sha256"], entry["size"]))
+                self.assertEqual(entry["file"].split(".")[0], entry["sha256"])
+                body = bodies[entry["request_id"]]  # what `attach` would send for the same file
+                self.assertEqual((entry["upload_name"], entry["content_type"], entry["title"], entry["category"], entry["notes"]),
+                                 (body["filename"], body["content_type"], body["content"]["title"], body["content"]["category"], body["content"]["notes"]))
+                self.assertEqual(base64.b64encode(raw).decode(), body["content_base64"])
+                self.assertEqual(entry["source_patient_id"], "1001")
+            by_name = {e["original_name"]: e for e in manifest["files"]}
+            self.assertEqual((by_name["note.html"]["content_type"], by_name["note.html"]["upload_name"]), ("text/plain", "note.txt"))
+            self.assertEqual((out / by_name["note.html"]["file"]).read_bytes(), b"Synthetic letter\n\nFirst line\nSecond line\n")
+            self.assertEqual((by_name["photo.heic"]["content_type"], by_name["photo.heic"]["upload_name"]), ("image/jpeg", "photo.jpg"))
+            self.assertEqual(by_name["insurance_card.jpg"]["category"], "insurance")
+            self.assertEqual({e["request_id"] for e in manifest["files"]}, {p["request_id"] for p in private["attachments"]})
+
+    def test_files_folder_must_be_private_and_plans_from_another_import_are_left_out(self):
+        with Export() as fixture:
+            fixture.standard()
+            packages, private, report = fixture.collect()
+            private["attachments"].append({"label": "P01", "member": "x.bin", "upload_type": None, "conversion": "unsupported", "reason": "file type is not accepted by patient documents"})
+            private["attachments"][0]["request_id"] = "00000000-0000-4000-8000-000000000000"
+            import_ccda.write_outputs(fixture.work, packages, private, report, "synthetic-emr")
+            out = fixture.work.parent / "files"
+            out.mkdir(mode=0o700)
+            original, import_ccda.to_jpeg = import_ccda.to_jpeg, lambda raw, suffix, work: JPEG
+            try:
+                outcome = import_ccda.prepare_files(fixture.export, fixture.work, out)
+            finally:
+                import_ccda.to_jpeg = original
+            self.assertEqual(outcome, {"ready": 5, "skipped: file type is not accepted by patient documents": 1,
+                                       "skipped: upload plan does not belong to this import; run package again": 1})
+            self.assertEqual(len(json.loads((out / "files-manifest.json").read_text())["files"]), 5)
+            os.chmod(out, 0o755)
+            for target in (out, fixture.work, fixture.export / "inside"):
+                with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                    import_ccda.main(["files", "--export-dir", str(fixture.export), "--work-dir", str(fixture.work), "--out-dir", str(target)])
+
+
 if __name__ == "__main__":
     unittest.main()

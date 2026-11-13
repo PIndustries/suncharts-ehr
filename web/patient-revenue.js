@@ -357,13 +357,14 @@ async function loadHostedCopays(appointment,force=false){
 function hostedCopayPanel(appointment,id){
  return appointment&&billingCan('create')?`<section id="${id}" data-appointment="${esc(appointment.id)}" class="billing-section">${hostedCopayMarkup(hostedCopayStateFor(appointment.id),id==='encounter-hosted-copay')}</section><div id="${id}-reader"></div>`:'';
 }
-async function openHostedCopayEditor(appointmentId){
- const view=hostedCopayView(),state=await loadHostedCopays(appointmentId,true);if(!state||!currentHostedCopayState(state)||!currentHostedCopayView(view))return;
+// The card link form opens under the copay controls that were pressed, like the reader form:
+// staff stay on the encounter billing step or the Insurance tab they were on.
+async function openHostedCopayEditor(appointmentId,panelId){
+ const view=hostedCopayView(),state=await loadHostedCopays(appointmentId,true);if(!state||!currentHostedCopayState(state)||!currentHostedCopayView(view,false))return;
  if(!state.availability?.available||typeof state.availability.livemode!=='boolean'||state.uncertain||state.items.some(item=>['creating','open','needs_review'].includes(item.status))){paintHostedCopayState(state);notice('Review the current card payment status before collecting another copay.',true);return;}
  const appointment=(workspace.appointments||[]).find(item=>item.id===appointmentId);if(!appointment||['cancelled','canceled','no_show'].includes(appointment.status))throw new Error('Choose an active appointment for card collection.');
- insuranceAppointmentSelection.set(selected,appointmentId);showChartSection('insurance');
  const coverage=revenueCoverage(revenueServiceDate(appointment)),amount=coverage?.content.copay_cents;
- openBillingEditor(`<form id="hosted-copay-form" data-patient="${esc(state.patient)}" data-appointment="${esc(appointmentId)}" data-coverage="${esc(coverage?.id||'')}" data-livemode="${state.availability.livemode===true}" data-request="${crypto.randomUUID()}"><h3>Collect card copay${state.availability.livemode?'':testPaymentTag()&&' · '+testPaymentTag()}</h3><p>${esc(appointment.title||'Appointment')} · ${esc(date(appointment.starts_at))}</p><p>${amount==null?'No plan copay has been recorded. Confirm the amount for this visit.':'Recorded plan copay: '+money(amount)+'. Confirm the benefit and amount before collection.'}</p><label>Reviewed copay amount (USD)<input name="amount" required inputmode="decimal" value="${amount==null?'':esc(dollars(amount))}"></label><p class="muted">Card details are entered on Stripe’s secure checkout page. A receipt appears only after SunCharts verifies payment. Returning from checkout alone does not record a payment.</p><button type="submit" class="primary">Prepare secure card checkout</button><button type="button" data-refresh-hosted-copay-list="${esc(appointmentId)}">Refresh existing card payments</button></form>`);
+ drawReaderCopay(panelId,`<form id="hosted-copay-form" class="billing-section" data-panel="${esc(panelId||'')}" data-patient="${esc(state.patient)}" data-appointment="${esc(appointmentId)}" data-coverage="${esc(coverage?.id||'')}" data-livemode="${state.availability.livemode===true}" data-request="${crypto.randomUUID()}"><h3>Collect card copay${state.availability.livemode?'':testPaymentTag()&&' · '+testPaymentTag()}</h3><p>${esc(appointment.title||'Appointment')} · ${esc(date(appointment.starts_at))}</p><p>${amount==null?'No plan copay has been recorded. Confirm the amount for this visit.':'Recorded plan copay: '+money(amount)+'. Confirm the benefit and amount before collection.'}</p><label>Reviewed copay amount (USD)<input name="amount" required inputmode="decimal" value="${amount==null?'':esc(dollars(amount))}"></label><p class="muted">Card details are entered on Stripe’s secure checkout page. A receipt appears only after SunCharts verifies payment. Returning from checkout alone does not record a payment.</p><button type="submit" class="primary">Prepare secure card checkout</button><button type="button" data-close-reader-copay="${esc(panelId||'')}">Cancel</button></form>`);
 }
 // The reader form and its live status are drawn directly under the copay controls that were
 // pressed, on the screen staff are already on. Nothing here changes the page or the tab.
@@ -465,7 +466,7 @@ async function refreshHostedCopay(appointment,id){
 document.addEventListener('click',event=>{
  const button=event.target.closest('button');if(!button)return;
  if(button.dataset.copayReturnRetry){event.preventDefault();run(()=>openHostedCopayReturn(button.dataset.copayReturnRetry));return;}
- if(button.dataset.collectCardCopay){event.preventDefault();run(()=>openHostedCopayEditor(button.dataset.collectCardCopay));return;}
+ if(button.dataset.collectCardCopay){event.preventDefault();const panel=button.closest?.('#encounter-hosted-copay,#insurance-hosted-copay')?.id;run(()=>openHostedCopayEditor(button.dataset.collectCardCopay,panel));return;}
  if(button.dataset.readerCopay){event.preventDefault();const panel=button.closest?.('#encounter-hosted-copay,#insurance-hosted-copay')?.id;run(()=>openReaderCopayEditor(button.dataset.readerCopay,panel));return;}
  if('closeReaderCopay' in button.dataset){event.preventDefault();const slot=readerCopaySlot(button.dataset.closeReaderCopay);if(slot)slot.innerHTML='';return;}
  if(button.dataset.cancelReaderCopay){event.preventDefault();run(()=>cancelReaderCopay(button.dataset.appointment,button.dataset.cancelReaderCopay));return;}
@@ -473,7 +474,7 @@ document.addEventListener('click',event=>{
  if(button.dataset.savedCardCopay){event.preventDefault();const panel=button.closest?.('#encounter-hosted-copay,#insurance-hosted-copay')?.id;run(()=>openSavedCardCopayEditor(button.dataset.savedCardCopay,panel));return;}
  if('savedCardCopayCharge' in button.dataset){event.preventDefault();const pending=hostedCopayState.savedCardCharge;if(!pending)return;hostedCopayState.savedCardCharge=null;button.disabled=true;run(()=>createSavedCardCopay(pending.state,pending.body,pending.panelId));return;}
  if('savedCardCopayBack' in button.dataset){event.preventDefault();const pending=hostedCopayState.savedCardCharge;if(!pending)return;hostedCopayState.savedCardCharge=null;run(()=>openSavedCardCopayEditor(pending.state.appointment,pending.panelId,pending.body.amount_cents));return;}
- if(button.dataset.retryHostedCopay){event.preventDefault();run(async()=>{const state=hostedCopayStateFor(button.dataset.retryHostedCopay);if(!state.uncertain||!state.retry)throw new Error('Refresh the current card payment status.');if(state.retry.reader_id)await createReaderCopay(state,state.retry,state.retryPanel);else if(state.retry.saved_card_setup_id)await createSavedCardCopay(state,state.retry,state.retryPanel);else await createHostedCopay(state,state.retry);});return;}
+ if(button.dataset.retryHostedCopay){event.preventDefault();run(async()=>{const state=hostedCopayStateFor(button.dataset.retryHostedCopay);if(!state.uncertain||!state.retry)throw new Error('Refresh the current card payment status.');if(state.retry.reader_id)await createReaderCopay(state,state.retry,state.retryPanel);else if(state.retry.saved_card_setup_id)await createSavedCardCopay(state,state.retry,state.retryPanel);else await createHostedCopay(state,state.retry,state.retryPanel);});return;}
  if(button.dataset.refreshHostedCopay){event.preventDefault();run(()=>refreshHostedCopay(button.dataset.appointment,button.dataset.refreshHostedCopay));return;}
  if(button.dataset.hostedCopayReceipt){event.preventDefault();run(async()=>{const state=hostedCopayStateFor(button.dataset.appointment),receipt=button.dataset.hostedCopayReceipt;if(!state.items.some(item=>item.receipt_id===receipt))throw new Error('Refresh this appointment’s card payments first.');await showCopayReceipt(receipt,state.appointment);});return;}
  if(button.dataset.refreshHostedCopayList){event.preventDefault();run(async()=>{const view=hostedCopayView(),state=await loadHostedCopays(button.dataset.refreshHostedCopayList,true);if(!state||!currentHostedCopayState(state)||!currentHostedCopayView(view)||!state.items.some(item=>item.receipt_id))return;const section=chartSection;await selectPatient(state.patient,typeof activeVisit!=='undefined'?activeVisit?.id:null);if(currentHostedCopayState(state)&&currentHostedCopayView(view,false))showChartSection(section);});}
@@ -500,16 +501,16 @@ document.addEventListener('submit',event=>{
  run(async()=>{const patient=form.dataset.patient,state=hostedCopayStateFor(form.dataset.appointment),data=Object.fromEntries(new FormData(form));
  if(patient!==selected||state.patient!==patient)throw new Error('Patient changed. Reopen card collection from the correct chart.');
  const body={request_id:form.dataset.request,amount_cents:cents(data.amount),coverage_id:form.dataset.coverage||null,livemode:form.dataset.livemode==='true',reason:'Reviewed appointment copay before hosted card collection'};
- await createHostedCopay(state,body);
+ await createHostedCopay(state,body,form.dataset.panel||undefined);
  });
 });
 
-async function createHostedCopay(state,body){
+async function createHostedCopay(state,body,panelId){
  if(!currentHostedCopayState(state))return;
  const view=hostedCopayView();
- let response;try{response=await api(hostedCopayBase(state),'POST',body);}catch(error){state.uncertain=true;state.retry=body;paintHostedCopayState(state);if(!currentHostedCopayView(view))return;throw error;}
+ let response;try{response=await api(hostedCopayBase(state),'POST',body);}catch(error){state.uncertain=true;state.retry=body;state.retryPanel=panelId;paintHostedCopayState(state);if(!currentHostedCopayView(view,false))return;throw error;}
  if(!currentHostedCopayState(state))return;acceptHostedCopayOperation(state,response.operation);
- if(!currentHostedCopayView(view))return;
- openBillingEditor('');
- $('insurance-hosted-copay')?.scrollIntoView({block:'center'});
+ if(!currentHostedCopayView(view,false))return;
+ // The checkout link and its status now show in the copay panel just above; close the form.
+ const slot=readerCopaySlot(panelId);if(slot){slot.innerHTML='';$(slot.id.replace(/-reader$/,''))?.scrollIntoView?.({block:'nearest'});}
 }

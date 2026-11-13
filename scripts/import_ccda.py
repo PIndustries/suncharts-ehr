@@ -17,6 +17,11 @@ extracting or changing it and writes, into a private 0700 work directory:
 POST /api/v1/patients/{id}/documents, finding each patient's chart through the
 committed import job. Nothing else in this tool uses the network.
 
+`files` writes the same upload-ready files into a private 0700 folder, named by
+their SHA-256, with a `files-manifest.json`. The practice owner picks that folder
+on the Data import page ("Add files from the previous system"), which uploads each
+file under the same request ID `attach` would use, so neither path duplicates the other.
+
 Only the printed report is free of patient data. Everything else stays in the work
 directory and must never be committed. This is not a complete EHI import: patients
 become charts (name, birth date, MRN and contact details), and every other record
@@ -1429,6 +1434,53 @@ def attach(export_dir, work, api, *, job_id=None, dry_run=False, only_label=None
     return dict(outcome)
 
 
+# --- files folder for the Data import page --------------------------------------------------
+
+FILES_MANIFEST = "files-manifest.json"
+FILE_EXTENSIONS = {"application/pdf": ".pdf", "image/png": ".png", "image/jpeg": ".jpg", "text/plain": ".txt"}
+
+
+def prepare_files(export_dir, work, out, *, only_label=None):
+    """Write converted, upload-ready files and their manifest for the browser upload."""
+    plans = json.loads((work / "attachments.json").read_text(encoding="utf-8"))
+    source_instance = json.loads((work / "batches" / "manifest.json").read_text(encoding="utf-8"))["source_instance"]
+    outcome, entries = collections.Counter(), []
+    for plan in plans:
+        if only_label and plan["label"] != only_label:
+            continue
+        try:
+            if not plan.get("upload_type"):
+                raise ImportProblem(plan.get("reason") or "file type is not accepted")
+            expected = str(uuid.uuid5(UUID_NAMESPACE, f"{source_instance}|{plan['patient_source_id']}|{plan['sha256']}"))
+            if plan.get("request_id") != expected:
+                raise ImportProblem("upload plan does not belong to this import; run package again")
+            body = prepare_upload(plan, Archive(pathlib.Path(export_dir) / plan["archive"]).read(plan["member"], MAX_FILE_BYTES), work)
+            raw = base64.b64decode(body["content_base64"])
+            limit = MAX_TEXT_DOCUMENT_BYTES if body["content_type"] == "text/plain" else MAX_DOCUMENT_BYTES
+            if not raw or len(raw) > limit or body["content_type"] not in FILE_EXTENSIONS:
+                raise ImportProblem("file is empty, too large or not an accepted type")
+            if body["content_type"] != "text/plain" and sniff(raw) != (body["content_type"], True):
+                raise ImportProblem("file content does not match its type")
+            digest = hashlib.sha256(raw).hexdigest()
+            name = digest + FILE_EXTENSIONS[body["content_type"]]
+            target = out / name
+            if not target.exists() or target.stat().st_size != len(raw):
+                fd, temporary = tempfile.mkstemp(prefix=".ccda-", dir=out)
+                with os.fdopen(fd, "wb") as output:
+                    output.write(raw)
+                os.chmod(temporary, 0o600)
+                os.replace(temporary, target)
+            entries.append({"file": name, "source_patient_id": plan["patient_source_id"],
+                            "original_name": pathlib.PurePosixPath(plan["member"]).name, "upload_name": body["filename"],
+                            "content_type": body["content_type"], "category": plan["category"], "size": len(raw), "sha256": digest,
+                            "request_id": plan["request_id"], "title": body["content"]["title"], "notes": body["content"]["notes"]})
+            outcome["ready"] += 1
+        except ImportProblem as error:
+            outcome["skipped: " + str(error)] += 1
+    write_private(out / FILES_MANIFEST, dump({"format": "suncharts-import-files/1", "source_instance": source_instance, "files": entries}))
+    return dict(outcome)
+
+
 # --- command line ---------------------------------------------------------------------------
 
 def main(argv=None):
@@ -1450,6 +1502,11 @@ def main(argv=None):
     send.add_argument("--job-id", help="ID of the committed import job; each patient's chart is looked up through it")
     send.add_argument("--only", metavar="LABEL")
     send.add_argument("--dry-run", action="store_true", help="convert and validate without sending anything")
+    folder = commands.add_parser("files", help="write upload-ready files and files-manifest.json for the Data import page")
+    folder.add_argument("--export-dir", required=True)
+    folder.add_argument("--work-dir", required=True)
+    folder.add_argument("--out-dir", required=True, help="private directory (mode 0700) the owner picks on the Data import page")
+    folder.add_argument("--only", metavar="LABEL")
     args = parser.parse_args(argv)
     try:
         work = private_directory(args.work_dir, args.export_dir)
@@ -1462,6 +1519,11 @@ def main(argv=None):
             packages, private, report = collect(args.export_dir, args.source_instance, args.source_revision, mrn_prefix=args.mrn_prefix,
                                                 keep_test=args.keep_test_patients, exclude_labels=set(args.exclude), salt=salt)
             write_outputs(work, packages, private, report, args.source_instance)
+        elif args.command == "files":
+            out = private_directory(args.out_dir, args.export_dir)
+            if out == work:
+                raise ImportProblem("the files folder must be separate from the work directory")
+            report = {"files": prepare_files(args.export_dir, work, out, only_label=args.only)}
         else:
             if not args.dry_run and not (args.api_base and args.job_id):
                 raise ImportProblem("--api-base and --job-id are required unless --dry-run is given")
