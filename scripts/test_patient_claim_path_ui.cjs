@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+// Staff display helpers load before every feature script, exactly as index.html loads them.
+{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
+
 
 const billing=fs.readFileSync('web/billing.js','utf8');
 const claims=fs.readFileSync('web/claims.js','utf8');
@@ -8,7 +11,7 @@ const claims=fs.readFileSync('web/claims.js','utf8');
 const summary=billing.slice(billing.indexOf('function renderBilling(){'),billing.indexOf('async function openEncounterBillingAccount('));
 assert.match(summary,/<h2>Account summary<\/h2>/);
 assert.doesNotMatch(summary,/data-patient-create-claim|data-new-billing|data-patient-claims/,'account summary must not launch a parallel billing workflow');
-assert.match(summary,/Open encounter billing/);
+assert.match(summary,/Open visit billing/);
 assert.match(claims,/data-claimmd-submit/);
 
 const selector=billing.match(/const patientClaimAccounts=.*;\n/)[0].replace('const patientClaimAccounts=','globalThis.patientClaimAccounts=');

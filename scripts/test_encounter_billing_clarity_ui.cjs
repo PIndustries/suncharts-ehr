@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+// Staff display helpers load before every feature script, exactly as index.html loads them.
+{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
+
 const handlers={},nodes={},calls=[];
 const node=id=>nodes[id]??={id,innerHTML:'',dataset:{},open:false,scrollIntoView(){},replaceChildren(){this.innerHTML='';}};
 const receipt={id:'receipt',appointment_id:'appt',amount_cents:2500,allocated_cents:0,reversed_cents:0,voided:false,occurred_on:'2026-11-11',method:'external',account_ids:[],hosted_checkout:{id:'checkout',status:'paid',livemode:false,refunded_cents:0}};

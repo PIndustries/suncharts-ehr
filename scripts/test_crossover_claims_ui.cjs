@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+// Staff display helpers load before every feature script, exactly as index.html loads them.
+{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
+
 const handlers={},nodes={},node=id=>nodes[id]??={innerHTML:'',dataset:{},scrollIntoView(){},querySelector(){return null;},querySelectorAll(){return [];}};
 const primary={id:'primary',patient_id:'patient',account_id:'account',version:5,status:'adjudicated',content:{billing_npi:'1234567893',diagnosis_codes:['Z00.00'],line_diagnosis_pointers:[[1]]}},account={id:'account',patient_id:'patient',version:3,total_cents:10000,content:{visit_id:'visit',lines:[{code:'99213',diagnosis_codes:['Z00.00']}]}};
 const coverage={coverage:{id:'coverage',version:2,content:{priority:'secondary'}},payer:{id:'payer',content:{name:'Synthetic secondary'}}};

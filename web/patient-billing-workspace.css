@@ -15,7 +15,7 @@
 .patient-billing-tabs button:focus-visible{outline:2px solid var(--blue);outline-offset:-3px}
 .patient-billing-scope{display:flex;align-items:flex-end;gap:16px;justify-content:space-between;margin-bottom:20px}
 .patient-billing-scope select{width:auto;min-width:190px}
-.patient-billing-scope p{font-size:.85rem;color:var(--muted);margin:0 0 8px}
+.patient-billing-scope p{font-size:var(--fs-body);color:var(--muted);margin:0 0 8px}
 .patient-billing-totals{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:16px 0 24px}
 .patient-billing-totals section{padding:18px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
 .patient-billing-totals span,.patient-billing-totals small{display:block;color:var(--muted)}
@@ -29,15 +29,15 @@
 .copay-receipt-card{max-width:740px;margin:16px 0;padding:24px;border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--text);scroll-margin-top:24px}
 .copay-receipt-card header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid var(--line)}
 .copay-receipt-card header img{width:64px;height:64px;object-fit:contain;background:#fff;border-radius:6px}
-.copay-receipt-card header>div{flex:1;min-width:160px}.copay-receipt-card header p,.copay-receipt-card h3{margin:0}.copay-receipt-card header p{color:var(--muted);font-size:.85rem;margin-bottom:4px}
+.copay-receipt-card header>div{flex:1;min-width:160px}.copay-receipt-card header p,.copay-receipt-card h3{margin:0}.copay-receipt-card header p{color:var(--muted);font-size:var(--fs-body);margin-bottom:4px}
 .copay-receipt-amount{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:20px 0;flex-wrap:wrap}.copay-receipt-amount span{display:block}.copay-receipt-amount strong{display:block;font-size:2.2rem;line-height:1.3;font-variant-numeric:tabular-nums}.copay-receipt-status{padding:7px 12px;border-radius:20px;background:var(--accent);color:var(--blue);font-weight:700}
-.copay-receipt-card dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin:20px 0}.copay-receipt-card dt{font-size:.8rem;color:var(--muted)}.copay-receipt-card dd{margin:4px 0 0;overflow-wrap:anywhere}.copay-receipt-card dd small{display:block;color:var(--muted);margin-top:4px}.copay-receipt-card details{font-size:.8rem;overflow-wrap:anywhere}.copay-receipt-card footer{border-top:1px solid var(--line);margin-top:20px;padding-top:12px;color:var(--muted);font-size:.8rem}.copay-receipt-card footer p{margin:5px 0}
+.copay-receipt-card dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin:20px 0}.copay-receipt-card dt{font-size:var(--fs-body);color:var(--muted)}.copay-receipt-card dd{margin:4px 0 0;overflow-wrap:anywhere}.copay-receipt-card dd small{display:block;color:var(--muted);margin-top:4px}.copay-receipt-card details{font-size:var(--fs-body);overflow-wrap:anywhere}.copay-receipt-card footer{border-top:1px solid var(--line);margin-top:20px;padding-top:12px;color:var(--muted);font-size:var(--fs-body)}.copay-receipt-card footer p{margin:5px 0}
 .copay-print-source{position:absolute;width:1px;height:1px;border:0;left:-10000px;pointer-events:none}
 @media(max-width:600px){.copay-receipt-card{padding:16px}.copay-receipt-card dl{grid-template-columns:1fr}.copay-receipt-card header button{width:100%}}
 @media(max-width:800px){.patient-billing-header,.patient-billing-scope{display:block}.patient-billing-header>.actions{margin-top:12px}.patient-billing-totals{grid-template-columns:1fr}.patient-billing-search-row{flex-wrap:wrap}.patient-billing-scope p{margin-top:8px}.patient-billing-tabs button{padding:12px}}
 
 .payment-card{display:flex;flex-direction:column;gap:10px;min-height:118px;max-width:300px;border-radius:12px;background:linear-gradient(135deg,color-mix(in srgb,var(--accent,#5fd0c0) 16%,transparent),transparent 70%)}
-.payment-card-brand{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.payment-card-brand{font-size:var(--fs-xs);font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .payment-card-number{font-size:20px;letter-spacing:.06em;font-variant-numeric:tabular-nums}
 .payment-card small{margin-top:auto;color:var(--muted)}
 .payment-card small.payment-card-use{margin-top:0;line-height:1.35}

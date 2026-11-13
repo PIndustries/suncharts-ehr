@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+// Staff display helpers load before every feature script, exactly as index.html loads them.
+{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
+
 function fixture(){
  const handlers={},timers=new Map(),calls=[],notices=[];let sequence=0,response;
  const nodes={actions:{outerHTML:''},status:{textContent:'ready'},version:{textContent:'SYN-CLAIM · v1'},lifecycle:{outerHTML:'',querySelector:()=>null,insertAdjacentHTML(_position,html){this.error=html;}},draft:{value:'Unsaved claim details',disabled:false}};
@@ -13,7 +16,7 @@ function fixture(){
 }
 (async()=>{
  for(const status of ['submitted','rejected']){
-  const f=fixture();f.setResponse({claim:{...f.claim,status,version:2},tracking:{}});f.context.startClaimMdTracking('claim');await f.poll();assert.equal(f.nodes.status.textContent,status);assert.equal(f.nodes.version.textContent,'SYN-CLAIM · v2');assert.doesNotMatch(f.nodes.actions.outerHTML,/data-claimmd-submit/);assert.match(f.nodes.lifecycle.outerHTML,new RegExp(status));assert.equal(f.nodes.draft.value,'Unsaved claim details');assert.equal(f.nodes.draft.disabled,false);assert.equal(f.calls.length,1);assert.equal(f.timers.size,1);
+  const f=fixture();f.setResponse({claim:{...f.claim,status,version:2},tracking:{}});f.context.startClaimMdTracking('claim');await f.poll();assert.equal(f.nodes.status.textContent,f.context.displayStatus(status));assert.equal(f.nodes.version.textContent,'SYN-CLAIM · v2');assert.doesNotMatch(f.nodes.actions.outerHTML,/data-claimmd-submit/);assert.match(f.nodes.lifecycle.outerHTML,new RegExp(status));assert.equal(f.nodes.draft.value,'Unsaved claim details');assert.equal(f.nodes.draft.disabled,false);assert.equal(f.calls.length,1);assert.equal(f.timers.size,1);
  }
  for(const tracking of [{submissions:[{status:'delivered'}]},{external_submission_recorded:true}]){
   const f=fixture();f.setResponse({claim:f.claim,tracking});f.context.startClaimMdTracking('claim');await f.poll();assert.doesNotMatch(f.nodes.actions.outerHTML,/data-claimmd-submit/);assert.match(f.nodes.actions.outerHTML,/This claim has been sent/);

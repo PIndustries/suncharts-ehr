@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+// Staff display helpers load before every feature script, exactly as index.html loads them.
+{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
+
 const source=fs.readFileSync('web/patient-billing-workspace.js','utf8'),overview=fs.readFileSync('web/billing-overview.js','utf8'),app=fs.readFileSync('web/app.js','utf8');
 const patient='11111111-1111-4111-8111-111111111111',other='22222222-2222-4222-8222-222222222222',request='33333333-3333-4333-8333-333333333333';
 function fixture(){

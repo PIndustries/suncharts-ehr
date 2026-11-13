@@ -3,6 +3,9 @@
 // Charging a card on file, cancelling an unfinished card link, and the forms that no longer
 // ask for a confirmation box or a typed reason.
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+// Staff display helpers load before every feature script, exactly as index.html loads them.
+{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
+
 const read=name=>fs.readFileSync('web/'+name,'utf8');
 const same=(actual,expected)=>assert.equal(JSON.stringify(actual),JSON.stringify(expected));
 const visibleText=html=>html.replace(/<[^>]*>/g,' ');

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+// Staff display helpers load before every feature script, exactly as index.html loads them.
+{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
+
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const handlers={},nodes={};
 const node=id=>nodes[id]??=( {id,innerHTML:'',dataset:{},hidden:false,scrollIntoView(){},querySelector(){return null;},replaceChildren(){this.innerHTML='';}} );
@@ -59,7 +62,7 @@ ctx.workspace.billing.copays=[{...receipt,amount_cents:5000,allocated_cents:2500
  assert.match(node('encounter-revenue-status').innerHTML,/data-revenue-remittance="era-current"/);assert.match(node('encounter-revenue-status').innerHTML,/Payer-reported patient responsibility \$25\.00/);
  assert.match(node('encounter-revenue-status').innerHTML,/Adjudicated — review remittance/);
  assert.match(node('encounter-revenue-status').innerHTML,/Posted patient payments<\/dt><dd>\$25\.00/);assert.match(node('encounter-revenue-status').innerHTML,/Balance<\/span><strong>\$0\.00/);assert.equal(calls.at(-1),'/api/v1/patients/patient/billing');assert.equal(ctx.workspace.billing.entries,originalLedger);assert.equal(ctx.workspace.billing.accounts,originalAccounts);assert.equal(posted.version,4);assert.equal(node('encounter-billing-detail').innerHTML,'UNSAVED CHARGE DRAFT');
- const successfulApi=ctx.api;ctx.api=async url=>{if(url.endsWith('/billing'))throw new Error('Synthetic ledger offline');return successfulApi(url)};await ctx.loadEncounterRevenueStatus(posted,true);assert.match(node('encounter-revenue-status').innerHTML,/Current ledger totals could not be refreshed/);assert.match(node('encounter-revenue-status').innerHTML,/Balance<\/span><strong>Unavailable/);assert.match(node('encounter-revenue-status').innerHTML,/data-revenue-remittance="era-current"/);
+ const successfulApi=ctx.api;ctx.api=async url=>{if(url.endsWith('/billing'))throw new Error('Synthetic ledger offline');return successfulApi(url)};await ctx.loadEncounterRevenueStatus(posted,true);assert.match(node('encounter-revenue-status').innerHTML,/Totals could not be refreshed/);assert.match(node('encounter-revenue-status').innerHTML,/Balance<\/span><strong>Unavailable/);assert.match(node('encounter-revenue-status').innerHTML,/data-revenue-remittance="era-current"/);
  ctx.api=async()=>{throw new Error('Synthetic offline')};await ctx.loadEncounterRevenueStatus(posted,true);assert.match(node('encounter-revenue-status').innerHTML,/Claim status could not be loaded/);assert.doesNotMatch(node('encounter-revenue-status').innerHTML,/data-new-claim/);
  let resolveClaim;ctx.api=()=>new Promise(resolve=>resolveClaim=resolve);const staleClaim=ctx.loadEncounterRevenueStatus(posted,true);ctx.selected='different-patient';node('encounter-revenue-status').innerHTML='NEW PATIENT';resolveClaim({items:[claim]});await staleClaim;assert.equal(node('encounter-revenue-status').innerHTML,'NEW PATIENT');ctx.selected='patient';
  ctx.workspaceResourceAllowed=()=>false;ctx.api=async url=>{assert.equal(url,'/api/v1/patients/patient/billing');return {accounts:[posted],entries:freshLedger}};await ctx.loadEncounterRevenueStatus(posted,true);assert.match(node('encounter-revenue-status').innerHTML,/requires access to insurance claims/);
