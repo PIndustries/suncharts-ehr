@@ -262,7 +262,7 @@ class DeploymentArtifactsTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             manifest = json.loads(output.read_text())
             self.assertEqual(manifest["version"], version)
-            self.assertEqual(manifest["database"]["schema_revision"], 104)
+            self.assertEqual(manifest["database"]["schema_revision"], 105)
             self.assertEqual(manifest["database"]["rollback_mode"], "restore_pre_update_backup")
             self.assertTrue(manifest["image_reference"].endswith("b" * 64))
 
