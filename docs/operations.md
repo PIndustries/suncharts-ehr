@@ -25,6 +25,10 @@ JSON response reports `infrastructure_ready`, `connection_status`, `connected`,
 `managed_email_ready`, `support_ready` and overall `ready` separately. A hosted
 instance can serve its web workspace while its outbound Connect channel is still
 connecting; that does not mean managed services are ready.
+`document_store` reports where new patient files are kept (`mode`) and, when that
+is file storage, whether it answered its last check (`reachable`, refreshed in the
+background at most every 30 seconds, so the probe never waits on the store). It is
+informational: an unreachable file store does not make the server unready. See [Patient file storage](#patient-file-storage).
 
 ## Container deployment foundation
 
@@ -212,6 +216,118 @@ Master-key rotation and a recovery UI are not implemented.
 Test restoration into an isolated environment before relying on backups. Restore
 and upgrade drills, monitoring, performance testing and independent security review
 remain operational work; passing application tests does not establish them.
+
+## Patient file storage
+
+Uploaded patient files (original uploads and later file versions) are kept in
+PostgreSQL by default. They can instead be kept in S3-compatible object storage.
+Document details, history, hashes and audit events always stay in PostgreSQL;
+only the file bytes move.
+
+### Settings
+
+All are optional. With none set, nothing changes for an existing installation.
+
+| Setting | Meaning |
+| --- | --- |
+| `ENGINE_DOCUMENT_STORE` | `database` (default) or `s3`. Where **new** files are written. |
+| `ENGINE_DOCUMENT_S3_ENDPOINT` | `http(s)://host[:port]`, no path. Path-style addressing is always used. |
+| `ENGINE_DOCUMENT_S3_REGION` | Signing region, for example `us-east-1`. |
+| `ENGINE_DOCUMENT_S3_BUCKET` | An existing bucket. The server never creates one. |
+| `ENGINE_DOCUMENT_S3_ACCESS_KEY_FILE` | Path of a file holding the access key. |
+| `ENGINE_DOCUMENT_S3_SECRET_KEY_FILE` | Path of a file holding the secret key. |
+
+With `ENGINE_DOCUMENT_STORE=s3` the server refuses to start if any setting is
+missing, a key file is unreadable or empty, the credential master key is
+unavailable, or the bucket does not answer a signed `HEAD` request. The log line
+names the setting at fault and never prints a value. After startup a brief outage
+does not stop the server: uploads and reads of stored files return HTTP 503 with
+a plain "temporarily unavailable" message, nothing is written, and they work
+again when the store returns. Files still in PostgreSQL stay readable throughout.
+
+The access key needs, on that one bucket only, permission to get and put
+objects and to list the bucket (on AWS-style policies `s3:GetObject`,
+`s3:PutObject` and `s3:ListBucket`; the bucket check and "does this object exist"
+answers depend on the last one). It does not need delete permission, and
+withholding it is recommended.
+
+Each row records where its own file is, so a database holding some files in
+PostgreSQL and some in object storage works at all times. If `s3` is later
+removed from the settings while files are stored there, the server still starts
+(with a warning) and those files answer 503 until the setting is restored.
+
+### Encryption and integrity
+
+The application encrypts every file before upload with AES-256-GCM, a fresh
+random 96-bit nonce per object, and a key derived (HKDF-SHA-256) for each practice
+from the credential master key described under
+[Credentials and backups](#credentials-and-backups). The object store only ever
+receives ciphertext. Each object is bound to its practice, document and file
+version, so an object copied over another one fails to decrypt.
+
+After every decrypt the file is compared with the SHA-256 and size recorded in
+PostgreSQL at upload. On any mismatch no bytes are returned, the request answers
+HTTP 500 with an integrity message, and a line naming the object is logged.
+
+**The credential master key is now required to read patient files. Losing it makes
+every stored file unrecoverable.** With `s3` selected the key is created only on
+an installation that has nothing depending on it yet; once files or credentials
+depend on it, a missing key stops startup instead of being replaced.
+
+### Objects are write-once and never deleted
+
+Object names are `t/{practice id}/d/{document id}/v{file version}-{sha256}`. They
+contain no patient identifier and no file name. The application never deletes an
+object and never writes over one that exists; if an object is already present
+under a name it is read back and must verify before it is used. An upload whose
+database write fails can leave an unreferenced object behind. That is harmless
+(nothing points to it), it is logged, and it is never cleaned up automatically.
+Do not add lifecycle or expiry rules to the bucket.
+
+### Moving existing files
+
+Selecting `s3` affects new files only. Existing files stay in PostgreSQL until
+an owner starts the move. Nothing moves at startup or on a schedule.
+
+1. Take a PostgreSQL backup and confirm the master key backup is current.
+2. Set the `ENGINE_DOCUMENT_*` settings and restart. Confirm the startup line
+   `Patient file storage: new files are kept in encrypted file storage`.
+3. As an owner open **Practice administration**, **Workspace**, **File storage**
+   and choose **Move files to file storage**. The page calls
+   `POST /api/v1/practice/document-storage/move` repeatedly and shows progress.
+   Each call handles up to 25 files or 200 MiB of that practice's files.
+4. It is finished when the panel shows no files left in the practice database
+   (`GET /api/v1/practice/document-storage` reports `files.database.count` 0).
+
+For each file the server encrypts and uploads it, downloads it again, decrypts
+it and compares hash and size with the database row. Only then, in one
+transaction with an audit event (`practice.document_storage.moved`), does the
+row switch to object storage and release its bytes. A file that fails any check
+stays in PostgreSQL untouched and is listed in the response under `failed`.
+The move can be stopped, repeated and run from more than one browser at once;
+staff can keep working while it runs. Each practice (tenant) is moved by its own
+owner.
+
+The move is one way. The database rejects moving a file back, changing where a
+row points, or changing a file's recorded hash. PostgreSQL does not shrink on
+disk until the table is vacuumed; reclaiming the space with `VACUUM FULL` needs
+a maintenance window and is optional.
+
+### Backups and rollback
+
+- Back up **three** things: PostgreSQL, the credential master key, and the
+  bucket. A database backup alone no longer contains the files that were moved
+  or uploaded after `s3` was selected.
+- Because objects are write-once and never deleted, any earlier database backup
+  can still read every object it refers to. Restoring a database backup taken
+  before a move simply shows those files in PostgreSQL again.
+- Use the object store's own replication or versioned backup for the bucket.
+  Restore tests must cover a stored file opening correctly, not only row counts.
+- A release older than schema 106 cannot read files that are in object storage.
+  After the first file is stored there, roll back by restoring the pre-update
+  database backup, not by running an older image against the newer database.
+- Rotating the master key is not implemented; rotating the S3 access key is a
+  key file change and a restart.
 
 ## Builds and releases
 

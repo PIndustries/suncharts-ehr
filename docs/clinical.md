@@ -280,7 +280,9 @@ the exact tenant, patient and document and commit an audit event. Preview respon
 prevent caching and MIME sniffing and restrict framing to the same origin. The
 service checks declared MIME types and file signatures; it does not scan for
 malware or fully validate a PDF, image, audio or Office package. HTML, SVG and
-arbitrary external document URLs are not rendered. Storage is PostgreSQL bytea.
+arbitrary external document URLs are not rendered. File bytes are stored in
+PostgreSQL by default, or encrypted in S3-compatible object storage when the
+operator configures it (see [Patient file storage](operations.md#patient-file-storage)).
 OCR, malware scanning, signature validation, consent execution and patient release
 remain unfinished. Uploading alone does not release a file externally.
 

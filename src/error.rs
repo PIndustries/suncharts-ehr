@@ -23,6 +23,12 @@ pub enum Error {
     Conflict(&'static str),
     #[error("If-Match with the current record version is required")]
     VersionRequired,
+    /// A dependency is briefly out of reach; nothing was changed and a retry is safe.
+    #[error("{0}")]
+    Unavailable(&'static str),
+    /// Stored content failed verification; no bytes were returned.
+    #[error("{0}")]
+    Integrity(&'static str),
     #[error("database operation failed")]
     Database(#[from] sqlx::Error),
 }
@@ -54,6 +60,8 @@ impl IntoResponse for Error {
                 "version_required",
                 "If-Match with the current record version is required",
             ),
+            Self::Unavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, "unavailable", m),
+            Self::Integrity(m) => (StatusCode::INTERNAL_SERVER_ERROR, "integrity", m),
             Self::Database(e)
                 if e.as_database_error()
                     .is_some_and(|d| d.code().as_deref() == Some("23505")) =>

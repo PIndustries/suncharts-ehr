@@ -18646,6 +18646,9 @@
           },
           "413": {
             "description": "Upload exceeds body/decoded-byte limit"
+          },
+          "503": {
+            "description": "File storage is temporarily unavailable; nothing was changed. Retry shortly."
           }
         },
         "requestBody": {
@@ -19014,6 +19017,9 @@
           },
           "500": {
             "description": "Atomic operation failed"
+          },
+          "503": {
+            "description": "File storage is temporarily unavailable; nothing was changed. Retry shortly."
           }
         },
         "description": "Staff-only. Download audit commits before bytes are returned. Attachment disposition, nosniff and no-store; uploaded HTML is not rendered inline. Filename in Content-Disposition uses document ID, not untrusted upload filename."
@@ -21906,6 +21912,9 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "File storage is temporarily unavailable; nothing was changed. Retry shortly."
           }
         },
         "parameters": [
@@ -31515,6 +31524,196 @@
         }
       }
     },
+    "/api/v1/practice/document-storage": {
+      "get": {
+        "operationId": "readDocumentStorage",
+        "summary": "Read where patient files are kept",
+        "tags": [
+          "Practice administration"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "description": "Owner browser session only. Reports whether new files are kept in the database or in encrypted file storage, and how many files of this practice are in each. Counts include original uploads and later file versions.",
+        "responses": {
+          "200": {
+            "description": "Storage mode and file counts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "mode",
+                    "storage_available",
+                    "files"
+                  ],
+                  "properties": {
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "database",
+                        "s3"
+                      ],
+                      "description": "Where new files are written."
+                    },
+                    "storage_available": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ],
+                      "description": "Whether file storage answered its last check (cached up to 30 seconds); null in database mode."
+                    },
+                    "files": {
+                      "type": "object",
+                      "required": [
+                        "database",
+                        "s3"
+                      ],
+                      "properties": {
+                        "database": {
+                          "type": "object",
+                          "required": [
+                            "count",
+                            "bytes"
+                          ],
+                          "properties": {
+                            "count": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "bytes": {
+                              "type": "integer",
+                              "minimum": 0
+                            }
+                          }
+                        },
+                        "s3": {
+                          "type": "object",
+                          "required": [
+                            "count",
+                            "bytes"
+                          ],
+                          "properties": {
+                            "count": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "bytes": {
+                              "type": "integer",
+                              "minimum": 0
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Owner authority required."
+          }
+        }
+      }
+    },
+    "/api/v1/practice/document-storage/move": {
+      "post": {
+        "operationId": "moveDocumentsToStorage",
+        "summary": "Move one batch of patient files from the database into file storage",
+        "tags": [
+          "Practice administration"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "description": "Owner browser session only; never runs on its own. Takes no request body. Each call handles a bounded batch (up to 25 files or 200 MiB) of this practice's files that are still in the database. Every file is encrypted, stored, read back, decrypted and compared with the SHA-256 and size recorded at upload; only then is its row switched, in one transaction with its audit event. A file that cannot be verified stays in the database and is listed in failed. Safe to repeat and to call concurrently; call again until remaining is 0.",
+        "responses": {
+          "200": {
+            "description": "Batch result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "moved",
+                    "moved_bytes",
+                    "remaining",
+                    "failed",
+                    "storage_available"
+                  ],
+                  "properties": {
+                    "moved": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Files moved by this call."
+                    },
+                    "moved_bytes": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "remaining": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Files of this practice still in the database after this call."
+                    },
+                    "failed": {
+                      "type": "array",
+                      "description": "Files examined by this call that were left in the database.",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "document_id",
+                          "file_version",
+                          "reason"
+                        ],
+                        "properties": {
+                          "document_id": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "file_version": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "1 is the original upload."
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "storage_available": {
+                      "type": "boolean",
+                      "description": "False when file storage stopped answering part way through; files already moved stay moved."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Owner authority required."
+          },
+          "409": {
+            "description": "File storage is not set up on this server."
+          },
+          "503": {
+            "description": "File storage is temporarily unavailable; nothing was changed."
+          }
+        }
+      }
+    },
     "/api/v1/care-pathways/instances/{id}/readiness": {
       "get": {
         "operationId": "readCarePathwayNativeReadiness",
@@ -31836,6 +32035,9 @@
           },
           "500": {
             "description": "Atomic operation failed"
+          },
+          "503": {
+            "description": "File storage is temporarily unavailable; nothing was changed. Retry shortly."
           }
         },
         "description": "Staff-only, tenant/patient/document scoped original PDF, PNG, JPEG, plain-text or audio bytes. Office files require a separately configured editor or authenticated download; HTML/SVG and remote URLs are never previewed. Audit commits before response. Inline generated filename, no-store, nosniff, same-origin resource/framing policy and restrictive CSP. This endpoint returns the original binary without later annotation overlays."
@@ -32932,6 +33134,9 @@
           },
           "413": {
             "description": "JSON body exceeds 15 MiB"
+          },
+          "503": {
+            "description": "File storage is temporarily unavailable; nothing was changed. Retry shortly."
           }
         },
         "parameters": [
@@ -33033,6 +33238,9 @@
           },
           "500": {
             "description": "Atomic operation failed"
+          },
+          "503": {
+            "description": "File storage is temporarily unavailable; nothing was changed. Retry shortly."
           }
         }
       }
@@ -33204,6 +33412,9 @@
           },
           "500": {
             "description": "Atomic operation failed"
+          },
+          "503": {
+            "description": "File storage is temporarily unavailable; nothing was changed. Retry shortly."
           }
         },
         "description": "Staff-only read scoped by tenant, patient, document and exact file version. Version 1 is the original. The audit commits before bytes return. Generated safe filename, no-store and nosniff; same-origin framing and restrictive CSP. Annotation overlays are returned separately in version metadata and are not flattened into these bytes. Office packages cannot be previewed here; use a configured Office session."
@@ -33344,6 +33555,9 @@
           },
           "500": {
             "description": "Atomic operation failed"
+          },
+          "503": {
+            "description": "File storage is temporarily unavailable; nothing was changed. Retry shortly."
           }
         },
         "description": "Staff-only read scoped by tenant, patient, document and exact file version. Version 1 is the original. The audit commits before bytes return. Generated safe filename, no-store and nosniff; same-origin framing and restrictive CSP. Annotation overlays are returned separately in version metadata and are not flattened into these bytes."

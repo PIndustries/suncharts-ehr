@@ -126,6 +126,8 @@ impl IntoResponse for Failure {
                 "Order or report changed; reload before saving",
             ),
             Error::Conflict(m) => (StatusCode::CONFLICT, "conflict", m),
+            Error::Unavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, "transient", m),
+            Error::Integrity(m) => (StatusCode::INTERNAL_SERVER_ERROR, "exception", m),
             Error::Database(ref e)
                 if e.as_database_error()
                     .is_some_and(|d| d.code().as_deref() == Some("23505")) =>
