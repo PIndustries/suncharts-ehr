@@ -40,3 +40,4 @@
 .payment-card-brand{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .payment-card-number{font-size:20px;letter-spacing:.06em;font-variant-numeric:tabular-nums}
 .payment-card small{margin-top:auto;color:var(--muted)}
+.payment-card small.payment-card-use{margin-top:0;line-height:1.35}

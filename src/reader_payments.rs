@@ -41,13 +41,13 @@ pub(crate) enum Kind {
     Invoice,
 }
 impl Kind {
-    fn table(self) -> &'static str {
+    pub(crate) fn table(self) -> &'static str {
         match self {
             Kind::Copay => "copay_checkout_attempts",
             Kind::Invoice => "invoice_checkout_attempts",
         }
     }
-    async fn event(
+    pub(crate) async fn event(
         self,
         tx: &mut Transaction<'_, Postgres>,
         a: &Actor,
@@ -60,7 +60,7 @@ impl Kind {
         }
     }
     #[allow(clippy::too_many_arguments)]
-    async fn apply(
+    pub(crate) async fn apply(
         self,
         pool: &PgPool,
         a: &Actor,

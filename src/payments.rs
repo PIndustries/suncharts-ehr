@@ -345,6 +345,10 @@ pub fn router() -> Router<State> {
             get(patient_profile::setup::read),
         )
         .route(
+            "/api/v1/billing/payment-setups/{id}/cancel",
+            post(patient_profile::setup::cancel),
+        )
+        .route(
             "/api/v1/billing/payments/settings/activation",
             post(activate),
         )

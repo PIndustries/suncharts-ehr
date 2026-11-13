@@ -522,7 +522,8 @@ async fn membership_gateway_additive_upgrade_preserves_existing_records_and_setu
         assert!(table
             .bytes()
             .all(|v| v.is_ascii_alphanumeric() || v == b'_'));
-        let q=format!("SELECT coalesce(jsonb_agg(to_jsonb(r) ORDER BY to_jsonb(r)::text),'[]'::jsonb) FROM \"{table}\" r");
+        // Later additive columns are null on existing rows; every existing value must be unchanged.
+        let q=format!("SELECT coalesce(jsonb_agg(jsonb_strip_nulls(to_jsonb(r)) ORDER BY jsonb_strip_nulls(to_jsonb(r))::text),'[]'::jsonb) FROM \"{table}\" r");
         before.push(
             sqlx::query_scalar::<_, Value>(&q)
                 .fetch_one(&f.pool)
@@ -539,7 +540,8 @@ async fn membership_gateway_additive_upgrade_preserves_existing_records_and_setu
     crate::MIGRATOR.run(&f.pool).await.unwrap();
     crate::MIGRATOR.run(&f.pool).await.unwrap();
     for (table, expected) in tables.iter().zip(before) {
-        let q=format!("SELECT coalesce(jsonb_agg(to_jsonb(r) ORDER BY to_jsonb(r)::text),'[]'::jsonb) FROM \"{table}\" r");
+        // Later additive columns are null on existing rows; every existing value must be unchanged.
+        let q=format!("SELECT coalesce(jsonb_agg(jsonb_strip_nulls(to_jsonb(r)) ORDER BY jsonb_strip_nulls(to_jsonb(r))::text),'[]'::jsonb) FROM \"{table}\" r");
         assert_eq!(
             expected,
             sqlx::query_scalar::<_, Value>(&q)
@@ -556,6 +558,14 @@ async fn membership_gateway_additive_upgrade_preserves_existing_records_and_setu
     .await
     .unwrap();
     assert_eq!(metadata, after);
+    // A card saved before later charges existed keeps its in-person consent and gains nothing.
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM patient_payment_setups WHERE consent_scope='patient_present' AND consent_version IS NULL AND consent_recorded_at IS NULL AND cancelled_at IS NULL AND cancelled_by IS NULL")
+            .fetch_one(&f.pool)
+            .await
+            .unwrap(),
+        1
+    );
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM patient_membership_operations")
             .fetch_one(&f.pool)

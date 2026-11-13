@@ -77,6 +77,7 @@ pub mod remittance_automation;
 pub mod retrieval;
 pub mod ringcentral_adapter;
 pub mod rooming;
+pub mod saved_card_payments;
 pub mod scheduling;
 pub mod settlements;
 pub mod sftp_transport;

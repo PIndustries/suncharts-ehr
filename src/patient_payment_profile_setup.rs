@@ -15,6 +15,10 @@ struct Setup {
     status: String,
     provider_evidence: Option<Value>,
     created_at: DateTime<Utc>,
+    consent_scope: String,
+    consent_version: Option<String>,
+    consent_recorded_at: Option<DateTime<Utc>>,
+    cancelled_at: Option<DateTime<Utc>>,
 }
 impl Setup {
     fn check(&self, c: &Context) -> Result<()> {
@@ -76,8 +80,19 @@ fn clean_setup(c: &Context, tenant: Uuid, op: &Setup, raw: &Value) -> Result<Val
     }
     let deadline = deadline.min(op.created_at + chrono::Duration::hours(23));
     let recovery = raw["recovery_required"].as_bool().ok_or_else(invalid)?;
+    // The broker echoes what the patient was asked to agree to. It must be what was reserved.
+    let later = op.consent_scope == crate::saved_card_payments::CONSENT_SCOPE;
+    if (later || !raw["consent_scope"].is_null())
+        && raw["consent_scope"] != op.consent_scope.as_str()
+        || (later && raw["consent_version"] != json!(op.consent_version))
+    {
+        return Err(invalid());
+    }
     let session = if raw["session"].is_null() {
-        if !matches!(status.as_str(), "creating" | "needs_review") {
+        // A link cancelled before it existed is closed; nothing was ever shown to the patient.
+        let cancelled =
+            status == "expired" && raw["cancelled"] == true && op.cancelled_at.is_some();
+        if !cancelled && !matches!(status.as_str(), "creating" | "needs_review") {
             return Err(invalid());
         }
         Value::Null
@@ -178,7 +193,31 @@ fn clean_setup(c: &Context, tenant: Uuid, op: &Setup, raw: &Value) -> Result<Val
     out["session"] = session;
     out["retry_safe_until"] = json!(deadline);
     out["recovery_required"] = json!(recovery);
+    out["consent_scope"] = json!(op.consent_scope);
+    out["consent_version"] = json!(op.consent_version);
+    // The wording the patient is shown on the card page, kept with the saved evidence.
+    out["consent_wording"] = json!(later.then_some(crate::saved_card_payments::CONSENT_WORDING));
+    out["cancelled"] = json!(op.cancelled_at.is_some() && out["status"] == "expired");
     Ok(out)
+}
+/// Save verified evidence. The time the processor confirmed a card saved for later charges is
+/// kept once, with the wording version the patient saw.
+async fn store(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    current: &Setup,
+    value: &mut Value,
+) -> Result<()> {
+    let recorded = if value["status"] == "succeeded"
+        && current.consent_scope == crate::saved_card_payments::CONSENT_SCOPE
+    {
+        current.consent_recorded_at.or_else(|| Some(Utc::now()))
+    } else {
+        current.consent_recorded_at
+    };
+    value["consent_recorded_at"] = json!(recorded);
+    sqlx::query("UPDATE patient_payment_setups SET status=$3,provider_evidence=$4,consent_recorded_at=$5,version=version+1,updated_at=now() WHERE tenant_id=$1 AND request_id=$2").bind(a.tenant_id).bind(current.request_id).bind(value["status"].as_str()).bind(&*value).bind(recorded).execute(&mut **tx).await?;
+    Ok(())
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -267,13 +306,32 @@ async fn create_with(
                 "A card setup is already pending. Refresh the existing request.",
             ));
         }
-        sqlx::query("INSERT INTO patient_payment_setups(tenant_id,request_id,patient_id,setting_id,credential_revision,installation_id,provider_account_id,livemode,return_url,requested_by,consent_scope,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'patient_present','creating')").bind(a.tenant_id).bind(v.request_id).bind(patient).bind(c.setting.id).bind(c.setting.credential_revision).bind(c.installation).bind(&c.account).bind(c.live).bind(&return_url).bind(a.sub).execute(&mut *tx).await?;
+        // Every card saved from now on asks the patient to agree to later charges.
+        sqlx::query("INSERT INTO patient_payment_setups(tenant_id,request_id,patient_id,setting_id,credential_revision,installation_id,provider_account_id,livemode,return_url,requested_by,consent_scope,consent_version,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'creating')").bind(a.tenant_id).bind(v.request_id).bind(patient).bind(c.setting.id).bind(c.setting.credential_revision).bind(c.installation).bind(&c.account).bind(c.live).bind(&return_url).bind(a.sub).bind(crate::saved_card_payments::CONSENT_SCOPE).bind(crate::saved_card_payments::CONSENT_VERSION).execute(&mut *tx).await?;
         crate::postgres::audit(&mut tx, &a, "payment.patient_setup_requested", v.request_id)
             .await?;
         load(&mut tx, a.tenant_id, v.request_id).await?
     };
     tx.commit().await?;
-    let raw=source.request(&c.config,Method::POST,&format!("/patient-billing/{patient}/setup-checkouts"),Some(json!({"account_id":c.account,"livemode":c.live,"remote_tenant_id":a.tenant_id,"request_id":v.request_id,"return_url":return_url,"consent":true}))).await;
+    if op.cancelled_at.is_some() {
+        return Err(Error::Conflict(
+            "This card link was cancelled. Start a new one.",
+        ));
+    }
+    let mut body = json!({"account_id":c.account,"livemode":c.live,"remote_tenant_id":a.tenant_id,"request_id":v.request_id,"return_url":return_url,"consent":true});
+    // A setup reserved before later charges existed is retried exactly as it was reserved.
+    if op.consent_scope == crate::saved_card_payments::CONSENT_SCOPE {
+        body["consent_scope"] = json!(op.consent_scope);
+        body["consent_version"] = json!(op.consent_version);
+    }
+    let raw = source
+        .request(
+            &c.config,
+            Method::POST,
+            &format!("/patient-billing/{patient}/setup-checkouts"),
+            Some(body),
+        )
+        .await;
     complete(&a, &s, &h, &path, Method::POST, "create", &c, &op, raw).await
 }
 pub(in crate::payments) async fn read(
@@ -385,7 +443,7 @@ async fn complete(
                         .await
                         .is_ok()
             );
-            sqlx::query("UPDATE patient_payment_setups SET status=$3,provider_evidence=$4,version=version+1,updated_at=now() WHERE tenant_id=$1 AND request_id=$2").bind(a.tenant_id).bind(op.request_id).bind(value["status"].as_str()).bind(&value).execute(&mut *tx).await?;
+            store(&mut tx, a, &current, &mut value).await?;
             crate::postgres::audit(&mut tx, a, "payment.patient_setup_verified", op.request_id)
                 .await?;
             tx.commit().await?;
@@ -412,6 +470,79 @@ async fn complete(
             Err(error)
         }
     }
+}
+pub(in crate::payments) async fn cancel(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(request): Path<Uuid>,
+) -> Result<Response> {
+    cancel_with(a, s, request, &HttpSource).await
+}
+/// Cancel an unfinished card link. The request is recorded first; the link is then closed at
+/// the processor and whatever really happened is saved, so a card the patient already saved
+/// stays saved.
+async fn cancel_with(a: Actor, s: State, request: Uuid, source: &dyn Source) -> Result<Response> {
+    a.scheduling()?;
+    crate::access_policies::require_native(&s, &a, "billing", "edit").await?;
+    let mut tx = db(&s)?.begin().await?;
+    let op = load(&mut tx, a.tenant_id, request).await?;
+    if op.terminal() {
+        tx.commit().await?;
+        return Ok(response(op.provider_evidence.ok_or_else(invalid)?));
+    }
+    if op.cancelled_at.is_none() {
+        sqlx::query("UPDATE patient_payment_setups SET cancelled_at=now(),cancelled_by=$3,version=version+1,updated_at=now() WHERE tenant_id=$1 AND request_id=$2")
+            .bind(a.tenant_id).bind(request).bind(a.sub).execute(&mut *tx).await?;
+        crate::postgres::audit(
+            &mut tx,
+            &a,
+            "payment.patient_setup_cancel_requested",
+            request,
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    let unconfirmed =
+        || Error::Invalid("The card link could not be cancelled just now. Try again.");
+    let c = context(&a, &s, op.patient_id, source)
+        .await
+        .map_err(|_| unconfirmed())?;
+    op.check(&c)?;
+    let raw = source
+        .request(
+            &c.config,
+            Method::POST,
+            &format!(
+                "/patient-billing/{}/setup-checkouts/{request}/expire",
+                op.patient_id
+            ),
+            Some(json!({"account_id":c.account,"livemode":c.live,"remote_tenant_id":a.tenant_id})),
+        )
+        .await;
+    let mut tx = db(&s)?.begin().await?;
+    c.unchanged(&mut tx, &a).await?;
+    let current = load(&mut tx, a.tenant_id, request).await?;
+    current.check(&c)?;
+    let mut value = match raw {
+        // The payment service never received this setup, so no card page exists.
+        Err(Error::NotFound) if current.provider_evidence.is_none() => {
+            json!({"contract_version":1,"installation_id":c.installation,
+            "remote_tenant_id":a.tenant_id,"patient_id":c.patient,"account_id":c.account,
+            "livemode":c.live,"checked_at":Utc::now(),"request_id":current.request_id,
+            "customer_id":null,"session":null,"status":"expired",
+            "retry_safe_until":current.created_at + chrono::Duration::hours(23),
+            "recovery_required":false,"consent_scope":current.consent_scope,
+            "consent_version":current.consent_version,"cancelled":true})
+        }
+        raw => raw
+            .and_then(|v| clean_setup(&c, a.tenant_id, &current, &v))
+            .map_err(|_| unconfirmed())?,
+    };
+    value["retry_allowed"] = json!(false);
+    store(&mut tx, &a, &current, &mut value).await?;
+    crate::postgres::audit(&mut tx, &a, "payment.patient_setup_cancelled", request).await?;
+    tx.commit().await?;
+    Ok(response(value))
 }
 
 #[cfg(test)]
