@@ -88,7 +88,7 @@ async fn loopback_rejection_is_retained_without_sensitive_text_or_duplicate_requ
     assert_eq!(saved["status"], "failed");
     assert_eq!(
         saved["response_snapshot"],
-        json!({"failure":{"kind":"provider_rejected","http_status":200,"provider_codes":["42"]}})
+        json!({"failure":{"kind":"provider_rejected","http_status":200,"provider_codes":["42"],"provider_hints":["key","name","patient"]}})
     );
     assert_eq!(
         saved["request_snapshot"]["request"]["provider_taxid"],
