@@ -277,8 +277,10 @@ contains only the practice name and the link. The EHR itself sends nothing. A li
 works for 30 days, or through the day of the appointment when the form is tied to
 a later visit. Forms sent before this feature have no expiry.
 
-**Send a new link** cancels a form the patient has not sent in yet and issues a
-fresh link in one step; the old link stops working. **Cancel link** asks for a
+**Send a new link** issues a fresh link and, in the same step, cancels a form the
+patient has not sent in yet when it is for the same appointment or for no
+appointment; that old link stops working. Forms sent for other appointments keep
+their own links. **Cancel link** asks for a
 reason and stops the link without issuing another. Filled-in and reviewed forms
 are never cancelled or replaced. Booking continues to issue the practice's saved
 form automatically when one exists; a practice with no saved form sends the
@@ -296,11 +298,13 @@ returns names only.
 
 **For the patient.** The page shows the practice name, the step number and a
 progress bar. Answers are saved each time the patient continues, so they can close
-the page and finish later on any device with the same link. Problems are shown
+the page and finish later on any device with the same link. **Finish later** saves
+and closes the form on that device, and a form left untouched for 15 minutes
+closes itself the same way, so nothing stays open on a shared tablet. Problems are shown
 next to the question in plain words. A final screen lists every answer by step
 with an **Edit** link, then asks the patient to confirm and type their name before
-**Send to the practice**. An expired, cancelled or unknown link always shows the
-same message asking the patient to request a new one. Repeated wrong links or
+**Send to the practice**. An expired, cancelled, already reviewed or unknown link
+always shows the same message asking the patient to request a new one. Repeated wrong links or
 very frequent requests are slowed down for fifteen minutes.
 
 **Review.** Opening a filled-in form shows every answer grouped by step. Contact

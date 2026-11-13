@@ -88,7 +88,10 @@ impl Fixture {
             request = request.header("If-Match", format!("\"{v}\""));
         }
         if let Some(address) = client {
-            request = request.header("X-Forwarded-For", address);
+            request = match address.strip_prefix("cf:") {
+                Some(visitor) => request.header("CF-Connecting-IP", visitor),
+                None => request.header("X-Forwarded-For", address),
+            };
         }
         let data = if let Some(value) = body {
             request = request.header("Content-Type", "application/json");
@@ -603,10 +606,14 @@ async fn links_are_sent_replaced_cancelled_and_expire_with_one_plain_message() {
         .0,
         StatusCode::OK
     );
-    assert_eq!(
-        f.patient("read", json!({"token":third_token})).await,
-        closed
-    );
+    for action in ["read", "save", "submit"] {
+        let body = match action {
+            "read" => json!({"token":third_token}),
+            "save" => json!({"token":third_token,"answers":{}}),
+            _ => submission(&third_token, standard_answers()),
+        };
+        assert_eq!(f.patient(action, body).await, closed, "reviewed {action}");
+    }
     // A filled-in form is kept when a new link is sent.
     let (_, _, sent) = f.send(patient, json!({})).await;
     assert_eq!(sent["replaced"], 0);
@@ -631,6 +638,11 @@ async fn links_are_sent_replaced_cancelled_and_expire_with_one_plain_message() {
         .map(|item| item["status"].as_str().unwrap())
         .collect();
     assert_eq!(statuses, ["sent", "reviewed", "void", "void"]);
+    // The counts say how many of the listed forms are cancelled.
+    assert_eq!(
+        list["summary"],
+        json!({"total":4,"submitted":0,"reviewed":1,"cancelled":2})
+    );
     assert!(list["items"][0]["appointment_id"].is_null());
     assert_eq!(list["items"][0]["expired"], false);
     assert_eq!(list["items"][0]["default_form"], true);
@@ -702,6 +714,17 @@ async fn appointment_forms_work_without_a_saved_form_and_can_be_resent() {
     assert_eq!(rows.len(), 1, "one worklist row per appointment: {ready}");
     assert_eq!(rows[0]["packet_id"], second.to_string());
     assert_eq!(rows[0]["status"], "sent");
+    // A form for another appointment, or for none, leaves this appointment's link alone.
+    let (loose, _, sent) = f.send(patient, json!({})).await;
+    assert_eq!(sent["replaced"], 0);
+    assert_eq!(f.status_of(second).await.0, "sent");
+    let (for_far, _, sent) = f.send(patient, json!({"appointment_id":far})).await;
+    assert_eq!(sent["replaced"], 1, "only the form with no appointment");
+    assert_eq!(f.status_of(loose).await.0, "void");
+    assert_eq!(f.status_of(second).await.0, "sent");
+    let (_, _, sent) = f.send(patient, json!({})).await;
+    assert_eq!(sent["replaced"], 0);
+    assert_eq!(f.status_of(for_far).await.0, "sent");
     // An appointment must be this patient's.
     assert_eq!(
         f.staff(
@@ -802,6 +825,103 @@ async fn too_many_wrong_links_or_requests_are_slowed_down() {
         .await
         .unwrap();
     assert_eq!(read(token.clone(), "198.51.100.20").await.0, StatusCode::OK);
+
+    // Visitors with no usable address share one bucket, which is never locked
+    // out for dead links: one person cannot stop every other patient.
+    let direct = |token: String| {
+        let f = &f;
+        async move {
+            f.request(
+                "POST",
+                "/api/public/v1/intake/read",
+                false,
+                Some(json!({"token":token})),
+                None,
+                None,
+            )
+            .await
+            .0
+        }
+    };
+    for attempt in 0..35 {
+        assert_eq!(
+            direct(format!("guess-{attempt}")).await,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(direct(token.clone()).await, StatusCode::OK);
+    // Behind a proxy the address it saw (the last hop) counts, whatever the caller put first.
+    for attempt in 0..30 {
+        read(format!("guess-{attempt}"), "198.51.100.30").await;
+    }
+    assert_eq!(
+        read(token.clone(), "203.0.113.99, 198.51.100.30").await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        read(token.clone(), "198.51.100.30, 203.0.113.98").await.0,
+        StatusCode::OK
+    );
+    // Cloudflare's visitor address wins when it is present.
+    assert_eq!(
+        read(token.clone(), "cf:198.51.100.30").await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // Made-up header values never mint new counters, and IPv6 visitors count by network.
+    let counters = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM patient_portal_rate_limits WHERE key LIKE 'intake:client:%'",
+        )
+        .fetch_one(&f.db)
+        .await
+        .unwrap()
+    };
+    let before = counters().await;
+    for made_up in ["not-an-address-1", "not-an-address-2", "cf:zzz", "1.2.3"] {
+        assert_eq!(read(token.clone(), made_up).await.0, StatusCode::OK);
+    }
+    assert_eq!(counters().await, before);
+    for address in [
+        "2001:db8:1:2::1",
+        "2001:db8:1:2::ffff",
+        "cf:2001:db8:1:2:9::7",
+    ] {
+        assert_eq!(read(token.clone(), address).await.0, StatusCode::OK);
+    }
+    assert_eq!(counters().await, before + 1);
+    // Old counters are cleared away rather than kept.
+    sqlx::query("UPDATE patient_portal_rate_limits SET window_started=now()-interval '31 minutes'")
+        .execute(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(direct(token.clone()).await, StatusCode::OK);
+    assert_eq!(counters().await, 1);
+}
+
+#[test]
+fn every_one_form_per_appointment_check_ignores_cancelled_forms() {
+    // Booking workflows, the worklist and the chart all ask "does this
+    // appointment already have a form?"; a cancelled form must never count.
+    let check = "appointment_id=$2 AND workflow_instance_id IS NULL";
+    for (name, source) in [
+        ("previsit", include_str!("../src/previsit.rs")),
+        (
+            "workflow_dispatcher",
+            include_str!("../src/workflow_dispatcher.rs"),
+        ),
+    ] {
+        let found: Vec<&str> = source
+            .match_indices(check)
+            .map(|(at, _)| &source[at..at + check.len() + 20])
+            .collect();
+        assert!(!found.is_empty(), "{name}");
+        for text in found {
+            assert!(
+                text.starts_with(&format!("{check} AND status<>'void'")),
+                "{name}: {text}"
+            );
+        }
+    }
 }
 
 #[tokio::test]

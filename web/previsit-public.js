@@ -187,6 +187,25 @@ function intakeWizard(packet,token){
  const given=packet.patient?.given_name||'',practice=packet.practice_name||'your practice';
  // Each new screen is announced from its heading and starts at the top, with the step count in view.
  let opened=false;
+ // The link is kept for this tab so a refresh can carry on. On a shared
+ // tablet it must not linger: it is dropped when the patient finishes, chooses
+ // "Finish later", or leaves the page untouched for 15 minutes.
+ const IDLE_MS=15*60*1000;let idle=null,lastSaved=false;
+ const forget=()=>{clearTimeout(idle);idle=null;try{sessionStorage.removeItem('intake-token');}catch{/* private browsing */}};
+ function renderAway(timedOut){
+  state.screen='away';forget();state.answers={};state.controls=[];
+  form.hidden=true;body.replaceChildren();actions.replaceChildren();q('intake-progress').hidden=true;savedHint.textContent='';summary.textContent='';result.className='';result.replaceChildren();
+  title.textContent=timedOut?'This page was closed for your privacy':'Your answers are saved';context.hidden=false;
+  context.textContent=`${timedOut?'Nothing was typed for 15 minutes, so the form was closed on this device. ':''}${lastSaved?'Your answers so far are saved. ':state.canSave?'Answers from the steps you finished are saved. ':''}You can come back using the link the practice sent you.`;
+  focusTitle();
+ }
+ function touch(){
+  clearTimeout(idle);idle=null;
+  if(!['step','review'].includes(state.screen))return;
+  idle=setTimeout(()=>{if(state.screen==='step')collect();Promise.resolve(save()).catch(()=>false).then(()=>renderAway(true));},IDLE_MS);
+ }
+ async function finishLater(){if(state.screen==='step')collect();if(!await save())return;renderAway(false);}
+ const laterButton=()=>state.canSave?h('button',{type:'button',className:'link finish-later',text:'Finish later',on:{click:()=>run(finishLater)}}):null;
  const focusTitle=()=>{title.focus?.({preventScroll:true});if(opened)q('practice-name').scrollIntoView?.({block:'start'});opened=true;};
  function progress(position,total,label){
   const nav=q('intake-progress');nav.hidden=false;q('intake-step-count').textContent=label;
@@ -216,8 +235,9 @@ function intakeWizard(packet,token){
   for(const control of state.controls){const visible=shown.has(control.field.key);control.wrap.hidden=!visible;if(!visible){control.error.hidden=true;control.error.textContent='';}}
  }
  async function save(){
+  lastSaved=false;
   if(!state.canSave)return true;
-  try{await request('/api/public/v1/intake/save',{method:'POST',body:JSON.stringify({token,answers:intakeResponse(template,state.answers)})});savedHint.textContent='Saved';return true;}
+  try{await request('/api/public/v1/intake/save',{method:'POST',body:JSON.stringify({token,answers:intakeResponse(template,state.answers)})});savedHint.textContent='Saved';lastSaved=true;return true;}
   catch(error){
    if(error.status===404||error.status===429){summary.textContent=error.message;return false;}
    if(error.status===409){state.canSave=false;return true;}
@@ -232,13 +252,13 @@ function intakeWizard(packet,token){
   title.textContent=section.label;context.textContent=section.intro||'';context.hidden=!section.intro;summary.textContent='';result.textContent='';result.className='';
   progress(at+1,steps.length,`Step ${at+1} of ${steps.length}`);
   // Every question on the step is built; ones that do not apply yet stay hidden.
-  const changed=()=>{savedHint.textContent='';refresh();};
+  const changed=()=>{savedHint.textContent='';refresh();touch();};
   state.controls=(section.fields||[]).filter(field=>field.hidden!==true).map(field=>field.lookup?intakeLookupControl(field,state.answers[field.key],field.id_key?state.answers[field.id_key]:'',changed,lookup):intakeControl(field,state.answers[field.key],changed));
   body.replaceChildren(...state.controls.map(control=>control.wrap));
   const back=at>0||state.editing?h('button',{type:'button',className:'secondary',text:state.editing?'Back to your answers':'Back',on:{click:()=>{collect();if(state.editing){state.editing=false;renderReview();}else renderStep(steps[at-1].index);}}}):null;
   const skip=section.skippable===true?h('button',{type:'button',className:'secondary',text:section.skip_label||'Skip this step',on:{click:()=>run(async()=>{for(const field of section.fields||[])delete state.answers[field.key];if(!await save())return;advance(step.index);})}}):null;
-  actions.replaceChildren(...[back,skip,h('button',{type:'submit',className:'primary',text:'Continue'})].filter(Boolean));
-  form.hidden=false;refresh();
+  actions.replaceChildren(...[back,skip,h('button',{type:'submit',className:'primary',text:'Continue'}),laterButton()].filter(Boolean));
+  form.hidden=false;refresh();touch();
   if(errors)showErrors(errors);else focusTitle();
  }
  function advance(fromIndex){
@@ -267,14 +287,14 @@ function intakeWizard(packet,token){
   title.textContent='Check your answers';context.hidden=false;context.textContent='Please look over your answers. You can change any of them before you send.';summary.textContent='';
   progress(steps.length,steps.length,'Last step: check and send');
   const groups=steps.map(step=>h('section',{className:'review-group'},h('div',{className:'review-head'},h('h2',{text:step.section.label}),h('button',{type:'button',className:'link','aria-label':`Edit ${step.section.label}`,text:'Edit',on:{click:()=>{state.editing=true;renderStep(step.index);}}})),h('dl',{},...step.fields.filter(field=>field.hidden!==true).flatMap(field=>[h('dt',{text:field.label}),h('dd',{className:intakeEmpty(state.answers[field.key])&&field.type!=='checkbox'?'empty':null,text:intakeAnswerText(field,state.answers[field.key])})]))));
-  const name=h('input',{id:'attested-name',name:'attested_name',autocomplete:'name',maxlength:200,'aria-required':'true','aria-describedby':'attested-name-error',value:state.attestedName,on:{input:()=>{state.attestedName=name.value;}}});
-  const agree=h('input',{id:'attested',name:'attested',type:'checkbox','aria-required':'true','aria-describedby':'attested-error',checked:state.attested,on:{change:()=>{state.attested=agree.checked;}}});
+  const name=h('input',{id:'attested-name',name:'attested_name',autocomplete:'name',maxlength:200,'aria-required':'true','aria-describedby':'attested-name-error',value:state.attestedName,on:{input:()=>{state.attestedName=name.value;touch();}}});
+  const agree=h('input',{id:'attested',name:'attested',type:'checkbox','aria-required':'true','aria-describedby':'attested-error',checked:state.attested,on:{change:()=>{state.attested=agree.checked;touch();}}});
   state.attest={name,agree,nameError:h('p',{id:'attested-name-error',className:'field-error',hidden:true}),agreeError:h('p',{id:'attested-error',className:'field-error',hidden:true})};
   const attestation=h('section',{className:'attestation'},h('h2',{text:'Confirm and send'}),h('p',{text:template.attestation||''}),h('div',{className:'field'},h('label',{className:'check',htmlFor:'attested'},agree,h('span',{text:'I confirm these answers are complete and correct as far as I know.'})),state.attest.agreeError),h('div',{className:'field'},h('label',{htmlFor:'attested-name'},h('span',{text:'Type your full name'})),name,state.attest.nameError));
   body.replaceChildren(...groups,attestation);
   const last=steps[steps.length-1];
-  actions.replaceChildren(...[last?h('button',{type:'button',className:'secondary',text:'Back',on:{click:()=>renderStep(last.index)}}):null,h('button',{type:'submit',className:'primary',text:'Send to the practice'})].filter(Boolean));
-  form.hidden=false;focusTitle();
+  actions.replaceChildren(...[last?h('button',{type:'button',className:'secondary',text:'Back',on:{click:()=>renderStep(last.index)}}):null,h('button',{type:'submit',className:'primary',text:'Send to the practice'}),laterButton()].filter(Boolean));
+  form.hidden=false;touch();focusTitle();
  }
  async function send(){
   const {steps}=layout();
@@ -293,7 +313,7 @@ function intakeWizard(packet,token){
  }
  function renderDone(){
   state.screen='done';form.hidden=true;body.replaceChildren();actions.replaceChildren();q('intake-progress').hidden=true;savedHint.textContent='';summary.textContent='';
-  try{sessionStorage.removeItem('intake-token');}catch{/* private browsing */}
+  forget();
   title.textContent=given?`Thank you, ${given}`:'Thank you';context.hidden=false;context.textContent=`Your answers were sent to ${practice}.`;
   result.className='done';result.replaceChildren(h('h2',{text:'What happens next'}),h('ul',{},h('li',{text:'The practice will look over your answers before your visit.'}),h('li',{text:'You do not need to do anything else right now.'}),h('li',{text:'If something changes, tell the front desk at your visit.'})),h('p',{text:'You can close this page.'}));
   focusTitle();
@@ -303,8 +323,10 @@ function intakeWizard(packet,token){
   title.textContent='You have already sent this form';context.hidden=false;context.textContent=`${practice} has your answers. You do not need to do anything else.`;
   result.className='';result.replaceChildren(h('p',{text:'Need to change something? You can fill the form in again and send it.'}),h('button',{type:'button',className:'secondary',text:'Fill it in again',on:{click:()=>{result.replaceChildren();renderStep(0);}}}));
  }
- function run(work){if(state.busy)return;state.busy=true;for(const button of actions.children||[])button.disabled=true;Promise.resolve().then(work).catch(error=>{summary.textContent=error.message||'Something went wrong. Please try again.';}).finally(()=>{state.busy=false;for(const button of actions.children||[])button.disabled=false;});}
+ function run(work){if(state.busy)return;touch();state.busy=true;for(const button of actions.children||[])button.disabled=true;Promise.resolve().then(work).catch(error=>{summary.textContent=error.message||'Something went wrong. Please try again.';}).finally(()=>{state.busy=false;for(const button of actions.children||[])button.disabled=false;});}
  form.addEventListener('submit',event=>{event.preventDefault();run(state.screen==='review'?send:continueStep);});
+ // Any typing, tapping or key press on the form counts as activity.
+ for(const type of ['input','click','keydown'])form.addEventListener(type,touch);
  q('practice-name').textContent=practice;
  if(typeof document.title==='string')document.title=`Patient forms · ${practice}`;
  if(packet.status==='submitted'){renderAlreadySent();return state;}

@@ -26469,9 +26469,6 @@
           "404": {
             "description": "Unknown, expired, cancelled or already reviewed link. Always the same message, so a link cannot be probed."
           },
-          "409": {
-            "description": "The practice has already reviewed this form"
-          },
           "429": {
             "description": "Too many requests from this client or against this link in 15 minutes; Retry-After is set."
           }
@@ -36731,7 +36728,7 @@
         ],
         "responses": {
           "200": {
-            "description": "{patient_id,items,next_cursor,summary:{total,submitted,reviewed}}; Cache-Control: no-store."
+            "description": "{patient_id,items,next_cursor,summary:{total,submitted,reviewed,cancelled}}; Cache-Control: no-store."
           },
           "400": {
             "description": "Invalid page limit or cursor outside this patient."
@@ -36749,7 +36746,7 @@
       "post": {
         "operationId": "sendPatientIntakeForm",
         "summary": "Send the practice's intake form to a patient, with or without an appointment",
-        "description": "Owner, clinician or front desk with clinical access. Issues the practice's default form (the standard form when nothing is saved) and returns its link once. The link works for 30 days, or through the day of the appointment when that is later. A default form the patient has not sent in yet is cancelled in the same transaction, so only the newest link works. No message is sent by the server.",
+        "description": "Owner, clinician or front desk with clinical access. Issues the practice's default form (the standard form when nothing is saved) and returns its link once. The link works for 30 days, or through the day of the appointment when that is later. A default form the patient has not sent in yet is cancelled in the same transaction when it is for the same appointment or for none; forms for other appointments keep their links. No message is sent by the server.",
         "parameters": [
           {
             "name": "patient",

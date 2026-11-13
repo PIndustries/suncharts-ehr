@@ -26,7 +26,7 @@ const row=(extra={})=>({packet_id:'form-open',packet_version:1,status:'sent',def
  // ---- Chart panel ----
  let f=fixture(),c=f.ctx;
  const items=[row(),row({packet_id:'form-started',status:'in_progress',started_at:'2026-11-11T09:00:00Z',appointment_id:'appointment-1',starts_at:'2026-11-20T15:00:00Z',appointment_title:'New patient visit',appointment_status:'booked'}),row({packet_id:'form-expired',expired:true,expires_at:'2026-10-01T00:00:00Z'}),row({packet_id:'form-filled',packet_version:2,status:'submitted',submitted_at:'2026-11-12T10:00:00Z',has_response:true}),row({packet_id:'form-reviewed',status:'reviewed',submitted_at:'2026-11-01T10:00:00Z',reviewed_at:'2026-11-02T10:00:00Z',has_response:true}),row({packet_id:'form-cancelled',status:'void'}),row({packet_id:'form-journey',default_form:false,workflow_step_key:'contact-form',template_name:'Workflow intake form'})];
- c.reply=(path,method)=>method==='POST'&&path.endsWith('/intake-forms')?{packet_id:'form-new',intake_url:'/intake#token=synthetic-link-secret',secret_shown_once:true,expires_at:'2026-12-13T15:00:00Z',replaced:1,practice_name:'Synthetic Family Clinic'}:method==='POST'?{status:'void'}:{patient_id:'patient-one',items,summary:{total:7,submitted:1,reviewed:1},next_cursor:null};
+ c.reply=(path,method)=>method==='POST'&&path.endsWith('/intake-forms')?{packet_id:'form-new',intake_url:'/intake#token=synthetic-link-secret',secret_shown_once:true,expires_at:'2026-12-13T15:00:00Z',replaced:1,practice_name:'Synthetic Family Clinic'}:method==='POST'?{status:'void'}:{patient_id:'patient-one',items,summary:{total:7,submitted:1,reviewed:1,cancelled:1},next_cursor:null};
  await c.renderPatientIntakePackets();let html=f.panel.innerHTML;
  assert.match(html,/<button type="button" class="primary" data-patient-intake-send>Send intake form<\/button>/);
  // Plain statuses, one per state.
@@ -39,7 +39,9 @@ const row=(extra={})=>({packet_id:'form-open',packet_version:1,status:'sent',def
  assert.match(actionsFor('form-started'),/data-patient-intake-resend="appointment-1"/);
  for(const id of ['form-filled','form-reviewed','form-cancelled','form-journey'])assert.doesNotMatch(actionsFor(id),/Send a new link|Cancel link/);
  assert.match(actionsFor('form-filled'),/>Review answers</);assert.match(actionsFor('form-reviewed'),/>View answers</);assert.match(actionsFor('form-open'),/>View form</);
- assert.match(html,/Sending again cancels that link and makes a new one/);
+ assert.match(html,/A form that is not tied to an appointment is already waiting\. Sending again cancels that link and makes a new one\. Forms sent for an appointment keep their own link\./);
+ // The counts match the list: cancelled forms are listed and counted as cancelled, and left out of the chart overview.
+ assert.match(html,/7 forms · 1 filled in and waiting for review · 1 reviewed · 1 cancelled/);assert.equal(c.$('patient-intake-summary').textContent,'6 intake forms · 1 submitted awaiting review');
  assert.doesNotMatch(html,/intake-link|synthetic-link-secret/,'no link is shown until one is made');
 
  // Sending shows the link once, with copy, email, expiry and the only-now note.
@@ -82,6 +84,16 @@ const row=(extra={})=>({packet_id:'form-open',packet_version:1,status:'sent',def
  click(f,['data-patient-intake-keep']);assert.doesNotMatch(f.panel.innerHTML,/data-patient-intake-cancel-form/);
  f.handlers.submit[0]({target:{hasAttribute:name=>name==='data-patient-intake-cancel-form',dataset:{packet:'form-open',version:'1'},elements:{reason:{value:' Sent to the wrong person '}}},preventDefault(){},stopImmediatePropagation(){}});await c.pending;
  assert.deepEqual(plain(f.calls.find(call=>call[1]==='POST')),['/api/v1/previsit/packets/form-open/cancel','POST',{reason:'Sent to the wrong person'},1]);assert.match(f.notices.at(-1),/cancelled and no longer works/);
+ // A form waiting for an appointment is not replaced by a plain send, so no such note is shown.
+ c.reply=()=>({patient_id:'patient-one',items:[row({appointment_id:'appointment-1',starts_at:'2026-11-20T15:00:00Z'})],summary:{total:1,submitted:0,reviewed:0,cancelled:0}});await c.renderPatientIntakePackets();assert.doesNotMatch(f.panel.innerHTML,/already waiting|cancelled<\/p>/);
+ // A practice's own form with no appointment: plain status, no made-up date, and the right words when the link is dead.
+ const ownForm={packet_id:'form-own',packet_version:1,patient_id:'patient-one',patient_name:'Sample, Avery',status:'sent',starts_at:null,appointment_id:null,expired:false,response:null,template_snapshot:{attestation:'I confirm.',sections:[{label:'Ours',fields:[{key:'q1',label:'Question one',type:'text'}]}]}};
+ for(const [extra,status,words] of [[{},'Sent',/The secure form has been issued/],[{status:'in_progress'},'Started',/The secure form has been issued/],[{status:'void'},'Cancelled',/This link was cancelled before the patient sent the form in\./],[{expired:true},'Expired',/This link expired before the patient sent the form in\. Send a new link from the patient’s chart\./]]){
+  c.reply=()=>({...ownForm,...extra});await c.openWorkflowIntakePacket('form-own');
+  assert.match(f.tools.innerHTML,new RegExp(`<p>${status} · Not tied to an appointment</p>`));assert.match(f.tools.innerHTML,words);assert.doesNotMatch(f.tools.innerHTML,/1970|1969|Invalid Date|undefined|null/);
+  if(extra.status==='void'||extra.expired)assert.doesNotMatch(f.tools.innerHTML,/secure form has been issued/);
+ }
+ c.reply=()=>({...ownForm,starts_at:'2026-11-20T15:00:00Z'});await c.openWorkflowIntakePacket('form-own');assert.match(f.tools.innerHTML,/<p>Sent · 2026-11-20<\/p>/);
  // Staff who cannot send see the list without send or cancel controls.
  f=fixture('nurse');c=f.ctx;c.reply=()=>({patient_id:'patient-one',items:[row()],summary:{total:1,submitted:0,reviewed:0}});await c.renderPatientIntakePackets();
  assert.doesNotMatch(f.panel.innerHTML,/data-patient-intake-send|Send a new link|Cancel link/);assert.match(f.panel.innerHTML,/>View form</);

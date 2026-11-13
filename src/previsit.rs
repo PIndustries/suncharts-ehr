@@ -1052,26 +1052,52 @@ type PublicResult<T> = std::result::Result<T, PublicError>;
 async fn count_try(pool: &PgPool, key: &str) -> Result<i32> {
     Ok(sqlx::query_scalar("INSERT INTO patient_portal_rate_limits(key) VALUES($1) ON CONFLICT(key) DO UPDATE SET attempts=CASE WHEN patient_portal_rate_limits.window_started<now()-interval '15 minutes' THEN 1 ELSE patient_portal_rate_limits.attempts+1 END,window_started=CASE WHEN patient_portal_rate_limits.window_started<now()-interval '15 minutes' THEN now() ELSE patient_portal_rate_limits.window_started END RETURNING attempts").bind(key).fetch_one(pool).await?)
 }
+/// Clients with no usable address share this one bucket.
+const DIRECT: &str = "direct";
+/// Who is asking, for counting only. Behind the Cloudflare tunnel that is the
+/// visitor address Cloudflare reports; otherwise the address the nearest proxy
+/// saw (the last hop of X-Forwarded-For). Anything that is not an IP address
+/// is ignored, and IPv6 visitors are counted by network, so a header cannot be
+/// varied to mint endless counters.
 fn client_key(headers: &HeaderMap) -> String {
-    let address = headers
-        .get("x-forwarded-for")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("direct");
-    hash(address)[..32].to_owned()
+    let text = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    let address = text("cf-connecting-ip")
+        .or_else(|| {
+            text("x-forwarded-for").and_then(|hops| hops.rsplit(',').next().map(str::to_owned))
+        })
+        .and_then(|value| value.trim().parse::<std::net::IpAddr>().ok());
+    match address {
+        Some(std::net::IpAddr::V4(address)) => hash(&address.to_string())[..32].to_owned(),
+        Some(std::net::IpAddr::V6(address)) => {
+            let network = u128::from(address) >> 64;
+            hash(&format!("v6:{network:x}"))[..32].to_owned()
+        }
+        None => DIRECT.to_owned(),
+    }
 }
 /// Refuses a client that is sending too much or has tried too many links that
 /// do not work. Returns the client's key for later counting.
 async fn admit_client(pool: &PgPool, headers: &HeaderMap) -> PublicResult<String> {
     let client = client_key(headers);
-    sqlx::query("DELETE FROM patient_portal_rate_limits WHERE key LIKE 'intake:%' AND window_started<now()-interval '1 day'")
+    // Counters are only needed for two windows, which also bounds how many can exist.
+    sqlx::query("DELETE FROM patient_portal_rate_limits WHERE key LIKE 'intake:%' AND window_started<now()-interval '30 minutes'")
         .execute(pool)
         .await?;
-    let misses: Option<i32> = sqlx::query_scalar("SELECT attempts FROM patient_portal_rate_limits WHERE key=$1 AND window_started>=now()-interval '15 minutes'")
-        .bind(format!("intake:miss:{client}"))
-        .fetch_optional(pool)
-        .await?;
+    // The shared bucket is never locked out for dead links: one person's bad
+    // links must not stop every other patient. Each link keeps its own limit.
+    let misses: Option<i32> = if client == DIRECT {
+        None
+    } else {
+        sqlx::query_scalar("SELECT attempts FROM patient_portal_rate_limits WHERE key=$1 AND window_started>=now()-interval '15 minutes'")
+            .bind(format!("intake:miss:{client}"))
+            .fetch_optional(pool)
+            .await?
+    };
     if misses.unwrap_or(0) >= MISS_LIMIT
         || count_try(pool, &format!("intake:client:{client}")).await? > CLIENT_LIMIT
     {
@@ -1080,6 +1106,9 @@ async fn admit_client(pool: &PgPool, headers: &HeaderMap) -> PublicResult<String
     Ok(client)
 }
 async fn link_closed(pool: &PgPool, client: &str) -> PublicError {
+    if client == DIRECT {
+        return PublicError::Closed;
+    }
     match count_try(pool, &format!("intake:miss:{client}")).await {
         Ok(_) => PublicError::Closed,
         Err(error) => PublicError::Other(error),
@@ -1130,13 +1159,10 @@ struct LinkedPacket {
     expired: bool,
 }
 impl LinkedPacket {
-    /// The link still works: not expired and not cancelled.
-    fn open(&self) -> bool {
-        !self.expired && self.status != "void"
-    }
-    /// Once the practice has reviewed the answers there is nothing left to show.
+    /// The link still works: not expired, not cancelled and not yet reviewed.
+    /// Once the practice has reviewed the answers there is nothing left to do.
     fn readable(&self) -> bool {
-        self.open() && self.status != "reviewed"
+        !self.expired && !["void", "reviewed"].contains(&self.status.as_str())
     }
 }
 async fn linked_packet(
@@ -1404,7 +1430,7 @@ async fn public_save(
     lock_packet_workflow(&mut tx, found.tenant_id, found.id).await?;
     let Some(packet) = linked_packet(&mut tx, &token, true)
         .await?
-        .filter(LinkedPacket::open)
+        .filter(LinkedPacket::readable)
     else {
         return Err(link_closed(pool, &client).await);
     };
@@ -1524,15 +1550,13 @@ async fn public_submit(
     };
     admit_link(pool, found.id).await?;
     lock_packet_workflow(&mut tx, found.tenant_id, found.id).await?;
+    // A reviewed form answers like any other link that no longer works.
     let Some(packet) = linked_packet(&mut tx, &input.token, true)
         .await?
-        .filter(LinkedPacket::open)
+        .filter(LinkedPacket::readable)
     else {
         return Err(link_closed(pool, &client).await);
     };
-    if packet.status == "reviewed" {
-        return Err(Error::Conflict("The practice has already reviewed this form.").into());
-    }
     let response = validate_response(&packet.template_snapshot, &input.response, true)?;
     let (tenant, id, next) = (packet.tenant_id, packet.id, packet.version + 1);
     sqlx::query("INSERT INTO previsit_intake_responses(tenant_id,packet_id,version,response,attested_name,attested) VALUES($1,$2,$3,$4,$5,true)").bind(tenant).bind(id).bind(next).bind(&response).bind(&input.attested_name).execute(&mut *tx).await?;
@@ -1620,7 +1644,8 @@ struct SendForm {
 }
 /// Sends the practice's intake form to a patient from the chart, with or
 /// without an appointment. A form the patient has not sent in yet is cancelled
-/// and replaced, so only the newest link works.
+/// and replaced when it is for the same appointment or for none; forms for
+/// other appointments keep their own links.
 async fn send_patient_form(
     actor: Actor,
     ExtractState(state): ExtractState<State>,
@@ -1647,8 +1672,8 @@ async fn send_patient_form(
                 .ok_or(Error::Invalid("That appointment does not belong to this patient."))?,
         ),
     };
-    let open: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as("SELECT id,appointment_id FROM previsit_intake_packets WHERE tenant_id=$1 AND patient_id=$2 AND workflow_instance_id IS NULL AND status IN('sent','in_progress') ORDER BY created_at FOR UPDATE")
-        .bind(actor.tenant_id).bind(patient).fetch_all(&mut *tx).await?;
+    let open: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as("SELECT id,appointment_id FROM previsit_intake_packets WHERE tenant_id=$1 AND patient_id=$2 AND workflow_instance_id IS NULL AND status IN('sent','in_progress') AND (appointment_id IS NULL OR appointment_id=$3) ORDER BY created_at FOR UPDATE")
+        .bind(actor.tenant_id).bind(patient).bind(input.appointment_id).fetch_all(&mut *tx).await?;
     for (old, old_appointment) in &open {
         void_packet(
             &mut tx,
@@ -1784,7 +1809,7 @@ async fn patient_packets(
     } else {
         None
     };
-    let counts: (i64,i64,i64) = sqlx::query_as("SELECT count(*),count(*) FILTER(WHERE status='submitted'),count(*) FILTER(WHERE status='reviewed') FROM previsit_intake_packets WHERE tenant_id=$1 AND patient_id=$2")
+    let counts: (i64,i64,i64,i64) = sqlx::query_as("SELECT count(*),count(*) FILTER(WHERE status='submitted'),count(*) FILTER(WHERE status='reviewed'),count(*) FILTER(WHERE status='void') FROM previsit_intake_packets WHERE tenant_id=$1 AND patient_id=$2")
         .bind(actor.tenant_id).bind(patient).fetch_one(&mut *tx).await?;
     // A form sent from the chart may have no appointment.
     let mut rows: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('packet_id',p.id,'packet_version',p.version,'status',p.status,'created_at',p.created_at,'submitted_at',p.submitted_at,'reviewed_at',p.reviewed_at,'expires_at',p.expires_at,'expired',(p.expires_at IS NOT NULL AND p.expires_at<=now()),'started_at',p.draft_saved_at,'default_form',p.workflow_instance_id IS NULL,'appointment_id',p.appointment_id,'appointment_title',a.title,'appointment_status',a.status,'starts_at',a.starts_at,'workflow_step_key',p.workflow_step_key,'workflow_definition_version',p.workflow_definition_version,'template_name',coalesce(r.name,'Workflow intake form'),'has_response',EXISTS(SELECT 1 FROM previsit_intake_responses x WHERE x.tenant_id=p.tenant_id AND x.packet_id=p.id)) FROM previsit_intake_packets p LEFT JOIN appointments a ON a.tenant_id=p.tenant_id AND a.id=p.appointment_id AND a.patient_id=p.patient_id LEFT JOIN previsit_intake_template_revisions r ON r.tenant_id=p.tenant_id AND r.template_id=p.template_id AND r.version=p.template_version WHERE p.tenant_id=$1 AND p.patient_id=$2 AND ($3::timestamptz IS NULL OR (p.created_at,p.id)<($3,$4)) ORDER BY p.created_at DESC,p.id DESC LIMIT $5")
@@ -1798,7 +1823,7 @@ async fn patient_packets(
     };
     crate::postgres::audit(&mut tx, &actor, "previsit.patient_packets_read", patient).await?;
     tx.commit().await?;
-    Ok(([(header::CACHE_CONTROL,"no-store")],Json(json!({"patient_id":patient,"items":rows,"next_cursor":next_cursor,"summary":{"total":counts.0,"submitted":counts.1,"reviewed":counts.2}}))).into_response())
+    Ok(([(header::CACHE_CONTROL,"no-store")],Json(json!({"patient_id":patient,"items":rows,"next_cursor":next_cursor,"summary":{"total":counts.0,"submitted":counts.1,"reviewed":counts.2,"cancelled":counts.3}}))).into_response())
 }
 
 async fn packet_detail(

@@ -46,3 +46,4 @@ progress::-moz-progress-bar{background:#117c82;border-radius:999px}
 .intake button.lookup-option:hover,.intake button.lookup-option:focus-visible{background:#eef7f5}
 .lookup-status{min-height:1.2rem;margin:.3rem 0 0;font-size:.9rem;color:#3d5a60}
 .lookup-toggle{font-size:.95rem}
+.wizard-actions .finish-later{flex:1 1 100%;order:4;text-align:center}

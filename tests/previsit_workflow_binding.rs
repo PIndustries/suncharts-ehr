@@ -345,7 +345,8 @@ async fn workflow_form_is_pinned_bound_reviewed_and_explicitly_promoted() {
     assert_eq!(history["preferred_name"], "Tay");
     let count:i64=sqlx::query_scalar("SELECT count(*) FROM previsit_events WHERE tenant_id=$1 AND packet_id=$2 AND action='intake_demographics_promoted'").bind(f.tenant).bind(packet).fetch_one(&f.db).await.unwrap();
     assert_eq!(count, 1);
-    assert_eq!(submit(&f, &token, answers()).await.0, StatusCode::CONFLICT);
+    // A reviewed form answers a patient like any other link that no longer works.
+    assert_eq!(submit(&f, &token, answers()).await.0, StatusCode::NOT_FOUND);
     cleanup(f).await;
 }
 #[tokio::test]

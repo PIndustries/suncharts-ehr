@@ -47,7 +47,9 @@ function open(packet,options={}){
  page.nodes['intake-form'].hidden=true;page.nodes['intake-progress'].hidden=true;
  const location={hash:'hash' in options?options.hash:'#token=synthetic-link-secret',pathname:'/intake'};
  let ready;
- const context={console,URLSearchParams,Intl,Date,Promise,JSON,Object,Array,Number,String,Set,Map,Math,location,setTimeout,clearTimeout,
+ // The 15-minute idle timer is captured so a test can let the time pass at once.
+ const later=(work,delay,...rest)=>{if(delay<60000)return setTimeout(work,delay,...rest);page.idle={work,delay};return page.idle;},cancel=handle=>{if(handle&&typeof handle==='object'&&'work' in handle){if(page.idle===handle)page.idle=null;}else clearTimeout(handle);};
+ const context={console,URLSearchParams,Intl,Date,Promise,JSON,Object,Array,Number,String,Set,Map,Math,location,setTimeout:later,clearTimeout:cancel,
   history:{replaceState(_state,_title,path){location.hash='';location.pathname=path;}},
   sessionStorage:{getItem:key=>page.storage.get(key)??null,setItem:(key,value)=>page.storage.set(key,value),removeItem:key=>page.storage.delete(key)},
   document:{body:{dataset:{previsitPage:'intake'}},get title(){return page.title;},set title(value){page.title=value;},getElementById:id=>page.nodes[id]||null,createElement:tag=>new El(tag,page),addEventListener:(_type,listener)=>{ready=listener;}},
@@ -283,6 +285,27 @@ const contact=p=>{p.type('phone','555-010-2026');p.type('address_line1','100 Exa
  // If the list cannot be reached the patient is told how to carry on.
  p=open(packet({template:picker}),{lookup:()=>({failure:429,message:'Too many tries'})});await p.settle();p.type('insurance_company','exam');await pause();await p.settle();
  assert.match(p.wrapOf('insurance_company').walk().find(node=>node.className==='lookup-status').textContent,/not available right now\. Choose “I can’t find mine”/);
+
+ // Shared tablets: "Finish later" saves, forgets the link in this tab and says how to come back.
+ p=open(packet());await p.settle();assert.equal(p.page.storage.get('intake-token'),'synthetic-link-secret');
+ assert.equal(p.button('Finish later')?.type,'button');p.type('first_name','Avery');await p.press('Finish later');
+ assert.equal(p.saves().length,1);assert.equal(p.saves()[0][1].answers.first_name,'Avery','what was typed is saved without having to finish the step');
+ assert.equal(p.page.storage.has('intake-token'),false);assert.equal(p.$('intake-title').textContent,'Your answers are saved');
+ assert.equal(p.$('intake-context').textContent,'Your answers so far are saved. You can come back using the link the practice sent you.');assert.equal(p.$('intake-form').hidden,true);assert.equal(p.$('intake-body').children.length,0);assert.equal(p.page.idle,null);
+ // Left untouched for 15 minutes: saved, closed and forgotten on this device.
+ p=open(packet());await p.settle();assert.equal(p.page.idle.delay,15*60*1000);
+ const armed=p.page.idle;p.type('first_name','Avery');assert.notEqual(p.page.idle,armed,'typing restarts the 15 minutes');
+ p.page.idle.work();await p.settle();
+ assert.equal(p.saves().at(-1)[1].answers.first_name,'Avery');assert.equal(p.page.storage.has('intake-token'),false);
+ assert.equal(p.$('intake-title').textContent,'This page was closed for your privacy');assert.match(p.$('intake-context').textContent,/Nothing was typed for 15 minutes.*Your answers so far are saved\. You can come back using the link the practice sent you\./);
+ assert.equal(p.$('intake-form').hidden,true);assert.equal(p.named('first_name').length,0,'nothing the patient typed stays on the screen');
+ // If the link stopped working meanwhile, "Finish later" says so instead of claiming a save.
+ p=open(packet(),{save:()=>({failure:404,message:closed})});await p.settle();await p.press('Finish later');assert.equal(p.$('intake-errors').textContent,closed);assert.equal(p.$('intake-title').textContent,'About you');
+ // After sending, nothing is left waiting or remembered.
+ p=open(packet({template:older}));await p.settle();p.type('insurance_plan','Synthetic Plan');await p.press('Continue');p.tick('consent');await p.press('Continue');assert.ok(p.button('Finish later'),'offered on the last screen too');p.tick('attested');p.type('attested_name','Avery Sample');await p.press('Send to the practice');
+ assert.equal(p.page.idle,null);assert.equal(p.page.storage.has('intake-token'),false);
+ // A form being filled in again after sending cannot be saved, so it offers no "Finish later".
+ p=open(packet({status:'submitted'}));await p.settle();await p.press('Fill it in again');assert.equal(p.button('Finish later'),undefined);
 
  // The page itself: no inline script or style, live regions, and room for thumbs.
  assert.doesNotMatch(html,/<script(?![^>]*\bsrc=)[^>]*>|<style|\sstyle=|\son[a-z]+=/i);assert.doesNotMatch(source,/innerHTML|insertAdjacentHTML|document\.write|\.style\./);
