@@ -602,6 +602,16 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/data-import.js",
+            get(|| async {
+                web_asset(
+                    "data-import.js",
+                    "application/javascript",
+                    include_str!("../web/data-import.js"),
+                )
+            }),
+        )
+        .route(
             "/demographics.js",
             get(|| async {
                 web_asset(
