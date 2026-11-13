@@ -37,6 +37,9 @@ const OVERHEAD: usize = HEADER.len() + 12 + 16;
 const KEY_SALT: &[u8] = b"suncharts:document-store:v1";
 const ATTEMPTS: u32 = 3;
 const HEALTH_TTL: Duration = Duration::from_secs(30);
+/// After a failed call, further calls fail at once for this long instead of
+/// each waiting out its own timeouts while holding a database connection.
+const BACKOFF: Duration = Duration::from_secs(10);
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -256,8 +259,8 @@ impl S3Client {
         };
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(3))
+            .timeout(Duration::from_secs(20))
             .build()
             .map_err(|_| "document storage client could not be created".to_string())?;
         Ok(Self {
@@ -583,6 +586,20 @@ impl DocumentStore {
         }
         health.last.map(|(_, ok)| ok)
     }
+    /// Refuses immediately while the store is known to have just failed.
+    fn available(&self) -> Result<()> {
+        match self.health.lock().unwrap().last {
+            Some((at, false)) if at.elapsed() < BACKOFF => Err(Error::Unavailable(UNAVAILABLE)),
+            _ => Ok(()),
+        }
+    }
+    /// Records an outage seen by a real request so the next ones fail fast.
+    fn observe<T>(&self, result: Result<T>) -> Result<T> {
+        if matches!(result, Err(Error::Unavailable(_))) {
+            self.health.lock().unwrap().last = Some((Instant::now(), false));
+        }
+        result
+    }
     /// Seal and store one file version, returning its object key.
     ///
     /// An object that already exists under the key is never replaced: it is
@@ -601,6 +618,23 @@ impl DocumentStore {
         let Backend::S3(remote) = &self.backend else {
             return Err(Error::Unavailable(NOT_SET_UP));
         };
+        self.available()?;
+        let stored = self
+            .store(remote, tenant, document, version, sha256, plain, read_back)
+            .await;
+        self.observe(stored)
+    }
+    #[allow(clippy::too_many_arguments)]
+    async fn store(
+        &self,
+        remote: &Remote,
+        tenant: Uuid,
+        document: Uuid,
+        version: i64,
+        sha256: &str,
+        plain: &[u8],
+        read_back: bool,
+    ) -> Result<String> {
         let key = object_key(tenant, document, version, sha256);
         let existing = remote.client.head_object(&key).await?.is_some();
         if !existing {
@@ -619,7 +653,8 @@ impl DocumentStore {
                 sha256: sha256.into(),
                 size_bytes: plain.len() as i64,
             };
-            self.load(tenant, document, version, stored).await?;
+            self.fetch(remote, tenant, document, version, stored)
+                .await?;
         }
         Ok(key)
     }
@@ -637,6 +672,18 @@ impl DocumentStore {
         let Backend::S3(remote) = &self.backend else {
             return Err(Error::Unavailable(NOT_SET_UP));
         };
+        self.available()?;
+        let fetched = self.fetch(remote, tenant, document, version, stored).await;
+        self.observe(fetched)
+    }
+    async fn fetch(
+        &self,
+        remote: &Remote,
+        tenant: Uuid,
+        document: Uuid,
+        version: i64,
+        stored: Stored,
+    ) -> Result<Vec<u8>> {
         let key = object_key(tenant, document, version, &stored.sha256);
         let failed = |why: &str| {
             eprintln!("document integrity check failed ({why}) for {key}; no bytes returned");

@@ -325,6 +325,7 @@ pub(crate) async fn office_source(
         version: file.version,
     })
 }
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn append_office_file(
     tx: &mut Transaction<'_, Postgres>,
     store: &DocumentStore,

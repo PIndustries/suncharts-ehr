@@ -243,7 +243,9 @@ unavailable, or the bucket does not answer a signed `HEAD` request. The log line
 names the setting at fault and never prints a value. After startup a brief outage
 does not stop the server: uploads and reads of stored files return HTTP 503 with
 a plain "temporarily unavailable" message, nothing is written, and they work
-again when the store returns. Files still in PostgreSQL stay readable throughout.
+again when the store returns (after a failed call the server waits about ten
+seconds before trying the store again, so requests fail quickly instead of
+queueing). Files still in PostgreSQL stay readable throughout.
 
 The access key needs, on that one bucket only, permission to get and put
 objects and to list the bucket (on AWS-style policies `s3:GetObject`,

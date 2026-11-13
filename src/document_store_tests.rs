@@ -832,8 +832,17 @@ async fn an_outage_gives_a_clean_temporary_error_and_writes_nothing() {
         ready["document_store"],
         json!({"mode":"s3","reachable":false})
     );
-    // Recovery needs nothing but the store coming back.
+    // While it is known to be down, requests fail at once without calling it.
+    let attempts = f.fake.requests.load(Ordering::SeqCst);
+    assert_eq!(
+        f.download(&f.remote, kept).await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(f.fake.requests.load(Ordering::SeqCst), attempts);
+    // Recovery needs nothing but the store coming back; the next bucket check
+    // (run in the background by the health probe) clears the short back-off.
     f.fake.down.store(false, Ordering::SeqCst);
+    f.store.check().await.unwrap();
     assert_eq!(
         f.download(&f.remote, kept).await,
         (StatusCode::OK, PDF.to_vec())

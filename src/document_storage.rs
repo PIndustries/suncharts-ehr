@@ -68,6 +68,8 @@ async fn status(ExtractState(s): ExtractState<State>, h: HeaderMap) -> Result<Js
     })))
 }
 
+/// Document, file version, bytes still in the row, recorded hash and size.
+type Candidate = (Uuid, i64, Option<Vec<u8>>, String, i64);
 enum Table {
     Originals,
     Versions,
@@ -92,7 +94,7 @@ async fn move_next(
     let mut tx = pool.begin().await?;
     let after = cursor.map(|c| c.0);
     let after_version = cursor.map(|c| c.1).unwrap_or(0);
-    let row: Option<(Uuid, i64, Option<Vec<u8>>, String, i64)> = match table {
+    let row: Option<Candidate> = match table {
         Table::Originals => sqlx::query_as("SELECT id,1::bigint,bytes,sha256,size_bytes FROM patient_documents WHERE tenant_id=$1 AND storage='database' AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED")
             .bind(a.tenant_id)
             .bind(after)
