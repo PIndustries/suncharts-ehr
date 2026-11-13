@@ -155,6 +155,8 @@ async function loadCardReaderList(current=()=>true){
 function cardReaderPreviewBuild(){
  try{return /^Development preview/.test(document.querySelector?.('.sidebar-source .preview')?.textContent||'');}catch{return false;}
 }
+// Test payments are labelled on a preview build only; a production build shows no label.
+function testPaymentLabel(){return cardReaderPreviewBuild()?'Test payment':'';}
 function cardReaderAddFormMarkup(data){
  const practice=typeof data.practice_code==='string'&&cardReaderPreviewBuild()?`<p class="muted">No reader yet? Type ${esc(data.practice_code)} to add a practice reader.</p>`:'';
  return `<form id="card-reader-add-form"><h4>Add a reader</h4><label>Code on the reader<input name="code" required maxlength="64" autocomplete="off" autocapitalize="none" spellcheck="false"></label><label>Reader name<input name="name" required maxlength="60" autocomplete="off" placeholder="Front desk"></label><p class="muted">On the reader, open Settings and choose Generate pairing code.</p>${practice}<button type="submit" class="primary">Add reader</button><button type="button" data-close-reader-form>Cancel</button></form>`;
@@ -247,7 +249,7 @@ let readerPaymentLive=null;
 function readerPaymentMarkup(live){
  const state=readerPaymentState(live.operation,live.readerName),operation=live.operation;
  const actions=state.final?(state.key==='approved'?live.approved?.(operation)||'':state.key==='review'?'':'<button type="button" class="primary" data-reader-payment-again>Try again</button>')+'<button type="button" data-reader-payment-close>Close</button>':state.locked?'':'<button type="button" data-reader-payment-cancel>Cancel</button>';
- return `<section class="billing-section reader-payment" data-reader-payment="${esc(state.key)}"><h3>Card payment on reader</h3><p>${money(operation.amount_cents)}${operation.livemode===false?' · Test payment':''}</p><p role="status" aria-live="polite"><b>${esc(state.text)}</b></p>${state.help?`<p class="muted">${esc(state.help)}</p>`:''}${live.unreachable?'<p class="muted">Checking again…</p>':''}<div class="actions">${actions}</div></section>`;
+ return `<section class="billing-section reader-payment" data-reader-payment="${esc(state.key)}"><h3>Card payment on reader</h3><p>${money(operation.amount_cents)}${operation.livemode===false&&testPaymentLabel()?' · '+testPaymentLabel():''}</p><p role="status" aria-live="polite"><b>${esc(state.text)}</b></p>${state.help?`<p class="muted">${esc(state.help)}</p>`:''}${live.unreachable?'<p class="muted">Checking again…</p>':''}<div class="actions">${actions}</div></section>`;
 }
 function paintReaderPayment(){const host=$('reader-payment-live'),live=readerPaymentLive;if(host&&live)host.innerHTML=readerPaymentMarkup(live);return !!host;}
 function stopReaderPayment(){if(readerPaymentLive)clearTimeout(readerPaymentLive.timer);readerPaymentLive=null;}
