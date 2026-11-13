@@ -304,6 +304,7 @@ fn action(method: &Method, path: &str) -> Option<Action> {
                 "preview",
                 "privacy-preview",
                 "read",
+                "reader-cancel",
                 "reconcile",
                 "refresh",
                 "reschedule",
@@ -371,6 +372,7 @@ fn action(method: &Method, path: &str) -> Option<Action> {
                 "prescriptions",
                 "provider-settings",
                 "providers",
+                "readers",
                 "referrals",
                 "refunds",
                 "releases",
@@ -932,6 +934,45 @@ mod tests {
         assert!(permitted(&flags, &Method::GET, read));
         flags.get_mut("billing").unwrap().view = false;
         assert!(!permitted(&flags, &Method::GET, read));
+    }
+    #[test]
+    fn card_reader_routes_are_billing_and_cancelling_a_reader_payment_is_an_edit() {
+        for (method, path, expected) in [
+            (
+                Method::GET,
+                "/api/v1/billing/payments/readers",
+                Action::View,
+            ),
+            (
+                Method::POST,
+                "/api/v1/billing/payments/readers",
+                Action::Create,
+            ),
+            (
+                Method::PUT,
+                "/api/v1/billing/payments/readers/{}",
+                Action::Edit,
+            ),
+            (
+                Method::DELETE,
+                "/api/v1/billing/payments/readers/{}",
+                Action::Delete,
+            ),
+            (
+                Method::POST,
+                "/api/v1/patients/{}/appointments/{}/copay-checkouts/{}/reader-cancel",
+                Action::Edit,
+            ),
+            (
+                Method::POST,
+                "/api/v1/billing/invoice-checkouts/{}/reader-cancel",
+                Action::Edit,
+            ),
+        ] {
+            assert!(known_route(&method, path), "{method} {path}");
+            assert_eq!(action(&method, path), Some(expected), "{method} {path}");
+            assert_eq!(resources(path), Some(vec!["billing"]), "{path}");
+        }
     }
     #[test]
     fn invoice_installment_permissions_are_billing_only_and_explicit() {

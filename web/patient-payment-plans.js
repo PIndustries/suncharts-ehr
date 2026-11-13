@@ -240,7 +240,8 @@ function installmentPlanForm(s){
  return `<details class="billing-section"><summary>Create a finite encounter payment plan</summary><form id="installment-preview-form" data-patient-plan-draft="installment-preview"><p>This divides the reviewed remaining patient amount. It does not charge a card, change the invoice or authorize automatic payments.</p><label>Reviewed patient invoice<select name="invoice_id" required><option value="">Choose a reviewed invoice</option>${eligible.map(invoice=>`<option value="${esc(invoice.invoice_id)}">Issued ${esc(date(invoice.invoice_created_at))} · ${money(invoice.remaining_cents)} remaining</option>`).join('')}</select></label><div class="form-grid"><label>Number of monthly installments<input name="count" type="number" min="2" max="24" value="2" required></label><label>First due date<input name="first_due" type="date" ${installmentDueDateAttributes()} aria-describedby="installment-date-guidance" required></label></div><p id="installment-date-guidance">Earliest due date: ${installmentDueDateBounds().earliest} (today in UTC). This may be tomorrow in your local time. All installments must be due by ${installmentDueDateBounds().latest}.</p><button type="button" data-installment-divide>Propose schedule</button><div id="installment-proposed-schedule"></div><button type="submit" disabled>Review exact schedule</button></form></details>`;
 }
 function installmentOperationMarkup(op){
- const url=op.status==='open'?patientBillingCheckoutUrl(op.checkout_url):null;
+ const url=op.status==='open'?patientBillingCheckoutUrl(op.checkout_url):null,onReader=op.channel==='reader'&&typeof readerPaymentLabel==='function';
+ if(onReader&&!['paid','refunded'].includes(op.status))return `<section class="mapping-notice"><b>${esc(readerPaymentLabel(op))} · ${money(op.amount_cents)}</b>${op.livemode===false?' · Test payment':''}<p>Card payment on reader. Nothing has been recorded for this payment.</p>${['creating','open'].includes(op.status)&&billingCan('edit')?`<button type="button" data-cancel-reader-invoice="${esc(op.id)}">Cancel payment</button>`:''}${op.status==='needs_review'?`<button type="button" data-invoice-checkout-review="${esc(op.id)}">Check payment status</button>`:''}</section>`;
  return `<section class="mapping-notice"><b>${esc(human(op.status||'Unknown'))} · ${money(op.amount_cents)}</b>${op.livemode===false?' · Stripe Sandbox':''}<p>${op.paid_entry_id?'Verified capture recorded in the patient ledger.':'No patient ledger capture is confirmed.'}${op.captured_at?' Received '+esc(date(op.captured_at))+'.':''}${op.refunded_cents?' Refunded '+money(op.refunded_cents)+'.':''}${op.unapplied_cents?' Unapplied '+money(op.unapplied_cents)+'.':''}</p>${url?`<a class="button primary" href="${esc(url)}" rel="noreferrer" referrerpolicy="no-referrer">Continue secure installment checkout</a>`:''}<button type="button" data-invoice-checkout-review="${esc(op.id)}">Check payment status</button>${op.status==='creating'&&billingCan('create')?`<button type="button" data-installment-checkout-resume="${esc(op.id)}">Resume this checkout request</button>`:''}</section>`;
 }
 function installmentPlanMarkup(plan,s){
@@ -315,7 +316,45 @@ function openInstallmentCollection(s,planId,number,existing){
  const plan=s.installmentPlans?.find(item=>item.id===planId),row=plan?.installments.find(item=>item.number===Number(number));
  if(!plan||!row||!billingCan('create'))return;
  const host=s.host.querySelector('#installment-collection');
- host.innerHTML=`<form id="installment-checkout-form" data-patient-plan-draft="installment-checkout:${esc(plan.id)}:${esc(row.number)}" data-plan="${esc(plan.id)}" data-version="${esc(plan.version)}" data-number="${esc(row.number)}" data-amount="${esc(existing?.amount_cents??row.collectible_cents)}" ${existing?`data-request="${esc(existing.request_id)}"`:''}><h4>${existing?'Resume original':'Collect'} installment ${esc(row.number)}</h4><p>${money(existing?.amount_cents??row.collectible_cents)} · due ${esc(row.due_on)}${plan.livemode===false?' · Stripe Sandbox':''}</p><p>This opens a secure payment page for this installment. It does not authorize future automatic charges.</p><label>Collection reason<input name="reason" maxlength="1000" required autocomplete="off" value="${esc(existing?.reason||'')}" ${existing?'readonly':''}></label><label class="check"><input name="patient_present" type="checkbox" required> The patient is present and agrees to this payment amount.</label><button type="submit" class="primary">${existing?'Resume same checkout request':'Create secure installment checkout'}</button></form>`;const form=host.querySelector('#installment-checkout-form');if(form&&!existing)restorePatientPlanDraft(s,form);host.scrollIntoView({block:'nearest'});host.querySelector('input[name="reason"]')?.focus();
+ host.innerHTML=`<form id="installment-checkout-form" data-patient-plan-draft="installment-checkout:${esc(plan.id)}:${esc(row.number)}" data-plan="${esc(plan.id)}" data-version="${esc(plan.version)}" data-number="${esc(row.number)}" data-amount="${esc(existing?.amount_cents??row.collectible_cents)}" ${existing?`data-request="${esc(existing.request_id)}"`:''}><h4>${existing?'Resume original':'Collect'} installment ${esc(row.number)}</h4><p>${money(existing?.amount_cents??row.collectible_cents)} · due ${esc(row.due_on)}${plan.livemode===false?' · Stripe Sandbox':''}</p><p>This opens a secure payment page for this installment. It does not authorize future automatic charges.</p><label>Collection reason<input name="reason" maxlength="1000" required autocomplete="off" value="${esc(existing?.reason||'')}" ${existing?'readonly':''}></label><label class="check"><input name="patient_present" type="checkbox" required> The patient is present and agrees to this payment amount.</label><button type="submit" class="primary">${existing?'Resume same checkout request':'Create secure installment checkout'}</button>${existing?'':'<button type="button" data-installment-reader>Take card payment on reader</button><div id="installment-reader-choice"></div>'}</form>`;const form=host.querySelector('#installment-checkout-form');if(form&&!existing)restorePatientPlanDraft(s,form);host.scrollIntoView({block:'nearest'});host.querySelector('input[name="reason"]')?.focus();
+}
+// Taking the installment on a reader uses the same reviewed form. The first press shows which
+// reader will be used; the payment is sent when staff press Take payment.
+async function chooseInstallmentReader(s,form){
+ if(!patientBillingCurrent(s)||s.tab!=='subscriptions'||!billingCan('create'))return;
+ if(!form.elements.reason.value.trim()||!form.elements.patient_present.checked){form.reportValidity?.();throw new Error('Enter the collection reason and confirm the patient is present.');}
+ const readers=await readersForPayment();if(!readers||!patientBillingCurrent(s)||!form.isConnected)return;
+ s.paymentReaders=readers;
+ const host=form.querySelector('#installment-reader-choice');
+ if(host)host.innerHTML=`${readerChoiceMarkup(readers)}<p>${money(Number(form.dataset.amount))} will be taken on the reader.</p><button type="button" class="primary" data-installment-reader-pay>Take payment</button>`;
+}
+async function takeInstallmentOnReader(s,form){
+ if(!patientBillingCurrent(s)||s.tab!=='subscriptions'||!billingCan('create')||!form.elements.patient_present.checked)return;
+ const reader=form.elements.reader?.value,reason=form.elements.reason.value.trim(),amount=Number(form.dataset.amount);
+ if(!reader||!reason||!Number.isSafeInteger(amount)||amount<50)throw new Error('Choose a card reader and enter the collection reason.');
+ installmentSession();const key=s.patientId+':'+form.dataset.plan+':'+form.dataset.number;
+ let saved=installmentCheckoutRequests.get(key);
+ if(!saved||saved.body.reader_id!==reader){saved={body:{request_id:crypto.randomUUID(),amount_cents:amount,patient_present:true,reason,reader_id:reader},version:Number(form.dataset.version),plan:form.dataset.plan,number:Number(form.dataset.number),amount};installmentCheckoutRequests.set(key,saved);}
+ const data=await api(`/api/v1/billing/patients/${encodeURIComponent(s.patientId)}/installment-plans/${encodeURIComponent(saved.plan)}/installments/${saved.number}/checkout`,'POST',saved.body,saved.version);
+ if(!patientBillingCurrent(s)||s.tab!=='subscriptions')return;
+ if(data.plan?.patient_id!==s.patientId||data.plan.id!==saved.plan||data.operation?.patient_id!==s.patientId||data.operation.plan_id!==saved.plan||data.operation.request_id!==saved.body.request_id)throw new Error('The payment result did not match the reviewed payment plan.');
+ installmentCheckoutRequests.delete(key);rememberCardReader(reader);
+ const index=s.installmentPlans.findIndex(plan=>plan.id===saved.plan);if(index>=0)s.installmentPlans[index]=data.plan;renderPatientInstallments(s);
+ showInstallmentReaderPayment(s,data.operation,saved.plan,saved.number);
+}
+function showInstallmentReaderPayment(s,operation,planId,number){
+ const host=s.host.querySelector('#installment-collection');if(!host)return;
+ const base='/api/v1/billing/invoice-checkouts/'+encodeURIComponent(operation.id),name=(s.paymentReaders||[]).find(reader=>reader.id===operation.reader_id)?.name;
+ host.innerHTML='<div id="reader-payment-live"></div>';host.scrollIntoView({block:'nearest'});
+ watchReaderPayment({operation,readerName:name,statusUrl:base,cancelUrl:base+'/reader-cancel',accept:()=>{},
+  again:async()=>{if(patientBillingCurrent(s)&&s.tab==='subscriptions')openInstallmentCollection(s,planId,number);},
+  approved:()=>'<p>The payment is recorded in the patient ledger.</p>',
+  // The plan is read again so its balance and history match, then the result is shown once more.
+  finished:async final=>{if(!patientBillingCurrent(s)||s.tab!=='subscriptions')return;const live=readerPaymentLive;try{await loadPatientInstallments(s,s.planRequest);}catch{/* The result stays on screen. */}if(!patientBillingCurrent(s)||readerPaymentLive!==live)return;const next=s.host.querySelector('#installment-collection');if(next&&live){next.innerHTML='<div id="reader-payment-live"></div>';live.operation=final;paintReaderPayment();}}});
+}
+async function cancelInstallmentReaderPayment(s,id){
+ await api('/api/v1/billing/invoice-checkouts/'+encodeURIComponent(id)+'/reader-cancel','POST',{});
+ if(patientBillingCurrent(s)&&s.tab==='subscriptions')await loadPatientInstallments(s,s.planRequest);
 }
 async function createInstallmentCheckout(s,form){
  if(!patientBillingCurrent(s)||s.tab!=='subscriptions'||!billingCan('create')||!form.elements.patient_present.checked)return;
@@ -385,5 +424,8 @@ document.addEventListener('click',event=>{
  else if(button.hasAttribute('data-installment-create-retry'))run(()=>createInstallmentPlan(s,null,true));
  else if(d.installmentLocalResume){const saved=installmentCheckoutRequests.get(s.patientId+':'+d.installmentLocalResume+':'+d.installmentNumber);if(saved)openInstallmentCollection(s,saved.plan,saved.number,{request_id:saved.body.request_id,reason:saved.body.reason,amount_cents:saved.amount});}
  else if(d.installmentCollect)openInstallmentCollection(s,d.installmentCollect,Number(d.installmentNumber));
+ else if(button.hasAttribute('data-installment-reader'))run(()=>chooseInstallmentReader(s,button.closest('form')));
+ else if(button.hasAttribute('data-installment-reader-pay'))run(()=>takeInstallmentOnReader(s,button.closest('form')));
+ else if(d.cancelReaderInvoice)run(()=>cancelInstallmentReaderPayment(s,d.cancelReaderInvoice));
  else if(d.installmentCheckoutResume){const plan=s.installmentPlans?.find(plan=>plan.attempts.some(op=>op.id===d.installmentCheckoutResume)),op=plan?.attempts.find(op=>op.id===d.installmentCheckoutResume);if(op)openInstallmentCollection(s,plan.id,op.installment_number,op);}
 });

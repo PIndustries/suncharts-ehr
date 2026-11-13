@@ -67,6 +67,7 @@ pub mod practice_billing;
 pub mod prescribing;
 pub mod previsit;
 pub mod provider_settings;
+pub mod reader_payments;
 pub mod recurrence;
 pub mod referral_delivery;
 pub mod referrals;
@@ -413,6 +414,7 @@ pub fn app(state: State) -> Router {
         .merge(payments::router())
         .merge(copay_checkout::router())
         .merge(installments::router())
+        .merge(reader_payments::router())
         .merge(claims::router())
         .merge(checkout::router())
         .merge(era_batches::router())

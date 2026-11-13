@@ -329,6 +329,7 @@ fn checkout_input() -> Checkout {
         request_id: Uuid::new_v4(),
         reason: "Patient present for scheduled payment".into(),
         patient_present: true,
+        reader_id: None,
     }
 }
 async fn read_plan(pool: &PgPool, a: &Actor, patient: Uuid, id: Uuid) -> Value {
@@ -387,6 +388,7 @@ async fn finite_invoice_collections_recover_once_and_append_refunds_without_rewr
         request_id: input.request_id,
         reason: input.reason.clone(),
         patient_present: true,
+        reader_id: None,
     };
     let first = checkout_with(
         &pool,
@@ -932,3 +934,5 @@ async fn billing_only_policy_is_intersected_and_uncertain_creates_are_not_replay
     assert_eq!(broker.state.lock().unwrap().calls, calls);
     assert_eq!(unavailable().status(), StatusCode::SERVICE_UNAVAILABLE);
 }
+
+include!("installments_reader_tests.rs");

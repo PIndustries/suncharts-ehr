@@ -106,6 +106,34 @@ pub(crate) trait Broker: Send + Sync {
         path: &str,
         body: Option<Value>,
     ) -> Result<Value>;
+    /// Like `call`, but keeps the HTTP status and body of a refusal so the caller can tell a
+    /// reader that is offline or busy from a request that never reached the payment service.
+    async fn reply(
+        &self,
+        pool: &PgPool,
+        binding: &Binding,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Reply> {
+        match self.call(pool, binding, method, path, body).await {
+            Ok(body) => Ok(Reply { status: 200, body }),
+            Err(Error::NotFound) => Ok(Reply {
+                status: 404,
+                body: Value::Null,
+            }),
+            Err(error) => Err(error),
+        }
+    }
+}
+pub(crate) struct Reply {
+    pub(crate) status: u16,
+    pub(crate) body: Value,
+}
+impl Reply {
+    pub(crate) fn code(&self) -> &str {
+        self.body["error"].as_str().unwrap_or_default()
+    }
 }
 pub(crate) struct HttpBroker;
 #[derive(Clone, Copy)]
@@ -137,6 +165,26 @@ impl Broker for HttpBroker {
         path: &str,
         body: Option<Value>,
     ) -> Result<Value> {
+        let reply = self.reply(pool, binding, method, path, body).await?;
+        if reply.status == 404 {
+            return Err(Error::NotFound);
+        }
+        if !(200..300).contains(&reply.status) {
+            return Err(Error::Invalid("payment provider request not confirmed"));
+        }
+        if reply.body.is_null() {
+            return Err(Error::Invalid("payment provider response unsupported"));
+        }
+        Ok(reply.body)
+    }
+    async fn reply(
+        &self,
+        pool: &PgPool,
+        binding: &Binding,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Reply> {
         let config = credentials(pool, binding.tenant, binding.setting, binding.revision).await?;
         if config.installation_id != Some(binding.installation) {
             return Err(Error::Invalid("stored payment installation changed"));
@@ -161,14 +209,11 @@ impl Broker for HttpBroker {
             .map_err(|_| Error::Invalid("payment provider response unavailable"))?;
         let status = response.status();
         let bytes = crate::stedi::bytes(response, 131072).await?;
-        if status == axum::http::StatusCode::NOT_FOUND {
-            return Err(Error::NotFound);
-        }
-        if !status.is_success() {
-            return Err(Error::Invalid("payment provider request not confirmed"));
-        }
-        serde_json::from_slice(&bytes)
-            .map_err(|_| Error::Invalid("payment provider response unsupported"))
+        // A body that is not JSON (a proxy error page, for example) is carried as null.
+        Ok(Reply {
+            status: status.as_u16(),
+            body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        })
     }
 }
 #[derive(Clone, sqlx::FromRow)]
@@ -200,6 +245,8 @@ struct Attempt {
     version: i64,
     created_at: DateTime<Utc>,
     lease_id: Option<Uuid>,
+    channel: String,
+    reader_id: Option<String>,
 }
 impl Attempt {
     fn binding(&self) -> Binding {
@@ -211,7 +258,7 @@ impl Attempt {
         }
     }
     fn public(&self, policy: Policy) -> Value {
-        json!({"id":self.id,"patient_id":self.patient_id,"appointment_id":self.appointment_id,"amount_cents":self.amount_cents,"currency":self.currency,"livemode":self.livemode,"status":self.status,"checkout_url":if policy.permits(self.livemode)&&self.status=="open"{self.checkout_url.as_deref()}else{None},"receipt_id":self.receipt_id,"refunded_cents":self.refunded_cents,"version":self.version,"created_at":self.created_at,"request_id":self.request_id,"last_result":self.last_result,"captured_at":self.provider_captured_at})
+        json!({"id":self.id,"patient_id":self.patient_id,"appointment_id":self.appointment_id,"amount_cents":self.amount_cents,"currency":self.currency,"livemode":self.livemode,"status":self.status,"checkout_url":if policy.permits(self.livemode)&&self.status=="open"{self.checkout_url.as_deref()}else{None},"receipt_id":self.receipt_id,"refunded_cents":self.refunded_cents,"version":self.version,"created_at":self.created_at,"request_id":self.request_id,"last_result":self.last_result,"captured_at":self.provider_captured_at,"channel":self.channel,"reader_id":self.reader_id})
     }
 }
 async fn load(tx: &mut Transaction<'_, Postgres>, tenant: Uuid, id: Uuid) -> Result<Attempt> {
@@ -239,6 +286,10 @@ struct Create {
     coverage_id: Option<Uuid>,
     livemode: bool,
     reason: String,
+    /// Present for a payment taken on a card reader. Omitted from the request digest when
+    /// absent, so hosted checkout requests hash exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reader_id: Option<String>,
 }
 pub(crate) async fn current_binding(
     pool: &PgPool,
@@ -303,6 +354,13 @@ async fn create_with(
     {
         return Err(Error::Invalid("review copay amount and reason"));
     }
+    if input
+        .reader_id
+        .as_deref()
+        .is_some_and(|reader| !identifier(reader, "tmr_"))
+    {
+        return Err(Error::Invalid("choose a card reader"));
+    }
     let hash = crate::oauth::hash(
         &serde_json::to_string(&(patient, appointment, &input))
             .map_err(|_| Error::Invalid("invalid copay request"))?,
@@ -366,8 +424,18 @@ async fn create_with(
     }
     let id = Uuid::new_v4();
     let return_url = format!("{}/?copay_checkout={id}", origin.trim_end_matches('/'));
-    sqlx::query("INSERT INTO copay_checkout_attempts(tenant_id,id,patient_id,appointment_id,coverage_id,coverage_snapshot,setting_id,credential_revision,installation_id,provider_account_id,livemode,amount_cents,request_id,creation_hash,requested_by,reason,return_url) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)").bind(a.tenant_id).bind(id).bind(patient).bind(appointment).bind(input.coverage_id).bind(coverage).bind(binding.setting).bind(binding.revision).bind(binding.installation).bind(account).bind(mode).bind(input.amount_cents).bind(input.request_id).bind(hash).bind(a.sub).bind(input.reason.trim()).bind(return_url).execute(&mut *tx).await?;
-    event(&mut tx, a, id, "checkout_reserved").await?;
+    sqlx::query("INSERT INTO copay_checkout_attempts(tenant_id,id,patient_id,appointment_id,coverage_id,coverage_snapshot,setting_id,credential_revision,installation_id,provider_account_id,livemode,amount_cents,request_id,creation_hash,requested_by,reason,return_url,channel,reader_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)").bind(a.tenant_id).bind(id).bind(patient).bind(appointment).bind(input.coverage_id).bind(coverage).bind(binding.setting).bind(binding.revision).bind(binding.installation).bind(account).bind(mode).bind(input.amount_cents).bind(input.request_id).bind(hash).bind(a.sub).bind(input.reason.trim()).bind(return_url).bind(if input.reader_id.is_some(){"reader"}else{"hosted"}).bind(&input.reader_id).execute(&mut *tx).await?;
+    event(
+        &mut tx,
+        a,
+        id,
+        if input.reader_id.is_some() {
+            "reader_payment_reserved"
+        } else {
+            "checkout_reserved"
+        },
+    )
+    .await?;
     tx.commit().await?;
     process_id(pool, a, id, broker, policy).await?;
     let mut tx = pool.begin().await?;
@@ -385,6 +453,8 @@ pub(crate) struct EvidenceBinding {
     pub(crate) provider_payment_intent: Option<String>,
     pub(crate) provider_charge_id: Option<String>,
     pub(crate) provider_captured_at: Option<DateTime<Utc>>,
+    /// Taken on a card reader: the evidence is a PaymentIntent, not a Checkout session.
+    pub(crate) reader: bool,
 }
 impl Attempt {
     fn evidence_binding(&self) -> EvidenceBinding {
@@ -400,6 +470,7 @@ impl Attempt {
             provider_payment_intent: self.provider_payment_intent.clone(),
             provider_charge_id: self.provider_charge_id.clone(),
             provider_captured_at: self.provider_captured_at,
+            reader: self.channel == "reader",
         }
     }
 }
@@ -410,7 +481,8 @@ fn verify(attempt: &Attempt, value: &Value) -> Result<Verified> {
     verify_bound(&attempt.evidence_binding(), value)
 }
 pub(crate) struct Verified {
-    pub(crate) session: String,
+    /// The Checkout session; none for a payment taken on a card reader.
+    pub(crate) session: Option<String>,
     pub(crate) url: Option<String>,
     pub(crate) paid: bool,
     pub(crate) expired: bool,
@@ -419,7 +491,7 @@ pub(crate) struct Verified {
     pub(crate) refunded: i64,
     pub(crate) captured_at: Option<DateTime<Utc>>,
 }
-pub(crate) fn envelope_bound<'a>(attempt: &EvidenceBinding, value: &'a Value) -> Result<&'a Value> {
+fn bound_identity(attempt: &EvidenceBinding, value: &Value) -> Result<()> {
     if value["contract_version"] != 1
         || value["installation_id"] != attempt.installation_id.to_string()
         || value["remote_tenant_id"] != attempt.tenant_id.to_string()
@@ -431,11 +503,18 @@ pub(crate) fn envelope_bound<'a>(attempt: &EvidenceBinding, value: &'a Value) ->
             "payment evidence does not match the reserved account, mode and request",
         ));
     }
+    Ok(())
+}
+pub(crate) fn envelope_bound<'a>(attempt: &EvidenceBinding, value: &'a Value) -> Result<&'a Value> {
+    bound_identity(attempt, value)?;
     value
         .get("session")
         .ok_or(Error::Invalid("payment session field is missing"))
 }
 pub(crate) fn verify_bound(attempt: &EvidenceBinding, value: &Value) -> Result<Verified> {
+    if attempt.reader {
+        return verify_reader_bound(attempt, value);
+    }
     let v = envelope_bound(attempt, value)?;
     let session = v["id"]
         .as_str()
@@ -484,7 +563,7 @@ pub(crate) fn verify_bound(attempt: &EvidenceBinding, value: &Value) -> Result<V
         ));
     }
     let mut out = Verified {
-        session: session.into(),
+        session: Some(session.into()),
         url,
         paid,
         expired,
@@ -494,7 +573,14 @@ pub(crate) fn verify_bound(attempt: &EvidenceBinding, value: &Value) -> Result<V
         captured_at: None,
     };
     if paid {
-        let intent = &v["payment_intent"];
+        captured(attempt, &v["payment_intent"], &mut out)?;
+    }
+    Ok(out)
+}
+/// The one rule for "paid", shared by hosted checkout and card readers: the intent succeeded
+/// for the full amount and carries a paid, captured, undisputed charge for that amount.
+fn captured(attempt: &EvidenceBinding, intent: &Value, out: &mut Verified) -> Result<()> {
+    {
         let charge = &intent["latest_charge"];
         let pi = intent["id"]
             .as_str()
@@ -546,6 +632,69 @@ pub(crate) fn verify_bound(attempt: &EvidenceBinding, value: &Value) -> Result<V
         out.charge = Some(ch.into());
         out.refunded = refunded;
     }
+    Ok(())
+}
+/// Evidence for a payment taken on a card reader. Paid uses `captured`, exactly as hosted
+/// checkout does. A cancelled PaymentIntent, or a cancelled request that never created one,
+/// is closed; anything still waiting for a card stays open.
+pub(crate) fn verify_reader_bound(attempt: &EvidenceBinding, value: &Value) -> Result<Verified> {
+    bound_identity(attempt, value)?;
+    if value["amount_cents"] != attempt.amount_cents || value["currency"] != attempt.currency {
+        return Err(Error::Invalid(
+            "reader payment does not match the reserved amount",
+        ));
+    }
+    let mut out = Verified {
+        session: None,
+        url: None,
+        paid: false,
+        expired: false,
+        intent: None,
+        charge: None,
+        refunded: 0,
+        captured_at: None,
+    };
+    let intent = &value["payment_intent"];
+    if intent.is_null() {
+        if attempt.provider_payment_intent.is_some() || value.get("payment_intent").is_none() {
+            return Err(Error::Invalid("reader payment evidence is missing"));
+        }
+        out.expired = value["cancelled"] == true;
+        return Ok(out);
+    }
+    let pi = intent["id"]
+        .as_str()
+        .filter(|v| identifier(v, "pi_"))
+        .ok_or(Error::Invalid("reader payment identity is invalid"))?;
+    if attempt
+        .provider_payment_intent
+        .as_ref()
+        .is_some_and(|saved| saved != pi)
+        || intent["livemode"] != attempt.livemode
+        || intent["amount"] != attempt.amount_cents
+        || intent["currency"] != attempt.currency
+        || intent["metadata"]["native_payment_id"] != attempt.id.to_string()
+    {
+        return Err(Error::Invalid(
+            "reader payment does not match the reserved request",
+        ));
+    }
+    match intent["status"].as_str() {
+        Some("succeeded") => {
+            out.paid = true;
+            captured(attempt, intent, &mut out)?;
+        }
+        Some("canceled") => out.expired = true,
+        Some(
+            "requires_payment_method" | "requires_confirmation" | "requires_action" | "processing",
+        ) => {}
+        _ => {
+            return Err(Error::Invalid(
+                "payment has not reached a supported confirmed state",
+            ))
+        }
+    }
+    out.intent = Some(pi.into());
     Ok(out)
 }
 async fn apply(
@@ -555,6 +704,19 @@ async fn apply(
     lease: Uuid,
     value: &Value,
     policy: Policy,
+) -> Result<()> {
+    apply_noted(pool, a, id, lease, value, policy, None).await
+}
+/// `note` is what staff see for a reader payment that is not paid (waiting, declined,
+/// cancelled). It never changes what is posted.
+pub(crate) async fn apply_noted(
+    pool: &PgPool,
+    a: &Actor,
+    id: Uuid,
+    lease: Uuid,
+    value: &Value,
+    policy: Policy,
+    note: Option<&'static str>,
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
     billing::tenant_lock(&mut tx, a).await?;
@@ -612,11 +774,24 @@ async fn apply(
     } else {
         "open"
     };
-    sqlx::query("UPDATE copay_checkout_attempts SET status=$3,provider_session_id=$4,provider_payment_intent=coalesce(provider_payment_intent,$5),provider_charge_id=coalesce(provider_charge_id,$6),checkout_url=$7,receipt_id=$8,refunded_cents=$9,provider_captured_at=coalesce(provider_captured_at,$10),version=version+1,updated_at=now(),lease_id=NULL,lease_until=NULL,last_result='provider_verified',next_poll_at=now()+CASE WHEN $3='paid' THEN interval '1 hour' ELSE interval '30 seconds' END WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(id).bind(status).bind(v.session).bind(v.intent).bind(v.charge).bind(if status=="open"{v.url}else{None}).bind(receipt).bind(v.refunded).bind(v.captured_at).execute(&mut *tx).await?;
+    let result = if ["paid", "refunded"].contains(&status) {
+        "provider_verified"
+    } else {
+        note.unwrap_or("provider_verified")
+    };
+    sqlx::query("UPDATE copay_checkout_attempts SET status=$3,provider_session_id=$4,provider_payment_intent=coalesce(provider_payment_intent,$5),provider_charge_id=coalesce(provider_charge_id,$6),checkout_url=$7,receipt_id=$8,refunded_cents=$9,provider_captured_at=coalesce(provider_captured_at,$10),version=version+1,updated_at=now(),lease_id=NULL,lease_until=NULL,last_result=$11,next_poll_at=now()+CASE WHEN $3='paid' THEN interval '1 hour' WHEN channel='reader' THEN interval '2 seconds' ELSE interval '30 seconds' END WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(id).bind(status).bind(v.session).bind(v.intent).bind(v.charge).bind(if status=="open"{v.url}else{None}).bind(receipt).bind(v.refunded).bind(v.captured_at).bind(result).execute(&mut *tx).await?;
     if status == "paid" {
         billing::allocate_verified_hosted_copay_credit(&mut tx, a, id).await?;
     }
-    event(&mut tx, a, id, "provider_evidence_verified").await?;
+    // A reader payment is read every couple of seconds while it waits for a card; only a
+    // change is worth a history entry.
+    if attempt.channel != "reader"
+        || attempt.status != status
+        || attempt.last_result.as_deref() != Some(result)
+        || v.refunded != attempt.refunded_cents
+    {
+        event(&mut tx, a, id, "provider_evidence_verified").await?;
+    }
     tx.commit().await?;
     Ok(())
 }
@@ -662,6 +837,18 @@ async fn process_id_mode(
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
     let attempt = load(&mut tx, a.tenant_id, id).await?;
+    if attempt.channel == "reader" {
+        drop(tx);
+        return crate::reader_payments::drive(
+            pool,
+            a,
+            crate::reader_payments::Kind::Copay,
+            id,
+            broker,
+            policy,
+        )
+        .await;
+    }
     if !policy.permits(attempt.livemode)
         || ["expired", "refunded"].contains(&attempt.status.as_str())
         || (!allow_create && attempt.provider_session_id.is_none())
@@ -787,6 +974,64 @@ async fn process_id_mode(
     }
     Ok(())
 }
+/// History entry for a reader payment state change.
+pub(crate) async fn reader_event(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    id: Uuid,
+    action: &str,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE copay_checkout_attempts SET version=version+1 WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    event(tx, a, id, action).await
+}
+async fn reader_cancel(
+    a: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path((patient, appointment, id)): Path<(Uuid, Uuid, Uuid)>,
+) -> Result<Json<Value>> {
+    let policy = Policy::current();
+    Ok(Json(
+        reader_cancel_with(
+            db(&state)?,
+            &a,
+            patient,
+            appointment,
+            id,
+            &HttpBroker,
+            policy,
+        )
+        .await?,
+    ))
+}
+async fn reader_cancel_with(
+    pool: &PgPool,
+    a: &Actor,
+    patient: Uuid,
+    appointment: Uuid,
+    id: Uuid,
+    broker: &dyn Broker,
+    policy: Policy,
+) -> Result<Value> {
+    a.scheduling()?;
+    scoped(pool, a, patient, appointment, id).await?;
+    crate::reader_payments::cancel(
+        pool,
+        a,
+        crate::reader_payments::Kind::Copay,
+        id,
+        broker,
+        policy,
+    )
+    .await?;
+    let row = scoped(pool, a, patient, appointment, id).await?;
+    Ok(json!({"operation":row.public(policy)}))
+}
 pub fn router() -> Router<State> {
     Router::new()
         .route("/api/v1/billing/copay-checkouts/{id}", get(return_detail))
@@ -805,6 +1050,10 @@ pub fn router() -> Router<State> {
         .route(
             "/api/v1/patients/{p}/appointments/{a}/copay-checkouts/{id}/refresh",
             post(refresh),
+        )
+        .route(
+            "/api/v1/patients/{p}/appointments/{a}/copay-checkouts/{id}/reader-cancel",
+            post(reader_cancel),
         )
 }
 async fn return_row(state: &State, a: &Actor, id: Uuid) -> Result<Attempt> {
