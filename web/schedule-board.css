@@ -111,6 +111,10 @@
 #schedule-workspace .grid-item.is-narrow .appt-card-main{display:flex}
 #schedule-workspace .grid-item.is-narrow .appt-meta{display:none}
 #schedule-workspace .grid-item.is-narrow .appt-patient{white-space:normal}
+/* In a tight column the visit type and provider give way first, so the name, the status and
+   the most urgent markers stay readable without hovering. */
+#schedule-workspace .schedule-grid-day .grid-item{container-type:inline-size}
+@container (max-width:420px){#schedule-workspace .appt-day .appt-meta{display:none}#schedule-workspace .appt-day .appt-card-main{grid-template-columns:auto minmax(0,1fr) auto}}
 /* A card too small for its contents opens up under the pointer or the keyboard. */
 #schedule-workspace .grid-item:is(:hover,:focus-within)>.appt-card{height:auto;min-height:100%;box-shadow:var(--theme-shadow)}
 #schedule-workspace .appt-markers{display:flex;flex:0 0 auto;flex-wrap:wrap;align-items:center;gap:3px 4px;min-width:0}
