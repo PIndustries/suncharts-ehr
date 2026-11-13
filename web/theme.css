@@ -74,9 +74,9 @@
 :root[data-theme=dark] :is(.quiet,.text-button){background:transparent}
 :root[data-theme=dark] .text-button{color:var(--blue)}
 :root[data-theme=dark] :is(.panel,.workspace-header,.chart-context,.schedule-panel,.schedule-controls,.schedule-day,.schedule-detail,.schedule-header,.schedule-sidebar,.schedule-agenda,.practice-card,.practice-metric,.practice-section,.work-queue,.task-workspace-head,.integration-card,.integration-review-panel,.integration-queue-list,.integration-empty,.integration-adapter-panel,.ai-compose,.automation-hero,.automation-card,.automation-metric,.automation-editor,.automation-row,.automation-action-card,.service-notification-panel,.service-notification-toast,.app-dialog){background:var(--surface);color:var(--ink);border-color:var(--line)}
-:root[data-theme=dark] :is(.shell-topbar,.sidebar,.sidebar-bottom,.chart-tabs,.patient-safety,.schedule-table th,.schedule-footnote,.workspace-tabs,.automation-tabs){background:var(--surface-soft);color:var(--muted);border-color:var(--line)}
+:root[data-theme=dark] :is(.shell-topbar,.sidebar,.sidebar-bottom,.chart-tabs,.schedule-table th,.schedule-footnote,.workspace-tabs,.automation-tabs){background:var(--surface-soft);color:var(--muted);border-color:var(--line)}
 :root[data-theme=dark] :is(.sidebar-brand,.sidebar-account,.sidebar-bottom,.summary-line,.timeline-row,.patient-row,.schedule-table td,.service-notification-item){border-color:var(--line)}
-:root[data-theme=dark] :is(.sidebar .wordmark,.sidebar-account strong,.chart-header p b,.schedule-patient-link,.automation-empty h3,.practice-journey button){color:var(--ink)}
+:root[data-theme=dark] :is(.sidebar .wordmark,.sidebar-account strong,.schedule-patient-link,.automation-empty h3,.practice-journey button){color:var(--ink)}
 :root[data-theme=dark] :is(.sidebar-subtitle,.sidebar-source .preview,.sidebar-source a,.account-label,.sidebar-signout,.nav-group-label,.shell-topbar time,.shell-location,.shell-location strong,.provider-label,.schedule-table td small,.schedule-day>h3 small,.schedule-footnote,.chart-tabs button,.note-text,footer){color:var(--muted)}
 :root[data-theme=dark] :is(.sidebar .wordmark b,.shell-patient-search,.shell-patient-search kbd,.account-avatar,.avatar,.pill,.status-badge,.workspace-tabs span,.app-dialog-detail){background:var(--surface-raised);border-color:var(--line);color:var(--ink)}
 :root[data-theme=dark] :is(.sidebar .sun,.shell-patient-search,.schedule-patient-link,.sidebar-source a){color:var(--blue)}
@@ -126,10 +126,10 @@
 :root[data-theme=dark] :is(.encounter-state,.encounter-step-number){background:var(--surface-raised);color:var(--muted);border-color:var(--line)}
 :root[data-theme=dark] :is(.encounter-next,.encounter-step.current,.encounter-step[data-state=current]){background:var(--accent);color:var(--ink);border-color:#529e9e}
 :root[data-theme=dark] .encounter-step-strip .encounter-step-link:hover{background:var(--surface-raised);border-bottom-color:var(--blue)}
-:root[data-theme=dark] :is(.encounter-workbench-heading strong,.encounter-step-link strong,.patient-heading>p:last-child b,.chart-summary-section>.section-head h2,.chart-data-row strong,.chart-results-table strong,.chart-vital-list dd,.chart-history-row strong){color:var(--ink)}
-:root[data-theme=dark] :is(.encounter-metrics,.encounter-status-note p,.chart-header .quiet){color:var(--muted)}
+:root[data-theme=dark] :is(.encounter-workbench-heading strong,.encounter-step-link strong,.chart-summary-section>.section-head h2,.chart-data-row strong,.chart-results-table strong,.chart-vital-list dd,.chart-history-row strong){color:var(--ink)}
+:root[data-theme=dark] :is(.encounter-metrics,.encounter-status-note p){color:var(--muted)}
 :root[data-theme=dark] :is(.clinical-editor,.chart-summary-section,.clinical-summary-columns>section,.chart-data-row,.chart-results-table td,.chart-vital-list>div,.chart-history-row,.encounter-workbench-heading>div:first-child>span){border-color:var(--line)}
-:root[data-theme=dark] .chart-header .avatar{background:var(--surface-raised);color:var(--ink);border-color:var(--line)}
+
 :root[data-theme=dark] :is(.encounter-step.complete,.encounter-step[data-state=complete],.encounter-step-link.has-saved-state .encounter-step-number){background:var(--success-bg);color:var(--success-text);border-color:var(--success-line)}
 :root[data-theme=dark] .encounter-step-link.has-saved-state small{color:var(--success-text)}
 :root[data-theme=dark] :is(.critical-result,.chart-results-table .critical-label){background:var(--error-bg);color:var(--error-text)}
@@ -179,7 +179,7 @@
 
 /* Status colors retain their meaning and readable foreground contrast. */
 :root[data-theme=dark] :is(.notice,.signed-notice,.signed,.status-badge.checked_in,.automation-safety,.automation-metric.success){background:var(--success-bg);color:var(--success-text);border-color:var(--success-line)}
-:root[data-theme=dark] :is(.notice.warning,.mapping-notice,.allergy-alert,.patient-safety.has-allergies,.workspace-environment,.shell-environment,.status-badge.in_progress,.status-badge.blocked,.automation-metric.warning,.shell-connect-status[data-state=reconnecting],.shell-connect-status[data-state=offline],.shell-connect-status[data-state=needs_attention],.automation-center .status-badge.pending_review,.automation-center .status-badge.needs_reconciliation,.automation-center .status-badge.dead_letter){background:var(--warning-bg);color:var(--warning-text);border-color:var(--warning-line)}
+:root[data-theme=dark] :is(.notice.warning,.mapping-notice,.allergy-alert,.workspace-environment,.shell-environment,.status-badge.in_progress,.status-badge.blocked,.automation-metric.warning,.shell-connect-status[data-state=reconnecting],.shell-connect-status[data-state=offline],.shell-connect-status[data-state=needs_attention],.automation-center .status-badge.pending_review,.automation-center .status-badge.needs_reconciliation,.automation-center .status-badge.dead_letter){background:var(--warning-bg);color:var(--warning-text);border-color:var(--warning-line)}
 :root[data-theme=dark] :is(.notice.error,.critical-label,.summary-line.critical-summary,.status-badge.cancelled,.status-badge.no_show,.status-badge.failed,.app-dialog.danger .app-dialog-mark){background:var(--error-bg);color:var(--error-text);border-color:var(--error-line)}
 :root[data-theme=dark] .error{color:var(--error-text)}
 :root[data-theme=dark] .status-badge.completed{background:var(--surface-raised);color:var(--muted);border-color:var(--line)}

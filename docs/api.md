@@ -237,6 +237,17 @@ and attributed history (latest 100 events). `PUT` requires the current quoted
 front-desk authority is intersected with custom clinical edit permissions.
 Version 1 is the initial active state. Archive/restore append an immutable event
 and audit in one transaction without updating the patient or linked records.
+
+`GET /api/v1/patients/{id}/banner` is a read-only summary for the chart's patient
+banner, with the same access as the chart workspace (clinical and scheduling
+view). It returns the next appointment, the last finished visit, status flags
+(archived, intake forms sent or waiting for review, portal account status,
+unsigned notes) and a `revision` marker that changes when the chart's records
+change. `billing` (the reviewed patient balance the billing pages show, open and
+to-re-check invoice counts, and whether a card is saved) is present only when
+the caller may view billing; `eligibility` (the latest check for each coverage)
+only when the caller may also view claims. Omitted fields mean "not available to
+this caller", never zero.
 New appointment and encounter creation rejects an archived chart with `409`.
 Existing appointment retry requests remain recoverable, and existing in-progress
 encounters may still be completed under ordinary author permissions.

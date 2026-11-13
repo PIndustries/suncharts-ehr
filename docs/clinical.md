@@ -15,8 +15,19 @@ settings until staff reviews it again.
 The primary chart navigation is **Overview**, **Encounter**, **Insurance**,
 **Billing** and **Files**. Files opens all patient documents without selecting an encounter.
 The Overview contact card displays the recorded phone and email and updates after
-a successful contact save without reloading the chart. **Contact details** in the
-chart header opens the same contact and demographics record.
+a successful contact save without reloading the chart.
+
+A patient banner stays at the top of the chart while it scrolls. It shows the
+patient's name, age and sex, date of birth and allergy status; the primary
+insurance with the insurer's latest eligibility answer; what the patient owes;
+the next appointment; and flags such as an intake form waiting for review or an
+unsigned note. Each item opens the place where it is changed. **Details** lists
+contact information, the MRN and every coverage. **More** holds **Contact
+details**, **Patient portal**, **Intake forms**, **Refresh**, **Get help with
+this patient** and **Archive this patient**. The insurance and balance items appear only
+for staff who may view billing, and the eligibility answer only for staff who
+may also view claims. "No known allergies" appears only when a clinician
+recorded it; an unreviewed list shows a prompt instead.
 **Patient record** contains **Contact & demographics**,
 longitudinal problems/allergies/medications, histories, prescribing, referrals,
 assessments, specialty care and imported records. These records remain available
@@ -29,8 +40,8 @@ coverage, payments or balances do not exist.
 so the visit has the full width; **Show patients** and **Hide patients** control its
 visibility, and the browser remembers that choice on the device.
 The directory initially shows active patients. Choose **Archived patients** or
-**All patients** to find a retained chart. **Archive this patient** is under the
-chart's **Patient record** menu; an archived chart shows **Restore patient** at the
+**All patients** to find a retained chart. **Archive this patient** is under **More**
+in the patient banner; an archived chart shows **Restore patient** at the
 top. **Archive patient** and **Restore patient**
 require a reason and explicit confirmation from an owner, clinician or front-desk
 user with clinical edit access. Archiving never deletes or rewrites visits, files,

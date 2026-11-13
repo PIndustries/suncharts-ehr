@@ -240,6 +240,8 @@ function claimmdEligibilityStore(coverageId,history){
  if(typeof updateInsuranceEligibility==='function')updateInsuranceEligibility(coverageId,history);
  if(claimmdEligibilityPanel?.coverage.id===coverageId)claimmdEligibilityPanel.items=history.items||[];
  claimmdEligibilityRepaint(coverageId);
+ // The patient banner shows the latest answer too, including an attempt that did not get one.
+ if(typeof patientBannerChanged==='function')patientBannerChanged();
 }
 // Where the person is working decides which visit a check is for.
 function claimmdEligibilityContext(){

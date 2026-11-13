@@ -281,6 +281,14 @@ async fn source(
         Err(Error::NotFound)
     }
 }
+/// Recorded (non-test) receivable totals for one patient, as the billing pages show them.
+pub(crate) async fn patient_account_summary(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    patient: Uuid,
+) -> Result<Value> {
+    overview::account_summary(tx, tenant, false, Some(patient)).await
+}
 pub(crate) async fn tenant_lock(tx: &mut Transaction<'_, Postgres>, a: &Actor) -> Result<()> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
         .bind(format!("billing:{}", a.tenant_id))

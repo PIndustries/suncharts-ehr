@@ -61,6 +61,7 @@ pub mod oauth;
 pub mod office;
 pub mod partner_scheduling;
 pub mod partner_support;
+pub mod patient_banner;
 pub mod patient_identity;
 pub mod patient_lifecycle;
 pub mod patient_portal;
@@ -400,6 +401,7 @@ pub fn app(state: State) -> Router {
         .merge(referral_delivery::routes())
         .merge(patient_identity::routes())
         .merge(patient_lifecycle::routes())
+        .merge(patient_banner::routes())
         .merge(fees::routes())
         .merge(patient_portal::router())
         .merge(prescribing::router())
@@ -900,6 +902,26 @@ pub fn app(state: State) -> Router {
                     "patient-lifecycle.js",
                     "text/javascript; charset=utf-8",
                     include_str!("../web/patient-lifecycle.js"),
+                )
+            }),
+        )
+        .route(
+            "/patient-banner.js",
+            get(|| async {
+                web_asset(
+                    "patient-banner.js",
+                    "text/javascript; charset=utf-8",
+                    include_str!("../web/patient-banner.js"),
+                )
+            }),
+        )
+        .route(
+            "/patient-banner.css",
+            get(|| async {
+                web_asset(
+                    "patient-banner.css",
+                    "text/css; charset=utf-8",
+                    include_str!("../web/patient-banner.css"),
                 )
             }),
         )

@@ -125,7 +125,7 @@ async function acceptConnectLaunch(){
  }finally{code=undefined;issuer=undefined;}
 }
 const connectLaunchAcceptance=acceptConnectLaunch();
-let chartSection='overview',encounterSection='documentation',patientDirectoryPreference=storedPatientDirectoryPreference(),patientLifecycleRevealed=false;
+let chartSection='overview',encounterSection='documentation',patientDirectoryPreference=storedPatientDirectoryPreference();
 // The patient list stays out of the way of an open chart unless this device asked to keep it.
 function storedPatientDirectoryPreference(){try{return localStorage.getItem('suncharts.patientDirectory.besideChart')==='shown';}catch{return false;}}
 function rememberPatientDirectoryPreference(visible){patientDirectoryPreference=Boolean(visible);try{localStorage.setItem('suncharts.patientDirectory.besideChart',visible?'shown':'hidden');}catch{}}
@@ -296,6 +296,8 @@ async function api(path, method = 'GET', body, version) {
   if(response.status===409&&data.message==='Staff account changed. Sign in again to continue.'){signInScreen();$('login-error').textContent=data.message;throw new Error(data.message);}
   if (response.status === 401) { signInScreen(); throw new Error('Please sign in to continue.'); }
   if (!response.ok) { const error=new Error(data.message || (response.status === 409 ? 'This visit changed. Reload it before saving.' : 'Unable to complete this action. Please check your entries.'));error.status=response.status;error.code=data.error;throw error; }
+  // A save anywhere may change what the open chart's banner shows.
+  if(method!=='GET'&&typeof patientBannerChanged==='function')patientBannerChanged();
   return data;
 }
 function signInScreen() {
@@ -315,6 +317,7 @@ function signInScreen() {
   if(typeof clearConnectionStatusSession==='function')clearConnectionStatusSession();
   if(typeof clearPatientIdentitySession==='function')clearPatientIdentitySession();
   if(typeof clearPatientLifecycleSession==='function')clearPatientLifecycleSession();
+  if(typeof clearPatientBannerSession==='function')clearPatientBannerSession();
   if(typeof clearReferralDeliverySession==='function')clearReferralDeliverySession();
   if(typeof clearDocumentsSession==='function')clearDocumentsSession();
   if(typeof clearReferralSession==='function')clearReferralSession();
@@ -328,7 +331,7 @@ function signInScreen() {
   if(typeof visitDiagnosisDrafts!=='undefined'){visitDiagnosisDrafts.clear();visitDiagnosisStates.clear();visitDiagnosisPending.clear();visitDiagnosisGeneration++;}
   if(typeof practiceAdminGeneration!=='undefined'){practiceAdminState=null;practiceAdminGeneration++;}
   if(typeof checkoutDrafts!=='undefined'){checkoutDrafts.clear();checkoutStates.clear();checkoutGeneration++;checkoutState=undefined;checkoutContext=undefined;}
-  patientWorkspaceGeneration++;patientDirectoryPreference=storedPatientDirectoryPreference();patientLifecycleRevealed=false;
+  patientWorkspaceGeneration++;patientDirectoryPreference=storedPatientDirectoryPreference();
   me = undefined; patients = []; selected = undefined; workspace = undefined; activeVisit = undefined;
   closeNavigation();
   $('app').hidden = true; $('login-screen').hidden = false;
@@ -450,7 +453,7 @@ async function selectPatient(id, keepVisit, stillCurrent=()=>true) {
   if(me!==openingIdentity||openingGeneration!==patientWorkspaceGeneration||!stillCurrent())return;
   captureVisitDrafts(); // Include edits made while the chart reads were in flight.
   next.history=history?.items??null;next.clinical=clinical;next.labs=labs;next.billing=billing;next.demographics=demographics;
-  if(id!==selected){patientLifecycleRevealed=false;chartSection='overview';encounterSection=['nurse','medical_assistant'].includes(me?.role)?'intake':'documentation';}
+  if(id!==selected){chartSection='overview';encounterSection=['nurse','medical_assistant'].includes(me?.role)?'intake':'documentation';}
   if(keepVisit&&activeVisit?.id!==keepVisit){chartSection='visits';encounterSection=['nurse','medical_assistant'].includes(me?.role)?'intake':'documentation';}
   workspace=next;billingPayers=payers.items;selected=id;
   activeVisit=keepVisit===null ? undefined : keepVisit ? workspace.visits.find(v=>v.id===keepVisit) : workspace.visits.find(v=>v.status==='in_progress'&&v.clinician_id===me.user_id)||workspace.visits.find(v=>v.status==='in_progress');
@@ -470,13 +473,6 @@ async function openPatientEncounter(id){
 }
 
 const date = s => new Date(s).toLocaleString(undefined,{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
-function revealPatientLifecycle(){
- patientLifecycleRevealed=true;applyChartSection();
- const host=$('patient-lifecycle');if(!host)return;
- const menu=$('patient-record-navigation');if(menu)menu.open=false;
- const disclosure=host.querySelector?.('details');if(disclosure)disclosure.open=true;
- host.scrollIntoView?.({block:'center'});host.querySelector?.('summary,button')?.focus?.({preventScroll:true});
-}
 function renderChart() {
   captureVisitAmendmentDraft();
   if(typeof capturePatientLifecycleDraft==='function')capturePatientLifecycleDraft();
@@ -487,18 +483,11 @@ function renderChart() {
   if(typeof captureOrderDiagnosisLinkDraft==='function')captureOrderDiagnosisLinkDraft();
   if(typeof captureAccountDiagnosisLinkDraft==='function')captureAccountDiagnosisLinkDraft();
   if(typeof captureHealthHistoryDraft==='function')captureHealthHistoryDraft(); if(typeof captureImmunizationDraft==='function')captureImmunizationDraft();
-  const p=workspace.patient;
-  const allergies=workspace.clinical.items.filter(e=>e.kind==='allergy'&&e.content.status==='active'&&!['refuted','entered_in_error'].includes(e.content.verification));
-  const allergyReview=workspace.clinical.reviews.find(r=>r.kind==='allergy');
-  const allergyText=allergies.length?allergies.map(e=>`${e.content.title} (${e.content.verification})`).join(', '):allergyReview?.review_state==='no_known'?'No known allergies':'Allergies not reviewed yet';
   if(typeof capturePrescribingDraft==='function')capturePrescribingDraft();
   let tabs=[['overview','Summary'],['profile','Patient details'],['clinical','Clinical lists'],['care_pathways','Care pathways'],['prescribing','Prescribing'],['immunizations','Immunizations'],['functional_status','Functional status'],['specialty_care','Specialty care'],['history','Surgical & dental history'],['documents','Documents'],['referrals','Referrals'],['orders','Orders & results'],['visits','Encounters'],['checkout','Checkout & AVS'],['billing','Financials'],['source','Source records']];
   if(typeof configuredChartTabs==='function')tabs=configuredChartTabs(tabs);
   if(tabs.some(([key])=>key==='billing'))tabs.splice(tabs.findIndex(([key])=>key==='billing'),0,['insurance','Insurance']);
-  const preferred=workspace.demographics?.content?.preferred_name;
-  const birth=new Date(p.birth_date+'T12:00:00'),now=new Date();let age=now.getFullYear()-birth.getFullYear();if(now.getMonth()<birth.getMonth()||(now.getMonth()===birth.getMonth()&&now.getDate()<birth.getDate()))age--;
-  const encounter=activeVisit?workspace.appointments.find(a=>a.id===activeVisit.appointment_id):null;
-  $('chart').innerHTML=`<div class="chart-context"><div class="chart-header"><div class="avatar">${esc(p.given_name[0])}${esc(p.family_name[0])}</div><div class="patient-heading"><p class="chart-record-label">PATIENT CHART${preferred?' · Preferred name '+esc(preferred):''}</p><h2>${esc(p.family_name)}, ${esc(p.given_name)} <span class="chart-age">${age>=0?esc(age)+' years':''}</span></h2><p><span>MRN <b>${esc(p.mrn)}</b></span><span>DOB <b>${esc(p.birth_date)}</b></span></p>${chartHeaderContact()}</div><div class="chart-header-context">${activeVisit?`<span class="status-badge ${activeVisit.status==='signed'?'completed':'in_progress'}">${activeVisit.status==='signed'?'Signed encounter':'Active encounter'}</span><small>${esc(encounterDateLabel(activeVisit))}</small>`:'<span class="muted">Longitudinal record</span>'}</div>${chartAreaEnabled('profile')?'<button type="button" data-chart-section="profile">Contact details</button>':''}<button class="quiet" data-action="reload" aria-label="Reload patient chart">↻ Refresh</button>${['owner','clinician','front_desk'].includes(me?.role)?`<button type="button" data-portal-access="${esc(selected)}">Patient portal</button>`:''}${typeof supportHelpButton==='function'?supportHelpButton('patient'):''}</div><div class="patient-safety ${allergies.length?'has-allergies':''}"><b>Allergies</b><span>${esc(allergyText)}</span></div>${chartNavigation(tabs)}</div>
+  $('chart').innerHTML=`<section id="patient-banner" class="patient-banner" aria-label="Patient summary">${typeof patientBannerMarkup==='function'?patientBannerMarkup():''}</section><div class="chart-context">${chartNavigation(tabs)}</div>
   <section id="patient-lifecycle" class="panel" hidden></section>
   <div id="encounter-progress">${encounterWorkflow()}</div>
   <div id="encounter-start-editor"></div>
@@ -514,7 +503,7 @@ function renderChart() {
   <section id="encounter-orders-actions" class="panel" hidden></section>
   <div id="visit-checkout"><div class="panel"><h2>Checkout & after-visit summary</h2><p>Select an encounter from Encounters to review its handoff and follow-up.</p></div></div>
   ${patientAppointmentWorkspace()}`;
-  if(typeof renderPrescribing==='function')void renderPrescribing(); renderClinical(); renderLabs(); renderBilling(); renderHistory(); if(typeof renderHealthHistory==='function')void renderHealthHistory(); if(typeof renderImmunizations==='function')void renderImmunizations(); if(typeof renderDocuments==='function')void renderDocuments(); if(typeof renderPatientIdentity==='function')void renderPatientIdentity(); if(typeof renderPatientLifecycle==='function')void renderPatientLifecycle(); if(typeof renderReferrals==='function')void renderReferrals(); if(typeof renderDemographics==='function')renderDemographics(selected,workspace.demographics); if(typeof renderPatientIntakePackets==='function')void renderPatientIntakePackets(); if(typeof renderSpecialtyPatientWorkspace==='function')void renderSpecialtyPatientWorkspace(); if(typeof renderCarePathways==='function'&&(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('workflows')))void renderCarePathways(); if(typeof renderPatientInsurance==='function')void renderPatientInsurance(); if(activeVisit) renderVisit(false); applyChartSection();
+  if(typeof renderPrescribing==='function')void renderPrescribing(); renderClinical(); renderLabs(); renderBilling(); renderHistory(); if(typeof renderHealthHistory==='function')void renderHealthHistory(); if(typeof renderImmunizations==='function')void renderImmunizations(); if(typeof renderDocuments==='function')void renderDocuments(); if(typeof renderPatientIdentity==='function')void renderPatientIdentity(); if(typeof renderPatientLifecycle==='function')void renderPatientLifecycle(); if(typeof renderReferrals==='function')void renderReferrals(); if(typeof renderDemographics==='function')renderDemographics(selected,workspace.demographics); if(typeof renderPatientIntakePackets==='function')void renderPatientIntakePackets(); if(typeof renderSpecialtyPatientWorkspace==='function')void renderSpecialtyPatientWorkspace(); if(typeof renderCarePathways==='function'&&(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('workflows')))void renderCarePathways(); if(typeof renderPatientInsurance==='function')void renderPatientInsurance(); if(activeVisit) renderVisit(false); applyChartSection(); if(typeof patientBannerChartRendered==='function')void patientBannerChartRendered();
 }
 function canRegisterPatient(){return ['owner','clinician','front_desk'].includes(me?.role)&&(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('clinical','create'));}
 function isRoomingStaff(){return ['nurse','medical_assistant'].includes(me?.role);}
@@ -583,17 +572,8 @@ function encounterDateLabel(v){
  const timestamp=workspace.appointments.find(a=>a.id===v.appointment_id)?.starts_at||v.signed_at||v.created_at;
  return timestamp?date(timestamp):'Encounter date not recorded';
 }
-function refreshPatientChartContext(){
- const host=$('chart')?.querySelector?.('.chart-header-context');if(!host)return;
- const appointment=chartSection==='insurance'&&typeof revenueAppointment==='function'?revenueAppointment():null;
- if(chartSection==='insurance'){host.innerHTML=`<span class="status-badge">Insurance review</span><small>${appointment?esc(appointment.title||'Appointment')+' · '+esc(date(appointment.starts_at)):'Select an appointment below'}</small>`;return;}
- host.innerHTML=activeVisit?`<span class="status-badge ${activeVisit.status==='signed'?'completed':'in_progress'}">${activeVisit.status==='signed'?'Signed encounter':'Active encounter'}</span><small>${esc(encounterDateLabel(activeVisit))}</small>`:'<span class="muted">Longitudinal record</span>';
-}
-function chartHeaderContact(){
- if(typeof workspaceResourceAllowed==='function'&&!workspaceResourceAllowed('clinical'))return '';
- const contact=workspace.demographics?.content||{};
- return `<p class="chart-header-contact"><span>Phone <b data-chart-contact="phone">${esc(contact.phone||'Not recorded')}</b></span><span>Email <b data-chart-contact="email">${esc(contact.email||'Not recorded')}</b></span>${chartAreaEnabled('documents')?'<button type="button" class="text-button" data-patient-intakes-open>Intake forms</button>':''}</p>`;
-}
+// The banner shows who the chart is for and what is under way; nothing else to refresh here.
+function refreshPatientChartContext(){if(typeof renderPatientBanner==='function')renderPatientBanner();}
 function chartContactSummary(){
  if(typeof workspaceResourceAllowed==='function'&&!workspaceResourceAllowed('clinical'))return '';
  const contact=workspace.demographics?.content||{},canDetails=chartAreaEnabled('profile');
@@ -602,15 +582,16 @@ function chartContactSummary(){
 function refreshChartContactSummary(){
  const chart=$('chart'),contact=workspace.demographics?.content||{};
  for(const key of ['phone','email']){const selector=`[data-chart-contact="${key}"]`,values=chart?.querySelectorAll?[...chart.querySelectorAll(selector)]:[chart?.querySelector(selector)];for(const value of values)if(value)value.textContent=contact[key]||'Not recorded';}
- const label=chart?.querySelector('.chart-record-label');
- if(label)label.textContent='PATIENT CHART'+(contact.preferred_name?' · Preferred name '+contact.preferred_name:'');
+ if(typeof renderPatientBanner==='function')renderPatientBanner();
 }
 function chartOverview(){
  const items=workspace.clinical.items,active=e=>e.content.status==='active'&&!['refuted','entered_in_error'].includes(e.content.verification),problems=items.filter(e=>e.kind==='problem'&&active(e)),meds=items.filter(e=>e.kind==='medication'&&active(e));
  const critical=r=>r.content.observations.some(o=>['critical','critical_high','critical_low'].includes(o.flag));
  const reports=workspace.labs.reports.filter(r=>['preliminary','final','corrected'].includes(r.status)&&!workspace.labs.acknowledgments.some(a=>a.report_id===r.id&&a.version===r.version)).sort((a,b)=>Number(critical(b))-Number(critical(a)));
- const recordedVisit=activeVisit?.vitals?activeVisit:workspace.visits.find(v=>v.vitals),vitals=recordedVisit?.vitals;
- const observations=vitals?[['Blood pressure',`${vitals.systolic_mm_hg}/${vitals.diastolic_mm_hg}`,'mmHg'],['Pulse',vitals.heart_rate_bpm,'bpm'],['Temperature',vitals.temperature_c,'°C'],['Oxygen saturation',vitals.oxygen_saturation_pct,'%'],['Weight',vitals.weight_kg,'kg'],['Height',vitals.height_cm,'cm']]:[];
+ // A measurement that was not taken is left out; the card never prints an empty or "undefined" value.
+ const measured=value=>value!==undefined&&value!==null&&value!==''&&!(typeof value==='number'&&!Number.isFinite(value)),hasVitals=v=>Boolean(v?.vitals)&&Object.values(v.vitals).some(measured);
+ const recordedVisit=hasVitals(activeVisit)?activeVisit:workspace.visits.find(hasVitals),vitals=recordedVisit?.vitals;
+ const observations=vitals?[['Blood pressure',measured(vitals.systolic_mm_hg)&&measured(vitals.diastolic_mm_hg)?`${vitals.systolic_mm_hg}/${vitals.diastolic_mm_hg}`:undefined,'mmHg'],['Pulse',vitals.heart_rate_bpm,'bpm'],['Temperature',vitals.temperature_c,'°C'],['Oxygen saturation',vitals.oxygen_saturation_pct,'%'],['Weight',vitals.weight_kg,'kg'],['Height',vitals.height_cm,'cm']].filter(([,value])=>measured(value)):[];
  const row=(title,detail)=>`<div class="chart-data-row"><strong>${esc(title)}</strong><small>${esc(detail)}</small></div>`;
  const problemRows=problems.slice(0,6).map(e=>row(e.content.title,`${displayStatus(e.content.verification)}${e.content.onset_date?' · Since '+displayDate(e.content.onset_date):''}`)).join('');
  const medRows=meds.slice(0,6).map(e=>row(e.content.title,[e.content.detail?.dose,e.content.detail?.route,e.content.detail?.frequency].filter(Boolean).join(' · ')||'No dose recorded')).join('');
@@ -629,7 +610,6 @@ function applyChartSection(){
  if(typeof encounterSection!=='undefined'&&typeof encounterSections==='function'&&!encounterSections().some(([key])=>key===encounterSection))encounterSection='documentation';
  const groups={overview:['chart-overview','patient-next-action'],profile:['patient-identity-panel','patient-demographics'],clinical:['clinical-lists'],care_pathways:['care-pathways-panel'],prescribing:['prescribing-panel'],immunizations:['immunizations-panel'],functional_status:['functional-status-panel'],specialty_care:['specialty-care-panel'],history:['health-history-panel'],documents:['documents-panel','patient-intake-panel'],referrals:['referrals-panel'],orders:['lab-workspace'],insurance:['insurance-workspace'],billing:['billing-workspace'],checkout:['visit-checkout'],source:['source-history']};
  for(const [key,ids] of Object.entries(groups))for(const id of ids)if($(id))$(id).hidden=!patientSectionVisible(key);
- if($('patient-lifecycle'))$('patient-lifecycle').hidden=!(patientLifecycleRevealed||(typeof workspace!=='undefined'&&Boolean(workspace?.patient?.archived)));
  const inEncounter=chartSection==='visits',hasVisit=typeof activeVisit!=='undefined'&&Boolean(activeVisit),step=typeof encounterSection==='undefined'?'documentation':encounterSection;
  if($('appointments-panel'))$('appointments-panel').hidden=!inEncounter;
  if($('visit-editor'))$('visit-editor').hidden=!(inEncounter&&hasVisit&&['intake','documentation'].includes(step));
@@ -652,7 +632,7 @@ function chartNavigation(tabs){
  const names={billing:'Account summary',profile:'Contact & demographics',clinical:'Problems, allergies & medications',history:'Surgical & dental history',care_pathways:'Practice workflows',functional_status:'Function & assessments',source:'Imported records'};
  const records=tabs.filter(([key])=>!mainKeys.has(key)&&key!=='checkout');
  const button=([key,label])=>`<button type="button" aria-label="${esc(label)}" data-chart-section="${key}" aria-pressed="${key===chartSection}">${esc(label)}</button>`;
- return `<nav class="chart-tabs patient-workspace-tabs" aria-label="Patient workspace"><div class="chart-tab-row chart-primary-tabs">${main.map(button).join('')}<details class="patient-record-navigation" id="patient-record-navigation"${records.length?'':' data-archive-only hidden'}><summary>Patient record</summary><div>${records.map(([key,label])=>button([key,names[key]||label])).join('')}<button type="button" id="chart-archive-entry" data-patient-lifecycle-show hidden>Archive this patient</button></div></details></div></nav>`;
+ return `<nav class="chart-tabs patient-workspace-tabs" aria-label="Patient workspace"><div class="chart-tab-row chart-primary-tabs">${main.map(button).join('')}${records.length?`<details class="patient-record-navigation" id="patient-record-navigation"><summary>Patient record</summary><div>${records.map(([key,label])=>button([key,names[key]||label])).join('')}</div></details>`:''}</div></nav>`;
 }
 function patientWorkflowActions(){
  if(workspace.patient?.archived&&!activeVisit)return '<section class="patient-next-action"><div><b>Archived patient chart</b><p>Review the encounter history below. Restore the patient to book or start a new visit.</p></div></section>';
@@ -680,7 +660,6 @@ function showChartSection(key){
  if(key==='checkout'){if(activeVisit)encounterSection='checkout';key='visits';}
  if(key==='orders'&&activeVisit&&chartSection==='visits'){encounterSection='orders';key='visits';}
  const recordMenu=$('patient-record-navigation');if(recordMenu)recordMenu.open=false;
- patientLifecycleRevealed=false;
  chartSection=key;applyChartSection();
  if(key==='insurance'&&typeof renderPatientInsurance==='function')void renderPatientInsurance();
  if(key==='documents'&&typeof renderEncounterFiles==='function')renderEncounterFiles();
@@ -842,7 +821,6 @@ document.addEventListener('click',e=>{
   if(button.dataset.action==='focus-amendment'){if(!busy)focusVisitAmendment();return;}
   if(button.dataset.action==='review-amendment-version'){if(!busy)reviewVisitAmendmentVersion(button);return;}
   if(button.id==='toggle-directory'){const show=$('clinical-workspace').classList.contains('directory-collapsed');setPatientDirectoryVisible(show);if(selected&&workspace)rememberPatientDirectoryPreference(show);return;}
-  if(button.hasAttribute('data-patient-lifecycle-show')){revealPatientLifecycle();return;}
   if(button.hasAttribute('data-encounter-history')){showChartSection('visits');const history=$('patient-encounter-history');if(history){history.open=true;history.scrollIntoView({block:'start'});}return;}
   if(button.dataset.clinicalFocus){showChartSection('clinical');if(chartSection!=='clinical')return;const label=({allergy:'Allergies',problem:'Problems',medication:'Medications'})[button.dataset.clinicalFocus];const section=Array.from($('clinical-lists')?.querySelectorAll('.clinical-domain')||[]).find(node=>node.querySelector('h3')?.textContent===label);section?.scrollIntoView({block:'start'});return;}
   if(button.dataset.chartSection){showChartSection(button.dataset.chartSection);return;}

@@ -49,40 +49,38 @@ const collapsed=f=>f.node('clinical-workspace').classList.contains('directory-co
  const blocked={getItem(){throw new Error('blocked');},setItem(){throw new Error('blocked');}};
  f=directory(blocked);await f.ctx.selectPatient('patient-a');assert.equal(collapsed(f),true);assert.doesNotThrow(()=>f.ctx.toggle());assert.equal(collapsed(f),false);
 
- // Archive: out of the main flow, one click away in the Patient record menu.
- const {node}=nodes(),chart=vm.createContext({console,Map,esc:value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),$:node,selected:'patient-a',me:{user_id:'owner',role:'owner'},workspace:{patient:{id:'patient-a',archived:false}},patients:[],cursor:null,activeVisit:undefined,chartSection:'overview',encounterSection:'documentation',patientLifecycleRevealed:false,
-  chartAreaEnabled:()=>true,encounterSections:()=>[['documentation','Notes']],document:{addEventListener(){},querySelectorAll:()=>[]},URLSearchParams});
+ // Archive: out of the main flow, one click away in the patient banner's More menu. It lives in one place only.
+ const {node}=nodes(),chart=vm.createContext({console,Map,Date,Intl,esc:value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),$:node,selected:'patient-a',me:{user_id:'owner',role:'owner'},workspace:{patient:{id:'patient-a',mrn:'SYN-1',given_name:'Avery',family_name:'Synthetic',birth_date:'1990-01-01',archived:false},appointments:[],visits:[],clinical:{items:[],reviews:[]},billing:{coverages:[]},demographics:{content:{}}},patients:[],cursor:null,activeVisit:undefined,chartSection:'overview',encounterSection:'documentation',
+  chartAreaEnabled:()=>true,encounterSections:()=>[['documentation','Notes']],document:{addEventListener(){},querySelectorAll:()=>[],querySelector:()=>null},URLSearchParams});
  vm.runInContext(extract('function patientSectionVisible(','function chartNavigation('),chart);
  vm.runInContext(extract('function chartNavigation(','function patientWorkflowActions('),chart);
- vm.runInContext(extract('function revealPatientLifecycle(','function renderChart()'),chart);
- vm.runInContext(lifecycle,chart);
+ vm.runInContext(fs.readFileSync(path.join(root,'web/display-format.js'),'utf8'),chart);
+ vm.runInContext(lifecycle,chart);vm.runInContext(fs.readFileSync(path.join(root,'web/patient-banner.js'),'utf8'),chart);
  const tabs=[['overview','Summary'],['profile','Patient details'],['visits','Encounters']];
  const menu=vm.runInContext(`chartNavigation(${JSON.stringify(tabs)})`,chart);
  assert.match(menu,/<details class="patient-record-navigation" id="patient-record-navigation"><summary>Patient record<\/summary>/);
- assert.match(menu,/<button type="button" id="chart-archive-entry" data-patient-lifecycle-show hidden>Archive this patient<\/button><\/div><\/details>/,'the entry waits, hidden, until the server says this person may archive');
- const bare=vm.runInContext("chartNavigation([['overview','Summary'],['visits','Encounters']])",chart);
- assert.match(bare,/id="patient-record-navigation" data-archive-only hidden>/);assert.match(bare,/id="chart-archive-entry"/,'Archive stays reachable when every record tab is switched off');
+ assert.doesNotMatch(menu,/Archive/,'the Patient record menu no longer carries a second Archive entry');
+ assert.doesNotMatch(app,/chart-archive-entry|data-patient-lifecycle-show|revealPatientLifecycle|patientLifecycleRevealed/);assert.doesNotMatch(style,/chart-archive-entry/);
  assert.match(app,/<section id="patient-lifecycle" class="panel" hidden><\/section>/,'the archive panel starts out of the main flow');
- // Hidden until asked for.
- const panel=node('patient-lifecycle'),details={open:false},focused={focus(){this.done=true;}};
- panel.querySelector=selector=>selector==='details'?details:selector==='summary,button'?focused:null;
- vm.runInContext('applyChartSection()',chart);assert.equal(panel.hidden,true);
+ const more=()=>{const html=vm.runInContext('patientBannerMarkup()',chart);return html.slice(html.indexOf('class="patient-banner-menu"'));};
+ // Hidden until asked for, and offered only once the server says this person may archive.
+ const panel=node('patient-lifecycle');panel.hidden=true;
+ assert.doesNotMatch(more(),/Archive/,'not offered before the server has answered');
  // The same control with the same confirmation, shown only to people who can use it.
  const state={patient_id:'patient-a',archived:false,can_manage:true,version:1,history:[]};chart.state=state;
- vm.runInContext('showPatientLifecycle(state)',chart);
- assert.equal(node('chart-archive-entry').hidden,false,'an owner sees the entry');
- assert.match(panel.innerHTML,/<summary>Archive this patient<\/summary>/);assert.match(panel.innerHTML,/data-patient-lifecycle-open>Archive patient…<\/button>/);
- chart.state={...state,can_manage:false};vm.runInContext('showPatientLifecycle(state)',chart);assert.equal(node('chart-archive-entry').hidden,true,'staff who cannot archive are not offered it');
- chart.state=state;vm.runInContext('showPatientLifecycle(state)',chart);
- node('patient-record-navigation').open=true;
- vm.runInContext('revealPatientLifecycle()',chart);
- assert.equal(panel.hidden,false,'choosing the entry shows the archive panel');assert.equal(details.open,true);assert.equal(panel.scrolled,true);assert.equal(focused.done,true);assert.equal(node('patient-record-navigation').open,false);
+ vm.runInContext("patientLifecycleStates.set('patient-a',state);showPatientLifecycle(state)",chart);
+ assert.match(more(),/<button type="button" role="menuitem" class="patient-banner-danger" data-patient-lifecycle-open>Archive this patient…<\/button>/,'someone who may archive reaches it from More, with every record tab switched on or off');
+ assert.equal(panel.hidden,true,'nothing is added to the chart until Archive is chosen');assert.equal(panel.innerHTML,'');
+ chart.state={...state,can_manage:false};vm.runInContext("patientLifecycleStates.set('patient-a',state);showPatientLifecycle(state)",chart);assert.doesNotMatch(more(),/Archive/,'staff who cannot archive are not offered it');
+ chart.state=state;vm.runInContext("patientLifecycleStates.set('patient-a',state);showPatientLifecycle(state)",chart);
+ // Choosing it (the existing data-patient-lifecycle-open handler starts the draft) shows the same form and confirmation.
+ assert.match(lifecycle,/\[data-patient-lifecycle-open\],\[data-patient-lifecycle-cancel\]/);
  vm.runInContext("patientLifecycleDrafts.set('patient-a',{reason:'',confirmed:false,archived:true,version:1});showPatientLifecycle(state)",chart);
+ assert.equal(panel.hidden,false,'choosing the entry shows the archive panel');
  assert.match(panel.innerHTML,/I confirm that I want to archive this patient chart\./);assert.match(panel.innerHTML,/<button type="submit" >Archive patient<\/button>/);
- // An archived chart always shows its restore control.
- chart.patientLifecycleRevealed=false;vm.runInContext('patientLifecycleRevealed=false;workspace.patient.archived=true;applyChartSection()',chart);assert.equal(panel.hidden,false);
- vm.runInContext('workspace.patient.archived=false;applyChartSection()',chart);assert.equal(panel.hidden,true);
- assert.match(app,/if\(button\.hasAttribute\('data-patient-lifecycle-show'\)\)\{revealPatientLifecycle\(\);return;\}/);
+ vm.runInContext("patientLifecycleDrafts.clear();showPatientLifecycle(state)",chart);assert.equal(panel.hidden,true,'cancelling puts it away again');
+ // An archived chart always shows its restore control, and is not offered Archive again.
+ chart.state={...state,archived:true,version:2};vm.runInContext("workspace.patient.archived=true;patientLifecycleStates.set('patient-a',state);showPatientLifecycle(state)",chart);assert.equal(panel.hidden,false);assert.match(panel.innerHTML,/Restore patient…/);assert.doesNotMatch(more(),/Archive this patient/);
  // The step row and the note stay on screen: the encounter band is one row and its tabs do not scroll sideways.
  assert.match(style,/#encounter-progress \.encounter-step-tabs\{overflow-x:visible\}/);
  assert.match(style,/\.encounter-workspace-heading \.eyebrow\{display:none\}/);

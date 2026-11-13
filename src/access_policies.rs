@@ -435,7 +435,7 @@ fn resources(path: &str) -> Option<Vec<&'static str>> {
     if path == "/api/v1/practice/worklist" {
         return Some(vec!["practice", "clinical", "scheduling"]);
     }
-    if path == "/api/v1/patients/{}/workspace" {
+    if path == "/api/v1/patients/{}/workspace" || path == "/api/v1/patients/{}/banner" {
         return Some(vec!["clinical", "scheduling"]);
     }
     if path == "/api/v1/patients/{}/history" {
@@ -1150,6 +1150,19 @@ mod tests {
             &Method::GET,
             "/api/v1/patients/{id}/workspace"
         ));
+        assert!(!permitted(
+            &flags,
+            &Method::GET,
+            "/api/v1/patients/{id}/banner"
+        ));
+        flags.get_mut("scheduling").unwrap().view = true;
+        flags.get_mut("billing").unwrap().view = false;
+        assert!(permitted(
+            &flags,
+            &Method::GET,
+            "/api/v1/patients/{id}/banner"
+        ));
+        flags.get_mut("scheduling").unwrap().view = false;
         assert!(!permitted(&flags, &Method::GET, "/api/v1/sun/context"));
         assert!(!permitted(
             &flags,
