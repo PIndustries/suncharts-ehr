@@ -232,14 +232,104 @@ additional records. Files retain their original links and are not copied into
 each encounter.
 
 **Patient intake forms** appears separately from uploads in Files and Files & voice.
-It lists issued forms across the patient's full history, including checked-in,
-completed and older appointments, with their original appointment date and status.
-The Overview also links directly to submitted forms and shows the number awaiting
-review. **Load older forms** pages through the retained records. Opening a packet
-uses the existing authorized intake detail view; it does not mark answers reviewed,
-copy them into the chart or alter the submitted response. Clinical-view permission
-is required. The separate upcoming-readiness worklist keeps its short scheduling
-window and is not the patient's intake archive.
+It lists every form sent to the patient across their full history, with or without
+an appointment, and shows a plain status for each: Sent, Started, Filled in – needs
+review, Reviewed, Cancelled or Expired. The Overview also links directly to the
+forms and shows the number awaiting review. **Load older forms** pages through the
+retained records. Opening a form does not mark it reviewed or change the chart.
+Clinical-view permission is required. The separate upcoming-readiness worklist
+keeps its short scheduling window and is not the patient's intake archive.
+
+### Patient intake forms
+
+Every practice starts with the **standard intake form**. Patients answer it one
+step at a time on a phone or computer:
+
+1. About you
+2. Contact
+3. More about you (all optional)
+4. Emergency contact
+5. Who is responsible for the bill
+6. How you will pay
+7. Primary insurance (only when the patient chooses insurance)
+8. Secondary insurance (only with insurance; the patient can skip it)
+9. Pharmacy and one last question
+
+The standard form never asks for a Social Security or driver's licence number.
+A practice that has saved nothing uses it automatically. Under **Pre-visit
+readiness → Booking and intake settings**, the owner chooses between:
+
+- **Use the standard intake form**, optionally with **Add your own questions**.
+  Each section added becomes an extra step after the standard steps. The settings
+  page shows a read-only list of the standard steps.
+- **Use only our own form.** Patients see only the practice's own sections. A
+  practice that saved its own form before the standard form existed stays on this
+  choice until the owner switches.
+
+Each save is kept as a new revision. A form that has already been sent keeps the
+questions it was sent with, whatever is saved later.
+
+**Sending.** In the chart's **Patient intake forms** panel, owner, clinician and
+front-desk staff use **Send intake form**. An appointment is not needed. The link
+is shown once, with **Copy link** and **Email the link**; the email opens in the
+staff member's own mail program, addressed to the patient's email on file, and
+contains only the practice name and the link. The EHR itself sends nothing. A link
+works for 30 days, or through the day of the appointment when the form is tied to
+a later visit. Forms sent before this feature have no expiry.
+
+**Send a new link** issues a fresh link and, in the same step, cancels a form the
+patient has not sent in yet when it is for the same appointment or for no
+appointment; that old link stops working. Forms sent for other appointments keep
+their own links. **Cancel link** asks for a
+reason and stops the link without issuing another. Filled-in and reviewed forms
+are never cancelled or replaced. Booking continues to issue the practice's saved
+form automatically when one exists; a practice with no saved form sends the
+standard form from the chart or the readiness worklist.
+
+**Choices instead of typing.** Wherever a known list exists the patient chooses
+from it: state, phone type, language, relationships, marital status, race,
+ethnicity, gender identity, sexual orientation and how they heard about the
+practice. Choosing **Other** opens a text box. Insurance company and preferred
+pharmacy are found by typing a few letters and picking a match from the practice's
+own insurance companies, insurers the practice has already looked up in its
+clearinghouse directory, and the practice's pharmacies; **I can't find mine**
+switches to a text box. The list is available only through a working link and
+returns names only.
+
+**For the patient.** The page shows the practice name, the step number and a
+progress bar. Answers are saved each time the patient continues, so they can close
+the page and finish later on any device with the same link. **Finish later** saves
+and closes the form on that device, and a form left untouched for 15 minutes
+closes itself the same way, so nothing stays open on a shared tablet. Problems are shown
+next to the question in plain words. A final screen lists every answer by step
+with an **Edit** link, then asks the patient to confirm and type their name before
+**Send to the practice**. An expired, cancelled, already reviewed or unknown link
+always shows the same message asking the patient to request a new one. Repeated wrong links or
+very frequent requests are slowed down for fifteen minutes.
+
+**Review.** Opening a filled-in form shows every answer grouped by step. Contact
+answers appear beside what the chart holds now, each with a tick box:
+
+- ticked already when the chart has nothing for that item;
+- left unticked when the chart holds a different value, so staff decide whether to
+  replace it;
+- no box when the chart already matches or the patient left it blank.
+
+**Mark reviewed and add ticked answers to the chart** records the review and copies
+only the ticked items to the patient's contact details: preferred name, language,
+sex, phone, email, address and emergency contact. The change is versioned with the
+reviewer, a reason and the form it came from. First name, last name and date of
+birth are shown for comparison only and are corrected in the patient's profile.
+For each insurance step the patient filled in, **Add as primary insurance** or
+**Add as secondary insurance** opens the coverage form inside the review with the
+member ID, group, plan and policy holder filled in. An insurance company the
+patient picked from the practice's list, or typed exactly, is already selected.
+Otherwise the practice's companies are listed closest match first, and the owner
+can add the company as a new one in the same place (adding insurance companies is
+owner-only); nothing is saved until staff save the coverage.
+Marital status, race, ethnicity, gender identity, sexual orientation, the
+responsible party, pharmacy, how the patient heard about the practice and the
+practice's own questions stay on the form record and are not copied to the chart.
 
 Owners and clinicians can upload PDF, PNG, JPEG, UTF-8 plain text, DOCX, XLSX,
 MP3, WAV, Ogg, WebM and M4A files up to 10 MiB. Plain text is limited to 200,000

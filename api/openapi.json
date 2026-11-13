@@ -112,7 +112,7 @@
       "get": {
         "operationId": "getIntakePacket",
         "summary": "Read a tenant-scoped intake packet and latest submitted answers",
-        "description": "Returns packet_id, packet_version, status, immutable template_snapshot, patient/appointment identity, attested_name, response and nullable workflow_instance_id/workflow_step_key/workflow_definition_version. Never returns the intake token.",
+        "description": "Returns packet_id, packet_version, status, created_at, nullable expires_at and expired, immutable template_snapshot, patient identity (patient_identity: given_name, family_name, birth_date for side-by-side comparison), nullable appointment_id/starts_at, attested_name, response and nullable workflow_instance_id/workflow_step_key/workflow_definition_version. Never returns the link secret or saved progress.",
         "parameters": [
           {
             "name": "id",
@@ -138,7 +138,7 @@
       "post": {
         "operationId": "promoteReviewedIntakeDemographics",
         "summary": "Apply explicitly selected mapped answers from a reviewed intake packet",
-        "description": "Only immutable field chart_target values demographics.preferred_name, pronouns, language, administrative_gender, phone and email are supported. Values come from the stored response, never caller-supplied values. Native validation, current demographics version, history and intake provenance apply atomically. No signed clinical content changes.",
+        "description": "Only immutable field chart_target values demographics.preferred_name, pronouns, language, administrative_gender, phone, email, address.line1, address.line2, address.city, address.region, address.postal_code, emergency_contact.name, emergency_contact.relationship and emergency_contact.phone are supported; name and date of birth are never changed here. Only the selected fields change; every other chart field is kept. Values come from the stored response, never caller-supplied values. Native validation, current demographics version, history and intake provenance apply atomically. No signed clinical content changes.",
         "security": [
           {
             "oauth2": [
@@ -182,7 +182,7 @@
                   "fields": {
                     "type": "array",
                     "minItems": 1,
-                    "maxItems": 6,
+                    "maxItems": 14,
                     "uniqueItems": true,
                     "items": {
                       "type": "string"
@@ -26286,7 +26286,7 @@
     "/api/public/v1/intake/read": {
       "post": {
         "security": [],
-        "summary": "Read an open intake packet using a bearer token supplied in the request body",
+        "summary": "Read an open intake form using the link secret supplied in the request body",
         "description": "The browser receives the token in a URL fragment and removes it before making this request, so the credential is not present in normal HTTP access logs.",
         "requestBody": {
           "required": true,
@@ -26310,10 +26310,114 @@
         },
         "responses": {
           "200": {
-            "description": "Pinned template and visit context"
+            "description": "packet_id, status, due_at, nullable expires_at, the issued form (template), saved progress (draft, draft_saved_at), practice_name, patient given name and nullable appointment context. Cache-Control no-store."
           },
           "404": {
-            "description": "Token unknown or packet closed"
+            "description": "Unknown, expired, cancelled or already reviewed link. Always the same message, so a link cannot be probed."
+          },
+          "429": {
+            "description": "Too many requests from this client or against this link in 15 minutes; Retry-After is set."
+          }
+        }
+      }
+    },
+    "/api/public/v1/intake/save": {
+      "post": {
+        "security": [],
+        "summary": "Save a patient's progress on an intake form that has not been sent in",
+        "description": "Stores the answers so far so the patient can finish later with the same link. Answers must belong to the issued form and match each question's type and size; nothing is required yet. Sets the form to in_progress without advancing its version. The save is recorded in the form history at most once every five minutes.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "token",
+                  "answers"
+                ],
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "maxLength": 100
+                  },
+                  "answers": {
+                    "type": "object"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "packet_id, status in_progress and saved_at."
+          },
+          "400": {
+            "description": "An answer does not belong to the form or does not fit its question."
+          },
+          "404": {
+            "description": "Unknown, expired, cancelled or already reviewed link. Always the same message, so a link cannot be probed."
+          },
+          "409": {
+            "description": "The form was already sent to the practice."
+          },
+          "429": {
+            "description": "Too many requests from this client or against this link in 15 minutes; Retry-After is set."
+          }
+        }
+      }
+    },
+    "/api/public/v1/intake/lookup": {
+      "post": {
+        "security": [],
+        "summary": "Names a patient can pick from while filling in an intake form",
+        "description": "kind insurer returns the practice's active insurance companies and insurers the practice has already looked up in its clearinghouse directory (reference claimmd:<payer id>); kind pharmacy returns the practice's active pharmacies. Matches the typed text anywhere in the name; fewer than two characters returns nothing. No outside service is called, nothing is written, and only a name and a reference are returned.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "token",
+                  "kind",
+                  "query"
+                ],
+                "properties": {
+                  "token": {
+                    "type": "string",
+                    "maxLength": 100
+                  },
+                  "kind": {
+                    "enum": [
+                      "insurer",
+                      "pharmacy"
+                    ]
+                  },
+                  "query": {
+                    "type": "string",
+                    "maxLength": 80
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "items: up to 10 of {id,name}. Cache-Control no-store."
+          },
+          "400": {
+            "description": "Unsupported list or text too long."
+          },
+          "404": {
+            "description": "Unknown, expired, cancelled or already reviewed link. Always the same message."
+          },
+          "429": {
+            "description": "Too many requests from this client or against this link in 15 minutes; Retry-After is set."
           }
         }
       }
@@ -26321,7 +26425,7 @@
     "/api/public/v1/intake/submit": {
       "post": {
         "security": [],
-        "summary": "Submit or correct an open patient intake packet",
+        "summary": "Send in or correct an open patient intake form",
         "requestBody": {
           "required": true,
           "content": {
@@ -26360,12 +26464,16 @@
             "description": "Immutable response revision recorded"
           },
           "400": {
-            "description": "Response does not match pinned template"
+            "description": "A required answer is missing or an answer does not fit its question"
           },
-          "409": {
-            "description": "Packet closed"
+          "404": {
+            "description": "Unknown, expired, cancelled or already reviewed link. Always the same message, so a link cannot be probed."
+          },
+          "429": {
+            "description": "Too many requests from this client or against this link in 15 minutes; Retry-After is set."
           }
-        }
+        },
+        "description": "A question is required only when it and its section are shown to the patient by the form's show_if rules; a skippable section left blank asks for nothing. Answers to questions the patient was not shown are dropped. Saved progress is cleared."
       }
     },
     "/api/v1/previsit/settings": {
@@ -26373,7 +26481,7 @@
         "summary": "Read tenant booking and active intake configuration",
         "responses": {
           "200": {
-            "description": "Tenant-scoped configuration"
+            "description": "profile, template (null until the practice saves or first sends a form), intake_mode (standard or own) and standard, the read-only standard intake form."
           }
         }
       },
@@ -26425,7 +26533,8 @@
           "403": {
             "description": "Owner role required"
           }
-        }
+        },
+        "description": "schema.base \"standard\" asks the standard steps first and then the practice's own sections (which may be empty); without base the saved sections are the whole form. Optional per field: help, show_if {key, equals} or {key, any_of}, option_labels, autocomplete, inputmode, format, max_length. Optional per section: intro, show_if, skippable, skip_label. A show_if rule may name only an earlier question. Also optional per field: lookup (insurer or pharmacy) with id_key naming a hidden field that keeps the picked record's reference, hidden, and other_key naming the text field that holds what the patient wrote for \"Other\"."
       }
     },
     "/api/v1/previsit/readiness": {
@@ -26440,7 +26549,7 @@
     },
     "/api/v1/appointments/{id}/intake-packet": {
       "post": {
-        "summary": "Issue the active intake template for an appointment",
+        "summary": "Issue the practice's default intake form for an appointment",
         "parameters": [
           {
             "name": "id",
@@ -26454,10 +26563,10 @@
         ],
         "responses": {
           "201": {
-            "description": "Packet issued; secret URL is shown once"
+            "description": "Form issued: packet_id, one-time intake_url, secret_shown_once and expires_at. A practice with no saved form gets the standard form."
           },
           "409": {
-            "description": "No active template or packet already exists"
+            "description": "The appointment already has a form that is not cancelled"
           }
         }
       }
@@ -26490,6 +26599,65 @@
           },
           "409": {
             "description": "Packet not submitted or stale"
+          }
+        }
+      }
+    },
+    "/api/v1/previsit/packets/{id}/cancel": {
+      "post": {
+        "operationId": "cancelIntakeForm",
+        "summary": "Cancel an intake form the patient has not sent in",
+        "description": "Only a default form in status sent or in_progress can be cancelled. The link stops working at once, saved progress is removed and the form is kept as cancelled (void) with the reason in its history. Workflow forms are managed from their patient journey.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Quoted current version."
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "packet_id, status void and the new version."
+          },
+          "404": {
+            "description": "Form not found in the authenticated tenant."
+          },
+          "409": {
+            "description": "Stale version, already filled in or cancelled, or a workflow form."
           }
         }
       }
@@ -36527,7 +36695,7 @@
       "get": {
         "operationId": "listPatientIntakePackets",
         "summary": "List retained patient intake forms across all appointment dates and statuses",
-        "description": "Requires staff clinical-view access. Audited patient- and tenant-scoped metadata only: packet identity/version/status, immutable template revision name, appointment context, submitted/reviewed times, response-presence flag, and all-history counts. No answers, attestation, access token or token hash. Existing packet detail reads authorize answer access separately. Does not change review status or chart data.",
+        "description": "Requires staff clinical-view access. Audited patient- and tenant-scoped metadata only: packet identity/version/status, immutable template revision name, nullable appointment context, submitted/reviewed times, expires_at, expired, started_at, default_form, response-presence flag, and all-history counts. No answers, attestation, access token or token hash. Existing packet detail reads authorize answer access separately. Does not change review status or chart data.",
         "parameters": [
           {
             "name": "patient",
@@ -36560,7 +36728,7 @@
         ],
         "responses": {
           "200": {
-            "description": "{patient_id,items,next_cursor,summary:{total,submitted,reviewed}}; Cache-Control: no-store."
+            "description": "{patient_id,items,next_cursor,summary:{total,submitted,reviewed,cancelled}}; Cache-Control: no-store."
           },
           "400": {
             "description": "Invalid page limit or cursor outside this patient."
@@ -36570,6 +36738,58 @@
           },
           "404": {
             "description": "Patient is not in the authorized tenant."
+          }
+        }
+      }
+    },
+    "/api/v1/patients/{patient}/intake-forms": {
+      "post": {
+        "operationId": "sendPatientIntakeForm",
+        "summary": "Send the practice's intake form to a patient, with or without an appointment",
+        "description": "Owner, clinician or front desk with clinical access. Issues the practice's default form (the standard form when nothing is saved) and returns its link once. The link works for 30 days, or through the day of the appointment when that is later. A default form the patient has not sent in yet is cancelled in the same transaction when it is for the same appointment or for none; forms for other appointments keep their links. No message is sent by the server.",
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "appointment_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "uuid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "packet_id, patient_id, one-time intake_url, secret_shown_once, expires_at and replaced (forms cancelled). Cache-Control no-store."
+          },
+          "400": {
+            "description": "The appointment does not belong to this patient."
+          },
+          "404": {
+            "description": "Patient is not in the authorized tenant."
+          },
+          "409": {
+            "description": "The appointment already has a filled-in form."
           }
         }
       }

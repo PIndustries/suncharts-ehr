@@ -317,7 +317,7 @@ async fn patient_intake_history_retains_old_completed_forms_and_is_metadata_only
         assert_eq!(status, StatusCode::OK, "{page}");
         assert_eq!(
             page["summary"],
-            json!({"total":4,"submitted":1,"reviewed":1})
+            json!({"total":4,"submitted":1,"reviewed":1,"cancelled":1})
         );
         let item = &page["items"][0];
         assert_eq!(item["template_name"], "Synthetic intake");

@@ -1498,7 +1498,7 @@ async fn intake(state: &State, actor: &Actor, instance: Uuid, input: &Value) -> 
     .await?;
     let (patient, due) = row.ok_or(Error::NotFound)?;
     pathway_patient(&mut tx, actor, instance, Some(patient)).await?;
-    if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM previsit_intake_packets WHERE tenant_id=$1 AND appointment_id=$2 AND workflow_instance_id IS NULL)").bind(actor.tenant_id).bind(appointment).fetch_one(&mut *tx).await?{return Err(Error::Conflict("an intake packet already exists"));}
+    if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM previsit_intake_packets WHERE tenant_id=$1 AND appointment_id=$2 AND workflow_instance_id IS NULL AND status<>'void')").bind(actor.tenant_id).bind(appointment).fetch_one(&mut *tx).await?{return Err(Error::Conflict("an intake packet already exists"));}
     let (packet, token) = crate::previsit::issue_for_appointment(
         &mut tx,
         actor.tenant_id,

@@ -271,7 +271,8 @@ fn action(method: &Method, path: &str) -> Option<Action> {
             }
             if path.starts_with("/api/v1/care-pathways/instances/")
                 && path.ends_with("/intake-packet")
-                || path.starts_with("/api/v1/previsit/packets/") && path.ends_with("/demographics")
+                || path.starts_with("/api/v1/previsit/packets/")
+                    && (path.ends_with("/demographics") || path.ends_with("/cancel"))
             {
                 return Some(Action::Edit);
             }
@@ -360,6 +361,7 @@ fn action(method: &Method, path: &str) -> Option<Action> {
                 "holds",
                 "immunizations",
                 "installations",
+                "intake-forms",
                 "intake-packet",
                 "integrations",
                 "intents",
@@ -979,6 +981,17 @@ mod tests {
             assert_eq!(action(&method, path), Some(expected), "{method} {path}");
             assert_eq!(resources(path), Some(vec!["billing"]), "{path}");
         }
+    }
+    #[test]
+    fn intake_forms_are_sent_with_clinical_access_and_cancelled_as_an_edit() {
+        let send = "/api/v1/patients/{}/intake-forms";
+        assert!(known_route(&Method::POST, send));
+        assert_eq!(action(&Method::POST, send), Some(Action::Create));
+        assert_eq!(resources(send), Some(vec!["clinical"]));
+        let cancel = "/api/v1/previsit/packets/{}/cancel";
+        assert!(known_route(&Method::POST, cancel));
+        assert_eq!(action(&Method::POST, cancel), Some(Action::Edit));
+        assert_eq!(resources(cancel), Some(vec!["scheduling"]));
     }
     #[test]
     fn invoice_installment_permissions_are_billing_only_and_explicit() {
