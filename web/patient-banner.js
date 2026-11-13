@@ -139,7 +139,7 @@ function patientBannerMarkup(now=new Date()){
  let balanceHtml='';
  if(billing&&Number.isSafeInteger(billing.patient_due_cents)){
   const owes=billing.patient_due_cents>0,count=Number(billing.open_invoice_count)||0,recheck=Number(billing.invoice_review_count)||0;
-  const title=[owes?`Patient owes ${patientBannerMoney(billing.patient_due_cents)} across their visits. Money still with insurance is not counted`:'Nothing is owed by the patient. Money still with insurance is not counted',recheck?`${displayCount(recheck,'statement')} sent before a later change`:'',billing.card_on_file?'A card is saved on file':'','Open Billing.'].filter(Boolean).join('. ');
+  const title=[owes?`Patient owes ${patientBannerMoney(billing.patient_due_cents)} across their visits. Money still with insurance is not counted`:'Nothing is owed by the patient. Money still with insurance is not counted',recheck?`${displayCount(recheck,'invoice')} to re-check`:'',billing.card_on_file?'A card is saved on file':'','Open Billing.'].filter(Boolean).join('. ');
   balanceHtml=item('balance','data-chart-section="billing"',`<span class="patient-banner-text ${owes?'patient-banner-owes':'patient-banner-quiet'}">${owes?'Owes '+esc(patientBannerMoney(billing.patient_due_cents)):'No balance'}</span>${billing.card_on_file?'<span class="patient-banner-sub patient-banner-card">Card on file</span>':''}`,title,'patient-banner-balance');
  }
  let visitHtml='';
