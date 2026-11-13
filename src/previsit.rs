@@ -84,6 +84,7 @@ pub fn router() -> Router<State> {
         )
         .route("/api/public/v1/intake/read", post(public_packet))
         .route("/api/public/v1/intake/save", post(public_save))
+        .route("/api/public/v1/intake/lookup", post(public_lookup))
         .route("/api/public/v1/intake/submit", post(public_submit))
         .route(
             "/api/v1/previsit/settings",
@@ -278,6 +279,9 @@ const AUTOCOMPLETE: &[&str] = &[
 ];
 const INPUT_MODES: &[&str] = &["text", "tel", "email", "numeric", "decimal"];
 const FORMATS: &[&str] = &["phone", "email", "zip", "past_date"];
+/// Lists a patient can pick from instead of typing: the practice's insurance
+/// companies and pharmacies.
+const LOOKUPS: &[&str] = &["insurer", "pharmacy"];
 
 fn optional_text(value: Option<&Value>, max: usize) -> Result<()> {
     match value {
@@ -410,6 +414,12 @@ fn validate_schema(schema: &Value) -> Result<()> {
             optional_choice(field.get("autocomplete"), AUTOCOMPLETE)?;
             optional_choice(field.get("inputmode"), INPUT_MODES)?;
             optional_choice(field.get("format"), FORMATS)?;
+            optional_choice(field.get("lookup"), LOOKUPS)?;
+            optional_text(field.get("id_key"), 80)?;
+            optional_text(field.get("other_key"), 80)?;
+            if field.get("hidden").is_some_and(|value| !value.is_boolean()) {
+                return Err(Error::Invalid("unsupported intake field setting"));
+            }
             if field
                 .get("max_length")
                 .filter(|v| !v.is_null())
@@ -991,7 +1001,8 @@ const LINK_CLOSED: &str =
 const TOO_MANY: &str = "Too many tries in a short time. Please wait a few minutes and try again.";
 /// Requests from one client, wrong or closed links from one client, and
 /// requests against one link, each per 15 minutes.
-const CLIENT_LIMIT: i32 = 300;
+const CLIENT_LIMIT: i32 = 600;
+const LOOKUP_LIMIT: i32 = 240;
 const MISS_LIMIT: i32 = 30;
 const LINK_LIMIT: i32 = 120;
 
@@ -1416,6 +1427,77 @@ async fn public_save(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Lookup {
+    token: String,
+    kind: String,
+    query: String,
+}
+/// Names a patient can pick from while filling in a form: the practice's own
+/// insurance companies, insurers the practice has already looked up in its
+/// clearinghouse directory, and the practice's pharmacies. Only a working link
+/// can ask, only a name and a reference come back, and no outside service is
+/// called.
+async fn public_lookup(
+    ExtractState(state): ExtractState<State>,
+    headers: HeaderMap,
+    Json(input): Json<Lookup>,
+) -> PublicResult<Response> {
+    let pool = db(&state)?;
+    let client = admit_client(pool, &headers).await?;
+    let token = clean(&input.token, 100)?;
+    if !LOOKUPS.contains(&input.kind.as_str()) {
+        return Err(Error::Invalid("unsupported list").into());
+    }
+    let mut tx = pool.begin().await?;
+    let Some(packet) = linked_packet(&mut tx, &token, false)
+        .await?
+        .filter(LinkedPacket::readable)
+    else {
+        return Err(link_closed(pool, &client).await);
+    };
+    if count_try(pool, &format!("intake:lookup:{}", packet.id)).await? > LOOKUP_LIMIT {
+        return Err(PublicError::Busy);
+    }
+    let query = input.query.trim();
+    let length = query.chars().count();
+    if length > 80 || query.chars().any(char::is_control) {
+        return Err(Error::Invalid("Please type a shorter name.").into());
+    }
+    let tenant = packet.tenant_id;
+    let mut items: Vec<(String, String)> = Vec::new();
+    if length >= 2 && input.kind == "insurer" {
+        items = sqlx::query_as("SELECT id::text,btrim(content->>'name') FROM ehr_payers WHERE tenant_id=$1 AND coalesce(content->>'active','true')='true' AND position(lower($2) in lower(content->>'name'))>0 ORDER BY position(lower($2) in lower(content->>'name')),lower(content->>'name'),id LIMIT 10")
+            .bind(tenant).bind(query).fetch_all(&mut *tx).await?;
+        // Insurers the practice has already found in its clearinghouse directory.
+        let known: Vec<(String, String)> = sqlx::query_as("SELECT DISTINCT ON (lower(name)) 'claimmd:'||code,name FROM (SELECT btrim(p->>'payer_name') AS name,btrim(p->>'payerid') AS code FROM (SELECT response FROM claimmd_payer_directory_snapshots WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 50) s CROSS JOIN LATERAL jsonb_array_elements(CASE jsonb_typeof(s.response->'payer') WHEN 'array' THEN s.response->'payer' WHEN 'object' THEN jsonb_build_array(s.response->'payer') ELSE '[]'::jsonb END) p) d WHERE code ~ '^[A-Za-z0-9_-]{1,40}$' AND length(name) BETWEEN 1 AND 200 AND position(lower($2) in lower(name))>0 ORDER BY lower(name),code LIMIT 10")
+            .bind(tenant).bind(query).fetch_all(&mut *tx).await?;
+        for (id, name) in known {
+            if items.len() < 10
+                && !items
+                    .iter()
+                    .any(|(_, have)| have.eq_ignore_ascii_case(&name))
+            {
+                items.push((id, name));
+            }
+        }
+    } else if length >= 2 {
+        items = sqlx::query_as("SELECT id::text,left(concat_ws(', ',btrim(content->>'name'),nullif(btrim(regexp_replace(content->>'address','[[:space:]]+',' ','g')),'')),300) FROM prescribing_pharmacies WHERE tenant_id=$1 AND active AND position(lower($2) in lower(concat_ws(' ',content->>'name',content->>'address')))>0 ORDER BY lower(content->>'name'),id LIMIT 10")
+            .bind(tenant).bind(query).fetch_all(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    let items: Vec<Value> = items
+        .into_iter()
+        .map(|(id, name)| json!({"id":id,"name":name}))
+        .collect();
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(json!({"items":items})),
+    )
+        .into_response())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Submission {
     token: String,
     response: Value,
@@ -1597,11 +1679,13 @@ async fn send_patient_form(
         "the intake form could not be prepared; try again",
     ))?;
     crate::postgres::audit(&mut tx, &actor, "previsit.packet_issue", packet).await?;
+    // The same name the patient sees on the form, for the staff member's own email.
+    let practice = practice_name(&mut tx, actor.tenant_id).await?;
     tx.commit().await?;
     Ok((
         StatusCode::CREATED,
         [(header::CACHE_CONTROL, "no-store")],
-        Json(json!({"packet_id":packet,"patient_id":patient,"intake_url":format!("/intake#token={plain}"),"secret_shown_once":true,"expires_at":expires,"replaced":open.len()})),
+        Json(json!({"packet_id":packet,"patient_id":patient,"intake_url":format!("/intake#token={plain}"),"secret_shown_once":true,"expires_at":expires,"replaced":open.len(),"practice_name":practice})),
     )
         .into_response())
 }
@@ -1622,7 +1706,8 @@ async fn cancel_packet(
     let expected = version(&headers)?;
     let reason = clean(&input.reason, 500)?;
     let mut tx = db(&state)?.begin().await?;
-    let row: Option<(Option<Uuid>, Uuid, String, i64, Option<Uuid>)> = sqlx::query_as("SELECT appointment_id,patient_id,status,version,workflow_instance_id FROM previsit_intake_packets WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
+    type Row = (Option<Uuid>, Uuid, String, i64, Option<Uuid>);
+    let row: Option<Row> = sqlx::query_as("SELECT appointment_id,patient_id,status,version,workflow_instance_id FROM previsit_intake_packets WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
         .bind(actor.tenant_id).bind(packet).fetch_optional(&mut *tx).await?;
     let (appointment, patient, status, current, workflow) = row.ok_or(Error::NotFound)?;
     if workflow.is_some() {
@@ -1785,7 +1870,8 @@ async fn promote_demographics(
     .await?;
     let mut tx = db(&state)?.begin().await?;
     crate::scheduling::tenant_lock(&mut tx, &actor).await?;
-    let row: Option<(Uuid,Option<Uuid>,String,i64,Value,Option<Value>)> = sqlx::query_as("SELECT patient_id,appointment_id,status,version,template_snapshot,(SELECT response FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1) FROM previsit_intake_packets p WHERE tenant_id=$1 AND id=$2 FOR SHARE")
+    type Row = (Uuid, Option<Uuid>, String, i64, Value, Option<Value>);
+    let row: Option<Row> = sqlx::query_as("SELECT patient_id,appointment_id,status,version,template_snapshot,(SELECT response FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1) FROM previsit_intake_packets p WHERE tenant_id=$1 AND id=$2 FOR SHARE")
         .bind(actor.tenant_id).bind(packet).fetch_optional(&mut *tx).await?;
     let (patient, appointment, status, packet_version, schema, response) =
         row.ok_or(Error::NotFound)?;
@@ -1851,6 +1937,14 @@ async fn promote_demographics(
             .ok_or(Error::Invalid(
                 "select a nonempty text answer for this chart field",
             ))?;
+        // "Other" stands for what the patient wrote in the box beside it.
+        let written = field["other_key"]
+            .as_str()
+            .filter(|_| answer == "Other")
+            .and_then(|other| response[other].as_str())
+            .map(str::trim)
+            .filter(|written| !written.is_empty());
+        let answer = written.unwrap_or(answer);
         let answer = if target == "administrative_gender" {
             json!(answer.to_ascii_lowercase())
         } else {
@@ -1936,4 +2030,48 @@ async fn review_packet(
     Ok(Json(
         json!({"packet_id":packet,"status":"reviewed","version":next}),
     ))
+}
+
+#[cfg(test)]
+mod standard_form_tests {
+    use super::*;
+
+    #[test]
+    fn the_standard_form_is_a_valid_form_with_nine_steps_and_no_identity_numbers() {
+        let form = crate::previsit_standard::preview();
+        validate_schema(&form).expect("the standard form passes the rules for any intake form");
+        let sections = form["sections"].as_array().unwrap();
+        assert_eq!(sections.len(), 9);
+        assert_eq!(form["standard_steps"], 9);
+        let text = form.to_string().to_lowercase();
+        for banned in ["social security", "ssn", "driver", "licence", "license"] {
+            assert!(!text.contains(banned), "{banned}");
+        }
+        // Every chart mapping is either comparison-only identity or a supported contact field.
+        for field in sections
+            .iter()
+            .flat_map(|section| section["fields"].as_array().unwrap())
+        {
+            if let Some(target) = field["chart_target"].as_str() {
+                let supported = target
+                    .strip_prefix("demographics.")
+                    .is_some_and(|target| DEMOGRAPHIC_TARGETS.contains(&target));
+                assert!(supported || target.starts_with("identity."), "{target}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_practice_without_insurance_answers_needs_no_insurance_steps() {
+        let form = crate::previsit_standard::preview();
+        let answers = json!({"first_name":"Synthetic","last_name":"Sample","date_of_birth":"1990-01-01","phone":"555-010-2026","address_line1":"1 Example Street","city":"Sampleville","state":"TX","zip":"75001","emergency_name":"Example Contact","emergency_relationship":"Friend","emergency_phone":"555-010-3030","responsible_party":"Myself","payment_method":"Self-pay","insurance_company":"Left over"});
+        let kept = validate_response(&form, &answers, true).unwrap();
+        assert!(kept.get("insurance_company").is_none());
+        let mut insured = answers.clone();
+        insured["payment_method"] = json!("Insurance");
+        assert!(validate_response(&form, &insured, true).is_err());
+        // A draft is kept exactly as typed and asks for nothing yet.
+        let draft = json!({"first_name":"Synthetic","zip":"7"});
+        assert_eq!(validate_response(&form, &draft, false).unwrap(), draft);
+    }
 }

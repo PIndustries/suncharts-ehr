@@ -227,6 +227,7 @@ async fn standard_form_is_the_default_and_saved_forms_keep_working_unchanged() {
 
     // Nothing saved: sending works and uses the standard form.
     let (_, token, sent) = f.send(patient, json!({})).await;
+    assert_eq!(sent["practice_name"], "Your practice");
     let expires: DateTime<Utc> = sent["expires_at"].as_str().unwrap().parse().unwrap();
     let month = Utc::now() + Duration::days(30);
     assert!((expires - month).num_minutes().abs() < 5, "{expires}");
@@ -921,10 +922,12 @@ async fn reviewed_answers_reach_the_chart_only_where_staff_chose() {
     sqlx::query("INSERT INTO patient_demographics(tenant_id,patient_id,version,content) VALUES($1,$2,1,$3)")
         .bind(f.tenant).bind(patient).bind(json!({"phone":"+1 555 010 0000","pronouns":"they/them","address":{"line1":"1 Old Road","city":"Oldtown"}})).execute(&f.db).await.unwrap();
     let (packet, token, _) = f.send(patient, json!({})).await;
+    let mut answers = standard_answers();
+    // "Other" stands for what the patient wrote beside it.
+    answers["emergency_relationship"] = json!("Other");
+    answers["emergency_relationship_other"] = json!("Neighbour");
     assert_eq!(
-        f.patient("submit", submission(&token, standard_answers()))
-            .await
-            .0,
+        f.patient("submit", submission(&token, answers)).await.0,
         StatusCode::OK
     );
     let promote = format!("/api/v1/previsit/packets/{packet}/demographics");
@@ -936,6 +939,7 @@ async fn reviewed_answers_reach_the_chart_only_where_staff_chose() {
         "state",
         "zip",
         "emergency_name",
+        "emergency_relationship",
         "emergency_phone"
     ]);
     let body = |fields: Value| json!({"fields":fields,"demographics_version":1,"reason":"Checked with the patient at the desk"});
@@ -988,7 +992,7 @@ async fn reviewed_answers_reach_the_chart_only_where_staff_chose() {
             "phone":"+1 555 010 0000",
             "email":"synthetic.sample@example.test",
             "address":{"line1":"1 Old Road","line2":null,"city":"Sampleville","region":"TX","postal_code":"75001","country":"US"},
-            "emergency_contact":{"name":"Example Contact","relationship":null,"phone":"555-010-3030"}
+            "emergency_contact":{"name":"Example Contact","relationship":"Neighbour","phone":"555-010-3030"}
         })
     );
     let (history, reason): (i64, String) = sqlx::query_as("SELECT version,reason FROM patient_demographics_history WHERE patient_id=$1 ORDER BY version DESC LIMIT 1").bind(patient).fetch_one(&f.db).await.unwrap();
@@ -1079,8 +1083,7 @@ async fn forms_issued_before_this_change_still_open_save_and_submit() {
             .await
             .unwrap();
     assert_eq!(stored, answers, "older forms are stored exactly as sent");
-    // Booking still issues the practice's saved form, and a practice with no
-    // saved form is not sent anything it did not ask for.
+    // The chart list still shows the form with its appointment.
     let (_, list) = f
         .request(
             "GET",
@@ -1093,4 +1096,129 @@ async fn forms_issued_before_this_change_still_open_save_and_submit() {
         .await;
     assert_eq!(list["items"][0]["appointment_title"], "Synthetic visit");
     assert_eq!(list["items"][0]["expired"], false);
+}
+
+#[tokio::test]
+async fn pick_lists_need_a_working_link_and_return_only_names() {
+    let f = Fixture::new().await;
+    let patient = f.add_patient().await;
+    let (packet, token, _) = f.send(patient, json!({})).await;
+    let other_tenant = Uuid::new_v4();
+    for (tenant, name, active) in [
+        (f.tenant, "Example Health Plan", true),
+        (f.tenant, "Example Closed Plan", false),
+        (f.tenant, "Zeta Mutual", true),
+        (other_tenant, "Example Other Practice Plan", true),
+    ] {
+        sqlx::query("INSERT INTO ehr_payers(tenant_id,id,content,request_id,creation_hash) VALUES($1,$2,$3,$4,'synthetic')")
+            .bind(tenant).bind(Uuid::new_v4()).bind(json!({"name":name,"payer_code":"SYN-CODE","phone":"555-010-9999","address":"1 Private Lane","active":active})).bind(Uuid::new_v4()).execute(&f.db).await.unwrap();
+    }
+    // Insurers the practice already looked up in its clearinghouse directory.
+    sqlx::query("INSERT INTO claimmd_payer_directory_snapshots(tenant_id,id,route_key,query,response,actor_id) VALUES($1,$2,'synthetic',$3,$4,$5)")
+        .bind(f.tenant).bind(Uuid::new_v4()).bind(json!({"name":"example"})).bind(json!({"payer":[{"payerid":"EX123","payer_name":"Example Mutual","payer_state":"TX","eligibility":"yes"},{"payerid":"EX999","payer_name":"Example Health Plan"},{"payerid":"bad id!","payer_name":"Example Broken"}]})).bind(f.user).execute(&f.db).await.unwrap();
+    for (name, active) in [("Example Pharmacy", true), ("Example Old Pharmacy", false)] {
+        sqlx::query("INSERT INTO prescribing_pharmacies(tenant_id,id,content,active,created_by,updated_by) VALUES($1,$2,$3,$4,$5,$5)")
+            .bind(f.tenant).bind(Uuid::new_v4()).bind(json!({"name":name,"address":"1 Example Street\nSampleville","phone":"555-010-7777","ncpdp_id":"1234567","npi":""})).bind(active).bind(f.user).execute(&f.db).await.unwrap();
+    }
+    let ask = |token: &str, kind: &str, query: &str| {
+        let body = json!({"token":token,"kind":kind,"query":query});
+        let f = &f;
+        async move { f.patient("lookup", body).await }
+    };
+    let (status, found) = ask(&token, "insurer", "exam").await;
+    assert_eq!(status, StatusCode::OK, "{found}");
+    let items = found["items"].as_array().unwrap();
+    let names: Vec<&str> = items
+        .iter()
+        .map(|item| item["name"].as_str().unwrap())
+        .collect();
+    // The practice's own companies first, then ones it has looked up; no closed or foreign ones.
+    assert_eq!(names, ["Example Health Plan", "Example Mutual"]);
+    assert_eq!(items[1]["id"], "claimmd:EX123");
+    assert!(items[0]["id"].as_str().unwrap().parse::<Uuid>().is_ok());
+    for item in items {
+        let keys: Vec<&String> = item.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["id", "name"], "only a name and a reference: {item}");
+    }
+    let text = found.to_string();
+    for private in [
+        "SYN-CODE",
+        "555-010",
+        "Private Lane",
+        "payer_state",
+        "eligibility",
+    ] {
+        assert!(!text.contains(private), "{private}");
+    }
+    let (_, found) = ask(&token, "pharmacy", "example").await;
+    assert_eq!(
+        found["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["Example Pharmacy, 1 Example Street Sampleville"]
+    );
+    assert!(!found.to_string().contains("1234567") && !found.to_string().contains("555-010"));
+    // Too little to search on returns nothing; wildcards are plain text.
+    for query in ["", "e", "%%", "__"] {
+        assert_eq!(
+            ask(&token, "insurer", query).await.1,
+            json!({"items":[]}),
+            "{query}"
+        );
+    }
+    assert_eq!(
+        ask(&token, "patients", "example").await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        ask(&token, "insurer", &"x".repeat(81)).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    // A wrong link gets the usual closed answer and no names; a link is always required.
+    let closed = (
+        StatusCode::NOT_FOUND,
+        json!({"error":"not_found","message":CLOSED}),
+    );
+    assert_eq!(ask("not-a-real-link", "insurer", "exam").await, closed);
+    let (status, body) = f
+        .patient("lookup", json!({"kind":"insurer","query":"exam"}))
+        .await;
+    assert!(status.is_client_error() && body.get("items").is_none());
+    // One link cannot be used to page through the list at speed.
+    sqlx::query("UPDATE patient_portal_rate_limits SET attempts=240 WHERE key=$1")
+        .bind(format!("intake:lookup:{packet}"))
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let (status, body) = ask(&token, "insurer", "exam").await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(body.get("items").is_none());
+    sqlx::query("DELETE FROM patient_portal_rate_limits")
+        .execute(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        f.staff(
+            "POST",
+            &format!("/api/v1/previsit/packets/{packet}/cancel"),
+            json!({"reason":"Synthetic cancel"}),
+            Some(1)
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(ask(&token, "insurer", "exam").await, closed);
+    // Looking up names never writes to the form or its history.
+    let events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM previsit_events WHERE packet_id=$1 AND action NOT IN('intake_packet_issued','intake_packet_cancelled')",
+    )
+    .bind(packet)
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(events, 0);
 }

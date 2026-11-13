@@ -38,3 +38,7 @@ CREATE OR REPLACE FUNCTION previsit_intake_packet_guard() RETURNS trigger LANGUA
  END IF;
  RETURN NEW;
 END $$;
+
+-- Finding a form's own history entries (for example its last saved-progress
+-- entry) no longer reads every entry of the practice.
+CREATE INDEX previsit_events_packet ON previsit_events(tenant_id,packet_id,created_at DESC);

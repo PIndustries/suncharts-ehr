@@ -67,6 +67,40 @@ const STATES: &[(&str, &str)] = &[
     ("WY", "Wyoming"),
 ];
 
+const RELATIONSHIPS: &[&str] = &[
+    "Spouse or partner",
+    "Parent",
+    "Child",
+    "Sibling",
+    "Friend",
+    "Other",
+];
+const LANGUAGES: &[&str] = &[
+    "English",
+    "Spanish",
+    "Chinese",
+    "Vietnamese",
+    "Tagalog",
+    "Arabic",
+    "French",
+    "Korean",
+    "Russian",
+    "Other",
+];
+
+/// The text box that appears only when the patient chooses "Other".
+fn other(key: &str) -> Value {
+    json!({"key":format!("{key}_other"),"label":"Please tell us","type":"text","required":true,"max_length":100,"show_if":{"key":key,"equals":"Other"}})
+}
+/// Holds the record the patient picked from a list; never shown as a question.
+fn picked(key: &str, coverage_field: Option<&str>) -> Value {
+    let mut field = json!({"key":format!("{key}_id"),"label":"Chosen from the list","type":"text","required":false,"hidden":true,"max_length":120});
+    if let Some(name) = coverage_field {
+        field["coverage_field"] = json!(name);
+    }
+    field
+}
+
 fn insurance(prefix: &str, rank: &str, label: &str, skippable: bool) -> Value {
     let key = |name: &str| format!("{prefix}_{name}");
     let other_holder = json!({"key":key("relationship"),"any_of":["Spouse","Child","Other"]});
@@ -76,7 +110,8 @@ fn insurance(prefix: &str, rank: &str, label: &str, skippable: bool) -> Value {
         "intro":"You can find these details on your insurance card.",
         "show_if":{"key":"payment_method","equals":"Insurance"},
         "fields":[
-            {"key":key("company"),"label":"Insurance company","type":"text","required":true,"max_length":200,"coverage_field":"company"},
+            {"key":key("company"),"label":"Insurance company","type":"text","required":true,"max_length":200,"lookup":"insurer","id_key":key("company_id"),"help":"Start typing and choose yours from the list.","coverage_field":"company"},
+            picked(&key("company"), Some("payer_ref")),
             {"key":key("member_id"),"label":"Member or policy ID","type":"text","required":true,"max_length":150,"coverage_field":"member_id"},
             {"key":key("plan"),"label":"Plan name","type":"text","required":false,"max_length":200,"coverage_field":"plan_name"},
             {"key":key("group"),"label":"Group number","type":"text","required":false,"max_length":150,"coverage_field":"group_number"},
@@ -105,10 +140,11 @@ pub(crate) fn sections() -> Vec<Value> {
             {"key":"middle_name","label":"Middle name","type":"text","required":false,"max_length":100,"autocomplete":"additional-name"},
             {"key":"last_name","label":"Last name","type":"text","required":true,"max_length":100,"autocomplete":"family-name","chart_target":"identity.family_name"},
             {"key":"suffix","label":"Suffix","type":"text","required":false,"max_length":20,"help":"For example Jr. or III.","autocomplete":"honorific-suffix"},
-            {"key":"date_of_birth","label":"Date of birth","type":"date","required":true,"format":"past_date","autocomplete":"bday","chart_target":"identity.birth_date"},
+            {"key":"date_of_birth","label":"Date of birth","type":"date","required":true,"format":"past_date","help":"Month, day and year.","autocomplete":"bday","chart_target":"identity.birth_date"},
             {"key":"sex","label":"Sex","type":"select","required":false,"options":["Female","Male","Unknown"],"option_labels":["Female","Male","Prefer not to say or unknown"],"chart_target":"demographics.administrative_gender"},
             {"key":"preferred_name","label":"Preferred name","type":"text","required":false,"max_length":100,"help":"What would you like us to call you?","chart_target":"demographics.preferred_name"},
-            {"key":"preferred_language","label":"Preferred language","type":"text","required":false,"max_length":100,"chart_target":"demographics.language"}
+            {"key":"preferred_language","label":"Preferred language","type":"select","required":false,"options":LANGUAGES,"other_key":"preferred_language_other","chart_target":"demographics.language"},
+            other("preferred_language")
         ]}),
         json!({"label":"Contact","fields":[
             {"key":"phone","label":"Mobile or main phone","type":"phone","required":true,"format":"phone","inputmode":"tel","autocomplete":"tel","chart_target":"demographics.phone"},
@@ -121,22 +157,28 @@ pub(crate) fn sections() -> Vec<Value> {
             {"key":"zip","label":"ZIP code","type":"text","required":true,"format":"zip","inputmode":"numeric","max_length":10,"autocomplete":"postal-code","chart_target":"demographics.address.postal_code"}
         ]}),
         json!({"label":"More about you","intro":"These questions are optional. Your answers help us care for you and are kept private.","fields":[
-            {"key":"marital_status","label":"Marital status","type":"select","required":false,"options":["Single","Married","Partnered","Divorced","Separated","Widowed","Prefer not to say"]},
-            {"key":"race","label":"Race","type":"select","required":false,"options":["American Indian or Alaska Native","Asian","Black or African American","Native Hawaiian or Other Pacific Islander","White","Other","Prefer not to say"]},
+            {"key":"marital_status","label":"Marital status","type":"select","required":false,"options":["Single","Married","Partnered","Divorced","Separated","Widowed","Other","Prefer not to say"],"other_key":"marital_status_other"},
+            other("marital_status"),
+            {"key":"race","label":"Race","type":"select","required":false,"options":["American Indian or Alaska Native","Asian","Black or African American","Native Hawaiian or Other Pacific Islander","White","Other","Prefer not to say"],"other_key":"race_other"},
+            other("race"),
             {"key":"ethnicity","label":"Are you Hispanic or Latino?","type":"select","required":false,"options":["Yes","No","Prefer not to say"]},
-            {"key":"gender_identity","label":"Gender identity","type":"select","required":false,"options":["Female","Male","Transgender female","Transgender male","Non-binary","Other","Prefer not to say"]},
-            {"key":"sexual_orientation","label":"Sexual orientation","type":"select","required":false,"options":["Straight or heterosexual","Lesbian or gay","Bisexual","Something else","Don't know","Prefer not to say"]}
+            {"key":"gender_identity","label":"Gender identity","type":"select","required":false,"options":["Female","Male","Transgender female","Transgender male","Non-binary","Other","Prefer not to say"],"other_key":"gender_identity_other"},
+            other("gender_identity"),
+            {"key":"sexual_orientation","label":"Sexual orientation","type":"select","required":false,"options":["Straight or heterosexual","Lesbian or gay","Bisexual","Other","Don't know","Prefer not to say"],"other_key":"sexual_orientation_other"},
+            other("sexual_orientation")
         ]}),
         json!({"label":"Emergency contact","intro":"Someone we can reach if we cannot reach you.","fields":[
             {"key":"emergency_name","label":"Their name","type":"text","required":true,"max_length":200,"chart_target":"demographics.emergency_contact.name"},
-            {"key":"emergency_relationship","label":"How are they related to you?","type":"text","required":true,"max_length":100,"help":"For example spouse, parent or friend.","chart_target":"demographics.emergency_contact.relationship"},
+            {"key":"emergency_relationship","label":"How are they related to you?","type":"select","required":true,"options":RELATIONSHIPS,"other_key":"emergency_relationship_other","chart_target":"demographics.emergency_contact.relationship"},
+            other("emergency_relationship"),
             {"key":"emergency_phone","label":"Their phone","type":"phone","required":true,"format":"phone","inputmode":"tel","chart_target":"demographics.emergency_contact.phone"},
             {"key":"emergency_email","label":"Their email","type":"email","required":false,"format":"email","inputmode":"email"}
         ]}),
         json!({"label":"Who is responsible for the bill","fields":[
             {"key":"responsible_party","label":"Who will pay for your care?","type":"select","required":true,"options":["Myself","Someone else"]},
             {"key":"responsible_name","label":"Their name","type":"text","required":true,"max_length":200,"show_if":someone_else},
-            {"key":"responsible_relationship","label":"How are they related to you?","type":"text","required":true,"max_length":100,"show_if":someone_else},
+            {"key":"responsible_relationship","label":"How are they related to you?","type":"select","required":true,"options":RELATIONSHIPS,"other_key":"responsible_relationship_other","show_if":someone_else},
+            other("responsible_relationship"),
             {"key":"responsible_phone","label":"Their phone","type":"phone","required":true,"format":"phone","inputmode":"tel","show_if":someone_else}
         ]}),
         json!({"label":"How you will pay","fields":[
@@ -145,9 +187,11 @@ pub(crate) fn sections() -> Vec<Value> {
         insurance("insurance", "primary", "Primary insurance", false),
         insurance("insurance2", "secondary", "Secondary insurance", true),
         json!({"label":"Pharmacy and one last question","fields":[
-            {"key":"pharmacy_name","label":"Preferred pharmacy","type":"text","required":false,"max_length":200},
+            {"key":"pharmacy_name","label":"Preferred pharmacy","type":"text","required":false,"max_length":300,"lookup":"pharmacy","id_key":"pharmacy_name_id","help":"Start typing and choose yours from the list."},
+            picked("pharmacy_name", None),
             {"key":"pharmacy_address","label":"Pharmacy address or cross streets","type":"text","required":false,"max_length":300},
-            {"key":"heard_about_us","label":"How did you hear about us?","type":"text","required":false,"max_length":300}
+            {"key":"heard_about_us","label":"How did you hear about us?","type":"select","required":false,"options":["Doctor referral","Friend or family","Insurance directory","Online search","Social media","Other"],"other_key":"heard_about_us_other"},
+            other("heard_about_us")
         ]}),
     ]
 }
