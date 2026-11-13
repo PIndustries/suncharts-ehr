@@ -101,6 +101,7 @@ MEASURED_SECONDS = {
     "rooming_workflow": 12,
     "secondary_claims": 11,
     "specialty_workspace": 13,
+    "staff_invitations": 12,
     "sun_tools": 5,
     "terminology": 6,
     "visit_diagnoses": 14,

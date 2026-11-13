@@ -14719,7 +14719,7 @@
             "description": "Atomic operation failed"
           }
         },
-        "description": "Local owner browser session only; up to1000records with has_more. Not delegated by OAuth clinical scopes."
+        "description": "Local owner browser session only; up to1000records with has_more. Not delegated by OAuth clinical scopes. sign_in is \"connect\" when SunCharts Connect handles staff sign-in for this installation (staff are invited by email and have no password here) and \"password\" otherwise."
       },
       "post": {
         "operationId": "createPracticeStaff",
@@ -14767,7 +14767,8 @@
               }
             }
           }
-        }
+        },
+        "description": "Owner-only same-origin write with attributed history. When sign_in is \"password\" a password is required. When sign_in is \"connect\" a password is refused: the account is saved first and Connect is then asked to email an invitation; the reply adds invitation {status, reason?, sent_at?, expires_at?} and the account is kept whatever the outcome (status not_sent carries the reason)."
       }
     },
     "/api/v1/practice/staff/{id}": {
@@ -14841,7 +14842,125 @@
             }
           }
         ],
-        "description": "Owner-only same-origin versioned write with attributed history; last active owner is protected. Sensitive staff changes revoke old sessions/grants. Provider activity affects scheduling eligibility; location identity changes cannot bypass existing future room bookings."
+        "description": "Owner-only same-origin versioned write with attributed history; last active owner is protected. Sensitive staff changes revoke old sessions/grants. Provider activity affects scheduling eligibility; location identity changes cannot bypass existing future room bookings. A role change is enforced here and needs no new invitation: the role a person holds in Connect does not decide what they may do in this installation."
+      }
+    },
+    "/api/v1/practice/staff/invitations": {
+      "get": {
+        "operationId": "listPracticeStaffInvitations",
+        "summary": "Sign-in status of staff invited through SunCharts Connect",
+        "tags": [
+          "Practice administration"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "fresh",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Read Connect again now instead of using the copy kept for up to two minutes."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "sign_in (connect or password), available (false when Connect could not be read; statuses then come from what this installation knows) and items of PracticeStaffInvitation, one per staff member. With password sign-in items is empty.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sign_in": {
+                      "type": "string",
+                      "enum": [
+                        "connect",
+                        "password"
+                      ]
+                    },
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PracticeStaffInvitation"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "500": {
+            "description": "Atomic operation failed"
+          }
+        },
+        "description": "Owner browser session only. Status combines Connect's invitation records for this installation with Connect sign-ins this installation has seen. Each read is audited."
+      }
+    },
+    "/api/v1/practice/staff/{id}/invitation": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "sendPracticeStaffInvitation",
+        "summary": "Send or resend a staff member's sign-in invitation",
+        "tags": [
+          "Practice administration"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The outcome as a PracticeStaffInvitation. A Connect outage or refusal is an outcome (status not_sent or access_off), not an error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PracticeStaffInvitation"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant"
+          },
+          "409": {
+            "description": "Staff sign in with passwords here, or this account's access is turned off"
+          },
+          "500": {
+            "description": "Atomic operation failed"
+          }
+        },
+        "description": "Owner-only same-origin write with no request body. Asks Connect, as this installation, to email the invitation again with a new request identifier; the attempt and its outcome are added to the staff member's history and audit trail."
       }
     },
     "/api/v1/practice/providers": {
@@ -47353,7 +47472,8 @@
             "type": "string",
             "writeOnly": true,
             "minLength": 14,
-            "maxLength": 1024
+            "maxLength": 1024,
+            "description": "Required when staff sign in with a password. Refused when SunCharts Connect handles sign-in."
           },
           "display_name": {
             "type": "string",
@@ -47379,7 +47499,6 @@
         },
         "required": [
           "email",
-          "password",
           "display_name",
           "role",
           "reason"
@@ -47389,6 +47508,12 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "maxLength": 254,
+            "description": "Optional new sign-in email. Ends that person's sessions. With Connect sign-in a new invitation is sent to the new address and the reply adds invitation; an owner cannot change their own email there."
+          },
           "display_name": {
             "type": "string",
             "minLength": 1,
@@ -47412,7 +47537,8 @@
             "type": "string",
             "writeOnly": true,
             "minLength": 14,
-            "maxLength": 1024
+            "maxLength": 1024,
+            "description": "With Connect sign-in only a practice owner may be given one (emergency sign-in); refused for other roles."
           },
           "reason": {
             "type": "string",
@@ -57670,6 +57796,67 @@
             "description": "The reader is taking a payment right now."
           }
         }
+      },
+      "PracticeStaffInvitation": {
+        "type": "object",
+        "description": "Sign-in status of one staff member on an installation whose sign-in is handled by SunCharts Connect. No invitation link or token is ever returned.",
+        "properties": {
+          "staff_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "can_sign_in",
+              "waiting",
+              "expired",
+              "cancelled",
+              "not_sent",
+              "not_invited",
+              "access_off",
+              "unknown",
+              "disabled"
+            ],
+            "description": "can_sign_in: has accepted or has signed in. waiting: invited, not yet accepted. expired/cancelled: the invitation can no longer be used. not_sent: the last attempt did not go out (see reason). not_invited: no invitation on record. access_off: their Connect membership is inactive. unknown: Connect could not be read. disabled: access is turned off here."
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "unreachable",
+              "email_refused",
+              "plan",
+              "busy",
+              "not_allowed",
+              "refused",
+              "email_not_delivered",
+              "delivery_unknown",
+              "partner_delivery"
+            ]
+          },
+          "sent_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "version": {
+            "type": "integer",
+            "description": "Current staff record version after an invitation attempt was recorded in its history."
+          }
+        },
+        "required": [
+          "staff_id",
+          "status"
+        ]
       }
     }
   }
