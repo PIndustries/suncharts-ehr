@@ -71,6 +71,7 @@ pub mod practice_admin;
 pub mod practice_billing;
 pub mod prescribing;
 pub mod previsit;
+mod previsit_standard;
 pub mod provider_settings;
 pub mod reader_payments;
 pub mod recurrence;

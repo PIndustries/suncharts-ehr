@@ -83,6 +83,7 @@ pub fn router() -> Router<State> {
             get(public_profile).post(public_book),
         )
         .route("/api/public/v1/intake/read", post(public_packet))
+        .route("/api/public/v1/intake/save", post(public_save))
         .route("/api/public/v1/intake/submit", post(public_submit))
         .route(
             "/api/v1/previsit/settings",
@@ -95,9 +96,14 @@ pub fn router() -> Router<State> {
             get(patient_packets),
         )
         .route(
+            "/api/v1/patients/{patient}/intake-forms",
+            post(send_patient_form),
+        )
+        .route(
             "/api/v1/appointments/{id}/intake-packet",
             post(issue_packet),
         )
+        .route("/api/v1/previsit/packets/{id}/cancel", post(cancel_packet))
         .route("/api/v1/previsit/packets/{id}/review", post(review_packet))
         .route("/api/v1/previsit/packets/{id}", get(packet_detail))
         .route(
@@ -167,7 +173,13 @@ async fn settings(actor: Actor, ExtractState(state): ExtractState<State>) -> Res
         .bind(actor.tenant_id).fetch_optional(db(&state)?).await?;
     let template:Option<Value>=sqlx::query_scalar("SELECT (to_jsonb(t)-'tenant_id'-'updated_by') FROM previsit_intake_templates t WHERE tenant_id=$1 AND active")
         .bind(actor.tenant_id).fetch_optional(db(&state)?).await?;
-    Ok(Json(json!({"profile":profile,"template":template})))
+    let mode = match &template {
+        Some(saved) if !crate::previsit_standard::uses_standard(&saved["schema"]) => "own",
+        _ => "standard",
+    };
+    Ok(Json(
+        json!({"profile":profile,"template":template,"intake_mode":mode,"standard":crate::previsit_standard::preview()}),
+    ))
 }
 async fn save_settings(
     actor: Actor,
@@ -248,6 +260,75 @@ struct TemplateInput {
     active: bool,
     reason: String,
 }
+const AUTOCOMPLETE: &[&str] = &[
+    "name",
+    "given-name",
+    "additional-name",
+    "family-name",
+    "honorific-suffix",
+    "bday",
+    "tel",
+    "email",
+    "address-line1",
+    "address-line2",
+    "address-level2",
+    "address-level1",
+    "postal-code",
+    "off",
+];
+const INPUT_MODES: &[&str] = &["text", "tel", "email", "numeric", "decimal"];
+const FORMATS: &[&str] = &["phone", "email", "zip", "past_date"];
+
+fn optional_text(value: Option<&Value>, max: usize) -> Result<()> {
+    match value {
+        None | Some(Value::Null) => Ok(()),
+        Some(value) => clean(value.as_str().unwrap_or(""), max).map(|_| ()),
+    }
+}
+fn optional_choice(value: Option<&Value>, allowed: &[&str]) -> Result<()> {
+    match value {
+        None | Some(Value::Null) => Ok(()),
+        Some(value) if value.as_str().is_some_and(|v| allowed.contains(&v)) => Ok(()),
+        Some(_) => Err(Error::Invalid("unsupported intake field setting")),
+    }
+}
+/// A "show only when" rule may point only at a question asked earlier, so
+/// rules can never form a loop.
+fn validate_condition(rule: Option<&Value>, earlier: &HashSet<String>) -> Result<()> {
+    let rule = match rule {
+        None | Some(Value::Null) => return Ok(()),
+        Some(rule) => rule,
+    };
+    let invalid = Error::Invalid(
+        "a show-only-when rule must name an earlier question and the answer that shows it",
+    );
+    let Some(object) = rule.as_object() else {
+        return Err(invalid);
+    };
+    if !object
+        .get("key")
+        .and_then(Value::as_str)
+        .is_some_and(|key| earlier.contains(key))
+    {
+        return Err(invalid);
+    }
+    let text = |value: &Value| {
+        value
+            .as_str()
+            .is_some_and(|v| !v.is_empty() && v.chars().count() <= 160)
+    };
+    let valid = match (object.get("equals"), object.get("any_of")) {
+        (Some(expected), None) => expected.is_boolean() || text(expected),
+        (None, Some(list)) => list
+            .as_array()
+            .is_some_and(|list| !list.is_empty() && list.len() <= 20 && list.iter().all(text)),
+        _ => false,
+    };
+    if !valid || object.len() != 2 {
+        return Err(invalid);
+    }
+    Ok(())
+}
 fn validate_schema(schema: &Value) -> Result<()> {
     let sections = schema
         .get("sections")
@@ -256,13 +337,22 @@ fn validate_schema(schema: &Value) -> Result<()> {
     if sections.is_empty() || sections.len() > 20 {
         return Err(Error::Invalid("intake template must contain 1-20 sections"));
     }
-    let mut keys = HashSet::new();
+    let mut keys: HashSet<String> = HashSet::new();
     let mut fields = 0;
     for section in sections {
         clean(
             section.get("label").and_then(Value::as_str).unwrap_or(""),
             120,
         )?;
+        optional_text(section.get("intro"), 500)?;
+        optional_text(section.get("skip_label"), 80)?;
+        if section
+            .get("skippable")
+            .is_some_and(|value| !value.is_boolean())
+        {
+            return Err(Error::Invalid("unsupported intake section setting"));
+        }
+        validate_condition(section.get("show_if"), &keys)?;
         let list = section
             .get("fields")
             .and_then(Value::as_array)
@@ -274,7 +364,7 @@ fn validate_schema(schema: &Value) -> Result<()> {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
                 || ["attested", "attested_name", "submit"].contains(&key.as_str())
-                || !keys.insert(key)
+                || keys.contains(&key)
             {
                 return Err(Error::Invalid(
                     "intake field keys must be unique identifiers",
@@ -300,11 +390,37 @@ fn validate_schema(schema: &Value) -> Result<()> {
             {
                 return Err(Error::Invalid("select fields require bounded options"));
             }
-            if let Some(options) = field.get("options").and_then(Value::as_array) {
+            let options = field.get("options").and_then(Value::as_array);
+            if let Some(options) = options {
                 for option in options {
                     clean(option.as_str().unwrap_or(""), 160)?;
                 }
             }
+            if let Some(labels) = field.get("option_labels").filter(|v| !v.is_null()) {
+                let labels = labels
+                    .as_array()
+                    .filter(|labels| options.is_some_and(|options| options.len() == labels.len()));
+                for label in labels.ok_or(Error::Invalid(
+                    "choice labels must match the choices one for one",
+                ))? {
+                    clean(label.as_str().unwrap_or(""), 160)?;
+                }
+            }
+            optional_text(field.get("help"), 300)?;
+            optional_choice(field.get("autocomplete"), AUTOCOMPLETE)?;
+            optional_choice(field.get("inputmode"), INPUT_MODES)?;
+            optional_choice(field.get("format"), FORMATS)?;
+            if field
+                .get("max_length")
+                .filter(|v| !v.is_null())
+                .is_some_and(|v| !v.as_u64().is_some_and(|n| (1..=1000).contains(&n)))
+            {
+                return Err(Error::Invalid("unsupported intake field setting"));
+            }
+            // The rule is checked before the field's own key is known, so a
+            // question can depend only on one asked before it.
+            validate_condition(field.get("show_if"), &keys)?;
+            keys.insert(key);
         }
     }
     if fields == 0 || fields > 100 {
@@ -319,6 +435,21 @@ fn validate_schema(schema: &Value) -> Result<()> {
     )?;
     Ok(())
 }
+/// A saved practice form either stands alone or adds the practice's own
+/// sections after the standard steps. Both are checked as the patient would
+/// receive them.
+fn validate_template(schema: &Value) -> Result<()> {
+    match schema.get("base") {
+        None | Some(Value::Null) => validate_schema(schema),
+        Some(base) if base == "standard" => {
+            if !schema.get("sections").is_some_and(Value::is_array) {
+                return Err(Error::Invalid("intake template requires sections"));
+            }
+            validate_schema(&crate::previsit_standard::resolve(schema))
+        }
+        Some(_) => Err(Error::Invalid("unsupported intake form type")),
+    }
+}
 async fn save_template(
     actor: Actor,
     ExtractState(state): ExtractState<State>,
@@ -326,7 +457,7 @@ async fn save_template(
     Json(mut input): Json<TemplateInput>,
 ) -> Result<Response> {
     owner(&actor)?;
-    validate_schema(&input.schema)?;
+    validate_template(&input.schema)?;
     input.name = clean(&input.name, 200)?;
     input.reason = clean(&input.reason, 1000)?;
     let expected = version(&headers)?;
@@ -535,6 +666,93 @@ async fn public_book(
     ))
 }
 
+/// How long a new intake link works when it is not tied to a later visit.
+const LINK_DAYS: i64 = 30;
+
+/// The complete default form for this practice as a patient would receive it.
+/// A practice that has saved nothing gets the standard form; when
+/// `create_standard` is set that choice is recorded as the practice's form so
+/// every issued form still points at a saved, versioned form.
+async fn default_form(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    issuer: Uuid,
+    create_standard: bool,
+) -> Result<Option<(Uuid, i64, Value)>> {
+    const ACTIVE: &str = "SELECT id,version,schema FROM previsit_intake_templates WHERE tenant_id=$1 AND active FOR SHARE";
+    let resolved = |(id, version, schema): (Uuid, i64, Value)| {
+        (id, version, crate::previsit_standard::resolve(&schema))
+    };
+    let saved: Option<(Uuid, i64, Value)> = sqlx::query_as(ACTIVE)
+        .bind(tenant)
+        .fetch_optional(&mut **tx)
+        .await?;
+    if saved.is_some() || !create_standard {
+        return Ok(saved.map(resolved));
+    }
+    let schema = crate::previsit_standard::unsaved_template();
+    let id = Uuid::new_v4();
+    // The usual name can already belong to a form the practice switched off.
+    let fallback = format!(
+        "{} {}",
+        crate::previsit_standard::TEMPLATE_NAME,
+        &id.simple().to_string()[..8]
+    );
+    for name in [crate::previsit_standard::TEMPLATE_NAME, fallback.as_str()] {
+        let created = sqlx::query("INSERT INTO previsit_intake_templates(tenant_id,id,name,version,active,schema,updated_by) VALUES($1,$2,$3,1,true,$4,$5) ON CONFLICT DO NOTHING")
+            .bind(tenant).bind(id).bind(name).bind(&schema).bind(issuer).execute(&mut **tx).await?.rows_affected();
+        if created == 1 {
+            sqlx::query("INSERT INTO previsit_intake_template_revisions(tenant_id,template_id,version,name,schema,active,actor_id,reason) VALUES($1,$2,1,$3,$4,true,$5,'The practice had not saved an intake form, so the standard form is used')")
+                .bind(tenant).bind(id).bind(name).bind(&schema).bind(issuer).execute(&mut **tx).await?;
+        }
+        // Another request may have saved the practice's form in the meantime.
+        let saved: Option<(Uuid, i64, Value)> = sqlx::query_as(ACTIVE)
+            .bind(tenant)
+            .fetch_optional(&mut **tx)
+            .await?;
+        if saved.is_some() {
+            return Ok(saved.map(resolved));
+        }
+    }
+    Err(Error::Conflict(
+        "the intake form could not be prepared; try again",
+    ))
+}
+
+async fn issue_default(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    appointment: Option<Uuid>,
+    patient: Uuid,
+    issuer: Uuid,
+    visit: Option<DateTime<Utc>>,
+    create_standard: bool,
+) -> Result<Option<(Uuid, String, DateTime<Utc>)>> {
+    let Some((template_id, template_version, schema)) =
+        default_form(tx, tenant, issuer, create_standard).await?
+    else {
+        return Ok(None);
+    };
+    let packet = Uuid::new_v4();
+    let plain = token();
+    let token_hash = hash(&plain);
+    // A link for a visit further out than the usual window stays usable
+    // through the day of that visit.
+    let mut expires = Utc::now() + Duration::days(LINK_DAYS);
+    if let Some(visit) = visit {
+        expires = expires.max(visit + Duration::days(1));
+    }
+    let due = visit.unwrap_or(expires);
+    sqlx::query("INSERT INTO previsit_intake_packets(tenant_id,id,appointment_id,patient_id,template_id,template_version,template_snapshot,access_token_hash,due_at,issued_by,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
+        .bind(tenant).bind(packet).bind(appointment).bind(patient).bind(template_id).bind(template_version).bind(schema).bind(token_hash).bind(due).bind(issuer).bind(expires).execute(&mut **tx).await?;
+    sqlx::query("INSERT INTO previsit_events(tenant_id,packet_id,appointment_id,patient_id,actor_id,actor_kind,action) VALUES($1,$2,$3,$4,$5,$6,'intake_packet_issued')")
+        .bind(tenant).bind(packet).bind(appointment).bind(patient).bind(issuer).bind(if issuer==patient{"patient_guest"}else{"staff"}).execute(&mut **tx).await?;
+    Ok(Some((packet, plain, expires)))
+}
+
+/// Issues the practice's saved default form when an appointment is booked.
+/// Booking never starts sending forms on its own for a practice that has not
+/// saved one; staff send the standard form from the chart or the worklist.
 pub(crate) async fn issue_for_appointment(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
@@ -543,18 +761,17 @@ pub(crate) async fn issue_for_appointment(
     issuer: Uuid,
     due: DateTime<Utc>,
 ) -> Result<Option<(Uuid, String)>> {
-    let template:Option<(Uuid,i64,Value)>=sqlx::query_as("SELECT id,version,schema FROM previsit_intake_templates WHERE tenant_id=$1 AND active FOR SHARE").bind(tenant).fetch_optional(&mut **tx).await?;
-    let Some((template_id, template_version, schema)) = template else {
-        return Ok(None);
-    };
-    let packet = Uuid::new_v4();
-    let plain = token();
-    let token_hash = hash(&plain);
-    sqlx::query("INSERT INTO previsit_intake_packets(tenant_id,id,appointment_id,patient_id,template_id,template_version,template_snapshot,access_token_hash,due_at,issued_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
-        .bind(tenant).bind(packet).bind(appointment).bind(patient).bind(template_id).bind(template_version).bind(schema).bind(token_hash).bind(due).bind(issuer).execute(&mut **tx).await?;
-    sqlx::query("INSERT INTO previsit_events(tenant_id,packet_id,appointment_id,patient_id,actor_id,actor_kind,action) VALUES($1,$2,$3,$4,$5,$6,'intake_packet_issued')")
-        .bind(tenant).bind(packet).bind(appointment).bind(patient).bind(issuer).bind(if issuer==patient{"patient_guest"}else{"staff"}).execute(&mut **tx).await?;
-    Ok(Some((packet, plain)))
+    Ok(issue_default(
+        tx,
+        tenant,
+        Some(appointment),
+        patient,
+        issuer,
+        Some(due),
+        false,
+    )
+    .await?
+    .map(|(packet, plain, _)| (packet, plain)))
 }
 
 #[derive(sqlx::FromRow)]
@@ -769,6 +986,160 @@ async fn issue_workflow_packet(
     Ok((if plain.is_some(){StatusCode::CREATED}else{StatusCode::OK},[(header::CACHE_CONTROL,"no-store")],Json(json!({"packet_id":packet,"intake_url":plain.as_ref().map(|plain|format!("/intake#token={plain}")),"secret_shown_once":plain.is_some(),"workflow_instance_id":instance,"workflow_step_key":step,"workflow_definition_version":binding}))).into_response())
 }
 
+const LINK_CLOSED: &str =
+    "This link has expired or is no longer active. Please ask the practice for a new one.";
+const TOO_MANY: &str = "Too many tries in a short time. Please wait a few minutes and try again.";
+/// Requests from one client, wrong or closed links from one client, and
+/// requests against one link, each per 15 minutes.
+const CLIENT_LIMIT: i32 = 300;
+const MISS_LIMIT: i32 = 30;
+const LINK_LIMIT: i32 = 120;
+
+/// Patient-facing failures. An unknown, expired, cancelled or finished link
+/// always gets the same answer so a link cannot be probed.
+enum PublicError {
+    Closed,
+    Busy,
+    Other(Error),
+}
+impl From<Error> for PublicError {
+    fn from(error: Error) -> Self {
+        Self::Other(error)
+    }
+}
+impl From<sqlx::Error> for PublicError {
+    fn from(error: sqlx::Error) -> Self {
+        Self::Other(error.into())
+    }
+}
+impl IntoResponse for PublicError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Closed => (
+                StatusCode::NOT_FOUND,
+                [(header::CACHE_CONTROL, "no-store")],
+                Json(json!({"error":"not_found","message":LINK_CLOSED})),
+            )
+                .into_response(),
+            Self::Busy => (
+                StatusCode::TOO_MANY_REQUESTS,
+                [
+                    (header::CACHE_CONTROL, "no-store"),
+                    (header::RETRY_AFTER, "900"),
+                ],
+                Json(json!({"error":"too_many_requests","message":TOO_MANY})),
+            )
+                .into_response(),
+            Self::Other(error) => error.into_response(),
+        }
+    }
+}
+type PublicResult<T> = std::result::Result<T, PublicError>;
+
+/// Counts one more try against `key` in the shared 15-minute window table the
+/// patient portal uses, and returns the tries so far in this window.
+async fn count_try(pool: &PgPool, key: &str) -> Result<i32> {
+    Ok(sqlx::query_scalar("INSERT INTO patient_portal_rate_limits(key) VALUES($1) ON CONFLICT(key) DO UPDATE SET attempts=CASE WHEN patient_portal_rate_limits.window_started<now()-interval '15 minutes' THEN 1 ELSE patient_portal_rate_limits.attempts+1 END,window_started=CASE WHEN patient_portal_rate_limits.window_started<now()-interval '15 minutes' THEN now() ELSE patient_portal_rate_limits.window_started END RETURNING attempts").bind(key).fetch_one(pool).await?)
+}
+fn client_key(headers: &HeaderMap) -> String {
+    let address = headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("direct");
+    hash(address)[..32].to_owned()
+}
+/// Refuses a client that is sending too much or has tried too many links that
+/// do not work. Returns the client's key for later counting.
+async fn admit_client(pool: &PgPool, headers: &HeaderMap) -> PublicResult<String> {
+    let client = client_key(headers);
+    sqlx::query("DELETE FROM patient_portal_rate_limits WHERE key LIKE 'intake:%' AND window_started<now()-interval '1 day'")
+        .execute(pool)
+        .await?;
+    let misses: Option<i32> = sqlx::query_scalar("SELECT attempts FROM patient_portal_rate_limits WHERE key=$1 AND window_started>=now()-interval '15 minutes'")
+        .bind(format!("intake:miss:{client}"))
+        .fetch_optional(pool)
+        .await?;
+    if misses.unwrap_or(0) >= MISS_LIMIT
+        || count_try(pool, &format!("intake:client:{client}")).await? > CLIENT_LIMIT
+    {
+        return Err(PublicError::Busy);
+    }
+    Ok(client)
+}
+async fn link_closed(pool: &PgPool, client: &str) -> PublicError {
+    match count_try(pool, &format!("intake:miss:{client}")).await {
+        Ok(_) => PublicError::Closed,
+        Err(error) => PublicError::Other(error),
+    }
+}
+async fn admit_link(pool: &PgPool, packet: Uuid) -> PublicResult<()> {
+    if count_try(pool, &format!("intake:link:{packet}")).await? > LINK_LIMIT {
+        return Err(PublicError::Busy);
+    }
+    Ok(())
+}
+
+/// The name patients know the practice by: the managed clinic name, or the
+/// practice's single location or billing name when self-hosted.
+async fn practice_name(tx: &mut Transaction<'_, Postgres>, tenant: Uuid) -> Result<String> {
+    let brand = crate::branding::InstanceBranding::from_env();
+    if brand.managed {
+        return Ok(brand.display_name);
+    }
+    let mut names: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM practice_facilities WHERE tenant_id=$1 AND active ORDER BY name LIMIT 2",
+    )
+    .bind(tenant)
+    .fetch_all(&mut **tx)
+    .await?;
+    if names.len() != 1 {
+        names = sqlx::query_scalar("SELECT name FROM practice_billing_organizations WHERE tenant_id=$1 AND active ORDER BY name LIMIT 2")
+            .bind(tenant)
+            .fetch_all(&mut **tx)
+            .await?;
+    }
+    Ok(if names.len() == 1 {
+        names.remove(0)
+    } else {
+        "Your practice".to_owned()
+    })
+}
+
+#[derive(sqlx::FromRow)]
+struct LinkedPacket {
+    tenant_id: Uuid,
+    id: Uuid,
+    appointment_id: Option<Uuid>,
+    patient_id: Uuid,
+    status: String,
+    version: i64,
+    template_snapshot: Value,
+    expired: bool,
+}
+impl LinkedPacket {
+    /// The link still works: not expired and not cancelled.
+    fn open(&self) -> bool {
+        !self.expired && self.status != "void"
+    }
+    /// Once the practice has reviewed the answers there is nothing left to show.
+    fn readable(&self) -> bool {
+        self.open() && self.status != "reviewed"
+    }
+}
+async fn linked_packet(
+    tx: &mut Transaction<'_, Postgres>,
+    token: &str,
+    lock: bool,
+) -> Result<Option<LinkedPacket>> {
+    let sql = format!("SELECT tenant_id,id,appointment_id,patient_id,status,version,template_snapshot,(expires_at IS NOT NULL AND expires_at<=now()) AS expired FROM previsit_intake_packets WHERE access_token_hash=$1{}", if lock { " FOR UPDATE" } else { "" });
+    Ok(sqlx::query_as(&sql)
+        .bind(hash(token))
+        .fetch_optional(&mut **tx)
+        .await?)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct IntakeToken {
@@ -776,29 +1147,122 @@ struct IntakeToken {
 }
 async fn public_packet(
     ExtractState(state): ExtractState<State>,
+    headers: HeaderMap,
     Json(input): Json<IntakeToken>,
-) -> Result<Json<Value>> {
+) -> PublicResult<Response> {
+    let pool = db(&state)?;
+    let client = admit_client(pool, &headers).await?;
     let token = clean(&input.token, 100)?;
-    let mut tx = db(&state)?.begin().await?;
-    let row:Option<(Uuid,Uuid,Uuid,Uuid,Value)>=sqlx::query_as("SELECT p.tenant_id,p.id,p.appointment_id,p.patient_id,jsonb_build_object('packet_id',p.id,'status',p.status,'due_at',p.due_at,'template',p.template_snapshot,'patient',jsonb_build_object('given_name',pt.given_name),'appointment',jsonb_build_object('starts_at',a.starts_at,'title',a.title)) FROM previsit_intake_packets p JOIN patients pt ON pt.tenant_id=p.tenant_id AND pt.id=p.patient_id JOIN appointments a ON a.tenant_id=p.tenant_id AND a.id=p.appointment_id WHERE p.access_token_hash=$1 AND p.status NOT IN('void','reviewed')")
-        .bind(hash(&token)).fetch_optional(&mut *tx).await?;
-    let (tenant, packet, appointment, patient, payload) = row.ok_or(Error::NotFound)?;
-    lock_packet_workflow(&mut tx, tenant, packet).await?;
-    sqlx::query("INSERT INTO previsit_events(tenant_id,packet_id,appointment_id,patient_id,actor_id,actor_kind,action) VALUES($1,$2,$3,$4,$4,'patient_guest','intake_opened')").bind(tenant).bind(packet).bind(appointment).bind(patient).execute(&mut *tx).await?;
+    let mut tx = pool.begin().await?;
+    let Some(packet) = linked_packet(&mut tx, &token, false)
+        .await?
+        .filter(LinkedPacket::readable)
+    else {
+        return Err(link_closed(pool, &client).await);
+    };
+    admit_link(pool, packet.id).await?;
+    lock_packet_workflow(&mut tx, packet.tenant_id, packet.id).await?;
+    let practice = practice_name(&mut tx, packet.tenant_id).await?;
+    let payload: Value = sqlx::query_scalar("SELECT jsonb_build_object('packet_id',p.id,'status',p.status,'due_at',p.due_at,'expires_at',p.expires_at,'template',p.template_snapshot,'draft',p.draft,'draft_saved_at',p.draft_saved_at,'practice_name',$3::text,'patient',jsonb_build_object('given_name',pt.given_name),'appointment',CASE WHEN a.id IS NULL THEN NULL ELSE jsonb_build_object('starts_at',a.starts_at,'title',a.title) END) FROM previsit_intake_packets p JOIN patients pt ON pt.tenant_id=p.tenant_id AND pt.id=p.patient_id LEFT JOIN appointments a ON a.tenant_id=p.tenant_id AND a.id=p.appointment_id WHERE p.tenant_id=$1 AND p.id=$2")
+        .bind(packet.tenant_id).bind(packet.id).bind(practice).fetch_one(&mut *tx).await?;
+    sqlx::query("INSERT INTO previsit_events(tenant_id,packet_id,appointment_id,patient_id,actor_id,actor_kind,action) VALUES($1,$2,$3,$4,$4,'patient_guest','intake_opened')").bind(packet.tenant_id).bind(packet.id).bind(packet.appointment_id).bind(packet.patient_id).execute(&mut *tx).await?;
     tx.commit().await?;
-    Ok(Json(payload))
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(payload)).into_response())
 }
-fn validate_response(schema: &Value, response: &Value) -> Result<()> {
+
+fn empty_answer(value: Option<&Value>) -> bool {
+    value.is_none_or(|value| {
+        value.is_null()
+            || value.as_str().is_some_and(|text| text.trim().is_empty())
+            || value.as_bool() == Some(false)
+    })
+}
+/// Whether a "show only when" rule is satisfied by the answers so far. A rule
+/// that points at a question the patient was not shown is never satisfied.
+fn condition_met(
+    rule: Option<&Value>,
+    answers: &serde_json::Map<String, Value>,
+    shown: &HashSet<&str>,
+) -> bool {
+    let Some(rule) = rule.filter(|rule| !rule.is_null()) else {
+        return true;
+    };
+    let Some(key) = rule.get("key").and_then(Value::as_str) else {
+        return true;
+    };
+    if !shown.contains(key) {
+        return false;
+    }
+    let answer = answers.get(key);
+    if let Some(expected) = rule.get("equals") {
+        return answer == Some(expected);
+    }
+    rule.get("any_of")
+        .and_then(Value::as_array)
+        .is_some_and(|list| answer.is_some_and(|answer| list.contains(answer)))
+}
+fn format_ok(format: &str, text: &str) -> bool {
+    match format {
+        "phone" => {
+            text.chars().count() <= 40
+                && text.chars().filter(char::is_ascii_digit).count() >= 7
+                && text
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || "+()- .xX#".contains(c))
+        }
+        "email" => {
+            let mut parts = text.split('@');
+            let local = parts.next().unwrap_or("");
+            let domain = parts.next().unwrap_or("");
+            text.chars().count() <= 254
+                && !local.is_empty()
+                && parts.next().is_none()
+                && !text.chars().any(char::is_whitespace)
+                && domain.contains('.')
+                && !domain.starts_with('.')
+                && !domain.ends_with('.')
+        }
+        "zip" => {
+            let bytes = text.as_bytes();
+            [5, 10].contains(&bytes.len())
+                && bytes.iter().enumerate().all(|(index, byte)| {
+                    if index == 5 {
+                        *byte == b'-'
+                    } else {
+                        byte.is_ascii_digit()
+                    }
+                })
+        }
+        "past_date" => NaiveDate::parse_from_str(text, "%Y-%m-%d").is_ok_and(|date| {
+            date <= Utc::now().date_naive() + Duration::days(1)
+                && date >= NaiveDate::from_ymd_opt(1900, 1, 1).expect("valid lower bound")
+        }),
+        _ => true,
+    }
+}
+/// Checks answers against the issued form and returns what is kept.
+///
+/// Every answer must belong to the form and match its question's type and
+/// size. When `complete`, a question is required only if it and its section
+/// were shown to the patient, a skippable section left blank asks for nothing,
+/// and answers to questions the patient was not shown are dropped. A draft
+/// (`complete` false) is kept as sent so the patient can pick it up later.
+fn validate_response(schema: &Value, response: &Value, complete: bool) -> Result<Value> {
     let object = response
         .as_object()
         .ok_or(Error::Invalid("intake answers must be an object"))?;
     let mut allowed = HashSet::new();
-    let mut required = HashSet::new();
+    let mut shown: HashSet<&str> = HashSet::new();
+    let mut kept = serde_json::Map::new();
     for section in schema
         .get("sections")
         .and_then(Value::as_array)
         .ok_or(Error::Invalid("invalid intake template"))?
     {
+        let section_shown = condition_met(section.get("show_if"), object, &shown);
+        let skippable = section.get("skippable").and_then(Value::as_bool) == Some(true);
+        let mut missing = false;
+        let mut answered = false;
         for field in section
             .get("fields")
             .and_then(Value::as_array)
@@ -809,10 +1273,12 @@ fn validate_response(schema: &Value, response: &Value) -> Result<()> {
                 .and_then(Value::as_str)
                 .ok_or(Error::Invalid("invalid intake template"))?;
             allowed.insert(key);
-            if field.get("required").and_then(Value::as_bool) == Some(true) {
-                required.insert(key);
+            let visible = section_shown && condition_met(field.get("show_if"), object, &shown);
+            if visible {
+                shown.insert(key);
             }
-            if let Some(value) = object.get(key).filter(|value| !value.is_null()) {
+            let value = object.get(key);
+            if let Some(value) = value.filter(|value| !value.is_null()) {
                 let kind = field["type"]
                     .as_str()
                     .ok_or(Error::Invalid("invalid intake field type"))?;
@@ -824,14 +1290,18 @@ fn validate_response(schema: &Value, response: &Value) -> Result<()> {
                     let text = value.as_str().ok_or(Error::Invalid(
                         "intake answers must match their field types",
                     ))?;
-                    let max = if kind == "textarea" { 10_000 } else { 1000 };
+                    let limit = if kind == "textarea" { 10_000 } else { 1000 };
+                    let max = field
+                        .get("max_length")
+                        .and_then(Value::as_u64)
+                        .map_or(limit, |own| limit.min(own as usize));
                     if text.chars().count() > max
                         || text.chars().any(|c| {
                             c.is_control()
                                 && !(kind == "textarea" && ['\n', '\r', '\t'].contains(&c))
                         })
                     {
-                        return Err(Error::Invalid("intake answer exceeds its field limit"));
+                        return Err(Error::Invalid("One of your answers is too long."));
                     }
                     if !text.is_empty() {
                         let valid = match kind {
@@ -845,34 +1315,105 @@ fn validate_response(schema: &Value, response: &Value) -> Result<()> {
                         };
                         if !valid {
                             return Err(Error::Invalid(
-                                "intake answer is not valid for this field",
+                                "One of your answers is not valid. Please check it and try again.",
+                            ));
+                        }
+                        if complete
+                            && visible
+                            && !text.trim().is_empty()
+                            && field
+                                .get("format")
+                                .and_then(Value::as_str)
+                                .is_some_and(|format| !format_ok(format, text.trim()))
+                        {
+                            return Err(Error::Invalid(
+                                "Please check your phone numbers, email addresses, ZIP code and dates.",
                             ));
                         }
                     }
                 }
             }
+            if visible {
+                if !empty_answer(value) {
+                    answered = true;
+                } else if field.get("required").and_then(Value::as_bool) == Some(true) {
+                    missing = true;
+                }
+                if let Some(value) = value {
+                    kept.insert(key.to_owned(), value.clone());
+                }
+            }
+        }
+        if complete && missing && (answered || !skippable) {
+            return Err(Error::Invalid("Please answer every required question."));
         }
     }
     if object.len() > 100 || object.keys().any(|k| !allowed.contains(k.as_str())) {
-        return Err(Error::Invalid("intake answers do not match this packet"));
-    }
-    for key in required {
-        if object
-            .get(key)
-            .is_none_or(|v| v.is_null() || v.as_str() == Some("") || v.as_bool() == Some(false))
-        {
-            return Err(Error::Invalid("complete every required intake field"));
-        }
+        return Err(Error::Invalid(
+            "These answers do not match this form. Please reload the page and try again.",
+        ));
     }
     if serde_json::to_vec(response)
         .map_err(|_| Error::Invalid("invalid intake answers"))?
         .len()
         > 48 * 1024
     {
-        return Err(Error::Invalid("intake answers exceed the size limit"));
+        return Err(Error::Invalid(
+            "Your answers are too long to send. Please shorten them and try again.",
+        ));
     }
-    Ok(())
+    Ok(if complete {
+        Value::Object(kept)
+    } else {
+        response.clone()
+    })
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DraftSave {
+    token: String,
+    answers: Value,
+}
+/// Keeps what the patient has entered so far so they can finish later, on any
+/// device, with the same link. Nothing reaches the chart or the review list.
+async fn public_save(
+    ExtractState(state): ExtractState<State>,
+    headers: HeaderMap,
+    Json(input): Json<DraftSave>,
+) -> PublicResult<Response> {
+    let pool = db(&state)?;
+    let client = admit_client(pool, &headers).await?;
+    let token = clean(&input.token, 100)?;
+    let mut tx = pool.begin().await?;
+    let Some(found) = linked_packet(&mut tx, &token, false).await? else {
+        return Err(link_closed(pool, &client).await);
+    };
+    admit_link(pool, found.id).await?;
+    lock_packet_workflow(&mut tx, found.tenant_id, found.id).await?;
+    let Some(packet) = linked_packet(&mut tx, &token, true)
+        .await?
+        .filter(LinkedPacket::open)
+    else {
+        return Err(link_closed(pool, &client).await);
+    };
+    if !["sent", "in_progress"].contains(&packet.status.as_str()) {
+        return Err(Error::Conflict("This form was already sent to the practice.").into());
+    }
+    let draft = validate_response(&packet.template_snapshot, &input.answers, false)?;
+    let saved_at: DateTime<Utc> = sqlx::query_scalar("UPDATE previsit_intake_packets SET status='in_progress',draft=$3,draft_saved_at=now(),updated_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING draft_saved_at")
+        .bind(packet.tenant_id).bind(packet.id).bind(&draft).fetch_one(&mut *tx).await?;
+    // Saving happens on every step; the history records it at most once every few minutes.
+    sqlx::query("INSERT INTO previsit_events(tenant_id,packet_id,appointment_id,patient_id,actor_id,actor_kind,action) SELECT $1,$2,$3,$4,$4,'patient_guest','intake_saved' WHERE NOT EXISTS(SELECT 1 FROM previsit_events WHERE tenant_id=$1 AND packet_id=$2 AND action='intake_saved' AND created_at>now()-interval '5 minutes')")
+        .bind(packet.tenant_id).bind(packet.id).bind(packet.appointment_id).bind(packet.patient_id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(json!({"packet_id":packet.id,"status":"in_progress","saved_at":saved_at})),
+    )
+        .into_response())
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Submission {
@@ -883,47 +1424,54 @@ struct Submission {
 }
 async fn public_submit(
     ExtractState(state): ExtractState<State>,
+    headers: HeaderMap,
     Json(mut input): Json<Submission>,
-) -> Result<Json<Value>> {
+) -> PublicResult<Response> {
+    let pool = db(&state)?;
+    let client = admit_client(pool, &headers).await?;
     input.token = clean(&input.token, 100)?;
     input.attested_name = clean(&input.attested_name, 200)?;
     if !input.attested {
-        return Err(Error::Invalid("the patient attestation is required"));
+        return Err(
+            Error::Invalid("Please tick the box to confirm your answers before sending.").into(),
+        );
     }
-    let mut tx = db(&state)?.begin().await?;
-    let identity: Option<(Uuid, Uuid)> = sqlx::query_as(
-        "SELECT tenant_id,id FROM previsit_intake_packets WHERE access_token_hash=$1",
-    )
-    .bind(hash(&input.token))
-    .fetch_optional(&mut *tx)
-    .await?;
-    let (tenant_id, packet_id) = identity.ok_or(Error::NotFound)?;
-    lock_packet_workflow(&mut tx, tenant_id, packet_id).await?;
-    let row:Option<(Uuid,Uuid,Uuid,Uuid,String,i64,Value)>=sqlx::query_as("SELECT tenant_id,id,appointment_id,patient_id,status,version,template_snapshot FROM previsit_intake_packets WHERE access_token_hash=$1 FOR UPDATE").bind(hash(&input.token)).fetch_optional(&mut *tx).await?;
-    let (tenant, packet, appointment, patient, status, current, schema) =
-        row.ok_or(Error::NotFound)?;
-    if !["sent", "in_progress", "submitted"].contains(&status.as_str()) {
-        return Err(Error::Conflict("this intake packet is closed"));
+    let mut tx = pool.begin().await?;
+    let Some(found) = linked_packet(&mut tx, &input.token, false).await? else {
+        return Err(link_closed(pool, &client).await);
+    };
+    admit_link(pool, found.id).await?;
+    lock_packet_workflow(&mut tx, found.tenant_id, found.id).await?;
+    let Some(packet) = linked_packet(&mut tx, &input.token, true)
+        .await?
+        .filter(LinkedPacket::open)
+    else {
+        return Err(link_closed(pool, &client).await);
+    };
+    if packet.status == "reviewed" {
+        return Err(Error::Conflict("The practice has already reviewed this form.").into());
     }
-    validate_response(&schema, &input.response)?;
-    let next = current + 1;
-    sqlx::query("INSERT INTO previsit_intake_responses(tenant_id,packet_id,version,response,attested_name,attested) VALUES($1,$2,$3,$4,$5,true)").bind(tenant).bind(packet).bind(next).bind(&input.response).bind(&input.attested_name).execute(&mut *tx).await?;
-    sqlx::query("UPDATE previsit_intake_packets SET status='submitted',submitted_at=now(),version=$3,updated_at=now() WHERE tenant_id=$1 AND id=$2").bind(tenant).bind(packet).bind(next).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO previsit_events(tenant_id,packet_id,appointment_id,patient_id,actor_id,actor_kind,action,details) VALUES($1,$2,$3,$4,$4,'patient_guest','intake_submitted',$5)").bind(tenant).bind(packet).bind(appointment).bind(patient).bind(json!({"response_version":next,"attested":true})).execute(&mut *tx).await?;
+    let response = validate_response(&packet.template_snapshot, &input.response, true)?;
+    let (tenant, id, next) = (packet.tenant_id, packet.id, packet.version + 1);
+    sqlx::query("INSERT INTO previsit_intake_responses(tenant_id,packet_id,version,response,attested_name,attested) VALUES($1,$2,$3,$4,$5,true)").bind(tenant).bind(id).bind(next).bind(&response).bind(&input.attested_name).execute(&mut *tx).await?;
+    sqlx::query("UPDATE previsit_intake_packets SET status='submitted',submitted_at=now(),draft=NULL,draft_saved_at=NULL,version=$3,updated_at=now() WHERE tenant_id=$1 AND id=$2").bind(tenant).bind(id).bind(next).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO previsit_events(tenant_id,packet_id,appointment_id,patient_id,actor_id,actor_kind,action,details) VALUES($1,$2,$3,$4,$4,'patient_guest','intake_submitted',$5)").bind(tenant).bind(id).bind(packet.appointment_id).bind(packet.patient_id).bind(json!({"response_version":next,"attested":true})).execute(&mut *tx).await?;
     workflow_packet_evidence(
         &mut tx,
         tenant,
-        packet,
-        patient,
+        id,
+        packet.patient_id,
         "submitted",
         next,
         "Patient submitted the version-pinned intake packet",
     )
     .await?;
     tx.commit().await?;
-    Ok(Json(
-        json!({"packet_id":packet,"status":"submitted","version":next,"message":"Your information was received and is awaiting practice review."}),
-    ))
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(json!({"packet_id":id,"status":"submitted","version":next,"message":"Your information was received and is awaiting practice review."})),
+    )
+        .into_response())
 }
 
 async fn issue_packet(
@@ -933,44 +1481,183 @@ async fn issue_packet(
 ) -> Result<impl IntoResponse> {
     staff_write(&actor)?;
     let mut tx = db(&state)?.begin().await?;
-    let patient: Option<Uuid> = sqlx::query_scalar(
-        "SELECT patient_id FROM appointments WHERE tenant_id=$1 AND id=$2 FOR SHARE",
+    let found: Option<(Uuid, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT patient_id,starts_at FROM appointments WHERE tenant_id=$1 AND id=$2 FOR SHARE",
     )
     .bind(actor.tenant_id)
     .bind(appointment)
     .fetch_optional(&mut *tx)
     .await?;
-    let patient = patient.ok_or(Error::NotFound)?;
-    if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM previsit_intake_packets WHERE tenant_id=$1 AND appointment_id=$2 AND workflow_instance_id IS NULL)").bind(actor.tenant_id).bind(appointment).fetch_one(&mut *tx).await?{return Err(Error::Conflict("an intake packet already exists for this appointment"));}
-    let due: DateTime<Utc> =
-        sqlx::query_scalar("SELECT starts_at FROM appointments WHERE tenant_id=$1 AND id=$2")
-            .bind(actor.tenant_id)
-            .bind(appointment)
-            .fetch_one(&mut *tx)
-            .await?;
-    let (packet, plain) = issue_for_appointment(
+    let (patient, due) = found.ok_or(Error::NotFound)?;
+    if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM previsit_intake_packets WHERE tenant_id=$1 AND appointment_id=$2 AND workflow_instance_id IS NULL AND status<>'void')").bind(actor.tenant_id).bind(appointment).fetch_one(&mut *tx).await?{return Err(Error::Conflict("an intake packet already exists for this appointment"));}
+    let (packet, plain, expires) = issue_default(
         &mut tx,
         actor.tenant_id,
-        appointment,
+        Some(appointment),
         patient,
         actor.sub,
-        due,
+        Some(due),
+        true,
     )
     .await?
-    .ok_or(Error::Conflict("configure an active intake template first"))?;
+    .ok_or(Error::Conflict(
+        "the intake form could not be prepared; try again",
+    ))?;
     crate::postgres::audit(&mut tx, &actor, "previsit.packet_issue", packet).await?;
     tx.commit().await?;
     Ok((
         StatusCode::CREATED,
+        [(header::CACHE_CONTROL, "no-store")],
         Json(
-            json!({"packet_id":packet,"intake_url":format!("/intake#token={plain}"),"secret_shown_once":true}),
+            json!({"packet_id":packet,"intake_url":format!("/intake#token={plain}"),"secret_shown_once":true,"expires_at":expires}),
         ),
     ))
 }
+
+async fn void_packet(
+    tx: &mut Transaction<'_, Postgres>,
+    actor: &Actor,
+    packet: Uuid,
+    appointment: Option<Uuid>,
+    patient: Uuid,
+    details: Value,
+) -> Result<i64> {
+    let next: i64 = sqlx::query_scalar("UPDATE previsit_intake_packets SET status='void',draft=NULL,draft_saved_at=NULL,version=version+1,updated_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING version")
+        .bind(actor.tenant_id).bind(packet).fetch_one(&mut **tx).await?;
+    sqlx::query("INSERT INTO previsit_events(tenant_id,packet_id,appointment_id,patient_id,actor_id,actor_kind,action,details) VALUES($1,$2,$3,$4,$5,'staff','intake_packet_cancelled',$6)")
+        .bind(actor.tenant_id).bind(packet).bind(appointment).bind(patient).bind(actor.sub).bind(details).execute(&mut **tx).await?;
+    crate::postgres::audit(tx, actor, "previsit.packet_cancel", packet).await?;
+    Ok(next)
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct SendForm {
+    #[serde(default)]
+    appointment_id: Option<Uuid>,
+}
+/// Sends the practice's intake form to a patient from the chart, with or
+/// without an appointment. A form the patient has not sent in yet is cancelled
+/// and replaced, so only the newest link works.
+async fn send_patient_form(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(patient): Path<Uuid>,
+    Json(input): Json<SendForm>,
+) -> Result<Response> {
+    staff_write(&actor)?;
+    crate::access_policies::require_native(&state, &actor, "clinical", "view").await?;
+    let mut tx = db(&state)?.begin().await?;
+    // Holding the patient row keeps two staff from sending at the same moment.
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM patients WHERE tenant_id=$1 AND id=$2 FOR UPDATE",
+    )
+    .bind(actor.tenant_id)
+    .bind(patient)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(Error::NotFound)?;
+    let visit: Option<DateTime<Utc>> = match input.appointment_id {
+        None => None,
+        Some(appointment) => Some(
+            sqlx::query_scalar("SELECT starts_at FROM appointments WHERE tenant_id=$1 AND id=$2 AND patient_id=$3 FOR SHARE")
+                .bind(actor.tenant_id).bind(appointment).bind(patient).fetch_optional(&mut *tx).await?
+                .ok_or(Error::Invalid("That appointment does not belong to this patient."))?,
+        ),
+    };
+    let open: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as("SELECT id,appointment_id FROM previsit_intake_packets WHERE tenant_id=$1 AND patient_id=$2 AND workflow_instance_id IS NULL AND status IN('sent','in_progress') ORDER BY created_at FOR UPDATE")
+        .bind(actor.tenant_id).bind(patient).fetch_all(&mut *tx).await?;
+    for (old, old_appointment) in &open {
+        void_packet(
+            &mut tx,
+            &actor,
+            *old,
+            *old_appointment,
+            patient,
+            json!({"reason":"Replaced by a new link","replaced":true}),
+        )
+        .await?;
+    }
+    if let Some(appointment) = input.appointment_id {
+        if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM previsit_intake_packets WHERE tenant_id=$1 AND appointment_id=$2 AND workflow_instance_id IS NULL AND status<>'void')").bind(actor.tenant_id).bind(appointment).fetch_one(&mut *tx).await? {
+            return Err(Error::Conflict("This appointment already has a filled-in intake form."));
+        }
+    }
+    let (packet, plain, expires) = issue_default(
+        &mut tx,
+        actor.tenant_id,
+        input.appointment_id,
+        patient,
+        actor.sub,
+        visit,
+        true,
+    )
+    .await?
+    .ok_or(Error::Conflict(
+        "the intake form could not be prepared; try again",
+    ))?;
+    crate::postgres::audit(&mut tx, &actor, "previsit.packet_issue", packet).await?;
+    tx.commit().await?;
+    Ok((
+        StatusCode::CREATED,
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(json!({"packet_id":packet,"patient_id":patient,"intake_url":format!("/intake#token={plain}"),"secret_shown_once":true,"expires_at":expires,"replaced":open.len()})),
+    )
+        .into_response())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CancelForm {
+    reason: String,
+}
+async fn cancel_packet(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(packet): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<CancelForm>,
+) -> Result<Json<Value>> {
+    staff_write(&actor)?;
+    let expected = version(&headers)?;
+    let reason = clean(&input.reason, 500)?;
+    let mut tx = db(&state)?.begin().await?;
+    let row: Option<(Option<Uuid>, Uuid, String, i64, Option<Uuid>)> = sqlx::query_as("SELECT appointment_id,patient_id,status,version,workflow_instance_id FROM previsit_intake_packets WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
+        .bind(actor.tenant_id).bind(packet).fetch_optional(&mut *tx).await?;
+    let (appointment, patient, status, current, workflow) = row.ok_or(Error::NotFound)?;
+    if workflow.is_some() {
+        return Err(Error::Conflict(
+            "This form belongs to a patient journey. Manage it from the journey.",
+        ));
+    }
+    if current != expected {
+        return Err(Error::Conflict("This form changed. Reload and try again."));
+    }
+    if !["sent", "in_progress"].contains(&status.as_str()) {
+        return Err(Error::Conflict(
+            "Only a form the patient has not sent in yet can be cancelled.",
+        ));
+    }
+    let next = void_packet(
+        &mut tx,
+        &actor,
+        packet,
+        appointment,
+        patient,
+        json!({"reason":reason}),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(
+        json!({"packet_id":packet,"status":"void","version":next}),
+    ))
+}
+
 async fn readiness(actor: Actor, ExtractState(state): ExtractState<State>) -> Result<Json<Value>> {
     actor.staff()?;
     let mut tx = db(&state)?.begin().await?;
-    let rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('packet_id',p.id,'packet_version',p.version,'status',coalesce(p.status,'not_issued'),'due_at',coalesce(p.due_at,a.starts_at),'submitted_at',p.submitted_at,'reviewed_at',p.reviewed_at,'appointment_id',a.id,'starts_at',a.starts_at,'patient_id',pt.id,'patient_name',pt.family_name||', '||pt.given_name,'mrn',pt.mrn,'template_snapshot',p.template_snapshot,'workflow_instance_id',p.workflow_instance_id,'workflow_step_key',p.workflow_step_key,'workflow_definition_version',p.workflow_definition_version,'response',(SELECT response FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1),'attested_name',(SELECT attested_name FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1)) FROM appointments a JOIN patients pt ON pt.tenant_id=a.tenant_id AND pt.id=a.patient_id LEFT JOIN previsit_intake_packets p ON p.tenant_id=a.tenant_id AND p.appointment_id=a.id WHERE a.tenant_id=$1 AND a.status='booked' AND a.starts_at>now()-interval '1 day' ORDER BY a.starts_at LIMIT 200").bind(actor.tenant_id).fetch_all(&mut *tx).await?;
+    // The worklist is per appointment; a cancelled form leaves it ready for a new one.
+    let rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('packet_id',p.id,'packet_version',p.version,'status',coalesce(p.status,'not_issued'),'due_at',coalesce(p.due_at,a.starts_at),'submitted_at',p.submitted_at,'reviewed_at',p.reviewed_at,'appointment_id',a.id,'starts_at',a.starts_at,'patient_id',pt.id,'patient_name',pt.family_name||', '||pt.given_name,'mrn',pt.mrn,'template_snapshot',p.template_snapshot,'workflow_instance_id',p.workflow_instance_id,'workflow_step_key',p.workflow_step_key,'workflow_definition_version',p.workflow_definition_version,'response',(SELECT response FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1),'attested_name',(SELECT attested_name FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1)) FROM appointments a JOIN patients pt ON pt.tenant_id=a.tenant_id AND pt.id=a.patient_id LEFT JOIN previsit_intake_packets p ON p.tenant_id=a.tenant_id AND p.appointment_id=a.id AND p.status<>'void' WHERE a.tenant_id=$1 AND a.status='booked' AND a.starts_at>now()-interval '1 day' ORDER BY a.starts_at LIMIT 200").bind(actor.tenant_id).fetch_all(&mut *tx).await?;
     crate::postgres::audit(&mut tx, &actor, "previsit.readiness_read", actor.tenant_id).await?;
     tx.commit().await?;
     Ok(Json(json!({"items":rows})))
@@ -1014,7 +1701,8 @@ async fn patient_packets(
     };
     let counts: (i64,i64,i64) = sqlx::query_as("SELECT count(*),count(*) FILTER(WHERE status='submitted'),count(*) FILTER(WHERE status='reviewed') FROM previsit_intake_packets WHERE tenant_id=$1 AND patient_id=$2")
         .bind(actor.tenant_id).bind(patient).fetch_one(&mut *tx).await?;
-    let mut rows: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('packet_id',p.id,'packet_version',p.version,'status',p.status,'created_at',p.created_at,'submitted_at',p.submitted_at,'reviewed_at',p.reviewed_at,'appointment_id',p.appointment_id,'appointment_title',a.title,'appointment_status',a.status,'starts_at',a.starts_at,'workflow_step_key',p.workflow_step_key,'workflow_definition_version',p.workflow_definition_version,'template_name',coalesce(r.name,'Workflow intake form'),'has_response',EXISTS(SELECT 1 FROM previsit_intake_responses x WHERE x.tenant_id=p.tenant_id AND x.packet_id=p.id)) FROM previsit_intake_packets p JOIN appointments a ON a.tenant_id=p.tenant_id AND a.id=p.appointment_id AND a.patient_id=p.patient_id LEFT JOIN previsit_intake_template_revisions r ON r.tenant_id=p.tenant_id AND r.template_id=p.template_id AND r.version=p.template_version WHERE p.tenant_id=$1 AND p.patient_id=$2 AND ($3::timestamptz IS NULL OR (p.created_at,p.id)<($3,$4)) ORDER BY p.created_at DESC,p.id DESC LIMIT $5")
+    // A form sent from the chart may have no appointment.
+    let mut rows: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('packet_id',p.id,'packet_version',p.version,'status',p.status,'created_at',p.created_at,'submitted_at',p.submitted_at,'reviewed_at',p.reviewed_at,'expires_at',p.expires_at,'expired',(p.expires_at IS NOT NULL AND p.expires_at<=now()),'started_at',p.draft_saved_at,'default_form',p.workflow_instance_id IS NULL,'appointment_id',p.appointment_id,'appointment_title',a.title,'appointment_status',a.status,'starts_at',a.starts_at,'workflow_step_key',p.workflow_step_key,'workflow_definition_version',p.workflow_definition_version,'template_name',coalesce(r.name,'Workflow intake form'),'has_response',EXISTS(SELECT 1 FROM previsit_intake_responses x WHERE x.tenant_id=p.tenant_id AND x.packet_id=p.id)) FROM previsit_intake_packets p LEFT JOIN appointments a ON a.tenant_id=p.tenant_id AND a.id=p.appointment_id AND a.patient_id=p.patient_id LEFT JOIN previsit_intake_template_revisions r ON r.tenant_id=p.tenant_id AND r.template_id=p.template_id AND r.version=p.template_version WHERE p.tenant_id=$1 AND p.patient_id=$2 AND ($3::timestamptz IS NULL OR (p.created_at,p.id)<($3,$4)) ORDER BY p.created_at DESC,p.id DESC LIMIT $5")
         .bind(actor.tenant_id).bind(patient).bind(cursor.map(|c|c.0)).bind(cursor.map(|c|c.1)).bind(limit+1).fetch_all(&mut *tx).await?;
     let has_more = rows.len() > limit as usize;
     rows.truncate(limit as usize);
@@ -1036,13 +1724,15 @@ async fn packet_detail(
     actor.staff()?;
     crate::access_policies::require_native(&state, &actor, "clinical", "view").await?;
     let mut tx = db(&state)?.begin().await?;
-    let value: Value = sqlx::query_scalar("SELECT jsonb_build_object('packet_id',p.id,'packet_version',p.version,'status',p.status,'due_at',p.due_at,'submitted_at',p.submitted_at,'reviewed_at',p.reviewed_at,'appointment_id',p.appointment_id,'starts_at',a.starts_at,'patient_id',p.patient_id,'patient_name',pt.family_name||', '||pt.given_name,'mrn',pt.mrn,'template_snapshot',p.template_snapshot,'workflow_instance_id',p.workflow_instance_id,'workflow_step_key',p.workflow_step_key,'workflow_definition_version',p.workflow_definition_version,'response',(SELECT response FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1),'attested_name',(SELECT attested_name FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1)) FROM previsit_intake_packets p JOIN appointments a ON a.tenant_id=p.tenant_id AND a.id=p.appointment_id JOIN patients pt ON pt.tenant_id=p.tenant_id AND pt.id=p.patient_id WHERE p.tenant_id=$1 AND p.id=$2")
+    let value: Value = sqlx::query_scalar("SELECT jsonb_build_object('packet_id',p.id,'packet_version',p.version,'status',p.status,'due_at',p.due_at,'created_at',p.created_at,'expires_at',p.expires_at,'expired',(p.expires_at IS NOT NULL AND p.expires_at<=now()),'submitted_at',p.submitted_at,'reviewed_at',p.reviewed_at,'appointment_id',p.appointment_id,'starts_at',a.starts_at,'patient_id',p.patient_id,'patient_name',pt.family_name||', '||pt.given_name,'patient_identity',jsonb_build_object('given_name',pt.given_name,'family_name',pt.family_name,'birth_date',pt.birth_date),'mrn',pt.mrn,'template_snapshot',p.template_snapshot,'workflow_instance_id',p.workflow_instance_id,'workflow_step_key',p.workflow_step_key,'workflow_definition_version',p.workflow_definition_version,'response',(SELECT response FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1),'attested_name',(SELECT attested_name FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1)) FROM previsit_intake_packets p LEFT JOIN appointments a ON a.tenant_id=p.tenant_id AND a.id=p.appointment_id JOIN patients pt ON pt.tenant_id=p.tenant_id AND pt.id=p.patient_id WHERE p.tenant_id=$1 AND p.id=$2")
         .bind(actor.tenant_id).bind(packet).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
     crate::postgres::audit(&mut tx, &actor, "previsit.packet_read", packet).await?;
     tx.commit().await?;
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(value)).into_response())
 }
 
+/// Chart contact fields a reviewed answer may be copied into. Name and date of
+/// birth are deliberately absent: identity is corrected only where identity is edited.
 const DEMOGRAPHIC_TARGETS: &[&str] = &[
     "preferred_name",
     "pronouns",
@@ -1050,6 +1740,14 @@ const DEMOGRAPHIC_TARGETS: &[&str] = &[
     "administrative_gender",
     "phone",
     "email",
+    "address.line1",
+    "address.line2",
+    "address.city",
+    "address.region",
+    "address.postal_code",
+    "emergency_contact.name",
+    "emergency_contact.relationship",
+    "emergency_contact.phone",
 ];
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1087,7 +1785,7 @@ async fn promote_demographics(
     .await?;
     let mut tx = db(&state)?.begin().await?;
     crate::scheduling::tenant_lock(&mut tx, &actor).await?;
-    let row: Option<(Uuid,Uuid,String,i64,Value,Option<Value>)> = sqlx::query_as("SELECT patient_id,appointment_id,status,version,template_snapshot,(SELECT response FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1) FROM previsit_intake_packets p WHERE tenant_id=$1 AND id=$2 FOR SHARE")
+    let row: Option<(Uuid,Option<Uuid>,String,i64,Value,Option<Value>)> = sqlx::query_as("SELECT patient_id,appointment_id,status,version,template_snapshot,(SELECT response FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1) FROM previsit_intake_packets p WHERE tenant_id=$1 AND id=$2 FOR SHARE")
         .bind(actor.tenant_id).bind(packet).fetch_optional(&mut *tx).await?;
     let (patient, appointment, status, packet_version, schema, response) =
         row.ok_or(Error::NotFound)?;
@@ -1117,6 +1815,9 @@ async fn promote_demographics(
             "contact details changed; reload before applying intake answers",
         ));
     }
+    if !content.is_object() {
+        content = json!({});
+    }
     let fields = schema["sections"]
         .as_array()
         .ok_or(Error::Invalid("invalid intake template"))?
@@ -1124,6 +1825,8 @@ async fn promote_demographics(
         .flat_map(|section| section["fields"].as_array().into_iter().flatten())
         .collect::<Vec<_>>();
     let mut targets = HashSet::new();
+    // Only the answers staff selected are copied; every other chart field,
+    // including the rest of an address or emergency contact, is left as it is.
     for key in &input.fields {
         let field = fields
             .iter()
@@ -1143,11 +1846,34 @@ async fn promote_demographics(
         }
         let answer = response[key]
             .as_str()
-            .filter(|answer| !answer.trim().is_empty())
+            .map(str::trim)
+            .filter(|answer| !answer.is_empty())
             .ok_or(Error::Invalid(
                 "select a nonempty text answer for this chart field",
             ))?;
-        content[target] = json!(answer);
+        let answer = if target == "administrative_gender" {
+            json!(answer.to_ascii_lowercase())
+        } else {
+            json!(answer)
+        };
+        match target.split_once('.') {
+            None => content[target] = answer,
+            Some((group, part)) => {
+                if !content[group].is_object() {
+                    content[group] = json!({});
+                }
+                content[group][part] = answer;
+            }
+        }
+    }
+    // The standard form asks for a United States address.
+    if crate::previsit_standard::uses_standard(&schema)
+        && targets.iter().any(|target| target.starts_with("address."))
+        && content["address"]["country"]
+            .as_str()
+            .is_none_or(|country| country.trim().is_empty())
+    {
+        content["address"]["country"] = json!("US");
     }
     let mut normalized: crate::demographics::Content = serde_json::from_value(content)
         .map_err(|_| Error::Invalid("invalid chart contact fields"))?;
@@ -1182,7 +1908,7 @@ async fn review_packet(
     let expected = version(&headers)?;
     let mut tx = db(&state)?.begin().await?;
     lock_packet_workflow(&mut tx, actor.tenant_id, packet).await?;
-    let row:Option<(Uuid,Uuid,String,i64)>=sqlx::query_as("SELECT appointment_id,patient_id,status,version FROM previsit_intake_packets WHERE tenant_id=$1 AND id=$2 FOR UPDATE").bind(actor.tenant_id).bind(packet).fetch_optional(&mut *tx).await?;
+    let row:Option<(Option<Uuid>,Uuid,String,i64)>=sqlx::query_as("SELECT appointment_id,patient_id,status,version FROM previsit_intake_packets WHERE tenant_id=$1 AND id=$2 FOR UPDATE").bind(actor.tenant_id).bind(packet).fetch_optional(&mut *tx).await?;
     let (appointment, patient, status, current) = row.ok_or(Error::NotFound)?;
     if current != expected {
         return Err(Error::Conflict(

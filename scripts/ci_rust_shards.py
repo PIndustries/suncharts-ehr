@@ -91,6 +91,7 @@ MEASURED_SECONDS = {
     "practice_fees": 10,
     "prescribing": 12,
     "previsit_access": 31,
+    "previsit_intake_links": 9,
     "previsit_workflow_binding": 7,
     "recurrence_workflow": 12,
     "referral_delivery": 25,
