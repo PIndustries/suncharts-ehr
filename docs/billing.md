@@ -127,8 +127,9 @@ copay collection is a separate operation with its own receipt and reconciliation
 ## Encounter diagnosis links
 
 When entering charges, select saved encounter diagnoses inline on each procedure.
-Selections copy codes for explicit review; new procedures have no default diagnosis
-association. These copied codes are not provenance links and do not follow later
+A brand-new procedure line starts with the visit's saved diagnoses selected (the first
+12, in the visit's order); staff untick any that do not apply. A line that already has
+codes, or that has been saved, is never filled in automatically. These copied codes are not provenance links and do not follow later
 encounter edits. Existing manual codes remain available.
 
 For versioned provenance, save an order or charge account as a draft linked to a native visit, then choose
