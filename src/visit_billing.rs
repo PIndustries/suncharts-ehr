@@ -248,6 +248,20 @@ FROM owed o WHERE $4::boolean IS NULL OR o.test_activity=$4"#;
 
 /// One row per charge account that is not void. `patients` and `accounts` narrow the set;
 /// `test` keeps only accounts with (or without) test processor activity.
+pub(crate) fn balances_query<'q>(
+    tenant: Uuid,
+    patients: Option<&'q [Uuid]>,
+    accounts: Option<&'q [Uuid]>,
+    test: Option<bool>,
+) -> sqlx::query::QueryScalar<'q, Postgres, Value, sqlx::postgres::PgArguments> {
+    #[cfg(test)]
+    query_log::count(tenant);
+    sqlx::query_scalar(BALANCES)
+        .bind(tenant)
+        .bind(patients)
+        .bind(accounts)
+        .bind(test)
+}
 pub(crate) async fn balances(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
@@ -255,15 +269,22 @@ pub(crate) async fn balances(
     accounts: Option<&[Uuid]>,
     test: Option<bool>,
 ) -> Result<Vec<Value>> {
-    #[cfg(test)]
-    query_log::count(tenant);
-    Ok(sqlx::query_scalar(BALANCES)
-        .bind(tenant)
-        .bind(patients)
-        .bind(accounts)
-        .bind(test)
+    Ok(balances_query(tenant, patients, accounts, test)
         .fetch_all(&mut **tx)
         .await?)
+}
+/// Adds up what each patient owes now from balance rows.
+pub(crate) fn owed_by_patient(rows: &[Value]) -> std::collections::HashMap<Uuid, i64> {
+    let mut out = std::collections::HashMap::new();
+    for row in rows {
+        if let Some(patient) = row["patient_id"]
+            .as_str()
+            .and_then(|v| Uuid::parse_str(v).ok())
+        {
+            *out.entry(patient).or_insert(0) += cents(&row["owes_now_cents"]);
+        }
+    }
+    out
 }
 /// What each patient owes now across their visits, in one query. Insurance-pending money
 /// is never part of it.
@@ -273,16 +294,9 @@ pub(crate) async fn patients_owe(
     patients: Option<&[Uuid]>,
     test: Option<bool>,
 ) -> Result<std::collections::HashMap<Uuid, i64>> {
-    let mut out = std::collections::HashMap::new();
-    for row in balances(tx, tenant, patients, None, test).await? {
-        if let Some(patient) = row["patient_id"]
-            .as_str()
-            .and_then(|v| Uuid::parse_str(v).ok())
-        {
-            *out.entry(patient).or_insert(0) += cents(&row["owes_now_cents"]);
-        }
-    }
-    Ok(out)
+    Ok(owed_by_patient(
+        &balances(tx, tenant, patients, None, test).await?,
+    ))
 }
 /// The state name of a visit's billing, from its balance row. `draft_needs_details` says
 /// whether the open draft claim fails the readiness checks.

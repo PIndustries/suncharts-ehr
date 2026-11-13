@@ -89,7 +89,7 @@ const flagsOf=html=>[...html.slice(0,html.indexOf('patient-banner-actions')).mat
  // ---- Balance --------------------------------------------------------------------------
  f=fixture({now:NOW});f.c.answer.billing={patient_due_cents:4500,open_invoice_count:1,invoice_review_count:0,card_on_file:true};
  html=await f.open();item=itemOf(html,'balance');
- assert.match(item,/<span class="patient-banner-text patient-banner-owes">Owes \$45\.00<\/span>/);assert.match(item,/data-chart-section="billing"/);assert.match(item,/Patient owes \$45\.00 on 1 open invoice/);assert.match(item,/patient-banner-card">Card on file</);
+ assert.match(item,/<span class="patient-banner-text patient-banner-owes">Owes \$45\.00<\/span>/);assert.match(item,/data-chart-section="billing"/);assert.match(item,/Patient owes \$45\.00 across their visits\. Money still with insurance is not counted/);assert.match(item,/patient-banner-card">Card on file</);
  f.c.answer={...f.c.answer,billing:{patient_due_cents:0,open_invoice_count:0,invoice_review_count:2,card_on_file:false}};f.run('patientBanner.data=answer');item=itemOf(f.markup(),'balance');
  assert.match(item,/patient-banner-quiet">No balance</);assert.doesNotMatch(item,/Card on file/);assert.match(item,/2 invoices to re-check/);
  f.c.answer={...f.c.answer,billing:{patient_due_cents:123456,open_invoice_count:3,invoice_review_count:0,card_on_file:false}};f.run('patientBanner.data=answer');assert.match(itemOf(f.markup(),'balance'),/Owes \$1,234\.56/);

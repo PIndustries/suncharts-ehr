@@ -81,7 +81,7 @@ function scheduleMarkerList(a){
   else if(test>0&&paid+test>=due)add('copay','Copay paid (test)','grey','Paid with a test card. No money was received.',10);
   else if(due>paid&&!closed)add('copay',`${scheduleMoney(due-paid)} due`,'amber',paid?`${scheduleMoney(paid)} of the ${scheduleMoney(due)} copay was received.`:`The plan’s copay of ${scheduleMoney(due)} has not been collected.`,2);
  }
- if(Number(m.balance_cents)>0)add('balance',`Owes ${scheduleMoney(Number(m.balance_cents))}`,'amber','The patient has an unpaid balance from earlier invoices.',6);
+ if(Number(m.balance_cents)>0)add('balance',`Owes ${scheduleMoney(Number(m.balance_cents))}`,'amber','The patient owes this from earlier visits. Money still with insurance is not counted.',6);
  if(started&&'note' in m){
   const note={signed:['Note signed','green','The visit note is signed.',20],in_progress:['Note in progress',done?'amber':'grey',done?'The visit is finished but its note is not signed.':'The visit note has been started.',done?5:11]}[m.note]||['Note not started',done?'amber':'grey',done?'The visit is finished but no note was written.':'The visit note has not been started.',done?5:11];
   add('note',...note);
@@ -351,7 +351,7 @@ function schedulePanelFacts(a){
   const copay=markers.get('copay'),paid=Number(m.copay?.paid_cents)>0||Number(m.copay?.test_paid_cents)>0;
   rows.push(schedulePanelRow('Copay',copay?copay.tip:'No copay is recorded for this visit.',copay?.tone,(!closed&&scheduleCanBill()&&copay?.tone!=='green'?schedulePanelButton('collect-copay',a,'Collect copay'):'')+(paid?schedulePanelButton('collect-copay',a,'View receipt'):'')));
  }
- if('balance_cents' in m){const balance=markers.get('balance');rows.push(schedulePanelRow('Balance',balance?`${balance.label}. ${balance.tip}`:'Nothing owed from earlier invoices.',balance?.tone,balance?schedulePanelButton('billing',a,'Open billing'):''));}
+ if('balance_cents' in m){const balance=markers.get('balance');rows.push(schedulePanelRow('Balance',balance?`${balance.label}. ${balance.tip}`:'Nothing owed from earlier visits.',balance?.tone,balance?schedulePanelButton('billing',a,'Open billing'):''));}
  if(markers.has('note')){const note=markers.get('note');rows.push(schedulePanelRow('Visit note',note.tip,note.tone,m.visit_id?schedulePanelButton('visit',a,'Open note'):''));}
  if(markers.has('charges')){const charges=markers.get('charges');rows.push(schedulePanelRow('Charges',charges.tip,charges.tone,m.visit_id&&scheduleAllowed('billing')?schedulePanelButton('charges',a,'Open charges'):''));}
  return rows.join('');
