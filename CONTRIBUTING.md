@@ -32,7 +32,10 @@ Python and API changes run their affected fixtures and structural checks. Shared
 shell files deliberately select every browser fixture. The immutable image
 publication workflow separately requires the complete Rust, PostgreSQL, Python,
 browser and authentication regression. Changed-path checks shorten development
-feedback; they do not weaken or replace the production release gate.
+feedback; they do not weaken or replace the production release gate. That
+regression runs as parallel jobs: every Rust test binary is compiled once and
+`scripts/ci_rust_shards.py` assigns each `tests/*.rs` binary to exactly one
+shard, so a new test file needs no workflow change.
 
 ## Changes
 

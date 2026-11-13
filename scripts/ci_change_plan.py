@@ -141,11 +141,20 @@ def build_plan(changed_files: list[str]) -> dict[str, object]:
         if path.startswith("deploy/") or path == "Dockerfile":
             deploy_contract = True
             python_tests.add("scripts.test_deploy_artifacts")
-        if path == ".github/workflows/publish-image.yml":
+        if path in {
+            ".github/workflows/publish-image.yml",
+            ".github/workflows/publish-dev-preview.yml",
+            "scripts/build_release_manifest.py",
+        }:
             deploy_contract = True
             python_tests.add("scripts.test_deploy_artifacts")
         if path.startswith(".github/workflows/"):
             python_tests.add("scripts.test_ci_change_plan")
+            python_tests.add("scripts.test_ci_rust_shards")
+        if path.startswith("tests/") and path.endswith(".rs"):
+            # Adding, renaming or removing a test binary changes the release
+            # shard plan; catch a broken plan here, not on the release tag.
+            python_tests.add("scripts.test_ci_rust_shards")
         if path.startswith("api/") and path.endswith(".json"):
             openapi_files.add(path)
 
