@@ -588,8 +588,10 @@ function chartOverview(){
  const items=workspace.clinical.items,active=e=>e.content.status==='active'&&!['refuted','entered_in_error'].includes(e.content.verification),problems=items.filter(e=>e.kind==='problem'&&active(e)),meds=items.filter(e=>e.kind==='medication'&&active(e));
  const critical=r=>r.content.observations.some(o=>['critical','critical_high','critical_low'].includes(o.flag));
  const reports=workspace.labs.reports.filter(r=>['preliminary','final','corrected'].includes(r.status)&&!workspace.labs.acknowledgments.some(a=>a.report_id===r.id&&a.version===r.version)).sort((a,b)=>Number(critical(b))-Number(critical(a)));
- const recordedVisit=activeVisit?.vitals?activeVisit:workspace.visits.find(v=>v.vitals),vitals=recordedVisit?.vitals;
- const observations=vitals?[['Blood pressure',`${vitals.systolic_mm_hg}/${vitals.diastolic_mm_hg}`,'mmHg'],['Pulse',vitals.heart_rate_bpm,'bpm'],['Temperature',vitals.temperature_c,'°C'],['Oxygen saturation',vitals.oxygen_saturation_pct,'%'],['Weight',vitals.weight_kg,'kg'],['Height',vitals.height_cm,'cm']]:[];
+ // A measurement that was not taken is left out; the card never prints an empty or "undefined" value.
+ const measured=value=>value!==undefined&&value!==null&&value!==''&&!(typeof value==='number'&&!Number.isFinite(value)),hasVitals=v=>Boolean(v?.vitals)&&Object.values(v.vitals).some(measured);
+ const recordedVisit=hasVitals(activeVisit)?activeVisit:workspace.visits.find(hasVitals),vitals=recordedVisit?.vitals;
+ const observations=vitals?[['Blood pressure',measured(vitals.systolic_mm_hg)&&measured(vitals.diastolic_mm_hg)?`${vitals.systolic_mm_hg}/${vitals.diastolic_mm_hg}`:undefined,'mmHg'],['Pulse',vitals.heart_rate_bpm,'bpm'],['Temperature',vitals.temperature_c,'°C'],['Oxygen saturation',vitals.oxygen_saturation_pct,'%'],['Weight',vitals.weight_kg,'kg'],['Height',vitals.height_cm,'cm']].filter(([,value])=>measured(value)):[];
  const row=(title,detail)=>`<div class="chart-data-row"><strong>${esc(title)}</strong><small>${esc(detail)}</small></div>`;
  const problemRows=problems.slice(0,6).map(e=>row(e.content.title,`${displayStatus(e.content.verification)}${e.content.onset_date?' · Since '+displayDate(e.content.onset_date):''}`)).join('');
  const medRows=meds.slice(0,6).map(e=>row(e.content.title,[e.content.detail?.dose,e.content.detail?.route,e.content.detail?.frequency].filter(Boolean).join(' · ')||'No dose recorded')).join('');

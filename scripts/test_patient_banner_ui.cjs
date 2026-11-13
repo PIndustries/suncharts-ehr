@@ -4,7 +4,7 @@
 // saves, and the stylesheet rules that keep it themed and compact. Synthetic data only.
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const read=file=>fs.readFileSync(file,'utf8');
-const banner=read('web/patient-banner.js'),eligibility=read('web/claimmd-eligibility.js'),app=read('web/app.js'),css=read('web/patient-banner.css'),index=read('web/index.html'),lib=read('src/lib.rs');
+const banner=read('web/patient-banner.js'),format=read('web/display-format.js'),eligibility=read('web/claimmd-eligibility.js'),app=read('web/app.js'),css=read('web/patient-banner.css'),index=read('web/index.html'),lib=read('src/lib.rs');
 const NOW=new Date(2026,10,13,10,0,0),iso=(day,hour=9,minute=0)=>new Date(2026,10,day,hour,minute,0).toISOString();
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const allergy=(title,extra={})=>({kind:'allergy',content:{title,status:'active',verification:'confirmed',detail:{kind:'allergy',reaction:'Hives',severity:'severe'},...extra}});
@@ -25,7 +25,7 @@ function fixture(options={}){
   chartAreaEnabled:()=>true,canSchedule:()=>true,canStartEncounterFlow:()=>true,isRoomingStaff:()=>false,
   supportHelpButton:(subject,attributes='')=>`<button type="button" class="quiet support-help" data-support-help ${attributes}>Get help with this ${subject}</button>`,
   patientLifecycleStates:new Map([['p1',{patient_id:'p1',archived:false,can_manage:true,version:1}]])};
- vm.createContext(c);vm.runInContext(eligibility+'\n'+banner,c);
+ vm.createContext(c);vm.runInContext(format+'\n'+eligibility+'\n'+banner,c);
  Object.assign(c,options);
  const run=code=>vm.runInContext(code,c);
  return {c,host,timers,calls,listeners,run,
@@ -53,7 +53,7 @@ const flagsOf=html=>[...html.slice(0,html.indexOf('patient-banner-actions')).mat
  f=fixture({now:NOW});f.c.workspace.clinical={items:[allergy('Penicillin'),allergy('Latex',{verification:'unconfirmed'}),allergy('Sulfa'),allergy('Peanuts'),allergy('Old',{status:'inactive'}),allergy('Wrong',{verification:'refuted'}),allergy('Mistake',{verification:'entered_in_error'}),{kind:'problem',content:{title:'Asthma',status:'active',verification:'confirmed'}}],reviews:[{kind:'allergy',review_state:'needs_review'}]};
  html=await f.open();let item=itemOf(html,'allergies');
  assert.match(item,/class="patient-banner-item patient-banner-allergies is-recorded"/);assert.match(item,/Allergies: Penicillin, Latex<\/span><span class="patient-banner-count">\+2</);assert.match(item,/data-clinical-focus="allergy"/);
- assert.match(item,/title="Allergies: Penicillin — Hives, severe; Latex — Hives, severe — unconfirmed; Sulfa — Hives, severe; Peanuts — Hives, severe\. Open the allergy list\."/);assert.doesNotMatch(item,/Old|Wrong|Mistake|Asthma/);
+ assert.match(item,/title="Allergies: Penicillin — Hives, severe; Latex — Hives, severe — Unconfirmed; Sulfa — Hives, severe; Peanuts — Hives, severe\. Open the allergy list\."/);assert.doesNotMatch(item,/Old|Wrong|Mistake|Asthma/);
  assert.match(html,/<dt>Allergies<\/dt><dd>Penicillin, Latex, Sulfa, Peanuts<\/dd>/,'the full list is one click away in Details');
  f.c.workspace.clinical={items:[allergy('Penicillin')],reviews:[]};assert.match(itemOf(f.markup(),'allergies'),/Allergies: Penicillin<\/span><\/button>/);
  f.c.workspace.clinical={items:[],reviews:[{kind:'allergy',review_state:'no_known'}]};item=itemOf(f.markup(),'allergies');assert.match(item,/is-none/);assert.match(item,/No known allergies/);
@@ -91,7 +91,7 @@ const flagsOf=html=>[...html.slice(0,html.indexOf('patient-banner-actions')).mat
  html=await f.open();item=itemOf(html,'balance');
  assert.match(item,/<span class="patient-banner-text patient-banner-owes">Owes \$45\.00<\/span>/);assert.match(item,/data-chart-section="billing"/);assert.match(item,/Patient owes \$45\.00 on 1 open invoice/);assert.match(item,/patient-banner-card">Card on file</);
  f.c.answer={...f.c.answer,billing:{patient_due_cents:0,open_invoice_count:0,invoice_review_count:2,card_on_file:false}};f.run('patientBanner.data=answer');item=itemOf(f.markup(),'balance');
- assert.match(item,/patient-banner-quiet">No balance</);assert.doesNotMatch(item,/Card on file/);assert.match(item,/2 invoices need a re-check/);
+ assert.match(item,/patient-banner-quiet">No balance</);assert.doesNotMatch(item,/Card on file/);assert.match(item,/2 invoices to re-check/);
  f.c.answer={...f.c.answer,billing:{patient_due_cents:123456,open_invoice_count:3,invoice_review_count:0,card_on_file:false}};f.run('patientBanner.data=answer');assert.match(itemOf(f.markup(),'balance'),/Owes \$1,234\.56/);
  const noBilling={...f.c.answer};delete noBilling.billing;f.c.answer=noBilling;f.run('patientBanner.data=answer');assert.equal(itemOf(f.markup(),'balance'),'','the server left the balance out for this role, so nothing is shown');assert.doesNotMatch(f.markup(),/No balance|Owes/);
  f=fixture({now:NOW,workspaceResourceAllowed:resource=>resource!=='billing'});f.c.answer.billing={patient_due_cents:4500,open_invoice_count:1,invoice_review_count:0,card_on_file:true};html=await f.open();assert.doesNotMatch(html,/Owes|No balance|Card on file/,'a role without billing never sees money, whatever arrives');
@@ -101,12 +101,12 @@ const flagsOf=html=>[...html.slice(0,html.indexOf('patient-banner-actions')).mat
  // ---- Next and last visit --------------------------------------------------------------
  f=fixture({now:NOW});f.c.answer.next_appointment={id:'a1',starts_at:iso(20,9,0),ends_at:iso(20,9,30),status:'booked',title:'Office visit'};f.c.answer.last_visit={appointment_id:'a0',starts_at:iso(10,14,0),title:'Follow-up'};
  html=await f.open();item=itemOf(html,'visit-link');
- assert.match(item,/<span class="patient-banner-wide">Last: Nov 10 · <\/span>Next: Nov 20, 9:00 AM<span class="patient-banner-wide"> · Office visit<\/span>/);assert.match(item,/data-chart-section="visits"/);assert.doesNotMatch(html,/data-chart-book/);
+ assert.match(item,/<span class="patient-banner-wide">Last: Nov 10, 2026 · <\/span>Next: Nov 20, 2026, 9:00 AM<span class="patient-banner-wide"> · Office visit<\/span>/);assert.match(item,/data-chart-section="visits"/);assert.doesNotMatch(html,/data-chart-book/);
  const next=value=>{f.c.answer={...f.c.answer,...value};f.run('patientBanner.data=answer');return f.markup();};
  html=next({next_appointment:{id:'a1',starts_at:iso(13,10,59),ends_at:iso(13,11,30),status:'in_progress',title:'Office visit'}});assert.match(itemOf(html,'visit-link'),/patient-banner-today">.*Today 10:59 AM · In progress</);
  html=next({next_appointment:{id:'a1',starts_at:iso(13,15,0),ends_at:iso(13,15,30),status:'checked_in',title:'Office visit'}});assert.match(itemOf(html,'visit-link'),/Today 3:00 PM · Checked in</);
  html=next({next_appointment:{id:'a1',starts_at:iso(13,16,0),ends_at:iso(13,16,30),status:'booked',title:'Wellness check'}});assert.match(itemOf(html,'visit-link'),/Today 4:00 PM · Wellness check</);
- html=next({next_appointment:{id:'a1',starts_at:iso(12,23,30),ends_at:iso(13,0,30),status:'in_progress',title:'Late visit'}});assert.match(itemOf(html,'visit-link'),/Nov 12 11:30 PM · In progress</,'a visit that began yesterday is not called today');
+ html=next({next_appointment:{id:'a1',starts_at:iso(12,23,30),ends_at:iso(13,0,30),status:'in_progress',title:'Late visit'}});assert.match(itemOf(html,'visit-link'),/Nov 12, 2026, 11:30 PM · In progress</,'a visit that began yesterday is not called today');
  html=next({next_appointment:{id:'a1',starts_at:new Date(2027,0,5,9,0).toISOString(),ends_at:new Date(2027,0,5,9,30).toISOString(),status:'booked',title:'Office visit'}});assert.match(itemOf(html,'visit-link'),/Next: Jan 5, 2027, 9:00 AM/,'another year is spelled out');
  html=next({next_appointment:null,last_visit:null});assert.match(itemOf(html,'visit-link'),/patient-banner-quiet">No upcoming appointment</);assert.match(html,/<button type="button" class="text-button patient-banner-book" data-chart-book="p1">Book<\/button>/,'Book opens the existing appointment editor for this patient');assert.doesNotMatch(itemOf(html,'visit-link'),/Last:/);
  f.c.canSchedule=()=>false;assert.doesNotMatch(f.markup(),/data-chart-book/);f.c.canSchedule=()=>true;f.c.workspace.patient.archived=true;assert.doesNotMatch(f.markup(),/data-chart-book/,'an archived chart cannot be booked');
@@ -169,7 +169,7 @@ const flagsOf=html=>[...html.slice(0,html.indexOf('patient-banner-actions')).mat
  // ---- Details --------------------------------------------------------------------------
  f=fixture({now:NOW});f.c.workspace.demographics.content={phone:'202-555-0101',email:'maria@example.test',address:{line1:'100 Example Street',city:'Springfield',region:'IL',postal_code:'62701'}};f.c.workspace.billing.coverages=[coverage('cov-a','primary','payer-a',{plan_name:'Gold PPO'}),coverage('cov-b','secondary','payer-b')];f.c.answer.flags.portal_status='invited';f.c.answer.last_visit={appointment_id:'a0',starts_at:iso(10),title:'Follow-up'};
  html=await f.open();const panel=html.slice(html.indexOf('patient-banner-panel'),html.indexOf('</details>'));
- for(const row of ['<dt>MRN</dt><dd>SYN-1001</dd>','<dt>Phone</dt><dd>202-555-0101</dd>','<dt>Email</dt><dd>maria@example.test</dd>','<dt>Address</dt><dd>100 Example Street, Springfield, IL, 62701</dd>','<dt>Primary insurance</dt><dd>Synthetic Health Plan · Gold PPO · Member SYN-cov-a</dd>','<dt>Secondary insurance</dt><dd>Synthetic Silver HMO · Member SYN-cov-b</dd>','<dt>Last visit</dt><dd>Nov 10 · Follow-up</dd>','<dt>Next appointment</dt><dd>None booked</dd>','<dt>Patient portal</dt><dd>Invited, not signed in yet</dd>'])assert.ok(panel.includes(row),row);
+ for(const row of ['<dt>MRN</dt><dd>SYN-1001</dd>','<dt>Phone</dt><dd>202-555-0101</dd>','<dt>Email</dt><dd>maria@example.test</dd>','<dt>Address</dt><dd>100 Example Street, Springfield, IL, 62701</dd>','<dt>Primary insurance</dt><dd>Synthetic Health Plan · Gold PPO · Member SYN-cov-a</dd>','<dt>Secondary insurance</dt><dd>Synthetic Silver HMO · Member SYN-cov-b</dd>','<dt>Last visit</dt><dd>Nov 10, 2026 · Follow-up</dd>','<dt>Date of birth</dt><dd>Jan 1, 1990 (36)</dd>','<dt>Next appointment</dt><dd>None booked</dd>','<dt>Patient portal</dt><dd>Invited, not signed in yet</dd>'])assert.ok(panel.includes(row),row);
  f.c.workspaceResourceAllowed=resource=>resource!=='clinical';assert.doesNotMatch(f.markup(),/202-555-0101|maria@example\.test|100 Example Street/,'contact details follow the same permission as the chart');
  console.log('PASS Details holds contact, MRN, every coverage, portal status and visits one click away');
 
@@ -182,7 +182,7 @@ const flagsOf=html=>[...html.slice(0,html.indexOf('patient-banner-actions')).mat
  assert.match(app,/if\(method!=='GET'&&typeof patientBannerChanged==='function'\)patientBannerChanged\(\);\n  return data;/,'every successful save reports to the banner');
  f.c.answer={patient_id:'p1',flags:{intake_to_review:1},next_appointment:{id:'a9',starts_at:iso(20),ends_at:iso(20,10),status:'booked',title:'Office visit'},last_visit:null,revision:'r2',billing:{patient_due_cents:0,open_invoice_count:0,invoice_review_count:0,card_on_file:true},eligibility:[]};
  for(let i=0;i<3;i++)f.run('patientBannerChanged()');assert.equal(f.timers.filter(timer=>!timer.cancelled).length,1);assert.equal(f.calls.length,1);await f.fire();
- assert.equal(f.calls.length,2);assert.match(f.host.innerHTML,/Next: Nov 20, 9:00 AM/);assert.match(f.host.innerHTML,/Card on file/);assert.match(f.host.innerHTML,/Intake form to review/);assert.doesNotMatch(f.host.innerHTML,/Updated — refresh/,'this person\'s own save is not reported as someone else\'s change');
+ assert.equal(f.calls.length,2);assert.match(f.host.innerHTML,/Next: Nov 20, 2026, 9:00 AM/);assert.match(f.host.innerHTML,/Card on file/);assert.match(f.host.innerHTML,/Intake form to review/);assert.doesNotMatch(f.host.innerHTML,/Updated — refresh/,'this person\'s own save is not reported as someone else\'s change');
  // Each listed action is a save through api(), and the ones that reload the chart repaint it too.
  for(const [file,pattern] of [['web/billing.js',/await selectPatient\(selected,activeVisit\?\.id\);showChartSection\(returnSection/],['web/clinical.js',/clinical-review\/\$\{k\}`,'POST'/],['web/clinical.js',/await selectPatient\(selected,activeVisit\?\.id\);notice\('Clinical entry saved/],['web/scheduling.js',/await selectPatient\(f\.dataset\.chartPatient/],['web/claimmd-eligibility.js',/api\(`\$\{base\}\/check`,'POST',body\)/],['web/claimmd-eligibility.js',/claimmdEligibilityRepaint\(coverageId\);\n[^\n]*\n if\(typeof patientBannerChanged==='function'\)patientBannerChanged\(\);/],['web/previsit.js',/\/review`,'POST'/],['web/patient-billing-workspace.js',/saved-card-charge`,'POST'/]])assert.match(read(file),pattern,`${file} still saves through the shared request helper`);
  assert.match(app,/applyChartSection\(\); if\(typeof patientBannerChartRendered==='function'\)void patientBannerChartRendered\(\);\n\}/,'every chart redraw repaints the banner');
@@ -224,6 +224,7 @@ const flagsOf=html=>[...html.slice(0,html.indexOf('patient-banner-actions')).mat
  const theme=read('web/theme.css')+read('web/style.css');for(const name of new Set([...css.matchAll(/var\((--[a-z-]+)/g)].map(match=>match[1])))assert.ok(name==='--patient-banner-top'||new RegExp(`${name}:`).test(theme),`${name} is a theme variable`);
  for(const name of ['--success-bg','--warning-bg','--error-bg','--surface','--ink','--muted','--line'])assert.match(read('web/theme.css').slice(read('web/theme.css').indexOf(':root[data-theme=dark]{')),new RegExp(`${name}:`),`${name} has a dark value`);
  assert.doesNotMatch(banner,/style="|#[0-9a-fA-F]{6}\b/,'no inline colours in the markup');
+ assert.doesNotMatch(banner,/Intl\.DateTimeFormat|toLocale(Date|Time)String|replaceAll\('_'/,'dates, times and status words come from display-format.js');for(const helper of ['displayDate','displayTime','displayDateTime','displayAge','displayBirthDate','displayStatus','displayCount'])assert.ok(banner.includes(helper+'('),`${helper} is used`);assert.doesNotMatch(css,/font-size:\s*[\d.]+(px|rem|em|pt)/,'type sizes come from the shared --fs tokens');
  // WCAG AA (4.5:1) for every text/background pair the banner uses, worked out from the palette in both themes.
  const palette=text=>Object.fromEntries([...text.matchAll(/(--[a-z-]+):(#[0-9a-fA-F]{3,8})/g)].map(match=>[match[1],match[2]])),themeCss=read('web/theme.css'),darkAt=themeCss.indexOf(':root[data-theme=dark]{');
  const lightPalette={...palette([...read('web/style.css').matchAll(/:root\{[^}]*\}/g)].map(match=>match[0]).join('')),...palette(themeCss.slice(themeCss.indexOf(':root{'),themeCss.indexOf(':root[data-theme=light]')))},darkPalette={...lightPalette,...palette(themeCss.slice(darkAt,themeCss.indexOf('}',darkAt)))};

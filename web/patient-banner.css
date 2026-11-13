@@ -2,39 +2,40 @@
 /* Patient banner. Loaded after theme.css; every colour is a theme variable so light and
    dark follow the rest of the app. Widths are measured on the chart area, not the window,
    because the sidebar and patient list take a share of the window. */
-.patient-banner{position:sticky;top:var(--patient-banner-top,0px);z-index:14;display:grid;gap:2px;padding:6px 10px 5px;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:6px 6px 0 0;box-shadow:0 1px 0 var(--line)}
+.patient-banner{position:sticky;top:var(--patient-banner-top,0px);z-index:14;display:grid;gap:2px;padding:5px 10px 4px;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:6px 6px 0 0;box-shadow:0 1px 0 var(--line)}
 .patient-banner+.chart-context{margin-top:0;border-top:0;border-top-left-radius:0;border-top-right-radius:0}
 .patient-banner-row{display:flex;align-items:center;gap:4px 6px;min-width:0;min-height:28px}
+.patient-banner-top{min-height:30px}
 .patient-banner-who{display:grid;grid-template-columns:auto minmax(90px,auto) auto;align-items:center;column-gap:9px;flex:0 1 auto}
-.patient-banner-who .avatar{flex:none;display:grid;place-items:center;width:28px;height:28px;border-radius:5px;background:var(--surface-raised);color:var(--ink);border:1px solid var(--line);font-size:12px;font-weight:650}
+.patient-banner-who .avatar{flex:none;display:grid;place-items:center;width:28px;height:28px;border-radius:5px;background:var(--surface-raised);color:var(--ink);border:1px solid var(--line);font-size:var(--fs-xs);font-weight:650}
 .patient-banner-identity{display:contents}
-.patient-banner-name{margin:0;font-size:17px;line-height:1.25;font-weight:700;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-.patient-banner-facts{margin:2px 0 0;display:flex;gap:10px;align-items:baseline;font-size:13px;line-height:1.3;color:var(--ink);white-space:nowrap}
+.patient-banner-name{margin:0;font-size:var(--fs-lg);line-height:1.25;font-weight:700;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.patient-banner-facts{margin:2px 0 0;display:flex;gap:10px;align-items:baseline;font-size:var(--fs-xs);line-height:1.3;color:var(--ink);white-space:nowrap}
 .patient-banner-facts>span{flex:none}
 .patient-banner-facts>span+span{padding-left:10px;border-left:1px solid var(--line)}
-.patient-banner-facts .patient-banner-mrn,.patient-banner-facts .patient-banner-goes-by{font-size:12px;color:var(--muted)}
+.patient-banner-facts .patient-banner-mrn,.patient-banner-facts .patient-banner-goes-by{font-size:var(--fs-xs);color:var(--muted)}
 .patient-banner-actions{display:flex;align-items:center;gap:6px;flex:none;margin-left:auto}
-.patient-banner-actions>button,.patient-banner-actions>details>summary{min-height:28px;padding:4px 10px;font-size:12px;line-height:1.3;white-space:nowrap}
+.patient-banner .patient-banner-actions>button,.patient-banner-actions>details>summary{min-height:30px;height:30px;padding:4px 10px;font-size:var(--fs-xs);line-height:1.3;white-space:nowrap}
 .patient-banner-actions>details>summary{display:inline-flex;align-items:center;gap:5px;list-style:none;cursor:pointer;border:1px solid var(--line);border-radius:5px;background:var(--surface);color:var(--ink);font-weight:600;user-select:none}
 .patient-banner-actions>details>summary::-webkit-details-marker{display:none}
-.patient-banner-actions>details>summary::after{content:"▾";font-size:10px;color:var(--muted)}
+.patient-banner-actions>details>summary::after{content:"▾";font-size:var(--fs-eyebrow);color:var(--muted)}
 .patient-banner-actions>details[open]>summary{background:var(--surface-raised)}
 .patient-banner-actions>details>summary:hover{background:var(--surface-soft)}
 .patient-banner :is(button,summary):focus-visible{outline:2px solid var(--focus);outline-offset:1px}
 
-.patient-banner :is(span,button).patient-banner-item{display:inline-flex;align-items:center;gap:5px;min-width:0;min-height:26px;margin:0;padding:2px 5px;border:1px solid transparent;border-radius:5px;background:transparent;color:var(--ink);font:inherit;font-size:13px;font-weight:450;line-height:1.3;text-align:left;white-space:nowrap;overflow:hidden;cursor:default}
+.patient-banner :is(span,button).patient-banner-item{display:inline-flex;align-items:center;gap:5px;min-width:0;min-height:26px;margin:0;padding:2px 5px;border:1px solid transparent;border-radius:5px;background:transparent;color:var(--ink);font:inherit;font-size:var(--fs-xs);font-weight:450;line-height:1.3;text-align:left;white-space:nowrap;overflow:hidden;cursor:default}
 .patient-banner button.patient-banner-item{cursor:pointer}
 .patient-banner button.patient-banner-item:hover{background:var(--surface-soft);border-color:var(--line)}
 .patient-banner-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .patient-banner-text b{font-weight:650}
 .patient-banner-plan,.patient-banner-sub,.patient-banner-quiet,.patient-banner-loading{color:var(--muted)}
-.patient-banner-sub{flex:none;font-size:12px}
+.patient-banner-sub{flex:none;font-size:var(--fs-xs)}
 .patient-banner-sub::before{content:"·";margin-right:5px}
 .patient-banner-icon{flex:none;font-weight:700}
 .patient-banner-owes{font-weight:700;color:var(--warning-text)}
 .patient-banner-today{font-weight:650}
-.patient-banner-loading{font-size:12px;white-space:nowrap}
-.patient-banner-pill{flex:none;padding:1px 8px;font-size:11.5px;line-height:1.45;white-space:nowrap}
+.patient-banner-loading{font-size:var(--fs-xs);white-space:nowrap}
+.patient-banner-pill{flex:none;padding:1px 8px;font-size:var(--fs-xs);line-height:1.45;white-space:nowrap}
 
 .patient-banner-bottom>.patient-banner-allergies{flex:0 1 auto;max-width:36%}
 .patient-banner-bottom>.patient-banner-insurance{flex:0 8 auto}
@@ -42,7 +43,7 @@
 .patient-banner-bottom>.patient-banner-balance{flex:none}
 .patient-banner-bottom>.patient-banner-visit{flex:none;margin-left:auto}
 .patient-banner-visit{display:inline-flex;align-items:center;gap:4px;min-width:0}
-.patient-banner button.patient-banner-book{flex:none;font-size:12px;min-height:24px;padding:2px 4px;border:0;background:transparent;color:var(--blue);text-decoration:underline}
+.patient-banner button.patient-banner-book{flex:none;font-size:var(--fs-xs);min-height:24px;padding:2px 4px;border:0;background:transparent;color:var(--blue);text-decoration:underline}
 .patient-banner .patient-banner-allergies{font-weight:650}
 .patient-banner button.patient-banner-allergies.is-recorded,.patient-banner button.patient-banner-allergies.is-recorded:hover{background:var(--error-bg);color:var(--error-text);border-color:var(--error-line)}
 .patient-banner button.patient-banner-allergies.is-unreviewed,.patient-banner button.patient-banner-allergies.is-unreviewed:hover{background:var(--warning-bg);color:var(--warning-text);border-color:var(--warning-line)}
@@ -52,7 +53,7 @@
 .patient-banner-allergies:is(.is-none,.is-empty) .patient-banner-icon{color:var(--success-text)}
 
 .patient-banner-flags{display:flex;flex-wrap:wrap;align-items:center;gap:6px 5px;flex:1 3 auto;min-width:min(200px,28%);max-height:24px;overflow:hidden}
-.patient-banner :is(span,button).patient-banner-flag{flex:none;display:inline-flex;align-items:center;min-height:22px;margin:0;padding:1px 8px;border:1px solid var(--line);border-radius:999px;background:var(--surface-raised);color:var(--ink);font:inherit;font-size:11.5px;font-weight:600;line-height:1.4;white-space:nowrap}
+.patient-banner :is(span,button).patient-banner-flag{flex:none;display:inline-flex;align-items:center;min-height:22px;margin:0;padding:1px 8px;border:1px solid var(--line);border-radius:999px;background:var(--surface-raised);color:var(--ink);font:inherit;font-size:var(--fs-xs);font-weight:600;line-height:1.4;white-space:nowrap}
 .patient-banner button.patient-banner-flag{cursor:pointer}
 .patient-banner :is(span,button).patient-banner-flag.is-warning{background:var(--warning-bg);color:var(--warning-text);border-color:var(--warning-line)}
 .patient-banner :is(span,button).patient-banner-flag.is-success{background:var(--success-bg);color:var(--success-text);border-color:var(--success-line)}
@@ -62,7 +63,7 @@
 
 .patient-banner-more{position:relative}
 .patient-banner-menu{position:absolute;right:0;top:calc(100% + 4px);z-index:2;display:grid;gap:1px;min-width:230px;max-width:min(360px,80vw);padding:5px;background:var(--surface);border:1px solid var(--line);border-radius:7px;box-shadow:var(--theme-shadow)}
-.patient-banner .patient-banner-menu>button{display:block;width:100%;min-height:32px;margin:0;padding:6px 10px;border:0;border-radius:5px;background:transparent;color:var(--ink);font:inherit;font-size:13px;font-weight:500;text-align:left;white-space:nowrap;cursor:pointer}
+.patient-banner .patient-banner-menu>button{display:block;width:100%;min-height:32px;margin:0;padding:6px 10px;border:0;border-radius:5px;background:transparent;color:var(--ink);font:inherit;font-size:var(--fs-xs);font-weight:500;text-align:left;white-space:nowrap;cursor:pointer}
 .patient-banner .patient-banner-menu>button:hover{background:var(--surface-raised)}
 .patient-banner .patient-banner-menu>button.patient-banner-danger{margin-top:4px;border-top:1px solid var(--line);border-radius:0 0 5px 5px;color:var(--error-text)}
 .patient-banner-menu-facts>[data-banner-collapsed]{display:none;padding:3px 0;border-bottom:1px solid var(--line);margin-bottom:3px}
@@ -72,15 +73,18 @@
 .patient-banner-panel{position:absolute;left:-1px;right:-1px;top:100%;z-index:1;padding:12px 14px;background:var(--surface);border:1px solid var(--line);border-top-color:var(--line);border-radius:0 0 7px 7px;box-shadow:var(--theme-shadow)}
 .patient-banner-panel dl{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px 18px;margin:0 0 8px}
 .patient-banner-panel dl>div{min-width:0}
-.patient-banner-panel dt{font-size:11.5px;font-weight:600;color:var(--muted)}
-.patient-banner-panel dd{margin:1px 0 0;font-size:13px;color:var(--ink);overflow-wrap:anywhere}
+.patient-banner-panel dt{font-size:var(--fs-xs);font-weight:600;color:var(--muted)}
+.patient-banner-panel dd{margin:1px 0 0;font-size:var(--fs-xs);color:var(--ink);overflow-wrap:anywhere}
 
 /* Narrow chart areas: the least urgent facts move into More, in this order. Identity and
    allergies always stay. */
-/* Below a roomy width the extras (MRN, plan name, copay, visit type) wait in Details and hover text. */
-@container (max-width:1000px){.patient-banner .patient-banner-row .patient-banner-wide{display:none}.patient-banner-item,.patient-banner-facts{font-size:12.5px}}
-@container (max-width:780px){.patient-banner-top>.patient-banner-flags{display:none}.patient-banner-menu-facts>[data-banner-collapsed=flags]{display:block}}
-@container (max-width:700px){.patient-banner-who{grid-template-columns:minmax(90px,auto) auto}.patient-banner-who .avatar{display:none}.patient-banner-insurance .patient-banner-more-count{display:none}.patient-banner-bottom>.patient-banner-visit{display:none}.patient-banner-menu-facts>[data-banner-collapsed=visit]{display:block}.patient-banner-bottom>.patient-banner-allergies{max-width:46%}}
+/* Below a roomy width the extras wait in Details and hover text: first the plan name, last visit
+   and visit type, then the MRN, "goes by" and copay. */
+@container (max-width:1250px){.patient-banner .patient-banner-row .patient-banner-wide{display:none}}
+@container (max-width:900px){.patient-banner .patient-banner-row .patient-banner-mid{display:none}}
+@container (max-width:800px){.patient-banner-top>.patient-banner-flags{display:none}.patient-banner-menu-facts>[data-banner-collapsed=flags]{display:block}}
+@container (max-width:790px){.patient-banner-bottom>.patient-banner-visit{display:none}.patient-banner-menu-facts>[data-banner-collapsed=visit]{display:block}}
+@container (max-width:700px){.patient-banner-who{grid-template-columns:minmax(90px,auto) auto}.patient-banner-who .avatar{display:none}.patient-banner-insurance .patient-banner-more-count{display:none}.patient-banner-bottom>.patient-banner-allergies{max-width:46%}}
 @container (max-width:540px){.patient-banner .patient-banner-bottom>.patient-banner-balance{display:none}.patient-banner-menu-facts>[data-banner-collapsed=balance]{display:block}.patient-banner-top{flex-wrap:wrap}}
 @container (max-width:440px){.patient-banner .patient-banner-bottom>.patient-banner-insurance{display:none}.patient-banner-menu-facts>[data-banner-collapsed=insurance]{display:block}.patient-banner-bottom>.patient-banner-allergies{max-width:100%}}
 /* Only a very wide chart area has room for everything on one line. */

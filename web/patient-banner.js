@@ -8,24 +8,8 @@ let patientBanner={patient:null,identity:null,data:null,failed:false,revision:nu
 function clearPatientBannerSession(){clearTimeout(patientBanner.timer);patientBanner={patient:null,identity:null,data:null,failed:false,revision:null,stale:false,own:false,request:null,timer:null,open:null};}
 function patientBannerCurrent(){return typeof selected!=='undefined'&&!!selected&&typeof workspace!=='undefined'&&workspace?.patient?.id===selected&&patientBanner.patient===selected&&patientBanner.identity===me;}
 
-// Plain dates for staff. Calendar dates never shift with the time zone.
-function patientBannerDay(value){
- const match=/^(\d{4})-(\d{2})-(\d{2})/.exec(String(value||''));if(!match)return '';
- const day=new Date(Date.UTC(Number(match[1]),Number(match[2])-1,Number(match[3])));
- return Number.isFinite(day.getTime())?new Intl.DateTimeFormat('en-US',{timeZone:'UTC',month:'short',day:'numeric',year:'numeric'}).format(day):'';
-}
+// Dates, times, ages, statuses and counts are worded by display-format.js, like the rest of the app.
 function patientBannerSameDay(a,b){return a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate();}
-function patientBannerDate(value,now=new Date()){
- const when=new Date(value);if(!Number.isFinite(when.getTime()))return '';
- return new Intl.DateTimeFormat('en-US',when.getFullYear()===now.getFullYear()?{month:'short',day:'numeric'}:{month:'short',day:'numeric',year:'numeric'}).format(when);
-}
-function patientBannerTime(value){const when=new Date(value);return Number.isFinite(when.getTime())?new Intl.DateTimeFormat('en-US',{hour:'numeric',minute:'2-digit'}).format(when):'';}
-function patientBannerAge(birthDate,now=new Date()){
- const match=/^(\d{4})-(\d{2})-(\d{2})/.exec(String(birthDate||''));if(!match)return null;
- let age=now.getFullYear()-Number(match[1]);
- if(now.getMonth()+1<Number(match[2])||(now.getMonth()+1===Number(match[2])&&now.getDate()<Number(match[3])))age--;
- return age>=0?age:null;
-}
 function patientBannerMoney(cents){return new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(cents/100);}
 function patientBannerCan(resource){return typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed(resource);}
 function patientBannerArea(key){return typeof chartAreaEnabled!=='function'||chartAreaEnabled(key);}
@@ -36,7 +20,7 @@ function patientBannerAllergies(){
  const active=(clinical.items||[]).filter(e=>e.kind==='allergy'&&e.content?.status==='active'&&!['refuted','entered_in_error'].includes(e.content.verification));
  const review=(clinical.reviews||[]).find(r=>r.kind==='allergy')?.review_state||'unknown';
  if(active.length){
-  const detail=e=>[e.content.title,[e.content.detail?.reaction,e.content.detail?.severity].filter(Boolean).join(', '),e.content.verification&&e.content.verification!=='confirmed'?e.content.verification.replaceAll('_',' '):''].filter(Boolean).join(' — ');
+  const detail=e=>[e.content.title,[e.content.detail?.reaction,e.content.detail?.severity].filter(Boolean).join(', '),e.content.verification&&e.content.verification!=='confirmed'?displayStatus(e.content.verification):''].filter(Boolean).join(' — ');
   return {state:'recorded',names:active.map(e=>e.content.title),text:'Allergies: '+active.slice(0,2).map(e=>e.content.title).join(', '),more:active.length>2?`+${active.length-2}`:'',title:'Allergies: '+active.map(detail).join('; ')+'. Open the allergy list.'};
  }
  if(review==='no_known')return {state:'none',names:[],text:'No known allergies',title:'Reviewed: no known allergies. Open the allergy list.'};
@@ -58,7 +42,7 @@ function patientBannerEligibility(coverage){
  const checks=patientBanner.data?.eligibility;if(!Array.isArray(checks)||!patientBannerCurrent())return null;
  const check=checks.find(item=>item.coverage_id===coverage.id);
  if(!check)return {state:'none',icon:'–',label:'Not checked',title:'Eligibility has not been checked with the insurer. Open Insurance to check it.',differs:[]};
- const when=patientBannerDay(String(check.completed_at||check.created_at).slice(0,10)),label=typeof claimmdStatusLabel==='function'?claimmdStatusLabel(check):'Could not confirm';
+ const when=displayDate(check.completed_at||check.created_at),label=typeof claimmdStatusLabel==='function'?claimmdStatusLabel(check):'Could not confirm';
  if(check.status==='pending')return {state:'none',icon:'…',label,title:`Asked the insurer ${when}. No answer yet.`,differs:[]};
  if(check.status!=='completed')return {state:'unknown',icon:'!',label,title:`The check on ${when} did not get an answer. Open Insurance to try again.`,differs:[]};
  const summary=typeof claimmdEligibilitySummary==='function'?claimmdEligibilitySummary(check):{status:'unknown',differs:[]};
@@ -68,12 +52,12 @@ function patientBannerEligibility(coverage){
 }
 function patientBannerVisits(now=new Date()){
  const data=patientBannerCurrent()?patientBanner.data:null;if(!data)return null;
- const next=data.next_appointment,last=data.last_visit,out={next:null,last:last?{text:'Last: '+patientBannerDate(last.starts_at,now),title:`Last visit ${patientBannerDate(last.starts_at,now)} · ${last.title||'Office visit'}`}:null};
+ const next=data.next_appointment,last=data.last_visit,out={next:null,last:last?{text:'Last: '+displayDate(last.starts_at),title:`Last visit ${displayDate(last.starts_at)} · ${last.title||'Office visit'}`}:null};
  if(next){
-  const starts=new Date(next.starts_at),today=patientBannerSameDay(starts,now),status={checked_in:'Checked in',in_progress:'In progress'}[next.status];
+  const starts=new Date(next.starts_at),today=patientBannerSameDay(starts,now),status=['checked_in','in_progress'].includes(next.status)?displayStatus(next.status):'';
   // Today's visit keeps its status in view; a later one keeps its type for wider screens.
-  out.next=today||status?{today:true,text:`${today?'Today':patientBannerDate(next.starts_at,now)} ${patientBannerTime(next.starts_at)} · ${status||next.title||'Office visit'}`,extra:'',title:`${next.title||'Office visit'} · ${status||'Booked'}`}
-   :{today:false,text:`Next: ${patientBannerDate(next.starts_at,now)}, ${patientBannerTime(next.starts_at)}`,extra:next.title||'Office visit',title:`Next appointment ${patientBannerDate(next.starts_at,now)}, ${patientBannerTime(next.starts_at)} · ${next.title||'Office visit'}`};
+  out.next=today||status?{today:true,text:`${today?'Today '+displayTime(next.starts_at):displayDateTime(next.starts_at)} · ${status||next.title||'Office visit'}`,extra:'',title:`${next.title||'Office visit'} · ${status||displayStatus(next.status)}`}
+   :{today:false,text:`Next: ${displayDateTime(next.starts_at)}`,extra:next.title||'Office visit',title:`Next appointment ${displayDateTime(next.starts_at)} · ${next.title||'Office visit'}`};
  }
  return out;
 }
@@ -83,7 +67,7 @@ function patientBannerFlags(insurance){
  if(patientBanner.stale&&patientBannerCurrent())add('stale','Updated — refresh','info','data-action="reload" aria-label="This chart was updated elsewhere. Refresh"','Someone changed this chart after you opened it. Refresh to see the latest.');
  if(workspace.patient.archived)add('archived','Archived','muted','','This chart is archived. Restore it to book or start a visit.');
  if(insurance?.eligibility?.differs?.length)add('differs','Insurer has different details','warning','data-chart-section="insurance"',`The insurer's answer shows a different ${insurance.eligibility.differs.join(', ')}. Open Insurance to compare.`);
- if(f.intake_to_review>0)add('intake-review','Intake form to review','warning',patientBannerArea('documents')?'data-patient-intakes-open':'',f.intake_to_review===1?'The patient sent in an intake form that nobody has reviewed yet.':`${f.intake_to_review} intake forms are waiting for review.`);
+ if(f.intake_to_review>0)add('intake-review','Intake form to review','warning',patientBannerArea('documents')?'data-patient-intakes-open':'',f.intake_to_review===1?'The patient sent in an intake form that nobody has reviewed yet.':`${displayCount(f.intake_to_review,'intake form')} are waiting for review.`);
  if(f.intake_sent>0)add('intake-sent','Intake form sent','muted',patientBannerArea('documents')?'data-patient-intakes-open':'','An intake form was sent and the patient has not finished it yet.');
  if((workspace.visits||[]).some(v=>v.status==='in_progress'))add('unsigned','Unsigned note','warning','data-chart-section="visits"','A visit note is still open and has not been signed.');
  if(f.portal_status==='active')add('portal','Portal active','success',portal?`data-portal-access="${esc(selected)}"`:'','The patient has an active portal account.');
@@ -119,7 +103,7 @@ function patientBannerMenu(facts){
 function patientBannerDetails(allergies,coverages,visits,flags){
  const p=workspace.patient,c=patientBannerCan('clinical')?workspace.demographics?.content||{}:{},a=c.address,data=patientBannerCurrent()?patientBanner.data:null;
  const row=(label,value)=>`<div><dt>${esc(label)}</dt><dd>${esc(value||'Not recorded')}</dd></div>`,rows=[];
- rows.push(row('Name',`${p.family_name}, ${p.given_name}`),row('MRN',p.mrn),row('Date of birth',patientBannerDay(p.birth_date)));
+ rows.push(row('Name',`${p.family_name}, ${p.given_name}`),row('MRN',p.mrn),row('Date of birth',displayBirthDate(p.birth_date)));
  if(patientBannerCan('clinical')){
   rows.push(row('Phone',c.phone),row('Email',c.email),row('Address',a?[a.line1,a.line2,a.city,a.region,a.postal_code].filter(Boolean).join(', '):''));
   if(c.preferred_name)rows.push(row('Goes by',c.preferred_name));
@@ -127,7 +111,7 @@ function patientBannerDetails(allergies,coverages,visits,flags){
   if(c.language)rows.push(row('Language',c.language));
  }
  rows.push(row('Allergies',allergies.names.length?allergies.names.join(', '):allergies.text));
- if(coverages)rows.push(coverages.length?coverages.map(cv=>row(`${cv.content.priority[0].toUpperCase()+cv.content.priority.slice(1)} insurance`,[patientBannerPayer(cv),cv.content.plan_name,cv.content.member_id?'Member '+cv.content.member_id:''].filter(Boolean).join(' · '))).join(''):row('Insurance','Self-pay'));
+ if(coverages)rows.push(coverages.length?coverages.map(cv=>row(`${displayStatus(cv.content.priority)} insurance`,[patientBannerPayer(cv),cv.content.plan_name,cv.content.member_id?'Member '+cv.content.member_id:''].filter(Boolean).join(' · '))).join(''):row('Insurance','Self-pay'));
  if(visits){rows.push(row('Last visit',visits.last?visits.last.title.replace(/^Last visit /,''):'None yet'));rows.push(row('Next appointment',visits.next?[visits.next.text.replace(/^Next: /,''),visits.next.extra].filter(Boolean).join(' · '):'None booked'));}
  if(flags.length)rows.push(row('Flags',flags.map(f=>f.text).join(', ')));
  if(data?.flags)rows.push(row('Patient portal',{active:'Active',invited:'Invited, not signed in yet',revoked:'Access removed'}[data.flags.portal_status]||'Not invited'));
@@ -135,11 +119,11 @@ function patientBannerDetails(allergies,coverages,visits,flags){
 }
 function patientBannerMarkup(now=new Date()){
  const p=workspace.patient,contact=patientBannerCan('clinical')?workspace.demographics?.content||{}:{};
- const age=patientBannerAge(p.birth_date,now),sex={female:'F',male:'M',other:'Other'}[contact.administrative_gender]||'',sexWord={female:'Female',male:'Male',other:'Other'}[contact.administrative_gender]||'';
+ const age=displayAge(p.birth_date,now),sex={female:'F',male:'M',other:'Other'}[contact.administrative_gender]||'',sexWord={female:'Female',male:'Male',other:'Other'}[contact.administrative_gender]||'';
  const name=`${p.family_name}, ${p.given_name}`,ageSex=[age===null?'':String(age),sex].filter(Boolean).join(' · ');
  const allergies=patientBannerAllergies(),coverages=patientBannerArea('insurance')?patientBannerCoverages(now):null,visits=patientBannerVisits(now);
  const item=(key,attrs,body,title,cls='')=>attrs?`<button type="button" class="patient-banner-item ${cls}" data-banner-item="${key}" ${attrs} title="${esc(title)}">${body}</button>`:`<span class="patient-banner-item ${cls}" data-banner-item="${key}" title="${esc(title)}">${body}</span>`;
- const who=`<div class="patient-banner-who"><span class="avatar" aria-hidden="true">${esc((p.given_name||'')[0]||'')}${esc((p.family_name||'')[0]||'')}</span><div class="patient-banner-identity"><h2 class="patient-banner-name" title="${esc(name)}">${esc(name)}</h2><p class="patient-banner-facts">${ageSex?`<span title="${esc([age===null?'':age+' years old',sexWord].filter(Boolean).join(', '))}">${esc(ageSex)}</span>`:''}<span title="Date of birth">${esc(patientBannerDay(p.birth_date))}</span><span class="patient-banner-mrn patient-banner-wide">MRN ${esc(p.mrn)}</span>${contact.preferred_name?`<span class="patient-banner-goes-by patient-banner-wide">goes by ${esc(contact.preferred_name)}</span>`:''}</p></div></div>`;
+ const who=`<div class="patient-banner-who"><span class="avatar" aria-hidden="true">${esc((p.given_name||'')[0]||'')}${esc((p.family_name||'')[0]||'')}</span><div class="patient-banner-identity"><h2 class="patient-banner-name" title="${esc(name)}">${esc(name)}</h2><p class="patient-banner-facts">${ageSex?`<span title="${esc([age===null?'':age+' years old',sexWord].filter(Boolean).join(', '))}">${esc(ageSex)}</span>`:''}<span title="Date of birth">${esc(displayDate(p.birth_date))}</span><span class="patient-banner-mrn patient-banner-mid">MRN ${esc(p.mrn)}</span>${contact.preferred_name?`<span class="patient-banner-goes-by patient-banner-mid">goes by ${esc(contact.preferred_name)}</span>`:''}</p></div></div>`;
  const allergyIcon={recorded:'⚠',unreviewed:'!',none:'✓',empty:'✓'}[allergies.state];
  const allergy=item('allergies','data-clinical-focus="allergy"',`<span class="patient-banner-icon" aria-hidden="true">${allergyIcon}</span><span class="patient-banner-text">${esc(allergies.text)}</span>${allergies.more?`<span class="patient-banner-count">${esc(allergies.more)}</span>`:''}`,allergies.title,`patient-banner-allergies is-${allergies.state}`);
  let insurance=null,insuranceHtml='';
@@ -147,15 +131,15 @@ function patientBannerMarkup(now=new Date()){
   if(coverages.length){
    const primary=coverages[0],eligibility=patientBannerEligibility(primary),payer=patientBannerPayer(primary),plan=primary.content.plan_name,copay=Number.isSafeInteger(primary.content.copay_cents)?patientBannerMoney(primary.content.copay_cents).replace(/\.00$/,'')+' copay':'',more=coverages.length-1;
    insurance={eligibility};
-   const title=[`${primary.content.priority[0].toUpperCase()+primary.content.priority.slice(1)} insurance: ${payer}${plan?' · '+plan:''}`,eligibility?.title,copay,more?`${more} more ${more===1?'coverage':'coverages'}: ${coverages.slice(1).map(patientBannerPayer).join(', ')}`:'','Open Insurance.'].filter(Boolean).join('. ');
-   insuranceHtml=item('insurance','data-chart-section="insurance"',`<span class="patient-banner-text"><b>${esc(payer)}</b>${plan?` <span class="patient-banner-plan patient-banner-wide">${esc(plan)}</span>`:''}</span>${eligibility?`<span class="eligibility-pill patient-banner-pill ${eligibility.state==='none'?'':eligibility.state}" data-eligibility-state="${eligibility.state}"><span aria-hidden="true">${eligibility.icon}</span> ${esc(eligibility.label)}</span>`:''}${copay?`<span class="patient-banner-sub patient-banner-wide">${esc(copay)}</span>`:''}${more?`<span class="patient-banner-sub patient-banner-more-count">+${more} more</span>`:''}`,title,'patient-banner-insurance');
+   const title=[`${displayStatus(primary.content.priority)} insurance: ${payer}${plan?' · '+plan:''}`,eligibility?.title,copay,more?`${displayCount(more,'more coverage')}: ${coverages.slice(1).map(patientBannerPayer).join(', ')}`:'','Open Insurance.'].filter(Boolean).join('. ');
+   insuranceHtml=item('insurance','data-chart-section="insurance"',`<span class="patient-banner-text"><b>${esc(payer)}</b>${plan?` <span class="patient-banner-plan patient-banner-wide">${esc(plan)}</span>`:''}</span>${eligibility?`<span class="eligibility-pill patient-banner-pill ${eligibility.state==='none'?'':eligibility.state}" data-eligibility-state="${eligibility.state}"><span aria-hidden="true">${eligibility.icon}</span> ${esc(eligibility.label)}</span>`:''}${copay?`<span class="patient-banner-sub patient-banner-mid">${esc(copay)}</span>`:''}${more?`<span class="patient-banner-sub patient-banner-more-count">+${more} more</span>`:''}`,title,'patient-banner-insurance');
   }else insuranceHtml=item('insurance','data-chart-section="insurance"','<span class="patient-banner-text patient-banner-quiet">Self-pay</span>','No active insurance on file. Open Insurance to add coverage.','patient-banner-insurance');
  }
  const billing=patientBannerCurrent()&&patientBannerArea('billing')&&patientBannerCan('billing')?patientBanner.data?.billing:null;
  let balanceHtml='';
  if(billing&&Number.isSafeInteger(billing.patient_due_cents)){
   const owes=billing.patient_due_cents>0,count=Number(billing.open_invoice_count)||0,recheck=Number(billing.invoice_review_count)||0;
-  const title=[owes?`Patient owes ${patientBannerMoney(billing.patient_due_cents)} on ${count} open ${count===1?'invoice':'invoices'}`:'Nothing is owed on reviewed invoices',recheck?`${recheck} ${recheck===1?'invoice needs':'invoices need'} a re-check`:'',billing.card_on_file?'A card is saved on file':'','Open Billing.'].filter(Boolean).join('. ');
+  const title=[owes?`Patient owes ${patientBannerMoney(billing.patient_due_cents)} on ${displayCount(count,'open invoice')}`:'Nothing is owed on reviewed invoices',recheck?`${displayCount(recheck,'invoice')} to re-check`:'',billing.card_on_file?'A card is saved on file':'','Open Billing.'].filter(Boolean).join('. ');
   balanceHtml=item('balance','data-chart-section="billing"',`<span class="patient-banner-text ${owes?'patient-banner-owes':'patient-banner-quiet'}">${owes?'Owes '+esc(patientBannerMoney(billing.patient_due_cents)):'No balance'}</span>${billing.card_on_file?'<span class="patient-banner-sub patient-banner-card">Card on file</span>':''}`,title,'patient-banner-balance');
  }
  let visitHtml='';
