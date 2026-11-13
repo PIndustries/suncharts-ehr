@@ -286,6 +286,28 @@ const contact=p=>{p.type('phone','555-010-2026');p.type('address_line1','100 Exa
  p=open(packet({template:picker}),{lookup:()=>({failure:429,message:'Too many tries'})});await p.settle();p.type('insurance_company','exam');await pause();await p.settle();
  assert.match(p.wrapOf('insurance_company').walk().find(node=>node.className==='lookup-status').textContent,/not available right now\. Choose “I can’t find mine”/);
 
+ // A well-known insurer is picked by name only and saved without a reference.
+ p=open(packet({template:picker}),{lookup:()=>({items:[{id:'payer-1',name:'Example Health Plan'},{name:'Aetna'}]})});await p.settle();
+ p.type('insurance_company','ae');await pause();p.wrapOf('insurance_company').walk().find(node=>node.getAttribute('role')==='option'&&node.textContent==='Aetna').fire('click');
+ assert.equal(p.named('insurance_company')[0].value,'Aetna');await p.press('Continue');assert.equal(p.step(),'Step 2 of 2 · Pharmacy');
+ assert.equal(p.saves().at(-1)[1].answers.insurance_company,'Aetna');assert.equal(p.saves().at(-1)[1].answers.insurance_company_id,'');
+ // The name the practice already holds starts filled in; date of birth and everything else stay blank.
+ const known={attestation:'I confirm.',sections:[{label:'About you',fields:[{key:'first_name',label:'First name',type:'text',required:true,chart_target:'identity.given_name'},{key:'last_name',label:'Last name',type:'text',required:true,chart_target:'identity.family_name'},{key:'date_of_birth',label:'Date of birth',type:'date',required:true,chart_target:'identity.birth_date'},{key:'preferred_name',label:'Preferred name',type:'text',chart_target:'demographics.preferred_name'}]}]};
+ p=open(packet({template:known,patient:{given_name:'Avery',family_name:'Sample',birth_date:'1990-04-12',preferred_name:'Ave'}}));await p.settle();
+ assert.equal(p.named('first_name')[0].value,'Avery');assert.equal(p.named('last_name')[0].value,'Sample');assert.equal(p.named('date_of_birth')[0].value,'');assert.equal(p.named('preferred_name')[0].value,'');
+ await p.press('Continue');assert.equal(p.errorFor('date_of_birth'),'Please answer this question.');assert.equal(p.errorFor('first_name'),'');
+ // A returning patient's saved answers are never replaced by the chart's.
+ p=open(packet({template:known,status:'in_progress',draft:{first_name:'Av',last_name:''},patient:{given_name:'Avery',family_name:'Sample'}}));await p.settle();assert.equal(p.named('first_name')[0].value,'Av');assert.equal(p.named('last_name')[0].value,'');
+ // Second insurance: member ID and policy holder are optional until a company is given.
+ const secondary={attestation:'I confirm.',sections:[{label:'Secondary insurance',skippable:true,skip_label:"I don't have a second insurance",fields:[{key:'insurance2_company',label:'Insurance company',type:'text',required:true},{key:'insurance2_member_id',label:'Member or policy ID',type:'text',required:false,required_with:'insurance2_company'},{key:'insurance2_relationship',label:'Who holds this policy?',type:'select',required:false,required_with:'insurance2_company',options:['Self','Spouse']},{key:'insurance2_plan',label:'Plan name',type:'text',required:false}]},{label:'Last',fields:[{key:'note',label:'Note',type:'text'}]}]};
+ p=open(packet({template:secondary}));await p.settle();
+ const optionalShown=name=>!p.wrapOf(name).walk().find(node=>node.className==='optional').hidden;
+ assert.ok(optionalShown('insurance2_member_id')&&optionalShown('insurance2_relationship'));assert.equal(p.named('insurance2_member_id')[0].getAttribute('aria-required'),null);
+ p.type('insurance2_company','Example Second Plan');
+ assert.ok(!optionalShown('insurance2_member_id')&&!optionalShown('insurance2_relationship')&&optionalShown('insurance2_plan'));assert.equal(p.named('insurance2_member_id')[0].getAttribute('aria-required'),'true');assert.equal(p.wrapOf('insurance2_relationship').getAttribute('aria-required'),'true');
+ await p.press('Continue');assert.equal(p.errorFor('insurance2_member_id'),'Please answer this question.');assert.equal(p.errorFor('insurance2_relationship'),'Please choose an answer.');assert.equal(p.errorFor('insurance2_plan'),'');
+ p.type('insurance2_company','');assert.ok(optionalShown('insurance2_member_id'));await p.press('Continue');assert.equal(p.step(),'Step 2 of 2 · Last','a blank second insurance asks for nothing');
+
  // Shared tablets: "Finish later" saves, forgets the link in this tab and says how to come back.
  p=open(packet());await p.settle();assert.equal(p.page.storage.get('intake-token'),'synthetic-link-secret');
  assert.equal(p.button('Finish later')?.type,'button');p.type('first_name','Avery');await p.press('Finish later');

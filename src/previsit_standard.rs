@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 /// Raised whenever the standard questions change, so an issued form records
 /// which edition the patient answered.
-pub(crate) const STANDARD_VERSION: i64 = 1;
+pub(crate) const STANDARD_VERSION: i64 = 2;
 pub(crate) const TEMPLATE_NAME: &str = "Standard intake form";
 pub(crate) const ATTESTATION: &str = "I confirm this information is complete and accurate to the best of my knowledge. I understand the practice will review it before adding it to my chart.";
 
@@ -112,11 +112,11 @@ fn insurance(prefix: &str, rank: &str, label: &str, skippable: bool) -> Value {
         "fields":[
             {"key":key("company"),"label":"Insurance company","type":"text","required":true,"max_length":200,"lookup":"insurer","id_key":key("company_id"),"help":"Start typing and choose yours from the list.","coverage_field":"company"},
             picked(&key("company"), Some("payer_ref")),
-            {"key":key("member_id"),"label":"Member or policy ID","type":"text","required":true,"max_length":150,"coverage_field":"member_id"},
+            {"key":key("member_id"),"label":"Member or policy ID","type":"text","required":!skippable,"required_with":if skippable { json!(key("company")) } else { Value::Null },"max_length":150,"coverage_field":"member_id"},
             {"key":key("plan"),"label":"Plan name","type":"text","required":false,"max_length":200,"coverage_field":"plan_name"},
             {"key":key("group"),"label":"Group number","type":"text","required":false,"max_length":150,"coverage_field":"group_number"},
             {"key":key("phone"),"label":"Insurance phone number","type":"phone","required":false,"format":"phone","inputmode":"tel","help":"Usually on the back of your card.","coverage_field":"phone"},
-            {"key":key("relationship"),"label":"Who holds this policy?","type":"select","required":true,"options":["Self","Spouse","Child","Other"],"option_labels":["I do","My spouse","My parent","Someone else"],"coverage_field":"relationship"},
+            {"key":key("relationship"),"label":"Who holds this policy?","type":"select","required":!skippable,"required_with":if skippable { json!(key("company")) } else { Value::Null },"options":["Self","Spouse","Child","Other"],"option_labels":["I do","My spouse","My parent","Someone else"],"coverage_field":"relationship"},
             {"key":key("holder_name"),"label":"Policy holder's full name","type":"text","required":true,"max_length":200,"show_if":other_holder,"coverage_field":"subscriber_name"},
             {"key":key("holder_dob"),"label":"Policy holder's date of birth","type":"date","required":true,"format":"past_date","show_if":other_holder,"coverage_field":"subscriber_birth_date"},
             {"key":key("holder_sex"),"label":"Policy holder's sex","type":"select","required":false,"options":["Female","Male","Unknown"],"show_if":other_holder,"coverage_field":"subscriber_sex"}
@@ -129,7 +129,7 @@ fn insurance(prefix: &str, rank: &str, label: &str, skippable: bool) -> Value {
     section
 }
 
-/// The nine standard steps, in the order the patient sees them.
+/// The eight standard steps, in the order the patient sees them.
 pub(crate) fn sections() -> Vec<Value> {
     let states: Vec<&str> = STATES.iter().map(|(code, _)| *code).collect();
     let state_names: Vec<&str> = STATES.iter().map(|(_, name)| *name).collect();
@@ -174,14 +174,12 @@ pub(crate) fn sections() -> Vec<Value> {
             {"key":"emergency_phone","label":"Their phone","type":"phone","required":true,"format":"phone","inputmode":"tel","chart_target":"demographics.emergency_contact.phone"},
             {"key":"emergency_email","label":"Their email","type":"email","required":false,"format":"email","inputmode":"email"}
         ]}),
-        json!({"label":"Who is responsible for the bill","fields":[
+        json!({"label":"Paying for your visits","fields":[
             {"key":"responsible_party","label":"Who will pay for your care?","type":"select","required":true,"options":["Myself","Someone else"]},
             {"key":"responsible_name","label":"Their name","type":"text","required":true,"max_length":200,"show_if":someone_else},
             {"key":"responsible_relationship","label":"How are they related to you?","type":"select","required":true,"options":RELATIONSHIPS,"other_key":"responsible_relationship_other","show_if":someone_else},
             other("responsible_relationship"),
-            {"key":"responsible_phone","label":"Their phone","type":"phone","required":true,"format":"phone","inputmode":"tel","show_if":someone_else}
-        ]}),
-        json!({"label":"How you will pay","fields":[
+            {"key":"responsible_phone","label":"Their phone","type":"phone","required":true,"format":"phone","inputmode":"tel","show_if":someone_else},
             {"key":"payment_method","label":"How do you plan to pay for visits?","type":"select","required":true,"options":["Insurance","Self-pay"],"option_labels":["With insurance","I will pay myself"]}
         ]}),
         insurance("insurance", "primary", "Primary insurance", false),
@@ -230,3 +228,85 @@ pub(crate) fn resolve(schema: &Value) -> Value {
 pub(crate) fn preview() -> Value {
     resolve(&unsaved_template())
 }
+
+/// Insurers most patients in the United States carry, offered after the
+/// practice's own when a patient looks for their insurance company. Names
+/// only: staff match a pick to one of the practice's companies at review.
+pub(crate) const COMMON_INSURERS: &[&str] = &[
+    "Medicare",
+    "Medicaid",
+    "Medicare Advantage",
+    "AARP Medicare Supplement (UnitedHealthcare)",
+    "AARP Medicare Advantage (UnitedHealthcare)",
+    "Aetna",
+    "Aetna Medicare",
+    "Aetna Better Health",
+    "Ambetter",
+    "AmeriHealth",
+    "AmeriHealth Caritas",
+    "Amerigroup",
+    "Anthem Blue Cross",
+    "Anthem Blue Cross Blue Shield",
+    "Blue Cross Blue Shield",
+    "Blue Cross Blue Shield Federal Employee Program",
+    "Blue Cross Blue Shield of Alabama",
+    "Blue Cross Blue Shield of Arizona",
+    "Blue Cross Blue Shield of Illinois",
+    "Blue Cross Blue Shield of Massachusetts",
+    "Blue Cross Blue Shield of Michigan",
+    "Blue Cross Blue Shield of Minnesota",
+    "Blue Cross Blue Shield of North Carolina",
+    "Blue Cross Blue Shield of Tennessee",
+    "Blue Cross Blue Shield of Texas",
+    "Blue Cross of Idaho",
+    "Blue Shield of California",
+    "Bright Health",
+    "Capital Blue Cross",
+    "CareFirst BlueCross BlueShield",
+    "CareSource",
+    "Centene",
+    "ChampVA",
+    "Cigna",
+    "Cigna Medicare",
+    "Clover Health",
+    "Devoted Health",
+    "Elevance Health",
+    "EmblemHealth",
+    "Empire BlueCross BlueShield",
+    "Excellus BlueCross BlueShield",
+    "Fidelis Care",
+    "Florida Blue",
+    "GEHA",
+    "Geisinger Health Plan",
+    "Harvard Pilgrim Health Care",
+    "Health Net",
+    "Healthfirst",
+    "HealthPartners",
+    "Highmark Blue Cross Blue Shield",
+    "Horizon Blue Cross Blue Shield of New Jersey",
+    "Humana",
+    "Humana Medicare",
+    "Independence Blue Cross",
+    "Kaiser Permanente",
+    "Medica",
+    "MetroPlus Health",
+    "Meritain Health",
+    "Molina Healthcare",
+    "Mutual of Omaha",
+    "Oscar Health",
+    "Oxford Health Plans",
+    "Premera Blue Cross",
+    "Priority Health",
+    "Regence BlueCross BlueShield",
+    "SelectHealth",
+    "Tricare",
+    "Tufts Health Plan",
+    "UMR",
+    "UnitedHealthcare",
+    "UnitedHealthcare Community Plan",
+    "UPMC Health Plan",
+    "VA (Veterans Affairs)",
+    "WellCare",
+    "Wellmark Blue Cross Blue Shield",
+    "Wellpoint",
+];

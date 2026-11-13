@@ -249,11 +249,14 @@ step at a time on a phone or computer:
 2. Contact
 3. More about you (all optional)
 4. Emergency contact
-5. Who is responsible for the bill
-6. How you will pay
-7. Primary insurance (only when the patient chooses insurance)
-8. Secondary insurance (only with insurance; the patient can skip it)
-9. Pharmacy and one last question
+5. Paying for your visits (who is responsible for the bill, and insurance or self-pay)
+6. Primary insurance (only when the patient chooses insurance)
+7. Secondary insurance (only with insurance; the patient can skip it, and the
+   member ID and policy holder are asked for only once a company is given)
+8. Pharmacy and one last question
+
+The first and last name the practice already holds start filled in; nothing else
+does.
 
 The standard form never asks for a Social Security or driver's licence number.
 A practice that has saved nothing uses it automatically. Under **Pre-visit
@@ -292,7 +295,8 @@ ethnicity, gender identity, sexual orientation and how they heard about the
 practice. Choosing **Other** opens a text box. Insurance company and preferred
 pharmacy are found by typing a few letters and picking a match from the practice's
 own insurance companies, insurers the practice has already looked up in its
-clearinghouse directory, and the practice's pharmacies; **I can't find mine**
+clearinghouse directory, a built-in list of well-known US insurers (by name only),
+and the practice's pharmacies; **I can't find mine**
 switches to a text box. The list is available only through a working link and
 returns names only.
 
@@ -326,7 +330,8 @@ member ID, group, plan and policy holder filled in. An insurance company the
 patient picked from the practice's list, or typed exactly, is already selected.
 Otherwise the practice's companies are listed closest match first, and the owner
 can add the company as a new one in the same place (adding insurance companies is
-owner-only); nothing is saved until staff save the coverage.
+owner-only); nothing is saved until staff save the coverage. **Coverage starts** is
+set to today and can be changed if the coverage started earlier.
 Marital status, race, ethnicity, gender identity, sexual orientation, the
 responsible party, pharmacy, how the patient heard about the practice and the
 practice's own questions stay on the form record and are not copied to the chart.
