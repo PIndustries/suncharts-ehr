@@ -11,7 +11,8 @@
  function state(){return {preference,theme:preference==='system'?(media?.matches?'dark':'light'):preference};}
  function apply(){
   const value=state();root.dataset.theme=value.theme;root.dataset.themePreference=value.preference;root.style.colorScheme=value.theme;
-  for(const select of document.querySelectorAll('[data-theme-preference]')){select.value=value.preference;select.title=value.preference==='system'?`Follow system appearance (${value.theme})`:`${value.theme==='dark'?'Dark':'Light'} appearance`;}
+  // Only the dropdowns: the page root carries the same attribute and must not get a tooltip.
+  for(const select of document.querySelectorAll('select[data-theme-preference]')){select.value=value.preference;select.title=value.preference==='system'?`Follow system appearance (${value.theme})`:`${value.theme==='dark'?'Dark':'Light'} appearance`;}
   document.dispatchEvent(new CustomEvent('suncharts:theme-change',{detail:value}));
   return value;
  }
