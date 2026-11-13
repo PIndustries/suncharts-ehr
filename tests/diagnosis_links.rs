@@ -113,6 +113,8 @@ fn note() -> SoapNote {
         objective: "Synthetic exam".into(),
         assessment: "Synthetic assessment".into(),
         plan: "Synthetic plan".into(),
+        procedure: String::new(),
+        started_from: None,
     }
 }
 async fn started(db: &PgPool, doc: &Actor, appointment_id: Uuid) -> Visit {

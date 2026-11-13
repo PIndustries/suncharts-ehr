@@ -1064,6 +1064,16 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/visit-note.js",
+            get(|| async {
+                web_asset(
+                    "visit-note.js",
+                    "application/javascript",
+                    include_str!("../web/visit-note.js"),
+                )
+            }),
+        )
+        .route(
             "/rooming.js",
             get(|| async {
                 web_asset(
@@ -1390,6 +1400,7 @@ pub fn app(state: State) -> Router {
         .route("/api/v1/visits", post(start_visit))
         .route("/api/v1/visits/{id}", get(visit))
         .route("/api/v1/visits/{id}/note", put(note))
+        .route("/api/v1/visits/{id}/previous-note", get(previous_note))
         .route("/api/v1/visits/{id}/vitals", put(vitals))
         .route("/api/v1/visits/{id}/sign", post(sign))
         .route("/api/v1/visits/{id}/amendments", post(amend))
@@ -1569,6 +1580,13 @@ async fn note(
     Ok(visit_response(
         s.backend.save_note(&a, id, expected(&h)?, p).await?,
     ))
+}
+async fn previous_note(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<PreviousNote>> {
+    Ok(Json(s.backend.previous_note(&a, id).await?))
 }
 async fn vitals(
     a: Actor,

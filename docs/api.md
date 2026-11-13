@@ -70,6 +70,13 @@ Versioned writes require quoted `If-Match` values. Missing/malformed versions re
 and vitals share the encounter version, while checkout, tasks, accounts and other
 resources have their own versions.
 
+`PUT /api/v1/visits/{id}/note` replaces the whole note. `procedure` and
+`started_from` are optional and are omitted from stored and returned notes when
+unused, so clients that only know the four SOAP sections keep working; a client
+that rewrites a note must send back the fields it received or they are removed.
+`GET /api/v1/visits/{id}/previous-note` returns the text of the patient's most
+recent earlier signed note to the visit's assigned clinician, or `source: null`.
+
 Use stable request UUIDs where the contract supports idempotent creation. Reusing
 an identity with changed content is rejected. After a network failure, retrieve
 the saved resource before deciding to repeat a write. Do not retry mutations blindly.

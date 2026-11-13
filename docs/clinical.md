@@ -186,6 +186,49 @@ charts or refreshing chart data preserves that draft. Closing or reloading the
 browser warns about unsaved corrections. If the encounter version changes, the
 clinician must review the current record before signing the retained correction.
 
+### Note sections
+
+The note has Subjective, Objective, Assessment and Plan, followed by an optional
+**Procedure** section for the procedure performed, site, medication and dose, lot
+number, guidance, tolerance and complications. The first four are required to
+save; Procedure may be left empty. An empty Procedure is not stored and is not
+shown on the signed note, so notes signed before the section existed look exactly
+as they did. Each section holds up to 10,000 characters. Corrections to any
+section after signing, including Procedure, use an amendment.
+
+Procedure is documentation only. It does not add charges, CPT/HCPCS codes or
+orders; those are entered in their own encounter steps. Like the rest of the note,
+it is not copied into the AVS and is not part of the FHIR resources.
+
+### Same as last visit
+
+While the note is unsigned, the assigned clinician sees **Same as last visit**
+above the note and on each section. It brings in the text of the patient's most
+recent signed note dated on or before this visit: the clinician's own when there
+is one, otherwise the most recent signed by anyone in the practice. The source is
+named next to the button. Unsigned notes and records imported from a previous
+system are never used. When there is no earlier signed note, the editor says so.
+
+- On an empty note, one click fills every section the earlier note has text for.
+- Sections that already have text are not replaced unless the clinician chooses
+  **Replace what I wrote**; the default fills only the empty sections. A
+  section link asks before replacing that section.
+- Sections the earlier note left empty are left as they are.
+- **Undo** puts the previous text back, one step at a time, until the note is
+  saved. A section edited after it was brought in is kept.
+
+Only note text is brought in. Vitals, diagnoses, orders, prescriptions and charges
+belong to the earlier visit and are not copied. The earlier note is read, never
+changed. Brought-in text is ordinary editable text and is saved with the note in
+the usual way.
+
+The new note records the earlier visit, its version and the sections brought in.
+Until signing the editor shows "Started from the visit on {date}. Review every
+section before signing."; the signed note keeps a "Started from the visit on
+{date}." line for reviewers. The audit trail records each read of an earlier note
+(`visit.previous_note.read`) and the first save that names it
+(`visit.note_started_from_earlier`).
+
 | Role | Intake/vitals before signing | SOAP/sign/amend |
 |---|---|---|
 | Assigned clinician or owner assigned to visit | Yes | Yes |

@@ -1134,7 +1134,88 @@
           {
             "browserSession": []
           }
-        ]
+        ],
+        "description": "Assigned clinician or assigned owner only while the visit is in progress. Replaces the whole note. procedure is optional. started_from may name an earlier signed visit of the same patient whose text the note was started from; it is verified, completed with that visit's date and audited once."
+      }
+    },
+    "/api/v1/visits/{id}/previous-note": {
+      "get": {
+        "operationId": "getPreviousVisitNote",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreviousNote"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found in trusted tenant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "summary": "Text of the most recent earlier signed note",
+        "description": "Assigned clinician or assigned owner of this visit only (the same rule as saving its note). Returns the note text of the patient's most recent signed visit dated on or before this one: the assigned clinician's own note when one exists, otherwise the most recent by any clinician in the practice. Unsigned notes, other patients and other practices are never returned. source is null when there is no earlier signed note. Read-only: the earlier visit is not changed; the read is audited."
       }
     },
     "/api/v1/visits/{id}/vitals": {
@@ -39058,6 +39139,14 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 10000
+          },
+          "procedure": {
+            "type": "string",
+            "maxLength": 10000,
+            "description": "Optional fifth section shown after Plan. Empty or blank text is not stored, so the field is absent on notes that do not use it and on every note written before it existed."
+          },
+          "started_from": {
+            "$ref": "#/components/schemas/NoteSource"
           }
         },
         "required": [
@@ -39065,6 +39154,149 @@
           "objective",
           "assessment",
           "plan"
+        ],
+        "description": "Visit note text. subjective, objective, assessment and plan are required; procedure and started_from are optional and omitted when unused. Signed notes are stored once and returned exactly as signed."
+      },
+      "NoteSource": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Recorded on an in-progress note whose text was started from an earlier signed note of the same patient. The earlier note is only read. Kept with the note when it is signed.",
+        "properties": {
+          "visit_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Earlier signed visit of the same patient in this practice; anything else is rejected with 400."
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Version of the earlier visit when its text was brought in; not above its current version."
+          },
+          "sections": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 5,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "subjective",
+                "objective",
+                "assessment",
+                "plan",
+                "procedure"
+              ]
+            },
+            "description": "Sections whose text was brought in. Stored in note order."
+          },
+          "visit_date": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Service date of the earlier visit. Set by the server; a submitted value is ignored."
+          }
+        },
+        "required": [
+          "visit_id",
+          "version",
+          "sections"
+        ]
+      },
+      "PreviousNote": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PreviousNoteSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "source"
+        ]
+      },
+      "PreviousNoteSource": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "visit_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "visit_date": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "signed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "clinician_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "clinician_name": {
+            "type": "string",
+            "description": "Provider or staff display name; empty when none is recorded."
+          },
+          "same_clinician": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Note text only. Vitals, diagnoses, orders and charges are never included.",
+            "properties": {
+              "subjective": {
+                "type": "string"
+              },
+              "objective": {
+                "type": "string"
+              },
+              "assessment": {
+                "type": "string"
+              },
+              "plan": {
+                "type": "string"
+              },
+              "procedure": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "subjective",
+              "objective",
+              "assessment",
+              "plan",
+              "procedure"
+            ]
+          }
+        },
+        "required": [
+          "visit_id",
+          "version",
+          "visit_date",
+          "signed_at",
+          "clinician_id",
+          "clinician_name",
+          "same_clinician",
+          "note"
         ]
       },
       "Vitals": {

@@ -32,7 +32,7 @@
   current.host.hidden=true;
   pendingRestore=current.restore;
   restoreFocus();
-  current.resolve(Boolean(result));
+  current.resolve(result==='alternate'?'alternate':Boolean(result));
  }
  function confirmAction(message,options={}){
   if(options.signal?.aborted)return Promise.resolve(false);
@@ -40,7 +40,7 @@
   pendingRestore=null;
   const host=ensureHost(),restore=document.activeElement;
   host.hidden=false;
-  host.innerHTML=`<div class="app-dialog-backdrop" data-dialog-cancel></div><section class="app-dialog ${options.tone==='danger'?'danger':''}" role="alertdialog" aria-modal="true" aria-labelledby="app-dialog-title" aria-describedby="app-dialog-message"><header><span class="app-dialog-mark" aria-hidden="true">${options.tone==='danger'?'!':'?'}</span><div><p class="eyebrow">${safe(options.eyebrow||'CONFIRM ACTION')}</p><h2 id="app-dialog-title">${safe(options.title||'Are you sure?')}</h2></div></header><p id="app-dialog-message">${safe(message)}</p>${options.detail?`<p class="app-dialog-detail">${safe(options.detail)}</p>`:''}<footer><button type="button" data-dialog-cancel>${safe(options.cancelLabel||'Cancel')}</button><button type="button" class="primary ${options.tone==='danger'?'danger':''}" data-dialog-confirm>${safe(options.confirmLabel||'Continue')}</button></footer></section>`;
+  host.innerHTML=`<div class="app-dialog-backdrop" data-dialog-cancel></div><section class="app-dialog ${options.tone==='danger'?'danger':''}" role="alertdialog" aria-modal="true" aria-labelledby="app-dialog-title" aria-describedby="app-dialog-message"><header><span class="app-dialog-mark" aria-hidden="true">${options.tone==='danger'?'!':'?'}</span><div><p class="eyebrow">${safe(options.eyebrow||'CONFIRM ACTION')}</p><h2 id="app-dialog-title">${safe(options.title||'Are you sure?')}</h2></div></header><p id="app-dialog-message">${safe(message)}</p>${options.detail?`<p class="app-dialog-detail">${safe(options.detail)}</p>`:''}<footer><button type="button" data-dialog-cancel>${safe(options.cancelLabel||'Cancel')}</button>${options.alternateLabel?`<button type="button" data-dialog-alternate>${safe(options.alternateLabel)}</button>`:''}<button type="button" class="primary ${options.tone==='danger'?'danger':''}" data-dialog-confirm>${safe(options.confirmLabel||'Continue')}</button></footer></section>`;
   return new Promise(resolve=>{
    const confirm=host.querySelector('[data-dialog-confirm]'),cancel=host.querySelector('button[data-dialog-cancel]');
    const focusables=()=>[...host.querySelectorAll(focusableSelector)];
@@ -66,6 +66,8 @@
    };
    active={host,resolve,restore,cleanup};
    confirm.addEventListener('click',onConfirm,{once:true});
+   // An optional second choice resolves to 'alternate'; confirm stays true and cancel false.
+   host.querySelector('[data-dialog-alternate]')?.addEventListener('click',()=>close('alternate'),{once:true});
    host.querySelectorAll('[data-dialog-cancel]').forEach(node=>node.addEventListener('click',onCancel,{once:true}));
    document.addEventListener('keydown',onKeydown,true);
    document.addEventListener('focusin',onFocusin,true);

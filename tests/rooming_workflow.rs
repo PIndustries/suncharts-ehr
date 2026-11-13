@@ -124,6 +124,8 @@ fn note() -> SoapNote {
         objective: "Synthetic examination".into(),
         assessment: "Synthetic assessment".into(),
         plan: "Synthetic plan".into(),
+        procedure: String::new(),
+        started_from: None,
     }
 }
 fn intake() -> Value {
