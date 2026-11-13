@@ -115,6 +115,7 @@ fn note() -> SoapNote {
         plan: "Synthetic plan".into(),
         procedure: String::new(),
         started_from: None,
+        saved_by: None,
     }
 }
 async fn started(db: &PgPool, doc: &Actor, appointment_id: Uuid) -> Visit {
@@ -187,18 +188,16 @@ async fn ordered_diagnoses_preserve_identity_history_and_shared_visit_version() 
     .is_err());
 }
 #[tokio::test]
-async fn diagnosis_writes_require_assigned_clinician_and_tenant_scope() {
+async fn diagnosis_writes_follow_the_note_drafting_rule_and_tenant_scope() {
     let (db, doc, nurse, appointment) = setup().await;
     let v = started(&db, &doc, appointment).await;
     let r = app(db.clone());
     let path = format!("/api/v1/visits/{}/diagnoses", v.id);
+    // Front desk, read-only and a medical assistant with no account on file cannot write.
     for other in [
-        nurse,
         actor(doc.tenant_id, Role::MedicalAssistant),
         actor(doc.tenant_id, Role::FrontDesk),
         actor(doc.tenant_id, Role::ReadOnly),
-        actor(doc.tenant_id, Role::Clinician),
-        actor(doc.tenant_id, Role::Owner),
     ] {
         let (status, data) = call(&r, &other, "GET", &path, Value::Null, None).await;
         assert_eq!(status, 200, "{data}");
@@ -206,6 +205,24 @@ async fn diagnosis_writes_require_assigned_clinician_and_tenant_scope() {
         let (status, _) = call(&r, &other, "PUT", &path, diagnoses(), Some(v.version)).await;
         assert_eq!(status, 403);
     }
+    // Clinical staff share drafting: the enabled nurse, a covering clinician, the owner.
+    let mut version = v.version;
+    for other in [
+        nurse,
+        actor(doc.tenant_id, Role::Clinician),
+        actor(doc.tenant_id, Role::Owner),
+    ] {
+        let (status, data) = call(&r, &other, "GET", &path, Value::Null, None).await;
+        assert_eq!(status, 200, "{data}");
+        assert_eq!(data["can_edit"], true);
+        let (status, saved) = call(&r, &other, "PUT", &path, diagnoses(), Some(version)).await;
+        assert_eq!(status, 200, "{saved}");
+        version += 1;
+        assert_eq!(saved["version"], version);
+        assert_eq!(saved["history"][0]["actor_id"], other.sub.to_string());
+        assert_eq!(saved["visit"]["clinician_id"], doc.sub.to_string());
+    }
+    let v = Visit { version, ..v };
     let mut patient = actor(doc.tenant_id, Role::Patient);
     patient.patient_id = Some(v.patient_id);
     let (status, _) = call(&r, &patient, "GET", &path, Value::Null, None).await;

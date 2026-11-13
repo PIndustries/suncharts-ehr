@@ -57,6 +57,7 @@ pub mod labs;
 pub mod managed_connect;
 pub mod migration;
 pub mod model;
+pub mod note_access;
 pub mod oauth;
 pub mod office;
 pub mod partner_scheduling;
@@ -1455,6 +1456,7 @@ pub fn app(state: State) -> Router {
         .route("/api/v1/visits/{id}", get(visit))
         .route("/api/v1/visits/{id}/note", put(note))
         .route("/api/v1/visits/{id}/previous-note", get(previous_note))
+        .route("/api/v1/visits/{id}/note-authorship", get(note_authorship))
         .route("/api/v1/visits/{id}/vitals", put(vitals))
         .route("/api/v1/visits/{id}/sign", post(sign))
         .route("/api/v1/visits/{id}/amendments", post(amend))
@@ -1641,6 +1643,13 @@ async fn previous_note(
     Path(id): Path<Uuid>,
 ) -> Result<Json<PreviousNote>> {
     Ok(Json(s.backend.previous_note(&a, id).await?))
+}
+async fn note_authorship(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>> {
+    Ok(Json(s.backend.note_authorship(&a, id).await?))
 }
 async fn vitals(
     a: Actor,

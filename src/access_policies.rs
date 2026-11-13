@@ -204,6 +204,42 @@ pub(crate) async fn can_view(
         })
         .collect())
 }
+/// Whether the actor's custom policy, if any, leaves one permission in place. For
+/// telling a person what they may do; the route middleware does the enforcing.
+pub(crate) async fn allows(
+    tx: &mut Transaction<'_, Postgres>,
+    actor: &Actor,
+    resource: &str,
+    operation: &str,
+) -> Result<bool> {
+    let action = match operation {
+        "view" => Action::View,
+        "create" => Action::Create,
+        "edit" => Action::Edit,
+        "delete" => Action::Delete,
+        _ => return Ok(false),
+    };
+    if matches!(
+        actor.role,
+        Role::Owner | Role::Patient | Role::PartnerSupport
+    ) {
+        return Ok(true);
+    }
+    let policy: Option<Policy> = sqlx::query_as("SELECT p.id,p.name,p.base_role,p.permissions,p.version FROM practice_access_assignments a JOIN practice_access_policies p ON p.tenant_id=a.tenant_id AND p.id=a.policy_id WHERE a.tenant_id=$1 AND a.user_id=$2")
+        .bind(actor.tenant_id)
+        .bind(actor.sub)
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(match policy {
+        Some(policy) => policy
+            .flags(actor)?
+            .get(resource)
+            .copied()
+            .unwrap_or_default()
+            .permits(action),
+        None => true,
+    })
+}
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Action {
     View,

@@ -41,6 +41,7 @@ function fixture({previous=source(),note=null,role='owner',clinician='author'}={
  context.testRequests=requests;context.testPrevious=previous;
  run(`api=async(path,method='GET',body,version)=>{testRequests.push({path,method,body,version});
   if(path.endsWith('/previous-note')){if(testPrevious==='fail')throw new Error('Synthetic failure');return {source:testPrevious};}
+  if(path.endsWith('/note-authorship'))return {assigned:{id:activeVisit.clinician_id,name:'Dr. Assigned'},signed:null,amendments:[]};
   if(path.endsWith('/note'))return {...activeVisit,version:activeVisit.version+1,note:{...body,...(body.started_from?{started_from:{...body.started_from,visit_date:'2026-11-04T15:00:00Z'}}:{})}};
   if(path.endsWith('/sign'))return {...activeVisit,status:'signed'};throw new Error('Unexpected request '+path);};
  selectPatient=async()=>{};setEncounterSection=()=>{};
@@ -148,10 +149,16 @@ async function main(){
  await f.click({noteSame:'all'});assert.deepEqual(text(f),blank);
  f=fixture({previous:'fail'});await f.settle();assert.match(f.bar(),/The last note could not be checked\..*data-note-retry>Try again</);
  f.context.testPrevious=source();await f.click({noteRetry:''});assert.match(f.bar(),/data-note-same="all"/);assert.equal(f.requests.length,2);
- f=fixture({clinician:'someone-else'});await f.settle();
- assert.equal(f.requests.length,0,'only the assigned clinician is offered the earlier note');assert.doesNotMatch(f.editor(),/note-previous|data-note-same|name="started_from"/);
- assert.doesNotMatch(f.editor(),/Procedure/,'a read-only viewer is not shown an empty Procedure');
- console.log('PASS no earlier note, empty earlier sections, another clinician and read-only viewers');
+ f=fixture({clinician:'someone-else',previous:source({clinician_id:'someone-else',clinician_name:'Dr. Assigned',same_clinician:true,own:false})});await f.settle();
+ assert.deepEqual(f.requests.map(r=>r.path).sort(),['/api/v1/visits/visit-1/note-authorship','/api/v1/visits/visit-1/previous-note'],'anyone who may draft is offered the earlier note');
+ assert.match(f.bar(),/data-note-same="all">Same as last visit<\/button><span class="muted">From Dr\. Assigned’s visit on /,'the assigned clinician’s earlier note is named as theirs, not as the covering writer’s');
+ await f.click({noteSame:'all'});assert.deepEqual(text(f),earlier);
+ for(const role of ['front_desk','read_only']){
+  f=fixture({role,clinician:'someone-else'});await f.settle();
+  assert.ok(!f.requests.some(r=>r.path.endsWith('/previous-note')),role+' is not offered the earlier note');assert.doesNotMatch(f.editor(),/note-previous|data-note-same|name="started_from"/);
+  assert.doesNotMatch(f.editor(),/Procedure/,'a read-only viewer is not shown an empty Procedure');
+ }
+ console.log('PASS no earlier note, empty earlier sections, a covering writer and read-only viewers');
 
  f=fixture();await f.settle();await f.click({noteSame:'all'});f.type({plan:'Edited plan',procedure:'   '});await f.submit();
  let put=f.requests.find(r=>r.method==='PUT');

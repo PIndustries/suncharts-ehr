@@ -407,23 +407,108 @@ async fn delegated_support_is_tenant_admin_revalidated_and_audited() {
         "Claim.MD native professional-claims JSON upload"
     );
 
-    assert_eq!(
-        call(
-            &app,
-            "POST",
-            "/api/v1/patients",
-            Some(&cookie),
-            Some(&audience),
-            Some(json!({
-                "given_name":"Synthetic",
-                "family_name":"Partner Admin",
-                "birth_date":"1990-01-01"
-            })),
-        )
+    let (status, registered, _) = call(
+        &app,
+        "POST",
+        "/api/v1/patients",
+        Some(&cookie),
+        Some(&audience),
+        Some(json!({
+            "given_name":"Synthetic",
+            "family_name":"Partner Admin",
+            "birth_date":"1990-01-01"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{registered}");
+
+    // In a clinician's visit the support session may help draft the note, named as
+    // support in the note and the audit trail. It can never sign or amend.
+    let patient = Uuid::parse_str(registered["id"].as_str().unwrap()).unwrap();
+    let clinician = Uuid::new_v4();
+    let appointment = Uuid::new_v4();
+    let visit = Uuid::new_v4();
+    sqlx::query("INSERT INTO browser_users(id,tenant_id,email,password_hash,display_name,role) VALUES($1,$2,'delegated-clinician@example.test','synthetic-not-login','Dr. Synthetic Clinician','clinician')")
+        .bind(clinician).bind(tenant).execute(&db).await.unwrap();
+    sqlx::query("INSERT INTO appointments(tenant_id,id,patient_id,clinician_id,starts_at,ends_at,status) VALUES($1,$2,$3,$4,'2026-11-10T15:00:00Z','2026-11-10T15:30:00Z','in_progress')")
+        .bind(tenant).bind(appointment).bind(patient).bind(clinician).execute(&db).await.unwrap();
+    sqlx::query("INSERT INTO visits(tenant_id,id,patient_id,appointment_id,clinician_id) VALUES($1,$2,$3,$4,$5)")
+        .bind(tenant).bind(visit).bind(patient).bind(appointment).bind(clinician).execute(&db).await.unwrap();
+    let (status, authorship, _) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/visits/{visit}/note-authorship"),
+        Some(&cookie),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{authorship}");
+    assert_eq!(authorship["delegated"], true);
+    assert_eq!(authorship["can_draft"], true);
+    assert_eq!(authorship["can_sign"], false);
+    assert_eq!(authorship["can_amend"], false);
+    assert_eq!(authorship["assigned"]["name"], "Dr. Synthetic Clinician");
+    let (status, drafted, _) = call_version(
+        &app,
+        "PUT",
+        &format!("/api/v1/visits/{visit}/note"),
+        Some(&cookie),
+        Some(&audience),
+        Some(json!({"subjective":"Synthetic support draft","objective":"Synthetic","assessment":"Synthetic","plan":"Synthetic"})),
+        Some(1),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{drafted}");
+    assert_eq!(drafted["note"]["saved_by"]["id"], grant.to_string());
+    assert_eq!(drafted["note"]["saved_by"]["name"], "Support staff");
+    assert_eq!(drafted["note"]["saved_by"]["support"], true);
+    assert_eq!(drafted["clinician_id"], clinician.to_string());
+    let note_author: Uuid = sqlx::query_scalar(
+        "SELECT actor_id FROM audit_events WHERE tenant_id=$1 AND action='visit.note_save' AND resource_id=$2",
+    )
+    .bind(tenant)
+    .bind(visit)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(note_author, grant);
+    let (status, _, _) = call_version(
+        &app,
+        "POST",
+        &format!("/api/v1/visits/{visit}/sign"),
+        Some(&cookie),
+        Some(&audience),
+        None,
+        Some(2),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let unsigned: String = sqlx::query_scalar("SELECT status FROM visits WHERE id=$1")
+        .bind(visit)
+        .fetch_one(&db)
         .await
-        .0,
-        StatusCode::CREATED
-    );
+        .unwrap();
+    assert_eq!(unsigned, "in_progress");
+    sqlx::query("UPDATE visits SET status='signed',signed_by=$2,signed_at=now(),version=version+1 WHERE id=$1")
+        .bind(visit).bind(clinician).execute(&db).await.unwrap();
+    let (status, _, _) = call_version(
+        &app,
+        "POST",
+        &format!("/api/v1/visits/{visit}/amendments"),
+        Some(&cookie),
+        Some(&audience),
+        Some(json!({"reason":"Synthetic","text":"Synthetic correction"})),
+        Some(3),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let amendments: i64 = sqlx::query_scalar("SELECT count(*) FROM amendments WHERE visit_id=$1")
+        .bind(visit)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(amendments, 0);
     assert_eq!(
         call(
             &app,

@@ -38,17 +38,34 @@ async fn patient_row(tx: &mut Tx<'_>, actor: &Actor, id: Uuid) -> Result<Patient
         .bind(actor.tenant_id).bind(id).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)
 }
 
-async fn lock_visit(tx: &mut Tx<'_>, actor: &Actor, id: Uuid, version: i64) -> Result<Visit> {
-    actor.clinical()?;
+#[derive(Clone, Copy)]
+enum NoteAction {
+    Draft,
+    Sign,
+    Amend,
+}
+
+/// Locks the visit for one note action. The visit does not have to be assigned to the
+/// actor: clinical staff share drafting, and any clinician or the owner may sign or
+/// correct. The version check keeps two writers from overwriting each other.
+async fn lock_visit(
+    tx: &mut Tx<'_>,
+    actor: &Actor,
+    id: Uuid,
+    version: i64,
+    action: NoteAction,
+) -> Result<Visit> {
+    actor.rooming()?;
     let v: Visit = sqlx::query_as("SELECT * FROM visits WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
         .bind(actor.tenant_id)
         .bind(id)
         .fetch_optional(&mut **tx)
         .await?
         .ok_or(Error::NotFound)?;
-    // Being a clinic owner does not grant a right to sign another clinician's documentation.
-    if v.clinician_id != actor.sub {
-        return Err(Error::Forbidden);
+    match action {
+        NoteAction::Draft => crate::note_access::require_draft(tx, actor).await?,
+        NoteAction::Sign => crate::note_access::require_sign(tx, actor).await?,
+        NoteAction::Amend => crate::note_access::require_amend(tx, actor).await?,
     }
     if v.version != version {
         return Err(Error::Conflict("visit changed; reload before saving"));
@@ -79,6 +96,24 @@ pub(crate) async fn rooming_authorized(
         return Err(Error::Forbidden);
     }
     Ok(())
+}
+
+/// Intake and vitals on a started visit: rooming staff, the assigned clinician, and a
+/// clinician or the owner covering the visit. Starting a visit keeps `rooming_authorized`.
+/// A delegated support session is not a clinician of the practice.
+pub(crate) async fn intake_authorized(
+    tx: &mut Tx<'_>,
+    a: &Actor,
+    clinician_id: Uuid,
+) -> Result<()> {
+    if matches!(a.role, Role::Owner | Role::Clinician) && a.sub != clinician_id {
+        return if crate::note_access::delegated(tx, a).await? {
+            Err(Error::Forbidden)
+        } else {
+            Ok(())
+        };
+    }
+    rooming_authorized(tx, a, clinician_id).await
 }
 
 type PreviousNoteRow = (
@@ -340,8 +375,20 @@ impl ClinicalBackend for PostgresBackend {
             note.procedure.clear();
         }
         let mut tx = self.0.begin().await?;
-        let v = lock_visit(&mut tx, a, id, version).await?;
+        let v = lock_visit(&mut tx, a, id, version, NoteAction::Draft).await?;
         editable(&v)?;
+        // Every save names its writer. A support session is named as such, never as staff.
+        let support = crate::note_access::delegated(&mut tx, a).await?;
+        note.saved_by = Some(NoteSaved {
+            id: a.sub,
+            name: if support {
+                crate::note_access::SUPPORT_NAME.into()
+            } else {
+                crate::note_access::person_name(&mut tx, a.tenant_id, a.sub).await?
+            },
+            at: Utc::now(),
+            support,
+        });
         let recorded = v
             .note
             .as_ref()
@@ -381,6 +428,9 @@ impl ClinicalBackend for PostgresBackend {
             .await?;
         let v = visit_row(&mut tx, a, id).await?;
         audit(&mut tx, a, "visit.note_save", id).await?;
+        if a.sub != v.clinician_id {
+            audit(&mut tx, a, "visit.note_save_for_assigned", id).await?;
+        }
         if started_from.is_some() && started_from != recorded {
             audit(&mut tx, a, "visit.note_started_from_earlier", id).await?;
         }
@@ -389,13 +439,11 @@ impl ClinicalBackend for PostgresBackend {
     }
 
     async fn previous_note(&self, a: &Actor, id: Uuid) -> Result<PreviousNote> {
-        a.clinical()?;
+        a.rooming()?;
         let mut tx = self.0.begin().await?;
         let v = visit_row(&mut tx, a, id).await?;
-        // The same rule as writing the note: only the assigned clinician documents this visit.
-        if v.clinician_id != a.sub {
-            return Err(Error::Forbidden);
-        }
+        // The same rule as writing the note: anyone who may draft may read the earlier one.
+        crate::note_access::require_draft(&mut tx, a).await?;
         // Signed notes only, same patient and practice, not later than this visit. The
         // assigned clinician's own notes come first; otherwise the newest by anyone.
         let rows: Vec<PreviousNoteRow> = sqlx::query_as("SELECT s.id,s.version,s.note,s.clinician_id,s.signed_at,ap.starts_at,COALESCE(NULLIF(pp.display_name,''),NULLIF(u.display_name,''),'') FROM visits s JOIN appointments ap ON ap.tenant_id=s.tenant_id AND ap.id=s.appointment_id JOIN appointments cur ON cur.tenant_id=s.tenant_id AND cur.id=$4 LEFT JOIN practice_providers pp ON pp.tenant_id=s.tenant_id AND pp.id=s.clinician_id LEFT JOIN browser_users u ON u.tenant_id=s.tenant_id AND u.id=s.clinician_id WHERE s.tenant_id=$1 AND s.patient_id=$2 AND s.id<>$3 AND s.status='signed' AND ap.starts_at<=cur.starts_at ORDER BY (s.clinician_id=$5) DESC,ap.starts_at DESC,s.signed_at DESC,s.id LIMIT 20")
@@ -441,6 +489,7 @@ impl ClinicalBackend for PostgresBackend {
                     clinician_id,
                     clinician_name,
                     same_clinician: clinician_id == v.clinician_id,
+                    own: clinician_id == a.sub,
                     note: text,
                 })
             },
@@ -454,6 +503,50 @@ impl ClinicalBackend for PostgresBackend {
         .await?;
         tx.commit().await?;
         Ok(PreviousNote { source })
+    }
+
+    async fn note_authorship(&self, a: &Actor, id: Uuid) -> Result<serde_json::Value> {
+        a.staff()?;
+        let mut tx = self.0.begin().await?;
+        let v = visit_row(&mut tx, a, id).await?;
+        let access = crate::note_access::note_access(&mut tx, a).await?;
+        // A custom access policy can only take these away, never add to them.
+        let edit = crate::access_policies::allows(&mut tx, a, "clinical", "edit").await?;
+        let create = crate::access_policies::allows(&mut tx, a, "clinical", "create").await?;
+        let signed = v.status == "signed";
+        let assigned =
+            crate::note_access::person_name(&mut tx, a.tenant_id, v.clinician_id).await?;
+        let signer = match v.signed_by {
+            Some(by) => {
+                serde_json::json!({"id":by,"name":crate::note_access::person_name(&mut tx, a.tenant_id, by).await?,"at":v.signed_at})
+            }
+            None => serde_json::Value::Null,
+        };
+        let authors: Vec<(Uuid, Uuid, chrono::DateTime<Utc>)> = sqlx::query_as("SELECT id,author_id,created_at FROM amendments WHERE tenant_id=$1 AND visit_id=$2 ORDER BY created_at,id")
+            .bind(a.tenant_id)
+            .bind(id)
+            .fetch_all(&mut *tx)
+            .await?;
+        let mut amendments = Vec::with_capacity(authors.len());
+        for (amendment, author, created_at) in authors {
+            amendments.push(serde_json::json!({"id":amendment,"author_id":author,"author_name":crate::note_access::person_name(&mut tx, a.tenant_id, author).await?,"created_at":created_at}));
+        }
+        audit(&mut tx, a, "visit.note_authorship.read", id).await?;
+        tx.commit().await?;
+        Ok(serde_json::json!({
+            "visit_id":v.id,
+            "version":v.version,
+            "status":v.status,
+            "assigned":{"id":v.clinician_id,"name":assigned},
+            "is_assigned":v.clinician_id == a.sub,
+            "last_saved":v.note.as_ref().and_then(|note| note.get("saved_by")).cloned(),
+            "signed":signer,
+            "amendments":amendments,
+            "delegated":access.delegated,
+            "can_draft":!signed && access.draft && edit,
+            "can_sign":!signed && access.sign && edit,
+            "can_amend":signed && access.amend && create,
+        }))
     }
 
     async fn save_vitals(
@@ -473,7 +566,7 @@ impl ClinicalBackend for PostgresBackend {
                 .fetch_optional(&mut *tx)
                 .await?
                 .ok_or(Error::NotFound)?;
-        rooming_authorized(&mut tx, a, v.clinician_id).await?;
+        intake_authorized(&mut tx, a, v.clinician_id).await?;
         if v.version != version {
             return Err(Error::Conflict("visit changed; reload before saving"));
         }
@@ -493,8 +586,9 @@ impl ClinicalBackend for PostgresBackend {
 
     async fn sign(&self, a: &Actor, id: Uuid, version: i64) -> Result<Visit> {
         let mut tx = self.0.begin().await?;
-        let v = lock_visit(&mut tx, a, id, version).await?;
+        let v = lock_visit(&mut tx, a, id, version, NoteAction::Sign).await?;
         editable(&v)?;
+        let assigned = v.clinician_id;
         let note: SoapNote = serde_json::from_value(v.note.ok_or(Error::Conflict(
             "a complete SOAP note is required before signing",
         ))?)
@@ -519,6 +613,10 @@ impl ClinicalBackend for PostgresBackend {
                 classification: "phi".into(), occurred_at: chrono::Utc::now(), retention_days: 30,
             }).await?;
         audit(&mut tx, a, "visit.sign", id).await?;
+        if a.sub != assigned {
+            // The signer is recorded as themselves. The visit stays assigned as it was.
+            audit(&mut tx, a, "visit.sign_for_assigned", id).await?;
+        }
         tx.commit().await?;
         Ok(v)
     }
@@ -527,7 +625,7 @@ impl ClinicalBackend for PostgresBackend {
         text(&input.reason, 1000)?;
         text(&input.text, 10000)?;
         let mut tx = self.0.begin().await?;
-        let v = lock_visit(&mut tx, a, id, version).await?;
+        let v = lock_visit(&mut tx, a, id, version, NoteAction::Amend).await?;
         if v.status != "signed" {
             return Err(Error::Conflict("only signed visits can be amended"));
         }
@@ -554,8 +652,17 @@ impl ClinicalBackend for PostgresBackend {
             .execute(&mut *tx)
             .await?;
         let patient = patient_row(&mut tx, a, id).await?;
-        let visits = sqlx::query_as("SELECT * FROM visits WHERE tenant_id=$1 AND patient_id=$2 AND status='signed' ORDER BY signed_at,id")
+        let mut visits: Vec<Visit> = sqlx::query_as("SELECT * FROM visits WHERE tenant_id=$1 AND patient_id=$2 AND status='signed' ORDER BY signed_at,id")
             .bind(a.tenant_id).bind(id).fetch_all(&mut *tx).await?;
+        if matches!(a.role, Role::Patient) {
+            // Who typed the draft is the practice's own working record. The patient's
+            // copy carries the note as signed, its signer and its amendments.
+            for visit in &mut visits {
+                if let Some(note) = visit.note.as_mut().and_then(|note| note.as_object_mut()) {
+                    note.remove("saved_by");
+                }
+            }
+        }
         let amendments = sqlx::query_as("SELECT a.* FROM amendments a JOIN visits v ON v.tenant_id=a.tenant_id AND v.id=a.visit_id WHERE v.tenant_id=$1 AND v.patient_id=$2 AND v.status='signed' ORDER BY a.created_at,a.id")
             .bind(a.tenant_id).bind(id).fetch_all(&mut *tx).await?;
         audit(&mut tx, a, "record.read", id).await?;

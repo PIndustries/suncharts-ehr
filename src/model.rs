@@ -122,6 +122,18 @@ pub struct NoteSource {
     pub visit_date: Option<DateTime<Utc>>,
 }
 
+/// Who last saved an in-progress note, and when. Set by the server on every save;
+/// client values are ignored. It stays with the note when the note is signed.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct NoteSaved {
+    pub id: Uuid,
+    pub name: String,
+    pub at: DateTime<Utc>,
+    /// The save came from a delegated support session, not a member of staff.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub support: bool,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SoapNote {
@@ -135,6 +147,8 @@ pub struct SoapNote {
     pub procedure: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_from: Option<NoteSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_by: Option<NoteSaved>,
 }
 impl SoapNote {
     pub fn validate(&self) -> Result<()> {
@@ -182,6 +196,8 @@ pub struct PreviousNoteSource {
     pub clinician_id: Uuid,
     pub clinician_name: String,
     pub same_clinician: bool,
+    /// The earlier note belongs to a visit assigned to the person asking.
+    pub own: bool,
     pub note: PreviousNoteText,
 }
 

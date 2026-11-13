@@ -4,7 +4,7 @@ use crate::{
     auth::{Actor, Role},
     error::{Error, Result},
     model::Visit,
-    postgres::{audit, rooming_authorized},
+    postgres::audit,
     State,
 };
 use axum::{
@@ -87,7 +87,8 @@ async fn payload(tx: &mut Transaction<'_, Postgres>, a: &Actor, v: &Visit) -> Re
     data["can_edit"] = json!(
         v.status == "in_progress"
             && (assistant
-                || (matches!(a.role, Role::Owner | Role::Clinician) && a.sub == v.clinician_id))
+                || (matches!(a.role, Role::Owner | Role::Clinician)
+                    && (a.sub == v.clinician_id || !crate::note_access::delegated(tx, a).await?)))
     );
     data["visit_id"] = json!(v.id);
     data["version"] = json!(v.version);
@@ -129,7 +130,7 @@ async fn save(
     let version = crate::expected(&h)?;
     let mut tx = db(&s)?.begin().await?;
     let v = visit(&mut tx, &a, id, true).await?;
-    rooming_authorized(&mut tx, &a, v.clinician_id).await?;
+    crate::postgres::intake_authorized(&mut tx, &a, v.clinician_id).await?;
     if v.version != version {
         return Err(Error::Conflict("visit changed; reload before saving"));
     }

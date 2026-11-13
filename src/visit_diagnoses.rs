@@ -103,12 +103,14 @@ async fn diagnoses(tx: &mut Transaction<'_, Postgres>, a: &Actor, id: Uuid) -> R
 }
 async fn payload(tx: &mut Transaction<'_, Postgres>, a: &Actor, v: &Visit) -> Result<Value> {
     let items = diagnoses(tx, a, v.id).await?;
+    // Diagnoses follow the note: anyone who may draft the note may record them.
+    let can_edit = v.status == "in_progress" && crate::note_access::note_access(tx, a).await?.draft;
     let service_date = diagnosis_service_date(tx, a, v).await?;
     let mut history = sqlx::query_scalar::<_, Value>("SELECT jsonb_build_object('id',id,'visit_version',visit_version,'actor_id',actor_id,'actor_label',(SELECT coalesce(nullif(u.display_name,''),u.email) FROM browser_users u WHERE u.tenant_id=visit_diagnosis_revisions.tenant_id AND u.id=visit_diagnosis_revisions.actor_id),'reason',reason,'snapshot',snapshot,'created_at',created_at) FROM visit_diagnosis_revisions WHERE tenant_id=$1 AND visit_id=$2 ORDER BY visit_version DESC LIMIT 101").bind(a.tenant_id).bind(v.id).fetch_all(&mut **tx).await?;
     let truncated = history.len() > 100;
     history.truncate(100);
     Ok(
-        json!({"visit":v,"service_date":service_date,"version":v.version,"can_edit":v.status=="in_progress" && a.clinical().is_ok() && a.sub==v.clinician_id,"diagnoses":items,"history":history,"history_truncated":truncated,"code_system":"http://hl7.org/fhir/sid/icd-10-cm"}),
+        json!({"visit":v,"service_date":service_date,"version":v.version,"can_edit":can_edit,"diagnoses":items,"history":history,"history_truncated":truncated,"code_system":"http://hl7.org/fhir/sid/icd-10-cm"}),
     )
 }
 async fn diagnosis_service_date(
@@ -150,14 +152,12 @@ async fn save(
     h: HeaderMap,
     Json(mut input): Json<Input>,
 ) -> Result<Json<Value>> {
-    a.clinical()?;
+    a.rooming()?;
     input.validate()?;
     let expected = crate::expected(&h)?;
     let mut tx = db(&s)?.begin().await?;
     let v = visit(&mut tx, &a, id, true).await?;
-    if a.sub != v.clinician_id {
-        return Err(Error::Forbidden);
-    }
+    crate::note_access::require_draft(&mut tx, &a).await?;
     if expected != v.version {
         return Err(Error::Conflict("visit changed; reload before saving"));
     }

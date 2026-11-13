@@ -509,7 +509,7 @@ fn public_fields(value: &Value, keys: &[&str]) -> Value {
     Value::Object(result)
 }
 fn public_snapshot(snapshot: &Value) -> Value {
-    let mut result = json!({"visit":public_fields(&snapshot["visit"],&["starts_at","signed_at","facility","room","clinician_label"])});
+    let mut result = json!({"visit":public_fields(&snapshot["visit"],&["starts_at","signed_at","facility","room","clinician_label","signed_by_label"])});
     for (kind, keys) in [
         (
             "medications",
@@ -588,7 +588,9 @@ async fn staff_access(
     let mut tx = db(&s)?.begin().await?;
     staff_patient(&mut tx, &a, p).await?;
     let account:Option<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',id,'email',email,'status',status,'version',version) FROM patient_portal_accounts WHERE tenant_id=$1 AND patient_id=$2").bind(a.tenant_id).bind(p).fetch_optional(&mut *tx).await?;
-    let releases:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('visit_id',r.visit_id,'avs_version',r.version,'released_at',r.released_at,'instructions',r.content->'instructions','publication_version',COALESCE(p.version,0),'visible',COALESCE(p.visible AND p.avs_version=r.version,false),'pinned_avs_version',p.avs_version,'can_publish',v.clinician_id=$3) FROM avs_releases r JOIN visits v ON v.tenant_id=r.tenant_id AND v.id=r.visit_id LEFT JOIN patient_portal_publications p ON p.tenant_id=r.tenant_id AND p.visit_id=r.visit_id WHERE v.tenant_id=$1 AND v.patient_id=$2 AND v.status='signed' ORDER BY r.released_at DESC LIMIT 101").bind(a.tenant_id).bind(p).bind(a.sub).fetch_all(&mut *tx).await?;
+    let can_publish =
+        a.clinical().is_ok() && crate::note_access::note_access(&mut tx, &a).await?.sign;
+    let releases:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('visit_id',r.visit_id,'avs_version',r.version,'released_at',r.released_at,'instructions',r.content->'instructions','publication_version',COALESCE(p.version,0),'visible',COALESCE(p.visible AND p.avs_version=r.version,false),'pinned_avs_version',p.avs_version,'can_publish',$3::boolean) FROM avs_releases r JOIN visits v ON v.tenant_id=r.tenant_id AND v.id=r.visit_id LEFT JOIN patient_portal_publications p ON p.tenant_id=r.tenant_id AND p.visit_id=r.visit_id WHERE v.tenant_id=$1 AND v.patient_id=$2 AND v.status='signed' ORDER BY r.released_at DESC LIMIT 101").bind(a.tenant_id).bind(p).bind(can_publish).fetch_all(&mut *tx).await?;
     let events:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('action',action,'actor_kind',actor_kind,'actor_id',actor_id,'version',version,'created_at',created_at) FROM patient_portal_events WHERE tenant_id=$1 AND patient_id=$2 ORDER BY id DESC LIMIT 51").bind(a.tenant_id).bind(p).fetch_all(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(
@@ -660,10 +662,9 @@ async fn publish(
     let expected = expected(&h)?;
     text(&mut input.reason, 1000)?;
     let mut tx = db(&s)?.begin().await?;
-    let clinician:Uuid=sqlx::query_scalar("SELECT clinician_id FROM visits WHERE tenant_id=$1 AND patient_id=$2 AND id=$3 AND status='signed' FOR UPDATE").bind(a.tenant_id).bind(p).bind(v).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
-    if clinician != a.sub {
-        return Err(Error::Forbidden);
-    }
+    let _visit:Uuid=sqlx::query_scalar("SELECT id FROM visits WHERE tenant_id=$1 AND patient_id=$2 AND id=$3 AND status='signed' FOR UPDATE").bind(a.tenant_id).bind(p).bind(v).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
+    // Publishing a summary stays with whoever may sign the note.
+    crate::note_access::require_sign(&mut tx, &a).await?;
     let current:Option<i64>=sqlx::query_scalar("SELECT version FROM patient_portal_publications WHERE tenant_id=$1 AND visit_id=$2 FOR UPDATE").bind(a.tenant_id).bind(v).fetch_optional(&mut *tx).await?;
     if current.unwrap_or(0) != expected {
         return Err(Error::Conflict(

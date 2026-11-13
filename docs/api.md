@@ -75,7 +75,19 @@ resources have their own versions.
 unused, so clients that only know the four SOAP sections keep working; a client
 that rewrites a note must send back the fields it received or they are removed.
 `GET /api/v1/visits/{id}/previous-note` returns the text of the patient's most
-recent earlier signed note to the visit's assigned clinician, or `source: null`.
+recent earlier signed note to anyone who may draft the visit's note, or
+`source: null`.
+
+Clinicians, the owner and enabled nurses and medical assistants may save an
+unsigned note and its diagnoses whether or not the visit is assigned to them; the
+server sets `saved_by` (who and when) on every save and ignores a client value.
+`POST /api/v1/visits/{id}/sign` and `POST /api/v1/visits/{id}/amendments` accept
+any clinician or the owner. `signed_by` is the person who signed; `clinician_id`
+is the assigned clinician and is never changed by signing. A delegated support
+session may draft and receives 403 for sign, amend and summary release.
+`GET /api/v1/visits/{id}/note-authorship` names the assigned clinician, last
+writer, signer and amendment authors and reports `can_draft`, `can_sign` and
+`can_amend` for the caller. The patient's own record omits `saved_by`.
 
 Use stable request UUIDs where the contract supports idempotent creation. Reusing
 an identity with changed content is rejected. After a network failure, retrieve

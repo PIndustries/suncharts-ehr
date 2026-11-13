@@ -34,7 +34,13 @@ source imports and ledger entries preserve history rather than overwrite it.
 
 An appointment moves from booking through arrival to an encounter. Enabled rooming
 staff may start a checked-in visit and record intake/vitals while retaining its
-assigned clinician. That clinician owns SOAP, signing and amendments. Checkout,
+assigned clinician. Drafting the note is shared by the practice's clinical staff
+(clinicians, the owner, enabled nurses and medical assistants); signing and
+amendments belong to a clinician or the owner, and the signature records the
+person who signed without reassigning the visit. A delegated support session,
+identified by its Connect grant rather than a staff account, may draft but never
+signs or amends. `src/note_access.rs` holds this rule; custom access policies
+intersect it on every request. Checkout,
 results, follow-up tasks and billing have separate state transitions. Prescription
 orders also retain their own versioned lifecycle and reviewed authorization
 snapshots, distinct from reported medication use and external pharmacy delivery.
