@@ -112,8 +112,6 @@ function patientBillingTestTag(){return typeof testPaymentLabel==='function'?tes
 function patientBillingTestNotice(s){const tag=patientBillingTestTag();return s.mode==='test'&&tag?`<p class="copay-mode-label">${tag}</p>`:'';}
 function patientBillingSummary(data){
  const a=data.summary.accounts,c=data.summary.copays;
- // Nothing owed, paid or held: one quiet line instead of three zero tiles.
- if(!Number(a.reviewed_patient_due_cents)&&!Number(a.open_invoice_count)&&!Number(a.invoice_review_count)&&!Number(c.net_received_cents)&&!Number(c.receipts)&&!Number(c.usable_unapplied_cents)&&!Number(c.review_count))return '<p class="patient-billing-totals-quiet muted">Nothing owed and no payments yet.</p>';
  return `<div class="patient-billing-totals"><section><span>Patient owes</span><strong>${money(a.reviewed_patient_due_cents)}</strong><small>${esc(a.open_invoice_count)} open ${a.open_invoice_count===1?'invoice':'invoices'}${a.invoice_review_count?` · ${esc(a.invoice_review_count)} to re-check`:''}</small></section><section><span>Paid by patient</span><strong>${money(c.net_received_cents)}</strong><small>${esc(c.receipts)} ${c.receipts===1?'receipt':'receipts'} · after refunds</small></section><section><span>Credit on account</span><strong>${money(c.usable_unapplied_cents)}</strong><small>${c.review_count?`${esc(c.review_count)} receipts to re-check`:'Paid but not yet applied to a visit'}</small></section></div>`;
 }
 function patientBillingAccounts(data,s){
