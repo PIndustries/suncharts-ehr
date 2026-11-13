@@ -217,7 +217,7 @@ test('cards saved before later charges are shown as in-person only, and an open 
  assert.match(html,/agrees there that the practice may charge it later\. Nothing is charged now\./);plain(html,'cards on file');
  f.setups.set(patient,{request_id:'setup-open',patient_id:patient,status:'open',session:{url:'https://checkout.stripe.com/c/pay/cs_test_setup'}});
  html=c.patientBillingProfileMarkup(f.s.profile,'methods',f.s);
- assert.match(html,/data-hub-setup-cancel-link>Cancel link</);assert.doesNotMatch(html,/data-hub-add-method/,'an open link blocks the next one until it is cancelled');
+ assert.match(html,/data-hub-setup-cancel-link>Cancel this link</);assert.doesNotMatch(html,/data-hub-add-method/,'an open link blocks the next one until it is cancelled');
  c.next=()=>({request_id:'setup-open',patient_id:patient,status:'expired',cancelled:true,session:{url:null},retry_allowed:false});
  await c.patientBillingCancelSetup(f.s);
  same(f.calls.find(call=>call[1]==='POST').slice(0,3),['/api/v1/billing/payment-setups/setup-open/cancel','POST',{}]);
