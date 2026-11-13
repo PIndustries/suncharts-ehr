@@ -258,6 +258,14 @@ fn action(method: &Method, path: &str) -> Option<Action> {
             {
                 return Some(Action::Create);
             }
+            // An eligibility check is requested for a coverage; it never changes the coverage.
+            if path.starts_with("/api/v1/patients/")
+                && (path.ends_with("/claimmd-eligibility")
+                    || path.ends_with("/claimmd-eligibility/check")
+                    || path.ends_with("/claimmd-eligibility/enrollment"))
+            {
+                return Some(Action::Create);
+            }
             if path == "/api/v1/practice/document-storage/move" {
                 return Some(Action::Edit);
             }
@@ -1064,6 +1072,27 @@ mod tests {
             &Method::POST,
             "/api/v1/scheduling/appointments/{id}/reschedule"
         ));
+    }
+    #[test]
+    fn eligibility_checks_are_a_billing_create_under_a_custom_policy() {
+        let base = "/api/v1/patients/{patient}/coverages/{coverage}/claimmd-eligibility";
+        let mut flags = defaults();
+        for path in [
+            base.to_owned(),
+            format!("{base}/check"),
+            format!("{base}/enrollment"),
+        ] {
+            assert!(permitted(&flags, &Method::POST, &path), "{path}");
+        }
+        flags.get_mut("billing").unwrap().create = false;
+        assert!(permitted(&flags, &Method::GET, base));
+        for path in [
+            base.to_owned(),
+            format!("{base}/check"),
+            format!("{base}/enrollment"),
+        ] {
+            assert!(!permitted(&flags, &Method::POST, &path), "{path}");
+        }
     }
     #[test]
     fn aggregates_and_nested_patient_domains_require_their_sources() {

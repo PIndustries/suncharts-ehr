@@ -34702,7 +34702,7 @@
       "get": {
         "operationId": "listClaimmdEligibility",
         "summary": "Review saved eligibility evidence",
-        "description": "Staff only. Latest100 scoped checks with immutable requested identity/version and service-date snapshot. Newly recorded tax IDs are masked. Failed checks may carry response_snapshot.failure with kind,http_status,provider_codes; numeric codes alone are preserved, never raw system-error text. Historical failures without evidence remain unknown.",
+        "description": "Staff only. Latest100 scoped checks with immutable requested identity/version and service-date snapshot. Newly recorded tax IDs are masked. Failed checks may carry response_snapshot.failure with kind,http_status,provider_codes; numeric codes alone are preserved, never raw system-error text. Historical failures without evidence remain unknown. Each check also carries actor_name, the display name (or sign-in email) of the staff member who ran it, and request_snapshot.automatic when the page ran it without a click.",
         "tags": [
           "Billing"
         ],
@@ -34802,6 +34802,192 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ClaimmdEligibilityRequest"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "coverage",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/patients/{patient}/coverages/{coverage}/claimmd-eligibility/check": {
+      "post": {
+        "operationId": "checkClaimmdEligibility",
+        "summary": "Check eligibility with what the chart already knows",
+        "description": "Scheduling-authorized staff only. The server builds the Claim.MD request itself: subscriber from the patient (relationship self) or from the coverage's subscriber name and birth date with the patient as dependent; member ID and payer ID from the coverage and its payer; provider from the appointment or visit clinician when they have an NPI, else the practice's booking clinician, else the provider last used, else the only provider with an NPI; billing organization last used, else the only one; service date from service_date, else the appointment date in the practice time zone, else today; benefit type 30. Returns outcome `checked` with the saved check (completed or failed; a failed check keeps only kind, HTTP status, numeric codes and hint words, never Claim.MD's text), outcome `needs` with exactly what is missing (payer_id, member_id, subscriber_name, subscriber_birth_date, provider or billing_organization with choices, provider_npi, billing_organization_missing, claim_connection) and nothing sent, or, when automatic is true, outcome `skipped` with a reason (coverage_not_active, no_payer_id, recent_check within 30 days, recent_failure within 12 hours, in_progress, rate_limited). The same request_id returns the saved check and never asks the insurer twice.",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; tenant-scoped attributed data, no credentials"
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant"
+          },
+          "409": {
+            "description": "State or version conflict"
+          },
+          "428": {
+            "description": "Current quoted resource version required"
+          },
+          "500": {
+            "description": "Atomic operation failed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "request_id"
+                ],
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "appointment_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "visit_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "service_date": {
+                    "type": "string",
+                    "format": "date"
+                  },
+                  "automatic": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "provider_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "billing_organization_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "coverage",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/patients/{patient}/coverages/{coverage}/claimmd-eligibility/enrollment": {
+      "post": {
+        "operationId": "startClaimmdEligibilityEnrollment",
+        "summary": "Start Claim.MD eligibility setup from a check",
+        "description": "Owner only. Starts Claim.MD enrollment of type elig for the insurer, provider NPI and billing organization that the named eligibility check used. The tax ID is resolved on the server and stored masked. Returns status `started` with a Claim.MD external_url to continue in a new tab, `no_link` when Claim.MD answered without a form, or `refused` with the bounded failure evidence (kind, codes, hint words).",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; tenant-scoped attributed data, no credentials"
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant"
+          },
+          "409": {
+            "description": "State or version conflict"
+          },
+          "428": {
+            "description": "Current quoted resource version required"
+          },
+          "500": {
+            "description": "Atomic operation failed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "check_id"
+                ],
+                "properties": {
+                  "check_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                }
               }
             }
           }

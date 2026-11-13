@@ -42,7 +42,7 @@ async function click(attribute,value='',parent='#encounter-revenue',extra={}){
  assert.deepEqual(await click('data-copay-receipt','receipt','#insurance-workspace'),[['receipt','receipt']]);
  assert.deepEqual(await click('data-collect-card-copay','appointment','#insurance-workspace'),[['hosted-copay','appointment']]);
  assert.deepEqual(await click('data-refresh-hosted-copay','operation','#insurance-workspace',{appointment:'appointment'}),[['hosted-refresh','appointment','operation']]);
- assert.deepEqual(await click('data-eligibility-report','coverage','#insurance-workspace'),[['eligibility-load','coverage'],['eligibility-open','coverage']]);
+ assert.deepEqual(await click('data-refresh-eligibility','coverage','#insurance-workspace'),[['eligibility-load','coverage']]);
  assert.deepEqual(await click('data-revenue-claim','claim'),[['encounter-claim','claim','account']]);
  assert.deepEqual(await click('data-revenue-remittance','remittance'),[['claims'],['era','remittance']]);
  assert.deepEqual(await click('data-revenue-invoice','account'),[['invoice']]);

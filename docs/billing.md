@@ -41,11 +41,73 @@ change a different clinical encounter or its signed documentation. Current prima
 secondary and tertiary coverage stay visible together, while inactive and prior
 coverage are available in history. Check-in keeps this appointment selected;
 an existing signed visit offers **Review signed encounter**. Coverage
-verification is a staff attestation, separate from a native Claim.MD eligibility
-response. The latest eligibility check shows its request date, service date and
-status; **View eligibility report** opens the retained structured response.
-**Payer response received** means the request completed, not that benefits are
-active or payment is guaranteed. Review the response before deciding what to collect.
+verification is a staff attestation, separate from an eligibility check with the
+insurer.
+
+### Checking eligibility
+
+**Check eligibility** on a coverage asks the insurer through Claim.MD straight
+away. There is no form: the request is built from the chart, the coverage and the
+practice directory.
+
+- The policy holder is the patient when the coverage says *self*. Otherwise it is
+  the coverage's subscriber name and date of birth, and the patient is sent as the
+  dependent.
+- The provider is the clinician of the appointment or visit being prepared, when
+  they have an NPI; otherwise the practice's online-booking clinician, the provider
+  the last check used, or the only provider with an NPI.
+- The billing organization is the one the last check used, or the only one.
+- The service date is the appointment's date, or today when no visit is in view.
+
+Staff are asked a question only when something is missing or there is a real
+choice: which billing organization or provider to use when there are several and
+none has been used before, or the policy holder's name or date of birth when the
+coverage does not have them. The answer is saved where it belongs (the coverage,
+or the choice of the next check) and the check runs. A missing payer ID, NPI,
+billing organization or Claim.MD connection is named with a button to the place it
+is set; only the practice owner can change those.
+
+Opening **Review insurance** for an appointment checks each current coverage by
+itself, once, when the coverage is active, its insurance company has a payer ID,
+no answer exists for a service date in the last 30 days and no attempt failed in
+the last 12 hours. It never repeats while the page stays open and never runs for
+inactive coverage. The result says **Checked automatically**. There is no setting
+to turn this off, and nothing runs in the background.
+
+The coverage shows a summary of the insurer's answer:
+
+- **Active**, **Not active** or **Could not confirm**, with the service date and
+  who checked.
+- Plan, insurance type, group number, coverage dates and the member name the
+  insurer has. One line says when the insurer's name, date of birth or member ID
+  differs from the chart.
+- What the patient pays at a visit, in network first: office visit copay (the
+  specialist or plan copay when no office copay is reported), coinsurance,
+  individual deductible and out-of-pocket limit with what is left. *Not reported by
+  the insurer* marks anything absent. Out-of-network amounts, family amounts and
+  limitations are under **Out of network** and **See all benefits**.
+- **Save $… as this plan's copay** records the returned copay on the coverage with
+  a reason. Nothing is saved without that click.
+
+An answer is what the insurer reported for that date; it is not a promise to pay.
+Earlier checks are listed under **Past checks**. The practice owner also sees
+**Technical details** and **More options**, which opens the full request form for
+a different date, benefit type, procedure code or provider.
+
+When a check cannot be completed the coverage says why and offers one next step:
+
+| What it says | Next step |
+| --- | --- |
+| Claim.MD has not turned on eligibility checks for this provider with this insurer | Owner: **Set up eligibility with Claim.MD** opens Claim.MD's enrollment form. Others ask the owner. |
+| The insurer could not find this member | **Edit coverage** and check the member ID, name and date of birth. |
+| The payer ID was not recognised, or is missing | Owner: **Add the payer ID**. |
+| The insurer's system did not answer | **Try again** in a few minutes. |
+| Claim.MD is not connected | Owner: **Open Claim connections**. |
+| Claim.MD refused and gave no reason | **Send this to support** opens a support request for this chart with the check time and Claim.MD's code. |
+
+A failed check never means the patient is uninsured. SunCharts keeps only the kind
+of failure, Claim.MD's numeric code and which ordinary words its message used;
+the message itself is not stored.
 
 Create an encounter-linked charge account, review codes and amounts, then post it.
 Accounting uses integer cents and append-only entries. Reversals append opposite
@@ -54,9 +116,9 @@ state remain separate from clinical signing and administrative checkout.
 
 Patient responsibility must be reviewed. An account balance alone does not establish
 what the patient owes. Comprehensive responsibility allocation, automated
-statements and financial close are not implemented. Configured Claim.MD
-eligibility inquiries are supported; payer enrollment and returned benefits still
-require review.
+statements and financial close are not implemented. Eligibility answers report
+what the insurer returned for one service date; decide what to collect from the
+plan's benefits for the visit type.
 
 ## Copay, patient invoice and insurance claim
 

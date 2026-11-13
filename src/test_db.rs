@@ -22,6 +22,14 @@ use std::sync::OnceLock;
 const OWNERS_TABLE_LOCK: i64 = 0x5375_6e43_6861_7274;
 static SWEPT: AtomicBool = AtomicBool::new(false);
 
+/// Held by a test for as long as it points `ENGINE_CREDENTIAL_KEY_FILE` at its own
+/// key. The variable belongs to the whole test process, so two tests that seal and
+/// open secrets at the same moment would otherwise read each other's key.
+pub fn credential_key_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 /// Creates `schema` on `pool`, records this process as its owner and, once per
 /// process, drops schemas left behind by test processes that have exited.
 pub async fn create_schema(pool: &PgPool, schema: &str) {

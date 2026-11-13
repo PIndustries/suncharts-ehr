@@ -89,13 +89,26 @@ function eligibilityState(){
  return insuranceEligibilityState;
 }
 function insuranceEligibilityMarkup(state,coverageId,serviceDate){
- if(!state||state.loading)return '<p class="muted">Loading recorded eligibility checks…</p>';
- if(state.error)return `<p>Eligibility history could not be loaded. Coverage status is unknown.</p><button type="button" data-refresh-eligibility="${esc(coverageId)}">Retry eligibility history</button>`;
- const check=state.history?.items?.[0];
- if(!check)return '<p class="muted">No eligibility check recorded. Confirm benefits for this service date.</p>';
- const checkedDate=check.request_snapshot?.request?.service_date||check.request_snapshot?.service_date;
- const status={completed:'Payer response received',pending:'Eligibility request pending',failed:'Eligibility request failed'}[check.status]||human(check.status);
- return `<div class="section-head"><div><b>${esc(status)}</b><small>Requested ${esc(date(check.created_at))}${checkedDate?' · Service '+esc(checkedDate):''}</small></div><button type="button" data-eligibility-report="${esc(coverageId)}">View eligibility report</button></div>${checkedDate&&checkedDate!==serviceDate?`<p class="eligibility-caution">This check is for ${esc(checkedDate)}; the selected visit is ${esc(serviceDate)}.</p>`:''}<p class="muted">${check.status==='completed'?'Review the returned benefits, network and service limits. A response does not guarantee coverage or payment.':'No completed benefit response from this request. Do not assume the patient is uninsured.'}</p>${check.status==='completed'&&checkedDate===serviceDate&&typeof claimmdBenefitSummary==='function'?claimmdBenefitSummary(check):''}`;
+ const coverage=(workspace?.billing?.coverages||[]).find(c=>c.id===coverageId);
+ if(!state||state.loading)return '<p class="muted">Loading eligibility…</p>';
+ if(state.error)return `<p>The eligibility history could not be loaded.</p><button type="button" data-refresh-eligibility="${esc(coverageId)}">Try again</button>`;
+ if(!coverage||typeof claimmdEligibilityCard!=='function')return '';
+ return claimmdEligibilityCard(coverage,state.history?.items||[],{serviceDate});
+}
+function refreshInsuranceEligibility(coverageId){
+ const entry=eligibilityState().items.get(coverageId),node=$('insurance-eligibility-'+coverageId);
+ if(node&&entry)node.innerHTML=insuranceEligibilityMarkup(entry,coverageId,revenueServiceDate());
+}
+// Opening the insurance step of an appointment checks each current coverage once,
+// when there is no recent answer to show. Nothing runs for a chart that is only open.
+function insuranceAutoEligibility(coverages,appointment,serviceDate){
+ if(!appointment||typeof chartSection==='undefined'||chartSection!=='insurance'||typeof claimmdEligibilityAuto!=='function')return;
+ const state=eligibilityState();
+ for(const coverage of coverages)Promise.resolve(loadInsuranceEligibility(coverage.id)).then(()=>{
+  const entry=state.items.get(coverage.id);
+  if(insuranceEligibilityState!==state||selected!==state.patient||me!==state.identity||!entry?.history||chartSection!=='insurance'||revenueAppointment()?.id!==appointment.id)return;
+  claimmdEligibilityAuto(coverage,entry.history.items,{appointmentId:appointment.id,serviceDate});
+ }).catch(()=>{});
 }
 function updateInsuranceEligibility(coverageId,history){
  const state=eligibilityState();state.items.set(coverageId,{history,loading:false});
@@ -193,10 +206,11 @@ function renderPatientInsurance(){
  let host=$('insurance-workspace');if(!host){host=document.createElement('section');host.id='insurance-workspace';host.className='panel';$('chart').insertBefore(host,$('appointments-panel'));}
  const appointment=revenueAppointment(),serviceDate=revenueServiceDate(appointment),coverages=workspace.billing.coverages||[],current=coverages.filter(c=>c.content.status==='active'&&c.content.effective_date<=serviceDate&&(!c.content.end_date||c.content.end_date>=serviceDate)).sort((a,b)=>({primary:0,secondary:1,tertiary:2}[a.content.priority]??3)-({primary:0,secondary:1,tertiary:2}[b.content.priority]??3)),history=coverages.filter(c=>!current.includes(c));
  if(typeof refreshPatientChartContext==='function')refreshPatientChartContext();
- const key=JSON.stringify([selected,appointment?.id,appointment?.status,serviceDate,coverages.map(c=>[c.id,c.version]),workspace.billing.copays,(workspace.visits||[]).map(v=>[v.id,v.status])]);if(host.dataset.insuranceKey===key){for(const coverage of coverages)loadInsuranceEligibility(coverage.id);if(appointment&&billingCan('create'))void loadHostedCopays(appointment.id);return;}host.dataset.insuranceKey=key;
+ const key=JSON.stringify([selected,appointment?.id,appointment?.status,serviceDate,coverages.map(c=>[c.id,c.version]),workspace.billing.copays,(workspace.visits||[]).map(v=>[v.id,v.status])]);if(host.dataset.insuranceKey===key){for(const coverage of coverages)loadInsuranceEligibility(coverage.id);insuranceAutoEligibility(current,appointment,serviceDate);if(appointment&&billingCan('create'))void loadHostedCopays(appointment.id);return;}host.dataset.insuranceKey=key;
  const options=(workspace.appointments||[]).filter(a=>!['cancelled','canceled','no_show'].includes(a.status)||a.id===appointment?.id);
  host.innerHTML=`<div class="section-head"><div><h2>Prepare this appointment</h2><p class="muted">Review insurance, handle the copay, then continue the same appointment.</p></div></div><div class="insurance-appointment-context"><label>Appointment being prepared<select id="insurance-appointment" ${options.length?'':'disabled'}>${options.map(a=>`<option value="${esc(a.id)}" ${appointment?.id===a.id?'selected':''}>${esc(a.title||'Visit')} · ${esc(date(a.starts_at))} · ${esc(human(a.status))}</option>`).join('')||'<option>No appointment available</option>'}</select></label><p class="muted">Insurance and every copay action below use this appointment${appointment?' and service date '+esc(serviceDate):''}.</p></div><ol class="insurance-workflow-stages" aria-label="Appointment preparation"><li><button type="button" data-insurance-stage="insurance-review-title"><span>1</span> Review insurance</button></li><li><button type="button" data-insurance-stage="insurance-copay-title"><span>2</span> Collect copay</button></li><li><button type="button" data-insurance-stage="insurance-continue-title"><span>3</span> Continue encounter</button></li></ol><section class="insurance-workflow-stage" aria-labelledby="insurance-review-title"><div class="section-head"><h3 id="insurance-review-title" tabindex="-1">1. Review insurance</h3><div class="actions"><button type="button" data-chart-section="documents">Insurance documents</button>${billingCan('create')?'<button type="button" data-new-coverage>Add coverage</button>':''}</div></div>${current.length?`<div class="insurance-coverage-list">${current.map(insuranceCoverageCard).join('')}</div>`:'<p>No insurance on file for this visit date.</p>'}${history.length?`<details class="insurance-supporting-records"><summary>Inactive &amp; prior coverage (${history.length})</summary><div class="insurance-coverage-list">${history.map(insuranceCoverageCard).join('')}</div></details>`:''}</section><section class="insurance-workflow-stage" aria-labelledby="insurance-copay-title"><h3 id="insurance-copay-title" tabindex="-1">2. Collect copay</h3>${appointment?hostedCopayPanel(appointment,'insurance-hosted-copay')||copayReceiptMarkup(appointmentCopays(appointment)):'<p>Select or book an appointment before collecting its copay.</p>'}${billingCan('create')&&appointment?`<details class="insurance-supporting-records"><summary>Record cash, check or an external receipt</summary><p>This records money already received; it does not charge a card.</p><button type="button" data-record-copay="${esc(appointment.id)}">Record received payment</button></details>`:''}</section><section class="insurance-workflow-stage" aria-labelledby="insurance-continue-title"><h3 id="insurance-continue-title" tabindex="-1">3. Continue encounter</h3>${insuranceContinueMarkup(appointment)}</section><div id="insurance-editor"></div>`;
  for(const coverage of coverages)loadInsuranceEligibility(coverage.id);
+ insuranceAutoEligibility(current,appointment,serviceDate);
  if(appointment&&billingCan('create'))void loadHostedCopays(appointment.id);
  host.hidden=typeof chartSection!=='undefined'&&chartSection!=='insurance';
 }
@@ -231,7 +245,6 @@ document.addEventListener('click',event=>{
  const button=event.target.closest('button');if(!button)return;
  if(button.dataset.insuranceStage){event.preventDefault();if(chartSection!=='insurance'||!['insurance-review-title','insurance-copay-title','insurance-continue-title'].includes(button.dataset.insuranceStage))return;const heading=$(button.dataset.insuranceStage);heading?.focus({preventScroll:true});heading?.scrollIntoView({block:'start',behavior:'smooth'});return;}
  if(button.dataset.insuranceCheckIn){event.preventDefault();run(()=>checkInInsuranceAppointment(button.dataset.insuranceCheckIn));return;}
- if(button.dataset.eligibilityReport){event.preventDefault();run(async()=>{const patient=selected,identity=me,coverage=workspace.billing.coverages.find(c=>c.id===button.dataset.eligibilityReport);if(!coverage)throw new Error('Coverage is no longer available.');await loadInsuranceEligibility(coverage.id);if(selected!==patient||me!==identity)return;const entry=eligibilityState().items.get(coverage.id);await openClaimmdEligibility(coverage,{readOnly:true,history:entry?.history,serviceDate:revenueServiceDate()});});return;}
  if(button.dataset.refreshEligibility){event.preventDefault();loadInsuranceEligibility(button.dataset.refreshEligibility,true);return;}
  if(button.hasAttribute('data-refresh-revenue')){event.preventDefault();loadEncounterRevenueStatus(encounterChargeAccount(),true);return;}
  if(button.hasAttribute('data-revenue-documentation')){event.preventDefault();setEncounterSection('documentation');return;}

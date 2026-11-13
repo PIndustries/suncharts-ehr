@@ -20,6 +20,8 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 const MAX_RESPONSE: usize = 1_048_576;
+const RATE_LIMITED: &str =
+    "Too many requests were sent to Claim.MD in the last minute. Wait a minute, then try again.";
 const BENEFIT_TYPES: &str = "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 30 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 A0 A1 A3 A4 A5 A6 A7 A8 A9 AA AB AC AD AE AF AG AH AI AJ AK AL AM AN AO AP AQ AR B1 B2 B3 BA BB BC BD BE BF BG BH BI BJ BK BL BM BN BP BQ BR BS BT BU BV BW BX BY BZ C1 CA CB CC CD CE CF CG CH CI CJ CK CL CM CN CO CP CQ DG DM DS GF GN GY IC MH NI ON PT PU RN RT TC TN UC E0 E1 E2 E3 E4 E5 E6 E7 E8 E9 E10 E11 E12 E13 E14 E15 E16 E17 E18 E19 E20 E21 E22 E23 E24 E25 E26 E27 E28 E29 E30 E31 E32 E33 E34 E35 E36 EA EB EC ED EE EF PE SMH";
 
 fn db(state: &State) -> Result<&PgPool> {
@@ -132,9 +134,7 @@ pub(crate) async fn acquire_rate_limit_key(pool: &PgPool, account_key: &str) -> 
     .await?;
     tx.commit().await?;
     if acquired.is_none() {
-        return Err(Error::Invalid(
-            "Claim.MD account request limit reached; retry after one minute",
-        ));
+        return Err(Error::Invalid(RATE_LIMITED));
     }
     Ok(())
 }
@@ -153,6 +153,7 @@ struct Failure {
 }
 const PROVIDER_HINTS: &[&str] = &[
     "account",
+    "already",
     "birth",
     "contract",
     "date",
@@ -201,16 +202,23 @@ impl Failure {
         }
     }
     fn error(&self) -> Error {
-        Error::Invalid(match self.kind {
-            "provider_rejected" => {
-                "Claim.MD rejected the request; review the saved eligibility diagnostic"
-            }
-            "transport_unavailable" => "Claim.MD request unavailable",
-            "configuration_unavailable" => "Claim.MD connection configuration is unavailable",
-            "response_invalid" => "Claim.MD returned an unsupported response",
-            _ => "Claim.MD request failed; review the saved eligibility diagnostic",
-        })
+        failure_error(self.kind)
     }
+}
+// Shown to staff as a banner. Say what happened and what to do, in ordinary words.
+fn failure_error(kind: &str) -> Error {
+    Error::Invalid(match kind {
+        "transport_unavailable" => {
+            "The insurer's system did not answer. Try again in a few minutes."
+        }
+        "configuration_unavailable" => {
+            "Claim.MD is not connected. Ask the practice owner to check Claim connections."
+        }
+        "response_invalid" => {
+            "Claim.MD sent an answer that could not be read. Try again in a few minutes."
+        }
+        _ => "Claim.MD did not accept this eligibility check. Open the coverage to see what to do next.",
+    })
 }
 fn normalized_response(value: Value) -> std::result::Result<Value, Failure> {
     let value = value
@@ -561,22 +569,66 @@ async fn run_with_route(
     actor: &Actor,
     patient_id: Uuid,
     coverage_id: Uuid,
-    mut request: EligibilityRequest,
+    request: EligibilityRequest,
     route_override: Option<Route>,
 ) -> Result<Value> {
+    let check = run_core(
+        state,
+        actor,
+        patient_id,
+        coverage_id,
+        request,
+        route_override,
+        Derived::default(),
+    )
+    .await?;
+    if check.status == "completed" {
+        Ok(check_json(check))
+    } else {
+        Err(failure_error(failure_kind(&check)))
+    }
+}
+fn failure_kind(check: &Check) -> &str {
+    check
+        .response_snapshot
+        .as_ref()
+        .and_then(|value| value["failure"]["kind"].as_str())
+        .unwrap_or("")
+}
+/// What the one-click route worked out for itself. The saved request ID then stands for
+/// the staff member's click, not for the fields derived from the chart at that moment.
+#[derive(Default)]
+struct Derived {
+    digest: Option<String>,
+    snapshot: serde_json::Map<String, Value>,
+}
+// Returns the saved check whether the insurer answered or the attempt failed.
+async fn run_core(
+    state: &State,
+    actor: &Actor,
+    patient_id: Uuid,
+    coverage_id: Uuid,
+    mut request: EligibilityRequest,
+    route_override: Option<Route>,
+    derived: Derived,
+) -> Result<Check> {
     actor.scheduling()?;
     let pool = db(state)?;
-    let digest = crate::oauth::hash(
-        &serde_json::to_string(&(patient_id, coverage_id, &request))
-            .map_err(|_| Error::Invalid("invalid eligibility request"))?,
-    );
+    let one_click = derived.digest.is_some();
+    let digest = match derived.digest {
+        Some(digest) => digest,
+        None => crate::oauth::hash(
+            &serde_json::to_string(&(patient_id, coverage_id, &request))
+                .map_err(|_| Error::Invalid("invalid eligibility request"))?,
+        ),
+    };
     if let Some(existing) = existing(pool, actor, request.request_id).await? {
         if existing.creation_hash != digest {
             return Err(Error::Conflict("eligibility request ID was already used"));
         }
         let check = existing.into_check();
-        return if check.status == "completed" {
-            Ok(check_json(check))
+        return if check.status == "completed" || (one_click && check.status == "failed") {
+            Ok(check)
         } else {
             Err(Error::Conflict("eligibility request is not complete"))
         };
@@ -667,7 +719,10 @@ async fn run_with_route(
     let mut saved_request = serde_json::to_value(&request)
         .map_err(|_| Error::Invalid("invalid eligibility request"))?;
     saved_request["provider_taxid"] = json!(format!("*****{}", &request.provider_taxid[5..]));
-    let snapshot = json!({"request":saved_request,"patient":{"id":patient_id,"given_name":patient_given,"family_name":patient_family,"birth_date":patient_birth},"coverage_id":coverage_id,"payerid":payerid,"member_id":member,"pat_rel":pat_rel});
+    let mut snapshot = json!({"request":saved_request,"patient":{"id":patient_id,"given_name":patient_given,"family_name":patient_family,"birth_date":patient_birth},"coverage_id":coverage_id,"payerid":payerid,"member_id":member,"pat_rel":pat_rel});
+    for (key, value) in derived.snapshot {
+        snapshot[key] = value;
+    }
     let id = Uuid::new_v4();
     sqlx::query("INSERT INTO claimmd_eligibility_checks(tenant_id,id,patient_id,coverage_id,request_id,creation_hash,route_key,request_snapshot,status,actor_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9)")
         .bind(actor.tenant_id).bind(id).bind(patient_id).bind(coverage_id).bind(request.request_id).bind(&digest).bind(&route.key).bind(&snapshot).bind(actor.sub).execute(&mut *tx).await?;
@@ -732,23 +787,17 @@ async fn run_with_route(
             normalized["elig"] = Value::Array(rows);
             Ok(normalized)
         });
+    let mut tx = pool.begin().await?;
     match result {
-        Ok(response) => {
-            let mut tx = pool.begin().await?;
-            mark(&mut tx, actor, id, "completed", Some(&response)).await?;
-            tx.commit().await?;
-            let check: Check = sqlx::query_as("SELECT id,patient_id,coverage_id,request_snapshot,response_snapshot,status,actor_id,created_at,completed_at FROM claimmd_eligibility_checks WHERE tenant_id=$1 AND id=$2")
-                .bind(actor.tenant_id).bind(id).fetch_one(pool).await?;
-            Ok(check_json(check))
-        }
+        Ok(response) => mark(&mut tx, actor, id, "completed", Some(&response)).await?,
         Err(error) => {
-            let mut tx = pool.begin().await?;
             let evidence = json!({"failure":&error});
-            mark(&mut tx, actor, id, "failed", Some(&evidence)).await?;
-            tx.commit().await?;
-            Err(error.error())
+            mark(&mut tx, actor, id, "failed", Some(&evidence)).await?
         }
     }
+    tx.commit().await?;
+    Ok(sqlx::query_as("SELECT id,patient_id,coverage_id,request_snapshot,response_snapshot,status,actor_id,created_at,completed_at FROM claimmd_eligibility_checks WHERE tenant_id=$1 AND id=$2")
+        .bind(actor.tenant_id).bind(id).fetch_one(pool).await?)
 }
 
 async fn list_eligibility(
@@ -769,8 +818,32 @@ async fn list_eligibility(
     .await?;
     tx.commit().await?;
     Ok(reply(
-        json!({"items":rows.into_iter().map(check_json).collect::<Vec<_>>()}),
+        json!({"items":named(db(&state)?, actor.tenant_id, rows).await?}),
     ))
+}
+
+// Staff see who ran a check by name. The stored actor ID stays for audit.
+async fn named(pool: &PgPool, tenant: Uuid, checks: Vec<Check>) -> Result<Vec<Value>> {
+    let ids: Vec<Uuid> = checks.iter().map(|check| check.actor_id).collect();
+    let names: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT id,CASE WHEN display_name<>'' THEN display_name ELSE email END FROM browser_users WHERE tenant_id=$1 AND id=ANY($2)",
+    )
+    .bind(tenant)
+    .bind(&ids)
+    .fetch_all(pool)
+    .await?;
+    Ok(checks
+        .into_iter()
+        .map(|check| {
+            let name = names
+                .iter()
+                .find(|(id, _)| *id == check.actor_id)
+                .map(|(_, name)| name.clone());
+            let mut value = check_json(check);
+            value["actor_name"] = json!(name);
+            value
+        })
+        .collect())
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -822,7 +895,18 @@ pub fn router() -> Router<State> {
             "/api/v1/patients/{patient}/coverages/{coverage}/claimmd-eligibility",
             get(list_eligibility).post(create_eligibility),
         )
+        .route(
+            "/api/v1/patients/{patient}/coverages/{coverage}/claimmd-eligibility/check",
+            axum::routing::post(quick::check),
+        )
+        .route(
+            "/api/v1/patients/{patient}/coverages/{coverage}/claimmd-eligibility/enrollment",
+            axum::routing::post(quick::enrollment),
+        )
 }
+
+#[path = "claimmd_eligibility_quick.rs"]
+mod quick;
 
 #[cfg(test)]
 mod tests {

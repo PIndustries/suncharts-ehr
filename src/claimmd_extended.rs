@@ -79,7 +79,11 @@ fn clean(value: &str, max: usize, required: bool) -> Result<String> {
     Ok(value.to_owned())
 }
 
-async fn route(pool: &PgPool, tenant: Uuid, requested: Option<Uuid>) -> Result<(Uuid, Route)> {
+pub(crate) async fn route(
+    pool: &PgPool,
+    tenant: Uuid,
+    requested: Option<Uuid>,
+) -> Result<(Uuid, Route)> {
     let routes = crate::provider_settings::active_claimmd_routes(pool, tenant).await?;
     match requested {
         Some(id) => routes
@@ -135,7 +139,7 @@ async fn form(
     Ok(value)
 }
 
-fn provider_link(value: &Value) -> Result<String> {
+pub(crate) fn provider_link(value: &Value) -> Result<String> {
     let raw = value
         .pointer("/link/url")
         .or_else(|| value.pointer("/result/link/url"))
@@ -234,23 +238,36 @@ async fn start_enrollment(
     }
     let response = form(db(&state)?, &route, "enroll", fields).await?;
     let link = provider_link(&response)?;
-    let id = Uuid::new_v4();
     let request = json!({
         "payerid": input.payerid.trim(), "enroll_type": input.enroll_type,
         "prov_taxid": input.prov_taxid.trim(), "prov_npi": input.prov_npi,
         "prov_name_l": input.prov_name_l, "prov_name_f": input.prov_name_f,
         "reason": reason
     });
-    let mut tx = db(&state)?.begin().await?;
-    sqlx::query("INSERT INTO claimmd_operations(tenant_id,id,setting_id,kind,request,external_url,created_by) VALUES($1,$2,$3,'enrollment',$4,$5,$6)")
-        .bind(actor.tenant_id).bind(id).bind(setting).bind(&request).bind(&link).bind(actor.sub).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO claimmd_operation_events(tenant_id,operation_id,version,actor_id,action,evidence) VALUES($1,$2,1,$3,'started',$4)")
-        .bind(actor.tenant_id).bind(id).bind(actor.sub).bind(json!({"reason":reason})).execute(&mut *tx).await?;
-    crate::postgres::audit(&mut tx, &actor, "claimmd.enrollment_started", id).await?;
-    tx.commit().await?;
+    let id = record_enrollment(db(&state)?, &actor, setting, &request, &link, &reason).await?;
     Ok(Json(
         json!({"id":id,"kind":"enrollment","status":"started","external_url":link,"version":1}),
     ))
+}
+
+// One place records a started enrollment, so every entry point leaves the same trail.
+pub(crate) async fn record_enrollment(
+    pool: &PgPool,
+    actor: &Actor,
+    setting: Uuid,
+    request: &Value,
+    link: &str,
+    reason: &str,
+) -> Result<Uuid> {
+    let id = Uuid::new_v4();
+    let mut tx = pool.begin().await?;
+    sqlx::query("INSERT INTO claimmd_operations(tenant_id,id,setting_id,kind,request,external_url,created_by) VALUES($1,$2,$3,'enrollment',$4,$5,$6)")
+        .bind(actor.tenant_id).bind(id).bind(setting).bind(request).bind(link).bind(actor.sub).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO claimmd_operation_events(tenant_id,operation_id,version,actor_id,action,evidence) VALUES($1,$2,1,$3,'started',$4)")
+        .bind(actor.tenant_id).bind(id).bind(actor.sub).bind(json!({"reason":reason})).execute(&mut *tx).await?;
+    crate::postgres::audit(&mut tx, actor, "claimmd.enrollment_started", id).await?;
+    tx.commit().await?;
+    Ok(id)
 }
 
 #[derive(Deserialize)]

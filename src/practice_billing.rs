@@ -218,6 +218,23 @@ pub(crate) async fn resolve(
         crate::provider_settings::open_secret(tenant, id, PURPOSE, &cipher)?,
     ))
 }
+/// The current tax identity of an active billing organization, for a request the
+/// server builds itself. Returns nothing when it was deactivated or removed.
+pub(crate) async fn tax_identity(
+    pool: &PgPool,
+    tenant: Uuid,
+    id: Uuid,
+) -> Result<Option<(String, crate::provider_settings::Secret)>> {
+    let row: Option<(String, Vec<u8>)> = sqlx::query_as("SELECT tax_id_type,encrypted_tax_id FROM practice_billing_organizations WHERE tenant_id=$1 AND id=$2 AND active")
+        .bind(tenant).bind(id).fetch_optional(pool).await?;
+    row.map(|(kind, cipher)| {
+        Ok((
+            kind,
+            crate::provider_settings::open_secret(tenant, id, PURPOSE, &cipher)?,
+        ))
+    })
+    .transpose()
+}
 pub fn router() -> Router<State> {
     Router::new()
         .route(
