@@ -529,7 +529,7 @@ async fn managed_create_invites_through_connect_and_takes_no_password() {
     let history = f.history(&id).await;
     assert_eq!(history.len(), 2);
     assert_eq!(history[0]["reason"], "Synthetic hire");
-    assert_eq!(history[1]["reason"], "Invitation emailed");
+    assert_eq!(history[1]["reason"], "Sign-in link emailed");
     assert_eq!(history[1]["content"]["invitation_status"], "waiting");
     assert_eq!(history[1]["content"]["invitation_request"], request);
     let text = history[1].to_string();
@@ -550,6 +550,109 @@ async fn managed_create_invites_through_connect_and_takes_no_password() {
     // An invitation that ran out says so.
     f.clinic(|c| c.records[0]["state"] = json!("expired"));
     assert_eq!(f.status(&id).await["status"], "expired");
+    cleanup(f).await;
+}
+
+/// The owner's page re-checks by itself. A person who used their link shows as
+/// signed in from this EHR's own record, without asking Connect again, and a
+/// passkey is only reported when Connect says there is one.
+#[tokio::test]
+async fn the_list_shows_who_signed_in_without_asking_connect_again() {
+    let f = setup(true, "synthetic-not-a-login-hash").await;
+    let (status, created) = f.add(&unique("desk"), "front_desk").await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let id = created["id"].as_str().unwrap().to_owned();
+    let user = Uuid::parse_str(&id).unwrap();
+    let reads = |f: &Fixture| f.seen().iter().filter(|s| s.0 == "GET").count();
+    let quiet = |f: &Fixture, id: String| {
+        let app = f.app.clone();
+        let cookie = f.cookie.clone();
+        async move {
+            let (code, v) = call(
+                &app,
+                &cookie,
+                "GET",
+                "/api/v1/practice/staff/invitations",
+                Value::Null,
+                None,
+            )
+            .await;
+            assert_eq!(code, StatusCode::OK, "{v}");
+            v["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|x| x["staff_id"] == id)
+                .cloned()
+                .unwrap()
+        }
+    };
+    let waiting = f.status(&id).await;
+    assert_eq!(waiting["status"], "waiting");
+    assert!(waiting.get("last_active_at").is_none());
+    assert!(waiting.get("passkey_added").is_none());
+    assert_eq!(reads(&f), 1);
+
+    // The page's quiet re-checks reuse what was read: Connect is not asked each time.
+    for _ in 0..5 {
+        assert_eq!(quiet(&f, id.clone()).await["status"], "waiting");
+    }
+    assert_eq!(reads(&f), 1);
+
+    // They click the emailed link and land here signed in. The next quiet check
+    // says so from this EHR's own sign-in record, with no call to Connect.
+    sqlx::query("INSERT INTO connect_identity_sessions(token_hash,tenant_id,issuer_tenant_id,user_id,grant_id,issuer,audience,expires_at) VALUES($1,$2,$2,$3,$4,'https://connect.example.test',$5,now()+interval '30 days')")
+        .bind(format!("synthetic-{}", Uuid::new_v4()))
+        .bind(f.tenant)
+        .bind(user)
+        .bind(Uuid::new_v4())
+        .bind(ORIGIN)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let signed_in = quiet(&f, id.clone()).await;
+    assert_eq!(signed_in["status"], "can_sign_in");
+    let at: chrono::DateTime<chrono::Utc> =
+        serde_json::from_value(signed_in["last_active_at"].clone()).unwrap();
+    assert!((chrono::Utc::now() - at).num_seconds().abs() < 60);
+    assert!(
+        signed_in.get("passkey_added").is_none(),
+        "Connect as it is today reports no passkey fact, so none is shown"
+    );
+    assert_eq!(reads(&f), 1);
+
+    // Using the EHR later moves "last active" forward.
+    sqlx::query("UPDATE connect_identity_sessions SET last_introspected_at=now()+interval '2 hours' WHERE tenant_id=$1 AND user_id=$2")
+        .bind(f.tenant)
+        .bind(user)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let later: chrono::DateTime<chrono::Utc> =
+        serde_json::from_value(quiet(&f, id.clone()).await["last_active_at"].clone()).unwrap();
+    assert!(later > at + chrono::Duration::minutes(100));
+
+    // A newer Connect adds the passkey fact; it is passed on only when true.
+    f.clinic(|c| {
+        c.records[0]["state"] = json!("accepted");
+        c.records[0]["passkey_added"] = json!(false);
+    });
+    assert!(f.status(&id).await.get("passkey_added").is_none());
+    f.clinic(|c| c.records[0]["passkey_added"] = json!(true));
+    let with_passkey = f.status(&id).await;
+    assert_eq!(with_passkey["status"], "can_sign_in");
+    assert_eq!(with_passkey["passkey_added"], true);
+
+    // Signing out everywhere (or losing access) removes the sign-in time, never invents one.
+    sqlx::query("DELETE FROM connect_identity_sessions WHERE tenant_id=$1 AND user_id=$2")
+        .bind(f.tenant)
+        .bind(user)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let out = f.status(&id).await;
+    assert_eq!(out["status"], "can_sign_in");
+    assert!(out.get("last_active_at").is_none());
     cleanup(f).await;
 }
 
@@ -590,7 +693,7 @@ async fn someone_who_already_has_access_is_told_so_and_inactive_access_is_explai
     assert_eq!(f.status(&id).await["status"], "can_sign_in");
     assert_eq!(
         f.history(&id).await[1]["reason"],
-        "Invitation not needed: already has a SunCharts account"
+        "No sign-in link needed: already has a SunCharts account"
     );
 
     // Connect refuses a turned-off membership; the account is still saved and the reason is kept.
@@ -610,7 +713,7 @@ async fn someone_who_already_has_access_is_told_so_and_inactive_access_is_explai
     assert_eq!(f.status(&id).await["status"], "access_off");
     assert_eq!(
         f.history(&id).await[1]["reason"],
-        "Invitation not sent: this person's SunCharts access is turned off"
+        "Sign-in link not sent: this person's SunCharts access is turned off"
     );
     cleanup(f).await;
 }
@@ -638,7 +741,7 @@ async fn connect_down_keeps_the_account_and_a_later_send_works() {
         .any(|x| x["id"] == id.as_str() && x["email"] == email.as_str()));
     assert_eq!(
         f.history(&id).await[1]["reason"],
-        "Invitation not sent: SunCharts could not be reached"
+        "Sign-in link not sent: SunCharts could not be reached"
     );
     let failed: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE tenant_id=$1 AND action='practice.staff.invitation_failed' AND resource_id=$2").bind(f.tenant).bind(Uuid::parse_str(&id).unwrap()).fetch_one(&f.db).await.unwrap();
     assert_eq!(failed, 1);

@@ -15166,7 +15166,7 @@
             "schema": {
               "type": "boolean"
             },
-            "description": "Read Connect again now instead of using the copy kept for up to two minutes."
+            "description": "Read Connect again now instead of using the copy kept for up to two minutes (20 seconds for the ten minutes after a link is sent). The staff page re-checks by itself and does not need it."
           }
         ],
         "responses": {
@@ -15225,7 +15225,7 @@
       ],
       "post": {
         "operationId": "sendPracticeStaffInvitation",
-        "summary": "Send or resend a staff member's sign-in invitation",
+        "summary": "Email a staff member a sign-in link, or a new one",
         "tags": [
           "Practice administration"
         ],
@@ -58664,7 +58664,7 @@
               "unknown",
               "disabled"
             ],
-            "description": "can_sign_in: has accepted or has signed in. waiting: invited, not yet accepted. expired/cancelled: the invitation can no longer be used. not_sent: the last attempt did not go out (see reason). not_invited: no invitation on record. access_off: their Connect membership is inactive. unknown: Connect could not be read. disabled: access is turned off here."
+            "description": "can_sign_in: has used their emailed sign-in link or has signed in. waiting: link sent, not yet used. expired/cancelled: the link can no longer be used. not_sent: the last attempt did not go out (see reason). not_invited: no link on record. access_off: their access is turned off in Connect. unknown: Connect could not be read. disabled: access is turned off here."
           },
           "reason": {
             "type": "string",
@@ -58694,9 +58694,18 @@
             ],
             "format": "date-time"
           },
+          "last_active_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Present with can_sign_in when this installation holds a Connect sign-in for the person: when it was last used here."
+          },
+          "passkey_added": {
+            "type": "boolean",
+            "description": "Present (true) with can_sign_in only when Connect reports that the person has a passkey. Absent when Connect does not report it."
+          },
           "version": {
             "type": "integer",
-            "description": "Current staff record version after an invitation attempt was recorded in its history."
+            "description": "Current staff record version after an attempt to send a sign-in link was recorded in its history."
           }
         },
         "required": [

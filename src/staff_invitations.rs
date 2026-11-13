@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Sign-in invitations for staff of a practice whose sign-in is handled by
-//! SunCharts Connect. The practice owner is authorized here; Connect only sees
-//! the installation credential. No invitation link or token passes through
+//! Sign-in links for staff of a practice whose sign-in is handled by
+//! SunCharts Connect. Staff have no password: Connect emails each new person
+//! a link that signs them in. The practice owner is authorized here; Connect
+//! only sees the installation credential. No link or token passes through
 //! this service, and nothing here logs an email address.
 use crate::{
     auth::Actor,
@@ -33,35 +34,92 @@ pub fn router() -> Router<State> {
 
 /// Connect allows an installation 60 invitation calls an hour, reads included.
 /// Status is therefore read at most once in this window per practice, and each
-/// invitation sent from here updates the remembered copy instead of rereading.
+/// link sent from here updates the remembered copy instead of rereading.
 const STATUS_TTL: Duration = Duration::from_secs(120);
-type Remembered = HashMap<Uuid, (Instant, Vec<Value>)>;
+/// Right after a link is sent the owner is watching for that person to sign
+/// in, so for a short while the remembered copy is only trusted this long.
+const WATCH_TTL: Duration = Duration::from_secs(20);
+/// How long after a link was sent the shorter window applies.
+const WATCH_SECONDS: i64 = 600;
+/// Reads allowed in any hour before the shorter window is given up, which
+/// leaves the rest of Connect's hourly allowance for sending links.
+const WATCH_READS: usize = 40;
+#[derive(Default)]
+struct Remembered {
+    copies: HashMap<Uuid, (Instant, Vec<Value>)>,
+    /// When Connect was read for each practice during the last hour.
+    reads: HashMap<Uuid, Vec<Instant>>,
+}
 static STATUS: Mutex<Option<Remembered>> = Mutex::new(None);
 
+/// True while a link sent in the last few minutes has not been used yet.
+fn watching(items: &[Value], now: chrono::DateTime<chrono::Utc>) -> bool {
+    items.iter().any(|v| {
+        v["state"] == "pending"
+            && v["created_at"]
+                .as_str()
+                .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+                .is_some_and(|at| {
+                    let age = (now - at.with_timezone(&chrono::Utc)).num_seconds();
+                    (0..=WATCH_SECONDS).contains(&age)
+                })
+    })
+}
+/// How long a remembered copy is trusted, given how often Connect was read.
+fn trusted_for(items: &[Value], reads_this_hour: usize) -> Duration {
+    if reads_this_hour < WATCH_READS && watching(items, chrono::Utc::now()) {
+        WATCH_TTL
+    } else {
+        STATUS_TTL
+    }
+}
 fn remembered(tenant: Uuid) -> Option<Vec<Value>> {
     let guard = STATUS.lock().ok()?;
-    let (at, items) = guard.as_ref()?.get(&tenant)?;
-    (at.elapsed() < STATUS_TTL).then(|| items.clone())
+    let kept = guard.as_ref()?;
+    let (at, items) = kept.copies.get(&tenant)?;
+    let reads = kept.reads.get(&tenant).map_or(0, |r| {
+        r.iter()
+            .filter(|t| t.elapsed() < Duration::from_secs(3600))
+            .count()
+    });
+    (at.elapsed() < trusted_for(items, reads)).then(|| items.clone())
+}
+/// The last copy however old, for when Connect says it has been asked too often.
+fn last_known(tenant: Uuid) -> Option<Vec<Value>> {
+    let guard = STATUS.lock().ok()?;
+    Some(guard.as_ref()?.copies.get(&tenant)?.1.clone())
 }
 fn remember(tenant: Uuid, items: Vec<Value>) {
     if let Ok(mut guard) = STATUS.lock() {
         guard
-            .get_or_insert_with(HashMap::new)
+            .get_or_insert_with(Remembered::default)
+            .copies
             .insert(tenant, (Instant::now(), items));
+    }
+}
+fn count_read(tenant: Uuid) {
+    if let Ok(mut guard) = STATUS.lock() {
+        let reads = guard
+            .get_or_insert_with(Remembered::default)
+            .reads
+            .entry(tenant)
+            .or_default();
+        reads.retain(|t| t.elapsed() < Duration::from_secs(3600));
+        reads.push(Instant::now());
     }
 }
 /// Adds a fresh result to a remembered list without extending its lifetime.
 fn remember_latest(tenant: Uuid, item: &Value) {
     if let Ok(mut guard) = STATUS.lock() {
-        if let Some((_, items)) = guard.as_mut().and_then(|m| m.get_mut(&tenant)) {
+        if let Some((_, items)) = guard.as_mut().and_then(|m| m.copies.get_mut(&tenant)) {
             items.insert(0, item.clone());
         }
     }
 }
 fn forget(tenant: Uuid) {
     if let Ok(mut guard) = STATUS.lock() {
-        if let Some(map) = guard.as_mut() {
-            map.remove(&tenant);
+        if let Some(kept) = guard.as_mut() {
+            kept.copies.remove(&tenant);
         }
     }
 }
@@ -97,13 +155,15 @@ impl Refusal {
     }
     fn history(self) -> &'static str {
         match self {
-            Self::Unreachable => "Invitation not sent: SunCharts could not be reached",
-            Self::AccessOff => "Invitation not sent: this person's SunCharts access is turned off",
-            Self::Email => "Invitation not sent: the email address was not accepted",
-            Self::Plan => "Invitation not sent: the SunCharts plan needs attention",
-            Self::Busy => "Invitation not sent: too many invitations in the last hour",
-            Self::NotAllowed => "Invitation not sent: the SunCharts connection needs attention",
-            Self::Refused => "Invitation not sent: SunCharts did not accept the request",
+            Self::Unreachable => "Sign-in link not sent: SunCharts could not be reached",
+            Self::AccessOff => {
+                "Sign-in link not sent: this person's SunCharts access is turned off"
+            }
+            Self::Email => "Sign-in link not sent: the email address was not accepted",
+            Self::Plan => "Sign-in link not sent: the SunCharts plan needs attention",
+            Self::Busy => "Sign-in link not sent: too many links sent in the last hour",
+            Self::NotAllowed => "Sign-in link not sent: the SunCharts connection needs attention",
+            Self::Refused => "Sign-in link not sent: SunCharts did not accept the request",
         }
     }
 }
@@ -194,7 +254,8 @@ async fn connect_list(db: &PgPool, tenant: Uuid) -> std::result::Result<Vec<Valu
         return Ok(items);
     }
     let i = installation(db, tenant).await?;
-    let value = call_at(
+    count_read(tenant);
+    let value = match call_at(
         &i.base,
         i.id,
         i.key.expose(),
@@ -202,7 +263,13 @@ async fn connect_list(db: &PgPool, tenant: Uuid) -> std::result::Result<Vec<Valu
         "/staff-invites",
         None,
     )
-    .await?;
+    .await
+    {
+        Ok(value) => value,
+        // Asked too often: what was last read is still the best answer.
+        Err(Refusal::Busy) => return last_known(tenant).ok_or(Refusal::Busy),
+        Err(refused) => return Err(refused),
+    };
     let items = value["items"].as_array().cloned().ok_or(Refusal::Refused)?;
     remember(tenant, items.clone());
     Ok(items)
@@ -216,6 +283,7 @@ struct Staff {
     role: String,
     disabled: bool,
     signed_in: bool,
+    last_active: Option<chrono::DateTime<chrono::Utc>>,
     last_status: Option<String>,
     last_reason: Option<String>,
 }
@@ -235,16 +303,20 @@ impl Staff {
     }
 }
 /// `signed_in` only counts Connect sign-ins made since the account last had a
-/// different email, because Connect matches staff by email. `last_*` is the
-/// most recent invitation attempt recorded here for the current email.
+/// different email, because Connect matches staff by email; `last_active` is
+/// when one of those sign-ins was last used here. `last_*` is the most recent
+/// attempt to send a link recorded here for the current email.
 const STAFF: &str = "SELECT u.id,u.email,u.display_name,u.role,u.disabled,
- EXISTS(SELECT 1 FROM connect_identity_sessions s WHERE s.tenant_id=u.tenant_id AND s.user_id=u.id
+ a.sessions>0 AS signed_in,a.last_active,
+ l.content->>'invitation_status' AS last_status,l.content->>'invitation_reason' AS last_reason
+ FROM browser_users u LEFT JOIN LATERAL (SELECT count(*) AS sessions,
+   max(greatest(s.created_at,coalesce(s.last_introspected_at,s.created_at))) AS last_active
+  FROM connect_identity_sessions s WHERE s.tenant_id=u.tenant_id AND s.user_id=u.id
   AND s.created_at>=coalesce((SELECT min(n.created_at) FROM practice_admin_history n
     WHERE n.tenant_id=u.tenant_id AND n.kind='staff' AND n.resource_id=u.id AND n.version>
      (SELECT max(o.version) FROM practice_admin_history o WHERE o.tenant_id=u.tenant_id AND o.kind='staff'
-       AND o.resource_id=u.id AND o.content->>'email'<>u.email)),'-infinity'::timestamptz)) AS signed_in,
- l.content->>'invitation_status' AS last_status,l.content->>'invitation_reason' AS last_reason
- FROM browser_users u LEFT JOIN LATERAL (SELECT h.content FROM practice_admin_history h
+       AND o.resource_id=u.id AND o.content->>'email'<>u.email)),'-infinity'::timestamptz)) a ON true
+ LEFT JOIN LATERAL (SELECT h.content FROM practice_admin_history h
    WHERE h.tenant_id=u.tenant_id AND h.kind='staff' AND h.resource_id=u.id AND h.content ? 'invitation_status'
      AND h.content->>'email'=u.email ORDER BY h.version DESC LIMIT 1) l ON true
  WHERE u.tenant_id=$1";
@@ -290,7 +362,7 @@ fn status(staff: &Staff, items: Option<&[Value]>) -> Value {
     let found = items
         .and_then(|items| matching(staff, items))
         .map(from_connect);
-    match found {
+    let mut out = match found {
         Some(v) if v["status"] == "access_off" => v,
         _ if staff.signed_in => state("can_sign_in"),
         Some(v) => v,
@@ -304,7 +376,21 @@ fn status(staff: &Staff, items: Option<&[Value]>) -> Value {
             _ if items.is_none() => state("unknown"),
             _ => state("not_invited"),
         },
+    };
+    // Only what is actually known is added: when they last used this EHR,
+    // and a passkey only when Connect itself reports one for this person.
+    if out["status"] == "can_sign_in" {
+        if let Some(at) = staff.last_active.filter(|_| staff.signed_in) {
+            out["last_active_at"] = json!(at);
+        }
+        let passkey = items
+            .and_then(|items| matching(staff, items))
+            .is_some_and(|v| v["passkey_added"] == true);
+        if passkey {
+            out["passkey_added"] = json!(true);
+        }
     }
+    out
 }
 
 #[derive(Deserialize)]
@@ -370,10 +456,10 @@ pub(crate) async fn invite(s: &State, a: &Actor, h: &HeaderMap, id: Uuid) -> Res
             remember_latest(a.tenant_id, v);
             let outcome = from_connect(v);
             let reason = match outcome["status"].as_str() {
-                Some("can_sign_in") => "Invitation not needed: already has a SunCharts account",
-                Some("waiting") => "Invitation emailed",
+                Some("can_sign_in") => "No sign-in link needed: already has a SunCharts account",
+                Some("waiting") => "Sign-in link emailed",
                 Some("access_off") => Refusal::AccessOff.history(),
-                _ => "Invitation not sent: the email could not be delivered",
+                _ => "Sign-in link not sent: the email could not be delivered",
             };
             (outcome, reason)
         }
@@ -465,7 +551,7 @@ async fn send(
     let db = &s.browser.as_ref().ok_or(Error::Unauthorized)?.db;
     if !managed(db).await? {
         return Err(Error::Conflict(
-            "This practice signs in with passwords, so there is no invitation to send.",
+            "This practice signs in with passwords, so there is no sign-in link to send.",
         ));
     }
     let disabled: Option<bool> =
@@ -476,7 +562,7 @@ async fn send(
             .await?;
     if disabled.ok_or(Error::NotFound)? {
         return Err(Error::Conflict(
-            "Turn this person's access back on before sending an invitation.",
+            "Turn this person's access back on before sending a sign-in link.",
         ));
     }
     Ok(Json(invite(&s, &a, &h, id).await?))
@@ -493,6 +579,11 @@ mod tests {
             role: "front_desk".into(),
             disabled: false,
             signed_in,
+            last_active: signed_in.then(|| {
+                chrono::DateTime::parse_from_rfc3339("2026-11-13T21:04:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc)
+            }),
             last_status: None,
             last_reason: None,
         }
@@ -566,6 +657,67 @@ mod tests {
         assert_eq!(status(&p, Some(&[]))["status"], "disabled");
     }
     #[test]
+    fn signed_in_staff_show_when_they_were_last_active_and_a_passkey_only_if_reported() {
+        let sent = json!({"transport":"email","accepted":true,"detail":"provider_accepted"});
+        // Connect as it is today sends no passkey fact: nothing is claimed.
+        let v = status(&person(true), Some(&[record("accepted", sent.clone())]));
+        assert_eq!(v["status"], "can_sign_in");
+        assert_eq!(v["last_active_at"], "2026-11-13T21:04:00Z");
+        assert!(v.get("passkey_added").is_none());
+        for (reported, shown) in [
+            (json!(true), true),
+            (json!(false), false),
+            (json!("yes"), false),
+        ] {
+            let mut r = record("accepted", sent.clone());
+            r["passkey_added"] = reported;
+            let v = status(&person(true), Some(&[r]));
+            assert_eq!(v.get("passkey_added").is_some(), shown);
+        }
+        // Used the link at Connect but has not opened this EHR yet: no sign-in time is invented.
+        let v = status(&person(false), Some(&[record("accepted", sent.clone())]));
+        assert_eq!(v["status"], "can_sign_in");
+        assert!(v.get("last_active_at").is_none());
+        // Someone still waiting never shows a sign-in time or passkey.
+        let mut r = record("pending", sent);
+        r["passkey_added"] = json!(true);
+        let v = status(&person(false), Some(&[r]));
+        assert_eq!(v["status"], "waiting");
+        assert!(v.get("last_active_at").is_none() && v.get("passkey_added").is_none());
+    }
+    #[test]
+    fn a_link_just_sent_is_checked_more_often_within_the_hourly_allowance() {
+        let now = chrono::Utc::now();
+        let at = |seconds: i64| (now - chrono::Duration::seconds(seconds)).to_rfc3339();
+        let sent = json!({"transport":"email","accepted":true});
+        let mut fresh = record("pending", sent.clone());
+        fresh["created_at"] = json!(at(30));
+        assert!(watching(&[fresh.clone()], now));
+        assert_eq!(trusted_for(&[fresh.clone()], 0), WATCH_TTL);
+        // Ten minutes after sending, ordinary reads resume.
+        let mut old = record("pending", sent.clone());
+        old["created_at"] = json!(at(WATCH_SECONDS + 1));
+        assert!(!watching(&[old.clone()], now));
+        assert_eq!(trusted_for(&[old], 0), STATUS_TTL);
+        // Once the link is used, expired or replaced there is nothing to watch.
+        for done in ["accepted", "expired", "revoked", "inactive"] {
+            let mut r = record(done, sent.clone());
+            r["created_at"] = json!(at(30));
+            assert!(!watching(&[r], now), "{done}");
+        }
+        // A date that cannot be read, or one in the future, never shortens the window.
+        let mut odd = record("pending", sent.clone());
+        odd["created_at"] = json!("soon");
+        assert!(!watching(&[odd.clone()], now));
+        odd["created_at"] = json!(at(-120));
+        assert!(!watching(&[odd], now));
+        // The shorter window stops before Connect's 60-an-hour allowance is at risk.
+        assert_eq!(trusted_for(&[fresh.clone()], WATCH_READS - 1), WATCH_TTL);
+        assert_eq!(trusted_for(&[fresh], WATCH_READS), STATUS_TTL);
+        assert!(WATCH_READS < 60);
+        assert!(WATCH_SECONDS as u64 / WATCH_TTL.as_secs() <= WATCH_READS as u64);
+    }
+    #[test]
     fn refusals_map_to_reasons_without_echoing_connect_text() {
         let c = |code: u16, m: &str| refusal(StatusCode::from_u16(code).unwrap(), m);
         assert_eq!(
@@ -592,7 +744,7 @@ mod tests {
             Refusal::NotAllowed,
             Refusal::Refused,
         ] {
-            assert!(r.history().starts_with("Invitation not sent: "));
+            assert!(r.history().starts_with("Sign-in link not sent: "));
             assert!(!r.history().contains('@'));
         }
     }

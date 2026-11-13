@@ -185,25 +185,41 @@ How a new person gets in depends on how the practice signs in.
 
 **Sign-in through SunCharts Connect.** Staff are matched to their Connect sign-in
 by email and never have a password here. Adding staff asks only for name, email
-and role; the account is saved first and Connect then emails an invitation. The
-person can sign in once they accept it. The staff list shows each person's
-sign-in status (can sign in, invitation sent and when it expires, expired, not
-sent, not invited yet) with **Send invitation** or **Send again**. Accounts created
-before invitations existed show "Not invited yet": send the invitation from the
+and role; the account is saved first and Connect then emails a link that signs
+the person in: one click on **Continue** and they land in this EHR, with nothing
+else to set up (Connect offers a passkey on the way, which they can skip). The
+staff list shows each person's sign-in status: "Signed in · last active …" (from
+this EHR's own record of their Connect sign-ins, plus "Passkey added" when
+Connect reports one), "Can sign in" (they have access but no sign-in is on record
+here), "Link sent … · hasn't signed in yet (link works until …)", "Link expired",
+"Email not delivered", "Link not sent" with the reason, "Not sent yet" and
+"Access turned off", with **Send sign-in link** or **Send a new link**. Accounts
+created before links were emailed show "Not sent yet": send the link from the
 list. If Connect cannot be reached or refuses, the account is kept, the row says
-the invitation was not sent and why, and the owner can send it later. **Refresh
-directory** rereads status from Connect; otherwise it is reread at most every two
-minutes because Connect limits an installation to 60 invitation calls an hour.
-Changing a person's email ends their sessions and sends a new invitation to the
-new address; an owner cannot change their own email. Each attempt and outcome is
-added to the staff member's history. No invitation link passes through the EHR.
+the link was not sent and why, and the owner can send it later.
+
+The list keeps itself current. While someone has a link they have not used, the
+page re-checks every 15 seconds for ten minutes after the link was sent, then
+once a minute, and again whenever the owner returns to the tab; only the sign-in
+column is redrawn. A person who signs in is recognised from this EHR's own
+record, so no call to Connect is needed for that. Connect itself is reread at
+most every two minutes (every 20 seconds for the ten minutes after a link is
+sent, and never more than 40 times an hour) because Connect limits an
+installation to 60 of these calls an hour. Changing a person's email ends their
+sessions and sends a sign-in link to the new address; an owner cannot change
+their own email. Each attempt and outcome is added to the staff member's
+**History**, which reads as plain sentences ("Nov 13, 3:03 PM — Sign-in link
+emailed by …"); the saved record behind each line is under **Details**. No link
+passes through the EHR. This works with Connect before and after it sends the
+one-click email: an older Connect still asks the person to accept first, and the
+statuses here mean the same.
 
 The role stored here is the one the EHR enforces. Connect also records a role
-when the invitation is accepted (nurse and medical assistant become read-only
-there), but a later role change here needs no new invitation and is not sent to
-Connect. Disabling an account here blocks sign-in immediately, whatever Connect
-says. A membership turned off in Connect shows as "SunCharts access turned off"
-and must be turned back on in Connect.
+when the link is used (nurse and medical assistant become read-only there), but
+a later role change here needs no new link and is not sent to Connect. Disabling
+an account here blocks sign-in immediately, whatever Connect says. Access turned
+off in Connect shows as "Access turned off" with a note to contact support, and
+must be turned back on in Connect.
 
 Only a practice owner can hold a local password on a Connect practice, and only
 for emergency (break-glass) sign-in when the operator has enabled it.

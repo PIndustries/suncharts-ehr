@@ -54,11 +54,13 @@ Scopes cover clinical read/write, billing read/write, events, imports and offlin
 access. Native identity administration requires a local owner browser session;
 a clinical OAuth scope does not grant staff-account administration.
 `GET /api/v1/practice/staff` reports `sign_in`: `connect` when SunCharts Connect
-handles staff sign-in (new staff are invited by email, a password is refused) or
-`password`. `GET /api/v1/practice/staff/invitations` returns each person's sign-in
-status and `POST /api/v1/practice/staff/{id}/invitation` sends or resends one
-invitation. A Connect outage is reported as status `not_sent`, never as an error
-that loses the staff account.
+handles staff sign-in (new staff are emailed a link that signs them in, a password
+is refused) or `password`. `GET /api/v1/practice/staff/invitations` returns each
+person's sign-in status, with `last_active_at` once they have signed in here and
+`passkey_added` when Connect reports a passkey, and
+`POST /api/v1/practice/staff/{id}/invitation` emails a sign-in link or a new one.
+A Connect outage is reported as status `not_sent`, never as an error that loses
+the staff account.
 
 The legacy HS256 gateway requires explicit server enablement and is disabled by
 default. OAuth2 support alone is not SMART App Launch or OIDC.
