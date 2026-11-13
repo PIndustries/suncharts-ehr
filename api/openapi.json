@@ -4882,6 +4882,74 @@
         }
       }
     },
+    "/api/v1/schedule/markers": {
+      "get": {
+        "operationId": "scheduleMarkers",
+        "description": "What each appointment overlapping a UTC half-open range of up to 31 days still needs: intake form state, insurance eligibility for the coverage that pays first, copay, patient balance, note and charge state, and whether it is the patient's first appointment. Read with a fixed number of queries. Requires the same access as the schedule. Insurance, copay, balance and charge facts are omitted when the staff member's access policy hides patient billing (insurance also needs claims access); note state is omitted without clinical access.",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleMarkers"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Role/scope denied"
+          },
+          "404": {
+            "description": "Tenant-scoped resource not found"
+          },
+          "409": {
+            "description": "Conflict or stale version"
+          },
+          "428": {
+            "description": "If-Match required"
+          },
+          "500": {
+            "description": "Change rolled back or outcome requires verification"
+          }
+        }
+      }
+    },
     "/api/v1/appointments/{id}": {
       "get": {
         "operationId": "readAppointment",
@@ -40786,10 +40854,201 @@
                 "label"
               ]
             }
+          },
+          "hours": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The practice's opening hours for online booking, when set. Times are local to the time zone given.",
+            "additionalProperties": false,
+            "properties": {
+              "start": {
+                "type": "string",
+                "pattern": "^[0-2][0-9]:[0-5][0-9]$"
+              },
+              "end": {
+                "type": "string",
+                "pattern": "^[0-2][0-9]:[0-5][0-9]$"
+              },
+              "timezone": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              }
+            },
+            "required": [
+              "start",
+              "end",
+              "timezone"
+            ]
           }
         },
         "required": [
           "items"
+        ]
+      },
+      "ScheduleMarkers": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 1000,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "appointment_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "patient_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "new_patient": {
+                  "type": "boolean"
+                },
+                "visit_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "uuid"
+                },
+                "forms": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "sent",
+                        "in_progress",
+                        "submitted",
+                        "reviewed"
+                      ]
+                    },
+                    "packet_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "packet_id"
+                  ]
+                },
+                "insurance": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "not_active",
+                        "not_checked",
+                        "check_failed",
+                        "self_pay"
+                      ]
+                    },
+                    "coverage_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "checked_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ]
+                },
+                "copay": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "due_cents": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "paid_cents": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "test_paid_cents": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "due_cents",
+                    "paid_cents",
+                    "test_paid_cents"
+                  ]
+                },
+                "balance_cents": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "note": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "not_started",
+                    "in_progress",
+                    "signed",
+                    null
+                  ]
+                },
+                "charges": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "none",
+                    "draft",
+                    "posted",
+                    null
+                  ]
+                }
+              },
+              "required": [
+                "appointment_id",
+                "patient_id",
+                "new_patient",
+                "visit_id",
+                "forms"
+              ]
+            }
+          },
+          "billing": {
+            "type": "boolean"
+          },
+          "insurance": {
+            "type": "boolean"
+          },
+          "clinical": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "billing",
+          "insurance",
+          "clinical"
         ]
       },
       "AppointmentMapping": {

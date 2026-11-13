@@ -198,7 +198,9 @@ struct Range {
 async fn providers(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json<Value>> {
     a.staff()?;
     let items:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',u.id,'label',coalesce(nullif(p.display_name,''),nullif(u.display_name,''),u.email)) FROM browser_users u LEFT JOIN practice_providers p ON p.tenant_id=u.tenant_id AND p.id=u.id WHERE u.tenant_id=$1 AND NOT u.disabled AND u.role IN ('owner','clinician') AND coalesce(p.active,true) ORDER BY coalesce(nullif(p.display_name,''),nullif(u.display_name,''),u.email),u.id").bind(a.tenant_id).fetch_all(db(&s)?).await?;
-    Ok(Json(json!({"items":items})))
+    // The practice's own opening hours, where it has set them for online booking.
+    let hours:Option<Value>=sqlx::query_scalar("SELECT jsonb_build_object('start',to_char(day_start,'HH24:MI'),'end',to_char(day_end,'HH24:MI'),'timezone',booking_timezone) FROM previsit_booking_profiles WHERE tenant_id=$1").bind(a.tenant_id).fetch_optional(db(&s)?).await?;
+    Ok(Json(json!({"items":items,"hours":hours})))
 }
 async fn schedule(
     a: Actor,

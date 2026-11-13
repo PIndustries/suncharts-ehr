@@ -15,8 +15,8 @@ function patientBannerCan(resource){return typeof workspaceResourceAllowed!=='fu
 function patientBannerArea(key){return typeof chartAreaEnabled!=='function'||chartAreaEnabled(key);}
 
 // Allergies. "No known allergies" is shown only when a clinician recorded exactly that.
-function patientBannerAllergies(){
- const clinical=workspace.clinical||{items:[],reviews:[]};
+// The schedule's appointment panel passes the clinical lists it read for its own patient.
+function patientBannerAllergies(clinical=workspace.clinical||{items:[],reviews:[]}){
  const active=(clinical.items||[]).filter(e=>e.kind==='allergy'&&e.content?.status==='active'&&!['refuted','entered_in_error'].includes(e.content.verification));
  const review=(clinical.reviews||[]).find(r=>r.kind==='allergy')?.review_state||'unknown';
  if(active.length){

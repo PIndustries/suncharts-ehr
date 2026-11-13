@@ -2,15 +2,34 @@
 
 ## Calendar and patient flow
 
-Schedule includes day/seven-day agendas, a month calendar and a week calendar
-with provider columns and 30-minute slots. Provider/date filters apply to each
-view. Appointments link to their patient and encounter.
+Schedule opens on today's Day view: a time grid over the practice's opening hours
+(the online-booking hours when set, otherwise 7am–7pm, extended to fit any visit
+outside them) with a column per provider when more than one has visits that day.
+Week uses the same grid with a column per day; Month shows up to three visits per
+day and List shows seven days as rows. The chosen view, provider and row height are
+remembered per staff member on each device. Clicking an empty time books there.
+
+Every view uses one appointment card: time, patient, visit type, provider, status
+and markers for what the visit still needs — intake form, insurance eligibility for
+the coverage that pays first, copay, patient balance, visit note, charges and a
+first-visit flag. Markers come from `GET /api/v1/schedule/markers`, one read per
+visible range. Insurance, copay, balance and charge markers are omitted for staff
+whose access policy hides patient billing (insurance also needs claims access);
+the note marker needs clinical access. Counts in the summary line filter the view.
+
+Selecting a card opens the appointment panel: check in, start or continue the visit,
+send or review the intake form, check eligibility, collect the copay, reschedule,
+cancel or open the chart. Each action uses the same route as the chart. **Check
+insurance for today** runs the one-click eligibility check for each visit that has
+none, one at a time, under the server's freshness rules and request limit.
 
 Book or reschedule with a provider, time, visit category and optional facility,
 room and notes. Active directory locations appear as suggestions; existing text
-locations remain supported. Booked appointments can be dragged to another time or
-provider. Review the proposed move and supply a reason before saving. A keyboard
-**Choose calendar slot to move** action provides the same review.
+locations remain supported. In the Week view a booked appointment can be dragged to
+another time; **Pick a new time on the calendar** does the same with a click, and in
+the Day view the provider column is part of the choice. Review the proposed move and
+supply a reason before saving. **Reschedule or edit** does all of this from the
+keyboard.
 
 The server checks overlapping provider, patient and named-room bookings and provider
 blocks. Adjacent intervals are allowed. Completed visits preserve their occupied

@@ -99,6 +99,7 @@ MEASURED_SECONDS = {
     "reminder_recovery": 27,
     "reminder_workflow": 8,
     "rooming_workflow": 12,
+    "schedule_markers": 6,
     "secondary_claims": 11,
     "specialty_workspace": 13,
     "staff_invitations": 12,

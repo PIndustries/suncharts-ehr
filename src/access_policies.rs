@@ -181,6 +181,29 @@ pub(crate) async fn require_native(
     }
     Ok(())
 }
+/// Whether the staff member's access policy lets them view each resource. One
+/// lookup answers for all of them; staff without a custom policy see everything
+/// their role allows.
+pub(crate) async fn can_view(
+    state: &State,
+    actor: &Actor,
+    resources: &[&str],
+) -> Result<Vec<bool>> {
+    let Some(policy) = assigned(db(state)?, actor).await? else {
+        return Ok(vec![true; resources.len()]);
+    };
+    let flags = policy.flags(actor)?;
+    Ok(resources
+        .iter()
+        .map(|resource| {
+            flags
+                .get(*resource)
+                .copied()
+                .unwrap_or_default()
+                .permits(Action::View)
+        })
+        .collect())
+}
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Action {
     View,

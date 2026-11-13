@@ -48,9 +48,18 @@ UI_ALIASES = {
         "test_visit_diagnoses_ui.cjs",
     },
     "web/connect-onboarding.js": {"test_connected_identity_ui.cjs"},
+    "web/schedule-board.css": {"test_schedule_board_ui.cjs"},
+    "web/schedule-board.js": {
+        "test_previsit_workflow_binding_ui.cjs",
+        "test_schedule_board_ui.cjs",
+        "test_schedule_calendar.cjs",
+        "test_week_calendar.cjs",
+    },
     "web/scheduling.js": {
         "test_appointment_workflows_ui.cjs",
         "test_chart_scheduling.cjs",
+        "test_previsit_workflow_binding_ui.cjs",
+        "test_schedule_board_ui.cjs",
         "test_schedule_calendar.cjs",
         "test_week_calendar.cjs",
     },
