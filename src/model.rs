@@ -104,6 +104,24 @@ pub struct Visit {
     pub signed_at: Option<DateTime<Utc>>,
 }
 
+/// The free-text sections of a visit note, in the order they are shown.
+pub const NOTE_SECTIONS: [&str; 5] = ["subjective", "objective", "assessment", "plan", "procedure"];
+
+/// Where an in-progress note's starting text came from. The earlier signed note is
+/// only read; this record stays with the new note so a reviewer can see its origin.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NoteSource {
+    pub visit_id: Uuid,
+    /// Version of the earlier visit when its text was brought in.
+    pub version: i64,
+    /// Sections whose text was brought in, in note order.
+    pub sections: Vec<String>,
+    /// Service date of the earlier visit. Set by the server; client values are ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visit_date: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SoapNote {
@@ -111,6 +129,12 @@ pub struct SoapNote {
     pub objective: String,
     pub assessment: String,
     pub plan: String,
+    /// Optional fifth section. Absent from stored JSON when empty, so notes written
+    /// before it existed and notes that do not use it have the same shape.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub procedure: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_from: Option<NoteSource>,
 }
 impl SoapNote {
     pub fn validate(&self) -> Result<()> {
@@ -122,8 +146,52 @@ impl SoapNote {
         ] {
             text(v, 10000)?;
         }
+        if self.procedure.chars().count() > 10000 {
+            return Err(Error::Invalid("text is empty or too long"));
+        }
+        if let Some(source) = &self.started_from {
+            let known = source
+                .sections
+                .iter()
+                .all(|section| NOTE_SECTIONS.contains(&section.as_str()));
+            let unique = source
+                .sections
+                .iter()
+                .enumerate()
+                .all(|(i, section)| !source.sections[..i].contains(section));
+            if source.version < 1 || source.sections.is_empty() || !known || !unique {
+                return Err(Error::Invalid("invalid earlier-note reference"));
+            }
+        }
         Ok(())
     }
+}
+
+/// Text of the most recent earlier signed note, offered for "Same as last visit".
+#[derive(Debug, Serialize)]
+pub struct PreviousNote {
+    pub source: Option<PreviousNoteSource>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PreviousNoteSource {
+    pub visit_id: Uuid,
+    pub version: i64,
+    pub visit_date: DateTime<Utc>,
+    pub signed_at: Option<DateTime<Utc>>,
+    pub clinician_id: Uuid,
+    pub clinician_name: String,
+    pub same_clinician: bool,
+    pub note: PreviousNoteText,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct PreviousNoteText {
+    pub subjective: String,
+    pub objective: String,
+    pub assessment: String,
+    pub plan: String,
+    pub procedure: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

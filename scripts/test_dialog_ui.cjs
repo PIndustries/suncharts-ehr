@@ -19,10 +19,10 @@ class ElementFake extends EventTargetFake{
  set id(value){this._id=value;if(this.isConnected)this.ownerDocument.ids.set(value,this)}get id(){return this._id}
  append(child){this.children.push(child);child.parentNode=this;child.isConnected=true;if(child.id)this.ownerDocument.ids.set(child.id,child);return child}
  replaceChildren(){this.children=[];this._dialogNodes=null;this._innerHTML=''}
- set innerHTML(value){this._innerHTML=value;this.children=[];if(this.id!=='suncharts-dialog-host')return;const backdrop=new ElementFake('div',this.ownerDocument);backdrop.dataset.dialogCancel='';const section=new ElementFake('section',this.ownerDocument);const cancel=new ElementFake('button',this.ownerDocument);cancel.dataset.dialogCancel='';const confirm=new ElementFake('button',this.ownerDocument);confirm.dataset.dialogConfirm='';this.append(backdrop);this.append(section);section.append(cancel);section.append(confirm);this._dialogNodes={backdrop,section,cancel,confirm}}
+ set innerHTML(value){this._innerHTML=value;this.children=[];if(this.id!=='suncharts-dialog-host')return;const backdrop=new ElementFake('div',this.ownerDocument);backdrop.dataset.dialogCancel='';const section=new ElementFake('section',this.ownerDocument);const cancel=new ElementFake('button',this.ownerDocument);cancel.dataset.dialogCancel='';const confirm=new ElementFake('button',this.ownerDocument);confirm.dataset.dialogConfirm='';this.append(backdrop);this.append(section);section.append(cancel);const alternate=value.includes('data-dialog-alternate')?new ElementFake('button',this.ownerDocument):null;if(alternate)section.append(alternate);section.append(confirm);this._dialogNodes={backdrop,section,cancel,confirm,alternate}}
  get innerHTML(){return this._innerHTML}
- querySelector(selector){if(selector==='[data-dialog-confirm]')return this._dialogNodes?.confirm||null;if(selector==='button[data-dialog-cancel]')return this._dialogNodes?.cancel||null;return null}
- querySelectorAll(selector){if(selector==='[data-dialog-cancel]')return this._dialogNodes?[this._dialogNodes.backdrop,this._dialogNodes.cancel]:[];if(selector.includes('button:not([disabled])'))return this._dialogNodes?[this._dialogNodes.cancel,this._dialogNodes.confirm]:[];return[]}
+ querySelector(selector){if(selector==='[data-dialog-confirm]')return this._dialogNodes?.confirm||null;if(selector==='button[data-dialog-cancel]')return this._dialogNodes?.cancel||null;if(selector==='[data-dialog-alternate]')return this._dialogNodes?.alternate||null;return null}
+ querySelectorAll(selector){if(selector==='[data-dialog-cancel]')return this._dialogNodes?[this._dialogNodes.backdrop,this._dialogNodes.cancel]:[];if(selector.includes('button:not([disabled])'))return this._dialogNodes?[this._dialogNodes.cancel,this._dialogNodes.alternate,this._dialogNodes.confirm].filter(Boolean):[];return[]}
  contains(node){if(node===this)return true;return !!this._dialogNodes&&Object.values(this._dialogNodes).includes(node)}
  closest(selector){if(selector==='[hidden],[aria-hidden="true"]'){for(let node=this;node;node=node.parentNode)if(node.hidden)return node;}return null}
  checkVisibility(){return !this.closest('[hidden],[aria-hidden="true"]')}
@@ -128,6 +128,17 @@ const key=(document,value,shiftKey=false)=>document.dispatchEvent({type:'keydown
  assert.equal(await apiCancel,false,'programmatic close is a cancellation');
  assert.equal(document.activeElement,opener);
  assert.equal(document.listenerCount('keydown'),0);
+
+ opener.focus();
+ const choice=window.confirmAction('Replace or fill?',{confirmLabel:'Fill empty sections',alternateLabel:'Replace <all>'});
+ assert.match(host.innerHTML,/<button type="button" data-dialog-alternate>Replace &lt;all&gt;<\/button><button type="button" class="primary " data-dialog-confirm>Fill empty sections</,'the second choice sits between Cancel and the recommended action');
+ assert.equal(document.activeElement,host._dialogNodes.confirm,'the recommended action keeps the initial focus');
+ host._dialogNodes.alternate.click();
+ assert.equal(await choice,'alternate','the second choice resolves distinctly from confirm and cancel');
+ assert.equal(document.listenerCount('keydown'),0);
+ const fill=window.confirmAction('Replace or fill?',{alternateLabel:'Replace'});host._dialogNodes.confirm.click();assert.equal(await fill,true);
+ const neither=window.confirmAction('Replace or fill?',{alternateLabel:'Replace'});key(document,'Escape');assert.equal(await neither,false);
+ window.confirmAction('Plain');assert.doesNotMatch(host.innerHTML,/data-dialog-alternate/,'ordinary confirmations keep two buttons');window.SunChartsDialog.close();
 
  assert.match(index,/<script src="\/dialog\.js"><\/script>/);
  assert.match(portal,/<script src="\/dialog\.js" defer><\/script>/);

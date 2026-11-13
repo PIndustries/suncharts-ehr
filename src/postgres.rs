@@ -81,6 +81,16 @@ pub(crate) async fn rooming_authorized(
     Ok(())
 }
 
+type PreviousNoteRow = (
+    Uuid,
+    i64,
+    Option<serde_json::Value>,
+    Uuid,
+    Option<chrono::DateTime<Utc>>,
+    chrono::DateTime<Utc>,
+    String,
+);
+
 fn editable(v: &Visit) -> Result<()> {
     if v.status != "in_progress" {
         Err(Error::Conflict(
@@ -318,11 +328,51 @@ impl ClinicalBackend for PostgresBackend {
         Ok(v)
     }
 
-    async fn save_note(&self, a: &Actor, id: Uuid, version: i64, note: SoapNote) -> Result<Visit> {
+    async fn save_note(
+        &self,
+        a: &Actor,
+        id: Uuid,
+        version: i64,
+        mut note: SoapNote,
+    ) -> Result<Visit> {
         note.validate()?;
+        if note.procedure.trim().is_empty() {
+            note.procedure.clear();
+        }
         let mut tx = self.0.begin().await?;
         let v = lock_visit(&mut tx, a, id, version).await?;
         editable(&v)?;
+        let recorded = v
+            .note
+            .as_ref()
+            .and_then(|saved| saved.get("started_from"))
+            .cloned();
+        if let Some(source) = note.started_from.as_mut() {
+            // Only a signed note of this same patient in this practice can be named.
+            let earlier: Option<(i64, chrono::DateTime<Utc>)> = sqlx::query_as("SELECT s.version,ap.starts_at FROM visits s JOIN appointments ap ON ap.tenant_id=s.tenant_id AND ap.id=s.appointment_id WHERE s.tenant_id=$1 AND s.id=$2 AND s.patient_id=$3 AND s.id<>$4 AND s.status='signed'")
+                .bind(a.tenant_id)
+                .bind(source.visit_id)
+                .bind(v.patient_id)
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+            let (current, visit_date) = earlier.ok_or(Error::Invalid(
+                "the earlier note must be a signed note for this patient",
+            ))?;
+            if source.version > current {
+                return Err(Error::Invalid("invalid earlier-note reference"));
+            }
+            source.visit_date = Some(visit_date);
+            source.sections = NOTE_SECTIONS
+                .iter()
+                .filter(|section| source.sections.iter().any(|s| s == *section))
+                .map(|section| section.to_string())
+                .collect();
+        }
+        let started_from = note
+            .started_from
+            .as_ref()
+            .map(|source| serde_json::to_value(source).expect("serializable note source"));
         sqlx::query("UPDATE visits SET note=$3, version=version+1 WHERE tenant_id=$1 AND id=$2")
             .bind(a.tenant_id)
             .bind(id)
@@ -331,8 +381,79 @@ impl ClinicalBackend for PostgresBackend {
             .await?;
         let v = visit_row(&mut tx, a, id).await?;
         audit(&mut tx, a, "visit.note_save", id).await?;
+        if started_from.is_some() && started_from != recorded {
+            audit(&mut tx, a, "visit.note_started_from_earlier", id).await?;
+        }
         tx.commit().await?;
         Ok(v)
+    }
+
+    async fn previous_note(&self, a: &Actor, id: Uuid) -> Result<PreviousNote> {
+        a.clinical()?;
+        let mut tx = self.0.begin().await?;
+        let v = visit_row(&mut tx, a, id).await?;
+        // The same rule as writing the note: only the assigned clinician documents this visit.
+        if v.clinician_id != a.sub {
+            return Err(Error::Forbidden);
+        }
+        // Signed notes only, same patient and practice, not later than this visit. The
+        // assigned clinician's own notes come first; otherwise the newest by anyone.
+        let rows: Vec<PreviousNoteRow> = sqlx::query_as("SELECT s.id,s.version,s.note,s.clinician_id,s.signed_at,ap.starts_at,COALESCE(NULLIF(pp.display_name,''),NULLIF(u.display_name,''),'') FROM visits s JOIN appointments ap ON ap.tenant_id=s.tenant_id AND ap.id=s.appointment_id JOIN appointments cur ON cur.tenant_id=s.tenant_id AND cur.id=$4 LEFT JOIN practice_providers pp ON pp.tenant_id=s.tenant_id AND pp.id=s.clinician_id LEFT JOIN browser_users u ON u.tenant_id=s.tenant_id AND u.id=s.clinician_id WHERE s.tenant_id=$1 AND s.patient_id=$2 AND s.id<>$3 AND s.status='signed' AND ap.starts_at<=cur.starts_at ORDER BY (s.clinician_id=$5) DESC,ap.starts_at DESC,s.signed_at DESC,s.id LIMIT 20")
+            .bind(a.tenant_id)
+            .bind(v.patient_id)
+            .bind(id)
+            .bind(v.appointment_id)
+            .bind(v.clinician_id)
+            .fetch_all(&mut *tx)
+            .await?;
+        let source = rows.into_iter().find_map(
+            |(visit_id, version, note, clinician_id, signed_at, visit_date, clinician_name)| {
+                // Only the note text is offered. Vitals, diagnoses, orders and charges
+                // live outside the note and are never part of this response.
+                let section = |key: &str| {
+                    note.as_ref()
+                        .and_then(|n| n.get(key))
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned()
+                };
+                let text = PreviousNoteText {
+                    subjective: section("subjective"),
+                    objective: section("objective"),
+                    assessment: section("assessment"),
+                    plan: section("plan"),
+                    procedure: section("procedure"),
+                };
+                let blank = [
+                    &text.subjective,
+                    &text.objective,
+                    &text.assessment,
+                    &text.plan,
+                    &text.procedure,
+                ]
+                .iter()
+                .all(|value| value.trim().is_empty());
+                (!blank).then_some(PreviousNoteSource {
+                    visit_id,
+                    version,
+                    visit_date,
+                    signed_at,
+                    clinician_id,
+                    clinician_name,
+                    same_clinician: clinician_id == v.clinician_id,
+                    note: text,
+                })
+            },
+        );
+        audit(
+            &mut tx,
+            a,
+            "visit.previous_note.read",
+            source.as_ref().map_or(id, |found| found.visit_id),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(PreviousNote { source })
     }
 
     async fn save_vitals(

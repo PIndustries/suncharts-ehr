@@ -1061,6 +1061,18 @@ mod tests {
             "/api/v1/patients/{patient}/orders/{order}/actions"
         ));
         assert!(permitted(&flags, &Method::PUT, "/api/v1/visits/{id}/note"));
+        assert!(permitted(
+            &flags,
+            &Method::GET,
+            "/api/v1/visits/{id}/previous-note"
+        ));
+        let mut hidden = defaults();
+        hidden.get_mut("clinical").unwrap().view = false;
+        assert!(!permitted(
+            &hidden,
+            &Method::GET,
+            "/api/v1/visits/{id}/previous-note"
+        ));
         flags.get_mut("scheduling").unwrap().delete = false;
         assert!(!permitted(
             &flags,

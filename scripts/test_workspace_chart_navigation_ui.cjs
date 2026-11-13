@@ -19,6 +19,7 @@ vm.runInContext(specialty,context,{filename:'specialty-workspace.js'});
 const extract=(startText,endText)=>{const start=app.indexOf(startText),end=app.indexOf(endText,start);assert.ok(start>=0&&end>start);return app.slice(start,end);};
 vm.runInContext(extract('function encounterWorkflow(){','function openEncounterStep('),context,{filename:'encounter-navigation.js'});
 vm.runInContext(extract('function chartAreaEnabled(key){','\nconst formData='),context,{filename:'chart-navigation.js'});
+vm.runInContext(extract('const noteSectionKeys=','const visitAmendmentDrafts='),context,{filename:'note-sections.js'});
 vm.runInContext(extract('function renderVisit(activate=true) {','function renderHistory()'),context,{filename:'encounter-render.js'});
 const evaluate=source=>vm.runInContext(source,context),plain=value=>JSON.parse(JSON.stringify(value));
 const configured=['overview','visits','billing','documents','profile','clinical','history','orders','checkout','functional_status','specialty_care'];
