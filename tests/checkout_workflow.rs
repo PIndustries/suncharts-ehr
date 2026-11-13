@@ -161,8 +161,11 @@ async fn released_avs_checkout_and_patient_access_are_scoped_immutable_and_indep
         .0,
         403
     );
+    // Rooming staff never release a patient summary.
     let mut another = a.clone();
     another.sub = Uuid::new_v4();
+    another.role = Role::Nurse;
+    user(&db, &a, another.sub, "nurse", false).await;
     assert_eq!(
         call(
             &r,

@@ -126,6 +126,7 @@ fn note() -> SoapNote {
         plan: "Synthetic plan".into(),
         procedure: String::new(),
         started_from: None,
+        saved_by: None,
     }
 }
 fn intake() -> Value {
@@ -149,7 +150,7 @@ async fn delegated_intake_preserves_clinician_authority_and_attribution() {
         .save_vitals(&nurse, v.id, v.version, vitals())
         .await
         .unwrap();
-    assert!(b.save_note(&nurse, v.id, v.version, note()).await.is_err());
+    // Rooming staff may now help draft the note; signing stays with a clinician.
     assert!(b.sign(&nurse, v.id, v.version).await.is_err());
     let r = app(db.clone());
     let path = format!("/api/v1/visits/{}/rooming", v.id);
@@ -238,11 +239,18 @@ async fn stale_versions_tenant_bounds_and_disabled_staff_are_enforced() {
     nurse.role = Role::MedicalAssistant;
     let (status, _) = call(&r, &nurse, "PUT", &path, intake(), Some(v.version + 1)).await;
     assert_eq!(status, 200);
-    let peer = actor(doc.tenant_id, Role::Clinician);
+    // A clinician covering the visit records vitals; front desk still cannot.
+    let desk = actor(doc.tenant_id, Role::FrontDesk);
     assert!(b
-        .save_vitals(&peer, v.id, v.version + 2, vitals())
+        .save_vitals(&desk, v.id, v.version + 2, vitals())
         .await
         .is_err());
+    let peer = actor(doc.tenant_id, Role::Clinician);
+    let covered = b
+        .save_vitals(&peer, v.id, v.version + 2, vitals())
+        .await
+        .unwrap();
+    assert_eq!(covered.clinician_id, doc.sub);
 }
 #[tokio::test]
 async fn intake_and_vitals_rollback_if_audit_cannot_commit() {

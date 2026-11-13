@@ -206,8 +206,17 @@ async fn previous(app: &Router, who: &Actor, visit: &Value) -> (StatusCode, Valu
     )
     .await
 }
+/// A note as returned, without the server's record of who last saved it.
+fn text_of(note: &Value) -> Value {
+    let mut note = note.clone();
+    if let Some(fields) = note.as_object_mut() {
+        fields.remove("saved_by");
+    }
+    note
+}
 async fn stored_note(db: &PgPool, visit: &Value) -> String {
-    sqlx::query_scalar("SELECT note::text FROM visits WHERE id=$1")
+    // The text sections as stored, without the server's record of who last saved.
+    sqlx::query_scalar("SELECT (note - 'saved_by')::text FROM visits WHERE id=$1")
         .bind(id(visit))
         .fetch_one(db)
         .await
@@ -255,7 +264,7 @@ async fn notes_without_a_procedure_keep_their_stored_shape_and_still_sign() {
     )
     .await;
     assert_eq!(status, 200);
-    assert_eq!(read["note"], soap());
+    assert_eq!(text_of(&read["note"]), soap());
     let (status, done) = call(
         &app,
         Some(&doctor),
@@ -330,7 +339,7 @@ async fn procedure_round_trips_through_draft_sign_amend_and_read() {
 
     let (status, saved) = save(&app, &doctor, &visit, note.clone()).await;
     assert_eq!(status, 200, "{saved}");
-    assert_eq!(saved["note"], note);
+    assert_eq!(text_of(&saved["note"]), note);
     let (status, done) = call(
         &app,
         Some(&doctor),
@@ -341,7 +350,7 @@ async fn procedure_round_trips_through_draft_sign_amend_and_read() {
     )
     .await;
     assert_eq!(status, 200, "{done}");
-    assert_eq!(done["note"], note);
+    assert_eq!(text_of(&done["note"]), note);
     let before = stored_note(&db, &done).await;
 
     let (status, amended) = call(
@@ -354,7 +363,7 @@ async fn procedure_round_trips_through_draft_sign_amend_and_read() {
     )
     .await;
     assert_eq!(status, 200, "{amended}");
-    assert_eq!(amended["note"], note);
+    assert_eq!(text_of(&amended["note"]), note);
     assert_eq!(stored_note(&db, &amended).await, before);
 
     let (status, record) = call(
@@ -367,7 +376,7 @@ async fn procedure_round_trips_through_draft_sign_amend_and_read() {
     )
     .await;
     assert_eq!(status, 200, "{record}");
-    assert_eq!(record["visits"][0]["note"], note);
+    assert_eq!(text_of(&record["visits"][0]["note"]), note);
     assert_eq!(record["amendments"].as_array().unwrap().len(), 1);
     let (status, chart) = call(
         &app,
@@ -474,6 +483,7 @@ async fn previous_note_prefers_the_same_clinician_and_only_offers_signed_notes()
             "clinician_id",
             "clinician_name",
             "note",
+            "own",
             "same_clinician",
             "signed_at",
             "version",
@@ -501,9 +511,15 @@ async fn previous_note_prefers_the_same_clinician_and_only_offers_signed_notes()
     assert_eq!(found["source"]["clinician_name"], "Dr. Peer Synthetic");
     assert_eq!(drafted["status"], "in_progress");
 
-    // Permissions match writing the note: the assigned clinician only, same practice only.
-    assert_eq!(previous(&app, &peer, &current).await.0, 403);
+    // Permissions match writing the note: clinical staff of the same practice only. A
+    // colleague covering this visit is offered the assigned clinician's earlier note.
+    let (status, covering) = previous(&app, &peer, &current).await;
+    assert_eq!(status, 200, "{covering}");
+    assert_eq!(covering["source"]["visit_id"], own_signed["id"]);
+    assert_eq!(covering["source"]["same_clinician"], true);
+    assert_eq!(covering["source"]["own"], false);
     assert_eq!(previous(&app, &desk, &current).await.0, 403);
+    // A nurse whose account is not on file is not clinical staff here.
     assert_eq!(previous(&app, &nurse, &current).await.0, 403);
     assert_eq!(previous(&app, &readonly, &current).await.0, 403);
     assert_eq!(previous(&app, &outsider, &current).await.0, 404);
@@ -539,7 +555,7 @@ async fn previous_note_prefers_the_same_clinician_and_only_offers_signed_notes()
     )
     .await;
     assert_eq!(reread["version"], own_signed["version"]);
-    assert_eq!(reread["note"], own);
+    assert_eq!(text_of(&reread["note"]), own);
 }
 
 #[tokio::test]
@@ -673,7 +689,7 @@ async fn a_note_started_from_an_earlier_one_records_where_it_came_from() {
     .await;
     assert_eq!(reread["version"], source["version"]);
     assert_eq!(reread["signed_at"], source["signed_at"]);
-    assert_eq!(reread["note"], earlier);
+    assert_eq!(text_of(&reread["note"]), earlier);
     assert_eq!(
         audits(&db, "visit.note_started_from_earlier", id(&source)).await,
         0

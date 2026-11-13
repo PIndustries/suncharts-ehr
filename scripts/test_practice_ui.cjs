@@ -78,13 +78,32 @@ async function testEncounterStates() {
   assert.doesNotMatch(f.node('visit-editor').innerHTML, /data-action="sign"|>Save note<|>Save vitals</);
   assert.match(f.node('visit-editor').innerHTML, /id="amendment-form"/);
   assert.match(f.node('encounter-progress').innerHTML, /Signed clinical record/);
-  for (const role of ['owner', 'clinician', 'front_desk', 'read_only']) {
+  // A signed note of a colleague's visit: any clinician or the owner may add a correction; other staff only read.
+  for (const role of ['owner', 'clinician']) {
+    f.evaluate(`me.role=${JSON.stringify(role)}; activeVisit.clinician_id='another-clinician';renderVisit(false)`);
+    assert.doesNotMatch(f.node('visit-editor').innerHTML, /data-action="sign"|>Save note<|>Save vitals</, role);
+    assert.match(f.node('visit-editor').innerHTML, /id="amendment-form"/, role);
+  }
+  for (const role of ['front_desk', 'read_only']) {
     f.evaluate(`me.role=${JSON.stringify(role)}; activeVisit.clinician_id='another-clinician';renderVisit(false)`);
     assert.doesNotMatch(f.node('visit-editor').innerHTML, /data-action="sign"|id="amendment-form"|>Save note<|>Save vitals</, role);
-    assert.match(f.node('visit-editor').innerHTML, /Documentation is read-only/, role);
+    assert.match(f.node('visit-editor').innerHTML, /A clinician can add a correction\./, role);
   }
-  f.evaluate(`me.role='front_desk';activeVisit.clinician_id='author';activeVisit.status='in_progress';renderVisit(false)`);
-  assert.doesNotMatch(f.node('visit-editor').innerHTML, /data-action="sign"|>Save note</);
+  // An unsigned note of a colleague's visit: clinicians and the owner write and sign it; front desk and read-only staff read it.
+  for (const role of ['owner', 'clinician']) {
+    f.evaluate(`me.role=${JSON.stringify(role)};activeVisit.status='in_progress';renderVisit(false)`);
+    assert.match(f.node('visit-editor').innerHTML, />Save note</, role);
+    assert.match(f.node('visit-editor').innerHTML, /data-action="sign"/, role);
+    // A covering clinician or the owner also records vitals for the visit.
+    assert.match(f.node('visit-editor').innerHTML, />Save vitals</, role);
+    assert.doesNotMatch(f.node('visit-editor').innerHTML, /You can read this note/, role);
+  }
+  for (const role of ['front_desk', 'read_only']) {
+    f.evaluate(`me.role=${JSON.stringify(role)};activeVisit.clinician_id='author';activeVisit.status='in_progress';renderVisit(false)`);
+    assert.doesNotMatch(f.node('visit-editor').innerHTML, /data-action="sign"|>Save note<|>Save vitals</, role);
+    assert.match(f.node('visit-editor').innerHTML, /<p id="note-read-only" class="muted">You can read this note\. Clinical staff write it and a clinician signs it\.<\/p>/, role);
+  }
+  assert.doesNotMatch(f.node('visit-editor').innerHTML, /Documentation is read-only|Only the assigned clinician/);
 }
 
 async function testDelegatedRoomingControls(){
@@ -92,7 +111,9 @@ async function testDelegatedRoomingControls(){
  for(const role of ['nurse','medical_assistant']){
   f.evaluate(`me.role=${JSON.stringify(role)};activeVisit.clinician_id='another-clinician';activeVisit.status='in_progress';renderVisit(false)`);
   assert.match(f.node('visit-editor').innerHTML,/>Save vitals</,role);
-  assert.doesNotMatch(f.node('visit-editor').innerHTML,/data-action="sign"|>Save note<|id="amendment-form"/,role);
+  // Rooming staff may draft the note for the clinician but are never offered the signature.
+  assert.match(f.node('visit-editor').innerHTML,/>Save note<\/button><span id="note-sign-help" class="muted">You can draft this note\. A clinician signs it\.<\/span>/,role);
+  assert.doesNotMatch(f.node('visit-editor').innerHTML,/data-action="sign"|id="amendment-form"/,role);
   assert.match(f.node('encounter-progress').innerHTML,/Notes &amp; diagnoses \(ICD-10\)|Notes & diagnoses \(ICD-10\)/,role);
   f.evaluate(`activeVisit.status='signed';renderVisit(false)`);
   assert.doesNotMatch(f.node('visit-editor').innerHTML,/>Save vitals<|>Save note<|data-action="sign"|id="amendment-form"/,role);
@@ -110,10 +131,26 @@ async function testVisitDrafts(){
  f.evaluate('captureVisitDrafts();renderVisit(false)');
  assert.match(f.node('visit-editor').innerHTML,/Unfinished &amp; &lt;safe&gt;/);
  assert.match(f.node('visit-draft-status').textContent,/Unsaved note/);
- // An unrelated chart refresh must retain both text and its optimistic-lock version.
- f.evaluate('activeVisit={...activeVisit,version:2};renderVisit(false)');
- assert.match(f.node('visit-editor').innerHTML,/id="note-form"[^>]*data-version="1"/);
- assert.match(f.node('visit-draft-status').textContent,/saved encounter changed/);
+ // Someone else saving vitals or intake moves the shared version but not the note text: the draft follows it.
+ f.evaluate('activeVisit={...activeVisit,version:2,vitals:{heart_rate_bpm:70}};renderVisit(false)');
+ assert.match(f.node('visit-editor').innerHTML,/id="note-form"[^>]*data-version="2"/);
+ assert.match(f.node('visit-editor').innerHTML,/Unfinished &amp; &lt;safe&gt;/);
+ assert.doesNotMatch(f.node('visit-draft-status').textContent,/saved this note|saved encounter changed/);
+ // Someone else saving the note itself is never followed silently: text and version stay, with a choice.
+ f.evaluate('activeVisit={...activeVisit,version:3,note:{subjective:"Colleague text",objective:"O",assessment:"A",plan:"P",saved_by:{id:"colleague",name:"Morgan <Assistant>",at:"2026-11-10T15:05:00Z"}}};renderVisit(false)');
+ assert.match(f.node('visit-editor').innerHTML,/id="note-form"[^>]*data-version="2"/);
+ assert.match(f.node('visit-editor').innerHTML,/Unfinished &amp; &lt;safe&gt;/);
+ assert.match(f.node('visit-draft-status').textContent,/Morgan <Assistant> saved this note on .*2026.* while you were writing\. Nothing was overwritten\. Your text is still here and has not been saved\./);
+ assert.match(f.node('note-conflict').innerHTML,/Morgan &lt;Assistant&gt; saved this note on [^<]*<\/p><div class="actions"><button type="button" data-action="show-saved-note"[^>]*>See the saved note<\/button><button type="button" data-action="keep-note-draft">Keep my text<\/button><button type="button" data-action="discard-visit-draft">Use the saved note<\/button>/);assert.equal(f.node('note-conflict').hidden,false);
+ f.evaluate('showSavedNoteCopy()');
+ assert.match(f.node('note-saved-copy').innerHTML,/Saved note · Morgan &lt;Assistant&gt;, [^<]*<\/h4><p class="muted">Subjective<\/p><p class="note-text">Colleague text<\/p>/);
+ assert.equal(f.node('note-saved-copy').hidden,false);
+ // Keeping the text is an explicit choice; only then does the draft take the current version.
+ f.evaluate('keepNoteDraft();renderVisit(false)');
+ assert.match(f.node('visit-editor').innerHTML,/id="note-form"[^>]*data-version="3"/);
+ assert.match(f.node('visit-editor').innerHTML,/Unfinished &amp; &lt;safe&gt;/);
+ assert.doesNotMatch(f.node('visit-draft-status').textContent,/saved this note/);
+ f.evaluate('activeVisit={...activeVisit,version:2,note:null,vitals:null};visitDrafts.get("visit-1").note.version=2;visitDrafts.get("visit-1").note.base=noteSavedText(null);renderVisit(false)');
  // Saving our own vitals advances the sibling note only from the same base revision.
  f.evaluate('activeVisit={...activeVisit,version:1};rememberVisit({...activeVisit,version:2,vitals:{heart_rate_bpm:72}},"vitals");renderVisit(false)');
  assert.match(f.node('visit-editor').innerHTML,/id="note-form"[^>]*data-version="2"/);

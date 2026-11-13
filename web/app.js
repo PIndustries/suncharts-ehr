@@ -155,6 +155,14 @@ function noteSourceText(value){
 }
 function noteFieldText(key,value){return key==='started_from'?noteSourceText(value):key==='procedure'&&!String(value??'').trim()?'':String(value??'');}
 function noteMatchesSaved(values,saved){return Boolean(saved)&&[...noteSectionKeys,'started_from'].every(key=>noteFieldText(key,values[key])===noteFieldText(key,saved[key]));}
+// The saved note as one comparable text: its sections and where it was started from, not who saved it.
+function noteSavedText(note){return JSON.stringify([...noteSectionKeys,'started_from'].map(key=>noteFieldText(key,note?.[key])));}
+function noteSaverName(note){const by=note?.saved_by;return by?by.name||(by.support?'Support staff':'a staff member'):'';}
+// Who may write, sign and correct a visit note. The server enforces the same rule.
+function clinicalAccess(action){return typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('clinical',action);}
+function canDraftNote(v){return v?.status==='in_progress'&&['owner','clinician','nurse','medical_assistant'].includes(me?.role)&&clinicalAccess('edit');}
+function canSignNote(){return ['owner','clinician'].includes(me?.role)&&!me?.delegated&&clinicalAccess('edit');}
+function canAmendNote(v){return v?.status==='signed'&&['owner','clinician'].includes(me?.role)&&!me?.delegated&&clinicalAccess('create');}
 function noteRequestBody(values){
  const body=Object.fromEntries(noteSectionKeys.slice(0,4).map(key=>[key,values[key]])),source=noteSourceText(values.started_from);
  if(String(values.procedure??'').trim())body.procedure=values.procedure;
@@ -194,7 +202,7 @@ function captureVisitAmendmentDraft(){
 }
 function currentAmendmentContext(form){
  const context=form&&visitAmendmentContexts.get(form);
- return context&&context.identity===me&&context.tenantId===me?.tenant_id&&context.patientId===selected&&context.visitId===activeVisit?.id&&activeVisit.status==='signed'&&['owner','clinician'].includes(me?.role)&&activeVisit.clinician_id===me.user_id&&$('amendment-form')===form?context:null;
+ return context&&context.identity===me&&context.tenantId===me?.tenant_id&&context.patientId===selected&&context.visitId===activeVisit?.id&&canAmendNote(activeVisit)&&$('amendment-form')===form?context:null;
 }
 function updateVisitAmendmentStatus(){
  const form=$('amendment-form'),context=currentAmendmentContext(form),status=$('amendment-draft-status');if(!context||!status)return;
@@ -224,7 +232,7 @@ async function discardVisitAmendmentDraft(){
  form.elements.reason.value='';form.elements.text.value='';visitAmendmentDrafts.delete(key);renderVisit(false);focusVisitAmendment();
 }
 async function submitVisitAmendment(form){
- const context=currentAmendmentContext(form);if(!context)throw new Error('Open the assigned encounter before signing this correction.');
+ const context=currentAmendmentContext(form);if(!context)throw new Error('Open the signed encounter before signing this correction.');
  if(context.version!==activeVisit.version)throw new Error('Review the changed encounter and confirm its current version before signing this correction.');
  captureVisitAmendmentDraft();
  const submitted=amendmentValues(form),key=amendmentContextKey(context),version=context.version;
@@ -268,17 +276,64 @@ function captureVisitDrafts(includeRooming=true){
   const form=$(kind+'-form');if(!form||form.dataset?.visitId!==key)continue;
   const values=formData(form),saved=activeVisit[kind]||{};
   const changed=Object.entries(values).some(([k,v])=>kind==='vitals'?v===''?saved[k]!=null:Number(v)!==saved[k]:noteFieldText(k,v)!==noteFieldText(k,saved[k]));
-  if(changed)draft[kind]={values,version:Number(form.dataset.version)};else delete draft[kind];
+  if(changed)draft[kind]={values,version:Number(form.dataset.version),...(kind==='note'?{base:draft.note?.base??noteSavedText(saved)}:{})};else delete draft[kind];
  }
  if(draft.note||draft.vitals)visitDrafts.set(key,draft);else visitDrafts.delete(key);
  updateDraftStatus();
 }
+// Saving vitals, intake or diagnoses moves the visit's shared version without touching the note text, so the note being written still applies to the current record.
+function followUnchangedNote(){
+ const draft=visitDrafts.get(activeVisit?.id),form=$('note-form');
+ if(!draft?.note||draft.note.version===activeVisit.version||draft.note.base!==noteSavedText(activeVisit.note))return;
+ draft.note.version=activeVisit.version;if(form?.dataset?.visitId===activeVisit.id)form.dataset.version=String(activeVisit.version);
+}
 function updateDraftStatus(){
- const status=$('visit-draft-status');if(!status||!activeVisit)return;
- const draft=visitDrafts.get(activeVisit.id),parts=['note','vitals'].filter(k=>draft?.[k]);
+ if(!activeVisit)return;
+ followUnchangedNote();
+ const draft=visitDrafts.get(activeVisit.id),status=$('visit-draft-status'),conflict=$('note-conflict'),copy=$('note-saved-copy');
+ const parts=['note','vitals'].filter(k=>draft?.[k]),noteChanged=Boolean(draft?.note)&&draft.note.version!==activeVisit.version,by=activeVisit.note?.saved_by;
+ const changed=noteChanged?`${noteSaverName(activeVisit.note)||'Someone else'} saved this note${by?.at?' on '+date(by.at):''} while you were writing. Nothing was overwritten. Your text is still here and has not been saved.`:'';
+ // The choice sits with the note itself, where the person is writing.
+ if(conflict&&conflict.isConnected!==false){conflict.hidden=!noteChanged;conflict.innerHTML=noteChanged?`<p>${esc(changed)}</p><div class="actions"><button type="button" data-action="show-saved-note" aria-controls="note-saved-copy">See the saved note</button><button type="button" data-action="keep-note-draft">Keep my text</button><button type="button" data-action="discard-visit-draft">Use the saved note</button></div>`:'';}
+ if(copy&&copy.isConnected!==false&&!noteChanged){copy.hidden=true;copy.innerHTML='';}
+ if(!status)return;
  status.textContent=parts.length?`Unsaved ${parts.join(' and ')} edits retained in this tab. Save before closing or reloading.`:'';
- if(parts.some(k=>draft[k].version!==activeVisit.version))status.textContent+=' The saved encounter changed. Your edits are preserved; compare with the current record before saving.';
+ if(noteChanged)status.textContent+=' '+changed;
+ if(draft?.vitals&&draft.vitals.version!==activeVisit.version)status.textContent+=' The saved encounter changed. Your edits are preserved; compare with the current record before saving.';
  if(parts.length)status.innerHTML+=' <button type="button" class="text-button" data-action="discard-visit-draft">Discard unsaved edits and use saved record</button>';
+}
+// The saved note, read-only, beside the text still being written.
+function showSavedNoteCopy(){
+ const copy=$('note-saved-copy');if(!copy||!activeVisit)return;
+ if(!copy.hidden){copy.hidden=true;copy.innerHTML='';return;}
+ const note=activeVisit.note||{},by=note.saved_by;
+ copy.innerHTML=`<h4>Saved note${by?.at?` · ${esc(noteSaverName(note))}, ${esc(date(by.at))}`:''}</h4>${noteSectionKeys.filter(key=>String(note[key]??'').trim()).map(key=>`<p class="muted">${key[0].toUpperCase()+key.slice(1)}</p><p class="note-text">${esc(note[key])}</p>`).join('')||'<p class="muted">The saved note is empty.</p>'}<p class="muted">Copy anything you need into your text, then choose Keep my text and save.</p>`;
+ copy.hidden=false;
+}
+// An explicit choice: the text in this tab replaces the saved note on the next save.
+function keepNoteDraft(){
+ const draft=visitDrafts.get(activeVisit?.id),form=$('note-form');if(!draft?.note||form?.dataset?.visitId!==activeVisit.id)return;
+ draft.note.version=activeVisit.version;draft.note.base=noteSavedText(activeVisit.note);form.dataset.version=String(activeVisit.version);updateDraftStatus();
+ notice('Your text is kept. Save note to replace the saved note with it.');
+}
+// Saves the note. If the visit moved on, the current record is loaded first: a change that left the note text alone is retried once, a change to the note itself is shown and never overwritten.
+async function saveVisitNote(form,data){
+ const id=activeVisit.id,identity=me;
+ for(let attempt=0;;attempt++){
+  try{rememberVisit(await api(`/api/v1/visits/${id}/note`,'PUT',noteRequestBody(data),Number(form.dataset.version)),'note');break;}
+  catch(error){
+   if(error.status!==409||error.code!=='conflict'||me!==identity||activeVisit?.id!==id)throw error;
+   const opened=activeVisit,current=await api(`/api/v1/visits/${id}`);
+   if(me!==identity||activeVisit?.id!==id)return;
+   if(current.status==='signed'){rememberVisit(current);throw new Error('This note was signed while you were writing, so your text was not saved. Copy anything you still need, then reload the patient.');}
+   const held=visitDrafts.get(id)||{patientId:selected},base=held.note?.base??noteSavedText(opened.note);
+   held.note={values:held.note?.values||data,version:held.note?.version??Number(form.dataset.version),base};visitDrafts.set(id,held);
+   rememberVisit(current);
+   if(attempt===0&&Number(form.dataset.version)===current.version)continue;
+   throw new Error(`${noteSaverName(current.note)||'Someone else'} saved this note while you were writing. Nothing was overwritten and your text is still here.`);
+  }
+ }
+ if(typeof visitNoteSaved==='function')visitNoteSaved(activeVisit);notice('Note saved.');
 }
 
 let me, patients = [], cursor, selected, workspace, activeVisit, busy = false;
@@ -507,20 +562,21 @@ function renderChart() {
 }
 function canRegisterPatient(){return ['owner','clinician','front_desk'].includes(me?.role)&&(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('clinical','create'));}
 function isRoomingStaff(){return ['nurse','medical_assistant'].includes(me?.role);}
-function canRecordVisitVitals(v){return v?.status==='in_progress'&&(isRoomingStaff()||(['owner','clinician'].includes(me?.role)&&v.clinician_id===me.user_id));}
+function canRecordVisitVitals(v){return v?.status==='in_progress'&&(isRoomingStaff()||(['owner','clinician'].includes(me?.role)&&(v.clinician_id===me.user_id||!me?.delegated)));}
 function renderVisit(activate=true) {
   captureVisitAmendmentDraft();
   if(activate){chartSection='visits';}
-  const v=activeVisit, draft=visitDrafts.get(v.id), retained=draft?.patientId===selected&&v.status!=='signed'?draft:null, note=retained?.note?.values||v.note||{}, noteSource=noteSourceText(retained?.note?.values?retained.note.values.started_from:v.note?.started_from), vitals=retained?.vitals?.values||v.vitals||{}, signed=v.status==='signed', writable=['owner','clinician'].includes(me.role)&&v.clinician_id===me.user_id, locked=signed||!writable, vitalsLocked=!canRecordVisitVitals(v);
-  const correction=signed&&writable?currentAmendmentDraft(v):null;
+  followUnchangedNote();
+  const v=activeVisit, draft=visitDrafts.get(v.id), retained=draft?.patientId===selected&&v.status!=='signed'?draft:null, note=retained?.note?.values||v.note||{}, noteSource=noteSourceText(retained?.note?.values?retained.note.values.started_from:v.note?.started_from), vitals=retained?.vitals?.values||v.vitals||{}, signed=v.status==='signed', canDraft=canDraftNote(v), canSign=canSignNote(), canAmend=canAmendNote(v), locked=signed||!canDraft, vitalsLocked=!canRecordVisitVitals(v);
+  const correction=canAmend?currentAmendmentDraft(v):null, authorship=typeof visitNoteAuthorshipLine==='function'?visitNoteAuthorshipLine(v):'', supportSession=Boolean(me.delegated);
   const vitalLabels={systolic_mm_hg:'Systolic BP (mmHg)',diastolic_mm_hg:'Diastolic BP (mmHg)',heart_rate_bpm:'Heart rate (bpm)',temperature_c:'Temperature (°C)',weight_kg:'Weight (kg)',height_cm:'Height (cm)',oxygen_saturation_pct:'Oxygen saturation (%)'};
   const amendments=workspace.amendments.filter(a=>a.visit_id===v.id);
-  $('visit-editor').innerHTML=`<section class="panel"><div class="section-head"><h2>${signed?'Signed clinical record':'Visit documentation'}</h2><span class="pill ${signed?'signed':''}">${signed?'Signed':'In progress'}</span></div>${signed?`<div class="signed-notice" id="signed-note-help"><strong>Signed note — read-only.</strong> Signed ${esc(date(v.signed_at))}. The original SOAP note and vitals cannot be overwritten.${writable?' Add a signed correction to this encounter, or start a new encounter for a new visit.<div class="actions"><button type="button" data-action="focus-amendment" aria-controls="amendment-form">Add a signed correction</button></div>':' Only the assigned clinician can append a correction.'}</div>`:''}
+  $('visit-editor').innerHTML=`<section class="panel"><div class="section-head"><h2>${signed?'Signed clinical record':'Visit documentation'}</h2><span class="pill ${signed?'signed':''}">${signed?'Signed':'In progress'}</span></div>${signed?`<div class="signed-notice" id="signed-note-help"><strong>Signed note — read-only.</strong> <span id="note-signed-by">${esc(typeof visitNoteSignedLine==='function'?visitNoteSignedLine(v):`Signed ${date(v.signed_at)}.`)}</span> The original SOAP note and vitals cannot be overwritten.${canAmend?' Add a signed correction to this encounter, or start a new encounter for a new visit.<div class="actions"><button type="button" data-action="focus-amendment" aria-controls="amendment-form">Add a signed correction</button></div>':supportSession?' A clinician at the practice must sign any correction.':' A clinician can add a correction.'}</div>`:''}
   <p id="visit-draft-status" class="muted" role="status"></p><div id="encounter-intake"><div class="encounter-context-links"><button type="button" data-chart-section="insurance">Review insurance & copay</button><button type="button" data-chart-section="clinical">Review allergies & medications</button><button type="button" data-chart-section="documents">Review patient documents</button></div><div id="encounter-benefits" class="billing-section"></div><div id="visit-rooming"></div><h3>Vitals</h3><form id="vitals-form" data-visit-id="${v.id}" data-version="${retained?.vitals?.version??v.version}"><div class="form-grid vitals-grid">${Object.entries(vitalLabels).map(([key,label])=>`<label>${label}<input name="${key}" type="number" step="${['systolic_mm_hg','diastolic_mm_hg','heart_rate_bpm'].includes(key)?'1':'any'}" required value="${esc(vitals[key])}" ${vitalsLocked?'disabled':''}></label>`).join('')}</div>${vitalsLocked?'':'<button type="submit">Save vitals</button>'}</form>
-  </div><div id="encounter-documentation"><section id="visit-diagnoses"></section><form id="note-form" data-visit-id="${v.id}" data-version="${retained?.note?.version??v.version}"${signed?' aria-describedby="signed-note-help"':''}><h3>${signed?'SOAP note — signed original':'SOAP note'}</h3>${locked?'':`<div id="note-previous" class="note-previous" hidden></div><input type="hidden" name="started_from" value="${esc(noteSource)}">`}<div class="form-grid note-grid">${noteSectionKeys.filter(key=>key!=='procedure'||!locked||String(note.procedure??'').trim()).map(key=>{const label=key[0].toUpperCase()+key.slice(1);return `<div class="note-section${key==='procedure'?' note-procedure':''}"><label>${label}<textarea name="${key}" maxlength="10000" ${key!=='procedure'?'required':locked?'':`placeholder="${esc(noteProcedureHint)}"`} ${locked?'readonly':''}>${esc(note[key])}</textarea></label>${locked?'':`<button type="button" class="text-button note-same" id="note-same-${key}" data-note-same="${key}" aria-label="Same as last visit: ${label}" hidden>Same as last visit</button>`}</div>`;}).join('')}</div>${noteSource||!locked?`<p id="note-source-line" class="note-source muted"${noteSource?'':' hidden'}>${esc(noteSourceLine(noteSource,signed,v.note?.started_from))}</p>`:''}${locked?'':'<div class="actions"><button type="submit">Save note</button><button class="primary" type="button" data-action="sign">Sign encounter note</button><span class="muted">Save your note before signing. Then review procedures and charges, complete checkout, and submit the reviewed claim.</span></div>'}</form>
-  ${signed?`<h3>Amendment history</h3>${amendments.map(a=>`<div class="amendment"><p><b>${esc(a.reason)}</b></p><p class="note-text">${esc(a.text)}</p><small class="muted">Recorded ${esc(date(a.created_at))}</small></div>`).join('')||'<p class="muted">No amendments.</p>'}${writable?`<form id="amendment-form" data-visit-id="${esc(v.id)}" data-patient-id="${esc(selected)}" data-version="${correction?.version??v.version}" aria-describedby="amendment-draft-status"><h3>Add a signed correction</h3><p id="amendment-draft-status" class="muted" role="status"></p><button id="amendment-review-current" type="button" data-action="review-amendment-version" hidden>I reviewed the current record — keep my correction</button><label>Reason<input name="reason" required maxlength="1000" value="${esc(correction?.values.reason||'')}"></label><label>Correction<textarea name="text" required maxlength="10000">${esc(correction?.values.text||'')}</textarea></label><div class="actions"><button id="amendment-submit" type="submit">Sign & append amendment</button><button id="amendment-discard" type="button" data-action="discard-amendment-draft" class="quiet" hidden>Discard unsaved correction</button></div></form>`:''}`:''}${!writable?'<p class="muted">Documentation is read-only. Only the assigned clinician can save, sign or amend the note. Authorized rooming staff may record intake and vitals before signing.</p>':''}</div></section>`;
-  if(signed&&writable){const form=$('amendment-form');if(form)visitAmendmentContexts.set(form,{identity:me,tenantId:me.tenant_id,patientId:selected,visitId:v.id,version:correction?.version??v.version});updateVisitAmendmentStatus();}
-  updateDraftStatus();if(!locked&&typeof renderVisitNoteSource==='function')void renderVisitNoteSource();refreshEncounterProgress();if(typeof renderRooming==='function')void renderRooming();if(typeof renderVisitDiagnoses==='function')void renderVisitDiagnoses();if(typeof renderVisitCheckout==='function')renderVisitCheckout();if(typeof renderEncounterRevenue==='function')void renderEncounterRevenue();renderEncounterOrderActions();if(typeof renderEncounterStartBenefits==='function')void renderEncounterStartBenefits('encounter-benefits',revenueServiceDate(workspace.appointments.find(a=>a.id===v.appointment_id)));if(encounterSection==='files'&&typeof renderEncounterFiles==='function')void renderEncounterFiles();applyChartSection();
+  </div><div id="encounter-documentation"><section id="visit-diagnoses"></section><form id="note-form" data-visit-id="${v.id}" data-version="${retained?.note?.version??v.version}"${signed?' aria-describedby="signed-note-help"':''}><h3>${signed?'SOAP note — signed original':'SOAP note'}</h3><p id="note-authorship" class="note-authorship muted"${authorship?'':' hidden'}>${esc(authorship)}</p>${locked?'':'<div id="note-conflict" class="notice error note-conflict" role="alert" hidden></div><div id="note-saved-copy" class="note-saved-copy" hidden></div>'}${locked?'':`<div id="note-previous" class="note-previous" hidden></div><input type="hidden" name="started_from" value="${esc(noteSource)}">`}<div class="form-grid note-grid">${noteSectionKeys.filter(key=>key!=='procedure'||!locked||String(note.procedure??'').trim()).map(key=>{const label=key[0].toUpperCase()+key.slice(1);return `<div class="note-section${key==='procedure'?' note-procedure':''}"><label>${label}<textarea name="${key}" maxlength="10000" ${key!=='procedure'?'required':locked?'':`placeholder="${esc(noteProcedureHint)}"`} ${locked?'readonly':''}>${esc(note[key])}</textarea></label>${locked?'':`<button type="button" class="text-button note-same" id="note-same-${key}" data-note-same="${key}" aria-label="Same as last visit: ${label}" hidden>Same as last visit</button>`}</div>`;}).join('')}</div>${noteSource||!locked?`<p id="note-source-line" class="note-source muted"${noteSource?'':' hidden'}>${esc(noteSourceLine(noteSource,signed,v.note?.started_from))}</p>`:''}${locked?'':`<div class="actions"><button type="submit">Save note</button>${canSign?'<button class="primary" type="button" data-action="sign">Sign encounter note</button><span class="muted">Save your note before signing. Then review procedures and charges, complete checkout, and submit the reviewed claim.</span>':`<span id="note-sign-help" class="muted">${supportSession?'You can draft this note. A clinician at the practice must sign it.':'You can draft this note. A clinician signs it.'}</span>`}</div>`}</form>
+  ${signed?`<h3>Amendment history</h3>${amendments.map(a=>`<div class="amendment"><p><b>${esc(a.reason)}</b></p><p class="note-text">${esc(a.text)}</p><small class="muted">Recorded ${esc(date(a.created_at))}<span id="amendment-author-${esc(a.id)}">${esc(typeof visitNoteAmendmentAuthor==='function'?visitNoteAmendmentAuthor(v,a):'')}</span></small></div>`).join('')||'<p class="muted">No amendments.</p>'}${canAmend?`<form id="amendment-form" data-visit-id="${esc(v.id)}" data-patient-id="${esc(selected)}" data-version="${correction?.version??v.version}" aria-describedby="amendment-draft-status"><h3>Add a signed correction</h3><p id="amendment-draft-status" class="muted" role="status"></p><button id="amendment-review-current" type="button" data-action="review-amendment-version" hidden>I reviewed the current record — keep my correction</button><label>Reason<input name="reason" required maxlength="1000" value="${esc(correction?.values.reason||'')}"></label><label>Correction<textarea name="text" required maxlength="10000">${esc(correction?.values.text||'')}</textarea></label><div class="actions"><button id="amendment-submit" type="submit">Sign & append amendment</button><button id="amendment-discard" type="button" data-action="discard-amendment-draft" class="quiet" hidden>Discard unsaved correction</button></div></form>`:''}`:''}${!signed&&!canDraft?'<p id="note-read-only" class="muted">You can read this note. Clinical staff write it and a clinician signs it.</p>':''}</div></section>`;
+  if(canAmend){const form=$('amendment-form');if(form)visitAmendmentContexts.set(form,{identity:me,tenantId:me.tenant_id,patientId:selected,visitId:v.id,version:correction?.version??v.version});updateVisitAmendmentStatus();}
+  updateDraftStatus();if(!locked&&typeof renderVisitNoteSource==='function')void renderVisitNoteSource();if(typeof renderVisitNoteAuthorship==='function')void renderVisitNoteAuthorship();refreshEncounterProgress();if(typeof renderRooming==='function')void renderRooming();if(typeof renderVisitDiagnoses==='function')void renderVisitDiagnoses();if(typeof renderVisitCheckout==='function')renderVisitCheckout();if(typeof renderEncounterRevenue==='function')void renderEncounterRevenue();renderEncounterOrderActions();if(typeof renderEncounterStartBenefits==='function')void renderEncounterStartBenefits('encounter-benefits',revenueServiceDate(workspace.appointments.find(a=>a.id===v.appointment_id)));if(encounterSection==='files'&&typeof renderEncounterFiles==='function')void renderEncounterFiles();applyChartSection();
 }
 function renderHistory() {
   if(workspace.history===null)return;
@@ -795,7 +851,7 @@ function rememberVisit(v,savedKind) {
   const draft=visitDrafts.get(v.id);if(draft){delete draft[savedKind];for(const kind of ['note','vitals'])if(draft[kind]?.version===previous.version)draft[kind].version=v.version;if(!draft.note&&!draft.vitals)visitDrafts.delete(v.id);}
   for(const kind of ['note','vitals']){const form=$(kind+'-form');if(form?.dataset?.visitId===v.id&&Number(form.dataset.version)===previous.version)form.dataset.version=String(v.version);}
  }
- activeVisit=v; workspace.visits=workspace.visits.map(old=>old.id===v.id?v:old); if(savedKind)captureVisitDrafts(false);updateDraftStatus();refreshEncounterProgress();if(savedKind&&savedKind!=='rooming'&&typeof renderRooming==='function')void renderRooming();if(savedKind&&savedKind!=='diagnoses'&&typeof renderVisitDiagnoses==='function')void renderVisitDiagnoses();
+ activeVisit=v; workspace.visits=workspace.visits.map(old=>old.id===v.id?v:old); if(savedKind)captureVisitDrafts(false);updateDraftStatus();if(typeof showVisitNoteAuthorship==='function')showVisitNoteAuthorship();refreshEncounterProgress();if(savedKind&&savedKind!=='rooming'&&typeof renderRooming==='function')void renderRooming();if(savedKind&&savedKind!=='diagnoses'&&typeof renderVisitDiagnoses==='function')void renderVisitDiagnoses();
 }
 document.addEventListener('submit',e=>{
   const form=e.target; if(!['login-form','patient-form','note-form','vitals-form','amendment-form','migration-form'].includes(form.id))return;
@@ -811,7 +867,7 @@ document.addEventListener('submit',e=>{
       form.reset();form.hidden=true;await selectPatient(p.id);notice(contactError?`Patient ${p.mrn} was created, but contact details need review: ${contactError.message}`:`Patient registered with MRN ${p.mrn}.`,Boolean(contactError));return;
     }
     if(form.id==='vitals-form'){Object.keys(data).forEach(k=>{data[k]=Number(data[k]);});rememberVisit(await api(`/api/v1/visits/${activeVisit.id}/vitals`,'PUT',data,Number(form.dataset.version)),'vitals');notice('Vitals saved.');return;}
-    if(form.id==='note-form'){rememberVisit(await api(`/api/v1/visits/${activeVisit.id}/note`,'PUT',noteRequestBody(data),Number(form.dataset.version)),'note');if(typeof visitNoteSaved==='function')visitNoteSaved(activeVisit);notice('Note saved.');return;}
+    if(form.id==='note-form'){await saveVisitNote(form,data);return;}
     if(form.id==='amendment-form'){await submitVisitAmendment(form);}
   });
 });
@@ -819,6 +875,8 @@ document.addEventListener('click',e=>{
   if(e.target.closest?.('#connect-login')?.id==='connect-login'){rememberHostedCopaySignInReturn();rememberPatientPaymentSetupSignInReturn();rememberPatientMembershipSignInReturn();rememberInvoiceCheckoutSignInReturn();return;}
   const button=e.target.closest('button');if(!button||(button.type==='submit' && button.form))return;
   if(button.dataset.action==='focus-amendment'){if(!busy)focusVisitAmendment();return;}
+  if(button.dataset.action==='show-saved-note'){if(!busy)showSavedNoteCopy();return;}
+  if(button.dataset.action==='keep-note-draft'){if(!busy)keepNoteDraft();return;}
   if(button.dataset.action==='review-amendment-version'){if(!busy)reviewVisitAmendmentVersion(button);return;}
   if(button.id==='toggle-directory'){const show=$('clinical-workspace').classList.contains('directory-collapsed');setPatientDirectoryVisible(show);if(selected&&workspace)rememberPatientDirectoryPreference(show);return;}
   if(button.hasAttribute('data-encounter-history')){showChartSection('visits');const history=$('patient-encounter-history');if(history){history.open=true;history.scrollIntoView({block:'start'});}return;}
@@ -877,13 +935,21 @@ document.addEventListener('click',e=>{
     if(button.dataset.action==='discard-amendment-draft'){await discardVisitAmendmentDraft();return;}
     if(button.dataset.action==='discard-visit-draft'){if(!await confirmAction('The unsaved note and vitals edits in this tab will be removed and the saved record will be shown.',{title:'Discard encounter edits?',confirmLabel:'Discard edits',tone:'danger'}))return;visitDrafts.delete(activeVisit.id);if(typeof visitNoteSaved==='function')visitNoteSaved(activeVisit);renderVisit();notice('Unsaved encounter edits discarded. The saved record is shown.');return;}
     if(button.dataset.action==='sign'){
+      if(!canSignNote())throw new Error('A clinician must sign this note.');
       if(typeof captureVisitDiagnosisDraft==='function')captureVisitDiagnosisDraft();
       if(typeof visitDiagnosisDrafts!=='undefined'&&visitDiagnosisDrafts.get(activeVisit.id)?.patientId===selected)throw new Error('Save or discard your diagnosis edits before signing.');
       const visible=formData($('note-form'));
       if(!noteMatchesSaved(visible,activeVisit.note))throw new Error('Save your current note before signing.');
       const entered=formData($('vitals-form'));
       if(Object.values(entered).some(x=>x!=='') && (!activeVisit.vitals || Object.keys(entered).some(k=>Number(entered[k])!==activeVisit.vitals[k])))throw new Error('Save your current vitals before signing.');
-      if(!await confirmAction('Signing locks the clinical note. Continue to charges and checkout after signing. Later corrections are preserved as signed amendments.',{title:'Sign encounter note?',confirmLabel:'Sign note'}))return;
+      const signing=activeVisit,signer=me;
+      if(signing.clinician_id!==me.user_id){
+        // Covering a colleague's visit: one clear question. The visit itself is not reassigned.
+        const name=(typeof visitNoteAssignedName==='function'?await visitNoteAssignedName(signing):'')||'the assigned clinician';
+        if(me!==signer||activeVisit!==signing)return;
+        if(!await confirmAction(`Signing locks the note and records you as the signer. The visit stays assigned to ${name}. Check the rendering provider on the claim if you saw the patient.`,{eyebrow:'COVERING A VISIT',title:`Sign as yourself for ${name}’s visit?`,confirmLabel:'Sign',cancelLabel:'Cancel'}))return;
+      }else if(!await confirmAction('Signing locks the clinical note. Continue to charges and checkout after signing. Later corrections are preserved as signed amendments.',{title:'Sign encounter note?',confirmLabel:'Sign note'}))return;
+      if(me!==signer||activeVisit!==signing)return;
       const v=await api(`/api/v1/visits/${activeVisit.id}/sign`,'POST',undefined,activeVisit.version);if(typeof clearVisitNoteSession==='function')clearVisitNoteSession();await selectPatient(selected,v.id);setEncounterSection(chartAreaEnabled('billing')?'charges':'checkout');notice('Encounter signed. Review procedures and charges, then complete checkout.');
     }
   });

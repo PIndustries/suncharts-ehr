@@ -149,7 +149,7 @@ appointment and send
 secure messages. Requests enter **Patient messages** for staff review; they do not
 automatically alter the schedule. Conversations retain attribution and status.
 
-A signed visit summary becomes visible only after the assigned clinician explicitly
+A signed visit summary becomes visible only after a clinician or the owner explicitly
 publishes a released after-visit-summary version. Later internal chart edits do not
 silently change that publication. The portal does not expose draft notes, source
 archives or unrestricted clinical records. Broader results/document release,
@@ -187,12 +187,65 @@ are not exported as FHIR Procedure or Condition resources yet.
 3. Rooming staff records a chief complaint, intake notes and vitals. Marking intake
    **Ready for clinician** requires a complaint and medication/allergy review
    attestations. These attestations do not edit the longitudinal clinical lists.
-4. The assigned clinician reviews the chart, records encounter diagnoses, saves
-   SOAP and signs the encounter. Signing completes the appointment and locks the
+4. Clinical staff record encounter diagnoses and write the note. A clinician or
+   the owner signs the encounter. Signing completes the appointment and locks the
    original note, diagnoses, intake and vitals.
 5. Corrections to signed documentation use attributed amendments.
 
-Signed SOAP fields are labeled read-only. The assigned clinician can use **Add a
+### Who writes, signs and corrects a note
+
+| Role | Intake/vitals before signing | Draft note and diagnoses | Sign | Amend a signed note |
+|---|---|---|---|---|
+| Clinician or owner the visit is assigned to | Yes | Yes | Yes | Yes |
+| Another clinician, or the owner | Yes | Yes | Yes | Yes |
+| Enabled nurse or medical assistant | Yes | Yes | No | No |
+| Front desk or read-only staff | No | No | No | No |
+| Delegated support session | No | Yes | No | No |
+
+- **Drafting is shared.** The assigned clinician, any other clinician, the owner
+  and an enabled nurse or medical assistant can save the unsigned note and its
+  encounter diagnoses and use **Same as last visit**. Every save records who
+  saved it. The editor shows "Last saved by {name}, {time}" and, for anyone
+  other than the assigned clinician, "Drafting for {assigned clinician}".
+- **Signing is a clinician's own act.** The assigned clinician signs, or another
+  clinician or the owner signs when covering. The signature records the person
+  who actually signed: the signed note shows "Signed by {name}" and, when that is
+  someone else, "Visit assigned to {assigned clinician}". A covering signer is
+  asked once, "Sign as yourself for {assigned clinician}'s visit?".
+- **Signing does not reassign the visit.** The visit stays assigned to its
+  clinician. Fee lookups and eligibility checks for the visit keep using the
+  assigned clinician. A claim's rendering NPI starts from the practice's default
+  provider and is reviewed on the claim, so check it when a covering clinician
+  saw the patient. A patient summary released for a visit someone else
+  signed shows "Seen by {signer}". An appointment's clinician can be changed on the schedule
+  before the encounter starts; a started encounter cannot be reassigned.
+- **Corrections** to a signed note can be added by any clinician or the owner,
+  including the signer and the assigned clinician. Each amendment shows its author.
+- **Support sessions.** Support staff working inside a practice through SunCharts
+  Connect may help draft. Their saves are named "Support staff" in the note and
+  recorded under the support grant in the audit trail, never as a member of the
+  practice. They can never sign, amend, or release a patient summary.
+- **Front desk and read-only staff** read the note and see "You can read this
+  note. Clinical staff write it and a clinician signs it."
+- A custom access policy that removes clinical **edit** from a role removes
+  drafting (and signing) for the staff it is assigned to; removing **create**
+  removes amendments. There is no separate practice setting that restricts a
+  note to its assigned clinician.
+
+Intake and vitals on a started encounter can be recorded by enabled rooming
+staff, the assigned clinician, and a clinician or the owner covering the visit.
+Starting an encounter is unchanged: the assigned clinician or enabled rooming
+staff. Each intake and vitals save keeps its author in the encounter history.
+
+Two people cannot overwrite each other's note. Each save carries the version of
+the encounter it was based on. If a colleague saved vitals, intake or diagnoses
+meanwhile, the note being written is saved as usual. If a colleague saved the
+note itself, the second save is refused: the editor names who saved, keeps the
+unsaved text in the tab, and offers **See the saved note**, **Keep my text**
+(the next save then replaces the saved note with it) or discarding the unsaved
+text.
+
+Signed SOAP fields are labeled read-only. A clinician or the owner can use **Add a
 signed correction** to focus the amendment form; the original note stays intact.
 Unsaved amendment text is retained only in memory in the current browser tab,
 scoped to the staff session, tenant, patient and encounter. Navigating between
@@ -216,10 +269,10 @@ it is not copied into the AVS and is not part of the FHIR resources.
 
 ### Same as last visit
 
-While the note is unsigned, the assigned clinician sees **Same as last visit**
+While the note is unsigned, anyone who may draft it sees **Same as last visit**
 above the note and on each section. It brings in the text of the patient's most
-recent signed note dated on or before this visit: the clinician's own when there
-is one, otherwise the most recent signed by anyone in the practice. The source is
+recent signed note dated on or before this visit: the assigned clinician's own
+when there is one, otherwise the most recent signed by anyone in the practice. The source is
 named next to the button. Unsigned notes and records imported from a previous
 system are never used. When there is no earlier signed note, the editor says so.
 
@@ -243,22 +296,20 @@ section before signing."; the signed note keeps a "Started from the visit on
 (`visit.previous_note.read`) and the first save that names it
 (`visit.note_started_from_earlier`).
 
-| Role | Intake/vitals before signing | SOAP/sign/amend |
-|---|---|---|
-| Assigned clinician or owner assigned to visit | Yes | Yes |
-| Enabled nurse or medical assistant | Yes | No |
-| Front desk or read-only staff | No | No |
-
-Intake, note and vitals writes share the encounter version. Stale saves fail with
-409. Unsaved browser edits remain in the current tab; comparison is required after
-another author changes the record. Closing or reloading the tab discards unsaved
-edits. History distinguishes the staff member who recorded intake/vitals from the
-clinician who signed.
+Intake, note, diagnoses and vitals writes share the encounter version. Stale saves
+fail with 409. Unsaved browser edits remain in the current tab; comparison is
+required after another author changes the same part of the record. Closing or
+reloading the tab discards unsaved edits. History distinguishes the staff member
+who recorded intake/vitals, the person who last saved the note and the clinician
+who signed. The audit trail records every note save (`visit.note_save`), each save
+or signature by someone other than the assigned clinician
+(`visit.note_save_for_assigned`, `visit.sign_for_assigned`) and every signature and
+amendment with its author.
 
 ## Encounter diagnoses
 
-The assigned clinician can record up to 20 ordered ICD-10-CM diagnoses before
-signing. The first diagnosis is primary. Add, edit, reorder or remove entries and
+Anyone who may draft the note can record up to 20 ordered ICD-10-CM diagnoses
+before signing. The first diagnosis is primary. Add, edit, reorder or remove entries and
 supply a change reason when saving. The entire ordered list is saved together;
 each revision retains the author, reason and previous recorded assessment.
 
@@ -544,8 +595,9 @@ trends, imaging attachments and patient result release are not implemented.
 
 ## Checkout and follow-up
 
-After signing, the assigned clinician reviews the prospective patient summary,
-writes patient-facing instructions and releases an immutable AVS version. SOAP
+After signing, a clinician or the owner (whoever may sign the note) reviews the
+prospective patient summary, writes patient-facing instructions and releases an
+immutable AVS version. Nurses, medical assistants and support sessions cannot. SOAP
 text and internal medication/order notes are not copied automatically. The released
 medication list contains recorded medication statements; native prescription orders
 are separate and are not included in that list.

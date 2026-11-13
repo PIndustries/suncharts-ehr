@@ -66,8 +66,14 @@ async function main(){
  f.run("me={tenant_id:'tenant-2',user_id:'author',role:'owner'};activeVisit={...activeVisit,id:'visit-1'};renderVisit(false)");
  assert.equal(f.nodes.get('amendment-form').values.text,'');assert.equal(f.run('visitAmendmentsHaveDrafts()'),false);
  f.type('Tenant two','Private correction');f.run('me={...me};captureVisitDrafts()');assert.equal(f.run('visitAmendmentsHaveDrafts()'),false,'replacement staff session cannot recapture stale DOM content');
- f.run("activeVisit.clinician_id='other';renderVisit(false)");assert.equal(f.nodes.get('amendment-form'),undefined);assert.doesNotMatch(f.nodes.get('visit-editor').innerHTML,/data-action="focus-amendment"/);
- console.log('PASS drafts remain isolated by tenant, patient, encounter and staff session; another clinician has no amendment action');
+ f.run("activeVisit.clinician_id='other';renderVisit(false)");assert.ok(f.nodes.get('amendment-form'),'the owner or another clinician may correct a colleague’s signed note');assert.match(f.nodes.get('visit-editor').innerHTML,/data-action="focus-amendment"/);
+ for(const role of ['nurse','medical_assistant','front_desk','read_only']){
+  f.run(`me={...me,role:${JSON.stringify(role)}};renderVisit(false)`);assert.equal(f.nodes.get('amendment-form'),undefined,role);
+  assert.doesNotMatch(f.nodes.get('visit-editor').innerHTML,/data-action="focus-amendment"|Only the assigned clinician/,role);assert.match(f.nodes.get('visit-editor').innerHTML,/cannot be overwritten\. A clinician can add a correction\.<\/div>/,role);
+ }
+ f.run("me={...me,role:'owner',delegated:true};renderVisit(false)");assert.equal(f.nodes.get('amendment-form'),undefined);
+ assert.match(f.nodes.get('visit-editor').innerHTML,/cannot be overwritten\. A clinician at the practice must sign any correction\.<\/div>/);assert.doesNotMatch(f.nodes.get('visit-editor').innerHTML,/data-action="focus-amendment"/);
+ console.log('PASS drafts remain isolated by tenant, patient, encounter and staff session; any clinician or the owner may correct, support staff and a support session may not');
 
  f=fixture();f.type('Reason','Correction');f.run('activeVisit={...activeVisit,version:2};renderVisit(false)');
  assert.equal(f.nodes.get('amendment-form').dataset.version,'1');assert.equal(f.nodes.get('amendment-submit').disabled,true);assert.equal(f.nodes.get('amendment-review-current').hidden,false);

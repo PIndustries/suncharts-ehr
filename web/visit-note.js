@@ -3,14 +3,58 @@
 // "Same as last visit": brings the text of the patient's most recent signed note into the
 // note being written. The earlier note is only read. Loaded text and undo steps live in
 // this tab only and are dropped when the signed-in person changes.
-const visitNoteSources=new Map(),visitNoteUndo=new Map();
-function clearVisitNoteSession(){visitNoteSources.clear();visitNoteUndo.clear();}
-function visitNoteSaved(visit){if(!visit)return;visitNoteUndo.delete(visit.id);visitNoteBar(visit.id);}
+const visitNoteSources=new Map(),visitNoteUndo=new Map(),visitNotePeople=new Map();
+function clearVisitNoteSession(){visitNoteSources.clear();visitNoteUndo.clear();visitNotePeople.clear();}
+function visitNoteSaved(visit){if(!visit)return;visitNoteUndo.delete(visit.id);visitNoteBar(visit.id);showVisitNoteAuthorship();}
+// Names of the people on a note: who the visit is assigned to, who signed it and who corrected it.
+// The signed-in person is known already; anyone else is asked for once per saved version.
+function visitNotePersonIds(visit){return [visit.clinician_id,visit.signed_by,...(workspace?.amendments||[]).filter(a=>a.visit_id===visit.id).map(a=>a.author_id)].filter(Boolean);}
+function visitNotePerson(visit,id){
+ if(id&&id===me?.user_id&&me.display_name)return me.display_name;
+ const entry=visitNotePeople.get(visit.id);return entry?.identity===me?entry.names[id]||'':'';
+}
+function visitNoteAuthorshipLine(visit){
+ const parts=[],assigned=visitNotePerson(visit,visit.clinician_id),by=visit.note?.saved_by;
+ if(visit.clinician_id!==me?.user_id&&canDraftNote(visit)&&assigned)parts.push(`Drafting for ${assigned}`);
+ if(by?.at)parts.push(`Last saved by ${noteSaverName(visit.note)}, ${date(by.at)}`);
+ return parts.join(' · ');
+}
+function visitNoteSignedLine(visit){
+ const signer=visitNotePerson(visit,visit.signed_by),assigned=visitNotePerson(visit,visit.clinician_id);
+ if(!signer)return `Signed ${date(visit.signed_at)}.`;
+ return `Signed by ${signer}, ${date(visit.signed_at)}.${visit.signed_by!==visit.clinician_id&&assigned?` Visit assigned to ${assigned}.`:''}`;
+}
+function visitNoteAmendmentAuthor(visit,amendment){const name=visitNotePerson(visit,amendment.author_id);return name?` by ${name}`:'';}
+function showVisitNoteAuthorship(){
+ const visit=activeVisit;if(!visit)return;
+ const line=$('note-authorship'),signed=$('note-signed-by');
+ if(line&&line.isConnected!==false){const text=visitNoteAuthorshipLine(visit);line.textContent=text;line.hidden=!text;}
+ if(signed&&signed.isConnected!==false&&visit.status==='signed')signed.textContent=visitNoteSignedLine(visit);
+ for(const amendment of (workspace?.amendments||[]).filter(a=>a.visit_id===visit.id)){const author=$('amendment-author-'+amendment.id);if(author&&author.isConnected!==false)author.textContent=visitNoteAmendmentAuthor(visit,amendment);}
+}
+async function loadVisitNotePeople(visit){
+ const identity=me;let entry=visitNotePeople.get(visit.id);
+ if(!entry||entry.identity!==identity||entry.version!==visit.version){
+  entry={identity,version:visit.version,names:entry?.identity===identity?entry.names:{},pending:null};visitNotePeople.set(visit.id,entry);
+  entry.pending=api(`/api/v1/visits/${visit.id}/note-authorship`).then(data=>{
+   const names={[data.assigned.id]:data.assigned.name};if(data.signed)names[data.signed.id]=data.signed.name;
+   for(const amendment of data.amendments||[])names[amendment.author_id]=amendment.author_name;
+   entry.names=names;
+  },()=>{}).finally(()=>{entry.pending=null;});
+ }
+ if(entry.pending)await entry.pending;
+ return me===identity&&visitNotePeople.get(visit.id)===entry?entry:null;
+}
+async function renderVisitNoteAuthorship(){
+ const visit=activeVisit;if(!visit||!visitNotePersonIds(visit).some(id=>id!==me?.user_id))return;
+ if(await loadVisitNotePeople(visit)&&activeVisit?.id===visit.id)showVisitNoteAuthorship();
+}
+async function visitNoteAssignedName(visit){await loadVisitNotePeople(visit);return visitNotePerson(visit,visit.clinician_id);}
 function visitNoteSourceDate(visitId){for(const entry of visitNoteSources.values())if(entry.source?.visit_id===visitId)return entry.source.visit_date;return null;}
 function visitNoteCurrent(visitId){const form=$('note-form');return activeVisit?.id===visitId&&activeVisit.status!=='signed'&&form?.isConnected!==false&&form?.dataset?.visitId===visitId?form:null;}
 function visitNoteLabel(key){return key[0].toUpperCase()+key.slice(1);}
 function visitNoteNames(keys){const names=keys.map(visitNoteLabel);return names.length>1?`${names.slice(0,-1).join(', ')} and ${names.at(-1)}`:names[0]||'';}
-function visitNoteFrom(source){const day=noteDay(source.visit_date);return source.same_clinician?`your visit on ${day}`:source.clinician_name?`${source.clinician_name}’s visit on ${day}`:`another clinician’s visit on ${day}`;}
+function visitNoteFrom(source){const day=noteDay(source.visit_date);return (source.own??source.same_clinician)?`your visit on ${day}`:source.clinician_name?`${source.clinician_name}’s visit on ${day}`:`another clinician’s visit on ${day}`;}
 function visitNoteValues(form){return Object.fromEntries(noteSectionKeys.map(key=>[key,String(form.elements[key]?.value??'')]));}
 function visitNoteBar(visitId,message=''){
  const host=$('note-previous'),form=visitNoteCurrent(visitId),entry=visitNoteSources.get(visitId);if(!host||!form||!entry||entry.identity!==me)return;

@@ -29,8 +29,11 @@ pub trait ClinicalBackend: Send + Sync {
         version: i64,
         input: SoapNote,
     ) -> Result<Visit>;
-    /// Text of the patient's most recent earlier signed note, for the assigned clinician.
+    /// Text of the patient's most recent earlier signed note, for anyone who may draft.
     async fn previous_note(&self, actor: &Actor, id: Uuid) -> Result<PreviousNote>;
+    /// Who the visit is assigned to, who last saved, signed and corrected its note,
+    /// and what the caller may do with it. No note text.
+    async fn note_authorship(&self, actor: &Actor, id: Uuid) -> Result<serde_json::Value>;
     async fn save_vitals(
         &self,
         actor: &Actor,

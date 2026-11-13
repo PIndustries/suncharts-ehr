@@ -394,7 +394,7 @@ async fn complete_visit_is_durable_scoped_versioned_and_append_only() {
     assert_eq!(
         call(
             &app,
-            Some(&peer),
+            Some(&readonly),
             "PUT",
             &format!("{path}/note"),
             soap(),
@@ -544,7 +544,9 @@ async fn complete_visit_is_durable_scoped_versioned_and_append_only() {
     )
     .await;
     assert_eq!(status, 200, "{portal}");
+    // The patient's copy is the note as signed, without the staff drafting record.
     assert_eq!(portal["visits"][0]["note"], soap());
+    assert_eq!(signed["note"]["saved_by"]["id"], json!(doctor.sub));
     assert_eq!(portal["amendments"][0]["author_id"], json!(doctor.sub));
     assert_eq!(portal["amendments"][0]["reason"], "Correct transcription");
     let mutation = sqlx::query("UPDATE visits SET note='{}' WHERE tenant_id=$1 AND id=$2")
