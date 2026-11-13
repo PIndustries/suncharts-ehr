@@ -146,7 +146,13 @@ const row=(extra={})=>({packet_id:'form-open',packet_version:1,status:'sent',def
  assert.match(html,/The patient typed <strong>Example &lt;Health&gt; Plan<\/strong>/);assert.match(html,/Nothing is saved until you press Save\./);
  // A typed name: the practice's companies are listed closest first, none chosen for staff.
  assert.deepEqual([...html.matchAll(/<option value="(payer-\d)" >/g)].map(match=>match[1]),['payer-1','payer-3','payer-9']);assert.doesNotMatch(html,/Closed Plan/);assert.doesNotMatch(html,/<option value="payer-\d" selected/);assert.match(html,/the closest names are first/);
- assert.match(html,/data-intake-payer-filter/);
+ // A short list needs no search box, so its label is hidden with it; a long list shows both.
+ assert.match(html,/<label hidden>Find in your insurance companies<input type="search" data-intake-payer-filter/);
+ const many={items:Array.from({length:9},(_,index)=>({id:`payer-m${index}`,content:{name:`Synthetic Plan ${index}`,active:true}}))};
+ assert.match(c.standardIntakeReviewView(item,demographics,many),/<label >Find in your insurance companies<input type="search" data-intake-payer-filter/);
+ // "Coverage starts" is filled with today so the form can be saved, and says it can be changed.
+ const now=new Date(),today=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+ assert.match(html,new RegExp(`Coverage starts <small>Set to today\\. Change it if the coverage started earlier\\.</small><input name="effective_date" type="date" required value="${today}">`));
  // Staff are never sent to another screen to finish.
  assert.doesNotMatch(html+source,/under Billing &amp; insurance first|then come back to this form/);
  // Front desk cannot create insurance companies (owner-only); the owner adds one in place.
@@ -229,6 +235,9 @@ const row=(extra={})=>({packet_id:'form-open',packet_version:1,status:'sent',def
  // Looks right in dark mode: theme variables only, no fixed light colours.
  const themed=css.slice(css.indexOf('/* Patient intake forms: chart panel'));
  assert.ok(themed.length>200);assert.doesNotMatch(themed,/#[0-9a-fA-F]{3,8}\b|rgb\(|:\s*white\b/);assert.match(themed,/\.intake-cancel-form\{[^}]*background:var\(--surface\)/);assert.match(themed,/\.intake-status\{[^}]*color:var\(--ink\)/);
+ // The owner's question editor uses the theme too (it used to stay white in dark mode).
+ const builderCss=css.split('\n').find(line=>line.startsWith('.intake-template-builder{'));
+ assert.match(builderCss,/\.intake-field-builder\{background:var\(--surface-soft\);color:var\(--ink\);border:1px solid var\(--line\)/);assert.doesNotMatch(builderCss,/#[0-9a-fA-F]{3,8}\b|--panel-subtle/);
  // Staff copy stays in plain words.
  const copy=[c.intakeTemplateBuilder(null,'standard',standard),fixture().ctx.standardIntakeReviewView(item,demographics,payers)].join('').replace(/<[^>]+>/g,' ');
  for(const word of ['packet','token','schema','payload','snapshot','idempotent'])assert.doesNotMatch(copy,new RegExp(`\\b${word}`,'i'),`staff are not shown “${word}”`);

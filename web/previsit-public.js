@@ -44,9 +44,11 @@ function intakeFormatError(field,text){
  if(field.format==='past_date'){const day=new Date(text+'T00:00:00');if(Number.isNaN(day.getTime())||text<'1900-01-01')return 'Please enter a full date.';if(day.getTime()>Date.now())return 'This date cannot be in the future.';}
  return '';
 }
-function intakeFieldError(field,value){
+// A question is needed when the form says so, or once the question it goes with has an answer.
+function intakeRequired(field,answers){return field.required===true||(typeof field.required_with==='string'&&!intakeEmpty(answers?.[field.required_with]));}
+function intakeFieldError(field,value,answers=null){
  if(intakeEmpty(value)){
-  if(field.required!==true)return '';
+  if(!intakeRequired(field,answers))return '';
   if(field.type==='checkbox')return 'Please tick this box to continue.';
   if(field.type==='select')return 'Please choose an answer.';
   return 'Please answer this question.';
@@ -58,7 +60,7 @@ function intakeFieldError(field,value){
 function intakeStepErrors(step,answers){
  const errors={},started=step.fields.some(field=>field.hidden!==true&&!intakeEmpty(answers[field.key]));
  if(step.section.skippable===true&&!started)return errors;
- for(const field of step.fields){if(field.hidden===true)continue;const message=intakeFieldError(field,answers[field.key]);if(message)errors[field.key]=message;}
+ for(const field of step.fields){if(field.hidden===true)continue;const message=intakeFieldError(field,answers[field.key],answers);if(message)errors[field.key]=message;}
  return errors;
 }
 // What is sent to the practice: only answers to questions that were shown.
@@ -110,7 +112,8 @@ function intakeLookupControl(field,value,pickedId,onChange,search){
  const help=h('small',{id:helpId,className:'help'});
  const toggle=h('button',{type:'button',className:'link lookup-toggle'});
  const close=()=>{list.hidden=true;list.replaceChildren();input.setAttribute('aria-expanded','false');};
- const choose=item=>{picked={id:String(item.id),name:String(item.name)};input.value=picked.name;close();status.textContent=`Chosen: ${picked.name}`;onChange();input.focus?.();};
+ // A well-known insurer comes as a name only; the practice's own records carry a reference.
+ const choose=item=>{picked={id:item.id?String(item.id):'',name:String(item.name)};input.value=picked.name;close();status.textContent=`Chosen: ${picked.name}`;onChange();input.focus?.();};
  const show=items=>{
   list.replaceChildren(...items.map(item=>h('li',{role:'presentation'},h('button',{type:'button',role:'option',className:'lookup-option',text:item.name,on:{click:()=>choose(item)}}))));
   list.hidden=!items.length;input.setAttribute('aria-expanded',items.length?'true':'false');
@@ -176,6 +179,8 @@ function intakeControl(field,value,onChange){
  }
  // A group of choices is marked as a whole; a single box or field is marked itself.
  if(!control.marks.length)control.marks=[control.wrap];
+ // "(optional)" comes and goes for a question that is needed only with another.
+ if(typeof field.required_with==='string'){const node=control.marks[0];control.require=needed=>{if(optional)optional.hidden=needed;if(needed)node.setAttribute('aria-required','true');else node.removeAttribute('aria-required');};}
  return control;
 }
 function intakeWizard(packet,token){
@@ -232,7 +237,7 @@ function intakeWizard(packet,token){
  function refresh(){
   collect();
   const {shown}=layout();
-  for(const control of state.controls){const visible=shown.has(control.field.key);control.wrap.hidden=!visible;if(!visible){control.error.hidden=true;control.error.textContent='';}}
+  for(const control of state.controls){const visible=shown.has(control.field.key);control.wrap.hidden=!visible;if(!visible){control.error.hidden=true;control.error.textContent='';}control.require?.(intakeRequired(control.field,state.answers));}
  }
  async function save(){
   lastSaved=false;
@@ -329,6 +334,11 @@ function intakeWizard(packet,token){
  for(const type of ['input','click','keydown'])form.addEventListener(type,touch);
  q('practice-name').textContent=practice;
  if(typeof document.title==='string')document.title=`Patient forms · ${practice}`;
+ // The practice already knows the patient's name, so those two answers start filled in. Nothing else does.
+ if(!draft&&packet.status==='sent')for(const field of (template.sections||[]).flatMap(section=>section.fields||[])){
+  const known=field.chart_target==='identity.given_name'?packet.patient?.given_name:field.chart_target==='identity.family_name'?packet.patient?.family_name:null;
+  if(typeof known==='string'&&known.trim()&&field.type==='text')state.answers[field.key]=known.trim();
+ }
  if(packet.status==='submitted'){renderAlreadySent();return state;}
  const resumeAt=draft?intakeResumeAt(template,state.answers):0,{steps}=layout();
  if(draft&&resumeAt>=steps.length)renderReview();else renderStep(steps[resumeAt]?.index||0);

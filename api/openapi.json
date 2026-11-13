@@ -26310,7 +26310,7 @@
         },
         "responses": {
           "200": {
-            "description": "packet_id, status, due_at, nullable expires_at, the issued form (template), saved progress (draft, draft_saved_at), practice_name, patient given name and nullable appointment context. Cache-Control no-store."
+            "description": "packet_id, status, due_at, nullable expires_at, the issued form (template), saved progress (draft, draft_saved_at), practice_name, patient given and family name and nullable appointment context. Cache-Control no-store."
           },
           "404": {
             "description": "Unknown, expired, cancelled or already reviewed link. Always the same message, so a link cannot be probed."
@@ -26373,7 +26373,7 @@
       "post": {
         "security": [],
         "summary": "Names a patient can pick from while filling in an intake form",
-        "description": "kind insurer returns the practice's active insurance companies and insurers the practice has already looked up in its clearinghouse directory (reference claimmd:<payer id>); kind pharmacy returns the practice's active pharmacies. Matches the typed text anywhere in the name; fewer than two characters returns nothing. No outside service is called, nothing is written, and only a name and a reference are returned.",
+        "description": "kind insurer returns the practice's active insurance companies and insurers the practice has already looked up in its clearinghouse directory (reference claimmd:<payer id>); then well-known US insurers from a built-in list, by name only with no id; kind pharmacy returns the practice's active pharmacies. Matches the typed text anywhere in the name; fewer than two characters returns nothing. No outside service is called, nothing is written, and only a name and a reference are returned.",
         "requestBody": {
           "required": true,
           "content": {
@@ -26408,7 +26408,7 @@
         },
         "responses": {
           "200": {
-            "description": "items: up to 10 of {id,name}. Cache-Control no-store."
+            "description": "items: up to 10 of {id,name}; built-in insurer names carry no id. Cache-Control no-store."
           },
           "400": {
             "description": "Unsupported list or text too long."
@@ -26534,7 +26534,7 @@
             "description": "Owner role required"
           }
         },
-        "description": "schema.base \"standard\" asks the standard steps first and then the practice's own sections (which may be empty); without base the saved sections are the whole form. Optional per field: help, show_if {key, equals} or {key, any_of}, option_labels, autocomplete, inputmode, format, max_length. Optional per section: intro, show_if, skippable, skip_label. A show_if rule may name only an earlier question. Also optional per field: lookup (insurer or pharmacy) with id_key naming a hidden field that keeps the picked record's reference, hidden, and other_key naming the text field that holds what the patient wrote for \"Other\"."
+        "description": "schema.base \"standard\" asks the standard steps first and then the practice's own sections (which may be empty); without base the saved sections are the whole form. Optional per field: help, show_if {key, equals} or {key, any_of}, option_labels, autocomplete, inputmode, format, max_length. Optional per section: intro, show_if, skippable, skip_label. A show_if rule may name only an earlier question. Also optional per field: lookup (insurer or pharmacy) with id_key naming a hidden field that keeps the picked record's reference, hidden, and other_key naming the text field that holds what the patient wrote for \"Other\". required_with names an earlier question; the field is required only once that question has an answer."
       }
     },
     "/api/v1/previsit/readiness": {

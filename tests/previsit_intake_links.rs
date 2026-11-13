@@ -218,8 +218,7 @@ async fn standard_form_is_the_default_and_saved_forms_keep_working_unchanged() {
             "Contact",
             "More about you",
             "Emergency contact",
-            "Who is responsible for the bill",
-            "How you will pay",
+            "Paying for your visits",
             "Primary insurance",
             "Secondary insurance",
             "Pharmacy and one last question"
@@ -237,10 +236,15 @@ async fn standard_form_is_the_default_and_saved_forms_keep_working_unchanged() {
     let (status, form) = f.patient("read", json!({"token":token})).await;
     assert_eq!(status, StatusCode::OK, "{form}");
     assert_eq!(form["template"]["base"], "standard");
-    assert_eq!(form["template"]["sections"].as_array().unwrap().len(), 9);
+    assert_eq!(form["template"]["sections"].as_array().unwrap().len(), 8);
     assert!(form["appointment"].is_null());
     assert_eq!(form["practice_name"], "Your practice");
-    assert_eq!(form["patient"], json!({"given_name":"Synthetic"}));
+    // Only the name the practice already holds is given back, so it can be filled in.
+    assert_eq!(
+        form["patient"],
+        json!({"given_name":"Synthetic","family_name":"Sample"})
+    );
+    assert!(!form.to_string().contains("1990-01-01"));
     sqlx::query("INSERT INTO practice_facilities(tenant_id,id,name) VALUES($1,$2,'Synthetic Family Clinic')").bind(f.tenant).bind(Uuid::new_v4()).execute(&f.db).await.unwrap();
     let (_, form) = f.patient("read", json!({"token":token})).await;
     assert_eq!(form["practice_name"], "Synthetic Family Clinic");
@@ -289,8 +293,8 @@ async fn standard_form_is_the_default_and_saved_forms_keep_working_unchanged() {
     let (_, token, _) = f.send(patient, json!({})).await;
     let (_, form) = f.patient("read", json!({"token":token})).await;
     let sections = form["template"]["sections"].as_array().unwrap();
-    assert_eq!(sections.len(), 10);
-    assert_eq!(sections[9]["label"], "Our questions");
+    assert_eq!(sections.len(), 9);
+    assert_eq!(sections[8]["label"], "Our questions");
     assert_eq!(
         form["template"]["attestation"],
         "I confirm these synthetic answers."
@@ -338,6 +342,8 @@ async fn conditional_and_skippable_questions_are_checked_when_saved_and_when_ans
         // A section may depend only on a question from an earlier section.
         json!([{"label":"One","show_if":{"key":"has_pet","equals":"Yes"},"fields":[pet]}]),
         json!([{"label":"One","skippable":"yes","fields":[pet]}]),
+        // "Needed with" may name only an earlier question.
+        json!([{"label":"One","fields":[{"key":"a","label":"A","type":"text","required_with":"b"},{"key":"b","label":"B","type":"text"}]}]),
         json!([{"label":"One","intro":"x".repeat(501),"fields":[pet]}]),
         json!([{"label":"One","fields":[{"key":"a","label":"A","type":"text","help":"x".repeat(301)}]}]),
         json!([{"label":"One","fields":[{"key":"a","label":"A","type":"select","options":["x","y"],"option_labels":["only one"]}]}]),
@@ -1011,12 +1017,33 @@ async fn progress_is_saved_resumed_and_cleared_when_the_form_is_sent() {
         f.patient("submit", submission(&token, second)).await.0,
         StatusCode::BAD_REQUEST
     );
+    // A second insurance needs its member ID and policy holder only once a company is given.
+    let mut second = standard_answers();
+    second["insurance2_company"] = json!("Example Second Plan");
+    assert_eq!(
+        f.patient("submit", submission(&token, second.clone()))
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    second["insurance2_member_id"] = json!("SYN-2");
+    assert_eq!(
+        f.patient("submit", submission(&token, second.clone()))
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    second["insurance2_relationship"] = json!("Self");
+    assert_eq!(
+        f.patient("submit", submission(&token, second)).await.0,
+        StatusCode::OK
+    );
     // Self-pay: the insurance steps are not shown, not required and not kept.
     let mut self_pay = standard_answers();
     self_pay["payment_method"] = json!("Self-pay");
     let (status, body) = f.patient("submit", submission(&token, self_pay)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["version"], 2);
+    assert_eq!(body["version"], 3);
     let (response, draft, saved_at): (Value, Option<Value>, Option<DateTime<Utc>>) = sqlx::query_as("SELECT (SELECT response FROM previsit_intake_responses r WHERE r.packet_id=p.id ORDER BY version DESC LIMIT 1),draft,draft_saved_at FROM previsit_intake_packets p WHERE id=$1").bind(packet).fetch_one(&f.db).await.unwrap();
     assert!(draft.is_none() && saved_at.is_none());
     assert!(response.get("insurance_company").is_none());
@@ -1270,6 +1297,31 @@ async fn pick_lists_need_a_working_link_and_return_only_names() {
     ] {
         assert!(!text.contains(private), "{private}");
     }
+    // Well-known insurers follow the practice's own, by name only, without repeating one the practice has.
+    sqlx::query("INSERT INTO ehr_payers(tenant_id,id,content,request_id,creation_hash) VALUES($1,$2,$3,$4,'synthetic')")
+        .bind(f.tenant).bind(Uuid::new_v4()).bind(json!({"name":"AETNA","payer_code":"","phone":"","address":"","active":true})).bind(Uuid::new_v4()).execute(&f.db).await.unwrap();
+    let (_, found) = ask(&token, "insurer", "aetna").await;
+    let items = found["items"].as_array().unwrap();
+    assert_eq!(items[0]["name"], "AETNA");
+    assert!(items[0]["id"].is_string());
+    let rest: Vec<&str> = items[1..]
+        .iter()
+        .map(|item| item["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(rest, ["Aetna Medicare", "Aetna Better Health"]);
+    assert!(items[1..].iter().all(|item| item.get("id").is_none()));
+    let (_, found) = ask(&token, "insurer", "horizon").await;
+    assert_eq!(
+        found["items"],
+        json!([{"name":"Horizon Blue Cross Blue Shield of New Jersey"}])
+    );
+    let (_, found) = ask(&token, "insurer", "blue").await;
+    assert_eq!(
+        found["items"].as_array().unwrap().len(),
+        10,
+        "never more than ten"
+    );
+    assert_eq!(found["items"][0]["name"], "Blue Cross Blue Shield");
     let (_, found) = ask(&token, "pharmacy", "example").await;
     assert_eq!(
         found["items"]

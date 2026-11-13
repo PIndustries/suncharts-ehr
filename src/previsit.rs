@@ -417,6 +417,16 @@ fn validate_schema(schema: &Value) -> Result<()> {
             optional_choice(field.get("lookup"), LOOKUPS)?;
             optional_text(field.get("id_key"), 80)?;
             optional_text(field.get("other_key"), 80)?;
+            // Needed only once an earlier question on the form has an answer.
+            if field
+                .get("required_with")
+                .filter(|value| !value.is_null())
+                .is_some_and(|value| !value.as_str().is_some_and(|key| keys.contains(key)))
+            {
+                return Err(Error::Invalid(
+                    "a needed-with rule must name an earlier question",
+                ));
+            }
             if field.get("hidden").is_some_and(|value| !value.is_boolean()) {
                 return Err(Error::Invalid("unsupported intake field setting"));
             }
@@ -1200,7 +1210,7 @@ async fn public_packet(
     admit_link(pool, packet.id).await?;
     lock_packet_workflow(&mut tx, packet.tenant_id, packet.id).await?;
     let practice = practice_name(&mut tx, packet.tenant_id).await?;
-    let payload: Value = sqlx::query_scalar("SELECT jsonb_build_object('packet_id',p.id,'status',p.status,'due_at',p.due_at,'expires_at',p.expires_at,'template',p.template_snapshot,'draft',p.draft,'draft_saved_at',p.draft_saved_at,'practice_name',$3::text,'patient',jsonb_build_object('given_name',pt.given_name),'appointment',CASE WHEN a.id IS NULL THEN NULL ELSE jsonb_build_object('starts_at',a.starts_at,'title',a.title) END) FROM previsit_intake_packets p JOIN patients pt ON pt.tenant_id=p.tenant_id AND pt.id=p.patient_id LEFT JOIN appointments a ON a.tenant_id=p.tenant_id AND a.id=p.appointment_id WHERE p.tenant_id=$1 AND p.id=$2")
+    let payload: Value = sqlx::query_scalar("SELECT jsonb_build_object('packet_id',p.id,'status',p.status,'due_at',p.due_at,'expires_at',p.expires_at,'template',p.template_snapshot,'draft',p.draft,'draft_saved_at',p.draft_saved_at,'practice_name',$3::text,'patient',jsonb_build_object('given_name',pt.given_name,'family_name',pt.family_name),'appointment',CASE WHEN a.id IS NULL THEN NULL ELSE jsonb_build_object('starts_at',a.starts_at,'title',a.title) END) FROM previsit_intake_packets p JOIN patients pt ON pt.tenant_id=p.tenant_id AND pt.id=p.patient_id LEFT JOIN appointments a ON a.tenant_id=p.tenant_id AND a.id=p.appointment_id WHERE p.tenant_id=$1 AND p.id=$2")
         .bind(packet.tenant_id).bind(packet.id).bind(practice).fetch_one(&mut *tx).await?;
     sqlx::query("INSERT INTO previsit_events(tenant_id,packet_id,appointment_id,patient_id,actor_id,actor_kind,action) VALUES($1,$2,$3,$4,$4,'patient_guest','intake_opened')").bind(packet.tenant_id).bind(packet.id).bind(packet.appointment_id).bind(packet.patient_id).execute(&mut *tx).await?;
     tx.commit().await?;
@@ -1373,7 +1383,14 @@ fn validate_response(schema: &Value, response: &Value, complete: bool) -> Result
             if visible {
                 if !empty_answer(value) {
                     answered = true;
-                } else if field.get("required").and_then(Value::as_bool) == Some(true) {
+                } else if field.get("required").and_then(Value::as_bool) == Some(true)
+                    || field
+                        .get("required_with")
+                        .and_then(Value::as_str)
+                        .is_some_and(|other| {
+                            shown.contains(other) && !empty_answer(object.get(other))
+                        })
+                {
                     missing = true;
                 }
                 if let Some(value) = value {
@@ -1491,6 +1508,8 @@ async fn public_lookup(
     }
     let tenant = packet.tenant_id;
     let mut items: Vec<(String, String)> = Vec::new();
+    // Well-known insurers, offered by name only after the practice's own.
+    let mut common: Vec<&str> = Vec::new();
     if length >= 2 && input.kind == "insurer" {
         items = sqlx::query_as("SELECT id::text,btrim(content->>'name') FROM ehr_payers WHERE tenant_id=$1 AND coalesce(content->>'active','true')='true' AND position(lower($2) in lower(content->>'name'))>0 ORDER BY position(lower($2) in lower(content->>'name')),lower(content->>'name'),id LIMIT 10")
             .bind(tenant).bind(query).fetch_all(&mut *tx).await?;
@@ -1506,6 +1525,23 @@ async fn public_lookup(
                 items.push((id, name));
             }
         }
+        let wanted = query.to_lowercase();
+        let mut matches: Vec<&str> = crate::previsit_standard::COMMON_INSURERS
+            .iter()
+            .copied()
+            .filter(|name| name.to_lowercase().contains(&wanted))
+            .filter(|name| {
+                !items
+                    .iter()
+                    .any(|(_, have)| have.eq_ignore_ascii_case(name))
+            })
+            .collect();
+        // Names that start with what was typed come first.
+        matches.sort_by_key(|name| !name.to_lowercase().starts_with(&wanted));
+        common = matches
+            .into_iter()
+            .take(10usize.saturating_sub(items.len()))
+            .collect();
     } else if length >= 2 {
         items = sqlx::query_as("SELECT id::text,left(concat_ws(', ',btrim(content->>'name'),nullif(btrim(regexp_replace(content->>'address','[[:space:]]+',' ','g')),'')),300) FROM prescribing_pharmacies WHERE tenant_id=$1 AND active AND position(lower($2) in lower(concat_ws(' ',content->>'name',content->>'address')))>0 ORDER BY lower(content->>'name'),id LIMIT 10")
             .bind(tenant).bind(query).fetch_all(&mut *tx).await?;
@@ -1514,6 +1550,7 @@ async fn public_lookup(
     let items: Vec<Value> = items
         .into_iter()
         .map(|(id, name)| json!({"id":id,"name":name}))
+        .chain(common.into_iter().map(|name| json!({"name":name})))
         .collect();
     Ok((
         [(header::CACHE_CONTROL, "no-store")],
@@ -2062,12 +2099,16 @@ mod standard_form_tests {
     use super::*;
 
     #[test]
-    fn the_standard_form_is_a_valid_form_with_nine_steps_and_no_identity_numbers() {
+    fn the_standard_form_is_a_valid_form_with_eight_steps_and_no_identity_numbers() {
         let form = crate::previsit_standard::preview();
         validate_schema(&form).expect("the standard form passes the rules for any intake form");
         let sections = form["sections"].as_array().unwrap();
-        assert_eq!(sections.len(), 9);
-        assert_eq!(form["standard_steps"], 9);
+        assert_eq!(sections.len(), 8);
+        assert_eq!(form["standard_steps"], 8);
+        let names = crate::previsit_standard::COMMON_INSURERS;
+        assert!((60..=80).contains(&names.len()));
+        let mut seen = HashSet::new();
+        assert!(names.iter().all(|name| seen.insert(name.to_lowercase())));
         let text = form.to_string().to_lowercase();
         for banned in ["social security", "ssn", "driver", "licence", "license"] {
             assert!(!text.contains(banned), "{banned}");
