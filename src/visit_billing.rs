@@ -193,7 +193,10 @@ fn plain_issue(issue: &str) -> Value {
             "the primary insurer's answer (bill the secondary from the primary claim)",
         )
     } else if issue.starts_with("Tertiary") {
-        ("tertiary", "a third insurer cannot be billed electronically")
+        (
+            "tertiary",
+            "a third insurer cannot be billed electronically",
+        )
     } else {
         ("other", issue)
     };
@@ -262,9 +265,9 @@ pub(crate) async fn summarize(
         .and_then(|(_, payer)| payer["name"].as_str())
         .unwrap_or("")
         .to_owned();
-    let electronic = coverage.as_ref().is_some_and(|(_, payer)| {
-        !payer["payer_code"].as_str().unwrap_or("").trim().is_empty()
-    });
+    let electronic = coverage
+        .as_ref()
+        .is_some_and(|(_, payer)| !payer["payer_code"].as_str().unwrap_or("").trim().is_empty());
     let plan_copay = coverage
         .as_ref()
         .and_then(|(content, _)| content["copay_cents"].as_i64());
@@ -273,8 +276,13 @@ pub(crate) async fn summarize(
 
     // Ledger: the same sums the account balance, invoices and claims already use.
     let total = account.as_ref().map(|b| b.total_cents).unwrap_or(0);
-    let (mut balance, mut patient_credit, mut patient_payments, mut insurer_paid, mut receipts_applied) =
-        (0i64, 0i64, 0i64, 0i64, 0i64);
+    let (
+        mut balance,
+        mut patient_credit,
+        mut patient_payments,
+        mut insurer_paid,
+        mut receipts_applied,
+    ) = (0i64, 0i64, 0i64, 0i64, 0i64);
     if let Some(b) = account.as_ref().filter(|_| posted) {
         let (net, insurer, applied): (i64, i64, i64) = sqlx::query_as(
             "SELECT coalesce(sum(e.effect_cents),0)::bigint,\
@@ -324,7 +332,10 @@ pub(crate) async fn summarize(
     } else if !insured {
         (total, "self_pay")
     } else if let Some(answer) = answer {
-        (answer.patient_responsibility.clamp(0, total), "insurer_response")
+        (
+            answer.patient_responsibility.clamp(0, total),
+            "insurer_response",
+        )
     } else {
         match plan_copay {
             Some(copay) => (copay.clamp(0, total), "plan_copay"),
@@ -336,7 +347,11 @@ pub(crate) async fn summarize(
     } else {
         (responsibility - paid_at_desk.net_received).max(0)
     };
-    let remainder = if posted { (balance - owes_now).max(0) } else { 0 };
+    let remainder = if posted {
+        (balance - owes_now).max(0)
+    } else {
+        0
+    };
     let (pending, unassigned) = if !insured {
         (0, 0)
     } else if answered {
@@ -468,6 +483,9 @@ pub(crate) async fn summarize(
         },
         "patient": {
             "copay_cents": plan_copay.filter(|_| insured),
+            "copay_paid_cents": plan_copay.filter(|_| insured).map(|copay| copay.min(paid_at_desk.net_received)),
+            "copay_due_cents": plan_copay.filter(|_| insured).map(|copay| (copay - paid_at_desk.net_received).max(0)),
+            "paid_above_copay_cents": plan_copay.filter(|_| insured).map(|copay| (paid_at_desk.net_received - copay).max(0)),
             "received_cents": paid_at_desk.net_received,
             "receipts_applied_cents": receipts_applied,
             "other_payments_cents": patient_payments - receipts_applied,
@@ -495,7 +513,8 @@ pub(crate) async fn summarize(
                 && row["amount_due_cents"].as_i64() == Some(owes_now)
         });
         out["statement"] = json!({"current":current,"latest_id":statements.first().map(|row| row["id"].clone()),"count":statements.len()});
-        out["timeline"] = json!(timeline(tx, a, b, &views, &paid_at_desk.items, &statements).await?);
+        out["timeline"] =
+            json!(timeline(tx, a, b, &views, &paid_at_desk.items, &statements).await?);
     }
     if opt.technical {
         out["technical"] = json!({
@@ -550,7 +569,9 @@ async fn timeline(
         let party = entry["party"].as_str().unwrap_or("");
         let kind = entry["kind"].as_str().unwrap_or("");
         let (group, code) = match (kind, party) {
-            ("payment", "patient") if entry["from_receipt"] == true => ("payments", "receipt_applied"),
+            ("payment", "patient") if entry["from_receipt"] == true => {
+                ("payments", "receipt_applied")
+            }
             ("payment", "patient") => ("payments", "patient_payment"),
             ("payment", "insurer") => ("insurance", "insurer_payment"),
             ("payment", _) => ("payments", "other_payment"),
@@ -725,14 +746,27 @@ async fn claim_defaults(
     p: Uuid,
     b: &billing::Account,
 ) -> Result<ClaimContent> {
-    let clinician: Option<Uuid> = match b.content["visit_id"].as_str().and_then(|v| Uuid::parse_str(v).ok()) {
-        Some(v) => sqlx::query_scalar("SELECT clinician_id FROM visits WHERE tenant_id=$1 AND patient_id=$2 AND id=$3")
-            .bind(a.tenant_id).bind(p).bind(v).fetch_optional(pool).await?,
-        None => None,
-    };
+    let clinician: Option<Uuid> =
+        match b.content["visit_id"]
+            .as_str()
+            .and_then(|v| Uuid::parse_str(v).ok())
+        {
+            Some(v) => sqlx::query_scalar(
+                "SELECT clinician_id FROM visits WHERE tenant_id=$1 AND patient_id=$2 AND id=$3",
+            )
+            .bind(a.tenant_id)
+            .bind(p)
+            .bind(v)
+            .fetch_optional(pool)
+            .await?,
+            None => None,
+        };
     let providers: Vec<(Uuid, String, String)> = sqlx::query_as("SELECT p.id,p.display_name,p.npi FROM practice_providers p JOIN browser_users u ON u.tenant_id=p.tenant_id AND u.id=p.id WHERE p.tenant_id=$1 AND p.active AND NOT u.disabled AND u.role IN ('owner','clinician') ORDER BY p.display_name,p.id LIMIT 100")
         .bind(a.tenant_id).fetch_all(pool).await?;
-    let providers: Vec<_> = providers.into_iter().filter(|row| luhn_npi(&row.2)).collect();
+    let providers: Vec<_> = providers
+        .into_iter()
+        .filter(|row| luhn_npi(&row.2))
+        .collect();
     let provider = providers
         .iter()
         .find(|row| Some(row.0) == clinician)
@@ -745,7 +779,10 @@ async fn claim_defaults(
     let mut tax_id = String::new();
     let mut organization_name = String::new();
     if let [organization] = organizations.as_slice() {
-        if let Some(id) = organization["id"].as_str().and_then(|v| Uuid::parse_str(v).ok()) {
+        if let Some(id) = organization["id"]
+            .as_str()
+            .and_then(|v| Uuid::parse_str(v).ok())
+        {
             if let Some((_, secret)) =
                 crate::practice_billing::tax_identity(pool, a.tenant_id, id).await?
             {
@@ -754,19 +791,37 @@ async fn claim_defaults(
             }
         }
     }
-    let demographics: Option<Value> = sqlx::query_scalar("SELECT content FROM patient_demographics WHERE tenant_id=$1 AND patient_id=$2")
-        .bind(a.tenant_id).bind(p).fetch_optional(pool).await?;
-    let birth_date: Option<NaiveDate> = sqlx::query_scalar("SELECT birth_date FROM patients WHERE tenant_id=$1 AND id=$2")
-        .bind(a.tenant_id).bind(p).fetch_optional(pool).await?.flatten();
+    let demographics: Option<Value> = sqlx::query_scalar(
+        "SELECT content FROM patient_demographics WHERE tenant_id=$1 AND patient_id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(p)
+    .fetch_optional(pool)
+    .await?;
+    let birth_date: Option<NaiveDate> =
+        sqlx::query_scalar("SELECT birth_date FROM patients WHERE tenant_id=$1 AND id=$2")
+            .bind(a.tenant_id)
+            .bind(p)
+            .fetch_optional(pool)
+            .await?
+            .flatten();
     // The place of service follows the practice's most recent claim; a first claim uses
     // 11 (office). Staff see and can change it before anything is sent.
     let place: Option<String> = sqlx::query_scalar("SELECT content->>'place_of_service' FROM ehr_claims WHERE tenant_id=$1 AND status<>'void' AND content->>'place_of_service' ~ '^[0-9]{2}$' ORDER BY created_at DESC,id DESC LIMIT 1")
         .bind(a.tenant_id).fetch_optional(pool).await?.flatten();
-    let coverage = &b.coverage_snapshot.as_ref().ok_or(Error::Invalid("insurance coverage is required for a claim"))?["coverage"]["content"];
+    let coverage = &b
+        .coverage_snapshot
+        .as_ref()
+        .ok_or(Error::Invalid("insurance coverage is required for a claim"))?["coverage"]
+        ["content"];
     let own_policy = coverage["relationship"] == "self";
     let patient_address = joined_address(demographics.as_ref());
-    let (diagnosis_codes, line_diagnosis_pointers) =
-        charge_diagnoses(b.content["lines"].as_array().map(Vec::as_slice).unwrap_or(&[]));
+    let (diagnosis_codes, line_diagnosis_pointers) = charge_diagnoses(
+        b.content["lines"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or(&[]),
+    );
     let today = chrono::Utc::now().date_naive();
     Ok(ClaimContent {
         billing_provider_name: facility
@@ -890,13 +945,20 @@ pub(crate) async fn prepare_claim(
 /// The stored statement for what the patient owes on this visit now. A matching statement
 /// is returned as it is; otherwise one is saved with the existing invoice builder. Earlier
 /// statements are never changed.
-pub(crate) async fn statement(pool: &PgPool, a: &Actor, p: Uuid, account_id: Uuid) -> Result<Value> {
+pub(crate) async fn statement(
+    pool: &PgPool,
+    a: &Actor,
+    p: Uuid,
+    account_id: Uuid,
+) -> Result<Value> {
     a.scheduling()?;
     let mut tx = pool.begin().await?;
     billing::tenant_lock(&mut tx, a).await?;
     let account = billing::account_row(&mut tx, a, p, account_id).await?;
     if account.status != "posted" {
-        return Err(Error::Conflict("post the charges before preparing a statement"));
+        return Err(Error::Conflict(
+            "post the charges before preparing a statement",
+        ));
     }
     let summary = summarize(
         &mut tx,
@@ -927,7 +989,13 @@ pub(crate) async fn statement(pool: &PgPool, a: &Actor, p: Uuid, account_id: Uui
     // responsibility, so the responsibility saved is what the patient owes plus those.
     let (credit, _) = billing::patient_ledger_totals(&mut tx, a.tenant_id, account_id).await?;
     let responsibility = (owes + credit).clamp(0, account.total_cents);
-    let request_id = derived_id(&("visit-statement", a.tenant_id, account_id, account.version, responsibility))?;
+    let request_id = derived_id(&(
+        "visit-statement",
+        a.tenant_id,
+        account_id,
+        account.version,
+        responsibility,
+    ))?;
     let hash = billing::digest(&(p, account_id, request_id, responsibility, "automatic"))?;
     let row = billing::issue_patient_invoice(
         &mut tx,
@@ -960,8 +1028,12 @@ async fn read(
         .await
         .is_ok();
     let mut tx = db(&s)?.begin().await?;
-    let known: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM patients WHERE tenant_id=$1 AND id=$2)")
-        .bind(a.tenant_id).bind(p).fetch_one(&mut *tx).await?;
+    let known: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM patients WHERE tenant_id=$1 AND id=$2)")
+            .bind(a.tenant_id)
+            .bind(p)
+            .fetch_one(&mut *tx)
+            .await?;
     if !known {
         return Err(Error::NotFound);
     }
@@ -1063,15 +1135,27 @@ mod tests {
 
     #[test]
     fn readiness_problems_are_named_in_plain_words() {
-        assert_eq!(plain_issue("Tax ID is required")["missing"], "billing organization tax ID");
-        assert_eq!(plain_issue("Tax ID must contain nine digits")["code"], "tax_id");
+        assert_eq!(
+            plain_issue("Tax ID is required")["missing"],
+            "billing organization tax ID"
+        );
+        assert_eq!(
+            plain_issue("Tax ID must contain nine digits")["code"],
+            "tax_id"
+        );
         assert_eq!(plain_issue("Something new")["missing"], "Something new");
     }
 
     #[test]
     fn derived_request_ids_are_stable() {
         let id = Uuid::new_v4();
-        assert_eq!(derived_id(&("x", id, 1)).unwrap(), derived_id(&("x", id, 1)).unwrap());
-        assert_ne!(derived_id(&("x", id, 1)).unwrap(), derived_id(&("x", id, 2)).unwrap());
+        assert_eq!(
+            derived_id(&("x", id, 1)).unwrap(),
+            derived_id(&("x", id, 1)).unwrap()
+        );
+        assert_ne!(
+            derived_id(&("x", id, 1)).unwrap(),
+            derived_id(&("x", id, 2)).unwrap()
+        );
     }
 }

@@ -112,6 +112,36 @@ async fn overview(
         limit,
     )
     .await?;
+    // Each visit row carries the same state name and patient amount as its billing card.
+    let mut accounts = accounts;
+    let claims_visible = crate::access_policies::require_native(&s, &a, "claims", "view")
+        .await
+        .is_ok();
+    for row in accounts["items"].as_array_mut().into_iter().flatten() {
+        let ids = (
+            row["patient_id"]
+                .as_str()
+                .and_then(|v| Uuid::parse_str(v).ok()),
+            row["id"].as_str().and_then(|v| Uuid::parse_str(v).ok()),
+        );
+        if let (Some(patient), Some(account)) = ids {
+            let summary = crate::visit_billing::summarize(
+                &mut tx,
+                &a,
+                patient,
+                None,
+                Some(account),
+                crate::visit_billing::Options {
+                    claims: claims_visible,
+                    ..Default::default()
+                },
+            )
+            .await?;
+            row["billing_state"] = summary["state"].clone();
+            row["patient_owes_now_cents"] = summary["patient"]["owes_now_cents"].clone();
+            row["insurance_pending_cents"] = summary["insurance"]["pending_cents"].clone();
+        }
+    }
     let copays = page(
         &mut tx,
         &a,

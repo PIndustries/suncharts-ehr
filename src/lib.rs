@@ -20,7 +20,6 @@ pub mod claimmd_eligibility;
 pub mod claimmd_extended;
 pub mod claimmd_operations;
 pub mod claims;
-mod visit_billing;
 pub mod claude_adapter;
 pub mod clearinghouse;
 pub mod clinical;
@@ -97,6 +96,7 @@ pub mod sun_tools;
 pub mod terminology;
 #[doc(hidden)]
 pub mod test_db;
+mod visit_billing;
 pub mod visit_diagnoses;
 pub mod workflow_dispatcher;
 pub mod workflow_evidence;
@@ -1271,6 +1271,26 @@ pub fn app(state: State) -> Router {
                     "billing.js",
                     "application/javascript",
                     include_str!("../web/billing.js"),
+                )
+            }),
+        )
+        .route(
+            "/visit-billing.js",
+            get(|| async {
+                web_asset(
+                    "visit-billing.js",
+                    "application/javascript",
+                    include_str!("../web/visit-billing.js"),
+                )
+            }),
+        )
+        .route(
+            "/visit-billing.css",
+            get(|| async {
+                web_asset(
+                    "visit-billing.css",
+                    "text/css",
+                    include_str!("../web/visit-billing.css"),
                 )
             }),
         )

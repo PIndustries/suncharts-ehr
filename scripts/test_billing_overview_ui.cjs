@@ -19,7 +19,7 @@ function fixture(claims=false){
  let f=fixture();await f.context.renderBillingOverview();
  assert.equal(f.context.title,'Billing & insurance');assert.deepEqual(f.calls,['/api/v1/billing/overview?mode=recorded']);
  const html=f.nodes['billing-overview'].innerHTML;
- for(const value of ['Standalone Synthetic','Collected copays','Unapplied copay credit','$5.00','at issuance','Needs review','patient and insurer','No insurer attached'])assert.ok(html.includes(value),value);
+ for(const value of ['Standalone Synthetic','Collected copays','Unapplied copay credit','$5.00','due then','Needs review','patient and insurer','No insurer attached'])assert.ok(html.includes(value),value);
  assert.ok(!html.includes('data-billing-patient'),'billing-only users are not sent into clinical chart');assert.ok(html.includes('Synthetic &lt;Patient&gt;'));assert.ok(html.includes('account containing any TEST ledger activity'));
  assert.ok(f.nodes['billing-overview'].innerHTML.includes('Claim information is not available to this role'));
  await f.context.showBillingOverviewDocument('invoice','invoice');await f.context.showBillingOverviewDocument('receipt','receipt');

@@ -135,7 +135,13 @@ impl Fixture {
         }
         (p, appointment, visit)
     }
-    async fn coverage(&self, p: Uuid, priority: &str, code: &str, copay: Option<i64>) -> (Value, Value) {
+    async fn coverage(
+        &self,
+        p: Uuid,
+        priority: &str,
+        code: &str,
+        copay: Option<i64>,
+    ) -> (Value, Value) {
         let payer=self.ok("POST","/api/v1/billing/payers",json!({"request_id":Uuid::new_v4(),"content":{"name":format!("Synthetic {priority} plan"),"payer_code":code,"address":"Synthetic address","phone":"","active":true},"reason":"Synthetic payer"}),None).await;
         let policy=self.ok("POST",&format!("/api/v1/patients/{p}/coverages"),json!({"request_id":Uuid::new_v4(),"content":{"payer_id":id(&payer),"priority":priority,"status":"active","member_id":format!("SYN-{priority}"),"group_number":"SYN-G","plan_name":"Synthetic plan","subscriber_name":"Avery Synthetic","subscriber_birth_date":null,"relationship":"self","effective_date":"2026-01-01","end_date":null,"copay_cents":copay,"verification":"manually_verified","notes":"Synthetic"},"reason":"Synthetic coverage"}),None).await;
         (payer, policy)
@@ -146,7 +152,10 @@ impl Fixture {
     async fn post(&self, p: Uuid, account: &Value) -> Value {
         self.ok(
             "POST",
-            &format!("/api/v1/patients/{p}/billing/accounts/{}/actions", id(account)),
+            &format!(
+                "/api/v1/patients/{p}/billing/accounts/{}/actions",
+                id(account)
+            ),
             json!({"action":"post","reason":"Reviewed synthetic signed visit"}),
             Some(version(account)),
         )
@@ -154,13 +163,26 @@ impl Fixture {
     }
     async fn summary(&self, a: &Actor, p: Uuid, visit: Uuid) -> Value {
         let (status, value) = self
-            .call(a, "GET", &format!("/api/v1/patients/{p}/billing/visit-summary?visit_id={visit}"), json!(null), None)
+            .call(
+                a,
+                "GET",
+                &format!("/api/v1/patients/{p}/billing/visit-summary?visit_id={visit}"),
+                json!(null),
+                None,
+            )
             .await;
         assert_eq!(status, StatusCode::OK, "{value}");
         value
     }
     async fn prepare(&self, a: &Actor, p: Uuid, account: Uuid, body: Value) -> (StatusCode, Value) {
-        self.call(a, "POST", &format!("/api/v1/patients/{p}/billing/accounts/{account}/claims/prepare"), body, None).await
+        self.call(
+            a,
+            "POST",
+            &format!("/api/v1/patients/{p}/billing/accounts/{account}/claims/prepare"),
+            body,
+            None,
+        )
+        .await
     }
     /// The practice directory a claim is filled in from.
     async fn directory(&self, organization: bool) {
@@ -169,12 +191,27 @@ impl Fixture {
         sqlx::query("INSERT INTO practice_facilities(tenant_id,id,name,address) VALUES($1,$2,'Synthetic Clinic','1 Synthetic Way, Austin TX 78701')").bind(a.tenant_id).bind(Uuid::new_v4()).execute(db).await.unwrap();
         if organization {
             let id = Uuid::new_v4();
-            let sealed = crate::provider_settings::seal_secret(db, a.tenant_id, id, "billing-organization-tax", "000000017").await.unwrap();
+            let sealed = crate::provider_settings::seal_secret(
+                db,
+                a.tenant_id,
+                id,
+                "billing-organization-tax",
+                "000000017",
+            )
+            .await
+            .unwrap();
             sqlx::query("INSERT INTO practice_billing_organizations(tenant_id,id,name,tax_id_type,encrypted_tax_id,tax_id_last4) VALUES($1,$2,'Synthetic Billing Organization','E',$3,'0017')").bind(a.tenant_id).bind(id).bind(sealed).execute(db).await.unwrap();
         }
     }
     async fn claim(&self, claim: &Value) -> Value {
-        self.ok("GET", &format!("/api/v1/billing/claims/{}", claim.as_str().unwrap()), json!(null), None).await["claim"].clone()
+        self.ok(
+            "GET",
+            &format!("/api/v1/billing/claims/{}", claim.as_str().unwrap()),
+            json!(null),
+            None,
+        )
+        .await["claim"]
+            .clone()
     }
     /// Mark ready and record that it was sent, as a person does.
     async fn send(&self, claim_id: &Value) -> Value {
@@ -183,22 +220,62 @@ impl Fixture {
     /// `delivered` also records a delivered claim file, which billing a secondary needs.
     /// The delivery is injected evidence; no network call is made.
     async fn send_with(&self, claim_id: &Value, delivered: bool) -> Value {
-        let path = format!("/api/v1/billing/claims/{}/actions", claim_id.as_str().unwrap());
+        let path = format!(
+            "/api/v1/billing/claims/{}/actions",
+            claim_id.as_str().unwrap()
+        );
         let claim = self.claim(claim_id).await;
-        let ready = self.ok("POST", &path, json!({"action":"ready","reason":"Synthetic review"}), Some(version(&claim))).await;
+        let ready = self
+            .ok(
+                "POST",
+                &path,
+                json!({"action":"ready","reason":"Synthetic review"}),
+                Some(version(&claim)),
+            )
+            .await;
         if delivered {
             let address = json!({"line1":"1 Synthetic Way","line2":"","city":"Austin","state":"TX","postal_code":"78701"});
             let details = json!({"billing_address":address,"subscriber_address":address,"patient_address":address,"payer_address":address,"subscriber_given_name":"Avery","subscriber_family_name":"Synthetic","patient_sex":"U","subscriber_sex":"U","rendering_given_name":"Synthetic","rendering_family_name":"Clinician","billing_taxonomy":"208D00000X","filing_indicator":"CI","signature_on_file":true,"benefits_assigned":true,"release_authorized":true,"routine_professional_reviewed":true});
             let partner = self.ok("POST","/api/v1/billing/clearinghouses",json!({"request_id":Uuid::new_v4(),"content":{"name":"Synthetic transport","active":true,"sender_qualifier":"ZZ","sender_id":"SYN-SEND","receiver_qualifier":"ZZ","receiver_id":"SYN-RECV","application_sender":"SYN-SEND","application_receiver":"SYN-RECV","submitter_name":"Synthetic Clinic","submitter_id":"SYN-CLINIC","receiver_name":"Synthetic Receiver","receiver_identifier":"SYN-R","contact_name":"Synthetic Contact","contact_phone":"5125550101","usage":"T","guide_reference":"Synthetic contract"},"reason":"Synthetic partner"}),None).await;
             let file = self.ok("POST", &format!("/api/v1/billing/claims/{}/837p", claim_id.as_str().unwrap()), json!({"request_id":Uuid::new_v4(),"partner_id":id(&partner),"partner_version":version(&partner),"details":details,"reason":"Synthetic generated evidence only"}), Some(version(&ready))).await;
-            sqlx::query("UPDATE edi_submissions SET status='delivered' WHERE tenant_id=$1 AND id=$2").bind(self.owner.tenant_id).bind(id(&file)).execute(&self.db).await.unwrap();
+            sqlx::query(
+                "UPDATE edi_submissions SET status='delivered' WHERE tenant_id=$1 AND id=$2",
+            )
+            .bind(self.owner.tenant_id)
+            .bind(id(&file))
+            .execute(&self.db)
+            .await
+            .unwrap();
         }
         self.ok("POST", &path, json!({"action":"record_submission","reference":"SYNTHETIC-TRANSPORT","event_date":"2026-10-25","reason":"Synthetic delivery fixture"}), Some(version(&ready))).await
     }
     /// Import, match and post one insurer response for a claim.
     #[allow(clippy::too_many_arguments)]
-    async fn respond(&self, p: Uuid, payer: &Value, claim: &Value, charged: i64, paid: i64, patient: i64, status: &str, trace: &str) {
-        let account = self.ok("GET", &format!("/api/v1/patients/{p}/billing"), json!(null), None).await["accounts"].as_array().unwrap().iter().find(|b| b["id"] == claim["account_id"]).unwrap().clone();
+    async fn respond(
+        &self,
+        p: Uuid,
+        payer: &Value,
+        claim: &Value,
+        charged: i64,
+        paid: i64,
+        patient: i64,
+        status: &str,
+        trace: &str,
+    ) {
+        let account = self
+            .ok(
+                "GET",
+                &format!("/api/v1/patients/{p}/billing"),
+                json!(null),
+                None,
+            )
+            .await["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["id"] == claim["account_id"])
+            .unwrap()
+            .clone();
         let writeoff = charged - paid - patient;
         let mut adjustments = vec![];
         if writeoff > 0 {
@@ -206,29 +283,67 @@ impl Fixture {
             adjustments.push(json!({"group":if status=="2" {"OA"} else {"CO"},"reason_code":match status {"4"=>"29","2"=>"23",_=>"45"},"amount_cents":writeoff,"service_index":0}));
         }
         if patient > 0 {
-            adjustments.push(json!({"group":"PR","reason_code":"2","amount_cents":patient,"service_index":0}));
+            adjustments.push(
+                json!({"group":"PR","reason_code":"2","amount_cents":patient,"service_index":0}),
+            );
         }
         let remit = self.ok("POST","/api/v1/billing/remittances",json!({"request_id":Uuid::new_v4(),"payer_id":id(payer),"format":"normalized","document":{"payer_code":payer["content"]["payer_code"],"trace":trace,"payment_date":"2026-10-26","total_paid_cents":paid,"currency":"USD","claims":[{"control_number":claim["control_number"],"payer_control_number":format!("PCN-{trace}"),"status":status,"patient_name":"Avery Synthetic","charged_cents":charged,"paid_cents":paid,"patient_responsibility_cents":patient,"adjustments":adjustments,"services":[{"code":"HC:99213","charged_cents":charged,"paid_cents":paid,"line_control":"1"}]}]},"reason":"Reviewed synthetic ERA"}),None).await;
         let path = format!("/api/v1/billing/remittances/{}", id(&remit));
         // A denial's contractual amount stays on the balance; a payment's is written off.
-        let chosen: Vec<usize> = if writeoff > 0 && status == "1" { vec![0] } else { vec![] };
+        let chosen: Vec<usize> = if writeoff > 0 && status == "1" {
+            vec![0]
+        } else {
+            vec![]
+        };
         let matched = self.ok("PUT",&format!("{path}/matches"),json!({"reason":"Reviewed synthetic match","matches":[{"row_index":0,"claim_id":claim["id"],"claim_version":version(claim),"account_version":version(&account),"writeoff_adjustments":chosen}]}),Some(version(&remit))).await;
-        assert_eq!(matched["issues"], json!([]), "synthetic match must reconcile");
-        self.ok("POST",&format!("{path}/actions"),json!({"action":"post","reason":"Post reviewed synthetic payment"}),Some(version(&matched["remittance"]))).await;
+        assert_eq!(
+            matched["issues"],
+            json!([]),
+            "synthetic match must reconcile"
+        );
+        self.ok(
+            "POST",
+            &format!("{path}/actions"),
+            json!({"action":"post","reason":"Post reviewed synthetic payment"}),
+            Some(version(&matched["remittance"])),
+        )
+        .await;
     }
     async fn pay(&self, p: Uuid, account: Uuid, cents: i64) {
-        let current = self.ok("GET", &format!("/api/v1/patients/{p}/billing"), json!(null), None).await["accounts"].as_array().unwrap().iter().find(|b| b["id"] == json!(account)).unwrap().clone();
+        let current = self
+            .ok(
+                "GET",
+                &format!("/api/v1/patients/{p}/billing"),
+                json!(null),
+                None,
+            )
+            .await["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["id"] == json!(account))
+            .unwrap()
+            .clone();
         self.ok("POST",&format!("/api/v1/patients/{p}/billing/accounts/{account}/entries"),json!({"request_id":Uuid::new_v4(),"kind":"payment","amount_cents":cents,"reverses_id":null,"party":"patient","method":"cash","reference":"SYN-CASH","occurred_on":"2026-10-26","reason":"Synthetic patient payment"}),Some(version(&current))).await;
     }
     async fn copay(&self, p: Uuid, appointment: Uuid, cents: i64) {
         self.ok("POST",&format!("/api/v1/patients/{p}/billing/copays"),json!({"request_id":Uuid::new_v4(),"appointment_id":appointment,"coverage_id":null,"amount_cents":cents,"method":"cash","reference":"","occurred_on":"2026-10-25","reason":"Synthetic copay at the desk","received_confirmed":true}),None).await;
     }
     async fn count(&self, sql: &str) -> i64 {
-        sqlx::query_scalar(sql).bind(self.owner.tenant_id).fetch_one(&self.db).await.unwrap()
+        sqlx::query_scalar(sql)
+            .bind(self.owner.tenant_id)
+            .fetch_one(&self.db)
+            .await
+            .unwrap()
     }
 }
 fn id(v: &Value) -> Uuid {
-    Uuid::parse_str(v["id"].as_str().unwrap_or_else(|| panic!("missing id: {v}"))).unwrap()
+    Uuid::parse_str(
+        v["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("missing id: {v}")),
+    )
+    .unwrap()
 }
 fn version(v: &Value) -> i64 {
     v["version"].as_i64().unwrap()
@@ -242,8 +357,12 @@ fn adds_up(s: &Value) {
     let n = |v: &Value| v.as_i64().unwrap();
     let (i, p) = (&s["insurance"], &s["patient"]);
     assert_eq!(
-        n(&s["charges_cents"]) - n(&i["paid_cents"]) - n(&i["adjusted_cents"])
-            - n(&p["receipts_applied_cents"]) - n(&p["other_payments_cents"]) - n(&p["adjustment_cents"]),
+        n(&s["charges_cents"])
+            - n(&i["paid_cents"])
+            - n(&i["adjusted_cents"])
+            - n(&p["receipts_applied_cents"])
+            - n(&p["other_payments_cents"])
+            - n(&p["adjustment_cents"]),
         n(&s["balance_cents"]),
         "{s}"
     );
@@ -259,14 +378,20 @@ async fn self_pay_visit_moves_from_charges_to_paid_in_full_and_never_prepares_a_
     let f = setup().await;
     let (p, appointment, visit) = f.visit(false).await;
     let s = f.summary(&f.owner, p, visit).await;
-    assert_eq!((s["state"].as_str(), s["waiting_on"].as_str()), (Some("add_charges"), Some("staff")));
+    assert_eq!(
+        (s["state"].as_str(), s["waiting_on"].as_str()),
+        (Some("add_charges"), Some("staff"))
+    );
     assert_eq!(s["insurance"]["insured"], false);
     assert!(s["charges_cents"].is_null() && s["balance_cents"].is_null());
 
     let draft = f.charges(p, visit, None, 12000).await;
     let s = f.summary(&f.owner, p, visit).await;
     assert_eq!(s["state"], "sign_visit");
-    assert_eq!(s["patient"]["owes_now_cents"], 0, "nothing is owed until charges are final");
+    assert_eq!(
+        s["patient"]["owes_now_cents"], 0,
+        "nothing is owed until charges are final"
+    );
     sqlx::query("UPDATE visits SET status='signed',signed_by=clinician_id,signed_at=now(),note=$3 WHERE tenant_id=$1 AND id=$2").bind(f.owner.tenant_id).bind(visit).bind(json!({"subjective":"Synthetic","objective":"Synthetic","assessment":"Synthetic","plan":"Synthetic"})).execute(&f.db).await.unwrap();
     assert_eq!(f.summary(&f.owner, p, visit).await["state"], "post_charges");
 
@@ -286,10 +411,17 @@ async fn self_pay_visit_moves_from_charges_to_paid_in_full_and_never_prepares_a_
     let (status, out) = f.prepare(&f.owner, p, id(&posted), json!({})).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(out, json!({"outcome":"not_needed","reason":"self_pay"}));
-    assert_eq!(f.count("SELECT count(*) FROM ehr_claims WHERE tenant_id=$1").await, 0);
+    assert_eq!(
+        f.count("SELECT count(*) FROM ehr_claims WHERE tenant_id=$1")
+            .await,
+        0
+    );
 
     // The statement is stored the first time it is needed and reused while nothing changes.
-    let path = format!("/api/v1/patients/{p}/billing/accounts/{}/statement", id(&posted));
+    let path = format!(
+        "/api/v1/patients/{p}/billing/accounts/{}/statement",
+        id(&posted)
+    );
     let first = f.ok("POST", &path, json!({}), None).await;
     assert_eq!(first["created"], true);
     assert_eq!(first["invoice"]["snapshot"]["amount_due_cents"], 10000);
@@ -297,20 +429,52 @@ async fn self_pay_visit_moves_from_charges_to_paid_in_full_and_never_prepares_a_
     let again = f.ok("POST", &path, json!({}), None).await;
     assert_eq!(again["created"], false);
     assert_eq!(again["invoice"]["id"], first["invoice"]["id"]);
-    assert_eq!(f.count("SELECT count(*) FROM patient_invoice_snapshots WHERE tenant_id=$1").await, 1);
+    assert_eq!(
+        f.count("SELECT count(*) FROM patient_invoice_snapshots WHERE tenant_id=$1")
+            .await,
+        1
+    );
     let s = f.summary(&f.owner, p, visit).await;
-    assert_eq!(s["statement"], json!({"current":true,"latest_id":first["invoice"]["id"],"count":1}));
+    assert_eq!(
+        s["statement"],
+        json!({"current":true,"latest_id":first["invoice"]["id"],"count":1})
+    );
 
     f.pay(p, id(&posted), 10000).await;
     let s = f.summary(&f.owner, p, visit).await;
     adds_up(&s);
-    assert_eq!((s["state"].as_str(), s["waiting_on"].as_str()), (Some("paid_in_full"), Some("nobody")));
+    assert_eq!(
+        (s["state"].as_str(), s["waiting_on"].as_str()),
+        (Some("paid_in_full"), Some("nobody"))
+    );
     assert_eq!(s["patient"]["owes_now_cents"], 0);
-    assert_eq!(s["statement"]["current"], false, "the earlier statement no longer matches");
+    assert_eq!(
+        s["statement"]["current"], false,
+        "the earlier statement no longer matches"
+    );
     // One timeline, oldest first, with the earlier statement kept.
-    let codes: Vec<&str> = s["timeline"].as_array().unwrap().iter().map(|e| e["code"].as_str().unwrap()).collect();
-    assert_eq!(codes, ["charges_added", "payment_received", "charges_posted", "receipt_applied", "statement", "patient_payment"]);
-    assert_eq!(f.count("SELECT count(*) FROM patient_invoice_snapshots WHERE tenant_id=$1").await, 1);
+    let codes: Vec<&str> = s["timeline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        codes,
+        [
+            "charges_added",
+            "payment_received",
+            "charges_posted",
+            "receipt_applied",
+            "statement",
+            "patient_payment"
+        ]
+    );
+    assert_eq!(
+        f.count("SELECT count(*) FROM patient_invoice_snapshots WHERE tenant_id=$1")
+            .await,
+        1
+    );
 
     // A credit: the patient paid more at the desk than the visit cost.
     let (p2, appointment2, visit2) = f.visit(true).await;
@@ -343,11 +507,17 @@ async fn insured_visit_prepares_its_claim_once_and_splits_insurance_from_patient
     assert_eq!(s["patient"]["copay_cents"], 2500);
     assert_eq!(s["patient"]["owes_now_cents"], 2500);
     f.copay(p, appointment, 1000).await;
-    assert_eq!(f.summary(&f.owner, p, visit).await["patient"]["owes_now_cents"], 1500);
+    assert_eq!(
+        f.summary(&f.owner, p, visit).await["patient"]["owes_now_cents"],
+        1500
+    );
 
     let draft = f.charges(p, visit, Some(id(&policy)), 10000).await;
     let (status, out) = f.prepare(&f.owner, p, id(&draft), json!({})).await;
-    assert_eq!((status, out["reason"].as_str()), (StatusCode::OK, Some("charges_not_posted")));
+    assert_eq!(
+        (status, out["reason"].as_str()),
+        (StatusCode::OK, Some("charges_not_posted"))
+    );
     let posted = f.post(p, &draft).await;
     let account = id(&posted);
 
@@ -364,14 +534,25 @@ async fn insured_visit_prepares_its_claim_once_and_splits_insurance_from_patient
 
     // Same permission as preparing a claim by hand.
     let nurse = f.staff(Role::Nurse, "nurse").await;
-    assert_eq!(f.prepare(&nurse, p, account, json!({})).await.0, StatusCode::FORBIDDEN);
-    assert_eq!(f.count("SELECT count(*) FROM ehr_claims WHERE tenant_id=$1").await, 0);
+    assert_eq!(
+        f.prepare(&nurse, p, account, json!({})).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        f.count("SELECT count(*) FROM ehr_claims WHERE tenant_id=$1")
+            .await,
+        0
+    );
 
     let desk = f.staff(Role::FrontDesk, "front_desk").await;
     let (status, out) = f.prepare(&desk, p, account, json!({})).await;
     assert_eq!(status, StatusCode::OK, "{out}");
     assert_eq!(out["outcome"], "prepared");
-    assert_eq!(out["issues"], json!([]), "the practice directory fills every required field");
+    assert_eq!(
+        out["issues"],
+        json!([]),
+        "the practice directory fills every required field"
+    );
     let claim_id = out["claim_id"].clone();
     // Idempotent, for the same person and for anyone else opening the visit.
     for actor in [&desk, &f.owner] {
@@ -379,50 +560,101 @@ async fn insured_visit_prepares_its_claim_once_and_splits_insurance_from_patient
         assert_eq!(status, StatusCode::OK);
         assert_eq!(again, json!({"outcome":"exists","claim_id":claim_id}));
     }
-    assert_eq!(f.count("SELECT count(*) FROM ehr_claims WHERE tenant_id=$1").await, 1);
+    assert_eq!(
+        f.count("SELECT count(*) FROM ehr_claims WHERE tenant_id=$1")
+            .await,
+        1
+    );
 
     let claim = f.claim(&claim_id).await;
     assert_eq!(claim["status"], "draft", "prepared, never released");
     assert_eq!(claim["frequency"], "original");
     assert_eq!(claim["snapshot"]["account"]["total_cents"], 10000);
-    assert_eq!(claim["content"], json!({"billing_provider_name":"Synthetic Clinic","billing_npi":"1234567893","tax_id":"000000017","billing_address":"1 Synthetic Way, Austin TX 78701","rendering_npi":"1234567893","patient_address":"1 Synthetic Way, Austin, TX, 78701, US","subscriber_address":"1 Synthetic Way, Austin, TX, 78701, US","subscriber_birth_date":"1990-01-01","place_of_service":"11","diagnosis_codes":["Z00.00"],"line_diagnosis_pointers":[[1]],"external_control_number":"","notes":"","synthetic_test":false}));
+    assert_eq!(
+        claim["content"],
+        json!({"billing_provider_name":"Synthetic Clinic","billing_npi":"1234567893","tax_id":"000000017","billing_address":"1 Synthetic Way, Austin TX 78701","rendering_npi":"1234567893","patient_address":"1 Synthetic Way, Austin, TX, 78701, US","subscriber_address":"1 Synthetic Way, Austin, TX, 78701, US","subscriber_birth_date":"1990-01-01","place_of_service":"11","diagnosis_codes":["Z00.00"],"line_diagnosis_pointers":[[1]],"external_control_number":"","notes":"","synthetic_test":false})
+    );
     // The same audit trail as the manual action, attributed to the person who opened it.
     let (actor, reason, evidence): (Uuid, String, Value) = sqlx::query_as("SELECT actor_id,reason,evidence FROM claim_revisions WHERE tenant_id=$1 AND claim_id=$2 AND version=1").bind(f.owner.tenant_id).bind(id(&claim)).fetch_one(&f.db).await.unwrap();
     assert_eq!(actor, desk.sub);
-    assert_eq!(reason, "Prepared automatically from the visit's posted charges");
-    assert_eq!(evidence, json!({"transport":"none","crossover_tracking_only":false,"network_transmitted":false,"prepared":"automatic"}));
-    assert_eq!(f.count("SELECT count(*) FROM audit_events WHERE tenant_id=$1 AND action='claim.change'").await, 1);
+    assert_eq!(
+        reason,
+        "Prepared automatically from the visit's posted charges"
+    );
+    assert_eq!(
+        evidence,
+        json!({"transport":"none","crossover_tracking_only":false,"network_transmitted":false,"prepared":"automatic"})
+    );
+    assert_eq!(
+        f.count("SELECT count(*) FROM audit_events WHERE tenant_id=$1 AND action='claim.change'")
+            .await,
+        1
+    );
     // Nothing was sent or queued.
-    assert_eq!(f.count("SELECT count(*) FROM edi_submissions WHERE tenant_id=$1").await, 0);
-    assert_eq!(f.count("SELECT count(*) FROM edi_delivery_jobs WHERE tenant_id=$1").await, 0);
+    assert_eq!(
+        f.count("SELECT count(*) FROM edi_submissions WHERE tenant_id=$1")
+            .await,
+        0
+    );
+    assert_eq!(
+        f.count("SELECT count(*) FROM edi_delivery_jobs WHERE tenant_id=$1")
+            .await,
+        0
+    );
     // Preparing did not touch the posted charges or the ledger.
-    let after: (i64, i64) = sqlx::query_as("SELECT version,total_cents FROM billing_accounts WHERE tenant_id=$1 AND id=$2").bind(f.owner.tenant_id).bind(account).fetch_one(&f.db).await.unwrap();
+    let after: (i64, i64) = sqlx::query_as(
+        "SELECT version,total_cents FROM billing_accounts WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(f.owner.tenant_id)
+    .bind(account)
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
     assert_eq!(after, (version(&posted), 10000));
 
     let s = f.summary(&desk, p, visit).await;
     adds_up(&s);
-    assert_eq!((s["state"].as_str(), s["waiting_on"].as_str()), (Some("send_claim"), Some("staff")));
+    assert_eq!(
+        (s["state"].as_str(), s["waiting_on"].as_str()),
+        (Some("send_claim"), Some("staff"))
+    );
     assert_eq!(s["claim"]["automatic"], true);
-    assert!(s["technical"].is_null() && s["claim"]["control_number"].is_null(), "identifiers are owner-only");
+    assert!(
+        s["technical"].is_null() && s["claim"]["control_number"].is_null(),
+        "identifiers are owner-only"
+    );
     let owner_view = f.summary(&f.owner, p, visit).await;
     assert_eq!(owner_view["technical"]["account_id"], json!(account));
-    assert_eq!(owner_view["technical"]["claims"][0]["control_number"], claim["control_number"]);
-    assert_eq!(owner_view["technical"]["coverage_verification"], "manually_verified");
+    assert_eq!(
+        owner_view["technical"]["claims"][0]["control_number"],
+        claim["control_number"]
+    );
+    assert_eq!(
+        owner_view["technical"]["coverage_verification"],
+        "manually_verified"
+    );
 
     // A person sends it; then the insurer is the one being waited on.
     let sent = f.send(&claim_id).await;
     let s = f.summary(&f.owner, p, visit).await;
     adds_up(&s);
-    assert_eq!((s["state"].as_str(), s["waiting_on"].as_str()), (Some("waiting_insurer"), Some("insurer")));
+    assert_eq!(
+        (s["state"].as_str(), s["waiting_on"].as_str()),
+        (Some("waiting_insurer"), Some("insurer"))
+    );
     assert_eq!(s["insurance"]["sent_on"], "2026-10-25");
     assert_eq!(s["insurance"]["pending_cents"], 7500);
     assert_eq!(s["patient"]["owes_now_cents"], 1500);
 
     // The insurer answers: paid 6000, wrote off 2000, patient responsibility 2000.
-    f.respond(p, &payer, &sent, 10000, 6000, 2000, "1", "SYN-PRIMARY").await;
+    f.respond(p, &payer, &sent, 10000, 6000, 2000, "1", "SYN-PRIMARY")
+        .await;
     let s = f.summary(&f.owner, p, visit).await;
     adds_up(&s);
-    assert_eq!((s["state"].as_str(), s["waiting_on"].as_str()), (Some("patient_owes"), Some("patient")));
+    assert_eq!(
+        (s["state"].as_str(), s["waiting_on"].as_str()),
+        (Some("patient_owes"), Some("patient"))
+    );
     assert_eq!(s["insurance"]["status"], "answered");
     assert_eq!(s["insurance"]["paid_cents"], 6000);
     assert_eq!(s["insurance"]["adjusted_cents"], 2000);
@@ -430,24 +662,54 @@ async fn insured_visit_prepares_its_claim_once_and_splits_insurance_from_patient
     assert_eq!(s["insurance"]["unassigned_cents"], 0);
     assert_eq!(s["patient"]["responsibility_source"], "insurer_response");
     assert_eq!(s["patient"]["responsibility_cents"], 2000);
-    assert_eq!(s["patient"]["owes_now_cents"], 1000, "2000 the insurer assigned less the 1000 copay paid");
+    assert_eq!(
+        s["patient"]["owes_now_cents"], 1000,
+        "2000 the insurer assigned less the 1000 copay paid"
+    );
     assert_eq!(s["claim"]["answer"]["paid_cents"], 6000);
 
     // Statement on first send: one record, the same amount as the card.
     let path = format!("/api/v1/patients/{p}/billing/accounts/{account}/statement");
-    assert_eq!(f.call(&nurse, "POST", &path, json!({}), None).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(
+        f.call(&nurse, "POST", &path, json!({}), None).await.0,
+        StatusCode::FORBIDDEN
+    );
     let statement = f.ok("POST", &path, json!({}), None).await;
     assert_eq!(statement["created"], true);
     assert_eq!(statement["invoice"]["snapshot"]["amount_due_cents"], 1000);
-    assert_eq!(statement["invoice"]["snapshot"]["responsibility_cents"], 2000);
+    assert_eq!(
+        statement["invoice"]["snapshot"]["responsibility_cents"],
+        2000
+    );
     assert_eq!(f.ok("POST", &path, json!({}), None).await["created"], false);
 
     f.pay(p, account, 1000).await;
     let s = f.summary(&f.owner, p, visit).await;
     adds_up(&s);
     assert_eq!(s["state"], "paid_in_full");
-    let codes: Vec<&str> = s["timeline"].as_array().unwrap().iter().map(|e| e["code"].as_str().unwrap()).collect();
-    assert_eq!(codes, ["payment_received", "charges_added", "charges_posted", "receipt_applied", "claim_prepared_auto", "claim_ready", "claim_sent", "insurer_payment", "insurer_adjustment", "claim_answered", "statement", "patient_payment"]);
+    let codes: Vec<&str> = s["timeline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        codes,
+        [
+            "payment_received",
+            "charges_added",
+            "charges_posted",
+            "receipt_applied",
+            "claim_prepared_auto",
+            "claim_ready",
+            "claim_sent",
+            "insurer_payment",
+            "insurer_adjustment",
+            "claim_answered",
+            "statement",
+            "patient_payment"
+        ]
+    );
 
     std::env::remove_var("ENGINE_CREDENTIAL_KEY_FILE");
 }
@@ -458,16 +720,31 @@ async fn missing_details_denials_deductibles_secondary_and_overpayment_are_repor
     // No practice directory: the claim is still prepared and says what is missing.
     let (p, _, visit) = f.visit(true).await;
     let (payer, policy) = f.coverage(p, "primary", "SYN-P", None).await;
-    let posted = f.post(p, &f.charges(p, visit, Some(id(&policy)), 10000).await).await;
+    let posted = f
+        .post(p, &f.charges(p, visit, Some(id(&policy)), 10000).await)
+        .await;
     let account = id(&posted);
     let (_, out) = f.prepare(&f.owner, p, account, json!({})).await;
     assert_eq!(out["outcome"], "prepared");
-    let missing: Vec<&str> = out["issues"].as_array().unwrap().iter().map(|i| i["missing"].as_str().unwrap()).collect();
-    assert!(missing.contains(&"billing organization tax ID") && missing.contains(&"provider NPI") && missing.contains(&"billing address"), "{missing:?}");
+    let missing: Vec<&str> = out["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["missing"].as_str().unwrap())
+        .collect();
+    assert!(
+        missing.contains(&"billing organization tax ID")
+            && missing.contains(&"provider NPI")
+            && missing.contains(&"billing address"),
+        "{missing:?}"
+    );
     let s = f.summary(&f.owner, p, visit).await;
     adds_up(&s);
     assert_eq!(s["state"], "fix_claim");
-    assert_eq!(s["claim"]["issues"].as_array().unwrap().len(), missing.len());
+    assert_eq!(
+        s["claim"]["issues"].as_array().unwrap().len(),
+        missing.len()
+    );
     assert_eq!(s["patient"]["responsibility_source"], "copay_not_recorded");
     assert_eq!(s["patient"]["owes_now_cents"], 0);
     assert_eq!(s["insurance"]["pending_cents"], 10000);
@@ -475,28 +752,66 @@ async fn missing_details_denials_deductibles_secondary_and_overpayment_are_repor
     // A person fills in the details on the draft; the claim is then ready to send.
     let claim = f.claim(&out["claim_id"]).await;
     let mut content = claim["content"].clone();
-    for (key, value) in [("billing_provider_name", "Synthetic Practice"), ("billing_npi", "1234567893"), ("rendering_npi", "1234567893"), ("tax_id", "000000001"), ("billing_address", "1 Synthetic Way, Austin TX 78701"), ("patient_address", "1 Synthetic Way, Austin TX 78701"), ("subscriber_address", "1 Synthetic Way, Austin TX 78701")] {
+    for (key, value) in [
+        ("billing_provider_name", "Synthetic Practice"),
+        ("billing_npi", "1234567893"),
+        ("rendering_npi", "1234567893"),
+        ("tax_id", "000000001"),
+        ("billing_address", "1 Synthetic Way, Austin TX 78701"),
+        ("patient_address", "1 Synthetic Way, Austin TX 78701"),
+        ("subscriber_address", "1 Synthetic Way, Austin TX 78701"),
+    ] {
         content[key] = json!(value);
     }
-    f.ok("PUT", &format!("/api/v1/billing/claims/{}", id(&claim)), json!({"content":content,"reason":"Synthetic correction"}), Some(version(&claim))).await;
+    f.ok(
+        "PUT",
+        &format!("/api/v1/billing/claims/{}", id(&claim)),
+        json!({"content":content,"reason":"Synthetic correction"}),
+        Some(version(&claim)),
+    )
+    .await;
     assert_eq!(f.summary(&f.owner, p, visit).await["state"], "send_claim");
 
     // Cancelling the claim is respected: no new one appears until a person asks.
     let draft = f.claim(&out["claim_id"]).await;
-    f.ok("POST", &format!("/api/v1/billing/claims/{}/actions", id(&draft)), json!({"action":"void_draft","reason":"Synthetic cancel"}), Some(version(&draft))).await;
-    assert_eq!(f.summary(&f.owner, p, visit).await["state"], "claim_cancelled");
-    assert_eq!(f.prepare(&f.owner, p, account, json!({})).await.1, json!({"outcome":"cancelled"}));
+    f.ok(
+        "POST",
+        &format!("/api/v1/billing/claims/{}/actions", id(&draft)),
+        json!({"action":"void_draft","reason":"Synthetic cancel"}),
+        Some(version(&draft)),
+    )
+    .await;
+    assert_eq!(
+        f.summary(&f.owner, p, visit).await["state"],
+        "claim_cancelled"
+    );
+    assert_eq!(
+        f.prepare(&f.owner, p, account, json!({})).await.1,
+        json!({"outcome":"cancelled"})
+    );
     let (_, again) = f.prepare(&f.owner, p, account, json!({"again":true})).await;
     assert_eq!(again["outcome"], "prepared");
-    assert_eq!(again["issues"], json!([]), "the corrected details carry over");
-    assert_eq!(f.count("SELECT count(*) FROM ehr_claims WHERE tenant_id=$1 AND status<>'void'").await, 1);
+    assert_eq!(
+        again["issues"],
+        json!([]),
+        "the corrected details carry over"
+    );
+    assert_eq!(
+        f.count("SELECT count(*) FROM ehr_claims WHERE tenant_id=$1 AND status<>'void'")
+            .await,
+        1
+    );
 
     // Denied: the patient is not handed the balance; the next step is to fix and resend.
     let sent = f.send(&again["claim_id"]).await;
-    f.respond(p, &payer, &sent, 10000, 0, 0, "4", "SYN-DENIED").await;
+    f.respond(p, &payer, &sent, 10000, 0, 0, "4", "SYN-DENIED")
+        .await;
     let s = f.summary(&f.owner, p, visit).await;
     adds_up(&s);
-    assert_eq!((s["state"].as_str(), s["waiting_on"].as_str()), (Some("denied"), Some("staff")));
+    assert_eq!(
+        (s["state"].as_str(), s["waiting_on"].as_str()),
+        (Some("denied"), Some("staff"))
+    );
     assert_eq!(s["insurance"]["status"], "denied");
     assert_eq!(s["patient"]["owes_now_cents"], 0);
     assert_eq!(s["insurance"]["pending_cents"], 10000);
@@ -505,13 +820,22 @@ async fn missing_details_denials_deductibles_secondary_and_overpayment_are_repor
     let (p, appointment, visit) = f.visit(true).await;
     let (payer, policy) = f.coverage(p, "primary", "SYN-D", Some(2500)).await;
     f.copay(p, appointment, 2500).await;
-    let posted = f.post(p, &f.charges(p, visit, Some(id(&policy)), 10000).await).await;
+    let posted = f
+        .post(p, &f.charges(p, visit, Some(id(&policy)), 10000).await)
+        .await;
     let account = id(&posted);
     let (_, out) = f.prepare(&f.owner, p, account, json!({})).await;
     let claim = f.claim(&out["claim_id"]).await;
-    f.ok("PUT", &format!("/api/v1/billing/claims/{}", id(&claim)), json!({"content":content,"reason":"Synthetic correction"}), Some(version(&claim))).await;
+    f.ok(
+        "PUT",
+        &format!("/api/v1/billing/claims/{}", id(&claim)),
+        json!({"content":content,"reason":"Synthetic correction"}),
+        Some(version(&claim)),
+    )
+    .await;
     let sent = f.send(&out["claim_id"]).await;
-    f.respond(p, &payer, &sent, 10000, 0, 8000, "1", "SYN-DEDUCTIBLE").await;
+    f.respond(p, &payer, &sent, 10000, 0, 8000, "1", "SYN-DEDUCTIBLE")
+        .await;
     let s = f.summary(&f.owner, p, visit).await;
     adds_up(&s);
     assert_eq!(s["state"], "patient_owes");
@@ -524,15 +848,27 @@ async fn missing_details_denials_deductibles_secondary_and_overpayment_are_repor
     let (p, appointment, visit) = f.visit(true).await;
     let (payer, policy) = f.coverage(p, "primary", "SYN-O", Some(2500)).await;
     f.copay(p, appointment, 2500).await;
-    let posted = f.post(p, &f.charges(p, visit, Some(id(&policy)), 10000).await).await;
+    let posted = f
+        .post(p, &f.charges(p, visit, Some(id(&policy)), 10000).await)
+        .await;
     let (_, out) = f.prepare(&f.owner, p, id(&posted), json!({})).await;
     let claim = f.claim(&out["claim_id"]).await;
-    f.ok("PUT", &format!("/api/v1/billing/claims/{}", id(&claim)), json!({"content":content,"reason":"Synthetic correction"}), Some(version(&claim))).await;
+    f.ok(
+        "PUT",
+        &format!("/api/v1/billing/claims/{}", id(&claim)),
+        json!({"content":content,"reason":"Synthetic correction"}),
+        Some(version(&claim)),
+    )
+    .await;
     let sent = f.send(&out["claim_id"]).await;
-    f.respond(p, &payer, &sent, 10000, 7500, 0, "1", "SYN-OVERPAID").await;
+    f.respond(p, &payer, &sent, 10000, 7500, 0, "1", "SYN-OVERPAID")
+        .await;
     let s = f.summary(&f.owner, p, visit).await;
     adds_up(&s);
-    assert_eq!(s["balance_cents"], -2500, "the insurer's payment left a credit on the visit");
+    assert_eq!(
+        s["balance_cents"], -2500,
+        "the insurer's payment left a credit on the visit"
+    );
     assert_eq!(s["state"], "patient_credit");
     assert_eq!(s["patient"]["overpaid_cents"], 2500);
     assert_eq!(s["patient"]["credit_cents"], 2500);
@@ -543,20 +879,48 @@ async fn missing_details_denials_deductibles_secondary_and_overpayment_are_repor
     let (p, _, visit) = f.visit(true).await;
     let (payer, policy) = f.coverage(p, "primary", "SYN-1", None).await;
     let (second_payer, second_policy) = f.coverage(p, "secondary", "SYN-2", None).await;
-    let posted = f.post(p, &f.charges(p, visit, Some(id(&policy)), 10000).await).await;
+    let posted = f
+        .post(p, &f.charges(p, visit, Some(id(&policy)), 10000).await)
+        .await;
     let account = id(&posted);
     let (_, out) = f.prepare(&f.owner, p, account, json!({})).await;
     let claim = f.claim(&out["claim_id"]).await;
-    f.ok("PUT", &format!("/api/v1/billing/claims/{}", id(&claim)), json!({"content":content,"reason":"Synthetic correction"}), Some(version(&claim))).await;
+    f.ok(
+        "PUT",
+        &format!("/api/v1/billing/claims/{}", id(&claim)),
+        json!({"content":content,"reason":"Synthetic correction"}),
+        Some(version(&claim)),
+    )
+    .await;
     let sent = f.send_with(&out["claim_id"], true).await;
-    f.respond(p, &payer, &sent, 10000, 6000, 2000, "1", "SYN-COB-PRIMARY").await;
+    f.respond(p, &payer, &sent, 10000, 6000, 2000, "1", "SYN-COB-PRIMARY")
+        .await;
     let s = f.summary(&f.owner, p, visit).await;
-    assert_eq!((s["state"].as_str(), s["patient"]["owes_now_cents"].as_i64()), (Some("patient_owes"), Some(2000)));
+    assert_eq!(
+        (s["state"].as_str(), s["patient"]["owes_now_cents"].as_i64()),
+        (Some("patient_owes"), Some(2000))
+    );
     // Preparing again never creates a second original while the primary stands.
-    assert_eq!(f.prepare(&f.owner, p, account, json!({})).await.1["outcome"], "exists");
-    let review = f.ok("GET", &format!("/api/v1/billing/claims/{}/secondary-review", id(&claim)), json!(null), None).await;
+    assert_eq!(
+        f.prepare(&f.owner, p, account, json!({})).await.1["outcome"],
+        "exists"
+    );
+    let review = f
+        .ok(
+            "GET",
+            &format!("/api/v1/billing/claims/{}/secondary-review", id(&claim)),
+            json!(null),
+            None,
+        )
+        .await;
     assert_eq!(review["blockers"], json!([]), "{review}");
-    let remittance: (Uuid, i64) = sqlx::query_as("SELECT id,version FROM era_remittances WHERE tenant_id=$1 AND trace='SYN-COB-PRIMARY'").bind(f.owner.tenant_id).fetch_one(&f.db).await.unwrap();
+    let remittance: (Uuid, i64) = sqlx::query_as(
+        "SELECT id,version FROM era_remittances WHERE tenant_id=$1 AND trace='SYN-COB-PRIMARY'",
+    )
+    .bind(f.owner.tenant_id)
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
     let coordination = json!({"coverage_id":id(&second_policy),"coverage_version":version(&second_policy),"primary_claim_version":version(&review["primary_claim"]),"remittance_id":remittance.0,"remittance_version":remittance.1,"row_index":0,"not_forwarded_confirmed":true,"payer_timing_reviewed":true,"crossover_reference":"Reviewed synthetic EOB: no crossover, timing confirmed","paid_units":[1]});
     let mut secondary_content = content.clone();
     secondary_content["subscriber_birth_date"] = json!("1990-01-01");
@@ -569,10 +933,23 @@ async fn missing_details_denials_deductibles_secondary_and_overpayment_are_repor
     assert_eq!(s["insurance"]["insurer"], "Synthetic primary plan");
     assert_eq!(s["claim"]["payer_name"], "Synthetic secondary plan");
     assert_eq!(s["claim"]["secondary"], true);
-    assert_eq!(s["patient"]["owes_now_cents"], 0, "the primary's patient amount is with the secondary now");
+    assert_eq!(
+        s["patient"]["owes_now_cents"], 0,
+        "the primary's patient amount is with the secondary now"
+    );
     assert_eq!(s["insurance"]["pending_cents"], 2000);
     let sent = f.send(&secondary["id"]).await;
-    f.respond(p, &second_payer, &sent, 10000, 1500, 500, "2", "SYN-COB-SECONDARY").await;
+    f.respond(
+        p,
+        &second_payer,
+        &sent,
+        10000,
+        1500,
+        500,
+        "2",
+        "SYN-COB-SECONDARY",
+    )
+    .await;
     let s = f.summary(&f.owner, p, visit).await;
     adds_up(&s);
     assert_eq!(s["state"], "patient_owes");
@@ -581,7 +958,25 @@ async fn missing_details_denials_deductibles_secondary_and_overpayment_are_repor
     assert_eq!(s["patient"]["owes_now_cents"], 500);
 
     // Another practice cannot read or prepare anything here.
-    let stranger = Actor { tenant_id: Uuid::new_v4(), sub: Uuid::new_v4(), ..f.owner.clone() };
-    assert_eq!(f.call(&stranger, "GET", &format!("/api/v1/patients/{p}/billing/visit-summary?visit_id={visit}"), json!(null), None).await.0, StatusCode::NOT_FOUND);
-    assert_eq!(f.prepare(&stranger, p, account, json!({})).await.0, StatusCode::NOT_FOUND);
+    let stranger = Actor {
+        tenant_id: Uuid::new_v4(),
+        sub: Uuid::new_v4(),
+        ..f.owner.clone()
+    };
+    assert_eq!(
+        f.call(
+            &stranger,
+            "GET",
+            &format!("/api/v1/patients/{p}/billing/visit-summary?visit_id={visit}"),
+            json!(null),
+            None
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        f.prepare(&stranger, p, account, json!({})).await.0,
+        StatusCode::NOT_FOUND
+    );
 }
