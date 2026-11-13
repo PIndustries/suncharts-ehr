@@ -118,10 +118,10 @@ test('a failed request or a blocked script shows a retry instead of a stuck page
  await f.open();assert.match(f.tools.innerHTML,/Check your connection and try again\./);assert.doesNotMatch(f.tools.innerHTML,/Reload the patient/);
  f=fixture();f.context.response=()=>{const error=new Error('forbidden');error.status=403;throw error;};await assert.rejects(f.open(),/forbidden/);
  f=fixture();f.context.autoLoad=false;const opening=f.run('openCardReaders()');await new Promise(r=>setImmediate(r));f.scripts[0].onerror();await opening;
- assert.match(f.tools.innerHTML,/Reader ordering could not load\. Try again\./);assert.equal(f.scripts[0].removed,true);
+ assert.match(f.tools.innerHTML,/This browser could not reach Stripe to show reader ordering\. Turn off any ad or tracker blocker for this site, or try another browser or network, then try again\./);assert.equal(f.scripts[0].removed,true);
  f.context.autoLoad=true;f.context.response=ready;await f.open();assert.equal(f.scripts.length,2,'Try again requests the script again');assert.equal(f.log.instances.length,1);
  f=fixture();f.context.autoLoad=false;const stalled=f.run('openCardReaders()');await new Promise(r=>setImmediate(r));assert.equal(f.timers.length,1);assert.equal(f.timers[0].ms,20000);f.timers[0].fn();await stalled;
- assert.match(f.tools.innerHTML,/Reader ordering could not load\. Try again\./,'a stalled download does not leave the workspace busy');
+ assert.match(f.tools.innerHTML,/This browser could not reach Stripe/,'a stalled download does not leave the workspace busy');
  f=fixture();await f.open();assert.equal(f.timers[0].cleared,true);
 });
 test('a slow answer cannot draw over another screen or another staff member',async()=>{

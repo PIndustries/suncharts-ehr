@@ -28,6 +28,8 @@ const cardReaderNotConnected='<div class="notice"><p>Finish payment setup before
 const cardReaderUnavailable='<div class="notice"><p>Reader ordering is not available yet.</p><p><button type="button" data-support-tickets>Support</button></p></div>';
 function cardReaderFailure(message){return `<div class="notice error"><p>${esc(message)}</p><p><button type="button" data-card-readers>Try again</button></p></div>`;}
 const cardReaderLoadFailure='Reader ordering could not load. Try again.';
+// Stripe's ordering page never arrived in this browser: usually an ad or tracker blocker, or a network filter.
+const cardReaderBlocked='This browser could not reach Stripe to show reader ordering. Turn off any ad or tracker blocker for this site, or try another browser or network, then try again.';
 
 // Stripe documents this pattern for pages without a bundler: add the script tag to <head>, and
 // Connect.js calls StripeConnect.onLoad when it is ready.
@@ -37,7 +39,7 @@ function loadCardReaderScript(){
  const loader=cardReaderLoader=new Promise((resolve,reject)=>{
   const script=document.createElement('script');
   // The workspace stays busy while this loads, so a stalled download gives up after 20 seconds.
-  const fail=()=>{clearTimeout(timer);if(cardReaderLoader!==loader)return;cardReaderLoader=null;script.remove?.();reject(new Error(cardReaderLoadFailure));};
+  const fail=()=>{clearTimeout(timer);if(cardReaderLoader!==loader)return;cardReaderLoader=null;script.remove?.();reject(new Error(cardReaderBlocked));};
   const timer=setTimeout(fail,20000);
   window.StripeConnect=window.StripeConnect||{};
   window.StripeConnect.onLoad=()=>{clearTimeout(timer);resolve(window.StripeConnect);};
@@ -79,7 +81,7 @@ function mountCardReaders(connection,current){
   return list;
  };
  // Stripe may report the same load failure more than once; showing the message is repeatable.
- function failed(event){if(!current())return;const host=$('card-reader-status');if(!host)return;const detail=String(event?.error?.message||'').trim().slice(0,300);host.innerHTML=cardReaderFailure(cardReaderLoadFailure)+(detail?`<p class="muted">Stripe said: ${esc(detail)}</p>`:'');if(detail&&typeof console!=='undefined')console.warn('Card reader ordering:',event?.error?.type||'',detail);}
+ function failed(event){if(!current())return;const host=$('card-reader-status');if(!host)return;const detail=String(event?.error?.message||'').trim().slice(0,300);host.innerHTML=cardReaderFailure(cardReaderLoadFailure)+(detail?`<p class="muted">Stripe said: ${esc(detail)}</p>`:'<p class="muted">Stripe gave no reason. If this keeps happening, turn off any ad or tracker blocker for this site or try another browser.</p>');if(detail&&typeof console!=='undefined')console.warn('Card reader ordering:',event?.error?.type||'',detail);}
  shop.setOnLoadError?.(failed);
  // A finished checkout adds an order, so the list below is drawn again.
  shop.setOnCheckoutFinished?.(()=>{if(current()&&$('card-reader-orders')===ordersHost)ordersHost.replaceChildren(orders());});
