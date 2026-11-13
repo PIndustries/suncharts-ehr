@@ -133,6 +133,22 @@ function fixture(jobs){
  before2=posts().length;const inputs=[{files:[]},{files:folder(entries.slice(0,1))}];
  await f.click({...f.button({importFilesAdd:'job-1'}),closest(selector){return selector==='button'?this:{querySelectorAll:()=>inputs};}});await new Promise(resolve=>setTimeout(resolve,20));
  assert.equal(posts().length-before2,1);assert.match(visible(status()),/1 of 1 uploaded\./);
+ // A file the chart already holds under another name is left alone and reported, not added again.
+ const plainApi=f.c.api;let pages=0;
+ f.c.api=async(path,method='GET',body)=>{
+  if(path==='/api/v1/patients/chart-a/documents?_count=100'){pages+=1;return {items:[{id:'old-1',sha256:'f'.repeat(64)}],next_cursor:'00000000-0000-4000-8000-0000000000aa'};}
+  if(path==='/api/v1/patients/chart-a/documents?_count=100&_after=00000000-0000-4000-8000-0000000000aa'){pages+=1;return {items:[{id:'old-2',sha256:sha(pdf(1))}],next_cursor:null};}
+  return plainApi(path,method,body);};
+ replayed=new Set();before2=posts().length;
+ await f.run('importFilesChoose')(current,folder(entries.slice(0,3)));
+ assert.equal(pages,2,'every page of the chart is read, once');
+ assert.deepEqual(posts().slice(before2).map(c=>c[2].request_id),['00000000-0000-4000-8000-000000000002','00000000-0000-4000-8000-000000000003']);
+ assert.match(visible(status()),/3 of 3 uploaded\. The files are on each patient's chart, under Files\. 1 file was already on the chart and was not added again\./);
+ // The same file twice in one folder for one chart is added once.
+ before2=posts().length;
+ await f.run('importFilesChoose')(current,folder([entries[1],{...entries[1],request_id:'00000000-0000-4000-8000-000000000009'}]));
+ assert.equal(posts().length-before2,1);assert.match(visible(status()),/2 of 2 uploaded\..*1 file was already on the chart and was not added again\./);
+ f.c.api=plainApi;
  console.log('PASS failed files can be tried again and a second run adds nothing twice');
 
  before2=posts().length;
@@ -150,7 +166,7 @@ function fixture(jobs){
  assert.match(visible(status()),/Synthetic letter 1\.pdf: This file is damaged\..*Synthetic letter 2\.pdf: This file was not in the folder you chose\./);assert.equal(posts().length,before2);
  f.c.api=async(path,method='GET',body)=>{f.calls.push([path,method,plain(body)]);if(path.endsWith('/patient-links'))return {items:[{source_patient_id:'1001',patient_id:'chart-a'}]};throw new Error('Please sign in to continue.');};
  await f.run('importFilesChoose')(current,folder(entries.slice(0,2)));
- assert.equal(posts().length-before2,1,'no more files are sent after sign-in is lost');assert.match(visible(status()),/0 of 2 uploaded\. 2 files could not be added\..*You were signed out\. Sign in and try again\./);
+ assert.equal(posts().length-before2,0,'nothing is sent after sign-in is lost');assert.match(visible(status()),/0 of 2 uploaded\. 2 files could not be added\..*You were signed out\. Sign in and try again\./);
  assert.doesNotMatch(visible(status()),internalTerms);
  assert.match(app,/button\.dataset\.importFilesAdd\|\|button\.dataset\.importFilesRetry\)return;/);
  console.log('PASS a folder for another import, a damaged folder and a lost sign-in are refused in plain words');
