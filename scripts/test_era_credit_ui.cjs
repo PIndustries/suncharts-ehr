@@ -11,14 +11,14 @@ context.claimPane=value=>html=value;context.claimHistory=()=>'';
 (async()=>{
  await context.showEra('era');
  assert.match(html,/Current account balance/);assert.match(html,/\$10\.00 patient credit/);assert.doesNotMatch(html,/-\$?10\.00 open/);
- assert.match(html,/Supplemental payer evidence \(1\)/);assert.match(html,/do not add payments or patient charges/);assert.match(html,/B6/);
+ assert.match(html,/Other amounts from the payer \(1\)/);assert.match(html,/do not add payments or patient charges/);assert.match(html,/B6/);
  assert(calls.every(c=>c.method==='GET'));
  context.eraImportEditor();assert.match(html,/maxlength="1048576"/);assert.match(html,/1,000 claim rows/);
  const accepted={id:'era-file',files:[{size:80000,text:async()=> 'SYNTHETIC-LARGE-FILE'}]};
  for(const handler of handlers.change)handler({target:accepted});await pending;
  assert.equal(node('era-import').elements.document_text.value,'SYNTHETIC-LARGE-FILE');
  for(const handler of handlers.change)handler({target:{id:'era-file',files:[{size:1048577,text:async()=>{throw new Error('Oversized input must not be read');}}]}});
- await assert.rejects(pending,/exceeds 1 MiB/);
+ await assert.rejects(pending,/larger than 1 MB/);
  await context.beginEraBatch();assert.match(html,/100 transactions \/ 1 MiB/);
  for(const handler of handlers.change)handler({target:{id:'era-batch-file',files:[{size:80000,text:async()=> 'SYNTHETIC-BATCH'}]}});await pending;
  assert.equal(node('era-batch-preview').elements.original_text.value,'SYNTHETIC-BATCH');

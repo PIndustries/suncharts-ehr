@@ -29,13 +29,13 @@ vm.runInContext("claimMdConnectionState={active:{partner_id:'native-partner',par
  assert.equal(calls.length,1,'prepare-only must make exactly one local API call');
  assert.equal(calls[0][0],'/api/v1/billing/claims/synthetic-claim/837p');
  assert.doesNotMatch(calls[0][0],/delivery/);
- assert.match(notices.at(-1),/Nothing was sent externally/);
+ assert.match(notices.at(-1),/Nothing was sent to Claim\.MD/);
 
  calls.length=0;notices.length=0;context.submitter={value:'queue'};
  await vm.runInContext('submitClaimMdForm(form,submitter)',context);
  assert.equal(calls.length,2,'queue action must prepare and then explicitly queue');
  assert.equal(calls[0][0],'/api/v1/billing/claims/synthetic-claim/837p');
  assert.equal(calls[1][0],'/api/v1/billing/submissions/prepared-submission/delivery');
- assert.match(notices.at(-1),/submission queued/);
+ assert.match(notices.at(-1),/on its way to Claim\.MD/);
  console.log('PASS Claim.MD prepare-only creates local 837P without external delivery; queue remains explicit');
 })().catch(error=>{console.error(error);process.exitCode=1});
