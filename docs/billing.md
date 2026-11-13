@@ -202,10 +202,20 @@ The amounts are calculated by the server from stored records:
 | Patient's share, no insurance on the visit | The whole charge. |
 | Patient's share before the insurer answers | The plan copay recorded on the coverage the charges were posted with; nothing when no copay is recorded. |
 | Patient's share after the insurer answers | The patient responsibility on the posted remittance that is the active answer for the latest claim, when no other claim for the visit is still open. A denial is not treated as an answer. |
+| Patient's share once a statement was saved | The responsibility on the visit's latest statement, so the figure matches the statement the patient holds. An insurer's answer posted after that statement replaces it. |
 | Patient owes now | The patient's share less patient payments, patient credits and usable unapplied receipts; never below zero or above the balance. |
 | Insurance pending | The rest of the balance while the insurer has not answered. |
 | Not assigned yet | The rest of the balance after the insurer answered: review the answer, write it off or bill the next insurer. |
 | Credit | Unapplied receipts, plus anything the patient paid beyond their share or the whole charge. |
+
+Charges that are not posted are never a balance. The patient banner, the schedule's
+**Owes** marker, the **Patient owes now** total and each row on **Patient billing** show
+this same figure, added up over the patient's posted visits; money still with insurance
+is never part of it.
+
+A delegated partner or platform support session does not prepare claims: the card says
+the claim is not prepared yet, and the draft is created when a member of the practice
+opens the visit.
 
 An eligibility answer is not used for these amounts. The patient's share before the
 insurer answers is only the recorded plan copay, so deductibles and coinsurance appear
