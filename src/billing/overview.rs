@@ -38,6 +38,22 @@ const COPAYS: &str = r#"WITH receipt_rows AS (
 )
 "#;
 
+const ACCOUNT_SUMMARY: &str = "SELECT jsonb_build_object('accounts',count(*),'latest_invoices',count(invoice_id),'invoice_review_count',count(*) FILTER(WHERE invoice_needs_review),'open_invoice_count',count(*) FILTER(WHERE invoice_id IS NOT NULL AND NOT invoice_needs_review AND (invoice_due_cents #>> '{}')::bigint>0),'reviewed_patient_due_cents',coalesce(sum((invoice_due_cents #>> '{}')::bigint) FILTER(WHERE invoice_id IS NOT NULL AND NOT invoice_needs_review),0),'posted_gross_cents',coalesce(sum(total_cents) FILTER(WHERE status='posted'),0),'posted_account_balance_cents',coalesce(sum(account_balance_cents),0)) FROM filtered";
+/// The receivable totals shown as "Patient owes" on the billing pages. Every caller that shows
+/// a patient balance reads it here so the figures always agree.
+pub(crate) async fn account_summary(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    test: bool,
+    patient: Option<Uuid>,
+) -> Result<Value> {
+    Ok(sqlx::query_scalar(&format!("{ACCOUNTS} {ACCOUNT_SUMMARY}"))
+        .bind(tenant)
+        .bind(test)
+        .bind(patient)
+        .fetch_one(&mut **tx)
+        .await?)
+}
 pub(super) fn router() -> Router<State> {
     Router::new()
         .route("/api/v1/billing/overview", get(overview))
@@ -82,8 +98,8 @@ async fn overview(
         Some(id) => Some(patient_summary(&mut tx, &a, id).await?),
         None => None,
     };
-    let account_summary:Value=sqlx::query_scalar(&format!("{ACCOUNTS} SELECT jsonb_build_object('accounts',count(*),'latest_invoices',count(invoice_id),'invoice_review_count',count(*) FILTER(WHERE invoice_needs_review),'open_invoice_count',count(*) FILTER(WHERE invoice_id IS NOT NULL AND NOT invoice_needs_review AND (invoice_due_cents #>> '{{}}')::bigint>0),'reviewed_patient_due_cents',coalesce(sum((invoice_due_cents #>> '{{}}')::bigint) FILTER(WHERE invoice_id IS NOT NULL AND NOT invoice_needs_review),0),'posted_gross_cents',coalesce(sum(total_cents) FILTER(WHERE status='posted'),0),'posted_account_balance_cents',coalesce(sum(account_balance_cents),0)) FROM filtered"))
-        .bind(a.tenant_id).bind(mode=="test").bind(q.patient_id).fetch_one(&mut *tx).await?;
+    let account_summary =
+        account_summary(&mut tx, a.tenant_id, mode == "test", q.patient_id).await?;
     let copay_summary:Value=sqlx::query_scalar(&format!("{COPAYS} SELECT jsonb_build_object('receipts',count(*),'net_received_cents',coalesce(sum(net_received_cents),0),'usable_unapplied_cents',coalesce(sum(usable_unapplied_cents),0),'review_count',count(*) FILTER(WHERE needs_review),'void_count',count(*) FILTER(WHERE voided)) FROM filtered"))
         .bind(a.tenant_id).bind(mode=="test").bind(q.patient_id).fetch_one(&mut *tx).await?;
     let accounts = page(

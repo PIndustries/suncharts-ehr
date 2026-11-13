@@ -822,6 +822,18 @@ async fn list_eligibility(
     ))
 }
 
+/// The most recent check for each of a patient's coverages, in the same shape as the
+/// eligibility history, so every page summarises an insurer's answer the same way.
+pub(crate) async fn latest_checks(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    patient: Uuid,
+) -> Result<Vec<Value>> {
+    let rows: Vec<Check> = sqlx::query_as("SELECT DISTINCT ON (coverage_id) id,patient_id,coverage_id,request_snapshot,response_snapshot,status,actor_id,created_at,completed_at FROM claimmd_eligibility_checks WHERE tenant_id=$1 AND patient_id=$2 ORDER BY coverage_id,created_at DESC,id DESC LIMIT 50")
+        .bind(tenant).bind(patient).fetch_all(&mut **tx).await?;
+    Ok(rows.into_iter().map(check_json).collect())
+}
+
 // Staff see who ran a check by name. The stored actor ID stays for audit.
 async fn named(pool: &PgPool, tenant: Uuid, checks: Vec<Check>) -> Result<Vec<Value>> {
     let ids: Vec<Uuid> = checks.iter().map(|check| check.actor_id).collect();

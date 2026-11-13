@@ -1709,6 +1709,73 @@
         ]
       }
     },
+    "/api/v1/patients/{id}/banner": {
+      "get": {
+        "operationId": "getStaffPatientBanner",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "description": "Staff only. Read-only facts for the patient banner: next appointment, last finished visit, status flags and a revision marker. The billing object (reviewed patient balance, card on file) is present only when the caller may view billing; eligibility (the latest check per coverage) only when the caller may also view claims.",
+        "responses": {
+          "200": {
+            "description": "Patient banner facts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "patient_id",
+                    "flags",
+                    "revision"
+                  ],
+                  "properties": {
+                    "patient_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "flags": {
+                      "type": "object"
+                    },
+                    "next_appointment": {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "last_visit": {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "revision": {
+                      "type": "string"
+                    },
+                    "billing": {
+                      "type": "object"
+                    },
+                    "eligibility": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/patients/{id}/workspace": {
       "get": {
         "operationId": "getStaffPatientWorkspace",

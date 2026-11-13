@@ -4,27 +4,27 @@ const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/st
 const app=fs.readFileSync('web/app.js','utf8'),source=fs.readFileSync('web/demographics.js','utf8');
 const summary=app.slice(app.indexOf('function chartContactSummary(){'),app.indexOf('function chartOverview(){'));
 function fixture(){
- const listeners={},notices=[],nodes={phone:{textContent:'Not recorded'},email:{textContent:'Not recorded'},label:{textContent:'PATIENT CHART'},intake:{textContent:'1 intake form · 1 submitted awaiting review'}};
+ const listeners={},notices=[],nodes={phone:{textContent:'Not recorded'},email:{textContent:'Not recorded'},intake:{textContent:'1 intake form · 1 submitted awaiting review'}};
  const error={hidden:true,textContent:''},controls=[{isConnected:true,disabled:false},{isConnected:true,disabled:false}];
  const form={id:'demographics-form',dataset:{},isConnected:false,values:{phone:'202-555-0101',email:'audit.journey@example.test',preferred_name:'Synthetic preferred',reason:'Synthetic contact correction'},querySelector:selector=>selector==='[data-demographics-error]'?error:{focus(){}},querySelectorAll:()=>controls};
  let html='';const host={get innerHTML(){return html;},set innerHTML(value){html=value;form.isConnected=value.includes('<form id="demographics-form"');}};
- const chart={querySelector:selector=>selector==='[data-chart-contact="phone"]'?nodes.phone:selector==='[data-chart-contact="email"]'?nodes.email:selector==='.chart-record-label'?nodes.label:null};
+ const chart={querySelector:selector=>selector==='[data-chart-contact="phone"]'?nodes.phone:selector==='[data-chart-contact="email"]'?nodes.email:null};let bannerPaints=0;
  const initial={version:0,content:{},history:[]};
- const c=vm.createContext({console,selected:'p1',me:{user_id:'owner1',role:'owner'},workspace:{patient:{id:'p1'},demographics:initial},chartSection:'profile',document:{addEventListener:(name,fn)=>(listeners[name]??=[]).push(fn)},$:(id)=>id==='chart'?chart:id==='patient-demographics'?host:id==='demographics-form'?form:null,esc:v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'),date:v=>v,chartAreaEnabled:()=>true,api:async()=>initial,notice:message=>notices.push(message),run:fn=>fn(),FormData:class{constructor(f){this.values=f.values;}*[Symbol.iterator](){yield*Object.entries(this.values);}},renderChart:()=>{throw Error('Contact save must not redraw unrelated chart editors');}});
+ const c=vm.createContext({console,selected:'p1',me:{user_id:'owner1',role:'owner'},workspace:{patient:{id:'p1'},demographics:initial},chartSection:'profile',document:{addEventListener:(name,fn)=>(listeners[name]??=[]).push(fn)},$:(id)=>id==='chart'?chart:id==='patient-demographics'?host:id==='demographics-form'?form:null,esc:v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'),date:v=>v,chartAreaEnabled:()=>true,api:async()=>initial,notice:message=>notices.push(message),run:fn=>fn(),FormData:class{constructor(f){this.values=f.values;}*[Symbol.iterator](){yield*Object.entries(this.values);}},renderChart:()=>{throw Error('Contact save must not redraw unrelated chart editors');},renderPatientBanner:()=>{bannerPaints++;}});
  vm.runInContext(summary+'\n'+source,c);
  const run=code=>vm.runInContext(code,c);
- return {c,run,host,form,nodes,error,controls,initial,notices,async edit(){await run('renderDemographics(selected,workspace.demographics)');run('demographicsEdit()');},submit(){return Promise.all(listeners.submit.map(fn=>fn({target:form,preventDefault(){}})));}};
+ return {c,run,host,form,nodes,get bannerPaints(){return bannerPaints;},error,controls,initial,notices,async edit(){await run('renderDemographics(selected,workspace.demographics)');run('demographicsEdit()');},submit(){return Promise.all(listeners.submit.map(fn=>fn({target:form,preventDefault(){}})));}};
 }
 function saved(content={}){return {version:1,content:{phone:'202-555-0101',email:'audit.journey@example.test',preferred_name:'Synthetic preferred',...content},history:[]};}
 (async()=>{
  let f=fixture();await f.edit();const requests=[];f.c.api=async(...args)=>{requests.push(args);return saved();};await f.submit();
  assert.equal(requests.length,1);assert.equal(requests[0][1],'PUT');assert.equal(requests[0][3],0);
- assert.equal(f.nodes.phone.textContent,'202-555-0101');assert.equal(f.nodes.email.textContent,'audit.journey@example.test');assert.equal(f.nodes.label.textContent,'PATIENT CHART · Preferred name Synthetic preferred');
+ assert.equal(f.nodes.phone.textContent,'202-555-0101');assert.equal(f.nodes.email.textContent,'audit.journey@example.test');assert.equal(f.bannerPaints,1,'the patient banner (name the patient goes by, contact in Details) is repainted from the saved contact');assert.equal(f.c.workspace.demographics.content.preferred_name,'Synthetic preferred');
  assert.equal(f.nodes.intake.textContent,'1 intake form · 1 submitted awaiting review');assert.equal(f.c.chartSection,'profile');assert.equal(f.c.workspace.demographics.version,1);assert.match(f.host.innerHTML,/Blank fields have not been collected yet/);
  console.log('PASS saved contact immediately updates existing Overview and preferred-name header without chart reload or intake reset');
 
  f=fixture();await f.edit();f.c.api=async()=>saved({phone:null,email:'<img src=x onerror=alert(1)>',preferred_name:null});await f.submit();
- assert.equal(f.nodes.phone.textContent,'Not recorded');assert.equal(f.nodes.email.textContent,'<img src=x onerror=alert(1)>');assert.equal(f.nodes.label.textContent,'PATIENT CHART');assert.match(f.host.innerHTML,/&lt;img/);
+ assert.equal(f.nodes.phone.textContent,'Not recorded');assert.equal(f.nodes.email.textContent,'<img src=x onerror=alert(1)>');assert.equal(f.bannerPaints,1);assert.match(f.host.innerHTML,/&lt;img/);
  assert.match(f.run('chartContactSummary()'),/data-chart-contact="phone"/);assert.match(f.run('chartContactSummary()'),/data-chart-contact="email"/);
  console.log('PASS cleared contact fields and untrusted values update as plain text');
 
