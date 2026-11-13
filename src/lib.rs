@@ -87,6 +87,7 @@ pub mod scheduling;
 pub mod settlements;
 pub mod sftp_transport;
 pub mod specialty_workspace;
+pub mod staff_invitations;
 pub mod stedi;
 pub mod sun_tools;
 pub mod terminology;
@@ -412,6 +413,7 @@ pub fn app(state: State) -> Router {
         .merge(connect_onboarding::router())
         .merge(connector_catalog::router())
         .merge(practice::router())
+        .merge(staff_invitations::router())
         .merge(practice_admin::router())
         .merge(practice_billing::router())
         .merge(previsit::router())

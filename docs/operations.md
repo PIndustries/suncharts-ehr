@@ -179,13 +179,42 @@ retention and key recovery remain operator responsibilities.
 
 ## Staff and location administration
 
-An owner opens **Practice administration** to create local staff accounts, choose
+An owner opens **Practice administration** to create staff accounts, choose
 roles, disable/reactivate access and maintain provider/facility/room directories.
-Staff creation needs a unique sign-in email and an initial password of at least
-14 bytes. Deliver initial credentials securely. Invitations, forced first-login
-changes, self-service recovery and MFA are not implemented.
+How a new person gets in depends on how the practice signs in.
 
-Role/access changes and password resets revoke existing sessions and OAuth grants.
+**Sign-in through SunCharts Connect.** Staff are matched to their Connect sign-in
+by email and never have a password here. Adding staff asks only for name, email
+and role; the account is saved first and Connect then emails an invitation. The
+person can sign in once they accept it. The staff list shows each person's
+sign-in status (can sign in, invitation sent and when it expires, expired, not
+sent, not invited yet) with **Send invitation** or **Send again**. Accounts created
+before invitations existed show "Not invited yet": send the invitation from the
+list. If Connect cannot be reached or refuses, the account is kept, the row says
+the invitation was not sent and why, and the owner can send it later. **Refresh
+directory** rereads status from Connect; otherwise it is reread at most every two
+minutes because Connect limits an installation to 60 invitation calls an hour.
+Changing a person's email ends their sessions and sends a new invitation to the
+new address; an owner cannot change their own email. Each attempt and outcome is
+added to the staff member's history. No invitation link passes through the EHR.
+
+The role stored here is the one the EHR enforces. Connect also records a role
+when the invitation is accepted (nurse and medical assistant become read-only
+there), but a later role change here needs no new invitation and is not sent to
+Connect. Disabling an account here blocks sign-in immediately, whatever Connect
+says. A membership turned off in Connect shows as "SunCharts access turned off"
+and must be turned back on in Connect.
+
+Only a practice owner can hold a local password on a Connect practice, and only
+for emergency (break-glass) sign-in when the operator has enabled it.
+
+**Password sign-in (not connected).** Staff creation needs a unique sign-in email
+and an initial password of at least 14 bytes. Give it to the person directly; it
+is not shown again. Forced first-login changes, self-service recovery and MFA are
+not implemented.
+
+Role/access changes, email changes and password resets revoke existing sessions
+and OAuth grants.
 The last enabled owner cannot be disabled or demoted. Provider profiles require an
 enabled owner/clinician identity. Re-enabling a staff account does not reactivate
 an old provider profile automatically. NPI checks validate format/checksum, not

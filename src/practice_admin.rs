@@ -154,15 +154,45 @@ async fn staff(ExtractState(s): ExtractState<State>, h: HeaderMap) -> Result<Jso
     let items:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',id,'email',email,'display_name',display_name,'role',role,'disabled',disabled,'version',version) FROM browser_users WHERE tenant_id=$1 ORDER BY lower(display_name),email LIMIT 1001").bind(a.tenant_id).fetch_all(&mut *tx).await?;
     crate::postgres::audit(&mut tx, &a, "practice.staff.read", a.tenant_id).await?;
     tx.commit().await?;
+    // "connect": staff sign in through SunCharts Connect and are invited by
+    // email. "password": staff sign in here with a password the owner sets.
+    let sign_in =
+        if crate::staff_invitations::managed(&s.browser.as_ref().ok_or(Error::Unauthorized)?.db)
+            .await?
+        {
+            "connect"
+        } else {
+            "password"
+        };
     Ok(Json(
-        json!({"has_more":items.len()>1000,"items":items.into_iter().take(1000).collect::<Vec<_>>()}),
+        json!({"sign_in":sign_in,"has_more":items.len()>1000,"items":items.into_iter().take(1000).collect::<Vec<_>>()}),
     ))
+}
+/// A valid hash of random bytes that are never kept, for an account that
+/// signs in through Connect. Nobody can know a password that matches it.
+async fn unusable_password_hash() -> Result<String> {
+    use argon2::password_hash::rand_core::RngCore;
+    let mut raw = [0u8; 32];
+    OsRng.fill_bytes(&mut raw);
+    password_hash(raw.iter().map(|b| format!("{b:02x}")).collect()).await
+}
+fn email_address(raw: &str) -> Result<String> {
+    let email = raw.trim().to_lowercase();
+    if !text(&email, 3, 254)
+        || email.chars().any(char::is_whitespace)
+        || email.matches('@').count() != 1
+        || email.starts_with('@')
+        || email.ends_with('@')
+    {
+        return Err(Error::Invalid("a valid email address is required"));
+    }
+    Ok(email)
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NewStaff {
     email: String,
-    password: String,
+    password: Option<String>,
     display_name: String,
     role: String,
     reason: String,
@@ -174,31 +204,55 @@ async fn create_staff(
 ) -> Result<Json<Value>> {
     let a = owner(&s, &h, true).await?;
     reason(&p.reason)?;
-    let email = p.email.trim().to_lowercase();
-    if !text(&email, 3, 254)
-        || email.chars().any(char::is_whitespace)
-        || email.matches('@').count() != 1
-        || email.starts_with('@')
-        || email.ends_with('@')
-        || !text(&p.display_name, 1, 200)
-        || !role(&p.role)
-    {
+    let email = email_address(&p.email);
+    if email.is_err() || !text(&p.display_name, 1, 200) || !role(&p.role) {
         return Err(Error::Invalid(
             "valid email, display name and supported staff role are required",
         ));
     }
-    let hash = password_hash(p.password).await?;
+    let email = email?;
+    let managed =
+        crate::staff_invitations::managed(&s.browser.as_ref().ok_or(Error::Unauthorized)?.db)
+            .await?;
+    let hash = match (managed, p.password) {
+        (true, Some(_)) => {
+            return Err(Error::Invalid(
+                "This practice signs in with SunCharts Connect. Leave the password out; the staff member is invited by email.",
+            ))
+        }
+        (true, None) => unusable_password_hash().await?,
+        (false, Some(password)) => password_hash(password).await?,
+        (false, None) => return Err(Error::Invalid("password must be 14 to 1024 bytes")),
+    };
     let mut tx = locked(&s, &a, &h).await?;
     let id = Uuid::new_v4();
     sqlx::query("INSERT INTO browser_users(tenant_id,id,email,password_hash,display_name,role) VALUES($1,$2,$3,$4,$5,$6)").bind(a.tenant_id).bind(id).bind(email).bind(hash).bind(p.display_name.trim()).bind(p.role).execute(&mut *tx).await?;
     let item = staff_snapshot(&mut tx, &a, id).await?;
     record(&mut tx, &a, "staff", id, 1, &p.reason, &item).await?;
     tx.commit().await?;
+    if managed {
+        return Ok(Json(invited(&s, &a, &h, id, item).await));
+    }
     Ok(Json(item))
+}
+/// The account is saved before Connect is asked, so nothing that happens to
+/// the invitation can lose it. The reply carries the current record version
+/// and what became of the invitation.
+async fn invited(s: &State, a: &Actor, h: &HeaderMap, id: Uuid, mut item: Value) -> Value {
+    let invitation = crate::staff_invitations::invite(s, a, h, id)
+        .await
+        .unwrap_or_else(|_| json!({"status":"not_sent","reason":"unreachable"}));
+    if let Some(version) = invitation.get("version") {
+        item["version"] = version.clone();
+    }
+    item["invitation"] = invitation;
+    item
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StaffChange {
+    #[serde(default)]
+    email: Option<String>,
     display_name: String,
     role: String,
     disabled: bool,
@@ -219,23 +273,54 @@ async fn update_staff(
             "valid display name and supported staff role are required",
         ));
     }
+    let email = p.email.as_deref().map(email_address).transpose()?;
+    let managed =
+        crate::staff_invitations::managed(&s.browser.as_ref().ok_or(Error::Unauthorized)?.db)
+            .await?;
+    // With Connect sign-in a local password is only ever used for an owner's
+    // emergency (break-glass) sign-in, which staff in other roles cannot use.
+    if managed && p.password.is_some() && p.role != "owner" {
+        return Err(Error::Invalid(
+            "This practice signs in with SunCharts Connect. Only a practice owner can have an emergency password.",
+        ));
+    }
     let hash = match p.password {
         Some(p) => Some(password_hash(p).await?),
         None => None,
     };
     let mut tx = locked(&s, &a, &h).await?;
-    let old: Option<(String, bool, i64)> = sqlx::query_as(
-        "SELECT role,disabled,version FROM browser_users WHERE tenant_id=$1 AND id=$2 FOR UPDATE",
+    let old: Option<(String, bool, i64, String)> = sqlx::query_as(
+        "SELECT role,disabled,version,email FROM browser_users WHERE tenant_id=$1 AND id=$2 FOR UPDATE",
     )
     .bind(a.tenant_id)
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?;
-    let (old_role, old_disabled, old_v) = old.ok_or(Error::NotFound)?;
+    let (old_role, old_disabled, old_v, old_email) = old.ok_or(Error::NotFound)?;
     if old_v != v {
         return Err(Error::Conflict(
             "staff record changed; reload before saving",
         ));
+    }
+    let email = email.filter(|e| *e != old_email);
+    if let Some(email) = &email {
+        // Connect matches a sign-in to staff by email, so an owner who changed
+        // their own address could be left with no way back in.
+        if managed && id == a.sub {
+            return Err(Error::Conflict(
+                "You cannot change your own sign-in email here. Ask another practice owner or contact support.",
+            ));
+        }
+        let taken: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM browser_users WHERE email=$1)")
+                .bind(email)
+                .fetch_one(&mut *tx)
+                .await?;
+        if taken {
+            return Err(Error::Conflict(
+                "Another staff account already uses this email address.",
+            ));
+        }
     }
     if old_role == "owner" && !old_disabled && (p.role != "owner" || p.disabled) {
         let others:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM browser_users WHERE tenant_id=$1 AND id<>$2 AND role='owner' AND NOT disabled)").bind(a.tenant_id).bind(id).fetch_one(&mut *tx).await?;
@@ -245,8 +330,9 @@ async fn update_staff(
             ));
         }
     }
-    let revoke = old_role != p.role || old_disabled != p.disabled || hash.is_some();
-    sqlx::query("UPDATE browser_users SET display_name=$3,role=$4,disabled=$5,password_hash=coalesce($6,password_hash),version=version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(id).bind(p.display_name.trim()).bind(&p.role).bind(p.disabled).bind(hash).execute(&mut *tx).await?;
+    let revoke =
+        old_role != p.role || old_disabled != p.disabled || hash.is_some() || email.is_some();
+    sqlx::query("UPDATE browser_users SET display_name=$3,role=$4,disabled=$5,password_hash=coalesce($6,password_hash),email=coalesce($7,email),version=version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(id).bind(p.display_name.trim()).bind(&p.role).bind(p.disabled).bind(hash).bind(&email).execute(&mut *tx).await?;
     if revoke {
         sqlx::query("DELETE FROM browser_sessions WHERE tenant_id=$1 AND user_id=$2")
             .bind(a.tenant_id)
@@ -274,6 +360,10 @@ async fn update_staff(
     let item = staff_snapshot(&mut tx, &a, id).await?;
     record(&mut tx, &a, "staff", id, v + 1, &p.reason, &item).await?;
     tx.commit().await?;
+    // The earlier invitation was for the old address and no longer matches.
+    if managed && email.is_some() && !p.disabled {
+        return Ok(Json(invited(&s, &a, &h, id, item).await));
+    }
     Ok(Json(item))
 }
 #[derive(Deserialize)]
