@@ -145,7 +145,11 @@ async function loadEncounterRevenueStatus(account,force=false){
  const current=()=>encounterRevenueState===state&&selected===state.patient&&me===state.identity&&activeVisit?.id===state.visit&&(encounterChargeAccount()?.id||null)===state.account;
  const render=()=>paintEncounterRevenue(state,current);
  if(state.pending){render();return state.pending;}
- if(state.data?.summary&&!force&&Date.now()-state.loadedAt<15000){render();return;}
+ // The claim is prepared only while the billing step itself is showing, never because the
+ // visit was opened on its note or another step.
+ const onBillingStep=()=>typeof encounterSection==='undefined'||encounterSection==='charges';
+ const mayPrepare=summary=>summary?.state==='prepare_claim'&&summary.account&&billingCan('create')&&!state.prepared&&onBillingStep()&&me?.delegated!==true&&summary.viewer?.delegated!==true;
+ if(state.data?.summary&&!force&&!mayPrepare(state.data.summary)&&Date.now()-state.loadedAt<15000){render();return;}
  if(!state.data)state.data={};render();
  state.pending=(async()=>{
   try{
@@ -154,7 +158,7 @@ async function loadEncounterRevenueStatus(account,force=false){
    let prepareError=state.data.prepareError||null;
    // The claim prepares itself once the charges are final: on posting, and the first time an
    // older posted visit is opened. It stays a draft; a person still reviews and sends it.
-   if(summary.state==='prepare_claim'&&summary.account&&billingCan('create')&&!state.prepared&&me?.delegated!==true&&summary.viewer?.delegated!==true){
+   if(current()&&mayPrepare(summary)){
     state.prepared=true;state.data={summary,preparing:true};render();
     try{await api(`/api/v1/patients/${encodeURIComponent(state.patient)}/billing/accounts/${encodeURIComponent(summary.account.id)}/claims/prepare`,'POST',{});prepareError=null;}catch(error){prepareError=visitBillingPrepareMessage(error);}
     if(!current())return;summary=await read();if(!current())return;

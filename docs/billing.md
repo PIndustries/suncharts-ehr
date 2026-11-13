@@ -154,8 +154,9 @@ plan's benefits for the visit type.
    holder from the coverage (the patient's own date of birth when the policy is
    theirs). The place of service repeats the practice's most recent claim and is 11
    (office) for a first claim. The claim stays a draft: nothing is marked ready or
-   sent. The same happens the first time an older posted visit without a claim is
-   opened, attributed to the person who opened it. A claim a person cancelled is not
+   sent. The same happens the first time the billing step of an older posted visit
+   without a claim is shown, attributed to the person who opened it. Opening the visit
+   on its note or another step prepares nothing. A claim a person cancelled is not
    prepared again until they choose **Prepare a new claim**, which keeps the details
    they had corrected.
 5. **Review and send claim** opens the claim. Anything missing is listed there and on
