@@ -45,11 +45,10 @@ function visitBillingStatus(s,ctx={}){
  }
 }
 function visitBillingReceiptNote(receipt){const how=visitBillingMethod(receipt.method),when=visitBillingDate(receipt.occurred_on);return [how,when].filter(Boolean).join(', ');}
-function visitBillingReceiptButtons(receipts){return receipts.map(r=>`<button type="button" class="text-button" data-copay-receipt="${esc(r.id)}" data-appointment="${esc(r.appointment_id)}">Receipt</button>`).join('');}
 // One small table: charges, the insurer's side, the patient's side, and what the patient owes now.
 function visitBillingBreakdown(s,ctx={}){
  const i=s.insurance,p=s.patient,posted=s.account?.status==='posted',row=(label,note,amount,cls='')=>`<tr class="${cls}"><th scope="row">${label}</th><td>${note||''}</td><td class="money-cell">${amount}</td></tr>`,group=label=>`<tr class="visit-billing-group"><th scope="rowgroup" colspan="3">${label}</th></tr>`;
- const receipts=(s.receipts||[]).filter(r=>!r.voided),received=p.received_cents,collect=ctx.canCreate&&s.visit?'<button type="button" class="text-button" data-visit-collect>Collect</button>':'';
+ const receipts=(s.receipts||[]).filter(r=>!r.voided),collect=ctx.canCreate&&s.visit?'<button type="button" class="text-button" data-visit-collect>Collect</button>':'';
  let rows=row('Charges',s.charges_cents==null?'':posted?'Charges are final':'Charges can still be changed',s.charges_cents==null?'Not added yet':money(s.charges_cents));
  if(i.insured){
   rows+=group(`Insurance: ${esc(i.insurer||'insurer on file')}`);
@@ -60,14 +59,13 @@ function visitBillingBreakdown(s,ctx={}){
   if(i.unassigned_cents>0)rows+=row('Not assigned yet','Review the insurer’s answer',money(i.unassigned_cents));
  }else if(posted&&i.adjusted_cents)rows+=row('Adjustments',i.adjusted_cents>0?'Taken off the charges':'Added to the charges',money(Math.abs(i.adjusted_cents)));
  rows+=group(i.insured?'Patient':'Patient (self-pay)');
- const copay=p.copay_cents,notes=receipts.map(visitBillingReceiptNote).filter(Boolean).join('; '),links=visitBillingReceiptButtons(receipts);
+ const copay=p.copay_cents,links=receipts.map(r=>`<button type="button" class="text-button" data-copay-receipt="${esc(r.id)}" data-appointment="${esc(r.appointment_id)}">Receipt: ${money(r.amount_cents)}${visitBillingReceiptNote(r)?' '+esc(visitBillingReceiptNote(r)):''}</button>`).join(' ');
  if(copay!=null){
   const due=p.copay_due_cents,paidTowards=p.copay_paid_cents;
-  rows+=row(`Copay ${money(copay)}`,due===0?`Paid${notes?` (${esc(notes)})`:''} ${links}`:paidTowards>0?`${money(paidTowards)} paid${notes?` (${esc(notes)})`:''}, ${money(due)} due ${links} ${collect}`:`Due ${collect}`,money(paidTowards));
-  if(p.paid_above_copay_cents>0)rows+=row('Paid above the copay','',money(p.paid_above_copay_cents));
- }else if(received>0||receipts.length)rows+=row('Paid at the visit',`${notes?esc(notes):''} ${links}`,money(received));
- else if(i.insured)rows+=row('Copay','No copay recorded for this plan','');
- if(p.other_payments_cents)rows+=row('Other patient payments','',money(p.other_payments_cents));
+  rows+=row(`Copay ${money(copay)}`,due===0?'Paid':paidTowards>0?`${money(paidTowards)} paid, ${money(due)} due ${collect}`:`Due ${collect}`,money(paidTowards));
+ }else if(i.insured)rows+=row('Copay','No copay recorded for this plan','');
+ if(p.other_patient_payments_cents)rows+=row(copay!=null?'Other patient payments':'Patient payments','',money(p.other_patient_payments_cents));
+ if(links)rows+=`<tr class="visit-billing-receipts"><th scope="row">Receipts</th><td colspan="2">${links}</td></tr>`;
  if(p.adjustment_cents)rows+=row('Patient adjustments',p.adjustment_cents>0?'Taken off what the patient owes':'Added to what the patient owes',money(Math.abs(p.adjustment_cents)));
  if(p.unapplied_cents>0)rows+=row('Paid but not applied yet',posted&&s.balance_cents>0&&ctx.canWrite?'<button type="button" class="text-button" data-apply-copays>Apply to this visit</button>':'Credit on the patient’s account',money(p.unapplied_cents));
  if(p.overpaid_cents>0)rows+=row('Paid more than owed','Refund it or keep it as a credit',money(p.overpaid_cents));

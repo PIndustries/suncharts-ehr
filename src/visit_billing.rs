@@ -489,6 +489,13 @@ pub(crate) async fn summarize(
             "received_cents": paid_at_desk.net_received,
             "receipts_applied_cents": receipts_applied,
             "other_payments_cents": patient_payments - receipts_applied,
+            // Everything the patient paid that is not the copay itself: money taken at the
+            // desk beyond the copay, plus payments recorded straight on the visit.
+            "other_patient_payments_cents": match plan_copay.filter(|_| insured) {
+                Some(copay) => (paid_at_desk.net_received - copay).max(0),
+                None => paid_at_desk.net_received,
+            } + patient_payments
+                - receipts_applied,
             "adjustment_cents": patient_credit - patient_payments,
             "unapplied_cents": paid_at_desk.usable_unapplied,
             "overpaid_cents": overpaid,

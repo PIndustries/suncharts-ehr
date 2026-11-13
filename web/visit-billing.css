@@ -18,7 +18,8 @@
 .visit-billing-breakdown .visit-billing-group th{padding-top:16px;font-size:12px;font-weight:650;letter-spacing:.02em;color:var(--muted);border-bottom-color:var(--line)}
 .visit-billing-breakdown .visit-billing-total th,.visit-billing-breakdown .visit-billing-total td.money-cell{font-weight:700;font-size:16px;color:var(--ink);border-bottom:0;border-top:2px solid var(--line)}
 .visit-billing-breakdown .visit-billing-total td{border-bottom:0;border-top:2px solid var(--line)}
-.visit-billing-breakdown .text-button{margin-left:6px}
+.visit-billing-breakdown .text-button{margin-right:14px}
+.visit-billing-breakdown .visit-billing-receipts td{color:var(--ink)}
 .visit-billing-more>summary{cursor:pointer;color:var(--muted);width:max-content;padding:4px 0}
 .visit-billing-more .actions{flex-wrap:wrap;margin-top:10px}
 #visit-billing-collect{border:1px solid var(--line);border-radius:7px;padding:18px 20px;margin:0 0 20px;background:var(--surface)}

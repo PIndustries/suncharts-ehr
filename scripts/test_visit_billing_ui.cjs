@@ -55,10 +55,10 @@ let b=ctx.visitBillingBreakdown(selfPay(),all);
 assert.deepEqual(cell(b,'Charges'),['Charges are final','$280.00']);assert.doesNotMatch(b,/Insurance:/);assert.match(b,/Patient \(self-pay\)/);assert.deepEqual(cell(b,'Patient owes now'),['No insurance on this visit','$280.00']);
 b=ctx.visitBillingBreakdown(visitSummary(),all);
 assert.match(b,/Insurance: Synthetic Medicare PPO/);assert.deepEqual(cell(b,'Insurance paid'),['Not sent yet','$0.00']);assert.equal(cell(b,'Insurance pending')[1],'$270.00');
-assert.match(cell(b,'Copay \\$10\\.00')[0],/^Paid \(cash, Nov 12, 2026\) <button type="button" class="text-button" data-copay-receipt="receipt" data-appointment="appointment">Receipt<\/button>$/);
+assert.deepEqual(cell(b,'Copay \\$10\\.00'),['Paid','$10.00']);assert.match(b,/<tr class="visit-billing-receipts"><th scope="row">Receipts<\/th><td colspan="2"><button type="button" class="text-button" data-copay-receipt="receipt" data-appointment="appointment">Receipt: \$10\.00 cash, Nov 12, 2026<\/button><\/td><\/tr>/);
 assert.deepEqual(cell(b,'Patient owes now'),['The plan copay, until the insurer answers','$0.00']);assert.doesNotMatch(b,/data-visit-collect/,'a paid copay offers nothing to collect');
 b=ctx.visitBillingBreakdown(visitSummary({patient:{copay_cents:2500,copay_paid_cents:0,copay_due_cents:2500,received_cents:0,owes_now_cents:2500},receipts:[]}),all);
-assert.match(cell(b,'Copay \\$25\\.00')[0],/^Due <button type="button" class="text-button" data-visit-collect>Collect<\/button>$/);assert.equal(cell(b,'Patient owes now')[1],'$25.00');
+assert.match(cell(b,'Copay \\$25\\.00')[0],/^Due <button type="button" class="text-button" data-visit-collect>Collect<\/button>$/);assert.doesNotMatch(b,/visit-billing-receipts/);assert.equal(cell(b,'Patient owes now')[1],'$25.00');
 assert.doesNotMatch(ctx.visitBillingBreakdown(visitSummary({patient:{copay_cents:2500,copay_paid_cents:0,copay_due_cents:2500,received_cents:0,owes_now_cents:2500},receipts:[]}),{canCreate:false}),/data-visit-collect/);
 b=ctx.visitBillingBreakdown(visitSummary({state:'waiting_insurer',insurance:{status:'waiting',sent_on:'2026-11-12'}}),all);
 assert.deepEqual(cell(b,'Insurance paid'),['Waiting since Nov 12, 2026','$0.00']);assert.deepEqual(cell(b,'Insurance pending'),['Waiting on the insurer’s answer','$270.00']);
@@ -70,10 +70,10 @@ assert.deepEqual(cell(b,'Insurance paid'),['Denied','$0.00']);assert.deepEqual(c
 b=ctx.visitBillingBreakdown(visitSummary({state:'patient_credit',insurance:{status:'answered',paid_cents:27500,pending_cents:0},patient:{copay_cents:2500,copay_paid_cents:2500,received_cents:2500,overpaid_cents:2500,credit_cents:2500,responsibility_cents:0,responsibility_source:'insurer_response'},balance_cents:-2500}),all);
 assert.deepEqual(cell(b,'Paid more than owed'),['Refund it or keep it as a credit','$25.00']);assert.equal(cell(b,'Patient owes now')[1],'$0.00');
 b=ctx.visitBillingBreakdown(selfPay({patient:{unapplied_cents:1500,received_cents:1500},receipts:[{id:'r2',appointment_id:'appointment',amount_cents:1500,method:'card',occurred_on:'2026-11-12',voided:false}]}),all);
-assert.match(cell(b,'Paid but not applied yet')[0],/data-apply-copays/);assert.match(cell(b,'Paid at the visit')[0],/card, Nov 12, 2026/);
+assert.match(cell(b,'Paid but not applied yet')[0],/data-apply-copays/);assert.match(b,/Receipt: \$15\.00 card, Nov 12, 2026/);
 assert.match(ctx.visitBillingBreakdown(visitSummary({patient:{receipt_needs_review:true}}),all),/A payment for this visit needs review/);
-b=ctx.visitBillingBreakdown(visitSummary({patient:{copay_cents:2500,copay_paid_cents:1000,copay_due_cents:1500,owes_now_cents:1500}}),all);assert.match(cell(b,'Copay \\$25\\.00')[0],/^\$10\.00 paid \(cash, Nov 12, 2026\), \$15\.00 due <button[^>]*data-copay-receipt[^>]*>Receipt<\/button> <button[^>]*data-visit-collect>Collect<\/button>$/);assert.equal(cell(b,'Copay \\$25\\.00')[1],'$10.00');
-b=ctx.visitBillingBreakdown(visitSummary({patient:{received_cents:1500,paid_above_copay_cents:500}}),all);assert.deepEqual(cell(b,'Paid above the copay'),['','$5.00']);
+b=ctx.visitBillingBreakdown(visitSummary({patient:{copay_cents:2500,copay_paid_cents:1000,copay_due_cents:1500,owes_now_cents:1500}}),all);assert.match(cell(b,'Copay \\$25\\.00')[0],/^\$10\.00 paid, \$15\.00 due <button[^>]*data-visit-collect>Collect<\/button>$/);assert.equal(cell(b,'Copay \\$25\\.00')[1],'$10.00');
+b=ctx.visitBillingBreakdown(visitSummary({patient:{received_cents:1500,other_patient_payments_cents:500}}),all);assert.deepEqual(cell(b,'Other patient payments'),['','$5.00']);b=ctx.visitBillingBreakdown(selfPay({patient:{other_patient_payments_cents:4000}}),all);assert.deepEqual(cell(b,'Patient payments'),['','$40.00']);
 // Amounts are only formatted: every money cell is exactly a value the server sent.
 const answered=states[11][0],shown=[...ctx.visitBillingBreakdown(answered,all).matchAll(/\$(\d+\.\d\d)/g)].map(m=>Math.round(Number(m[1])*100)),served=new Set([answered.charges_cents,...Object.values(answered.insurance),...Object.values(answered.patient)].filter(Number.isInteger));
 for(const value of shown)assert.ok(served.has(value),`${value} was not sent by the server`);

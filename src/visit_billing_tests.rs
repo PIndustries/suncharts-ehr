@@ -612,6 +612,18 @@ async fn insured_visit_prepares_its_claim_once_and_splits_insurance_from_patient
     .unwrap();
     assert_eq!(after, (version(&posted), 10000));
 
+    // Posted charges are final: they cannot be edited under a prepared claim, so the
+    // claim always matches the charges it was prepared from.
+    let edit = f
+        .call(
+            &f.owner,
+            "PUT",
+            &format!("/api/v1/patients/{p}/billing/accounts/{account}"),
+            json!({"content":posted["content"],"reason":"Synthetic late edit"}),
+            Some(version(&posted)),
+        )
+        .await;
+    assert_eq!(edit.0, StatusCode::CONFLICT, "{}", edit.1);
     let s = f.summary(&desk, p, visit).await;
     adds_up(&s);
     assert_eq!(
@@ -687,6 +699,9 @@ async fn insured_visit_prepares_its_claim_once_and_splits_insurance_from_patient
     let s = f.summary(&f.owner, p, visit).await;
     adds_up(&s);
     assert_eq!(s["state"], "paid_in_full");
+    assert_eq!(s["patient"]["copay_paid_cents"], 1000);
+    assert_eq!(s["patient"]["copay_due_cents"], 1500);
+    assert_eq!(s["patient"]["other_patient_payments_cents"], 1000);
     let codes: Vec<&str> = s["timeline"]
         .as_array()
         .unwrap()
