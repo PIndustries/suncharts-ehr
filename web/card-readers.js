@@ -279,3 +279,62 @@ document.addEventListener('click',event=>{
  else if('readerPaymentClose' in d){event.preventDefault();const host=$('reader-payment-live');stopReaderPayment();if(host)host.innerHTML='';}
  else if('readerPaymentAgain' in d){event.preventDefault();const again=readerPaymentLive?.again;stopReaderPayment();const host=$('reader-payment-live');if(host)host.innerHTML='';if(again)run(again);}
 });
+
+// ---- Card on file ---------------------------------------------------------------------------
+// Only a card the patient agreed may be charged later can be charged here. Cards saved before
+// that agreement existed stay on file for use with the patient present.
+async function savedCardsForCharge(patientId){
+ const data=await api(`/api/v1/billing/patients/${encodeURIComponent(patientId)}/payment-profile`);
+ if(data.patient_id!==patientId)throw new Error('The cards on file do not match this patient.');
+ const cards=data.payment_methods?.status==='available'&&Array.isArray(data.payment_methods.data?.items)?data.payment_methods.data.items:[];
+ return {cards:cards.filter(card=>card.charge_later===true&&card.setup_id),inPerson:cards.filter(card=>card.charge_later!==true).length};
+}
+function savedCardName(card){return `${human(card.brand||'Card')} ending ${card.last4}`;}
+const savedCardInPersonText='Saved for in-person use. Ask the patient to save it again to charge it later.';
+function savedCardChoiceMarkup(found){
+ if(!found.cards.length)return `<p role="status">${found.inPerson?'The card on file was saved for in-person use. Ask the patient to save it again to charge it later.':'No card on file yet. Save a card under Payment methods first.'}</p>`;
+ if(found.cards.length===1)return `<input type="hidden" name="card" value="${esc(found.cards[0].setup_id)}"><p>Card: <b>${esc(savedCardName(found.cards[0]))}</b></p>`;
+ return `<label>Card<select name="card" required>${found.cards.map(card=>`<option value="${esc(card.setup_id)}">${esc(savedCardName(card))}</option>`).join('')}</select></label>`;
+}
+// What staff read for a charge to a card on file, from its saved status.
+function savedCardPaymentState(operation){
+ const status=operation?.status,result=operation?.last_result;
+ if(status==='paid'||status==='refunded')return {key:'approved',text:'Approved',final:true};
+ if(status==='needs_review')return {key:'review',text:'Payment needs review',help:'Do not take this payment again until it is reviewed.',final:true};
+ if(status==='expired'){
+  if(result==='saved_card_needs_patient')return {key:'confirm',text:'The bank needs the patient to confirm - send a card link instead',help:'Nothing was charged.',final:true};
+  if(result==='saved_card_declined')return {key:'declined',text:'Declined',help:'Nothing was charged. Try another card or another way to pay.',final:true};
+  if(result==='saved_card_not_eligible')return {key:'in-person',text:'This card was saved for in-person use',help:'Ask the patient to save it again to charge it later.',final:true};
+  return {key:'failed',text:'Card was not charged',help:'Nothing was charged. Try again.',final:true};
+ }
+ return {key:'charging',text:'Charging the card'};
+}
+function savedCardPaymentLabel(operation){return savedCardPaymentState(operation).text;}
+let savedCardPaymentLive=null;
+function savedCardPaymentMarkup(live){
+ const state=savedCardPaymentState(live.operation),operation=live.operation;
+ const next=state.key==='approved'?live.approved?.(operation)||'':state.key==='confirm'&&live.link?'<button type="button" class="primary" data-saved-card-link>Create card link</button>':'';
+ return `<section class="billing-section saved-card-payment" data-saved-card-payment="${esc(state.key)}"><h3>Charge card on file</h3><p>${money(operation.amount_cents)}${operation.livemode===false&&testPaymentLabel()?' · '+testPaymentLabel():''}</p><p role="status" aria-live="polite"><b>${esc(state.text)}</b></p>${state.help?`<p class="muted">${esc(state.help)}</p>`:''}${live.error?`<p role="alert">${esc(live.error)}</p>`:''}<div class="actions">${state.final?next+'<button type="button" data-saved-card-close>Close</button>':''}</div></section>`;
+}
+function paintSavedCardPayment(){const host=$('saved-card-payment-live'),live=savedCardPaymentLive;if(host&&live)host.innerHTML=savedCardPaymentMarkup(live);return !!host;}
+function stopSavedCardPayment(){if(savedCardPaymentLive)clearTimeout(savedCardPaymentLive.timer);savedCardPaymentLive=null;}
+// live: {operation, refreshUrl, accept(operation), approved(operation), link(operation), finished(operation)}
+// The result is drawn where the charge was started. A charge the bank is still working on is
+// checked every two seconds; leaving the screen stops the display only.
+function watchSavedCardPayment(live){
+ stopSavedCardPayment();live.identity=me;savedCardPaymentLive=live;paintSavedCardPayment();
+ const settle=()=>{if(savedCardPaymentState(live.operation).final){clearTimeout(live.timer);live.timer=null;live.finished?.(live.operation);return true;}return false;};
+ const tick=async()=>{
+  if(savedCardPaymentLive!==live||me!==live.identity)return;
+  try{const data=await api(live.refreshUrl,'POST',{});if(savedCardPaymentLive!==live||me!==live.identity)return;live.accept?.(data.operation);live.operation=data.operation;}
+  catch{if(savedCardPaymentLive!==live)return;}
+  if(!paintSavedCardPayment()){stopSavedCardPayment();return;}
+  if(!settle())live.timer=setTimeout(tick,2000);
+ };
+ if(!settle())live.timer=setTimeout(tick,2000);
+}
+document.addEventListener('click',event=>{
+ const button=event.target.closest?.('button');if(!button?.dataset)return;const d=button.dataset;
+ if('savedCardClose' in d){event.preventDefault();const host=$('saved-card-payment-live');stopSavedCardPayment();if(host)host.innerHTML='';}
+ else if('savedCardLink' in d){event.preventDefault();const live=savedCardPaymentLive;if(!live?.link)return;button.disabled=true;run(async()=>{try{await live.link(live.operation);}catch(error){if(savedCardPaymentLive===live){live.error=error.message||'The card link could not be created. Try again.';paintSavedCardPayment();}}});}
+});

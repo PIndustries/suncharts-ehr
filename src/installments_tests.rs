@@ -330,6 +330,8 @@ fn checkout_input() -> Checkout {
         reason: "Patient present for scheduled payment".into(),
         patient_present: true,
         reader_id: None,
+        saved_card_setup_id: None,
+        after_saved_card: None,
     }
 }
 async fn read_plan(pool: &PgPool, a: &Actor, patient: Uuid, id: Uuid) -> Value {
@@ -389,6 +391,8 @@ async fn finite_invoice_collections_recover_once_and_append_refunds_without_rewr
         reason: input.reason.clone(),
         patient_present: true,
         reader_id: None,
+        saved_card_setup_id: None,
+        after_saved_card: None,
     };
     let first = checkout_with(
         &pool,
@@ -936,3 +940,4 @@ async fn billing_only_policy_is_intersected_and_uncertain_creates_are_not_replay
 }
 
 include!("installments_reader_tests.rs");
+include!("installments_saved_card_tests.rs");

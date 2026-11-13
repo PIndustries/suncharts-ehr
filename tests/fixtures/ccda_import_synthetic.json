@@ -1,0 +1,2998 @@
+{
+ "document_upload": {
+  "content": {
+   "category": "consult",
+   "document_date": null,
+   "notes": "Imported from the previous record system. Converted for storage (html to text); original SHA-256 0bc40863688addd3b7fe3ae9b52a2cd48e3479bf4f9e2bcb696a48a770dd8172.",
+   "status": "active",
+   "title": "note",
+   "visit_id": null
+  },
+  "content_base64": "U3ludGhldGljIGxldHRlcgoKRmlyc3QgbGluZQpTZWNvbmQgbGluZQo=",
+  "content_type": "text/plain",
+  "filename": "note.txt",
+  "reason": "Imported from the previous record system",
+  "request_id": "c6043e1a-3b77-58e0-a09c-c4cefa239ca9"
+ },
+ "items": [
+  {
+   "data": {
+    "birth_date": "1990-01-01",
+    "family_name": "Synthetic",
+    "given_name": "Avery Q",
+    "mrn": "IM-99371194D513"
+   },
+   "kind": "patient",
+   "patient_source_id": null,
+   "source_data": {
+    "administrative_gender": "F",
+    "contact": {
+     "address": {
+      "city": "Testville",
+      "country": "US",
+      "line1": "1 Synthetic Way",
+      "line2": "Suite 2",
+      "postal_code": "75000",
+      "region": "TX"
+     },
+     "administrative_gender": "female",
+     "email": "synthetic.patient@example.test",
+     "language": "Spanish",
+     "phone": "+1-555-0100"
+    },
+    "format": "hl7-ccda",
+    "id": "1001",
+    "id_root": "2.16.999.1"
+   },
+   "source_id": "1001"
+  },
+  {
+   "data": {
+    "codes": "CPT 99213",
+    "date": "2024-01-05T09:30:00-05:00",
+    "diagnoses": "ICD-10-CM G80.1 (Synthetic spasticity)",
+    "ended": "2024-01-05T10:00:00-05:00",
+    "performer": "Synthetic Clinician",
+    "title": "Office visit"
+   },
+   "kind": "encounter",
+   "patient_source_id": "1001",
+   "source_data": {
+    "codes": [
+     {
+      "code": "99213",
+      "system": "CPT",
+      "system_name": "CPT-4",
+      "system_oid": "2.16.840.1.113883.6.12"
+     }
+    ],
+    "date": "2024-01-05T09:30:00-05:00",
+    "diagnoses": [
+     {
+      "codes": [
+       {
+        "code": "G80.1",
+        "display": "Synthetic spasticity",
+        "system": "ICD-10-CM",
+        "system_name": "ICD10",
+        "system_oid": "2.16.840.1.113883.6.90"
+       }
+      ],
+      "display": "Synthetic spasticity"
+     }
+    ],
+    "diagnosis_codes": [
+     {
+      "code": "G80.1",
+      "display": "Synthetic spasticity",
+      "system": "ICD-10-CM",
+      "system_name": "ICD10",
+      "system_oid": "2.16.840.1.113883.6.90"
+     }
+    ],
+    "end_date": "2024-01-05T10:00:00-05:00",
+    "entry": {
+     "attrs": {
+      "classCode": "ENC",
+      "moodCode": "EVN"
+     },
+     "children": [
+      {
+       "attrs": {
+        "extension": "enc-1",
+        "root": "2.16.999.1"
+       },
+       "tag": "id"
+      },
+      {
+       "attrs": {
+        "code": "99213",
+        "codeSystem": "2.16.840.1.113883.6.12",
+        "codeSystemName": "CPT-4"
+       },
+       "children": [
+        {
+         "tag": "originalText",
+         "text": "Office visit"
+        }
+       ],
+       "tag": "code"
+      },
+      {
+       "children": [
+        {
+         "attrs": {
+          "value": "20240105093000-0500"
+         },
+         "tag": "low"
+        },
+        {
+         "attrs": {
+          "value": "20240105100000-0500"
+         },
+         "tag": "high"
+        }
+       ],
+       "tag": "effectiveTime"
+      },
+      {
+       "children": [
+        {
+         "children": [
+          {
+           "children": [
+            {
+             "children": [
+              {
+               "tag": "given",
+               "text": "Synthetic"
+              },
+              {
+               "tag": "family",
+               "text": "Clinician"
+              }
+             ],
+             "tag": "name"
+            }
+           ],
+           "tag": "assignedPerson"
+          }
+         ],
+         "tag": "assignedEntity"
+        }
+       ],
+       "tag": "performer"
+      },
+      {
+       "attrs": {
+        "typeCode": "REFR"
+       },
+       "children": [
+        {
+         "attrs": {
+          "classCode": "ACT",
+          "moodCode": "EVN"
+         },
+         "children": [
+          {
+           "attrs": {
+            "typeCode": "SUBJ"
+           },
+           "children": [
+            {
+             "attrs": {
+              "classCode": "OBS",
+              "moodCode": "EVN"
+             },
+             "children": [
+              {
+               "attrs": {
+                "code": "G80.1",
+                "codeSystem": "2.16.840.1.113883.6.90",
+                "codeSystemName": "ICD10",
+                "displayName": "Synthetic spasticity"
+               },
+               "tag": "value"
+              }
+             ],
+             "tag": "observation"
+            }
+           ],
+           "tag": "entryRelationship"
+          }
+         ],
+         "tag": "act"
+        }
+       ],
+       "tag": "entryRelationship"
+      }
+     ],
+     "tag": "encounter"
+    },
+    "format": "hl7-ccda",
+    "section": "Encounters",
+    "section_code": "46240-8"
+   },
+   "source_id": "1001/46240-8/2.16.999.1:enc-1"
+  },
+  {
+   "data": {
+    "recorded_by": "Synthetic Clinic",
+    "text": "Synthetic history narrative.",
+    "title": "History of Present Illness"
+   },
+   "kind": "form",
+   "patient_source_id": "1001",
+   "source_data": {
+    "format": "hl7-ccda",
+    "section": "History of Present Illness",
+    "section_code": "10164-2",
+    "section_title": "History of Present Illness",
+    "text_sha256": "ec62123f86719db8554dd888a9e392350ea693cea08ba0b8336677a511d66b5c"
+   },
+   "source_id": "1001/10164-2/sha256:332b5e504011c54903e1014beaefd0c0"
+  },
+  {
+   "data": {
+    "recorded_by": "Synthetic Clinic",
+    "text": "Social History: Tobacco\nDescription: Never smoker",
+    "title": "Social History"
+   },
+   "kind": "form",
+   "patient_source_id": "1001",
+   "source_data": {
+    "codes": [
+     {
+      "code": "266919005",
+      "display": "Never smoker",
+      "system": "SNOMED CT",
+      "system_oid": "2.16.840.1.113883.6.96"
+     }
+    ],
+    "entries": [
+     {
+      "children": [
+       {
+        "attrs": {
+         "classCode": "OBS",
+         "moodCode": "EVN"
+        },
+        "children": [
+         {
+          "attrs": {
+           "code": "72166-2",
+           "codeSystem": "2.16.840.1.113883.6.1"
+          },
+          "tag": "code"
+         },
+         {
+          "attrs": {
+           "code": "completed"
+          },
+          "tag": "statusCode"
+         },
+         {
+          "attrs": {
+           "code": "266919005",
+           "codeSystem": "2.16.840.1.113883.6.96",
+           "displayName": "Never smoker"
+          },
+          "tag": "value"
+         }
+        ],
+        "tag": "observation"
+       }
+      ],
+      "tag": "entry"
+     }
+    ],
+    "format": "hl7-ccda",
+    "section": "Social History",
+    "section_code": "29762-2",
+    "section_title": "SOCIAL HISTORY",
+    "text_sha256": "835b1884f6d6137efdb33e51e13068febddf5b7fc2fa46b357e15b9e43b1728e"
+   },
+   "source_id": "1001/29762-2/sha256:74030d7c941ac2bf9b83873043b44e37"
+  },
+  {
+   "data": {
+    "status": "active",
+    "title": "Allergies: No known: Propensity to adverse reactions to drug",
+    "type": "Propensity to adverse reactions to drug"
+   },
+   "kind": "form",
+   "patient_source_id": "1001",
+   "source_data": {
+    "activity": "1",
+    "entry": {
+     "attrs": {
+      "classCode": "ACT",
+      "moodCode": "EVN"
+     },
+     "children": [
+      {
+       "attrs": {
+        "nullFlavor": "NI"
+       },
+       "tag": "id"
+      },
+      {
+       "attrs": {
+        "code": "active"
+       },
+       "tag": "statusCode"
+      },
+      {
+       "attrs": {
+        "typeCode": "SUBJ"
+       },
+       "children": [
+        {
+         "attrs": {
+          "classCode": "OBS",
+          "moodCode": "EVN",
+          "negationInd": "true"
+         },
+         "children": [
+          {
+           "attrs": {
+            "code": "ASSERTION",
+            "codeSystem": "2.16.840.1.113883.5.4"
+           },
+           "tag": "code"
+          },
+          {
+           "attrs": {
+            "code": "419511003",
+            "codeSystem": "2.16.840.1.113883.6.96",
+            "displayName": "Propensity to adverse reactions to drug"
+           },
+           "tag": "value"
+          },
+          {
+           "attrs": {
+            "typeCode": "CSM"
+           },
+           "children": [
+            {
+             "attrs": {
+              "classCode": "MANU"
+             },
+             "children": [
+              {
+               "attrs": {
+                "classCode": "MMAT"
+               },
+               "children": [
+                {
+                 "attrs": {
+                  "nullFlavor": "NA"
+                 },
+                 "tag": "code"
+                }
+               ],
+               "tag": "playingEntity"
+              }
+             ],
+             "tag": "participantRole"
+            }
+           ],
+           "tag": "participant"
+          }
+         ],
+         "tag": "observation"
+        }
+       ],
+       "tag": "entryRelationship"
+      }
+     ],
+     "tag": "act"
+    },
+    "format": "hl7-ccda",
+    "negated": true,
+    "section": "Allergies",
+    "section_code": "48765-2",
+    "type_codes": [
+     {
+      "code": "419511003",
+      "display": "Propensity to adverse reactions to drug",
+      "system": "SNOMED CT",
+      "system_oid": "2.16.840.1.113883.6.96"
+     }
+    ]
+   },
+   "source_id": "1001/48765-2/sha256:84698fb8c47895141f61be2d968bf59d"
+  },
+  {
+   "data": {
+    "address": "1 Synthetic Way, Suite 2, Testville, TX, 75000, USA",
+    "email": "synthetic.patient@example.test; not an address",
+    "language": "es-US",
+    "phone_mobile": "+1-555-0100",
+    "phone_work": "+1-555-0199",
+    "sex": "Female",
+    "title": "Demographics (previous record system)"
+   },
+   "kind": "form",
+   "patient_source_id": "1001",
+   "source_data": {
+    "contact": {
+     "address": {
+      "city": "Testville",
+      "country": "US",
+      "line1": "1 Synthetic Way",
+      "line2": "Suite 2",
+      "postal_code": "75000",
+      "region": "TX"
+     },
+     "administrative_gender": "female",
+     "email": "synthetic.patient@example.test",
+     "language": "Spanish",
+     "phone": "+1-555-0100"
+    },
+    "demographics": {
+     "address": "1 Synthetic Way, Suite 2, Testville, TX, 75000, USA",
+     "email": "synthetic.patient@example.test; not an address",
+     "language": "es-US",
+     "phone_mobile": "+1-555-0100",
+     "phone_work": "+1-555-0199",
+     "sex": "Female"
+    },
+    "format": "hl7-ccda",
+    "section": "Demographics"
+   },
+   "source_id": "1001/demographics"
+  },
+  {
+   "data": {
+    "codes": "CVX 140 (Synthetic influenza vaccine)",
+    "date": "2022-10-01",
+    "lot_number": "SYN-LOT",
+    "status": "completed",
+    "title": "Synthetic influenza vaccine"
+   },
+   "kind": "immunization",
+   "patient_source_id": "1001",
+   "source_data": {
+    "codes": [
+     {
+      "code": "140",
+      "display": "Synthetic influenza vaccine",
+      "system": "CVX",
+      "system_name": "CVX",
+      "system_oid": "2.16.840.1.113883.12.292"
+     }
+    ],
+    "date": "2022-10-01",
+    "entry": {
+     "attrs": {
+      "classCode": "SBADM",
+      "moodCode": "EVN",
+      "negationInd": "false"
+     },
+     "children": [
+      {
+       "attrs": {
+        "extension": "imm-1",
+        "root": "2.16.999.1"
+       },
+       "tag": "id"
+      },
+      {
+       "attrs": {
+        "code": "completed"
+       },
+       "tag": "statusCode"
+      },
+      {
+       "attrs": {
+        "value": "20221001"
+       },
+       "tag": "effectiveTime"
+      },
+      {
+       "children": [
+        {
+         "children": [
+          {
+           "children": [
+            {
+             "attrs": {
+              "code": "140",
+              "codeSystem": "2.16.840.1.113883.12.292",
+              "codeSystemName": "CVX",
+              "displayName": "Synthetic influenza vaccine"
+             },
+             "tag": "code"
+            },
+            {
+             "tag": "lotNumberText",
+             "text": "SYN-LOT"
+            }
+           ],
+           "tag": "manufacturedMaterial"
+          }
+         ],
+         "tag": "manufacturedProduct"
+        }
+       ],
+       "tag": "consumable"
+      }
+     ],
+     "tag": "substanceAdministration"
+    },
+    "format": "hl7-ccda",
+    "lot_number": "SYN-LOT",
+    "section": "Immunizations",
+    "section_code": "11369-6"
+   },
+   "source_id": "1001/11369-6/2.16.999.1:imm-1"
+  },
+  {
+   "data": {
+    "coverage_type": "Private health insurance",
+    "effective": "2023-01-01",
+    "group_number": "SYN-GROUP",
+    "plan": "Synthetic PPO",
+    "policy_id": "SYN-MEMBER-1",
+    "priority": "1",
+    "relationship": "Self",
+    "title": "Synthetic Payer"
+   },
+   "kind": "insurance",
+   "patient_source_id": "1001",
+   "source_data": {
+    "codes": [
+     {
+      "code": "5",
+      "display": "Private health insurance",
+      "system": "Source of Payment Typology",
+      "system_oid": "2.16.840.1.113883.3.221.5"
+     }
+    ],
+    "coverage": {
+     "effective_date": "2023-01-01",
+     "group_number": "SYN-GROUP",
+     "member_id": "SYN-MEMBER-1",
+     "payer_name": "Synthetic Payer",
+     "plan_name": "Synthetic PPO",
+     "priority": "primary",
+     "relationship": "self"
+    },
+    "entry": {
+     "attrs": {
+      "classCode": "ACT",
+      "moodCode": "EVN"
+     },
+     "children": [
+      {
+       "attrs": {
+        "root": "0d3f7a52-0000-4000-8000-000000000001"
+       },
+       "tag": "id"
+      },
+      {
+       "attrs": {
+        "code": "completed"
+       },
+       "tag": "statusCode"
+      },
+      {
+       "attrs": {
+        "typeCode": "COMP"
+       },
+       "children": [
+        {
+         "attrs": {
+          "value": "1"
+         },
+         "tag": "sequenceNumber"
+        },
+        {
+         "attrs": {
+          "classCode": "ACT",
+          "moodCode": "EVN"
+         },
+         "children": [
+          {
+           "attrs": {
+            "extension": "pol-1",
+            "root": "2.16.999.2"
+           },
+           "tag": "id"
+          },
+          {
+           "attrs": {
+            "code": "5",
+            "codeSystem": "2.16.840.1.113883.3.221.5",
+            "displayName": "Private health insurance"
+           },
+           "tag": "code"
+          },
+          {
+           "attrs": {
+            "typeCode": "COV"
+           },
+           "children": [
+            {
+             "children": [
+              {
+               "attrs": {
+                "value": "20230101"
+               },
+               "tag": "low"
+              }
+             ],
+             "tag": "time"
+            },
+            {
+             "children": [
+              {
+               "attrs": {
+                "extension": "SYN-MEMBER-1",
+                "root": "2.16.999.3"
+               },
+               "tag": "id"
+              },
+              {
+               "attrs": {
+                "code": "SELF",
+                "codeSystem": "2.16.840.1.113883.5.111",
+                "displayName": "Self"
+               },
+               "tag": "code"
+              }
+             ],
+             "tag": "participantRole"
+            }
+           ],
+           "tag": "participant"
+          }
+         ],
+         "tag": "act"
+        }
+       ],
+       "tag": "entryRelationship"
+      }
+     ],
+     "tag": "act"
+    },
+    "format": "hl7-ccda",
+    "narrative": {
+     "Insurance Company": "Synthetic Payer",
+     "Insurance Group Number": "SYN-GROUP",
+     "Insurance Plan": "Synthetic PPO",
+     "Insurance Policy ID": "SYN-MEMBER-1"
+    },
+    "section": "Insurance Providers",
+    "section_code": "48768-6"
+   },
+   "source_id": "1001/48768-6/2.16.999.2:pol-1"
+  },
+  {
+   "data": {
+    "date": "2023-12-12",
+    "results": "Synthetic glucose: no value recorded",
+    "title": "Synthetic glucose"
+   },
+   "kind": "lab_result",
+   "patient_source_id": "1001",
+   "source_data": {
+    "codes": [
+     {
+      "code": "2345-7",
+      "display": "Synthetic glucose",
+      "system": "LOINC",
+      "system_name": "LOINC",
+      "system_oid": "2.16.840.1.113883.6.1"
+     }
+    ],
+    "date": "2023-12-12",
+    "entry": {
+     "attrs": {
+      "classCode": "OBS",
+      "moodCode": "EVN"
+     },
+     "children": [
+      {
+       "attrs": {
+        "extension": "res-1",
+        "root": "2.16.999.1"
+       },
+       "tag": "id"
+      },
+      {
+       "attrs": {
+        "code": "2345-7",
+        "codeSystem": "2.16.840.1.113883.6.1",
+        "codeSystemName": "LOINC",
+        "displayName": "Synthetic glucose"
+       },
+       "tag": "code"
+      },
+      {
+       "attrs": {
+        "code": "completed"
+       },
+       "tag": "statusCode"
+      },
+      {
+       "attrs": {
+        "value": "20231212"
+       },
+       "tag": "effectiveTime"
+      }
+     ],
+     "tag": "observation"
+    },
+    "format": "hl7-ccda",
+    "results": [
+     {
+      "codes": [
+       {
+        "code": "2345-7",
+        "display": "Synthetic glucose",
+        "system": "LOINC",
+        "system_name": "LOINC",
+        "system_oid": "2.16.840.1.113883.6.1"
+       }
+      ],
+      "date": "2023-12-12",
+      "name": "Synthetic glucose",
+      "status": "completed"
+     }
+    ],
+    "section": "Results",
+    "section_code": "30954-2"
+   },
+   "source_id": "1001/30954-2/2.16.999.1:res-1"
+  },
+  {
+   "data": {
+    "author": "Synthetic Clinician",
+    "author_organization": "Synthetic Clinic",
+    "authored": "2024-01-05",
+    "codes": "ICD-10-CM G80.1 (Synthetic spasticity); SNOMED CT 1234567 (Synthetic finding)",
+    "comments": "Synthetic comment",
+    "onset": "2020-03-04",
+    "status": "active",
+    "title": "Synthetic spasticity",
+    "type": "Diagnosis"
+   },
+   "kind": "medical_problem",
+   "patient_source_id": "1001",
+   "source_data": {
+    "activity": "1",
+    "begdate": "2020-03-04",
+    "codes": [
+     {
+      "code": "G80.1",
+      "display": "Synthetic spasticity",
+      "system": "ICD-10-CM",
+      "system_name": "ICD10",
+      "system_oid": "2.16.840.1.113883.6.90"
+     },
+     {
+      "code": "1234567",
+      "display": "Synthetic finding",
+      "system": "SNOMED CT",
+      "system_name": "SNOMED-CT",
+      "system_oid": "2.16.840.1.113883.6.96"
+     }
+    ],
+    "comments": "Synthetic comment",
+    "diagnosis": "ICD-10-CM G80.1 (Synthetic spasticity); SNOMED CT 1234567 (Synthetic finding)",
+    "entry": {
+     "attrs": {
+      "classCode": "ACT",
+      "moodCode": "EVN"
+     },
+     "children": [
+      {
+       "attrs": {
+        "extension": "pr-1",
+        "root": "2.16.999.1"
+       },
+       "tag": "id"
+      },
+      {
+       "attrs": {
+        "code": "active"
+       },
+       "tag": "statusCode"
+      },
+      {
+       "attrs": {
+        "typeCode": "SUBJ"
+       },
+       "children": [
+        {
+         "attrs": {
+          "classCode": "OBS",
+          "moodCode": "EVN",
+          "negationInd": "false"
+         },
+         "children": [
+          {
+           "children": [
+            {
+             "attrs": {
+              "value": "20240105"
+             },
+             "tag": "time"
+            },
+            {
+             "children": [
+              {
+               "attrs": {
+                "extension": "77",
+                "root": "2.16.999.9"
+               },
+               "tag": "id"
+              },
+              {
+               "children": [
+                {
+                 "children": [
+                  {
+                   "tag": "given",
+                   "text": "Synthetic"
+                  },
+                  {
+                   "tag": "family",
+                   "text": "Clinician"
+                  }
+                 ],
+                 "tag": "name"
+                }
+               ],
+               "tag": "assignedPerson"
+              },
+              {
+               "children": [
+                {
+                 "tag": "name",
+                 "text": "Synthetic Clinic"
+                }
+               ],
+               "tag": "representedOrganization"
+              }
+             ],
+             "tag": "assignedAuthor"
+            }
+           ],
+           "tag": "author"
+          },
+          {
+           "attrs": {
+            "code": "55607006",
+            "codeSystem": "2.16.840.1.113883.6.96",
+            "displayName": "Problem"
+           },
+           "tag": "code"
+          },
+          {
+           "children": [
+            {
+             "attrs": {
+              "value": "#prob1"
+             },
+             "tag": "reference"
+            }
+           ],
+           "tag": "text"
+          },
+          {
+           "children": [
+            {
+             "attrs": {
+              "value": "20200304"
+             },
+             "tag": "low"
+            },
+            {
+             "attrs": {
+              "nullFlavor": "UNK"
+             },
+             "tag": "high"
+            }
+           ],
+           "tag": "effectiveTime"
+          },
+          {
+           "attrs": {
+            "code": "G80.1",
+            "codeSystem": "2.16.840.1.113883.6.90",
+            "codeSystemName": "ICD10",
+            "displayName": "Synthetic spasticity"
+           },
+           "children": [
+            {
+             "attrs": {
+              "code": "1234567",
+              "codeSystem": "2.16.840.1.113883.6.96",
+              "codeSystemName": "SNOMED-CT",
+              "displayName": "Synthetic finding"
+             },
+             "tag": "translation"
+            }
+           ],
+           "tag": "value"
+          }
+         ],
+         "tag": "observation"
+        }
+       ],
+       "tag": "entryRelationship"
+      }
+     ],
+     "tag": "act"
+    },
+    "format": "hl7-ccda",
+    "section": "Problems",
+    "section_code": "11450-4",
+    "title": "Synthetic spasticity"
+   },
+   "source_id": "1001/11450-4/2.16.999.1:pr-1"
+  },
+  {
+   "data": {
+    "codes": "RxNorm 99999 (Synthetic relaxant 10 MG); NDC 00000-0000-00",
+    "instructions": "One tablet at night",
+    "started": "2023-02-01",
+    "status": "active",
+    "title": "Synthetic relaxant 10 mg tablet"
+   },
+   "kind": "medication",
+   "patient_source_id": "1001",
+   "source_data": {
+    "activity": "1",
+    "begdate": "2023-02-01",
+    "codes": [
+     {
+      "code": "99999",
+      "display": "Synthetic relaxant 10 MG",
+      "system": "RxNorm",
+      "system_name": "RxNorm",
+      "system_oid": "2.16.840.1.113883.6.88"
+     },
+     {
+      "code": "00000-0000-00",
+      "system": "NDC",
+      "system_name": "NDC",
+      "system_oid": "2.16.840.1.113883.6.69"
+     }
+    ],
+    "comments": "Instructions: One tablet at night",
+    "diagnosis": "RxNorm 99999 (Synthetic relaxant 10 MG); NDC 00000-0000-00",
+    "entry": {
+     "attrs": {
+      "classCode": "SBADM",
+      "moodCode": "EVN"
+     },
+     "children": [
+      {
+       "attrs": {
+        "extension": "rx-1",
+        "root": "2.16.999.1"
+       },
+       "tag": "id"
+      },
+      {
+       "children": [
+        {
+         "attrs": {
+          "value": "#med1"
+         },
+         "tag": "reference"
+        }
+       ],
+       "tag": "text"
+      },
+      {
+       "attrs": {
+        "code": "active"
+       },
+       "tag": "statusCode"
+      },
+      {
+       "children": [
+        {
+         "attrs": {
+          "value": "20230201"
+         },
+         "tag": "low"
+        },
+        {
+         "attrs": {
+          "nullFlavor": "UNK"
+         },
+         "tag": "high"
+        }
+       ],
+       "tag": "effectiveTime"
+      },
+      {
+       "attrs": {
+        "nullFlavor": "UNK"
+       },
+       "tag": "doseQuantity"
+      },
+      {
+       "children": [
+        {
+         "children": [
+          {
+           "children": [
+            {
+             "attrs": {
+              "code": "99999",
+              "codeSystem": "2.16.840.1.113883.6.88",
+              "codeSystemName": "RxNorm",
+              "displayName": "Synthetic relaxant 10 MG"
+             },
+             "children": [
+              {
+               "attrs": {
+                "code": "00000-0000-00",
+                "codeSystem": "2.16.840.1.113883.6.69",
+                "codeSystemName": "NDC"
+               },
+               "tag": "translation"
+              }
+             ],
+             "tag": "code"
+            },
+            {
+             "tag": "name",
+             "text": "Synthetic relaxant 10 mg tablet"
+            }
+           ],
+           "tag": "manufacturedMaterial"
+          }
+         ],
+         "tag": "manufacturedProduct"
+        }
+       ],
+       "tag": "consumable"
+      }
+     ],
+     "tag": "substanceAdministration"
+    },
+    "format": "hl7-ccda",
+    "section": "Medications",
+    "section_code": "10160-0",
+    "title": "Synthetic relaxant 10 mg tablet"
+   },
+   "source_id": "1001/10160-0/2.16.999.1:rx-1"
+  },
+  {
+   "data": {
+    "codes": "CPT 64615 (Synthetic chemodenervation)",
+    "date": "2024-01-05",
+    "description": "Synthetic injection procedure",
+    "ended": "2024-01-05",
+    "status": "COMPLETE",
+    "title": "Synthetic chemodenervation"
+   },
+   "kind": "procedure",
+   "patient_source_id": "1001",
+   "source_data": {
+    "codes": [
+     {
+      "code": "64615",
+      "display": "Synthetic chemodenervation",
+      "system": "CPT",
+      "system_oid": "2.16.840.1.113883.6.12"
+     }
+    ],
+    "date": "2024-01-05",
+    "end_date": "2024-01-05",
+    "entry": {
+     "attrs": {
+      "classCode": "ACT",
+      "moodCode": "EVN"
+     },
+     "children": [
+      {
+       "attrs": {
+        "code": "64615",
+        "codeSystem": "2.16.840.1.113883.6.12",
+        "displayName": "Synthetic chemodenervation"
+       },
+       "tag": "code"
+      },
+      {
+       "attrs": {
+        "mediaType": "text/plain"
+       },
+       "children": [
+        {
+         "attrs": {
+          "value": "#proc1"
+         },
+         "tag": "reference"
+        }
+       ],
+       "tag": "text"
+      },
+      {
+       "attrs": {
+        "code": "COMPLETE"
+       },
+       "tag": "statusCode"
+      },
+      {
+       "children": [
+        {
+         "attrs": {
+          "value": "20240105"
+         },
+         "tag": "low"
+        },
+        {
+         "attrs": {
+          "value": "20240105"
+         },
+         "tag": "high"
+        }
+       ],
+       "tag": "effectiveTime"
+      }
+     ],
+     "tag": "act"
+    },
+    "format": "hl7-ccda",
+    "section": "Procedures",
+    "section_code": "47519-4"
+   },
+   "source_id": "1001/47519-4/sha256:1aa565accaa9286cd16a9c505ede9a1f"
+  },
+  {
+   "data": {
+    "date": "2024-01-02",
+    "reasons": "ICD-10-CM G80.1 (Synthetic spasticity)",
+    "status": "active",
+    "title": "Patient referral"
+   },
+   "kind": "referral",
+   "patient_source_id": "1001",
+   "source_data": {
+    "codes": [
+     {
+      "code": "3457005",
+      "display": "Patient referral",
+      "system": "SNOMED CT",
+      "system_oid": "2.16.840.1.113883.6.96"
+     },
+     {
+      "code": "G80.1",
+      "display": "Synthetic spasticity",
+      "system": "ICD-10-CM",
+      "system_oid": "2.16.840.1.113883.6.90"
+     }
+    ],
+    "date": "2024-01-02",
+    "entry": {
+     "attrs": {
+      "classCode": "PCPR",
+      "moodCode": "INT"
+     },
+     "children": [
+      {
+       "attrs": {
+        "extension": "ref-1",
+        "root": "2.16.999.1"
+       },
+       "tag": "id"
+      },
+      {
+       "attrs": {
+        "code": "3457005",
+        "codeSystem": "2.16.840.1.113883.6.96",
+        "displayName": "Patient referral"
+       },
+       "tag": "code"
+      },
+      {
+       "attrs": {
+        "code": "active"
+       },
+       "tag": "statusCode"
+      },
+      {
+       "attrs": {
+        "value": "20240102"
+       },
+       "tag": "effectiveTime"
+      },
+      {
+       "attrs": {
+        "typeCode": "RSON"
+       },
+       "children": [
+        {
+         "attrs": {
+          "classCode": "OBS",
+          "moodCode": "EVN"
+         },
+         "children": [
+          {
+           "attrs": {
+            "code": "G80.1",
+            "codeSystem": "2.16.840.1.113883.6.90",
+            "displayName": "Synthetic spasticity"
+           },
+           "tag": "value"
+          }
+         ],
+         "tag": "observation"
+        }
+       ],
+       "tag": "entryRelationship"
+      }
+     ],
+     "tag": "act"
+    },
+    "format": "hl7-ccda",
+    "reasons": [
+     {
+      "codes": [
+       {
+        "code": "G80.1",
+        "display": "Synthetic spasticity",
+        "system": "ICD-10-CM",
+        "system_oid": "2.16.840.1.113883.6.90"
+       }
+      ],
+      "display": "Synthetic spasticity"
+     }
+    ],
+    "section": "Reason for Referral",
+    "section_code": "42349-1"
+   },
+   "source_id": "1001/42349-1/2.16.999.1:ref-1"
+  },
+  {
+   "data": {
+    "date": "2024-01-05",
+    "note": "Synthetic progress note line one.\nLine two.",
+    "title": "Progress Note"
+   },
+   "kind": "soap_note",
+   "patient_source_id": "1001",
+   "source_data": {
+    "codes": [
+     {
+      "code": "34109-9",
+      "system": "LOINC",
+      "system_oid": "2.16.840.1.113883.6.1"
+     },
+     {
+      "code": "11506-3",
+      "display": "Progress Note",
+      "system": "LOINC",
+      "system_oid": "2.16.840.1.113883.6.1"
+     }
+    ],
+    "date": "2024-01-05",
+    "entry": {
+     "attrs": {
+      "classCode": "ACT",
+      "moodCode": "EVN"
+     },
+     "children": [
+      {
+       "attrs": {
+        "extension": "note-1",
+        "root": "2.16.999.1"
+       },
+       "tag": "id"
+      },
+      {
+       "attrs": {
+        "code": "34109-9",
+        "codeSystem": "2.16.840.1.113883.6.1"
+       },
+       "children": [
+        {
+         "attrs": {
+          "code": "11506-3",
+          "codeSystem": "2.16.840.1.113883.6.1",
+          "displayName": "Progress Note"
+         },
+         "tag": "translation"
+        }
+       ],
+       "tag": "code"
+      },
+      {
+       "attrs": {
+        "mediaType": "text/plain"
+       },
+       "children": [
+        {
+         "attrs": {
+          "value": "#note1"
+         },
+         "tag": "reference"
+        }
+       ],
+       "tag": "text"
+      },
+      {
+       "attrs": {
+        "code": "COMPLETE"
+       },
+       "tag": "statusCode"
+      },
+      {
+       "attrs": {
+        "value": "20240105"
+       },
+       "tag": "effectiveTime"
+      },
+      {
+       "attrs": {
+        "inversionInd": "true",
+        "typeCode": "COMP"
+       },
+       "children": [
+        {
+         "children": [
+          {
+           "attrs": {
+            "extension": "enc-1",
+            "root": "2.16.999.1"
+           },
+           "tag": "id"
+          }
+         ],
+         "tag": "encounter"
+        }
+       ],
+       "tag": "entryRelationship"
+      }
+     ],
+     "tag": "act"
+    },
+    "format": "hl7-ccda",
+    "section": "Clinical Notes",
+    "section_code": "34109-9",
+    "source_encounter": "2.16.999.1:enc-1",
+    "text_sha256": "d701a46b1a9bd8ce7fa08e833185d94721c33a5e7c64e7b142b95bdf08c67ecf"
+   },
+   "source_id": "1001/34109-9/2.16.999.1:note-1"
+  },
+  {
+   "data": {
+    "body_height": "170 cm",
+    "date": "2024-01-05",
+    "title": "Vital signs"
+   },
+   "kind": "vital",
+   "patient_source_id": "1001",
+   "source_data": {
+    "codes": [
+     {
+      "code": "8302-2",
+      "display": "Body height",
+      "system": "LOINC",
+      "system_oid": "2.16.840.1.113883.6.1"
+     }
+    ],
+    "components": [
+     {
+      "codes": [
+       {
+        "code": "8302-2",
+        "display": "Body height",
+        "system": "LOINC",
+        "system_oid": "2.16.840.1.113883.6.1"
+       }
+      ],
+      "name": "Body height",
+      "taken": "2024-01-05",
+      "text": "170 cm",
+      "unit": "cm",
+      "value": "170"
+     }
+    ],
+    "date": "2024-01-05",
+    "entry": {
+     "attrs": {
+      "classCode": "CLUSTER",
+      "moodCode": "EVN"
+     },
+     "children": [
+      {
+       "attrs": {
+        "extension": "vs-1",
+        "root": "2.16.999.1"
+       },
+       "tag": "id"
+      },
+      {
+       "attrs": {
+        "value": "20240105"
+       },
+       "tag": "effectiveTime"
+      },
+      {
+       "children": [
+        {
+         "attrs": {
+          "classCode": "OBS",
+          "moodCode": "EVN"
+         },
+         "children": [
+          {
+           "attrs": {
+            "code": "8302-2",
+            "codeSystem": "2.16.840.1.113883.6.1",
+            "displayName": "Body height"
+           },
+           "tag": "code"
+          },
+          {
+           "attrs": {
+            "value": "20240105"
+           },
+           "tag": "effectiveTime"
+          },
+          {
+           "attrs": {
+            "type": "PQ",
+            "unit": "cm",
+            "value": "170"
+           },
+           "tag": "value"
+          }
+         ],
+         "tag": "observation"
+        }
+       ],
+       "tag": "component"
+      },
+      {
+       "children": [
+        {
+         "attrs": {
+          "classCode": "OBS",
+          "moodCode": "EVN"
+         },
+         "children": [
+          {
+           "attrs": {
+            "code": "29463-7",
+            "codeSystem": "2.16.840.1.113883.6.1",
+            "displayName": "Body weight"
+           },
+           "tag": "code"
+          },
+          {
+           "attrs": {
+            "nullFlavor": "UNK"
+           },
+           "tag": "value"
+          }
+         ],
+         "tag": "observation"
+        }
+       ],
+       "tag": "component"
+      }
+     ],
+     "tag": "organizer"
+    },
+    "format": "hl7-ccda",
+    "section": "Vital Signs",
+    "section_code": "8716-3"
+   },
+   "source_id": "1001/8716-3/2.16.999.1:vs-1"
+  },
+  {
+   "data": {
+    "birth_date": "1985-12-31",
+    "family_name": "Example",
+    "given_name": "Blake Q",
+    "mrn": "IM-1CB2B771F67D"
+   },
+   "kind": "patient",
+   "patient_source_id": null,
+   "source_data": {
+    "administrative_gender": "F",
+    "contact": {
+     "address": {
+      "city": "Testville",
+      "country": "US",
+      "line1": "1 Synthetic Way",
+      "line2": "Suite 2",
+      "postal_code": "75000",
+      "region": "TX"
+     },
+     "administrative_gender": "female",
+     "email": "synthetic.patient@example.test",
+     "language": "Spanish",
+     "phone": "+1-555-0100"
+    },
+    "format": "hl7-ccda",
+    "id": "2002",
+    "id_root": "2.16.999.1"
+   },
+   "source_id": "2002"
+  },
+  {
+   "data": {
+    "codes": "CPT 99213",
+    "date": "2024-01-05T09:30:00-05:00",
+    "diagnoses": "ICD-10-CM G80.1 (Synthetic spasticity)",
+    "ended": "2024-01-05T10:00:00-05:00",
+    "performer": "Synthetic Clinician",
+    "title": "Office visit"
+   },
+   "kind": "encounter",
+   "patient_source_id": "2002",
+   "source_data": {
+    "codes": [
+     {
+      "code": "99213",
+      "system": "CPT",
+      "system_name": "CPT-4",
+      "system_oid": "2.16.840.1.113883.6.12"
+     }
+    ],
+    "date": "2024-01-05T09:30:00-05:00",
+    "diagnoses": [
+     {
+      "codes": [
+       {
+        "code": "G80.1",
+        "display": "Synthetic spasticity",
+        "system": "ICD-10-CM",
+        "system_name": "ICD10",
+        "system_oid": "2.16.840.1.113883.6.90"
+       }
+      ],
+      "display": "Synthetic spasticity"
+     }
+    ],
+    "diagnosis_codes": [
+     {
+      "code": "G80.1",
+      "display": "Synthetic spasticity",
+      "system": "ICD-10-CM",
+      "system_name": "ICD10",
+      "system_oid": "2.16.840.1.113883.6.90"
+     }
+    ],
+    "end_date": "2024-01-05T10:00:00-05:00",
+    "entry": {
+     "attrs": {
+      "classCode": "ENC",
+      "moodCode": "EVN"
+     },
+     "children": [
+      {
+       "attrs": {
+        "extension": "enc-1",
+        "root": "2.16.999.1"
+       },
+       "tag": "id"
+      },
+      {
+       "attrs": {
+        "code": "99213",
+        "codeSystem": "2.16.840.1.113883.6.12",
+        "codeSystemName": "CPT-4"
+       },
+       "children": [
+        {
+         "tag": "originalText",
+         "text": "Office visit"
+        }
+       ],
+       "tag": "code"
+      },
+      {
+       "children": [
+        {
+         "attrs": {
+          "value": "20240105093000-0500"
+         },
+         "tag": "low"
+        },
+        {
+         "attrs": {
+          "value": "20240105100000-0500"
+         },
+         "tag": "high"
+        }
+       ],
+       "tag": "effectiveTime"
+      },
+      {
+       "children": [
+        {
+         "children": [
+          {
+           "children": [
+            {
+             "children": [
+              {
+               "tag": "given",
+               "text": "Synthetic"
+              },
+              {
+               "tag": "family",
+               "text": "Clinician"
+              }
+             ],
+             "tag": "name"
+            }
+           ],
+           "tag": "assignedPerson"
+          }
+         ],
+         "tag": "assignedEntity"
+        }
+       ],
+       "tag": "performer"
+      },
+      {
+       "attrs": {
+        "typeCode": "REFR"
+       },
+       "children": [
+        {
+         "attrs": {
+          "classCode": "ACT",
+          "moodCode": "EVN"
+         },
+         "children": [
+          {
+           "attrs": {
+            "typeCode": "SUBJ"
+           },
+           "children": [
+            {
+             "attrs": {
+              "classCode": "OBS",
+              "moodCode": "EVN"
+             },
+             "children": [
+              {
+               "attrs": {
+                "code": "G80.1",
+                "codeSystem": "2.16.840.1.113883.6.90",
+                "codeSystemName": "ICD10",
+                "displayName": "Synthetic spasticity"
+               },
+               "tag": "value"
+              }
+             ],
+             "tag": "observation"
+            }
+           ],
+           "tag": "entryRelationship"
+          }
+         ],
+         "tag": "act"
+        }
+       ],
+       "tag": "entryRelationship"
+      }
+     ],
+     "tag": "encounter"
+    },
+    "format": "hl7-ccda",
+    "section": "Encounters",
+    "section_code": "46240-8"
+   },
+   "source_id": "2002/46240-8/2.16.999.1:enc-1"
+  },
+  {
+   "data": {
+    "recorded_by": "Synthetic Clinic",
+    "text": "Synthetic history narrative.",
+    "title": "History of Present Illness"
+   },
+   "kind": "form",
+   "patient_source_id": "2002",
+   "source_data": {
+    "format": "hl7-ccda",
+    "section": "History of Present Illness",
+    "section_code": "10164-2",
+    "section_title": "History of Present Illness",
+    "text_sha256": "ec62123f86719db8554dd888a9e392350ea693cea08ba0b8336677a511d66b5c"
+   },
+   "source_id": "2002/10164-2/sha256:332b5e504011c54903e1014beaefd0c0"
+  },
+  {
+   "data": {
+    "recorded_by": "Synthetic Clinic",
+    "text": "Social History: Tobacco\nDescription: Never smoker",
+    "title": "Social History"
+   },
+   "kind": "form",
+   "patient_source_id": "2002",
+   "source_data": {
+    "codes": [
+     {
+      "code": "266919005",
+      "display": "Never smoker",
+      "system": "SNOMED CT",
+      "system_oid": "2.16.840.1.113883.6.96"
+     }
+    ],
+    "entries": [
+     {
+      "children": [
+       {
+        "attrs": {
+         "classCode": "OBS",
+         "moodCode": "EVN"
+        },
+        "children": [
+         {
+          "attrs": {
+           "code": "72166-2",
+           "codeSystem": "2.16.840.1.113883.6.1"
+          },
+          "tag": "code"
+         },
+         {
+          "attrs": {
+           "code": "completed"
+          },
+          "tag": "statusCode"
+         },
+         {
+          "attrs": {
+           "code": "266919005",
+           "codeSystem": "2.16.840.1.113883.6.96",
+           "displayName": "Never smoker"
+          },
+          "tag": "value"
+         }
+        ],
+        "tag": "observation"
+       }
+      ],
+      "tag": "entry"
+     }
+    ],
+    "format": "hl7-ccda",
+    "section": "Social History",
+    "section_code": "29762-2",
+    "section_title": "SOCIAL HISTORY",
+    "text_sha256": "835b1884f6d6137efdb33e51e13068febddf5b7fc2fa46b357e15b9e43b1728e"
+   },
+   "source_id": "2002/29762-2/sha256:74030d7c941ac2bf9b83873043b44e37"
+  },
+  {
+   "data": {
+    "status": "active",
+    "title": "Allergies: No known: Propensity to adverse reactions to drug",
+    "type": "Propensity to adverse reactions to drug"
+   },
+   "kind": "form",
+   "patient_source_id": "2002",
+   "source_data": {
+    "activity": "1",
+    "entry": {
+     "attrs": {
+      "classCode": "ACT",
+      "moodCode": "EVN"
+     },
+     "children": [
+      {
+       "attrs": {
+        "nullFlavor": "NI"
+       },
+       "tag": "id"
+      },
+      {
+       "attrs": {
+        "code": "active"
+       },
+       "tag": "statusCode"
+      },
+      {
+       "attrs": {
+        "typeCode": "SUBJ"
+       },
+       "children": [
+        {
+         "attrs": {
+          "classCode": "OBS",
+          "moodCode": "EVN",
+          "negationInd": "true"
+         },
+         "children": [
+          {
+           "attrs": {
+            "code": "ASSERTION",
+            "codeSystem": "2.16.840.1.113883.5.4"
+           },
+           "tag": "code"
+          },
+          {
+           "attrs": {
+            "code": "419511003",
+            "codeSystem": "2.16.840.1.113883.6.96",
+            "displayName": "Propensity to adverse reactions to drug"
+           },
+           "tag": "value"
+          },
+          {
+           "attrs": {
+            "typeCode": "CSM"
+           },
+           "children": [
+            {
+             "attrs": {
+              "classCode": "MANU"
+             },
+             "children": [
+              {
+               "attrs": {
+                "classCode": "MMAT"
+               },
+               "children": [
+                {
+                 "attrs": {
+                  "nullFlavor": "NA"
+                 },
+                 "tag": "code"
+                }
+               ],
+               "tag": "playingEntity"
+              }
+             ],
+             "tag": "participantRole"
+            }
+           ],
+           "tag": "participant"
+          }
+         ],
+         "tag": "observation"
+        }
+       ],
+       "tag": "entryRelationship"
+      }
+     ],
+     "tag": "act"
+    },
+    "format": "hl7-ccda",
+    "negated": true,
+    "section": "Allergies",
+    "section_code": "48765-2",
+    "type_codes": [
+     {
+      "code": "419511003",
+      "display": "Propensity to adverse reactions to drug",
+      "system": "SNOMED CT",
+      "system_oid": "2.16.840.1.113883.6.96"
+     }
+    ]
+   },
+   "source_id": "2002/48765-2/sha256:84698fb8c47895141f61be2d968bf59d"
+  },
+  {
+   "data": {
+    "address": "1 Synthetic Way, Suite 2, Testville, TX, 75000, USA",
+    "email": "synthetic.patient@example.test; not an address",
+    "language": "es-US",
+    "phone_mobile": "+1-555-0100",
+    "phone_work": "+1-555-0199",
+    "sex": "Female",
+    "title": "Demographics (previous record system)"
+   },
+   "kind": "form",
+   "patient_source_id": "2002",
+   "source_data": {
+    "contact": {
+     "address": {
+      "city": "Testville",
+      "country": "US",
+      "line1": "1 Synthetic Way",
+      "line2": "Suite 2",
+      "postal_code": "75000",
+      "region": "TX"
+     },
+     "administrative_gender": "female",
+     "email": "synthetic.patient@example.test",
+     "language": "Spanish",
+     "phone": "+1-555-0100"
+    },
+    "demographics": {
+     "address": "1 Synthetic Way, Suite 2, Testville, TX, 75000, USA",
+     "email": "synthetic.patient@example.test; not an address",
+     "language": "es-US",
+     "phone_mobile": "+1-555-0100",
+     "phone_work": "+1-555-0199",
+     "sex": "Female"
+    },
+    "format": "hl7-ccda",
+    "section": "Demographics"
+   },
+   "source_id": "2002/demographics"
+  },
+  {
+   "data": {
+    "codes": "CVX 140 (Synthetic influenza vaccine)",
+    "date": "2022-10-01",
+    "lot_number": "SYN-LOT",
+    "status": "completed",
+    "title": "Synthetic influenza vaccine"
+   },
+   "kind": "immunization",
+   "patient_source_id": "2002",
+   "source_data": {
+    "codes": [
+     {
+      "code": "140",
+      "display": "Synthetic influenza vaccine",
+      "system": "CVX",
+      "system_name": "CVX",
+      "system_oid": "2.16.840.1.113883.12.292"
+     }
+    ],
+    "date": "2022-10-01",
+    "entry": {
+     "attrs": {
+      "classCode": "SBADM",
+      "moodCode": "EVN",
+      "negationInd": "false"
+     },
+     "children": [
+      {
+       "attrs": {
+        "extension": "imm-1",
+        "root": "2.16.999.1"
+       },
+       "tag": "id"
+      },
+      {
+       "attrs": {
+        "code": "completed"
+       },
+       "tag": "statusCode"
+      },
+      {
+       "attrs": {
+        "value": "20221001"
+       },
+       "tag": "effectiveTime"
+      },
+      {
+       "children": [
+        {
+         "children": [
+          {
+           "children": [
+            {
+             "attrs": {
+              "code": "140",
+              "codeSystem": "2.16.840.1.113883.12.292",
+              "codeSystemName": "CVX",
+              "displayName": "Synthetic influenza vaccine"
+             },
+             "tag": "code"
+            },
+            {
+             "tag": "lotNumberText",
+             "text": "SYN-LOT"
+            }
+           ],
+           "tag": "manufacturedMaterial"
+          }
+         ],
+         "tag": "manufacturedProduct"
+        }
+       ],
+       "tag": "consumable"
+      }
+     ],
+     "tag": "substanceAdministration"
+    },
+    "format": "hl7-ccda",
+    "lot_number": "SYN-LOT",
+    "section": "Immunizations",
+    "section_code": "11369-6"
+   },
+   "source_id": "2002/11369-6/2.16.999.1:imm-1"
+  },
+  {
+   "data": {
+    "coverage_type": "Private health insurance",
+    "effective": "2023-01-01",
+    "group_number": "SYN-GROUP",
+    "plan": "Synthetic PPO",
+    "policy_id": "SYN-MEMBER-1",
+    "priority": "1",
+    "relationship": "Self",
+    "title": "Synthetic Payer"
+   },
+   "kind": "insurance",
+   "patient_source_id": "2002",
+   "source_data": {
+    "codes": [
+     {
+      "code": "5",
+      "display": "Private health insurance",
+      "system": "Source of Payment Typology",
+      "system_oid": "2.16.840.1.113883.3.221.5"
+     }
+    ],
+    "coverage": {
+     "effective_date": "2023-01-01",
+     "group_number": "SYN-GROUP",
+     "member_id": "SYN-MEMBER-1",
+     "payer_name": "Synthetic Payer",
+     "plan_name": "Synthetic PPO",
+     "priority": "primary",
+     "relationship": "self"
+    },
+    "entry": {
+     "attrs": {
+      "classCode": "ACT",
+      "moodCode": "EVN"
+     },
+     "children": [
+      {
+       "attrs": {
+        "root": "0d3f7a52-0000-4000-8000-000000000001"
+       },
+       "tag": "id"
+      },
+      {
+       "attrs": {
+        "code": "completed"
+       },
+       "tag": "statusCode"
+      },
+      {
+       "attrs": {
+        "typeCode": "COMP"
+       },
+       "children": [
+        {
+         "attrs": {
+          "value": "1"
+         },
+         "tag": "sequenceNumber"
+        },
+        {
+         "attrs": {
+          "classCode": "ACT",
+          "moodCode": "EVN"
+         },
+         "children": [
+          {
+           "attrs": {
+            "extension": "pol-1",
+            "root": "2.16.999.2"
+           },
+           "tag": "id"
+          },
+          {
+           "attrs": {
+            "code": "5",
+            "codeSystem": "2.16.840.1.113883.3.221.5",
+            "displayName": "Private health insurance"
+           },
+           "tag": "code"
+          },
+          {
+           "attrs": {
+            "typeCode": "COV"
+           },
+           "children": [
+            {
+             "children": [
+              {
+               "attrs": {
+                "value": "20230101"
+               },
+               "tag": "low"
+              }
+             ],
+             "tag": "time"
+            },
+            {
+             "children": [
+              {
+               "attrs": {
+                "extension": "SYN-MEMBER-1",
+                "root": "2.16.999.3"
+               },
+               "tag": "id"
+              },
+              {
+               "attrs": {
+                "code": "SELF",
+                "codeSystem": "2.16.840.1.113883.5.111",
+                "displayName": "Self"
+               },
+               "tag": "code"
+              }
+             ],
+             "tag": "participantRole"
+            }
+           ],
+           "tag": "participant"
+          }
+         ],
+         "tag": "act"
+        }
+       ],
+       "tag": "entryRelationship"
+      }
+     ],
+     "tag": "act"
+    },
+    "format": "hl7-ccda",
+    "narrative": {
+     "Insurance Company": "Synthetic Payer",
+     "Insurance Group Number": "SYN-GROUP",
+     "Insurance Plan": "Synthetic PPO",
+     "Insurance Policy ID": "SYN-MEMBER-1"
+    },
+    "section": "Insurance Providers",
+    "section_code": "48768-6"
+   },
+   "source_id": "2002/48768-6/2.16.999.2:pol-1"
+  },
+  {
+   "data": {
+    "date": "2023-12-12",
+    "results": "Synthetic glucose: no value recorded",
+    "title": "Synthetic glucose"
+   },
+   "kind": "lab_result",
+   "patient_source_id": "2002",
+   "source_data": {
+    "codes": [
+     {
+      "code": "2345-7",
+      "display": "Synthetic glucose",
+      "system": "LOINC",
+      "system_name": "LOINC",
+      "system_oid": "2.16.840.1.113883.6.1"
+     }
+    ],
+    "date": "2023-12-12",
+    "entry": {
+     "attrs": {
+      "classCode": "OBS",
+      "moodCode": "EVN"
+     },
+     "children": [
+      {
+       "attrs": {
+        "extension": "res-1",
+        "root": "2.16.999.1"
+       },
+       "tag": "id"
+      },
+      {
+       "attrs": {
+        "code": "2345-7",
+        "codeSystem": "2.16.840.1.113883.6.1",
+        "codeSystemName": "LOINC",
+        "displayName": "Synthetic glucose"
+       },
+       "tag": "code"
+      },
+      {
+       "attrs": {
+        "code": "completed"
+       },
+       "tag": "statusCode"
+      },
+      {
+       "attrs": {
+        "value": "20231212"
+       },
+       "tag": "effectiveTime"
+      }
+     ],
+     "tag": "observation"
+    },
+    "format": "hl7-ccda",
+    "results": [
+     {
+      "codes": [
+       {
+        "code": "2345-7",
+        "display": "Synthetic glucose",
+        "system": "LOINC",
+        "system_name": "LOINC",
+        "system_oid": "2.16.840.1.113883.6.1"
+       }
+      ],
+      "date": "2023-12-12",
+      "name": "Synthetic glucose",
+      "status": "completed"
+     }
+    ],
+    "section": "Results",
+    "section_code": "30954-2"
+   },
+   "source_id": "2002/30954-2/2.16.999.1:res-1"
+  },
+  {
+   "data": {
+    "author": "Synthetic Clinician",
+    "author_organization": "Synthetic Clinic",
+    "authored": "2024-01-05",
+    "codes": "ICD-10-CM G80.1 (Synthetic spasticity); SNOMED CT 1234567 (Synthetic finding)",
+    "comments": "Synthetic comment",
+    "onset": "2020-03-04",
+    "status": "active",
+    "title": "Synthetic spasticity",
+    "type": "Diagnosis"
+   },
+   "kind": "medical_problem",
+   "patient_source_id": "2002",
+   "source_data": {
+    "activity": "1",
+    "begdate": "2020-03-04",
+    "codes": [
+     {
+      "code": "G80.1",
+      "display": "Synthetic spasticity",
+      "system": "ICD-10-CM",
+      "system_name": "ICD10",
+      "system_oid": "2.16.840.1.113883.6.90"
+     },
+     {
+      "code": "1234567",
+      "display": "Synthetic finding",
+      "system": "SNOMED CT",
+      "system_name": "SNOMED-CT",
+      "system_oid": "2.16.840.1.113883.6.96"
+     }
+    ],
+    "comments": "Synthetic comment",
+    "diagnosis": "ICD-10-CM G80.1 (Synthetic spasticity); SNOMED CT 1234567 (Synthetic finding)",
+    "entry": {
+     "attrs": {
+      "classCode": "ACT",
+      "moodCode": "EVN"
+     },
+     "children": [
+      {
+       "attrs": {
+        "extension": "pr-1",
+        "root": "2.16.999.1"
+       },
+       "tag": "id"
+      },
+      {
+       "attrs": {
+        "code": "active"
+       },
+       "tag": "statusCode"
+      },
+      {
+       "attrs": {
+        "typeCode": "SUBJ"
+       },
+       "children": [
+        {
+         "attrs": {
+          "classCode": "OBS",
+          "moodCode": "EVN",
+          "negationInd": "false"
+         },
+         "children": [
+          {
+           "children": [
+            {
+             "attrs": {
+              "value": "20240105"
+             },
+             "tag": "time"
+            },
+            {
+             "children": [
+              {
+               "attrs": {
+                "extension": "77",
+                "root": "2.16.999.9"
+               },
+               "tag": "id"
+              },
+              {
+               "children": [
+                {
+                 "children": [
+                  {
+                   "tag": "given",
+                   "text": "Synthetic"
+                  },
+                  {
+                   "tag": "family",
+                   "text": "Clinician"
+                  }
+                 ],
+                 "tag": "name"
+                }
+               ],
+               "tag": "assignedPerson"
+              },
+              {
+               "children": [
+                {
+                 "tag": "name",
+                 "text": "Synthetic Clinic"
+                }
+               ],
+               "tag": "representedOrganization"
+              }
+             ],
+             "tag": "assignedAuthor"
+            }
+           ],
+           "tag": "author"
+          },
+          {
+           "attrs": {
+            "code": "55607006",
+            "codeSystem": "2.16.840.1.113883.6.96",
+            "displayName": "Problem"
+           },
+           "tag": "code"
+          },
+          {
+           "children": [
+            {
+             "attrs": {
+              "value": "#prob1"
+             },
+             "tag": "reference"
+            }
+           ],
+           "tag": "text"
+          },
+          {
+           "children": [
+            {
+             "attrs": {
+              "value": "20200304"
+             },
+             "tag": "low"
+            },
+            {
+             "attrs": {
+              "nullFlavor": "UNK"
+             },
+             "tag": "high"
+            }
+           ],
+           "tag": "effectiveTime"
+          },
+          {
+           "attrs": {
+            "code": "G80.1",
+            "codeSystem": "2.16.840.1.113883.6.90",
+            "codeSystemName": "ICD10",
+            "displayName": "Synthetic spasticity"
+           },
+           "children": [
+            {
+             "attrs": {
+              "code": "1234567",
+              "codeSystem": "2.16.840.1.113883.6.96",
+              "codeSystemName": "SNOMED-CT",
+              "displayName": "Synthetic finding"
+             },
+             "tag": "translation"
+            }
+           ],
+           "tag": "value"
+          }
+         ],
+         "tag": "observation"
+        }
+       ],
+       "tag": "entryRelationship"
+      }
+     ],
+     "tag": "act"
+    },
+    "format": "hl7-ccda",
+    "section": "Problems",
+    "section_code": "11450-4",
+    "title": "Synthetic spasticity"
+   },
+   "source_id": "2002/11450-4/2.16.999.1:pr-1"
+  },
+  {
+   "data": {
+    "codes": "RxNorm 99999 (Synthetic relaxant 10 MG); NDC 00000-0000-00",
+    "instructions": "One tablet at night",
+    "started": "2023-02-01",
+    "status": "active",
+    "title": "Synthetic relaxant 10 mg tablet"
+   },
+   "kind": "medication",
+   "patient_source_id": "2002",
+   "source_data": {
+    "activity": "1",
+    "begdate": "2023-02-01",
+    "codes": [
+     {
+      "code": "99999",
+      "display": "Synthetic relaxant 10 MG",
+      "system": "RxNorm",
+      "system_name": "RxNorm",
+      "system_oid": "2.16.840.1.113883.6.88"
+     },
+     {
+      "code": "00000-0000-00",
+      "system": "NDC",
+      "system_name": "NDC",
+      "system_oid": "2.16.840.1.113883.6.69"
+     }
+    ],
+    "comments": "Instructions: One tablet at night",
+    "diagnosis": "RxNorm 99999 (Synthetic relaxant 10 MG); NDC 00000-0000-00",
+    "entry": {
+     "attrs": {
+      "classCode": "SBADM",
+      "moodCode": "EVN"
+     },
+     "children": [
+      {
+       "attrs": {
+        "extension": "rx-1",
+        "root": "2.16.999.1"
+       },
+       "tag": "id"
+      },
+      {
+       "children": [
+        {
+         "attrs": {
+          "value": "#med1"
+         },
+         "tag": "reference"
+        }
+       ],
+       "tag": "text"
+      },
+      {
+       "attrs": {
+        "code": "active"
+       },
+       "tag": "statusCode"
+      },
+      {
+       "children": [
+        {
+         "attrs": {
+          "value": "20230201"
+         },
+         "tag": "low"
+        },
+        {
+         "attrs": {
+          "nullFlavor": "UNK"
+         },
+         "tag": "high"
+        }
+       ],
+       "tag": "effectiveTime"
+      },
+      {
+       "attrs": {
+        "nullFlavor": "UNK"
+       },
+       "tag": "doseQuantity"
+      },
+      {
+       "children": [
+        {
+         "children": [
+          {
+           "children": [
+            {
+             "attrs": {
+              "code": "99999",
+              "codeSystem": "2.16.840.1.113883.6.88",
+              "codeSystemName": "RxNorm",
+              "displayName": "Synthetic relaxant 10 MG"
+             },
+             "children": [
+              {
+               "attrs": {
+                "code": "00000-0000-00",
+                "codeSystem": "2.16.840.1.113883.6.69",
+                "codeSystemName": "NDC"
+               },
+               "tag": "translation"
+              }
+             ],
+             "tag": "code"
+            },
+            {
+             "tag": "name",
+             "text": "Synthetic relaxant 10 mg tablet"
+            }
+           ],
+           "tag": "manufacturedMaterial"
+          }
+         ],
+         "tag": "manufacturedProduct"
+        }
+       ],
+       "tag": "consumable"
+      }
+     ],
+     "tag": "substanceAdministration"
+    },
+    "format": "hl7-ccda",
+    "section": "Medications",
+    "section_code": "10160-0",
+    "title": "Synthetic relaxant 10 mg tablet"
+   },
+   "source_id": "2002/10160-0/2.16.999.1:rx-1"
+  },
+  {
+   "data": {
+    "codes": "CPT 64615 (Synthetic chemodenervation)",
+    "date": "2024-01-05",
+    "description": "Synthetic injection procedure",
+    "ended": "2024-01-05",
+    "status": "COMPLETE",
+    "title": "Synthetic chemodenervation"
+   },
+   "kind": "procedure",
+   "patient_source_id": "2002",
+   "source_data": {
+    "codes": [
+     {
+      "code": "64615",
+      "display": "Synthetic chemodenervation",
+      "system": "CPT",
+      "system_oid": "2.16.840.1.113883.6.12"
+     }
+    ],
+    "date": "2024-01-05",
+    "end_date": "2024-01-05",
+    "entry": {
+     "attrs": {
+      "classCode": "ACT",
+      "moodCode": "EVN"
+     },
+     "children": [
+      {
+       "attrs": {
+        "code": "64615",
+        "codeSystem": "2.16.840.1.113883.6.12",
+        "displayName": "Synthetic chemodenervation"
+       },
+       "tag": "code"
+      },
+      {
+       "attrs": {
+        "mediaType": "text/plain"
+       },
+       "children": [
+        {
+         "attrs": {
+          "value": "#proc1"
+         },
+         "tag": "reference"
+        }
+       ],
+       "tag": "text"
+      },
+      {
+       "attrs": {
+        "code": "COMPLETE"
+       },
+       "tag": "statusCode"
+      },
+      {
+       "children": [
+        {
+         "attrs": {
+          "value": "20240105"
+         },
+         "tag": "low"
+        },
+        {
+         "attrs": {
+          "value": "20240105"
+         },
+         "tag": "high"
+        }
+       ],
+       "tag": "effectiveTime"
+      }
+     ],
+     "tag": "act"
+    },
+    "format": "hl7-ccda",
+    "section": "Procedures",
+    "section_code": "47519-4"
+   },
+   "source_id": "2002/47519-4/sha256:1aa565accaa9286cd16a9c505ede9a1f"
+  },
+  {
+   "data": {
+    "date": "2024-01-02",
+    "reasons": "ICD-10-CM G80.1 (Synthetic spasticity)",
+    "status": "active",
+    "title": "Patient referral"
+   },
+   "kind": "referral",
+   "patient_source_id": "2002",
+   "source_data": {
+    "codes": [
+     {
+      "code": "3457005",
+      "display": "Patient referral",
+      "system": "SNOMED CT",
+      "system_oid": "2.16.840.1.113883.6.96"
+     },
+     {
+      "code": "G80.1",
+      "display": "Synthetic spasticity",
+      "system": "ICD-10-CM",
+      "system_oid": "2.16.840.1.113883.6.90"
+     }
+    ],
+    "date": "2024-01-02",
+    "entry": {
+     "attrs": {
+      "classCode": "PCPR",
+      "moodCode": "INT"
+     },
+     "children": [
+      {
+       "attrs": {
+        "extension": "ref-1",
+        "root": "2.16.999.1"
+       },
+       "tag": "id"
+      },
+      {
+       "attrs": {
+        "code": "3457005",
+        "codeSystem": "2.16.840.1.113883.6.96",
+        "displayName": "Patient referral"
+       },
+       "tag": "code"
+      },
+      {
+       "attrs": {
+        "code": "active"
+       },
+       "tag": "statusCode"
+      },
+      {
+       "attrs": {
+        "value": "20240102"
+       },
+       "tag": "effectiveTime"
+      },
+      {
+       "attrs": {
+        "typeCode": "RSON"
+       },
+       "children": [
+        {
+         "attrs": {
+          "classCode": "OBS",
+          "moodCode": "EVN"
+         },
+         "children": [
+          {
+           "attrs": {
+            "code": "G80.1",
+            "codeSystem": "2.16.840.1.113883.6.90",
+            "displayName": "Synthetic spasticity"
+           },
+           "tag": "value"
+          }
+         ],
+         "tag": "observation"
+        }
+       ],
+       "tag": "entryRelationship"
+      }
+     ],
+     "tag": "act"
+    },
+    "format": "hl7-ccda",
+    "reasons": [
+     {
+      "codes": [
+       {
+        "code": "G80.1",
+        "display": "Synthetic spasticity",
+        "system": "ICD-10-CM",
+        "system_oid": "2.16.840.1.113883.6.90"
+       }
+      ],
+      "display": "Synthetic spasticity"
+     }
+    ],
+    "section": "Reason for Referral",
+    "section_code": "42349-1"
+   },
+   "source_id": "2002/42349-1/2.16.999.1:ref-1"
+  },
+  {
+   "data": {
+    "date": "2024-01-05",
+    "note": "Synthetic progress note line one.\nLine two.",
+    "title": "Progress Note"
+   },
+   "kind": "soap_note",
+   "patient_source_id": "2002",
+   "source_data": {
+    "codes": [
+     {
+      "code": "34109-9",
+      "system": "LOINC",
+      "system_oid": "2.16.840.1.113883.6.1"
+     },
+     {
+      "code": "11506-3",
+      "display": "Progress Note",
+      "system": "LOINC",
+      "system_oid": "2.16.840.1.113883.6.1"
+     }
+    ],
+    "date": "2024-01-05",
+    "entry": {
+     "attrs": {
+      "classCode": "ACT",
+      "moodCode": "EVN"
+     },
+     "children": [
+      {
+       "attrs": {
+        "extension": "note-1",
+        "root": "2.16.999.1"
+       },
+       "tag": "id"
+      },
+      {
+       "attrs": {
+        "code": "34109-9",
+        "codeSystem": "2.16.840.1.113883.6.1"
+       },
+       "children": [
+        {
+         "attrs": {
+          "code": "11506-3",
+          "codeSystem": "2.16.840.1.113883.6.1",
+          "displayName": "Progress Note"
+         },
+         "tag": "translation"
+        }
+       ],
+       "tag": "code"
+      },
+      {
+       "attrs": {
+        "mediaType": "text/plain"
+       },
+       "children": [
+        {
+         "attrs": {
+          "value": "#note1"
+         },
+         "tag": "reference"
+        }
+       ],
+       "tag": "text"
+      },
+      {
+       "attrs": {
+        "code": "COMPLETE"
+       },
+       "tag": "statusCode"
+      },
+      {
+       "attrs": {
+        "value": "20240105"
+       },
+       "tag": "effectiveTime"
+      },
+      {
+       "attrs": {
+        "inversionInd": "true",
+        "typeCode": "COMP"
+       },
+       "children": [
+        {
+         "children": [
+          {
+           "attrs": {
+            "extension": "enc-1",
+            "root": "2.16.999.1"
+           },
+           "tag": "id"
+          }
+         ],
+         "tag": "encounter"
+        }
+       ],
+       "tag": "entryRelationship"
+      }
+     ],
+     "tag": "act"
+    },
+    "format": "hl7-ccda",
+    "section": "Clinical Notes",
+    "section_code": "34109-9",
+    "source_encounter": "2.16.999.1:enc-1",
+    "text_sha256": "d701a46b1a9bd8ce7fa08e833185d94721c33a5e7c64e7b142b95bdf08c67ecf"
+   },
+   "source_id": "2002/34109-9/2.16.999.1:note-1"
+  },
+  {
+   "data": {
+    "body_height": "170 cm",
+    "date": "2024-01-05",
+    "title": "Vital signs"
+   },
+   "kind": "vital",
+   "patient_source_id": "2002",
+   "source_data": {
+    "codes": [
+     {
+      "code": "8302-2",
+      "display": "Body height",
+      "system": "LOINC",
+      "system_oid": "2.16.840.1.113883.6.1"
+     }
+    ],
+    "components": [
+     {
+      "codes": [
+       {
+        "code": "8302-2",
+        "display": "Body height",
+        "system": "LOINC",
+        "system_oid": "2.16.840.1.113883.6.1"
+       }
+      ],
+      "name": "Body height",
+      "taken": "2024-01-05",
+      "text": "170 cm",
+      "unit": "cm",
+      "value": "170"
+     }
+    ],
+    "date": "2024-01-05",
+    "entry": {
+     "attrs": {
+      "classCode": "CLUSTER",
+      "moodCode": "EVN"
+     },
+     "children": [
+      {
+       "attrs": {
+        "extension": "vs-1",
+        "root": "2.16.999.1"
+       },
+       "tag": "id"
+      },
+      {
+       "attrs": {
+        "value": "20240105"
+       },
+       "tag": "effectiveTime"
+      },
+      {
+       "children": [
+        {
+         "attrs": {
+          "classCode": "OBS",
+          "moodCode": "EVN"
+         },
+         "children": [
+          {
+           "attrs": {
+            "code": "8302-2",
+            "codeSystem": "2.16.840.1.113883.6.1",
+            "displayName": "Body height"
+           },
+           "tag": "code"
+          },
+          {
+           "attrs": {
+            "value": "20240105"
+           },
+           "tag": "effectiveTime"
+          },
+          {
+           "attrs": {
+            "type": "PQ",
+            "unit": "cm",
+            "value": "170"
+           },
+           "tag": "value"
+          }
+         ],
+         "tag": "observation"
+        }
+       ],
+       "tag": "component"
+      },
+      {
+       "children": [
+        {
+         "attrs": {
+          "classCode": "OBS",
+          "moodCode": "EVN"
+         },
+         "children": [
+          {
+           "attrs": {
+            "code": "29463-7",
+            "codeSystem": "2.16.840.1.113883.6.1",
+            "displayName": "Body weight"
+           },
+           "tag": "code"
+          },
+          {
+           "attrs": {
+            "nullFlavor": "UNK"
+           },
+           "tag": "value"
+          }
+         ],
+         "tag": "observation"
+        }
+       ],
+       "tag": "component"
+      }
+     ],
+     "tag": "organizer"
+    },
+    "format": "hl7-ccda",
+    "section": "Vital Signs",
+    "section_code": "8716-3"
+   },
+   "source_id": "2002/8716-3/2.16.999.1:vs-1"
+  }
+ ],
+ "manifest": {
+  "consistency": "read_only_export",
+  "expected_counts": {
+   "encounter": 2,
+   "form": 8,
+   "immunization": 2,
+   "insurance": 2,
+   "lab_result": 2,
+   "medical_problem": 2,
+   "medication": 2,
+   "patient": 2,
+   "procedure": 2,
+   "referral": 2,
+   "soap_note": 2,
+   "vital": 2
+  },
+  "limitations": [
+   "Operator asserted a read-only source export; a frozen source was not independently verified.",
+   "C-CDA health summaries only: sections the previous system left empty or did not export are absent.",
+   "Patients who look like an existing chart are attached to it or created as new charts by the owner's decision before import.",
+   "New charts get name, birth date, a generated MRN and contact details; insurance and every clinical section are preserved as read-only source history.",
+   "Problems, medications and allergies need clinician reconciliation before they appear in the native lists; their source codes are carried over.",
+   "Attached files are not part of this package and are uploaded separately as patient documents."
+  ],
+  "source_instance": "synthetic-emr",
+  "source_revision": "export-1"
+ }
+}

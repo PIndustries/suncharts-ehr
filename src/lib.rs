@@ -46,6 +46,7 @@ pub mod fhir;
 pub mod gmail_referral_adapter;
 pub mod health_history;
 pub mod immunizations;
+pub mod import_matching;
 pub mod installments;
 pub mod instance_integrations;
 pub mod labs;
@@ -76,6 +77,7 @@ pub mod remittance_automation;
 pub mod retrieval;
 pub mod ringcentral_adapter;
 pub mod rooming;
+pub mod saved_card_payments;
 pub mod scheduling;
 pub mod settlements;
 pub mod sftp_transport;
@@ -597,6 +599,16 @@ pub fn app(state: State) -> Router {
                     "shell.js",
                     "application/javascript",
                     include_str!("../web/shell.js"),
+                )
+            }),
+        )
+        .route(
+            "/data-import.js",
+            get(|| async {
+                web_asset(
+                    "data-import.js",
+                    "application/javascript",
+                    include_str!("../web/data-import.js"),
                 )
             }),
         )

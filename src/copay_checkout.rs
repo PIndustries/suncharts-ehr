@@ -247,6 +247,8 @@ struct Attempt {
     lease_id: Option<Uuid>,
     channel: String,
     reader_id: Option<String>,
+    reader_cancel_requested_at: Option<DateTime<Utc>>,
+    saved_card_setup_id: Option<Uuid>,
 }
 impl Attempt {
     fn binding(&self) -> Binding {
@@ -258,7 +260,7 @@ impl Attempt {
         }
     }
     fn public(&self, policy: Policy) -> Value {
-        json!({"id":self.id,"patient_id":self.patient_id,"appointment_id":self.appointment_id,"amount_cents":self.amount_cents,"currency":self.currency,"livemode":self.livemode,"status":self.status,"checkout_url":if policy.permits(self.livemode)&&self.status=="open"{self.checkout_url.as_deref()}else{None},"receipt_id":self.receipt_id,"refunded_cents":self.refunded_cents,"version":self.version,"created_at":self.created_at,"request_id":self.request_id,"last_result":self.last_result,"captured_at":self.provider_captured_at,"channel":self.channel,"reader_id":self.reader_id})
+        json!({"id":self.id,"patient_id":self.patient_id,"appointment_id":self.appointment_id,"amount_cents":self.amount_cents,"currency":self.currency,"livemode":self.livemode,"status":self.status,"checkout_url":if policy.permits(self.livemode)&&self.status=="open"{self.checkout_url.as_deref()}else{None},"receipt_id":self.receipt_id,"refunded_cents":self.refunded_cents,"version":self.version,"created_at":self.created_at,"request_id":self.request_id,"last_result":self.last_result,"captured_at":self.provider_captured_at,"channel":self.channel,"reader_id":self.reader_id,"saved_card_setup_id":self.saved_card_setup_id,"cancel_requested":self.reader_cancel_requested_at.is_some()&&["creating","open"].contains(&self.status.as_str())})
     }
 }
 async fn load(tx: &mut Transaction<'_, Postgres>, tenant: Uuid, id: Uuid) -> Result<Attempt> {
@@ -290,6 +292,10 @@ struct Create {
     /// absent, so hosted checkout requests hash exactly as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reader_id: Option<String>,
+    /// Present for a charge to a card the patient saved earlier: the card setup that carries
+    /// the patient's agreement to later charges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    saved_card_setup_id: Option<Uuid>,
 }
 pub(crate) async fn current_binding(
     pool: &PgPool,
@@ -361,6 +367,9 @@ async fn create_with(
     {
         return Err(Error::Invalid("choose a card reader"));
     }
+    if input.reader_id.is_some() && input.saved_card_setup_id.is_some() {
+        return Err(Error::Invalid("choose one way to take this payment"));
+    }
     let hash = crate::oauth::hash(
         &serde_json::to_string(&(patient, appointment, &input))
             .map_err(|_| Error::Invalid("invalid copay request"))?,
@@ -422,17 +431,37 @@ async fn create_with(
             "payment account mode changed; review before continuing",
         ));
     }
+    if let Some(setup) = input.saved_card_setup_id {
+        // Only a card saved with the patient's agreement to later charges may be charged.
+        crate::saved_card_payments::eligible_setup(
+            &mut tx,
+            a.tenant_id,
+            patient,
+            setup,
+            &binding,
+            &account,
+            mode,
+        )
+        .await?;
+    }
+    let channel = if input.reader_id.is_some() {
+        "reader"
+    } else if input.saved_card_setup_id.is_some() {
+        "saved_card"
+    } else {
+        "hosted"
+    };
     let id = Uuid::new_v4();
     let return_url = format!("{}/?copay_checkout={id}", origin.trim_end_matches('/'));
-    sqlx::query("INSERT INTO copay_checkout_attempts(tenant_id,id,patient_id,appointment_id,coverage_id,coverage_snapshot,setting_id,credential_revision,installation_id,provider_account_id,livemode,amount_cents,request_id,creation_hash,requested_by,reason,return_url,channel,reader_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)").bind(a.tenant_id).bind(id).bind(patient).bind(appointment).bind(input.coverage_id).bind(coverage).bind(binding.setting).bind(binding.revision).bind(binding.installation).bind(account).bind(mode).bind(input.amount_cents).bind(input.request_id).bind(hash).bind(a.sub).bind(input.reason.trim()).bind(return_url).bind(if input.reader_id.is_some(){"reader"}else{"hosted"}).bind(&input.reader_id).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO copay_checkout_attempts(tenant_id,id,patient_id,appointment_id,coverage_id,coverage_snapshot,setting_id,credential_revision,installation_id,provider_account_id,livemode,amount_cents,request_id,creation_hash,requested_by,reason,return_url,channel,reader_id,saved_card_setup_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)").bind(a.tenant_id).bind(id).bind(patient).bind(appointment).bind(input.coverage_id).bind(coverage).bind(binding.setting).bind(binding.revision).bind(binding.installation).bind(account).bind(mode).bind(input.amount_cents).bind(input.request_id).bind(hash).bind(a.sub).bind(input.reason.trim()).bind(return_url).bind(channel).bind(&input.reader_id).bind(input.saved_card_setup_id).execute(&mut *tx).await?;
     event(
         &mut tx,
         a,
         id,
-        if input.reader_id.is_some() {
-            "reader_payment_reserved"
-        } else {
-            "checkout_reserved"
+        match channel {
+            "reader" => "reader_payment_reserved",
+            "saved_card" => "saved_card_charge_reserved",
+            _ => "checkout_reserved",
         },
     )
     .await?;
@@ -453,7 +482,8 @@ pub(crate) struct EvidenceBinding {
     pub(crate) provider_payment_intent: Option<String>,
     pub(crate) provider_charge_id: Option<String>,
     pub(crate) provider_captured_at: Option<DateTime<Utc>>,
-    /// Taken on a card reader: the evidence is a PaymentIntent, not a Checkout session.
+    /// Taken on a card reader or charged to a saved card: the evidence is a PaymentIntent,
+    /// not a Checkout session.
     pub(crate) reader: bool,
 }
 impl Attempt {
@@ -470,7 +500,7 @@ impl Attempt {
             provider_payment_intent: self.provider_payment_intent.clone(),
             provider_charge_id: self.provider_charge_id.clone(),
             provider_captured_at: self.provider_captured_at,
-            reader: self.channel == "reader",
+            reader: self.channel != "hosted",
         }
     }
 }
@@ -849,6 +879,18 @@ async fn process_id_mode(
         )
         .await;
     }
+    if attempt.channel == "saved_card" {
+        drop(tx);
+        return crate::saved_card_payments::drive(
+            pool,
+            a,
+            crate::reader_payments::Kind::Copay,
+            id,
+            broker,
+            policy,
+        )
+        .await;
+    }
     if !policy.permits(attempt.livemode)
         || ["expired", "refunded"].contains(&attempt.status.as_str())
         || (!allow_create && attempt.provider_session_id.is_none())
@@ -863,6 +905,12 @@ async fn process_id_mode(
     event(&mut tx, a, id, "provider_poll_started").await?;
     tx.commit().await?;
     let binding = attempt.binding();
+    if attempt.reader_cancel_requested_at.is_some()
+        && attempt.provider_captured_at.is_none()
+        && ["creating", "open"].contains(&attempt.status.as_str())
+    {
+        return cancel_link(pool, a, &attempt, lease, broker, policy).await;
+    }
     let fetched = if let Some(session) = &attempt.provider_session_id {
         broker
             .call(
@@ -974,6 +1022,118 @@ async fn process_id_mode(
     }
     Ok(())
 }
+/// Staff cancelled an unfinished card link. The link is expired at the processor and whatever
+/// really happened is recorded: a link the patient already paid stays paid.
+async fn cancel_link(
+    pool: &PgPool,
+    a: &Actor,
+    attempt: &Attempt,
+    lease: Uuid,
+    broker: &dyn Broker,
+    policy: Policy,
+) -> Result<()> {
+    let id = attempt.id;
+    let reply = broker
+        .reply(
+            pool,
+            &attempt.binding(),
+            Method::POST,
+            &format!("/hosted-checkout-requests/{id}/expire"),
+            Some(json!({"account_id":attempt.provider_account_id,"livemode":attempt.livemode})),
+        )
+        .await;
+    let Ok(reply) = reply else {
+        return fail_attempt(pool, a, id, lease, false).await;
+    };
+    match reply.status {
+        // The link never existed at the processor and can no longer be created.
+        200..=299 if reply.body.get("session") == Some(&Value::Null) => {
+            if envelope(attempt, &reply.body).is_ok() && reply.body["cancelled"] == true {
+                close_cancelled(pool, a, id, lease).await
+            } else {
+                fail_attempt(pool, a, id, lease, true).await
+            }
+        }
+        200..=299 => {
+            if apply_noted(
+                pool,
+                a,
+                id,
+                lease,
+                &reply.body,
+                policy,
+                Some("link_cancelled"),
+            )
+            .await
+            .is_err()
+            {
+                fail_attempt(pool, a, id, lease, true).await?;
+            }
+            Ok(())
+        }
+        404 if attempt.provider_session_id.is_none() => close_cancelled(pool, a, id, lease).await,
+        _ => fail_attempt(pool, a, id, lease, false).await,
+    }
+}
+async fn close_cancelled(pool: &PgPool, a: &Actor, id: Uuid, lease: Uuid) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    let changed = sqlx::query("UPDATE copay_checkout_attempts SET status='expired',last_result='link_cancelled',checkout_url=NULL,lease_id=NULL,lease_until=NULL,version=version+1,updated_at=now() WHERE tenant_id=$1 AND id=$2 AND lease_id=$3 AND provider_captured_at IS NULL AND receipt_id IS NULL")
+        .bind(a.tenant_id).bind(id).bind(lease).execute(&mut *tx).await?.rows_affected();
+    if changed == 1 {
+        event(&mut tx, a, id, "link_cancelled").await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+async fn link_cancel(
+    a: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path((patient, appointment, id)): Path<(Uuid, Uuid, Uuid)>,
+) -> Result<Json<Value>> {
+    let policy = Policy::current();
+    Ok(Json(
+        link_cancel_with(
+            db(&state)?,
+            &a,
+            patient,
+            appointment,
+            id,
+            &HttpBroker,
+            policy,
+        )
+        .await?,
+    ))
+}
+/// The request is recorded first, so the link is cancelled on the next pass even if the
+/// payment service cannot be reached right now.
+async fn link_cancel_with(
+    pool: &PgPool,
+    a: &Actor,
+    patient: Uuid,
+    appointment: Uuid,
+    id: Uuid,
+    broker: &dyn Broker,
+    policy: Policy,
+) -> Result<Value> {
+    a.scheduling()?;
+    if scoped(pool, a, patient, appointment, id).await?.channel != "hosted" {
+        return Err(Error::Invalid("this payment is not a card link"));
+    }
+    let mut tx = pool.begin().await?;
+    let row = load(&mut tx, a.tenant_id, id).await?;
+    if ["creating", "open"].contains(&row.status.as_str())
+        && row.receipt_id.is_none()
+        && row.reader_cancel_requested_at.is_none()
+    {
+        sqlx::query("UPDATE copay_checkout_attempts SET reader_cancel_requested_at=now(),next_poll_at=now(),version=version+1,updated_at=now() WHERE tenant_id=$1 AND id=$2")
+            .bind(a.tenant_id).bind(id).execute(&mut *tx).await?;
+        event(&mut tx, a, id, "link_cancel_requested").await?;
+    }
+    tx.commit().await?;
+    process_id(pool, a, id, broker, policy).await?;
+    let row = scoped(pool, a, patient, appointment, id).await?;
+    Ok(json!({"operation":row.public(policy)}))
+}
 /// History entry for a reader payment state change.
 pub(crate) async fn reader_event(
     tx: &mut Transaction<'_, Postgres>,
@@ -1054,6 +1214,10 @@ pub fn router() -> Router<State> {
         .route(
             "/api/v1/patients/{p}/appointments/{a}/copay-checkouts/{id}/reader-cancel",
             post(reader_cancel),
+        )
+        .route(
+            "/api/v1/patients/{p}/appointments/{a}/copay-checkouts/{id}/cancel",
+            post(link_cancel),
         )
 }
 async fn return_row(state: &State, a: &Actor, id: Uuid) -> Result<Attempt> {

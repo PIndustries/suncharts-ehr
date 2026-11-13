@@ -54,6 +54,21 @@ struct Checkout {
     /// absent, so hosted checkout requests hash exactly as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reader_id: Option<String>,
+    /// Present for a charge to a card the patient saved earlier: the card setup that carries
+    /// the patient's agreement to later charges. The patient does not need to be present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    saved_card_setup_id: Option<Uuid>,
+    /// A card link sent after the bank asked the patient to confirm this saved-card charge.
+    /// The patient confirms on the card page, so they do not need to be present either.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    after_saved_card: Option<Uuid>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BalanceCharge {
+    request_id: Uuid,
+    amount_cents: i64,
+    saved_card_setup_id: Uuid,
 }
 #[derive(sqlx::FromRow)]
 struct Invoice {
@@ -116,6 +131,7 @@ struct Attempt {
     lease_id: Option<Uuid>,
     channel: String,
     reader_id: Option<String>,
+    reader_cancel_requested_at: Option<DateTime<Utc>>,
 }
 impl Attempt {
     fn binding(&self) -> Binding {
@@ -139,11 +155,11 @@ impl Attempt {
             provider_payment_intent: self.provider_payment_intent.clone(),
             provider_charge_id: self.provider_charge_id.clone(),
             provider_captured_at: self.provider_captured_at,
-            reader: self.channel == "reader",
+            reader: self.channel != "hosted",
         }
     }
     fn public(&self, policy: Policy) -> Value {
-        json!({"id":self.id,"request_id":self.request_id,"reason":self.reason,"patient_id":self.patient_id,"account_id":self.account_id,"plan_id":self.plan_id,"installment_number":self.installment_number,"amount_cents":self.amount_cents,"currency":self.currency,"livemode":self.livemode,"status":self.status,"checkout_url":if self.status=="open"&&policy.permits(self.livemode){self.checkout_url.as_deref()}else{None},"paid_entry_id":self.paid_entry_id,"captured_at":self.provider_captured_at,"refunded_cents":self.refunded_cents,"unapplied_cents":if self.provider_captured_at.is_some()&&self.paid_entry_id.is_none(){self.amount_cents-self.refunded_cents}else{0},"last_result":self.last_result,"version":self.version,"created_at":self.created_at,"channel":self.channel,"reader_id":self.reader_id})
+        json!({"id":self.id,"request_id":self.request_id,"reason":self.reason,"patient_id":self.patient_id,"account_id":self.account_id,"plan_id":self.plan_id,"installment_number":self.installment_number,"amount_cents":self.amount_cents,"currency":self.currency,"livemode":self.livemode,"status":self.status,"checkout_url":if self.status=="open"&&policy.permits(self.livemode){self.checkout_url.as_deref()}else{None},"paid_entry_id":self.paid_entry_id,"captured_at":self.provider_captured_at,"refunded_cents":self.refunded_cents,"unapplied_cents":if self.provider_captured_at.is_some()&&self.paid_entry_id.is_none(){self.amount_cents-self.refunded_cents}else{0},"last_result":self.last_result,"version":self.version,"created_at":self.created_at,"channel":self.channel,"reader_id":self.reader_id,"cancel_requested":self.reader_cancel_requested_at.is_some()&&["creating","open"].contains(&self.status.as_str())})
     }
 }
 fn db(s: &State) -> Result<&PgPool> {
@@ -481,10 +497,18 @@ async fn checkout_with(
     a.scheduling()?;
     reason(&input.reason)?;
     input.reason = input.reason.trim().to_owned();
-    if !input.patient_present || input.request_id.is_nil() {
+    let unattended = input.saved_card_setup_id.is_some() || input.after_saved_card.is_some();
+    if (!input.patient_present && !unattended) || input.request_id.is_nil() {
         return Err(Error::Invalid(
             "the patient must be present and agree to this payment",
         ));
+    }
+    if input.reader_id.is_some() as u8
+        + input.saved_card_setup_id.is_some() as u8
+        + input.after_saved_card.is_some() as u8
+        > 1
+    {
+        return Err(Error::Invalid("choose one way to take this payment"));
     }
     if input
         .reader_id
@@ -585,9 +609,37 @@ async fn checkout_with(
             "no collectible installment balance of at least 50 cents remains",
         ));
     }
+    if let Some(setup) = input.saved_card_setup_id {
+        // Only a card saved with the patient's agreement to later charges may be charged.
+        crate::saved_card_payments::eligible_setup(
+            &mut tx,
+            a.tenant_id,
+            patient,
+            setup,
+            &binding,
+            &provider_account,
+            mode,
+        )
+        .await?;
+    }
+    if let Some(prior) = input.after_saved_card {
+        let asked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM invoice_checkout_attempts WHERE tenant_id=$1 AND id=$2 AND plan_id=$3 AND installment_number=$4 AND channel='saved_card' AND status='expired' AND last_result='saved_card_needs_patient')").bind(a.tenant_id).bind(prior).bind(p.id).bind(number).fetch_one(&mut *tx).await?;
+        if !asked {
+            return Err(Error::Invalid(
+                "the patient must be present and agree to this payment",
+            ));
+        }
+    }
+    let channel = if input.reader_id.is_some() {
+        "reader"
+    } else if input.saved_card_setup_id.is_some() {
+        "saved_card"
+    } else {
+        "hosted"
+    };
     let id = Uuid::new_v4();
     let return_url = format!("{}/?invoice_checkout={id}", origin.trim_end_matches('/'));
-    sqlx::query("INSERT INTO invoice_checkout_attempts(tenant_id,id,patient_id,account_id,plan_id,installment_number,setting_id,credential_revision,installation_id,provider_account_id,livemode,amount_cents,request_id,creation_hash,requested_by,reason,return_url,channel,reader_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)").bind(a.tenant_id).bind(id).bind(patient).bind(p.account_id).bind(p.id).bind(number).bind(binding.setting).bind(binding.revision).bind(binding.installation).bind(provider_account).bind(mode).bind(amount).bind(input.request_id).bind(hash).bind(a.sub).bind(input.reason.trim()).bind(return_url).bind(if input.reader_id.is_some(){"reader"}else{"hosted"}).bind(&input.reader_id).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO invoice_checkout_attempts(tenant_id,id,patient_id,account_id,plan_id,installment_number,setting_id,credential_revision,installation_id,provider_account_id,livemode,amount_cents,request_id,creation_hash,requested_by,reason,return_url,channel,reader_id,saved_card_setup_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)").bind(a.tenant_id).bind(id).bind(patient).bind(p.account_id).bind(p.id).bind(number).bind(binding.setting).bind(binding.revision).bind(binding.installation).bind(provider_account).bind(mode).bind(amount).bind(input.request_id).bind(hash).bind(a.sub).bind(input.reason.trim()).bind(return_url).bind(channel).bind(&input.reader_id).bind(input.saved_card_setup_id).execute(&mut *tx).await?;
     sqlx::query(
         "UPDATE patient_installment_plans SET version=version+1 WHERE tenant_id=$1 AND id=$2",
     )
@@ -600,7 +652,11 @@ async fn checkout_with(
         a,
         p.id,
         Some(id),
-        "collection_reserved_patient_present",
+        match (channel, input.after_saved_card) {
+            ("saved_card", _) => "collection_reserved_saved_card",
+            (_, Some(_)) => "collection_reserved_card_link_for_patient",
+            _ => "collection_reserved_patient_present",
+        },
     )
     .await?;
     tx.commit().await?;
@@ -830,6 +886,18 @@ async fn process(
         )
         .await;
     }
+    if r.channel == "saved_card" {
+        drop(tx);
+        return crate::saved_card_payments::drive(
+            pool,
+            a,
+            crate::reader_payments::Kind::Invoice,
+            id,
+            broker,
+            policy,
+        )
+        .await;
+    }
     if !policy.permits(r.livemode)
         || ["expired", "refunded"].contains(&r.status.as_str())
         || (!allow_create && r.provider_session_id.is_none())
@@ -844,6 +912,12 @@ async fn process(
     event(&mut tx, a, r.plan_id, Some(id), "provider_poll_started").await?;
     tx.commit().await?;
     let binding = r.binding();
+    if r.reader_cancel_requested_at.is_some()
+        && r.provider_captured_at.is_none()
+        && ["creating", "open"].contains(&r.status.as_str())
+    {
+        return cancel_link(pool, a, &r, lease, broker, policy).await;
+    }
     let fetched = broker
         .call(
             pool,
@@ -935,6 +1009,272 @@ async fn process(
         fail(pool, a, id, lease, true).await?
     }
     Ok(())
+}
+/// Staff cancelled an unfinished card link. The link is expired at the processor and whatever
+/// really happened is recorded: a link the patient already paid stays paid.
+async fn cancel_link(
+    pool: &PgPool,
+    a: &Actor,
+    r: &Attempt,
+    lease: Uuid,
+    broker: &dyn Broker,
+    policy: Policy,
+) -> Result<()> {
+    let id = r.id;
+    let reply = broker
+        .reply(
+            pool,
+            &r.binding(),
+            Method::POST,
+            &format!("/hosted-checkout-requests/{id}/expire"),
+            Some(json!({"account_id":r.provider_account_id,"livemode":r.livemode})),
+        )
+        .await;
+    let Ok(reply) = reply else {
+        return fail(pool, a, id, lease, false).await;
+    };
+    match reply.status {
+        // The link never existed at the processor and can no longer be created.
+        200..=299 if reply.body.get("session") == Some(&Value::Null) => {
+            if hosted::envelope_bound(&r.evidence(), &reply.body).is_ok()
+                && reply.body["cancelled"] == true
+            {
+                close_cancelled(pool, a, r, lease).await
+            } else {
+                fail(pool, a, id, lease, true).await
+            }
+        }
+        200..=299 => {
+            if apply_noted(
+                pool,
+                a,
+                id,
+                lease,
+                &reply.body,
+                policy,
+                Some("link_cancelled"),
+            )
+            .await
+            .is_err()
+            {
+                fail(pool, a, id, lease, true).await?;
+            }
+            Ok(())
+        }
+        404 if r.provider_session_id.is_none() => close_cancelled(pool, a, r, lease).await,
+        _ => fail(pool, a, id, lease, false).await,
+    }
+}
+async fn close_cancelled(pool: &PgPool, a: &Actor, r: &Attempt, lease: Uuid) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    let changed = sqlx::query("UPDATE invoice_checkout_attempts SET status='expired',last_result='link_cancelled',checkout_url=NULL,lease_id=NULL,lease_until=NULL,version=version+1,updated_at=now() WHERE tenant_id=$1 AND id=$2 AND lease_id=$3 AND provider_captured_at IS NULL AND paid_entry_id IS NULL")
+        .bind(a.tenant_id).bind(r.id).bind(lease).execute(&mut *tx).await?.rows_affected();
+    if changed == 1 {
+        sqlx::query(
+            "UPDATE patient_installment_plans SET version=version+1 WHERE tenant_id=$1 AND id=$2",
+        )
+        .bind(a.tenant_id)
+        .bind(r.plan_id)
+        .execute(&mut *tx)
+        .await?;
+        event(&mut tx, a, r.plan_id, Some(r.id), "link_cancelled").await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+async fn link_cancel(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>> {
+    Ok(Json(
+        link_cancel_with(&s, &a, id, &HttpBroker, Policy::current()).await?,
+    ))
+}
+/// The request is recorded first, so the link is cancelled on the next pass even if the
+/// payment service cannot be reached right now.
+async fn link_cancel_with(
+    s: &State,
+    a: &Actor,
+    id: Uuid,
+    broker: &dyn Broker,
+    policy: Policy,
+) -> Result<Value> {
+    authorize(s, a, "edit").await?;
+    let pool = db(s)?;
+    let mut tx = pool.begin().await?;
+    billing::tenant_lock(&mut tx, a).await?;
+    let r = attempt(&mut tx, a, id).await?;
+    if r.channel != "hosted" {
+        return Err(Error::Invalid("this payment is not a card link"));
+    }
+    if ["creating", "open"].contains(&r.status.as_str())
+        && r.provider_captured_at.is_none()
+        && r.reader_cancel_requested_at.is_none()
+    {
+        sqlx::query("UPDATE invoice_checkout_attempts SET reader_cancel_requested_at=now(),next_poll_at=now(),version=version+1,updated_at=now() WHERE tenant_id=$1 AND id=$2")
+            .bind(a.tenant_id).bind(id).execute(&mut *tx).await?;
+        sqlx::query(
+            "UPDATE patient_installment_plans SET version=version+1 WHERE tenant_id=$1 AND id=$2",
+        )
+        .bind(a.tenant_id)
+        .bind(r.plan_id)
+        .execute(&mut *tx)
+        .await?;
+        event(&mut tx, a, r.plan_id, Some(id), "link_cancel_requested").await?;
+    }
+    tx.commit().await?;
+    process(pool, a, id, broker, policy, true).await?;
+    operation_with(s, a, id).await
+}
+const BALANCE_REASON: &str = "Balance charged to card on file";
+/// Charge the whole reviewed balance of an invoice to a saved card. The balance becomes a
+/// one-payment plan, so the charge is reserved, posted and reviewed exactly like any other
+/// invoice card payment.
+#[allow(clippy::too_many_arguments)]
+async fn balance_charge_with(
+    pool: &PgPool,
+    a: &Actor,
+    patient: Uuid,
+    invoice_id: Uuid,
+    input: BalanceCharge,
+    origin: &str,
+    broker: &dyn Broker,
+    policy: Policy,
+) -> Result<Value> {
+    a.scheduling()?;
+    if input.request_id.is_nil() {
+        return Err(Error::Invalid("invalid payment request"));
+    }
+    let binding = hosted::current_binding(pool, a.tenant_id, broker).await?;
+    let status = broker
+        .call(pool, &binding, Method::GET, "/status", None)
+        .await?;
+    let (provider_account, mode) =
+        hosted::status_account(&binding, &status, policy).map_err(|_| {
+            Error::Conflict(
+            "invoice card collection is unavailable; review the connected account and payment mode",
+        )
+        })?;
+    let mut tx = pool.begin().await?;
+    billing::tenant_lock(&mut tx, a).await?;
+    // The card is checked before anything is saved, so a refused card leaves no plan behind.
+    crate::saved_card_payments::eligible_setup(
+        &mut tx,
+        a.tenant_id,
+        patient,
+        input.saved_card_setup_id,
+        &binding,
+        &provider_account,
+        mode,
+    )
+    .await?;
+    // A balance charge that was declined leaves its one-payment plan; the next try reuses it.
+    let existing: Option<(Uuid, String, i32)> = sqlx::query_as("SELECT id,reason,jsonb_array_length(schedule) FROM patient_installment_plans WHERE tenant_id=$1 AND patient_id=$2 AND invoice_id=$3")
+        .bind(a.tenant_id)
+        .bind(patient)
+        .bind(invoice_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let plan_id = if let Some((id, reason, payments)) = existing {
+        if reason != BALANCE_REASON || payments != 1 {
+            return Err(Error::Conflict(
+                "This invoice has a payment plan. Charge the card from the plan.",
+            ));
+        }
+        tx.commit().await?;
+        id
+    } else {
+        let i = invoice(&mut tx, a, patient, invoice_id).await?;
+        let b = balance(&mut tx, a, &i, None, mode).await?;
+        if let Some(block) = b.blocked {
+            return Err(Error::Conflict(block));
+        }
+        if b.remaining != input.amount_cents {
+            return Err(Error::Conflict(
+                "The balance changed. Check the amount and try again.",
+            ));
+        }
+        let version = b.account.version;
+        tx.commit().await?;
+        let created = create_with(
+            pool,
+            a,
+            patient,
+            Create {
+                invoice_id,
+                livemode: mode,
+                installments: vec![Installment {
+                    due_on: Utc::now().date_naive(),
+                    amount_cents: input.amount_cents,
+                }],
+                request_id: input.request_id,
+                reason: BALANCE_REASON.into(),
+                consent: true,
+            },
+            version,
+            policy,
+        )
+        .await?;
+        created["id"]
+            .as_str()
+            .and_then(|id| Uuid::parse_str(id).ok())
+            .ok_or(Error::Invalid("payment plan unavailable"))?
+    };
+    let version: i64 = sqlx::query_scalar(
+        "SELECT version FROM patient_installment_plans WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(plan_id)
+    .fetch_one(pool)
+    .await?;
+    checkout_with(
+        pool,
+        a,
+        patient,
+        plan_id,
+        1,
+        Checkout {
+            request_id: input.request_id,
+            amount_cents: input.amount_cents,
+            reason: BALANCE_REASON.into(),
+            patient_present: false,
+            reader_id: None,
+            saved_card_setup_id: Some(input.saved_card_setup_id),
+            after_saved_card: None,
+        },
+        version,
+        origin,
+        broker,
+        policy,
+    )
+    .await
+}
+async fn balance_charge(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((patient, invoice_id)): Path<(Uuid, Uuid)>,
+    Json(input): Json<BalanceCharge>,
+) -> Result<Response> {
+    authorize(&s, &a, "create").await?;
+    let policy = Policy::current();
+    if policy.production && !policy.live_enabled {
+        return Ok(unavailable());
+    }
+    Ok(Json(
+        balance_charge_with(
+            db(&s)?,
+            &a,
+            patient,
+            invoice_id,
+            input,
+            s.browser.as_ref().ok_or(Error::NotFound)?.origin(),
+            &HttpBroker,
+            policy,
+        )
+        .await?,
+    )
+    .into_response())
 }
 /// History entry for a reader payment state change; the plan version moves with it.
 pub(crate) async fn reader_event(
@@ -1197,6 +1537,8 @@ pub fn router() -> Router<State> {
  .route("/api/v1/billing/invoice-checkouts/{id}",get(operation))
  .route("/api/v1/billing/invoice-checkouts/{id}/refresh",post(refresh))
  .route("/api/v1/billing/invoice-checkouts/{id}/reader-cancel",post(reader_cancel))
+ .route("/api/v1/billing/invoice-checkouts/{id}/cancel",post(link_cancel))
+ .route("/api/v1/billing/patients/{patient}/invoices/{invoice}/saved-card-charge",post(balance_charge))
 }
 async fn poll(pool: &PgPool, broker: &dyn Broker, policy: Policy) -> Result<()> {
     let due:Vec<(Uuid,Uuid)>=sqlx::query_as("SELECT tenant_id,id FROM invoice_checkout_attempts WHERE status NOT IN ('expired','refunded') AND ((livemode AND $1) OR (NOT livemode AND $2)) AND next_poll_at<=now() AND (lease_until IS NULL OR lease_until<now()) ORDER BY next_poll_at LIMIT 20").bind(policy.live_enabled).bind(!policy.production).fetch_all(pool).await?;

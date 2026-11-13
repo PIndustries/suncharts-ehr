@@ -2657,7 +2657,7 @@
     "/api/v1/migrations/{id}/reconcile": {
       "post": {
         "operationId": "reconcileMigration",
-        "description": "Checks declared counts, external identities, patient links and MRN conflicts; digest covers manifest and ordered items.",
+        "description": "Checks declared counts, external identities, patient links and MRN conflicts; digest covers manifest and ordered items. The report lists every staged patient as new, linked by an earlier import, an exact single match to an existing chart (attach pre-selected) or a possible match needing an owner decision; ready_to_import is false while any decision is missing.",
         "responses": {
           "200": {
             "description": "Success",
@@ -2705,10 +2705,96 @@
         }
       ]
     },
+    "/api/v1/migrations/{id}/patient-decisions": {
+      "post": {
+        "operationId": "decideMigrationPatient",
+        "description": "Owner only. For a staged patient that matches an existing chart (same normalized family name, first given name and birth date, or a weaker match), record attach with the chosen candidate chart, or create. Only listed candidates are accepted and one chart takes one imported patient. Not available after import. Audited.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Scope or role denied"
+          },
+          "404": {
+            "description": "Record not found in the authenticated clinic"
+          },
+          "409": {
+            "description": "Conflicting state"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "source_id",
+                  "action"
+                ],
+                "properties": {
+                  "source_id": {
+                    "type": "string"
+                  },
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "attach",
+                      "create"
+                    ]
+                  },
+                  "patient_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Required for attach; omitted for create."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "oauth2": [
+              "migration.manage"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ]
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ]
+    },
     "/api/v1/migrations/{id}/commit": {
       "post": {
         "operationId": "commitMigration",
-        "description": "Owner only. Reconciled digest required. Atomic patient and immutable historical-record import with external identity mapping. Source signatures stay unverified; no native signing or cutover.",
+        "description": "Owner only. Reconciled digest required and every matching patient needs a stored attach or create decision. Atomic import: attached patients are linked to the chosen chart without changing it, new charts get identity and contact details from the source, and all other records become immutable historical records with external identity mapping. Source signatures stay unverified; no native signing or cutover.",
         "responses": {
           "200": {
             "description": "Success",
@@ -2749,6 +2835,60 @@
                 ]
               }
             }
+          }
+        },
+        "security": [
+          {
+            "oauth2": [
+              "migration.manage"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ]
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ]
+    },
+    "/api/v1/migrations/{id}/patient-links": {
+      "get": {
+        "operationId": "migrationPatientLinks",
+        "description": "Owner only; committed jobs only. Source patient id to chart id for every patient in the job, whether the chart was created by the import or attached by decision. Audited.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Scope or role denied"
+          },
+          "404": {
+            "description": "Record not found in the authenticated clinic"
+          },
+          "409": {
+            "description": "Conflicting state"
           }
         },
         "security": [
@@ -3479,10 +3619,101 @@
         }
       ]
     },
+    "/api/v1/patients/{patient}/clinical-reconcile/{kind}": {
+      "post": {
+        "operationId": "reconcileImportedClinicalList",
+        "description": "Clinician/owner only. Creates one native entry per listed imported problem or medication of this patient, each with its own source link, carried source codes (ICD-10-CM, SNOMED CT, RxNorm, NDC) and attributed revision. Already reconciled records are skipped; records whose suggested entry is not valid are returned in needs_review and left for individual reconciliation. No native signature is created.",
+        "security": [
+          {
+            "oauth2": [
+              "clinical.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Scope or role denied"
+          },
+          "404": {
+            "description": "Record not found in the authenticated clinic"
+          },
+          "409": {
+            "description": "Conflicting state"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "history_ids"
+                ],
+                "properties": {
+                  "history_ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 200,
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "patient",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "kind",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "enum": [
+              "problem",
+              "medication"
+            ]
+          }
+        }
+      ]
+    },
     "/api/v1/patients/{patient}/history/{id}/mapping": {
       "get": {
         "operationId": "previewClinicalSourceMapping",
-        "description": "Clinician/owner only. Suggested source system list mapping, review issues, original source fields and existing native_entry_id if reconciled. Preview never mutates source or creates an entry; explicitly POST ClinicalChange to reconcile. Mapping is not source identity authentication, terminology validation or eRx.",
+        "description": "Clinician/owner only. Suggested source system list mapping, review issues, original source fields and existing native_entry_id if reconciled. Preview never mutates source or creates an entry; explicitly POST ClinicalChange to reconcile. Structured source codes (ICD-10-CM, SNOMED CT, RxNorm, NDC) are carried into the suggested entry as recorded. Mapping is not source identity authentication, terminology validation or eRx.",
         "security": [
           {
             "oauth2": [
@@ -10720,6 +10951,96 @@
           }
         }
       }
+    },
+    "/api/v1/patients/{id}/history/{record}/use-contact": {
+      "post": {
+        "operationId": "useImportedContactValue",
+        "summary": "Copy one imported contact value into an empty native field",
+        "description": "Owner, clinician or front desk. Copies address, phone, email, administrative_gender or language from the imported record's contact block into the native contact profile only when that native field is empty; a filled field returns 409. Appends an attributed contact revision.",
+        "security": [
+          {
+            "oauth2": [
+              "clinical.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Scope or role denied"
+          },
+          "404": {
+            "description": "Record not found in the authenticated clinic"
+          },
+          "409": {
+            "description": "Conflicting state"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "field"
+                ],
+                "properties": {
+                  "field": {
+                    "type": "string",
+                    "enum": [
+                      "address",
+                      "phone",
+                      "email",
+                      "administrative_gender",
+                      "language"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "record",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ]
     },
     "/api/v1/billing/provider-settings": {
       "get": {
@@ -34938,7 +35259,7 @@
     "/api/v1/billing/patients/{id}/payment-setups": {
       "post": {
         "summary": "Reserve explicitly consented hosted card setup",
-        "description": "Billing create plus scheduling role required. Reserves exact patient/account/mode/installation/credentials and consent actor before broker I/O. Patient-present card saving does not authorize recurring charges. Retry only the same request UUID within the bounded 23-hour window; unknown outcomes remain reserved. No card fields or financial ledger mutation. Return URL is generated server-side.",
+        "description": "Billing create plus scheduling role required. Reserves exact patient/account/mode/installation/credentials and consent actor before broker I/O. The Stripe page shows the practice wording for later charges; the setup is stored with `consent_scope` `later_charges`, its `consent_version` and, once the processor confirms the card, `consent_recorded_at`. Cards saved earlier keep `patient_present` and cannot be charged later. Saving a card does not authorize recurring charges. Retry only the same request UUID within the bounded 23-hour window; unknown outcomes remain reserved. No card fields or financial ledger mutation. Return URL is generated server-side.",
         "parameters": [
           {
             "name": "id",
@@ -36433,6 +36754,238 @@
           }
         ],
         "description": "Billing edit. Records the cancel request, resets the reader and cancels the payment at the processor if no card was taken. If a card is being approved at that moment the payment is left alone and its real outcome is recorded. No refund is initiated here."
+      }
+    },
+    "/api/v1/patients/{p}/appointments/{a}/copay-checkouts/{id}/cancel": {
+      "parameters": [
+        {
+          "name": "p",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "a",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "cancelAppointmentCopayCardLink",
+        "summary": "Cancel an unfinished copay card link",
+        "description": "Billing-write staff. Records the cancel request, then expires the Stripe Checkout Session through SunCharts Connect and records what really happened: `expired` with `last_result` `link_cancelled`, or `paid` when the patient completed the link in the same moment. `cancel_requested` is true while the payment service has not confirmed yet; the worker finishes the cancellation. Only a hosted card link can be cancelled here. No refund is initiated here.",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "billing.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current durable operation state; financial effects require verified provider evidence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "operation": {
+                      "$ref": "#/components/schemas/HostedCopayOperation"
+                    }
+                  },
+                  "required": [
+                    "operation"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input or unavailable/mismatched payment mode"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Billing permission denied"
+          },
+          "404": {
+            "description": "Tenant/patient/appointment-scoped record not found"
+          },
+          "409": {
+            "description": "Conflicting retry, pending collection, unsafe balance or over-limit history"
+          },
+          "500": {
+            "description": "Database/audit failure; mutation rolled back"
+          }
+        }
+      }
+    },
+    "/api/v1/billing/invoice-checkouts/{id}/cancel": {
+      "post": {
+        "summary": "Cancel an unfinished invoice or installment card link",
+        "tags": [
+          "Billing"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated tenant-scoped result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvoiceCheckoutResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Billing permission required"
+          },
+          "409": {
+            "description": "Responsibility, version, reservation or idempotency conflict"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "description": "Billing edit. Records the cancel request, then expires the Stripe Checkout Session through SunCharts Connect and records what really happened: `expired` with `last_result` `link_cancelled`, or `paid` when the patient completed the link in the same moment. Only a hosted card link can be cancelled here. No refund is initiated here."
+      }
+    },
+    "/api/v1/billing/payment-setups/{id}/cancel": {
+      "post": {
+        "summary": "Cancel an unfinished hosted card setup link",
+        "description": "Billing edit plus scheduling role required. Records who cancelled and when, expires the Stripe Checkout Session through SunCharts Connect and stores what really happened: `expired` with `cancelled` true, or `succeeded` when the patient saved the card in the same moment. Another card setup can be started as soon as this one is `expired`. Never creates a customer, setup or payment.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fresh minimized provider evidence; never a payment or ledger entry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientPaymentSetup"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/billing/patients/{patient}/invoices/{invoice}/saved-card-charge": {
+      "post": {
+        "summary": "Charge a reviewed invoice balance to a card on file",
+        "tags": [
+          "Billing"
+        ],
+        "description": "Billing create. Charges the whole remaining reviewed balance of an invoice without a payment plan to a card the patient saved with consent to later charges. The balance becomes a one-payment plan and the charge is an invoice card attempt with `channel` `saved_card`, posted by the same code as hosted checkout and reader payments. A card saved for in-person use is refused with 409 before anything is saved. The result is `paid`, or `expired` with `last_result` `saved_card_declined`, `saved_card_needs_patient`, `saved_card_not_eligible` or `saved_card_unavailable`. Retrying the same `request_id` never charges twice.",
+        "parameters": [
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "invoice",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "request_id",
+                  "amount_cents",
+                  "saved_card_setup_id"
+                ],
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "amount_cents": {
+                    "type": "integer",
+                    "minimum": 50,
+                    "maximum": 100000000
+                  },
+                  "saved_card_setup_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated tenant-scoped result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvoiceCheckoutResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Billing permission required"
+          },
+          "409": {
+            "description": "Responsibility, version, reservation or idempotency conflict"
+          }
+        }
       }
     }
   },

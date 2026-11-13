@@ -57,7 +57,9 @@ impl Source for HttpSource {
                 "Patient payment request is uncertain. Keep this request and refresh its status.",
             )
         })?;
-        if reply.status() == reqwest::StatusCode::NOT_FOUND && method == Method::GET {
+        if reply.status() == reqwest::StatusCode::NOT_FOUND
+            && (method == Method::GET || path.ends_with("/expire"))
+        {
             return Err(Error::NotFound);
         }
         if !reply.status().is_success() {
@@ -448,6 +450,28 @@ async fn read_with(
     c.unchanged(&mut tx, &a).await?;
     let active:Option<Value>=sqlx::query_scalar("SELECT jsonb_build_object('request_id',request_id,'status',status) FROM patient_payment_setups WHERE tenant_id=$1 AND patient_id=$2 AND status IN ('creating','open','pending','needs_review') ORDER BY created_at DESC LIMIT 1").bind(a.tenant_id).bind(patient).fetch_optional(&mut *tx).await?;
     out["active_setup"] = json!(active);
+    // A card may be charged later only when the patient agreed to that while saving it. Every
+    // other card on file was saved for use with the patient present.
+    let chargeable = crate::saved_card_payments::chargeable_cards(
+        &mut tx,
+        a.tenant_id,
+        patient,
+        c.setting.id,
+        c.installation,
+        &c.account,
+        c.live,
+    )
+    .await?;
+    if let Some(items) = out["payment_methods"]["data"]["items"].as_array_mut() {
+        for item in items {
+            let setup = chargeable
+                .iter()
+                .find(|(method, _)| item["id"] == method.as_str())
+                .map(|(_, setup)| *setup);
+            item["charge_later"] = json!(setup.is_some());
+            item["setup_id"] = json!(setup);
+        }
+    }
     crate::postgres::audit(&mut tx, &a, "payment.patient_profile_read", patient).await?;
     tx.commit().await?;
     Ok(response(out))

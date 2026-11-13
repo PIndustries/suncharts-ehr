@@ -16,9 +16,11 @@ review. The Stripe invoice and subscription lists are separate provider records,
 not additional native encounter charges. An unavailable provider section is not a
 zero balance or an empty customer record.
 
-**Add payment method** opens Stripe-hosted setup after explicit permission to save
-a card for patient-present use. No card number is entered or stored in the EHR.
-This step does not collect a payment or authorize recurring charges. The EHR binds
+**Add card** opens Stripe-hosted setup. The Stripe page shows the practice's wording
+above the Save button, and by saving the card the patient agrees that the practice may
+charge it later (see "Cards on file and charging a card later"). No card number is
+entered or stored in the EHR. This step does not collect a payment or authorize
+recurring charges. The EHR binds
 the request to the patient, practice installation, Stripe account and mode before
 calling Connect. A verified SetupIntent and attached payment method establish
 completion; returning from the browser alone does not. An interrupted setup keeps
@@ -435,8 +437,91 @@ A reader payment leaves `creating`/`open` within about five minutes without anyo
 acting, so an abandoned reader payment does not hold up an upgrade.
 
 A copay or invoice can have one unresolved card attempt at a time, so an open card
-link for the same appointment or account must finish or expire before a reader payment
-can be started, and the reverse.
+link for the same appointment or account must finish, be cancelled or expire before a
+reader payment can be started, and the reverse.
+
+## Cancelling an unfinished card link
+
+**Cancel link** sits beside every open card link: a copay link, an invoice or
+installment link, and a card-setup link under Cards on file. Afterwards the link reads
+**Cancelled** and staff can start another payment or link at once.
+
+| Route | Roles | Use |
+| --- | --- | --- |
+| `POST /api/v1/patients/{patient}/appointments/{appointment}/copay-checkouts/{id}/cancel` | Owner, clinician, front desk | Cancel an open copay card link. |
+| `POST /api/v1/billing/invoice-checkouts/{id}/cancel` | Billing edit | Cancel an open invoice or installment card link. |
+| `POST /api/v1/billing/payment-setups/{id}/cancel` | Billing edit | Cancel an open card-setup link. |
+
+The request is recorded first (`reader_cancel_requested_at` on the attempt,
+`cancelled_at`/`cancelled_by` on the setup), then SunCharts Connect expires the Stripe
+Checkout Session and the EHR records what really happened. An expired link becomes
+`expired` with `last_result` `link_cancelled`. A link the patient completed in the same
+moment is recorded as paid (or as a saved card) and is never shown as cancelled. If
+SunCharts Connect cannot be reached the request stays recorded, the response shows
+`cancel_requested`, and the worker finishes the cancellation on its next pass.
+Cancelling again changes nothing.
+
+## Cards on file and charging a card later
+
+Every card saved from build 26.11.11.23 on is saved with the patient's agreement to
+later charges. The card-setup row keeps `consent_scope` `later_charges`, the
+`consent_version` of the wording shown on the Stripe page (`card_on_file_2026_11`) and
+`consent_recorded_at`, the time the processor confirmed the saved card. The wording is:
+
+> By saving your card, you agree that this practice may charge it later for amounts you
+> owe, such as copays, visit balances and payment plan payments, without asking you to
+> enter your card again. You can ask the practice to remove your card at any time.
+
+Cards saved earlier keep `consent_scope` `patient_present`. They stay listed under
+Cards on file as **Saved for in-person use - ask the patient to save it again to charge
+it later**, are never offered for a charge, and are refused by the EHR and again by
+SunCharts Connect if a request names one. The payment profile marks each card with
+`charge_later` and, when it is true, the `setup_id` to charge it with.
+
+**Charge card on file** is offered on the appointment copay controls, on each
+installment's collection form, and under **Balance due** on the patient's billing
+overview. Staff see the eligible cards and the amount, press the Charge button, and
+read the result in the same place:
+
+| Result | `status` / `last_result` | What staff do |
+| --- | --- | --- |
+| Approved | `paid` / `provider_verified` | Nothing. The receipt or ledger payment is posted. |
+| Declined | `expired` / `saved_card_declined` | Try another card or another way to pay. |
+| The bank needs the patient to confirm - send a card link instead | `expired` / `saved_card_needs_patient` | Press **Create card link**; the link for the same amount is created at once. |
+| This card was saved for in-person use | `expired` / `saved_card_not_eligible` | Ask the patient to save the card again. |
+| Card was not charged | `expired` / `saved_card_unavailable`, `saved_card_not_sent` | Try again. |
+
+A saved-card charge is the existing card attempt with `channel` `saved_card`
+(`0104_saved_card_charges.sql`, additive; existing rows are unchanged):
+
+- It is started by the existing routes with `saved_card_setup_id` in the body:
+  `POST .../copay-checkouts`, or
+  `POST /api/v1/billing/patients/{patient}/installment-plans/{plan}/installments/{number}/checkout`
+  (no `patient_present` needed). A card link that follows a
+  `saved_card_needs_patient` charge names it in `after_saved_card` and needs no
+  `patient_present` either.
+- `POST /api/v1/billing/patients/{patient}/invoices/{invoice}/saved-card-charge`
+  (`request_id`, `amount_cents`, `saved_card_setup_id`) charges the whole reviewed
+  balance of an invoice that has no payment plan. The balance becomes a one-payment
+  plan, so it is reserved, posted and reviewed like any other invoice card payment.
+  The card is checked before anything is saved.
+- It is verified and posted by the same code as hosted checkout and reader payments,
+  under the same rule for paid, and refunds are observed the same way.
+- Only the amount, the patient's opaque identifier, the card setup's identifier and
+  the attempt's own identifier are sent to SunCharts Connect. No application fee is
+  taken.
+- The charge is sent once per attempt. SunCharts Connect answers a repeat of the same
+  request with what already happened, and a request older than ten minutes is only
+  read back, never sent again. A declined charge or one the bank wants confirmed is
+  cancelled at Stripe before the attempt is closed.
+
+The card link copay form no longer asks staff to tick a review box, and the
+installment card link form sends a standard reason when the reason is left blank. The
+cash and check receipt form keeps its confirmation, and the installment card link keeps
+its patient-present box.
+
+On a development build test payments are labelled **Test payment**; a production build
+shows no label.
 
 ## Card reader ordering
 

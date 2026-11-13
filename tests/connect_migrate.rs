@@ -8904,3 +8904,249 @@ async fn claimmd_empty_terminal_era_page_finishes_only_previously_persisted_high
     );
     task.abort();
 }
+
+/// Stages the package `scripts/import_ccda.py` builds from synthetic C-CDA documents.
+/// Both patients already have a hand-entered chart; the owner attaches one and asks for
+/// a new chart for the other. A repeated import follows the recorded links.
+#[tokio::test]
+async fn ccda_package_imports_onto_the_charts_the_owner_chose_and_reimports_cleanly() {
+    let (r, db, a, _) = setup().await;
+    let auth = bearer(&a);
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/ccda_import_synthetic.json")).unwrap();
+    let mut manual = Vec::new();
+    for (given, family, birth) in [
+        ("Avery Q", "Synthetic", "1990-01-01"),
+        ("Blake Q", "Example", "1985-12-31"),
+    ] {
+        let (status, _, patient) = json_call(
+            &r,
+            "POST",
+            "/api/v1/patients",
+            Some(&auth),
+            None,
+            json!({"given_name":given,"family_name":family,"birth_date":birth}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        manual.push(patient["id"].as_str().unwrap().parse::<Uuid>().unwrap());
+    }
+    let items = fixture["items"].as_array().unwrap();
+    let mut imported = Value::Null;
+    for round in 0..2 {
+        let (status, _, job) = json_call(
+            &r,
+            "POST",
+            "/api/v1/migrations",
+            Some(&auth),
+            None,
+            fixture["manifest"].clone(),
+        )
+        .await;
+        assert_eq!(status, 200);
+        let id = job["id"].as_str().unwrap();
+        let mut batch: Vec<Value> = Vec::new();
+        for (index, item) in items.iter().enumerate() {
+            batch.push(item.clone());
+            let next = items.get(index + 1).map_or(0, |v| v.to_string().len());
+            if batch.len() == 50
+                || next == 0
+                || json!({"items":batch}).to_string().len() + next > 60000
+            {
+                let (status, _, staged) = json_call(
+                    &r,
+                    "POST",
+                    &format!("/api/v1/migrations/{id}/items"),
+                    Some(&auth),
+                    None,
+                    json!({"items":batch}),
+                )
+                .await;
+                assert_eq!(status, 200, "{staged}");
+                batch.clear();
+            }
+        }
+        let (_, _, report) = json_call(
+            &r,
+            "POST",
+            &format!("/api/v1/migrations/{id}/reconcile"),
+            Some(&auth),
+            None,
+            Value::Null,
+        )
+        .await;
+        assert_eq!(report["errors"], json!([]), "round {round}");
+        assert_eq!(report["ready_to_import"], true);
+        assert_eq!(report["counts"], fixture["manifest"]["expected_counts"]);
+        let people = report["patients"].as_array().unwrap();
+        if round == 0 {
+            // Both match a hand-entered chart exactly, so attaching is pre-selected.
+            assert!(people.iter().all(|p| p["status"] == "match"
+                && p["decision"]["action"] == "attach"
+                && p["decision"]["preselected"] == true));
+            let (status, _, decided) = json_call(
+                &r,
+                "POST",
+                &format!("/api/v1/migrations/{id}/patient-decisions"),
+                Some(&auth),
+                None,
+                json!({"source_id":"1001","action":"create"}),
+            )
+            .await;
+            assert_eq!(status, 200, "{decided}");
+            assert_eq!(decided["report"]["ready_to_import"], true);
+        } else {
+            assert!(people.iter().all(|p| p["status"] == "linked"));
+        }
+        let (status, _, done) = json_call(
+            &r,
+            "POST",
+            &format!("/api/v1/migrations/{id}/commit"),
+            Some(&auth),
+            None,
+            json!({"digest":report["digest"]}),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(done["status"], "imported");
+        if round == 0 {
+            imported = done;
+        }
+        // A second identical job maps every record to the first import and adds nothing.
+        let people: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT family_name,count(*) FROM patients GROUP BY family_name ORDER BY family_name",
+        )
+        .fetch_all(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            people,
+            vec![("Example".to_string(), 1), ("Synthetic".to_string(), 2)],
+            "the attached chart is reused; the declined match became a second chart"
+        );
+        let history: i64 = sqlx::query_scalar("SELECT count(*) FROM historical_records")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(history as usize, items.len() - 2);
+    }
+    assert_eq!(imported["cutover"]["allowed"], false);
+    let expected = |patient: &str| {
+        items
+            .iter()
+            .filter(|i| i["patient_source_id"] == patient)
+            .count()
+    };
+    let (_, _, linked) = json_call(
+        &r,
+        "GET",
+        &format!("/api/v1/patients/{}/history", manual[1]),
+        Some(&auth),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(linked["items"].as_array().unwrap().len(), expected("2002"));
+    let (_, _, unlinked) = json_call(
+        &r,
+        "GET",
+        &format!("/api/v1/patients/{}/history", manual[0]),
+        Some(&auth),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(unlinked["items"], json!([]));
+    let problem = linked["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "medical_problem")
+        .unwrap();
+    assert_eq!(problem["signature_origin"], "external_unverified");
+    let (status, _, mapping) = json_call(
+        &r,
+        "GET",
+        &format!(
+            "/api/v1/patients/{}/history/{}/mapping",
+            manual[1],
+            problem["id"].as_str().unwrap()
+        ),
+        Some(&auth),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(mapping["content"]["title"], "Synthetic spasticity");
+    assert_eq!(mapping["content"]["onset_date"], "2020-03-04");
+    assert_eq!(mapping["content"]["status"], "active");
+    assert_eq!(
+        mapping["content"]["codes"],
+        json!([{"system":"ICD-10-CM","code":"G80.1","display":"Synthetic spasticity"},
+            {"system":"SNOMED CT","code":"1234567","display":"Synthetic finding"}])
+    );
+    // The attached chart keeps its own contact details; the imported block sits beside the history.
+    let block = linked["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["source_data"]["contact"].is_object())
+        .unwrap();
+    assert_eq!(block["source_data"]["contact"]["phone"], "+1-555-0100");
+    let (_, _, native) = json_call(
+        &r,
+        "GET",
+        &format!("/api/v1/patients/{}/demographics", manual[1]),
+        Some(&auth),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(native["version"], 0);
+    let insurance = linked["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "insurance")
+        .unwrap();
+    assert_eq!(
+        insurance["source_data"]["coverage"]["member_id"],
+        "SYN-MEMBER-1"
+    );
+    // The committed job tells the attachment upload where each patient's files go.
+    let (status, _, links) = json_call(
+        &r,
+        "GET",
+        &format!(
+            "/api/v1/migrations/{}/patient-links",
+            imported["id"].as_str().unwrap()
+        ),
+        Some(&auth),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(links["items"][1]["source_patient_id"], "2002");
+    assert_eq!(links["items"][1]["patient_id"], json!(manual[1]));
+    assert_ne!(links["items"][0]["patient_id"], json!(manual[0]));
+    // A converted attachment is stored through the patient documents route; a retry replays.
+    let mut stored = Vec::new();
+    for _ in 0..2 {
+        let (status, _, document) = json_call(
+            &r,
+            "POST",
+            &format!("/api/v1/patients/{}/documents", manual[1]),
+            Some(&auth),
+            None,
+            fixture["document_upload"].clone(),
+        )
+        .await;
+        assert!(status.is_success(), "{document}");
+        assert_eq!(document["content_type"], "text/plain");
+        stored.push(document["id"].clone());
+    }
+    assert_eq!(stored[0], stored[1]);
+    db.close().await;
+}

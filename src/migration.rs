@@ -121,6 +121,7 @@ struct Job {
     version: i64,
     digest: Option<String>,
     report: Option<Value>,
+    patient_decisions: Value,
 }
 fn owner(a: &Actor) -> Result<()> {
     if matches!(a.role, Role::Owner) {
@@ -134,7 +135,7 @@ fn db(s: &State) -> Result<&sqlx::PgPool> {
 }
 async fn lock(tx: &mut Transaction<'_, Postgres>, a: &Actor, id: Uuid) -> Result<Job> {
     owner(a)?;
-    sqlx::query_as("SELECT id,source_instance,manifest,status,version,digest,report FROM migration_jobs WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
+    sqlx::query_as("SELECT id,source_instance,manifest,status,version,digest,report,patient_decisions FROM migration_jobs WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
         .bind(a.tenant_id).bind(id).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)
 }
 fn view(j: &Job) -> Value {
@@ -147,12 +148,14 @@ pub fn router() -> Router<State> {
         .route("/api/v1/migrations/{id}", get(status))
         .route("/api/v1/migrations/{id}/items", post(stage))
         .route("/api/v1/migrations/{id}/reconcile", post(reconcile))
+        .route("/api/v1/migrations/{id}/patient-decisions", post(decide))
         .route("/api/v1/migrations/{id}/commit", post(commit))
+        .route("/api/v1/migrations/{id}/patient-links", get(patient_links))
         .route("/api/v1/patients/{id}/history", get(history))
 }
 async fn list(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json<Value>> {
     owner(&a)?;
-    let rows:Vec<Job>=sqlx::query_as("SELECT id,source_instance,manifest,status,version,digest,report FROM migration_jobs WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 100").bind(a.tenant_id).fetch_all(db(&s)?).await?;
+    let rows:Vec<Job>=sqlx::query_as("SELECT id,source_instance,manifest,status,version,digest,report,patient_decisions FROM migration_jobs WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 100").bind(a.tenant_id).fetch_all(db(&s)?).await?;
     Ok(Json(
         json!({"items":rows.iter().map(view).collect::<Vec<_>>()}),
     ))
@@ -332,6 +335,8 @@ async fn inspect(
     a: &Actor,
     j: &Job,
     records: &[Item],
+    decisions: &Value,
+    preselect: bool,
 ) -> Result<Value> {
     let m: Manifest = serde_json::from_value(j.manifest.clone())
         .map_err(|_| Error::Invalid("invalid stored manifest"))?;
@@ -393,6 +398,23 @@ async fn inspect(
             }
         }
     }
+    let staged: Vec<(&str, &NewPatient)> = records
+        .iter()
+        .filter(|r| r.kind == "patient")
+        .filter_map(|r| {
+            patients
+                .get(&r.source_id)
+                .map(|p| (r.source_id.as_str(), p))
+        })
+        .collect();
+    let mut people =
+        crate::import_matching::patients(tx, a, &j.source_instance, &staged, decisions).await?;
+    let (_, undecided) = crate::import_matching::settle(&mut people, preselect);
+    let attached: std::collections::HashSet<&str> = people
+        .iter()
+        .filter(|p| p["decision"]["action"] == "attach")
+        .filter_map(|p| p["source_id"].as_str())
+        .collect();
     for (kind, expected) in &m.expected_counts {
         if counts.get(kind).copied().unwrap_or(0) != *expected {
             errors.push(json!({"kind":kind,"error":"source_count_mismatch","expected":expected,"received":counts.get(kind).copied().unwrap_or(0)}));
@@ -407,7 +429,8 @@ async fn inspect(
         if mapped.as_ref().is_some_and(|x| x.1 != digest) {
             errors.push(json!({"kind":r.kind,"source_id":r.source_id,"error":"source_changed_since_prior_import"}));
         }
-        if r.kind == "patient" && mapped.is_none() {
+        // An attached patient keeps the existing chart's MRN; only new charts can collide.
+        if r.kind == "patient" && mapped.is_none() && !attached.contains(r.source_id.as_str()) {
             if let Some(p) = patients.get(&r.source_id) {
                 let exists: bool = sqlx::query_scalar(
                     "SELECT EXISTS(SELECT 1 FROM patients WHERE tenant_id=$1 AND mrn=$2)",
@@ -435,7 +458,7 @@ async fn inspect(
             .map_err(|_| Error::Invalid("invalid snapshot"))?,
     );
     Ok(
-        json!({"counts":counts,"errors":errors,"digest":digest,"ready_to_import":errors.is_empty(),"native_mapped_kinds":["patient"],"clinician_reconciliation_kinds":["medical_problem","allergy","medication"],"staff_reconciliation_kinds":["appointment","insurance","billing","claim","remittance","edi_acknowledgment"],"owner_reconciliation_kinds":["insurance_company","x12_partner"],"historically_preserved_kinds":counts.keys().filter(|k|k.as_str()!="patient").collect::<Vec<_>>(),"limitations":m.limitations,"cutover_allowed":false}),
+        json!({"counts":counts,"errors":errors,"digest":digest,"ready_to_import":errors.is_empty()&&undecided==0,"patients":people,"patients_needing_decision":undecided,"native_mapped_kinds":["patient"],"clinician_reconciliation_kinds":["medical_problem","allergy","medication"],"staff_reconciliation_kinds":["appointment","insurance","billing","claim","remittance","edi_acknowledgment"],"owner_reconciliation_kinds":["insurance_company","x12_partner"],"historically_preserved_kinds":counts.keys().filter(|k|k.as_str()!="patient").collect::<Vec<_>>(),"limitations":m.limitations,"cutover_allowed":false}),
     )
 }
 async fn reconcile(
@@ -449,21 +472,112 @@ async fn reconcile(
         return Err(Error::Conflict("snapshot already imported"));
     }
     let records = items(&mut tx, id).await?;
-    let report = inspect(&mut tx, &a, &j, &records).await?;
-    sqlx::query("UPDATE migration_jobs SET report=$2,digest=$3,status=$4 WHERE id=$1")
-        .bind(id)
-        .bind(&report)
-        .bind(report["digest"].as_str())
-        .bind(if report["ready_to_import"] == true {
-            "reconciled"
-        } else {
-            "collecting"
-        })
-        .execute(&mut *tx)
-        .await?;
+    let report = inspect(&mut tx, &a, &j, &records, &j.patient_decisions, true).await?;
+    save_report(&mut tx, id, &report).await?;
     crate::postgres::audit(&mut tx, &a, "migration.reconcile", id).await?;
     tx.commit().await?;
     Ok(Json(report))
+}
+/// Stores the report with the decisions it reflects. The snapshot is closed to further
+/// staging once its counts and mappings are clean, whether or not every matching
+/// patient has a decision yet; commit checks the decisions separately.
+async fn save_report(tx: &mut Transaction<'_, Postgres>, id: Uuid, report: &Value) -> Result<()> {
+    let decisions: serde_json::Map<String, Value> = report["patients"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| !p["decision"].is_null())
+        .filter_map(|p| Some((p["source_id"].as_str()?.to_owned(), p["decision"].clone())))
+        .collect();
+    sqlx::query(
+        "UPDATE migration_jobs SET report=$2,digest=$3,status=$4,patient_decisions=$5 WHERE id=$1",
+    )
+    .bind(id)
+    .bind(report)
+    .bind(report["digest"].as_str())
+    .bind(if report["errors"] == json!([]) {
+        "reconciled"
+    } else {
+        "collecting"
+    })
+    .bind(Value::Object(decisions))
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Decision {
+    pub source_id: String,
+    pub action: String,
+    #[serde(default)]
+    pub patient_id: Option<Uuid>,
+}
+/// Records the owner's choice for one imported patient who looks like an existing
+/// chart: attach the imported records to that chart, or create a new chart.
+async fn decide(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(id): Path<Uuid>,
+    Json(input): Json<Decision>,
+) -> Result<Json<Value>> {
+    let mut tx = db(&s)?.begin().await?;
+    let j = lock(&mut tx, &a, id).await?;
+    if j.status == "imported" {
+        return Err(Error::Conflict("snapshot already imported"));
+    }
+    let records = items(&mut tx, id).await?;
+    let current = inspect(&mut tx, &a, &j, &records, &j.patient_decisions, false).await?;
+    let entry = current["patients"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|p| p["source_id"] == input.source_id.as_str())
+        .ok_or(Error::NotFound)?;
+    let choice = match (input.action.as_str(), input.patient_id) {
+        ("create", None) => json!({"action":"create"}),
+        ("attach", Some(target)) => json!({"action":"attach","patient_id":target}),
+        _ => {
+            return Err(Error::Invalid(
+                "choose attach with a chart, or create a new chart",
+            ))
+        }
+    };
+    if !matches!(entry["status"].as_str(), Some("match" | "possible")) {
+        return Err(Error::Conflict(
+            "this patient has no matching chart to decide on",
+        ));
+    }
+    if let Some(target) = input.patient_id {
+        let target = json!(target);
+        if !entry["candidates"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|c| c["patient_id"] == target))
+        {
+            return Err(Error::Invalid(
+                "the chart is not one of the matches for this patient",
+            ));
+        }
+        if current["patients"].as_array().is_some_and(|all| {
+            all.iter().any(|p| {
+                p["source_id"] != input.source_id.as_str()
+                    && p["decision"]["action"] == "attach"
+                    && p["decision"]["patient_id"] == target
+            })
+        }) {
+            return Err(Error::Conflict(
+                "another patient in this import is already attached to that chart",
+            ));
+        }
+    }
+    let mut decisions = j.patient_decisions.clone();
+    decisions[input.source_id.as_str()] = choice;
+    let report = inspect(&mut tx, &a, &j, &records, &decisions, false).await?;
+    save_report(&mut tx, id, &report).await?;
+    crate::postgres::audit(&mut tx, &a, "migration.patient_decision", id).await?;
+    let j = lock(&mut tx, &a, id).await?;
+    tx.commit().await?;
+    Ok(Json(view(&j)))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -492,12 +606,29 @@ async fn commit(
         .execute(&mut *tx)
         .await?;
     let records = items(&mut tx, id).await?;
-    let report = inspect(&mut tx, &a, &j, &records).await?;
-    if report["ready_to_import"] != true {
+    let report = inspect(&mut tx, &a, &j, &records, &j.patient_decisions, false).await?;
+    if report["errors"] != json!([]) {
         return Err(Error::Conflict(
             "source mappings changed; reconcile a fresh snapshot",
         ));
     }
+    if report["patients_needing_decision"] != 0 {
+        return Err(Error::Conflict(
+            "choose an existing chart or a new chart for every matching patient before importing",
+        ));
+    }
+    let attach: HashMap<&str, Uuid> = report["patients"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p["decision"]["action"] == "attach")
+        .filter_map(|p| {
+            Some((
+                p["source_id"].as_str()?,
+                p["decision"]["patient_id"].as_str()?.parse().ok()?,
+            ))
+        })
+        .collect();
     let mut ordered: Vec<_> = records.iter().collect();
     ordered.sort_by_key(|r| r.kind != "patient");
     for r in ordered {
@@ -506,11 +637,28 @@ async fn commit(
         if mapped.is_some() {
             continue;
         }
-        let target = Uuid::new_v4();
+        let mut target = Uuid::new_v4();
         let digest = crate::oauth::hash(
             &serde_json::to_string(r).map_err(|_| Error::Invalid("invalid snapshot"))?,
         );
-        if r.kind == "patient" {
+        if let Some(existing) = attach
+            .get(r.source_id.as_str())
+            .filter(|_| r.kind == "patient")
+        {
+            // The owner chose this chart: link it so every record of the imported patient
+            // lands there. Its identity and native contact details are left untouched.
+            let found: Option<Uuid> = sqlx::query_scalar(
+                "SELECT id FROM patients WHERE tenant_id=$1 AND id=$2 FOR UPDATE",
+            )
+            .bind(a.tenant_id)
+            .bind(existing)
+            .fetch_optional(&mut *tx)
+            .await?;
+            target = found.ok_or(Error::Conflict(
+                "a chosen chart is no longer available; check the import again",
+            ))?;
+            crate::postgres::audit(&mut tx, &a, "migration.patient_attach", target).await?;
+        } else if r.kind == "patient" {
             let p = patient(r)?;
             let registered: crate::model::Patient = sqlx::query_as("INSERT INTO patients (tenant_id,id,mrn,given_name,family_name,birth_date) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id,mrn,given_name,family_name,birth_date").bind(a.tenant_id).bind(target).bind(p.mrn).bind(p.given_name).bind(p.family_name).bind(p.birth_date).fetch_one(&mut *tx).await?;
             crate::patient_identity::record_initial(
@@ -518,6 +666,15 @@ async fn commit(
                 &a,
                 &registered,
                 "Patient registered from reviewed source import",
+            )
+            .await?;
+            // Contact details the previous system held become the new chart's own.
+            crate::demographics::record_imported(
+                &mut tx,
+                &a,
+                target,
+                &r.source_data["contact"],
+                &j.source_instance,
             )
             .await?;
         } else {
@@ -555,6 +712,31 @@ async fn commit(
     tx.commit().await?;
     Ok(Json(view(&j)))
 }
+/// Where each imported patient's records went, for uploading that patient's files.
+async fn patient_links(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>> {
+    let mut tx = db(&s)?.begin().await?;
+    let j = lock(&mut tx, &a, id).await?;
+    if j.status != "imported" {
+        return Err(Error::Conflict(
+            "import the records before looking up patient charts",
+        ));
+    }
+    let rows: Vec<(String, Uuid)> = sqlx::query_as("SELECT i.source_id,s.target_id FROM migration_items i JOIN source_identifiers s ON s.tenant_id=i.tenant_id AND s.source_instance=$3 AND s.kind='patient' AND s.source_id=i.source_id WHERE i.tenant_id=$1 AND i.job_id=$2 AND i.kind='patient' ORDER BY i.source_id")
+        .bind(a.tenant_id)
+        .bind(id)
+        .bind(&j.source_instance)
+        .fetch_all(&mut *tx)
+        .await?;
+    crate::postgres::audit(&mut tx, &a, "migration.patient_links_read", id).await?;
+    tx.commit().await?;
+    Ok(Json(
+        json!({"job_id":id,"source_instance":j.source_instance,"items":rows.into_iter().map(|(source,patient)|json!({"source_patient_id":source,"patient_id":patient})).collect::<Vec<_>>()}),
+    ))
+}
 async fn history(
     a: Actor,
     ExtractState(s): ExtractState<State>,
@@ -571,7 +753,9 @@ async fn history(
     if !exists {
         return Err(Error::NotFound);
     }
-    let rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',id,'kind',kind,'source_instance',source_instance,'source_id',source_id,'data',data,'source_data',source_data,'source_digest',source_digest,'imported_at',imported_at,'signature_origin','external_unverified') FROM historical_records WHERE tenant_id=$1 AND patient_id=$2 ORDER BY imported_at,id LIMIT 100")
+    // Contact details and the lists staff act on come first, so the 100-row view never
+    // hides them behind a long note history.
+    let rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',id,'kind',kind,'source_instance',source_instance,'source_id',source_id,'data',data,'source_data',source_data,'source_digest',source_digest,'imported_at',imported_at,'signature_origin','external_unverified') FROM historical_records WHERE tenant_id=$1 AND patient_id=$2 ORDER BY jsonb_exists(source_data,'contact') DESC,kind IN ('medical_problem','medication','allergy','insurance') DESC,imported_at,id LIMIT 100")
         .bind(a.tenant_id).bind(id).fetch_all(&mut *tx).await?;
     crate::postgres::audit(&mut tx, &a, "history.read", id).await?;
     tx.commit().await?;

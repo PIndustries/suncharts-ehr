@@ -72,12 +72,21 @@ impl Source for Fake {
                 out[key] = json!({"status":"available","data":{"items":[],"has_more":false,"next_cursor":null}});
             }
         } else {
-            if mode == "not_received" && method == Method::GET {
+            if mode == "not_received" && (method == Method::GET || path.ends_with("/expire")) {
                 return Err(Error::NotFound);
             }
-            if method == Method::POST {
+            let expire = path.ends_with("/expire");
+            if expire {
+                assert_eq!(method, Method::POST);
+                let v = body.clone().unwrap();
+                assert_eq!(v.as_object().unwrap().len(), 3);
+                assert_eq!(v["account_id"], "acct_synthetic");
+            }
+            if method == Method::POST && !expire {
                 let v = body.unwrap();
                 assert_eq!(v["consent"], true);
+                assert_eq!(v["consent_scope"], "later_charges");
+                assert_eq!(v["consent_version"], "card_on_file_2026_11");
                 assert_eq!(v["livemode"], false);
                 assert_eq!(v["account_id"], "acct_synthetic");
                 let request: Uuid = serde_json::from_value(v["request_id"].clone()).unwrap();
@@ -120,6 +129,20 @@ impl Source for Fake {
             };
             out["retry_safe_until"] = json!(Utc::now() + chrono::Duration::hours(23));
             out["recovery_required"] = json!(mode == "review");
+            // The broker echoes the consent it reserved, and closes a link it is asked to expire
+            // unless the patient already finished.
+            let (scope, version): (String, Option<String>) = sqlx::query_as("SELECT consent_scope,consent_version FROM patient_payment_setups WHERE tenant_id=$1 AND request_id=$2").bind(self.tenant).bind(request).fetch_one(&self.pool).await?;
+            out["consent_scope"] = json!(scope);
+            out["consent_version"] = json!(version);
+            out["cancelled"] = json!(false);
+            if expire && !complete {
+                out["status"] = json!("expired");
+                out["cancelled"] = json!(true);
+                if !out["session"].is_null() {
+                    out["session"]["status"] = json!("expired");
+                    out["session"]["url"] = Value::Null;
+                }
+            }
             if mode == "missing_session" {
                 out.as_object_mut().unwrap().remove("session");
             }
@@ -210,6 +233,7 @@ impl Fixture {
         let f = self.fake.clone();
         let f2 = f.clone();
         let f3 = f.clone();
+        let f4 = f.clone();
         Router::new()
             .route(
                 "/api/v1/billing/patients/{id}/payment-profile",
@@ -246,6 +270,15 @@ impl Fixture {
                           h: HeaderMap| {
                         let f = f3.clone();
                         async move { read_with(a, s, id, h, f.as_ref()).await }
+                    },
+                ),
+            )
+            .route(
+                "/api/v1/billing/payment-setups/{id}/cancel",
+                post(
+                    move |a: Actor, ExtractState(s): ExtractState<State>, Path(id): Path<Uuid>| {
+                        let f = f4.clone();
+                        async move { cancel_with(a, s, id, f.as_ref()).await }
                     },
                 ),
             )
@@ -589,5 +622,213 @@ async fn broker_review_blocks_retry_even_with_future_deadline_and_missing_sessio
         .filter(|(m, _)| *m == Method::POST)
         .count();
     assert_eq!(before, after);
+    f.untouched().await;
+}
+
+#[tokio::test]
+async fn new_cards_record_consent_to_later_charges_and_earlier_cards_stay_in_person_only() {
+    let f = Fixture::new().await;
+    let request = Uuid::new_v4();
+    let create = format!("/api/v1/billing/patients/{}/payment-setups", f.patient);
+    let profile = format!("/api/v1/billing/patients/{}/payment-profile", f.patient);
+    let (code, opened) = f
+        .call(
+            "POST",
+            &create,
+            json!({"request_id":request,"consent":true}),
+            false,
+            None,
+        )
+        .await;
+    assert_eq!(code, 200, "{opened}");
+    assert_eq!(opened["consent_scope"], "later_charges");
+    assert_eq!(opened["consent_version"], "card_on_file_2026_11");
+    assert!(opened["consent_wording"]
+        .as_str()
+        .unwrap()
+        .contains("charge it later"));
+    assert_eq!(opened["consent_recorded_at"], Value::Null);
+    // Until the processor confirms the card, it is not chargeable.
+    let (_, before) = f.call("GET", &profile, Value::Null, false, None).await;
+    assert_eq!(
+        before["payment_methods"]["data"]["items"][0]["charge_later"],
+        false
+    );
+    f.fake.set("succeeded");
+    let (code, saved) = f
+        .call(
+            "GET",
+            &format!("/api/v1/billing/payment-setups/{request}"),
+            Value::Null,
+            false,
+            None,
+        )
+        .await;
+    assert_eq!(code, 200, "{saved}");
+    assert_eq!(saved["status"], "succeeded");
+    assert!(saved["consent_recorded_at"].is_string());
+    let (scope, version, recorded): (String, Option<String>, Option<DateTime<Utc>>) = sqlx::query_as("SELECT consent_scope,consent_version,consent_recorded_at FROM patient_payment_setups WHERE tenant_id=$1 AND request_id=$2")
+        .bind(f.actor.tenant_id).bind(request).fetch_one(&f.pool).await.unwrap();
+    assert_eq!(scope, "later_charges");
+    assert_eq!(version.as_deref(), Some("card_on_file_2026_11"));
+    let recorded = recorded.expect("the time the saved card was confirmed is kept");
+    // Reading again never moves the recorded time.
+    f.call(
+        "GET",
+        &format!("/api/v1/billing/payment-setups/{request}"),
+        Value::Null,
+        false,
+        None,
+    )
+    .await;
+    let again: Option<DateTime<Utc>> = sqlx::query_scalar("SELECT consent_recorded_at FROM patient_payment_setups WHERE tenant_id=$1 AND request_id=$2")
+        .bind(f.actor.tenant_id).bind(request).fetch_one(&f.pool).await.unwrap();
+    assert_eq!(again, Some(recorded));
+    let (code, after) = f.call("GET", &profile, Value::Null, false, None).await;
+    assert_eq!(code, 200, "{after}");
+    let card = &after["payment_methods"]["data"]["items"][0];
+    assert_eq!(card["charge_later"], true);
+    assert_eq!(card["setup_id"], json!(request));
+
+    // A card saved before this change keeps its in-person consent and is never chargeable later.
+    let f = Fixture::new().await;
+    let setting: Uuid = sqlx::query_scalar("SELECT id FROM payment_settings WHERE tenant_id=$1")
+        .bind(f.actor.tenant_id)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO patient_payment_setups(tenant_id,request_id,patient_id,setting_id,credential_revision,installation_id,provider_account_id,livemode,return_url,requested_by,consent_scope,status,provider_evidence) VALUES($1,$2,$3,$4,1,$5,'acct_synthetic',false,'http://127.0.0.1:8099/?payment_setup=x',$6,'patient_present','succeeded',$7)")
+        .bind(f.actor.tenant_id).bind(Uuid::new_v4()).bind(f.patient).bind(setting).bind(f.fake.installation).bind(f.actor.sub)
+        .bind(json!({"session":{"payment_method_id":"pm_synthetic"}}))
+        .execute(&f.pool).await.unwrap();
+    let profile = format!("/api/v1/billing/patients/{}/payment-profile", f.patient);
+    let (code, old) = f.call("GET", &profile, Value::Null, false, None).await;
+    assert_eq!(code, 200, "{old}");
+    let card = &old["payment_methods"]["data"]["items"][0];
+    assert_eq!(card["charge_later"], false);
+    assert_eq!(card["setup_id"], Value::Null);
+    f.untouched().await;
+}
+
+#[tokio::test]
+async fn an_unfinished_card_link_can_be_cancelled_and_another_started_at_once() {
+    let f = Fixture::new().await;
+    let create = format!("/api/v1/billing/patients/{}/payment-setups", f.patient);
+    let start = |request: Uuid| {
+        let create = create.clone();
+        let f = &f;
+        async move {
+            *f.fake.request.lock().unwrap() = None;
+            f.call(
+                "POST",
+                &create,
+                json!({"request_id":request,"consent":true}),
+                false,
+                None,
+            )
+            .await
+        }
+    };
+    let cancel = |request: Uuid| {
+        let f = &f;
+        async move {
+            f.call(
+                "POST",
+                &format!("/api/v1/billing/payment-setups/{request}/cancel"),
+                Value::Null,
+                false,
+                None,
+            )
+            .await
+        }
+    };
+    let first = Uuid::new_v4();
+    assert_eq!(start(first).await.0, 200);
+    // An open link blocks the next one until it is cancelled.
+    let blocked = Uuid::new_v4();
+    assert_eq!(
+        f.call(
+            "POST",
+            &create,
+            json!({"request_id":blocked,"consent":true}),
+            false,
+            None
+        )
+        .await
+        .0,
+        409
+    );
+    *f.fake.request.lock().unwrap() = Some(first);
+    let (code, cancelled) = cancel(first).await;
+    assert_eq!(code, 200, "{cancelled}");
+    assert_eq!(cancelled["status"], "expired");
+    assert_eq!(cancelled["cancelled"], true);
+    assert_eq!(cancelled["session"]["url"], Value::Null);
+    let by: Option<Uuid> = sqlx::query_scalar("SELECT cancelled_by FROM patient_payment_setups WHERE tenant_id=$1 AND request_id=$2 AND cancelled_at IS NOT NULL AND status='expired'")
+        .bind(f.actor.tenant_id).bind(first).fetch_one(&f.pool).await.unwrap();
+    assert_eq!(by, Some(f.actor.sub));
+    // Cancelling again reports the same thing without asking the payment service.
+    let asked = f.fake.calls.lock().unwrap().len();
+    let (code, again) = cancel(first).await;
+    assert_eq!((code, &again["status"]), (200, &json!("expired")));
+    assert_eq!(f.fake.calls.lock().unwrap().len(), asked);
+    // The cancelled link can never be reopened; a new one starts straight away.
+    assert_eq!(start(first).await.0, 200);
+    let second = Uuid::new_v4();
+    let (code, opened) = start(second).await;
+    assert_eq!(code, 200, "{opened}");
+    assert_eq!(opened["status"], "open");
+
+    // The patient finished while staff pressed Cancel: the card stays saved.
+    f.fake.set("succeeded");
+    let (code, saved) = cancel(second).await;
+    assert_eq!(code, 200, "{saved}");
+    assert_eq!(saved["status"], "succeeded");
+    assert_eq!(saved["cancelled"], false);
+    assert!(saved["consent_recorded_at"].is_string());
+
+    // A link the payment service never received is closed here.
+    let f = Fixture::new().await;
+    let lost = Uuid::new_v4();
+    f.fake.set("not_received");
+    let create = format!("/api/v1/billing/patients/{}/payment-setups", f.patient);
+    assert_eq!(
+        f.call(
+            "POST",
+            &create,
+            json!({"request_id":lost,"consent":true}),
+            false,
+            None
+        )
+        .await
+        .0,
+        400
+    );
+    let (code, closed) = f
+        .call(
+            "POST",
+            &format!("/api/v1/billing/payment-setups/{lost}/cancel"),
+            Value::Null,
+            false,
+            None,
+        )
+        .await;
+    assert_eq!(code, 200, "{closed}");
+    assert_eq!(closed["status"], "expired");
+    assert_eq!(closed["cancelled"], true);
+    f.fake.set("open");
+    *f.fake.request.lock().unwrap() = None;
+    assert_eq!(
+        f.call(
+            "POST",
+            &create,
+            json!({"request_id":Uuid::new_v4(),"consent":true}),
+            false,
+            None
+        )
+        .await
+        .0,
+        200
+    );
     f.untouched().await;
 }

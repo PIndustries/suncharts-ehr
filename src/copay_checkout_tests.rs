@@ -206,6 +206,7 @@ fn input(live: bool) -> Create {
         livemode: live,
         reason: "Reviewed synthetic copay".into(),
         reader_id: None,
+        saved_card_setup_id: None,
     }
 }
 fn policy(live: bool) -> Policy {
@@ -1608,3 +1609,4 @@ async fn transfers_only_or_unknown_card_capability_cannot_reserve_a_copay() {
 mod browser_fixture;
 
 include!("copay_reader_tests.rs");
+include!("copay_saved_card_tests.rs");

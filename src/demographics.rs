@@ -10,7 +10,7 @@ use axum::{
     extract::{Path, State as ExtractState},
     http::{header, HeaderMap},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -172,7 +172,212 @@ fn version(h: &HeaderMap) -> Result<i64> {
     Ok(value)
 }
 pub fn router() -> Router<State> {
-    Router::new().route("/api/v1/patients/{id}/demographics", get(read).put(update))
+    Router::new()
+        .route("/api/v1/patients/{id}/demographics", get(read).put(update))
+        .route(
+            "/api/v1/patients/{id}/history/{record}/use-contact",
+            post(use_imported),
+        )
+}
+fn address_part<'a>(a: &'a mut Address, part: &str) -> &'a mut Option<String> {
+    match part {
+        "line1" => &mut a.line1,
+        "line2" => &mut a.line2,
+        "city" => &mut a.city,
+        "region" => &mut a.region,
+        "postal_code" => &mut a.postal_code,
+        _ => &mut a.country,
+    }
+}
+const IMPORTED_FIELDS: &[&str] = &[
+    "address",
+    "phone",
+    "email",
+    "administrative_gender",
+    "language",
+];
+/// Contact details from a previous record system, keeping only values the native
+/// profile accepts. Each field is checked on its own so one bad value never
+/// discards the rest.
+pub(crate) fn from_previous_system(contact: &Value) -> Content {
+    let text = |v: &Value| v.as_str().map(str::to_owned);
+    let mut out = Content::default();
+    for field in IMPORTED_FIELDS {
+        let mut one = Content::default();
+        match *field {
+            "phone" => one.phone = text(&contact["phone"]),
+            "email" => one.email = text(&contact["email"]),
+            "language" => one.language = text(&contact["language"]),
+            "administrative_gender" => {
+                one.administrative_gender = text(&contact["administrative_gender"])
+            }
+            _ => {
+                let mut address = Address::default();
+                for part in ["line1", "line2", "city", "region", "postal_code", "country"] {
+                    let mut probe = Content {
+                        address: Some(Address::default()),
+                        ..Content::default()
+                    };
+                    if let Some(a) = probe.address.as_mut() {
+                        *address_part(a, part) = text(&contact["address"][part]);
+                    }
+                    if probe.normalize().is_ok() {
+                        if let Some(mut a) = probe.address {
+                            *address_part(&mut address, part) = address_part(&mut a, part).take();
+                        }
+                    }
+                }
+                one.address = Some(address);
+            }
+        }
+        if one.normalize().is_err() {
+            continue;
+        }
+        match *field {
+            "phone" => out.phone = one.phone,
+            "email" => out.email = one.email,
+            "language" => out.language = one.language,
+            "administrative_gender" => out.administrative_gender = one.administrative_gender,
+            _ => out.address = one.address,
+        }
+    }
+    out
+}
+fn is_empty(content: &Content, field: &str) -> bool {
+    match field {
+        "phone" => content.phone.is_none(),
+        "email" => content.email.is_none(),
+        "language" => content.language.is_none(),
+        "administrative_gender" => content.administrative_gender.is_none(),
+        _ => content.address.is_none(),
+    }
+}
+async fn write_version(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    a: &Actor,
+    p: Uuid,
+    next: i64,
+    content: Content,
+    reason: &str,
+) -> Result<()> {
+    let content = serde_json::to_value(content).expect("serializable contact details");
+    sqlx::query("INSERT INTO patient_demographics(tenant_id,patient_id,version,content) VALUES($1,$2,$3,$4) ON CONFLICT(tenant_id,patient_id) DO UPDATE SET version=EXCLUDED.version,content=EXCLUDED.content").bind(a.tenant_id).bind(p).bind(next).bind(&content).execute(&mut **tx).await?;
+    sqlx::query("INSERT INTO patient_demographics_history(tenant_id,patient_id,version,content,author_id,reason) VALUES($1,$2,$3,$4,$5,$6)").bind(a.tenant_id).bind(p).bind(next).bind(content).bind(a.sub).bind(reason).execute(&mut **tx).await?;
+    Ok(())
+}
+/// First contact profile of a chart the import just created, attributed to the import.
+/// Never called for a chart that already existed.
+pub(crate) async fn record_imported(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    a: &Actor,
+    p: Uuid,
+    contact: &Value,
+    source_instance: &str,
+) -> Result<()> {
+    let content = from_previous_system(contact);
+    if IMPORTED_FIELDS.iter().all(|f| is_empty(&content, f)) {
+        return Ok(());
+    }
+    let label: String = source_instance
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(200)
+        .collect();
+    let reason = format!("Imported from previous system ({})", label.trim());
+    write_version(tx, a, p, 1, content, &reason).await?;
+    crate::postgres::audit(tx, a, "patient.demographics_import", p).await
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UseImported {
+    field: String,
+}
+/// Copies one contact value from an imported record into the chart's own contact
+/// details, only when that field is still empty.
+async fn use_imported(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((p, record)): Path<(Uuid, Uuid)>,
+    Json(input): Json<UseImported>,
+) -> Result<Response> {
+    a.scheduling()?;
+    if !IMPORTED_FIELDS.contains(&input.field.as_str()) {
+        return Err(Error::Invalid("unsupported contact field"));
+    }
+    let mut tx = database(&s)?.begin().await?;
+    crate::scheduling::tenant_lock(&mut tx, &a).await?;
+    let exists: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM patients WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
+            .bind(a.tenant_id)
+            .bind(p)
+            .fetch_optional(&mut *tx)
+            .await?;
+    exists.ok_or(Error::NotFound)?;
+    let source: Option<Value> = sqlx::query_scalar(
+        "SELECT source_data->'contact' FROM historical_records WHERE tenant_id=$1 AND patient_id=$2 AND id=$3",
+    )
+    .bind(a.tenant_id)
+    .bind(p)
+    .bind(record)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let mut imported = from_previous_system(&source.ok_or(Error::NotFound)?);
+    if is_empty(&imported, &input.field) {
+        return Err(Error::Invalid(
+            "the previous system has no usable value for this field",
+        ));
+    }
+    let row: Option<(i64, Value)> = sqlx::query_as(
+        "SELECT version,content FROM patient_demographics WHERE tenant_id=$1 AND patient_id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(p)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (current, mut content) = match row {
+        Some((version, content)) => (
+            version,
+            serde_json::from_value::<Content>(content)
+                .map_err(|_| Error::Conflict("contact details need review before copying"))?,
+        ),
+        None => (0, Content::default()),
+    };
+    if !is_empty(&content, &input.field) {
+        return Err(Error::Conflict(
+            "this contact field already has a value; edit contact details to change it",
+        ));
+    }
+    let label = match input.field.as_str() {
+        "phone" => {
+            content.phone = imported.phone.take();
+            "Phone"
+        }
+        "email" => {
+            content.email = imported.email.take();
+            "Email"
+        }
+        "language" => {
+            content.language = imported.language.take();
+            "Language"
+        }
+        "administrative_gender" => {
+            content.administrative_gender = imported.administrative_gender.take();
+            "Gender"
+        }
+        _ => {
+            content.address = imported.address.take();
+            "Address"
+        }
+    };
+    let next = current
+        .checked_add(1)
+        .ok_or(Error::Conflict("contact version exhausted"))?;
+    let reason = format!("{label} copied from previous system records");
+    write_version(&mut tx, &a, p, next, content, &reason).await?;
+    crate::postgres::audit(&mut tx, &a, "patient.demographics_update", p).await?;
+    let (v, data) = snapshot(&mut tx, &a, p).await?;
+    tx.commit().await?;
+    Ok(response(v, data))
 }
 async fn snapshot(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
