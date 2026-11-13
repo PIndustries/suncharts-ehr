@@ -152,10 +152,36 @@ struct Failure {
     provider_hints: Vec<&'static str>,
 }
 const PROVIDER_HINTS: &[&str] = &[
-    "account", "birth", "contract", "date", "duplicate", "eligibility", "enroll", "gender",
-    "insured", "invalid", "key", "member", "missing", "name", "not authorized", "not enabled",
-    "not found", "not supported", "npi", "patient", "payer", "provider", "relationship",
-    "required", "service", "subscriber", "tax", "taxonomy", "timeout", "unavailable",
+    "account",
+    "birth",
+    "contract",
+    "date",
+    "duplicate",
+    "eligibility",
+    "enroll",
+    "gender",
+    "insured",
+    "invalid",
+    "key",
+    "member",
+    "missing",
+    "name",
+    "not authorized",
+    "not enabled",
+    "not found",
+    "not supported",
+    "npi",
+    "patient",
+    "payer",
+    "provider",
+    "relationship",
+    "required",
+    "service",
+    "subscriber",
+    "tax",
+    "taxonomy",
+    "timeout",
+    "unavailable",
 ];
 fn provider_hints(failure: &mut Failure, message: &str) {
     let message = message.to_ascii_lowercase();
@@ -208,7 +234,13 @@ fn normalized_response(value: Value) -> std::result::Result<Value, Failure> {
             if let Some(text) = entry.as_str() {
                 provider_hints(&mut failure, text);
             }
-            for name in ["error_mesg", "error_message", "error_msg", "message", "mesg"] {
+            for name in [
+                "error_mesg",
+                "error_message",
+                "error_msg",
+                "message",
+                "mesg",
+            ] {
                 if let Some(text) = entry.get(name).and_then(Value::as_str) {
                     provider_hints(&mut failure, text);
                 }
@@ -843,8 +875,13 @@ mod tests {
             json!({"kind":"provider_rejected","http_status":200,"provider_codes":["42"],"provider_hints":["patient"]})
         );
         let text = serde_json::to_string(&saved).unwrap();
-        assert!(!text.contains("000000017") && !text.contains("secret") && !text.contains("Synthetic"));
-        let plain = normalized_response(json!({"error":"Provider NPI 1234567893 is not enrolled for payer SYN"})).unwrap_err();
+        assert!(
+            !text.contains("000000017") && !text.contains("secret") && !text.contains("Synthetic")
+        );
+        let plain = normalized_response(
+            json!({"error":"Provider NPI 1234567893 is not enrolled for payer SYN"}),
+        )
+        .unwrap_err();
         assert_eq!(
             serde_json::to_value(plain).unwrap(),
             json!({"kind":"provider_rejected","http_status":200,"provider_codes":[],"provider_hints":["enroll","npi","payer","provider"]})
