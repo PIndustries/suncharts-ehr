@@ -368,14 +368,83 @@ Managed payments use the verified Connect origin unless an operator supplies
 are required. Authorized clinic owners and delegated administrators manage the
 clinic-scoped account from the EHR.
 
+## Card readers and payments on a reader
+
+**Your readers**, at the top of the Card readers page, lists the readers the practice
+has added with their name, model and whether they are online. The owner adds a reader
+by typing the code the reader shows (on the reader: Settings, then Generate pairing
+code) and giving it a name, and can rename or remove it. Readers belong to the
+practice's own connected Stripe account.
+
+| Route | Who | Purpose |
+| --- | --- | --- |
+| `GET /api/v1/billing/payments/readers` | Owner, clinician, front desk | The practice's readers. `status` is `ready`, `not_connected` or `unavailable`. |
+| `POST /api/v1/billing/payments/readers` | Owner | Add a reader: `request_id`, `code`, `name`. |
+| `PUT /api/v1/billing/payments/readers/{reader}` | Owner | Rename. |
+| `DELETE /api/v1/billing/payments/readers/{reader}` | Owner | Remove. Refused while the reader is taking a payment. |
+
+Stripe's practice reader (`simulated-wpe`) is accepted only for a test account outside
+production. The list response carries `practice_code` only then, and the Add a reader
+form shows it only on a build whose sidebar reads "Development preview".
+
+**Take card payment on reader** sits beside the card link on the appointment copay
+panel and on an installment's collection form. It is left out until card payments are
+set up. Staff confirm the amount, pick the reader when there is more than one (the last
+one used on that computer is offered first) and watch the payment: waiting for the
+card, approved, declined, reader offline or cancelled. With no reader set up, the
+owner is taken to the Card readers page.
+
+A reader payment is the existing card attempt with `channel` `reader`:
+
+- It is started by the existing routes with a `reader_id` in the body:
+  `POST /api/v1/patients/{p}/appointments/{a}/copay-checkouts` and
+  `POST /api/v1/billing/patients/{patient}/installment-plans/{plan}/installments/{number}/checkout`.
+  The same reservation, account binding, guards and idempotency apply.
+- It lives in `copay_checkout_attempts` or `invoice_checkout_attempts` (migration
+  `0103_reader_payments.sql` adds `channel`, `reader_id` and
+  `reader_cancel_requested_at`; existing rows keep `channel` `hosted`).
+- It is posted by the same code under the same rule for "paid": the PaymentIntent
+  succeeded for the full amount with a paid, captured, undisputed charge. Receipts,
+  ledger entries, copay allocation, refund observation and review are unchanged.
+- Only the amount, the reader and the attempt's own identifier are sent to SunCharts
+  Connect. No patient, appointment, coverage or reason leaves the EHR.
+- It is read through the existing status routes, and cancelled with
+  `POST .../copay-checkouts/{id}/reader-cancel` or
+  `POST /api/v1/billing/invoice-checkouts/{id}/reader-cancel`.
+
+A reader payment always ends by itself. A worker reads open reader payments every two
+seconds. The attempt becomes `paid`, or `expired` with `last_result` saying why:
+
+| `last_result` | Meaning |
+| --- | --- |
+| `reader_declined` | The card was declined. Staff start a new payment for another card. |
+| `reader_cancelled` | Staff pressed Cancel, or the patient cancelled on the reader. |
+| `reader_timed_out` | No card was presented within five minutes. |
+| `reader_offline`, `reader_in_use`, `reader_unavailable`, `reader_failed` | The reader could not take the payment. |
+
+While open, `last_result` is `reader_waiting`, `reader_offline` (the reader dropped
+off while waiting) or `reader_finishing` (a presented card is being approved, so it
+cannot be cancelled yet). An attempt is closed only after SunCharts Connect confirms
+the payment was cancelled at Stripe or never existed there; a card approved at the last
+moment is therefore recorded as paid. If SunCharts Connect cannot be reached the attempt
+stays open and is retried every two seconds. Evidence that does not match the reserved
+account, mode, amount or request sets `needs_review`, as it does for hosted checkout.
+
+The production upgrade check counts attempts in `creating`, `open` or `needs_review`.
+A reader payment leaves `creating`/`open` within about five minutes without anyone
+acting, so an abandoned reader payment does not hold up an upgrade.
+
+A copay or invoice can have one unresolved card attempt at a time, so an open card
+link for the same appointment or account must finish or expire before a reader payment
+can be started, and the reverse.
+
 ## Card reader ordering
 
 The practice owner can open **Card readers** from the payment account screen or
 from **Practice administration** (address `#/card-readers`). The page shows two
 Stripe views: **Order a reader**, where the practice buys a reader from Stripe, and
 **Your orders**, where it follows shipping, returns and warranty claims. Readers
-are ordered from Stripe, shipped to the practice and billed by Stripe. This screen
-does not take patient payments on a reader.
+are ordered from Stripe, shipped to the practice and billed by Stripe.
 
 `POST /api/v1/billing/payments/readers/hardware-session` is owner-only. The EHR
 asks SunCharts Connect for a short-lived Stripe session limited to those two views

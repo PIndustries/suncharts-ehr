@@ -31888,7 +31888,7 @@
       "post": {
         "operationId": "createHostedAppointmentCopay",
         "summary": "Collect an appointment copay with Stripe-hosted Checkout",
-        "description": "Billing-write staff. Reserve a same-patient appointment attempt before provider I/O. Binds installation, credential revision, Stripe account, mode, amount and optional coverage snapshot immutably. Exact request retry returns the original attempt; conflicting reuse fails. Test mode is blocked in production. Live mode requires both the EHR and Connect operator gates. Pending/uncertain attempts retain their identity; recovery retries only within the verified 23-hour window. This can precede encounter charges.",
+        "description": "Billing-write staff. Reserve a same-patient appointment attempt before provider I/O. Binds installation, credential revision, Stripe account, mode, amount and optional coverage snapshot immutably. Exact request retry returns the original attempt; conflicting reuse fails. Test mode is blocked in production. Live mode requires both the EHR and Connect operator gates. Pending/uncertain attempts retain their identity; recovery retries only within the verified 23-hour window. This can precede encounter charges. With `reader_id` the copay is taken on that card reader instead: the same reservation, binding and paid rule apply, the attempt has `channel` `reader`, and it closes by itself if the card is declined, the payment is cancelled, or no card is presented within five minutes.",
         "tags": [
           "Billing"
         ],
@@ -35440,7 +35440,8 @@
               "maximum": 60
             }
           }
-        ]
+        ],
+        "description": "With `reader_id` the amount is taken on that card reader instead of a hosted Checkout link; the same reservation, binding, guards and paid rule apply."
       }
     },
     "/api/v1/billing/invoice-checkouts/{id}": {
@@ -36036,6 +36037,402 @@
             "description": "Patient is not in the authorized tenant."
           }
         }
+      }
+    },
+    "/api/v1/billing/payments/readers": {
+      "get": {
+        "summary": "List the practice's card readers",
+        "description": "Owner, clinician and front desk staff. Asks SunCharts Connect for the Stripe readers registered for the practice's connected payment account, bound to the current installation, tenant and Stripe account/mode. `status` is `ready`, `not_connected` when payment account setup is not finished, or `unavailable` when a production practice is bound to a test account. `can_manage` says whether this staff member may add, rename or remove readers. `payments_available` says whether a card payment can be taken on a reader in this environment and payment mode. `practice_code` is present only for a test account outside production and is the Stripe code for a practice reader. Takes no payment. Response is no-store.",
+        "tags": [
+          "Billing"
+        ],
+        "responses": {
+          "200": {
+            "description": "The practice's card readers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "readers",
+                    "can_manage"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ready",
+                        "not_connected",
+                        "unavailable"
+                      ]
+                    },
+                    "readers": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/CardReader"
+                      }
+                    },
+                    "can_manage": {
+                      "type": "boolean"
+                    },
+                    "payments_available": {
+                      "type": "boolean"
+                    },
+                    "practice_code": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input, or the reader code was not accepted"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Not permitted for this staff member"
+          },
+          "404": {
+            "description": "Reader not found for this practice"
+          },
+          "409": {
+            "description": "Payment setup is not finished, the practice address is missing, or the reader is taking a payment"
+          },
+          "500": {
+            "description": "Database/audit failure"
+          }
+        }
+      },
+      "post": {
+        "summary": "Add a card reader",
+        "description": "Owner-only; staff with a custom access policy also need billing edit. Registers the reader that is showing `code` with the practice's connected payment account and gives it `name`. SunCharts Connect creates the practice's reader location on first use from the business address Stripe already holds. The same `request_id` never registers twice. A practice reader code is accepted only for a test account outside production. Takes no payment.",
+        "tags": [
+          "Billing"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "request_id",
+                  "code",
+                  "name"
+                ],
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "code": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "The code shown on the reader's screen."
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 60
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The reader that was added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "reader"
+                  ],
+                  "properties": {
+                    "reader": {
+                      "$ref": "#/components/schemas/CardReader"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input, or the reader code was not accepted"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Not permitted for this staff member"
+          },
+          "404": {
+            "description": "Reader not found for this practice"
+          },
+          "409": {
+            "description": "Payment setup is not finished, the practice address is missing, or the reader is taking a payment"
+          },
+          "500": {
+            "description": "Database/audit failure"
+          }
+        }
+      }
+    },
+    "/api/v1/billing/payments/readers/{reader}": {
+      "parameters": [
+        {
+          "name": "reader",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "pattern": "^tmr_[A-Za-z0-9]+$"
+          }
+        }
+      ],
+      "put": {
+        "summary": "Rename a card reader",
+        "description": "Owner-only; staff with a custom access policy also need billing edit. Only a reader registered for this practice can be renamed.",
+        "tags": [
+          "Billing"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 60
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The renamed reader",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "reader"
+                  ],
+                  "properties": {
+                    "reader": {
+                      "$ref": "#/components/schemas/CardReader"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input, or the reader code was not accepted"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Not permitted for this staff member"
+          },
+          "404": {
+            "description": "Reader not found for this practice"
+          },
+          "409": {
+            "description": "Payment setup is not finished, the practice address is missing, or the reader is taking a payment"
+          },
+          "500": {
+            "description": "Database/audit failure"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Remove a card reader",
+        "description": "Owner-only; staff with a custom access policy also need billing delete. Only a reader registered for this practice can be removed, and not while it is taking a payment.",
+        "tags": [
+          "Billing"
+        ],
+        "responses": {
+          "200": {
+            "description": "The reader was removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "removed"
+                  ],
+                  "properties": {
+                    "removed": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input, or the reader code was not accepted"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Not permitted for this staff member"
+          },
+          "404": {
+            "description": "Reader not found for this practice"
+          },
+          "409": {
+            "description": "Payment setup is not finished, the practice address is missing, or the reader is taking a payment"
+          },
+          "500": {
+            "description": "Database/audit failure"
+          }
+        }
+      }
+    },
+    "/api/v1/patients/{p}/appointments/{a}/copay-checkouts/{id}/reader-cancel": {
+      "parameters": [
+        {
+          "name": "p",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "a",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "cancelReaderAppointmentCopay",
+        "summary": "Cancel a copay that is waiting on a card reader",
+        "description": "Billing-write staff. Records the cancel request, resets the reader and cancels the payment at the processor if no card was taken. If a card is being approved at that moment the payment is left alone and its real outcome is recorded: `open` with `last_result` `reader_finishing`, then `paid` or `expired`. A reader payment also closes by itself when the card is declined, the patient cancels on the reader, or no card is presented within five minutes. No refund is initiated here.",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "billing.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current durable operation state; financial effects require verified provider evidence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "operation": {
+                      "$ref": "#/components/schemas/HostedCopayOperation"
+                    }
+                  },
+                  "required": [
+                    "operation"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input or unavailable/mismatched payment mode"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Billing permission denied"
+          },
+          "404": {
+            "description": "Tenant/patient/appointment-scoped record not found"
+          },
+          "409": {
+            "description": "Conflicting retry, pending collection, unsafe balance or over-limit history"
+          },
+          "500": {
+            "description": "Database/audit failure; mutation rolled back"
+          }
+        }
+      }
+    },
+    "/api/v1/billing/invoice-checkouts/{id}/reader-cancel": {
+      "post": {
+        "summary": "Cancel an invoice payment that is waiting on a card reader",
+        "tags": [
+          "Billing"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated tenant-scoped result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvoiceCheckoutResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Billing permission required"
+          },
+          "409": {
+            "description": "Responsibility, version, reservation or idempotency conflict"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "description": "Billing edit. Records the cancel request, resets the reader and cancels the payment at the processor if no card was taken. If a card is being approved at that moment the payment is left alone and its real outcome is recorded. No refund is initiated here."
       }
     }
   },
@@ -52794,6 +53191,21 @@
               "string",
               "null"
             ]
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "hosted",
+              "reader"
+            ],
+            "description": "`hosted` for a Stripe-hosted Checkout link, `reader` for a card payment taken on a reader. For a reader payment `last_result` says where it stands: `reader_waiting`, `reader_offline` or `reader_finishing` while open; `reader_declined`, `reader_cancelled`, `reader_timed_out`, `reader_offline`, `reader_in_use`, `reader_unavailable` or `reader_failed` once closed (`expired`)."
+          },
+          "reader_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The card reader for a reader payment."
           }
         },
         "required": [
@@ -52811,7 +53223,9 @@
           "version",
           "created_at",
           "captured_at",
-          "last_result"
+          "last_result",
+          "channel",
+          "reader_id"
         ],
         "description": "Immutable appointment/payment binding with durable reconciliation state. Receipt creation requires independently retrieved account/mode-bound captured charge evidence. Browser return and Checkout opening never count as payment."
       },
@@ -52842,6 +53256,11 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 1000
+          },
+          "reader_id": {
+            "type": "string",
+            "pattern": "^tmr_[A-Za-z0-9]+$",
+            "description": "A card reader from GET /api/v1/billing/payments/readers. When present the payment is taken on that reader instead of a Stripe-hosted Checkout link."
           }
         },
         "required": [
@@ -55155,6 +55574,11 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 1000
+          },
+          "reader_id": {
+            "type": "string",
+            "pattern": "^tmr_[A-Za-z0-9]+$",
+            "description": "A card reader from GET /api/v1/billing/payments/readers. When present the payment is taken on that reader instead of a Stripe-hosted Checkout link."
           }
         }
       },
@@ -55266,6 +55690,21 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "hosted",
+              "reader"
+            ],
+            "description": "`hosted` for a Stripe-hosted Checkout link, `reader` for a card payment taken on a reader. For a reader payment `last_result` says where it stands: `reader_waiting`, `reader_offline` or `reader_finishing` while open; `reader_declined`, `reader_cancelled`, `reader_timed_out`, `reader_offline`, `reader_in_use`, `reader_unavailable` or `reader_failed` once closed (`expired`)."
+          },
+          "reader_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The card reader for a reader payment."
           }
         },
         "required": [
@@ -55287,7 +55726,9 @@
           "unapplied_cents",
           "last_result",
           "version",
-          "created_at"
+          "created_at",
+          "channel",
+          "reader_id"
         ]
       },
       "PatientInstallmentCollectionItem": {
@@ -56027,6 +56468,35 @@
           "recovery_required",
           "retry_allowed"
         ]
+      },
+      "CardReader": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "model",
+          "online",
+          "busy"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "description": "The name the practice gave this reader."
+          },
+          "model": {
+            "type": "string"
+          },
+          "online": {
+            "type": "boolean"
+          },
+          "busy": {
+            "type": "boolean",
+            "description": "The reader is taking a payment right now."
+          }
+        }
       }
     }
   }

@@ -10,8 +10,8 @@ const handlers={click:[],submit:[]},calls=[],order=[];let statusFailure=false,le
 let workspaceHtml='',providerHtml='',detailHeadingFocus=null;
 const nodes={};
 const manualSection={hidden:false,insertAdjacentHTML(){},before(){}};
-const partnerHeading={textContent:'Trading partners',closest:()=>manualSection};
-const emptyRow={textContent:'No generated submissions. Release a reviewed claim packet, then choose Generate X12 837P.'};
+const partnerHeading={textContent:'Manual clearinghouse connections',closest:()=>manualSection};
+const emptyRow={textContent:'No claim files yet. Open a ready claim and choose Prepare claim file (837P).'};
 const connectionNotice={outerHTML:'',insertAdjacentHTML(){}};
 const ediTool={
  inserted:'',
@@ -59,11 +59,11 @@ for(const file of ['web/claimmd-native.js','web/provider-settings.js','web/clear
  await vm.runInContext('showEdiWorkspace()',context);
  await settle();
  assert.equal(order[0],'show:Claim lifecycle','workspace must become visible before any API work');
- assert.match(ediTool.inserted,/NATIVE REVENUE CYCLE/);
- assert.match(ediTool.inserted,/Insurance &amp; eligibility|Insurance & eligibility/);
+ assert.match(ediTool.inserted,/INSURANCE CLAIMS/);
+ assert.match(ediTool.inserted,/Check insurance/);
  assert.match(connectionNotice.outerHTML,/Claim\.MD is not connected/);
  assert.match(connectionNotice.outerHTML,/data-provider-new/);
- assert.match(connectionNotice.outerHTML,/No trading-partner profile is required/);
+ assert.match(connectionNotice.outerHTML,/Connect your Claim\.MD account to check eligibility, send claims/);
  assert.match(providerHtml,/Claim\.MD is not connected/);
  assert(order.indexOf('delivery')>0,'legacy delivery panels load after native settings');
  assert(calls.indexOf('/api/v1/billing/provider-settings')<calls.indexOf('/api/v1/billing/delivery/routes')||!calls.includes('/api/v1/billing/delivery/routes'));
@@ -78,14 +78,14 @@ for(const file of ['web/claimmd-native.js','web/provider-settings.js','web/clear
  assert.match(workspaceHtml,/manual clearinghouse history is temporarily unavailable/);
  assert.match(connectionNotice.outerHTML,/data-provider-new/);
  assert.match(providerHtml,/Claim\.MD is not connected/);
- assert.match(providerHtml,/Delivery and acknowledgment panels are temporarily unavailable/);
- assert.match(providerHtml,/Additional Claim\.MD account activity is temporarily unavailable/);
+ assert.match(providerHtml,/Delivery and acknowledgment details are temporarily unavailable/);
+ assert.match(providerHtml,/More Claim\.MD activity is temporarily unavailable/);
  console.log('PASS legacy and optional API outages preserve native Claim.MD setup with section warnings');
 
  legacyFailure=false;optionalFailure=false;optionalHang=true;connectionNotice.outerHTML='';
  const load=vm.runInContext('showEdiWorkspace()',context);
  await Promise.race([load,new Promise((_,reject)=>setTimeout(()=>reject(new Error('core workspace remained blocked on optional provider history')),100))]);
- assert.match(workspaceHtml,/Electronic claim operations/);
+ assert.match(workspaceHtml,/<h2>Claim connections<\/h2>/);
  assert.match(connectionNotice.outerHTML,/data-provider-new/);
  assert.match(providerHtml,/Loading delivery, acknowledgment and account activity/);
  console.log('PASS a hung optional provider panel cannot block or blank the populated Clearinghouse workspace');
@@ -101,8 +101,8 @@ for(const file of ['web/claimmd-native.js','web/provider-settings.js','web/clear
  assert.equal(detailHeadingFocus?.preventScroll,true);
  assert.doesNotMatch(fs.readFileSync('web/clearinghouse.js','utf8'),/\.scrollIntoView\(/);
  const nativeSource=fs.readFileSync('web/claimmd-native.js','utf8');
- assert.match(nativeSource,/Claim progress and recorded evidence/);
- assert.match(nativeSource,/SYNTHETIC TEST CLAIM/);
+ assert.match(nativeSource,/Where this claim stands/);
+ assert.match(nativeSource,/Test claim\$\{live/);
  assert.match(nativeSource,/synthetic_test_reviewed/);
  assert.match(fs.readFileSync('web/claims.js','utf8'),/SCTEST control number/);
  console.log('PASS Connect Claim.MD opens direct AccountKey setup without a trading-partner prerequisite');
