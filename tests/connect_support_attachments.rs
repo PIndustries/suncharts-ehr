@@ -86,7 +86,12 @@ async fn service(old: bool) -> (String, Seen) {
                     out
                 } else if line.starts_with("POST") {
                     let sent: Value = serde_json::from_slice(&body).unwrap_or_default();
-                    if old && (sent.get("links").is_some() || sent.get("attachments").is_some()) {
+                    // An earlier release refuses any field it does not know.
+                    if old
+                        && (sent.get("links").is_some()
+                            || sent.get("attachments").is_some()
+                            || sent.get("author_email").is_some())
+                    {
                         json(422, json!({}))
                     } else {
                         json(
@@ -281,7 +286,34 @@ async fn support_messages_carry_checked_links_and_files() {
     let forwarded: Value = serde_json::from_slice(&forwarded).unwrap();
     assert_eq!(
         forwarded,
-        json!({"request_id":request,"subject":"Synthetic claim question","message":"Operational only","links":[{"kind":"patient","id":p,"label":"MRN SYN-LINK"},{"kind":"visit","id":visit,"label":"Visit 2026-11-01 · MRN SYN-LINK"},{"kind":"claim","id":claim,"label":"Claim SC-SYN-0001 · MRN SYN-LINK"}],"attachments":[file]})
+        json!({"request_id":request,"subject":"Synthetic claim question","message":"Operational only","links":[{"kind":"patient","id":p,"label":"MRN SYN-LINK"},{"kind":"visit","id":visit,"label":"Visit 2026-11-01 · MRN SYN-LINK"},{"kind":"claim","id":claim,"label":"Claim SC-SYN-0001 · MRN SYN-LINK"}],"attachments":[file],"author_email":format!("{}@example.test", a.sub.simple())}),
+        "the ticket names the staff member who opened it"
+    );
+    // A session that is not one of the clinic's staff accounts names nobody, and a
+    // reply never does: Connect already knows the conversation.
+    let mut delegated = a.clone();
+    delegated.sub = Uuid::new_v4();
+    let unnamed =
+        json!({"request_id":Uuid::new_v4(),"subject":"Synthetic","message":"Operational only"});
+    assert_eq!(
+        call(&r, &delegated, "POST", tickets, unnamed.clone(), None)
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&seen.lock().unwrap().last().unwrap().2).unwrap(),
+        unnamed
+    );
+    let answer = json!({"request_id":Uuid::new_v4(),"message":"Operational only"});
+    let replies = format!("{tickets}/{}/replies", Uuid::new_v4());
+    assert_eq!(
+        call(&r, &a, "POST", &replies, answer.clone(), None).await.0,
+        200
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&seen.lock().unwrap().last().unwrap().2).unwrap(),
+        answer
     );
     assert!(
         !forwarded.to_string().contains("Avery") && !forwarded.to_string().contains("Synthetic\"")
@@ -568,6 +600,7 @@ async fn support_messages_carry_checked_links_and_files() {
         "Support cannot receive attached records or files yet."
     );
     let plain = Uuid::new_v4();
+    let earlier = old_seen.lock().unwrap().len();
     assert_eq!(
         call(
             &r,
@@ -585,5 +618,16 @@ async fn support_messages_carry_checked_links_and_files() {
         serde_json::from_slice::<Value>(&old_seen.lock().unwrap().last().unwrap().2).unwrap(),
         json!({"request_id":plain,"subject":"Synthetic","message":"Operational only"})
     );
+    // That earlier release was asked once with the author and once without, no more.
+    let attempts: Vec<Value> = old_seen.lock().unwrap()[earlier..]
+        .iter()
+        .map(|(_, _, body)| serde_json::from_slice(body).unwrap())
+        .collect();
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(
+        attempts[0]["author_email"],
+        format!("{}@example.test", a.sub.simple())
+    );
+    assert_eq!(attempts[0]["request_id"], attempts[1]["request_id"]);
     db.close().await;
 }

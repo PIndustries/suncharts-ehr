@@ -470,6 +470,17 @@ async fn request_extras_at(
     body: Option<&Value>,
     extras: bool,
 ) -> Result<Value> {
+    let response = send_at(base, installation, key, method, path, body).await?;
+    service_reply(response, extras).await
+}
+async fn send_at(
+    base: &str,
+    installation: Uuid,
+    key: &str,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<reqwest::Response> {
     let mut req = crate::stedi::client()?
         .request(
             method,
@@ -479,10 +490,68 @@ async fn request_extras_at(
     if let Some(body) = body {
         req = req.json(body);
     }
-    let response = req
-        .send()
+    req.send()
         .await
-        .map_err(|_| Error::Invalid("SunCharts service is unavailable"))?;
+        .map_err(|_| Error::Invalid("SunCharts service is unavailable"))
+}
+/// Opens a ticket and tells Connect who opened it, so its email notices can reach
+/// that person. A Connect release that predates `author_email` refuses the unknown
+/// field while parsing (422), before anything is stored; the same request is then
+/// sent once more without it. Any other answer is final. The address is never logged.
+async fn create_ticket_at(
+    base: &str,
+    installation: Uuid,
+    key: &str,
+    body: &Value,
+    extras: bool,
+    author_email: Option<&str>,
+) -> Result<Value> {
+    if let Some(email) = author_email {
+        let mut named = body.clone();
+        named["author_email"] = json!(email);
+        let response = send_at(
+            base,
+            installation,
+            key,
+            reqwest::Method::POST,
+            "/tickets",
+            Some(&named),
+        )
+        .await?;
+        if response.status() != StatusCode::UNPROCESSABLE_ENTITY {
+            return service_reply(response, extras).await;
+        }
+    }
+    request_extras_at(
+        base,
+        installation,
+        key,
+        reqwest::Method::POST,
+        "/tickets",
+        Some(body),
+        extras,
+    )
+    .await
+}
+/// The signed-in person's own address, when they are a member of the clinic's staff.
+/// A delegated partner or platform administrator session acts under a grant, not a
+/// staff account, and has no row here.
+async fn staff_email(pool: &PgPool, a: &Actor) -> Result<Option<String>> {
+    if matches!(a.role, Role::PartnerSupport | Role::Patient) {
+        return Ok(None);
+    }
+    let email: Option<String> = sqlx::query_scalar(
+        "SELECT email FROM browser_users WHERE tenant_id=$1 AND id=$2 AND NOT disabled",
+    )
+    .bind(a.tenant_id)
+    .bind(a.sub)
+    .fetch_optional(pool)
+    .await?;
+    Ok(email.filter(|value| {
+        value.len() <= 254 && value.contains('@') && !value.chars().any(char::is_whitespace)
+    }))
+}
+async fn service_reply(response: reqwest::Response, extras: bool) -> Result<Value> {
     if extras && response.status() == StatusCode::UNPROCESSABLE_ENTITY {
         return Err(Error::Conflict(SUPPORT_EXTRAS_UNAVAILABLE));
     }
@@ -713,16 +782,39 @@ async fn support_call(
     };
     let extras = body.is_some_and(|b| b.get("links").is_some() || b.get("attachments").is_some());
     let (mut tx, r, key) = support_session(a, s, write, reservation).await?;
-    let value = request_extras_at(
-        &crate::connect_onboarding::cloud_origin()?,
-        r.installation_id,
-        key.expose(),
-        method,
-        path,
-        body,
-        extras,
-    )
-    .await?;
+    let origin = crate::connect_onboarding::cloud_origin()?;
+    // The reservation above is of the message as written. Who wrote it is added only
+    // on the wire, so a retry stays the same request whatever Connect accepts.
+    let author_email = if write && path == "/tickets" {
+        staff_email(db(s)?, a).await?
+    } else {
+        None
+    };
+    let value = match (author_email.as_deref(), body) {
+        (Some(email), Some(body)) => {
+            create_ticket_at(
+                &origin,
+                r.installation_id,
+                key.expose(),
+                body,
+                extras,
+                Some(email),
+            )
+            .await?
+        }
+        _ => {
+            request_extras_at(
+                &origin,
+                r.installation_id,
+                key.expose(),
+                method,
+                path,
+                body,
+                extras,
+            )
+            .await?
+        }
+    };
     crate::postgres::audit(&mut tx, a, action, r.id).await?;
     // One event per record whose label left the practice with this message.
     for record in linked {
@@ -1741,5 +1833,220 @@ mod tests {
             "support_attachments_unavailable"
         );
         assert!(support_response(Err(Error::Conflict("other"))).is_err());
+    }
+    /// Answers each connection in turn and returns what each one sent.
+    async fn endpoints(
+        answers: Vec<(u16, Value)>,
+    ) -> (String, tokio::task::JoinHandle<Vec<Value>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            let mut bodies = Vec::new();
+            for (status, answer) in answers {
+                let Ok(Ok((mut stream, _))) =
+                    tokio::time::timeout(std::time::Duration::from_millis(200), listener.accept())
+                        .await
+                else {
+                    break;
+                };
+                let mut bytes = Vec::new();
+                let body = loop {
+                    let mut part = [0; 4096];
+                    let n = stream.read(&mut part).await.unwrap();
+                    bytes.extend_from_slice(&part[..n]);
+                    let Some(index) = bytes.windows(4).position(|v| v == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let header = String::from_utf8_lossy(&bytes[..index]).to_ascii_lowercase();
+                    let length = header
+                        .lines()
+                        .find_map(|v| {
+                            v.strip_prefix("content-length:")?
+                                .trim()
+                                .parse::<usize>()
+                                .ok()
+                        })
+                        .unwrap_or(0);
+                    if n == 0 || bytes.len() >= index + 4 + length {
+                        break bytes[index + 4..].to_vec();
+                    }
+                };
+                bodies.push(serde_json::from_slice(&body).unwrap());
+                let answer = answer.to_string();
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+                            answer.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            }
+            bodies
+        });
+        (base, task)
+    }
+    #[tokio::test]
+    async fn a_new_ticket_names_its_author_and_older_connect_still_accepts_it() {
+        let installation = Uuid::new_v4();
+        let email = "front.desk@example.test";
+        let body =
+            json!({"request_id":Uuid::new_v4(),"subject":"Synthetic","message":"Synthetic issue"});
+        let mut named = body.clone();
+        named["author_email"] = json!(email);
+        let saved = json!({"id":Uuid::new_v4(),"status":"open"});
+        let send = |base: String, extras: bool, author: Option<&'static str>, body: Value| async move {
+            create_ticket_at(
+                &base,
+                installation,
+                "scs_inst_fixture",
+                &body,
+                extras,
+                author,
+            )
+            .await
+        };
+
+        // A staff member with an address: sent once, with the address.
+        let (base, task) = endpoints(vec![(200, saved.clone()), (200, json!({}))]).await;
+        assert_eq!(
+            send(base, false, Some(email), body.clone()).await.unwrap(),
+            saved
+        );
+        assert_eq!(task.await.unwrap(), vec![named.clone()]);
+
+        // Nobody to name: the message is exactly what earlier builds sent.
+        let (base, task) = endpoints(vec![(200, saved.clone()), (200, json!({}))]).await;
+        assert_eq!(send(base, false, None, body.clone()).await.unwrap(), saved);
+        assert_eq!(task.await.unwrap(), vec![body.clone()]);
+
+        // A Connect that does not know the field: one retry without it, same request.
+        let (base, task) = endpoints(vec![
+            (422, json!({})),
+            (200, saved.clone()),
+            (200, json!({})),
+        ])
+        .await;
+        assert_eq!(
+            send(base, false, Some(email), body.clone()).await.unwrap(),
+            saved
+        );
+        let sent = task.await.unwrap();
+        assert_eq!(sent, vec![named.clone(), body.clone()]);
+        assert_eq!(sent[0]["request_id"], sent[1]["request_id"]);
+
+        // Still refused without it: no third attempt, and the usual answer.
+        let (base, task) = endpoints(vec![
+            (422, json!({})),
+            (422, json!({})),
+            (200, saved.clone()),
+        ])
+        .await;
+        assert!(matches!(
+            send(base, false, Some(email), body.clone()).await,
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(task.await.unwrap().len(), 2);
+        let mut with_file = body.clone();
+        with_file["attachments"] = json!([Uuid::new_v4()]);
+        let (base, task) = endpoints(vec![
+            (422, json!({})),
+            (422, json!({})),
+            (200, saved.clone()),
+        ])
+        .await;
+        assert!(matches!(
+            send(base, true, Some(email), with_file.clone()).await,
+            Err(Error::Conflict(m)) if m == SUPPORT_EXTRAS_UNAVAILABLE
+        ));
+        let sent = task.await.unwrap();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1], with_file, "files and links are kept on the retry");
+
+        // Any other refusal is final.
+        for status in [400, 401, 403, 404, 409, 429, 500, 503] {
+            let (base, task) = endpoints(vec![(status, json!({})), (200, saved.clone())]).await;
+            assert!(send(base, false, Some(email), body.clone()).await.is_err());
+            assert_eq!(
+                task.await.unwrap(),
+                vec![named.clone()],
+                "{status} is not retried"
+            );
+        }
+    }
+    #[tokio::test]
+    async fn only_a_clinic_staff_account_is_named_as_the_author() {
+        let url =
+            std::env::var("TEST_DATABASE_URL").expect("disposable TEST_DATABASE_URL required");
+        let schema = format!("support_author_{}", Uuid::new_v4().simple());
+        let scoped = schema.clone();
+        let admin = PgPool::connect(&url).await.unwrap();
+        crate::test_db::create_schema(&admin, &schema).await;
+        admin.close().await;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .after_connect(move |c, _| {
+                let query = format!("SET search_path TO {scoped}");
+                Box::pin(async move {
+                    sqlx::query(&query).execute(c).await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .unwrap();
+        crate::MIGRATOR.run(&pool).await.unwrap();
+        let tenant = Uuid::new_v4();
+        let actor = |sub: Uuid, tenant: Uuid, role: Role| Actor {
+            sub,
+            tenant_id: tenant,
+            role,
+            patient_id: None,
+            iss: "synthetic".into(),
+            aud: "synthetic".into(),
+            iat: 0,
+            exp: i64::MAX,
+        };
+        let (front_desk, disabled) = (Uuid::new_v4(), Uuid::new_v4());
+        for (id, email, off) in [
+            (front_desk, "front.desk@example.test", false),
+            (disabled, "former.staff@example.test", true),
+        ] {
+            sqlx::query("INSERT INTO browser_users(tenant_id,id,email,password_hash,role,disabled) VALUES($1,$2,$3,'synthetic','front_desk',$4)").bind(tenant).bind(id).bind(email).bind(off).execute(&pool).await.unwrap();
+        }
+        let named = |a: Actor| {
+            let pool = pool.clone();
+            async move { staff_email(&pool, &a).await.unwrap() }
+        };
+        assert_eq!(
+            named(actor(front_desk, tenant, Role::FrontDesk))
+                .await
+                .as_deref(),
+            Some("front.desk@example.test")
+        );
+        // A delegated partner or platform administrator acts under a grant ID.
+        assert_eq!(
+            named(actor(Uuid::new_v4(), tenant, Role::Owner)).await,
+            None
+        );
+        assert_eq!(
+            named(actor(front_desk, tenant, Role::PartnerSupport)).await,
+            None
+        );
+        assert_eq!(named(actor(disabled, tenant, Role::FrontDesk)).await, None);
+        assert_eq!(
+            named(actor(front_desk, Uuid::new_v4(), Role::FrontDesk)).await,
+            None,
+            "never another clinic's account"
+        );
+        pool.close().await;
+        let admin = PgPool::connect(&url).await.unwrap();
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        admin.close().await;
     }
 }
