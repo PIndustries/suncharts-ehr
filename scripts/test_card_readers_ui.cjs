@@ -65,7 +65,7 @@ test('ready practice loads Connect.js from the documented address and starts it 
  assert.equal(await instance.options.fetchClientSecret(),'accs_secret__synthetic','the first secret is the one the server just returned');
  assert.equal(f.calls.length,1,'no second request for the first secret');
  assert.deepEqual(instance.created.map(e=>e.name),['terminal-hardware-shop','terminal-hardware-orders']);
- assert.match(html,/<h3>Order a reader<\/h3><div id="card-reader-shop"><\/div>/);
+ assert.match(html,/<h3>Order a reader<\/h3><p class="muted">Readers that work with SunCharts: BBPOS WisePOS E, Stripe Reader S700, S710 and T600\. The Stripe Reader M2 does not\.<\/p><div id="card-reader-shop"><\/div>/);
  assert.match(html,/<h3>Your orders<\/h3><div id="card-reader-orders"><\/div>/);
  assert.ok(html.indexOf('Readers are ordered from Stripe')<html.indexOf('Order a reader')&&html.indexOf('Order a reader')<html.indexOf('Your orders'));
  assert.deepEqual(f.nodes['card-reader-shop'].children,[instance.created[0]]);

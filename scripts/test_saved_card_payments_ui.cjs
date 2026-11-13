@@ -125,8 +125,8 @@ test('an open card link has Cancel link; afterwards it reads Cancelled and anoth
 
 test('the card link copay form has no confirmation box; the cash and check form keeps its box',async()=>{
  const f=copay(),c=f.ctx;
- await c.openHostedCopayEditor('appt');
- assert.doesNotMatch(c.editor,/type="checkbox"|name="reviewed"|I reviewed/);assert.match(c.editor,/name="amount" required/);
+ await c.openHostedCopayEditor('appt','insurance-hosted-copay');
+ assert.doesNotMatch(f.slot(),/type="checkbox"|name="reviewed"|I reviewed/);assert.match(f.slot(),/name="amount" required/);
  c.next=link;await f.submit({id:'hosted-copay-form',dataset:{patient:'patient',appointment:'appt',coverage:'coverage',request:'stable-request',livemode:'false'},values:{amount:'25.00'},hasAttribute:()=>false});
  same(f.calls.find(call=>call[1]==='POST'),[base,'POST',{request_id:'stable-request',amount_cents:2500,coverage_id:'coverage',livemode:false,reason:'Reviewed appointment copay before hosted card collection'}]);
  c.chartSection='insurance';c.openCopayReceiptEditor('appt');

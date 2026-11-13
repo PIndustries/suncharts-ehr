@@ -111,7 +111,7 @@ async function openCardReaders(){
  try{stripe=await loadCardReaderScript();}
  catch(error){show(page(cardReaderFailure(error.message)));return;}
  if(!current())return;
- show(page('<div id="card-reader-status"></div><section class="billing-section"><h3>Order a reader</h3><div id="card-reader-shop"></div></section><section class="billing-section"><h3>Your orders</h3><div id="card-reader-orders"></div></section>'));
+ show(page('<div id="card-reader-status"></div><section class="billing-section"><h3>Order a reader</h3><p class="muted">Readers that work with SunCharts: BBPOS WisePOS E, Stripe Reader S700, S710 and T600. The Stripe Reader M2 does not.</p><div id="card-reader-shop"></div></section><section class="billing-section"><h3>Your orders</h3><div id="card-reader-orders"></div></section>'));
  try{mountCardReaders(cardReaderConnect(stripe,data,identity),current);}
  catch{endCardReaderConnection();show(page(cardReaderFailure(cardReaderLoadFailure)));}
 }

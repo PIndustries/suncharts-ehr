@@ -137,6 +137,17 @@ without sending anything. Uploading needs `SUNCHARTS_ACCESS_TOKEN`, an OAuth acc
 token granted by the owner with `migration.manage`, `clinical.read` and
 `clinical.write`.
 
+The owner can add the same files from the browser instead, with no token.
+`import_ccda.py files --export-dir <export> --work-dir <work> --out-dir <folder>`
+writes the converted files into a private 0700 folder, each named by its SHA-256,
+with a `files-manifest.json` that lists the source patient, type, category and the
+same request identifier `attach` uses. On **Data import**, under an imported file,
+**Add files from the previous system** takes that folder, looks up each patient's
+chart through the same patient-links route and uploads one file at a time. A folder
+prepared for a different import is refused. Choosing the folder again, or running
+`attach` afterwards, stores nothing twice. The folder contains patient files: keep
+it private and delete it when the upload is done.
+
 Imported history cannot be removed: `historical_records` rejects updates and
 deletes, a stored document can only be marked archived or entered in error, no
 route deletes a patient, a patient link cannot be undone, and there is no rollback

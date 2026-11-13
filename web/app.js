@@ -811,7 +811,7 @@ document.addEventListener('click',e=>{
   if(button.closest('#billing-workspace')||button.closest('#billing-tool')||button.dataset.mapBilling)return;
   if(button.closest('#schedule-workspace')||button.dataset.mapAppointment)return;
   if(button.closest('#patient-demographics'))return;
-  if(button.dataset.importSource||button.dataset.useContact||button.dataset.reconcileAll)return;
+  if(button.dataset.importSource||button.dataset.useContact||button.dataset.reconcileAll||button.dataset.importFilesAdd||button.dataset.importFilesRetry)return;
   if(button.closest('#clinical-lists')||button.closest('#lab-workspace')||button.dataset.mapLab||button.dataset.openLabPatient||button.dataset.mapClinical)return;
   if(button.id==='new-patient'){ if(!canRegisterPatient())return; $('patient-form').hidden=false;$('patient-form').elements.given_name.focus();return; }
   if(button.id==='cancel-patient'){ $('patient-form').reset();$('patient-form').hidden=true;return; }
