@@ -46,11 +46,23 @@ class ChangePlanTest(unittest.TestCase):
             [
                 "scripts/test_appointment_workflows_ui.cjs",
                 "scripts/test_chart_scheduling.cjs",
+                "scripts/test_previsit_workflow_binding_ui.cjs",
+                "scripts/test_schedule_board_ui.cjs",
                 "scripts/test_schedule_calendar.cjs",
                 "scripts/test_week_calendar.cjs",
             ],
         )
         self.assertEqual(plan["javascript_files"], ["web/scheduling.js"])
+        board = build_plan(["web/schedule-board.js", "web/schedule-board.css"])
+        self.assertEqual(
+            board["ui_tests"],
+            [
+                "scripts/test_previsit_workflow_binding_ui.cjs",
+                "scripts/test_schedule_board_ui.cjs",
+                "scripts/test_schedule_calendar.cjs",
+                "scripts/test_week_calendar.cjs",
+            ],
+        )
 
     def test_shell_change_runs_every_ui_fixture(self):
         plan = build_plan(["web/shell.js"])

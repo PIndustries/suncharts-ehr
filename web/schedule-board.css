@@ -1,0 +1,195 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/* Schedule board: time grid, appointment card, markers and appointment panel.
+   Every colour comes from the theme variables so light and dark stay in step. */
+#schedule-workspace{
+ --appt-booked-bg:var(--accent);--appt-booked-text:var(--blue);--appt-booked-line:var(--blue);
+ --appt-in-bg:var(--success-bg);--appt-in-text:var(--success-text);--appt-in-line:var(--success-line);
+ --appt-active-bg:var(--approval-bg);--appt-active-text:var(--approval-text);--appt-active-line:var(--approval-text);
+ --appt-done-bg:var(--surface-raised);--appt-done-text:var(--muted);--appt-done-line:var(--line);
+ --appt-off-bg:var(--error-bg);--appt-off-text:var(--error-text);--appt-off-line:var(--error-line);
+ --visit-office:var(--blue);--visit-new:var(--approval-text);--visit-followup:var(--success-text);
+ --visit-telehealth:var(--focus);--visit-procedure:var(--warning-text);--visit-other:var(--muted);
+ --grid-axis:58px;
+}
+
+/* Header */
+#schedule-workspace .schedule-commandbar{align-items:flex-start;background:var(--surface);color:var(--ink);border-color:var(--line)}
+#schedule-workspace .schedule-commandbar h2{font-size:16px;margin:0 0 2px}
+#schedule-workspace .schedule-period{margin:0;font-size:13px;font-weight:600;color:var(--ink)}
+#schedule-workspace .schedule-zone{margin:3px 0 0;font-size:11px}
+#schedule-workspace .schedule-more{position:relative}
+#schedule-workspace .schedule-more>summary{list-style:none;display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:6px 11px;border:1px solid var(--line);border-left:1px solid var(--line);border-radius:4px;background:var(--surface);color:var(--ink);font-size:13px;font-weight:600;cursor:pointer}
+#schedule-workspace .schedule-more>summary::-webkit-details-marker{display:none}
+#schedule-workspace .schedule-more>summary::after{content:"";width:6px;height:6px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg) translateY(-2px)}
+#schedule-workspace .schedule-more>summary:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+#schedule-workspace .schedule-more-menu{position:absolute;right:0;top:calc(100% + 4px);z-index:20;display:grid;min-width:190px;padding:4px;border:1px solid var(--line);border-radius:6px;background:var(--surface);box-shadow:var(--theme-shadow)}
+#schedule-workspace .schedule-more-menu button{justify-content:flex-start;text-align:left;border:0;background:transparent;color:var(--ink);font-weight:500}
+#schedule-workspace .schedule-more-menu button:hover,#schedule-workspace .schedule-more-menu button:focus-visible{background:var(--surface-raised)}
+#schedule-workspace .schedule-toolbar{align-items:end;gap:12px;background:var(--surface-soft);border-color:var(--line)}
+#schedule-workspace .schedule-toolbar label{font-size:11px;color:var(--muted)}
+#schedule-workspace :is(.schedule-views,.schedule-zoom,.schedule-groups){display:inline-flex;align-items:stretch}
+#schedule-workspace :is(.schedule-views,.schedule-zoom,.schedule-groups) button{border-radius:0;margin-left:-1px;padding:6px 12px;background:var(--surface);color:var(--ink);border-color:var(--line);font-weight:500}
+#schedule-workspace :is(.schedule-views,.schedule-zoom,.schedule-groups) button:first-child{margin-left:0;border-radius:4px 0 0 4px}
+#schedule-workspace :is(.schedule-views,.schedule-zoom,.schedule-groups) button:last-child{border-radius:0 4px 4px 0}
+#schedule-workspace :is(.schedule-views,.schedule-zoom,.schedule-groups) button.is-on{position:relative;z-index:1;background:var(--accent);color:var(--blue);border-color:var(--blue);font-weight:700}
+#schedule-workspace .schedule-zoom{margin-left:auto}
+#schedule-workspace .schedule-zoom button{font-size:12px;padding:6px 10px}
+#schedule-workspace .schedule-statusbar{gap:10px 16px;font-size:12px;color:var(--muted);background:var(--surface);border-color:var(--line)}
+#schedule-workspace .schedule-statusbar b{color:var(--ink);font-weight:700}
+#schedule-workspace .schedule-groups button{font-size:12px;min-height:28px;padding:4px 10px}
+#schedule-workspace .schedule-summary{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px}
+#schedule-workspace .schedule-count{min-height:26px;padding:2px 6px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--muted);font-size:12px;font-weight:500}
+#schedule-workspace .schedule-count:hover{background:var(--surface-raised);color:var(--ink)}
+#schedule-workspace .schedule-count.is-on{background:var(--accent);border-color:var(--blue);color:var(--blue)}
+#schedule-workspace .schedule-count.is-on b{color:var(--blue)}
+#schedule-workspace .schedule-show-all{min-height:26px;padding:2px 8px;font-size:12px;border-color:var(--line);background:var(--surface);color:var(--blue)}
+#schedule-workspace .schedule-statusbar>button[data-board-action]{min-height:28px;padding:3px 10px;font-size:12px;margin-left:auto;background:var(--surface);color:var(--ink);border-color:var(--line)}
+#schedule-workspace .schedule-batch-status:empty{display:none}
+#schedule-workspace .schedule-batch-status{color:var(--ink);font-weight:600}
+#schedule-workspace .schedule-marker-problem{color:var(--warning-text)}
+
+/* Time grid */
+#schedule-workspace .schedule-grid{--minute:2px;--grid-minutes:720;--s:0;--l:30;--lane:0;--lanes:1;border-top:1px solid var(--line);background:var(--surface);color:var(--ink)}
+#schedule-workspace .schedule-grid .grid-scroll{overflow:auto;max-height:max(340px,calc(100dvh - 292px));overscroll-behavior:contain}
+#schedule-workspace .schedule-grid{--grid-columns:1;--grid-col-min:240px}
+#schedule-workspace .schedule-grid-week{--grid-col-min:128px}
+#schedule-workspace .schedule-grid .grid-inner{min-width:calc(var(--grid-axis) + var(--grid-columns)*var(--grid-col-min))}
+#schedule-workspace .schedule-grid :is(.grid-head,.grid-body){display:flex;min-width:100%}
+#schedule-workspace .schedule-grid .grid-head{position:sticky;top:0;z-index:6;background:var(--surface-soft);border-bottom:1px solid var(--line)}
+#schedule-workspace .schedule-grid :is(.grid-corner,.grid-axis){flex:0 0 var(--grid-axis);width:var(--grid-axis);position:sticky;left:0;z-index:5;background:var(--surface-soft);border-right:1px solid var(--line)}
+#schedule-workspace .schedule-grid .grid-head .grid-corner{z-index:7}
+#schedule-workspace .schedule-grid :is(.grid-col-head,.grid-col){flex:1 1 0;min-width:0;border-right:1px solid var(--line)}
+#schedule-workspace .schedule-grid :is(.grid-col-head,.grid-col):last-child{border-right:0}
+#schedule-workspace .schedule-grid .grid-col-head{display:flex;align-items:center;gap:8px;padding:7px 10px;font-size:12px;color:var(--muted)}
+#schedule-workspace .schedule-grid .grid-col-head strong{font-size:13px;color:var(--ink);overflow-wrap:anywhere}
+#schedule-workspace .schedule-grid .grid-col-head small{font-size:11px;color:var(--muted);white-space:nowrap}
+#schedule-workspace .schedule-grid .grid-col-head.is-today :is(strong,.grid-day-link){color:var(--blue)}
+#schedule-workspace .schedule-grid-week .grid-col-head{flex-wrap:wrap;gap:0 6px;padding:5px 4px 5px 8px}
+#schedule-workspace .schedule-grid-week .grid-col-head small{order:3;flex-basis:100%}
+#schedule-workspace .schedule-grid .grid-day-link{min-height:24px;padding:0;border:0;background:transparent;color:var(--ink);font-size:13px;font-weight:700;text-align:left}
+#schedule-workspace .schedule-grid .grid-day-link:hover{text-decoration:underline;background:transparent}
+#schedule-workspace .schedule-grid .grid-add{margin-left:auto;min-height:26px;min-width:26px;padding:0 6px;border:1px solid transparent;background:transparent;color:var(--blue);font-size:17px;line-height:1}
+#schedule-workspace .schedule-grid .grid-add:hover,#schedule-workspace .schedule-grid .grid-add:focus-visible{border-color:var(--line);background:var(--surface)}
+#schedule-workspace .schedule-grid .grid-body{position:relative;height:calc(var(--grid-minutes)*var(--minute))}
+#schedule-workspace .schedule-grid .grid-axis{position:sticky}
+#schedule-workspace .schedule-grid .grid-hour{position:absolute;right:6px;top:calc(var(--s)*var(--minute));transform:translateY(-1px);padding-top:2px;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+#schedule-workspace .schedule-grid .grid-col{position:relative;background-image:linear-gradient(to bottom,var(--line) 1px,transparent 1px),linear-gradient(to bottom,color-mix(in srgb,var(--line) 45%,transparent) 1px,transparent 1px);background-size:100% calc(60*var(--minute)),100% calc(30*var(--minute));cursor:default}
+#schedule-workspace .schedule-grid .grid-col[title]{cursor:cell}
+#schedule-workspace .schedule-grid .grid-col.is-today{background-color:color-mix(in srgb,var(--accent) 35%,transparent)}
+#schedule-workspace .schedule-grid :is(.grid-item,.grid-block,.grid-now){position:absolute;top:calc(var(--s)*var(--minute))}
+#schedule-workspace .schedule-grid :is(.grid-item,.grid-block){height:calc(var(--l)*var(--minute));left:calc(var(--lane)/var(--lanes)*100%);width:calc(100%/var(--lanes))}
+#schedule-workspace .schedule-grid .grid-item{z-index:2;padding:1px 3px 1px 2px;cursor:default}
+#schedule-workspace .schedule-grid .grid-item:focus-within,#schedule-workspace .schedule-grid .grid-item:hover{z-index:4}
+#schedule-workspace .schedule-grid .grid-block{z-index:1;display:flex;align-items:flex-start;gap:8px;min-height:0;padding:4px 8px;border:0;border-left:3px solid var(--warning-line);border-radius:0;text-align:left;color:var(--warning-text);font-weight:500;background:repeating-linear-gradient(135deg,var(--warning-bg),var(--warning-bg) 8px,color-mix(in srgb,var(--warning-bg) 55%,transparent) 8px,color-mix(in srgb,var(--warning-bg) 55%,transparent) 16px);overflow:hidden}
+#schedule-workspace .schedule-grid .grid-block strong{font-size:12px}
+#schedule-workspace .schedule-grid .grid-block small{font-size:11px}
+#schedule-workspace .schedule-grid .grid-block.is-selected{outline:2px solid var(--focus);outline-offset:-2px}
+#schedule-workspace .schedule-grid .grid-now{left:0;right:0;z-index:3;height:0;border-top:2px solid var(--error-text);pointer-events:none}
+#schedule-workspace .schedule-grid .grid-now::before{content:"";position:absolute;left:-4px;top:-5px;width:8px;height:8px;border-radius:50%;background:var(--error-text)}
+
+/* Appointment card: the left edge is the visit type, the fill and pill are the status. */
+#schedule-workspace .appt-card{--edge:var(--visit-other);--fill:var(--appt-booked-bg);--pill-text:var(--appt-booked-text);--pill-line:var(--appt-booked-line);position:relative;display:flex;flex-direction:column;gap:3px;min-width:0;height:100%;padding:4px 7px 4px 9px;border:1px solid var(--line);border-left:4px solid var(--edge);border-radius:5px;background:color-mix(in srgb,var(--fill) 70%,var(--surface));color:var(--ink);overflow:hidden}
+#schedule-workspace .appt-card.type-office{--edge:var(--visit-office)}#schedule-workspace .appt-card.type-new{--edge:var(--visit-new)}#schedule-workspace .appt-card.type-followup{--edge:var(--visit-followup)}
+#schedule-workspace .appt-card.type-telehealth{--edge:var(--visit-telehealth)}#schedule-workspace .appt-card.type-procedure{--edge:var(--visit-procedure)}
+#schedule-workspace :is(.appt-card,.appt-status-pill,.appt-panel).status-checked_in{--fill:var(--appt-in-bg);--pill-text:var(--appt-in-text);--pill-line:var(--appt-in-line)}
+#schedule-workspace :is(.appt-card,.appt-status-pill,.appt-panel).status-in_progress{--fill:var(--appt-active-bg);--pill-text:var(--appt-active-text);--pill-line:var(--appt-active-line)}
+#schedule-workspace :is(.appt-card,.appt-status-pill,.appt-panel).status-completed{--fill:var(--appt-done-bg);--pill-text:var(--appt-done-text);--pill-line:var(--appt-done-line)}
+#schedule-workspace :is(.appt-card,.appt-status-pill,.appt-panel):is(.status-cancelled,.status-no_show){--fill:var(--appt-off-bg);--pill-text:var(--appt-off-text);--pill-line:var(--appt-off-line)}
+#schedule-workspace .appt-card:is(.status-cancelled,.status-no_show) .appt-patient{text-decoration:line-through;color:var(--muted)}
+#schedule-workspace .appt-card.is-selected{outline:2px solid var(--focus);outline-offset:-1px}
+#schedule-workspace .appt-card .appt-card-main{display:flex;flex:0 0 auto;flex-wrap:wrap;align-items:baseline;gap:1px 8px;min-height:0;min-width:0;padding:0;border:0;border-radius:3px;background:transparent;color:inherit;font-weight:400;text-align:left;line-height:1.3}
+#schedule-workspace .appt-card .appt-card-main:hover{background:transparent}
+#schedule-workspace .appt-card .appt-card-main:hover .appt-patient{text-decoration:underline}
+#schedule-workspace .appt-card .appt-card-main:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+#schedule-workspace .appt-card .appt-card-main[draggable=true]{cursor:grab}
+#schedule-workspace .appt-time{font-size:11px;font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+#schedule-workspace .appt-patient{font-size:13px;font-weight:700;color:var(--ink);overflow-wrap:anywhere}
+#schedule-workspace .appt-meta{font-size:11px;color:var(--muted);overflow-wrap:anywhere}
+#schedule-workspace .appt-status,#schedule-workspace .appt-status-pill{display:inline-block;padding:0 6px;border:1px solid var(--pill-line);border-radius:9px;background:var(--surface);color:var(--pill-text);font-size:11px;font-weight:700;line-height:1.5;white-space:nowrap}
+#schedule-workspace .appt-day .appt-card-main{display:grid;grid-template-columns:auto minmax(0,auto) minmax(0,1fr) auto;column-gap:8px}
+#schedule-workspace .appt-day :is(.appt-patient,.appt-meta){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#schedule-workspace .grid-item.is-narrow .appt-card-main{display:flex}
+#schedule-workspace .grid-item.is-narrow .appt-meta{display:none}
+#schedule-workspace .grid-item.is-narrow .appt-patient{white-space:normal}
+/* A card too small for its contents opens up under the pointer or the keyboard. */
+#schedule-workspace .grid-item:is(:hover,:focus-within)>.appt-card{height:auto;min-height:100%;box-shadow:var(--theme-shadow)}
+#schedule-workspace .appt-markers{display:flex;flex:0 0 auto;flex-wrap:wrap;align-items:center;gap:3px 4px;min-width:0}
+#schedule-workspace .appt-markers:empty{display:none}
+#schedule-workspace .appt-marker{--tone-bg:var(--surface-raised);--tone-text:var(--muted);--tone-line:var(--line);display:inline-flex;align-items:center;gap:3px;min-height:20px;padding:0 6px 0 4px;border:1px solid var(--tone-line);border-radius:4px;background:var(--tone-bg);color:var(--tone-text);font-size:11px;font-weight:600;line-height:1.4;white-space:nowrap}
+#schedule-workspace .appt-marker:hover{background:var(--tone-bg);border-color:var(--tone-text)}
+#schedule-workspace .appt-marker:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+#schedule-workspace :is(.appt-marker,.appt-fact-state).tone-green{--tone-bg:var(--success-bg);--tone-text:var(--success-text);--tone-line:var(--success-line)}
+#schedule-workspace :is(.appt-marker,.appt-fact-state).tone-amber{--tone-bg:var(--warning-bg);--tone-text:var(--warning-text);--tone-line:var(--warning-line)}
+#schedule-workspace :is(.appt-marker,.appt-fact-state).tone-red{--tone-bg:var(--error-bg);--tone-text:var(--error-text);--tone-line:var(--error-line)}
+#schedule-workspace :is(.appt-marker,.appt-fact-state).tone-info{--tone-bg:var(--approval-bg);--tone-text:var(--approval-text);--tone-line:var(--approval-text)}
+#schedule-workspace .appt-marker .marker-icon{width:12px;height:12px;flex:none}
+#schedule-workspace .appt-marker-offer{border-style:dashed;background:var(--surface);color:var(--blue);opacity:0}
+#schedule-workspace .appt-card:hover .appt-marker-offer,#schedule-workspace .appt-card:focus-within .appt-marker-offer,#schedule-workspace .appt-marker-offer:focus-visible{opacity:1}
+@media(hover:none){#schedule-workspace .appt-marker-offer{opacity:1}}
+/* A short visit keeps to one line; everything is still in the panel and the tooltip. */
+#schedule-workspace .grid-item.is-short .appt-card{flex-direction:row;align-items:center;gap:6px;padding-top:1px;padding-bottom:1px}
+#schedule-workspace .grid-item.is-short .appt-card-main{display:flex;flex-wrap:nowrap;flex:0 0 auto;max-width:100%;white-space:nowrap;overflow:hidden}
+#schedule-workspace .grid-item.is-short .appt-meta{display:none}
+#schedule-workspace .grid-item.is-short .appt-markers{flex:0 1 auto;flex-wrap:nowrap;overflow:hidden}
+#schedule-workspace .grid-item.is-short .appt-patient{white-space:nowrap}
+#schedule-workspace .zoom-compact .grid-item.is-short .appt-card{padding-top:0;padding-bottom:0;border-radius:3px}
+#schedule-workspace .zoom-compact .appt-card{gap:1px;padding-top:2px;padding-bottom:2px}
+#schedule-workspace .zoom-compact .appt-marker{min-height:17px;font-size:10.5px}
+#schedule-workspace .appt-week{padding:2px 3px 2px 5px;gap:1px}
+#schedule-workspace .schedule-grid-week .grid-item{padding:1px}
+#schedule-workspace :is(.appt-week,.appt-compact) .appt-status{padding:0 5px}
+#schedule-workspace :is(.appt-week,.appt-compact) .appt-card-main{gap:0 6px;align-items:center;line-height:1.25}
+#schedule-workspace :is(.appt-week,.appt-compact) .appt-patient{order:3;flex-basis:100%;font-size:12px}
+#schedule-workspace :is(.appt-week,.appt-compact) .appt-status{line-height:1.35}
+#schedule-workspace :is(.appt-week,.appt-compact) .appt-marker{min-height:17px;line-height:1.3}
+#schedule-workspace .grid-item:not(.is-short) .appt-week .appt-markers{flex-wrap:nowrap;overflow:hidden}
+#schedule-workspace .grid-item:not(.is-short):is(:hover,:focus-within) .appt-week .appt-markers{flex-wrap:wrap}
+#schedule-workspace .grid-item.is-short .appt-week .appt-patient{order:0;flex-basis:auto}
+#schedule-workspace .grid-item.is-short .appt-week .appt-status{display:none}
+#schedule-workspace .appt-compact{height:auto;padding:3px 5px 3px 6px;gap:2px}
+#schedule-workspace :is(.appt-week,.appt-compact) .appt-time-end,#schedule-workspace .grid-item.is-short.is-narrow .appt-time-end{display:none}
+#schedule-workspace .appt-row{height:auto;flex-direction:row;flex-wrap:wrap;align-items:center;gap:4px 12px;padding:8px 12px 8px 10px;border-radius:0;border-width:0 0 1px 4px}
+#schedule-workspace .appt-row .appt-card-main{flex:1 1 380px;gap:2px 12px}
+#schedule-workspace .appt-row .appt-time{min-width:132px}
+#schedule-workspace .appt-row .appt-meta{flex:1 1 auto}
+#schedule-workspace .appt-row .appt-status{margin-left:auto}
+
+/* Month and list */
+#schedule-workspace .schedule-month .calendar-scroll{border-radius:0;border-width:1px 0 0;background:var(--surface);border-color:var(--line)}
+#schedule-workspace .month-calendar td{height:132px}
+#schedule-workspace .calendar-events .calendar-more{color:var(--blue);font-size:11px;font-weight:600}
+#schedule-workspace .calendar-events .calendar-block{background:var(--warning-bg);color:var(--warning-text);border-color:var(--warning-line);font-size:11px}
+#schedule-workspace .schedule-list-day>h3{font-size:13px;background:var(--surface-soft);color:var(--ink);border-color:var(--line)}
+#schedule-workspace .schedule-list-day>h3 small{font-size:11px;color:var(--muted)}
+#schedule-workspace .schedule-list{background:var(--surface)}
+#schedule-workspace .schedule-list-empty{margin:0;padding:10px 18px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--line)}
+#schedule-workspace .schedule-list-block{display:flex;gap:12px;align-items:baseline;width:100%;padding:8px 12px 8px 10px;border:0;border-left:4px solid var(--warning-line);border-bottom:1px solid var(--line);border-radius:0;background:var(--warning-bg);color:var(--warning-text);font-size:12px;font-weight:500;text-align:left}
+
+/* Appointment panel */
+#schedule-workspace .schedule-detail{background:var(--surface);color:var(--ink);border-color:var(--line)}
+#schedule-workspace .detail-titlebar{background:var(--surface-soft);border-color:var(--line)}
+#schedule-workspace .detail-titlebar>span{color:var(--muted);font-size:11px}
+#schedule-workspace .appt-panel-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+#schedule-workspace .appt-panel-head h2{margin:0 0 2px;font-size:18px;overflow-wrap:anywhere}
+#schedule-workspace .appt-panel-head p{margin:0;font-size:12px}
+#schedule-workspace .appt-panel-when{font-weight:600;color:var(--ink)}
+#schedule-workspace .appt-status-pill{font-size:12px;padding:1px 9px;background:color-mix(in srgb,var(--fill,var(--appt-booked-bg)) 70%,var(--surface))}
+#schedule-workspace .appt-panel-allergies{margin:10px 0 0;padding:6px 10px;border:1px solid var(--line);border-radius:4px;background:var(--surface-soft);color:var(--muted);font-size:12px}
+#schedule-workspace .appt-panel-allergies.has-allergies{border-color:var(--error-line);background:var(--error-bg);color:var(--error-text);font-weight:600}
+#schedule-workspace .appt-panel .appt-panel-next{margin:12px 0}
+#schedule-workspace .appt-panel-facts{margin:0 0 12px;border-top:1px solid var(--line)}
+#schedule-workspace .appt-fact{padding:8px 0;border-bottom:1px solid var(--line)}
+#schedule-workspace .appt-fact dt{font-size:11px;font-weight:700;color:var(--muted)}
+#schedule-workspace .appt-fact dd{margin:2px 0 0;display:grid;gap:6px;font-size:12px}
+#schedule-workspace .appt-fact-state{--tone-text:var(--ink);--tone-line:transparent;padding-left:8px;border-left:3px solid var(--tone-line);color:var(--ink)}
+#schedule-workspace .appt-fact-state:not([class*=tone-]){padding-left:0;border-left:0}
+#schedule-workspace .appt-fact-actions{display:flex;flex-wrap:wrap;gap:6px}
+#schedule-workspace .appt-fact-actions button{min-height:28px;padding:3px 10px;font-size:12px}
+#schedule-workspace .appt-panel details{margin-top:12px;border-top:1px solid var(--line);padding-top:8px}
+#schedule-workspace .appt-panel details>summary{font-size:12px;font-weight:600;color:var(--blue);cursor:pointer;border:0;padding:0;background:transparent}
+#schedule-workspace .appt-panel details .amendment{padding:6px 0;border-bottom:1px solid var(--line);font-size:12px}
+#schedule-workspace .appt-panel details .amendment p{margin:0}
+#schedule-workspace .appt-panel .intake-link{margin:0 0 12px}
+
+@media(max-width:1100px){#schedule-workspace .schedule-grid{--grid-col-min:200px}#schedule-workspace .schedule-grid-week{--grid-col-min:112px}#schedule-workspace .schedule-zoom{margin-left:0}}
+@media print{#schedule-workspace .schedule-grid .grid-scroll{max-height:none;overflow:visible}#schedule-workspace .appt-marker-offer,#schedule-workspace .grid-add{display:none}}

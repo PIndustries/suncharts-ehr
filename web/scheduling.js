@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
-let scheduleDate=localTime(new Date().toISOString()).slice(0,10), scheduleMode='month', scheduleProvider='', scheduleState, scheduleProviders=[], schedulePatients=[], scheduleCursor, scheduleSelected, schedulePreferenceLoadedFor='';
+let scheduleDate=localTime(new Date().toISOString()).slice(0,10), scheduleMode='day', scheduleProvider='', scheduleState, scheduleProviders=[], schedulePatients=[], scheduleCursor, scheduleSelected, schedulePreferenceLoadedFor='', scheduleFilter='all', scheduleZoom='comfortable', scheduleHours=null;
 const canSchedule=()=>['owner','clinician','front_desk'].includes(me.role);
 const scheduleModes=new Set(['day','week','month','week_grid']);
-function schedulePreferenceKey(){return `suncharts.schedule.default-view.${me?.tenant_id||'local'}.${me?.user_id||'anonymous'}`;}
-function loadSchedulePreference(){const key=schedulePreferenceKey();if(schedulePreferenceLoadedFor===key)return;schedulePreferenceLoadedFor=key;scheduleMode='month';try{const saved=localStorage.getItem(key);if(scheduleModes.has(saved))scheduleMode=saved;}catch{}}
-function saveSchedulePreference(){try{localStorage.setItem(schedulePreferenceKey(),scheduleMode);}catch{}}
+// The chosen view, provider and row height are remembered on this device for each staff member.
+function schedulePreferenceKey(part=''){return `suncharts.schedule.default-view.${me?.tenant_id||'local'}.${me?.user_id||'anonymous'}${part}`;}
+function loadSchedulePreference(){const key=schedulePreferenceKey();if(schedulePreferenceLoadedFor===key)return;schedulePreferenceLoadedFor=key;scheduleMode='day';scheduleZoom='comfortable';scheduleFilter='all';try{const saved=localStorage.getItem(key),provider=localStorage.getItem(schedulePreferenceKey('.provider'));if(scheduleModes.has(saved))scheduleMode=saved;if(!scheduleProvider&&/^[0-9a-f-]{36}$/i.test(provider||''))scheduleProvider=provider;if(localStorage.getItem(schedulePreferenceKey('.zoom'))==='compact')scheduleZoom='compact';}catch{}}
+function saveSchedulePreference(part='view'){try{if(part==='provider')localStorage.setItem(schedulePreferenceKey('.provider'),scheduleProvider||'');else if(part==='zoom')localStorage.setItem(schedulePreferenceKey('.zoom'),scheduleZoom);else localStorage.setItem(schedulePreferenceKey(),scheduleMode);}catch{}}
 function scheduleInstant(value){
  const d=new Date(value);if(!Number.isFinite(d.getTime())||localTime(d.toISOString())!==value)throw new Error('This local time does not exist. Choose another time.');
  for(const delta of [-7200000,-3600000,-1800000,1800000,3600000,7200000])if(localTime(new Date(d.getTime()+delta).toISOString())===value)throw new Error('This local time occurs twice during a clock change. Use the API with an explicit UTC offset or choose another time.');
@@ -31,8 +32,8 @@ function shiftSchedulePeriod(direction){
  if(scheduleMode==='month'){d.setDate(1);d.setMonth(d.getMonth()+direction);}else d.setDate(d.getDate()+direction*(['week','week_grid'].includes(scheduleMode)?7:1));
  scheduleDate=scheduleDayKey(d);
 }
-let scheduleLoadGeneration=0;
-async function showSchedule(){
+let scheduleLoadGeneration=0,scheduleMarkersReady=Promise.resolve();
+async function showSchedule(options={}){
  loadSchedulePreference();
  scheduleDrag=undefined;scheduleMove=undefined;
  const generation=++scheduleLoadGeneration,bounds=scheduleBounds(),provider=scheduleProvider;
@@ -41,42 +42,14 @@ async function showSchedule(){
  while(cursor<end){const next=new Date(cursor);next.setDate(next.getDate()+21);if(next>end)next.setTime(end.getTime());ranges.push({start:cursor.toISOString(),end:next.toISOString()});cursor=next;}
  const [providers,pages]=await Promise.all([api('/api/v1/schedule/providers'),Promise.all(ranges.map(range=>api(`/api/v1/schedule?${new URLSearchParams({...range,...(provider?{clinician_id:provider}:{})})}`)))]);
  if(generation!==scheduleLoadGeneration)return;
+ // A remembered provider who no longer works here must not hide the schedule.
+ if(provider&&!providers.items.some(p=>p.id===provider)){scheduleProvider='';saveSchedulePreference('provider');return showSchedule(options);}
  const unique=key=>Array.from(new Map(pages.flatMap(page=>page[key]).map(item=>[item.id,item])).values());
- scheduleProviders=providers.items;scheduleState={appointments:unique('appointments'),blocks:unique('blocks')};showTool('Schedule');renderSchedule();
-}
-function scheduleEntriesForDay(day){
- const start=new Date(`${day}T00:00:00`),end=new Date(start);end.setDate(end.getDate()+1);
- return [...scheduleState.appointments.map(a=>({...a,kind:'appointment'})),...scheduleState.blocks.map(b=>({...b,kind:'block'}))].filter(a=>new Date(a.starts_at)<end&&new Date(a.ends_at)>start).sort((a,b)=>a.starts_at.localeCompare(b.starts_at)||a.id.localeCompare(b.id));
-}
-function scheduleMonthCalendar(){
- const days=scheduleCalendarDays(),today=scheduleDayKey(new Date()),month=scheduleDate.slice(0,7);
- const monthLabel=new Date(`${scheduleDate}T12:00:00`).toLocaleDateString(undefined,{month:'long',year:'numeric'});
- const time=value=>new Date(value).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
- return `<section class="schedule-month" aria-label="${esc(monthLabel)} calendar"><div class="calendar-title"><h3>${esc(monthLabel)}</h3><span>Choose a date for its agenda · Select an appointment for details</span></div><div class="calendar-scroll"><table class="month-calendar"><caption class="sr-only">${esc(monthLabel)} appointments and provider time blocks</caption><thead><tr>${days.slice(0,7).map(day=>`<th scope="col">${esc(new Date(`${day}T12:00:00`).toLocaleDateString(undefined,{weekday:'short'}))}</th>`).join('')}</tr></thead><tbody>${Array.from({length:6},(_,week)=>`<tr>${days.slice(week*7,week*7+7).map(day=>{
- const entries=scheduleEntriesForDay(day),label=new Date(`${day}T12:00:00`).toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric',year:'numeric'});
- return `<td class="calendar-day ${day.slice(0,7)!==month?'outside-month ':''}${day===today?'calendar-today ':''}${day===scheduleDate?'calendar-selected':''}"><div class="calendar-date-row"><button type="button" data-calendar-day="${day}" aria-label="Open agenda for ${esc(label)}" ${day===today?'aria-current="date"':''}>${Number(day.slice(-2))}<span class="sr-only"> · ${entries.length} entries</span></button>${canSchedule()?`<button type="button" class="calendar-add" data-calendar-book="${day}" aria-label="Book appointment on ${esc(label)}">+</button>`:''}</div><div class="calendar-events">${entries.slice(0,3).map(a=>`<button type="button" class="calendar-event ${a.kind==='block'?'calendar-block':esc(a.status)}" data-schedule-id="${esc(a.id)}" ${a.kind==='block'?`data-schedule-block="${esc(a.id)}"`:`data-schedule-open="${esc(a.id)}"`}><span class="calendar-event-time">${esc(time(a.starts_at))}${localTime(a.starts_at).slice(0,10)!==day?' · continued':''}</span><strong>${esc(a.kind==='block'?a.label:a.patient_name)}</strong><span>${esc(a.kind==='block'?'Provider blocked':scheduleLabel(a.status))}</span><span>${esc(a.kind==='block'?scheduleProviders.find(p=>p.id===a.clinician_id)?.label:a.provider_label)}</span></button>`).join('')}${entries.length>3?`<button type="button" class="calendar-more" data-calendar-day="${day}">View all ${entries.length} entries</button>`:''}</div></td>`;
- }).join('')}</tr>`).join('')}</tbody></table></div><p class="schedule-footnote">Adjacent-month dates are included. Cancelled and no-show appointments stay visible with their recorded status.</p></section>`;
+ scheduleProviders=providers.items;scheduleHours=providers.hours||null;scheduleState={appointments:unique('appointments'),blocks:unique('blocks')};if(typeof scheduleLastRefresh!=='undefined')scheduleLastRefresh=Date.now();if(!options.quiet)showTool('Schedule');renderSchedule();
+ // Cards are on screen; what each visit still needs is read once for the whole range.
+ scheduleMarkersReady=typeof loadScheduleMarkers==='function'?loadScheduleMarkers(ranges,provider,generation):Promise.resolve();
 }
 let scheduleDrag, scheduleMove;
-function scheduleWeekCalendar(){
- const days=scheduleWeekDays(),providers=scheduleProviders.filter(p=>!scheduleProvider||p.id===scheduleProvider);
- // Preserve visibility for historical appointments whose provider is no longer active.
- for(const a of [...scheduleState.appointments,...scheduleState.blocks])if(!providers.some(p=>p.id===a.clinician_id))providers.push({id:a.clinician_id,label:a.provider_label||'Unavailable provider'});
- if(!providers.length)return '<div class="notice">No providers available. Add a provider before booking.</div>';
- const entries=days.map(day=>scheduleEntriesForDay(day));let first=14,last=38;
- entries.forEach((items,di)=>items.forEach(a=>{const start=localTime(a.starts_at),end=localTime(a.ends_at),minute=v=>Number(v.slice(11,13))*60+Number(v.slice(14,16));first=Math.min(first,start.slice(0,10)!==days[di]?0:Math.floor(minute(start)/30));last=Math.max(last,end.slice(0,10)!==days[di]?48:Math.ceil(minute(end)/30));}));
- const slotLabel=n=>`${String(Math.floor(n/2)).padStart(2,'0')}:${n%2?'30':'00'}`;
- const label=day=>new Date(`${day}T12:00:00`).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'});
- return `<section class="week-calendar" aria-label="Week calendar"><div class="calendar-title"><h3>${esc(label(days[0]))} – ${esc(label(days[6]))}</h3><span>Drag booked appointments to a slot, then review and save. Edit / reschedule is also available without dragging.</span></div><div class="week-calendar-scroll"><table class="week-slot-table"><caption class="sr-only">Weekly schedule with providers side by side and 30-minute time slots</caption><thead><tr><th rowspan="2" scope="col">Time</th>${days.map(day=>`<th colspan="${providers.length}" scope="colgroup"><button type="button" data-calendar-day="${day}">${esc(label(day))}</button></th>`).join('')}</tr><tr>${days.map(()=>providers.map(p=>`<th scope="col">${esc(p.label)}</th>`).join('')).join('')}</tr></thead><tbody>${Array.from({length:last-first},(_,i)=>i+first).map(slot=>`<tr><th scope="row">${slotLabel(slot)}</th>${days.map((day,di)=>providers.map(p=>{
- const key=`${day}T${slotLabel(slot)}`,start=new Date(key),end=new Date(start.getTime()+1800000);
- const rows=entries[di].filter(a=>a.clinician_id===p.id&&new Date(a.starts_at)<end&&new Date(a.ends_at)>start);
- const ambiguous=!Number.isFinite(start.getTime())||localTime(start.toISOString())!==key;
- return `<td class="week-slot ${rows.length?'slot-occupied':''}" data-drop-time="${key}" data-drop-provider="${esc(p.id)}">${rows.map(a=>{
- const continued=new Date(a.starts_at)<start,canMove=canSchedule()&&a.kind==='appointment'&&a.status==='booked';
- return `<button type="button" class="week-appointment ${a.kind==='block'?'calendar-block':esc(a.status)} ${continued?'slot-continuation':''}" data-schedule-id="${esc(a.id)}" ${a.kind==='block'?`data-schedule-block="${esc(a.id)}"`:`data-schedule-open="${esc(a.id)}"`} ${canMove?`draggable="true" data-drag-appointment="${esc(a.id)}"`:''}><strong>${continued?'↳ ':''}${esc(a.kind==='block'?a.label:a.patient_name)}</strong><span>${esc(new Date(a.starts_at).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}))}–${esc(new Date(a.ends_at).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}))}</span><span>${esc(a.kind==='block'?'Provider blocked':scheduleLabel(a.status))}</span></button>`;
- }).join('')}${canSchedule()&&!ambiguous?`<button type="button" class="week-slot-book" data-slot-book="${key}" data-slot-provider="${esc(p.id)}" aria-label="Book ${esc(label(day))} at ${slotLabel(slot)} with ${esc(p.label)}">+</button>`:''}</td>`;
- }).join('')).join('')}</tr>`).join('')}</tbody></table></div><p class="schedule-footnote">Times use ${esc(Intl.DateTimeFormat().resolvedOptions().timeZone)}. Occupied slots show continuing appointments; cancelled and no-show records retain their status. Only booked appointments can move.</p></section>`;
-}
 function proposeScheduleMove(appointment,targetTime,provider){
  if(!canSchedule()||appointment.status!=='booked')throw new Error('Only booked appointments can be rescheduled by scheduling staff.');
  if(!scheduleProviders.some(p=>p.id===provider))throw new Error('Choose an active provider.');
@@ -95,19 +68,22 @@ document.addEventListener('dragstart',e=>{
  const b=e.target.closest('[data-drag-appointment]');if(!b)return;
  const a=scheduleState?.appointments.find(x=>x.id===b.dataset.dragAppointment);
  if(!a||!canSchedule()||a.status!=='booked'){e.preventDefault();return;}
- scheduleDrag={id:a.id,version:a.version};e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',a.id);
+ scheduleDrag={id:a.id,version:a.version,provider:a.clinician_id};e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',a.id);
 });
-document.addEventListener('dragover',e=>{const cell=e.target.closest('[data-drop-time]');if(!cell||!scheduleDrag||!canSchedule())return;e.preventDefault();e.dataTransfer.dropEffect='move';});
+const scheduleDropTarget=e=>e.target.closest('[data-drop-time],[data-grid-column]');
+document.addEventListener('dragover',e=>{const cell=scheduleDropTarget(e);if(!cell||!scheduleDrag||!canSchedule())return;e.preventDefault();e.dataTransfer.dropEffect='move';});
 document.addEventListener('drop',e=>{
- const cell=e.target.closest('[data-drop-time]');if(!cell||!scheduleDrag)return;e.preventDefault();const drag=scheduleDrag;scheduleDrag=undefined;
- run(()=>reviewScheduleMove(drag.id,cell.dataset.dropTime,cell.dataset.dropProvider,drag.version));
+ const cell=scheduleDropTarget(e);if(!cell||!scheduleDrag)return;e.preventDefault();const drag=scheduleDrag;scheduleDrag=undefined;
+ // A calendar column gives the time from where the card was dropped; the provider stays unless the column names one.
+ const time=cell.dataset.dropTime||scheduleGridTimeAt(cell,e.clientY-cell.getBoundingClientRect().top);
+ run(()=>reviewScheduleMove(drag.id,time,cell.dataset.dropProvider||cell.dataset.gridProvider||drag.provider,drag.version));
 });
 document.addEventListener('dragend',()=>{scheduleDrag=undefined;});
 let scheduleFocus;
 function schedulePanel(content){
  const panel=$('schedule-detail');if(!panel.contains(document.activeElement))scheduleFocus=document.activeElement;
- panel.hidden=false;panel.closest('.schedule-layout').classList.add('has-detail');
- panel.innerHTML=`<div class="detail-titlebar"><span>APPOINTMENT WORKSPACE</span><button type="button" data-schedule-close aria-label="Close appointment details">✕</button></div>${content}`;
+ panel.hidden=false;panel.closest('.schedule-layout').classList.add('has-detail');if(typeof placeSchedulePanel==='function')placeSchedulePanel(panel);
+ panel.innerHTML=`<div class="detail-titlebar"><span>APPOINTMENT</span><button type="button" data-schedule-close aria-label="Close appointment details">✕</button></div>${content}`;
  document.querySelectorAll('[data-schedule-id]').forEach(row=>row.classList.toggle('is-selected',row.dataset.scheduleId===scheduleSelected));
  const heading=panel.querySelector('h2,h3');if(heading){heading.tabIndex=-1;heading.focus({preventScroll:true});}panel.scrollTop=0;
 }
@@ -116,23 +92,11 @@ function closeSchedulePane(){
  $('schedule-detail').hidden=true;$('schedule-detail').closest('.schedule-layout').classList.remove('has-detail');
  if(scheduleFocus?.isConnected)scheduleFocus.focus({preventScroll:true});
 }
-function renderSchedule(){
- const active=scheduleState.appointments.filter(a=>!['cancelled','no_show'].includes(a.status));
- const checked=active.filter(a=>a.status==='checked_in').length;
- const days=Array.from({length:['week','week_grid'].includes(scheduleMode)?7:1},(_,i)=>{const d=new Date(`${scheduleDate}T12:00:00`);d.setDate(d.getDate()+i);return localTime(d.toISOString()).slice(0,10);});
- const tz=Intl.DateTimeFormat().resolvedOptions().timeZone;
- const time=s=>new Date(s).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
- $('tools').innerHTML=`<section id="schedule-workspace"><div class="schedule-commandbar"><div><h2>Practice schedule</h2><p class="muted">${esc(tz)} · ${scheduleMode==='month'?'Month calendar':scheduleMode==='week_grid'?'Week calendar · 30-minute slots':scheduleMode==='week'?'Seven-day agenda':'Day agenda'}</p></div><div class="actions"><button type="button" data-previsit-refresh>Intake readiness</button><button type="button" data-series-list>Recurring series</button><button type="button" data-reminder-workspace>Reminders</button></div>${canSchedule()?'<div class="actions"><button type="button" data-new-block>Block time</button><button type="button" class="primary" data-new-appointment>+ Appointment</button></div>':''}</div>
- <form id="schedule-filter" class="schedule-toolbar"><div class="actions"><button type="button" data-schedule-shift="-1" aria-label="Previous period">←</button><button type="button" data-schedule-today>Today</button><button type="button" data-schedule-shift="1" aria-label="Next period">→</button></div><label>Date<input name="date" type="date" value="${esc(scheduleDate)}" required></label><label>View<select name="view" aria-label="Schedule view; saved as your default"><option value="day" ${scheduleMode==='day'?'selected':''}>Day agenda</option><option value="week" ${scheduleMode==='week'?'selected':''}>7-day agenda</option><option value="month" ${scheduleMode==='month'?'selected':''}>Month calendar</option><option value="week_grid" ${scheduleMode==='week_grid'?'selected':''}>Week calendar</option></select></label><label>Provider<select name="provider"><option value="">All providers</option>${scheduleProviders.map(p=>`<option value="${p.id}" ${scheduleProvider===p.id?'selected':''}>${esc(p.label)}</option>`).join('')}</select></label><span class="schedule-filter-status" aria-live="polite">Updates automatically</span></form>
- <div class="schedule-statusbar"><span><b>${active.length}</b> appointments</span><span class="schedule-status-item checked_in"><b>${checked}</b> checked in</span><span class="schedule-status-item in_progress"><b>${active.filter(a=>a.status==='in_progress').length}</b> in progress</span><span><b>${scheduleState.blocks.length}</b> time blocks</span><span class="schedule-status-hint">Select a patient to manage appointment</span></div>
- <div class="schedule-layout"><div class="schedule-agenda">${scheduleMode==='month'?scheduleMonthCalendar():scheduleMode==='week_grid'?scheduleWeekCalendar():days.map(day=>{const start=new Date(`${day}T00:00:00`),end=new Date(start);end.setDate(end.getDate()+1);const entries=[...scheduleState.appointments.map(a=>({...a,kind:'appointment'})),...scheduleState.blocks.map(b=>({...b,kind:'block'}))].filter(a=>new Date(a.starts_at)<end&&new Date(a.ends_at)>start).sort((a,b)=>a.starts_at.localeCompare(b.starts_at));return `<section class="schedule-day"><h3>${esc(start.toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric',year:'numeric'}))}<small>${entries.length} entries</small></h3><div class="schedule-table-wrap"><table class="schedule-table"><caption class="sr-only">Appointments for ${esc(day)}</caption><thead><tr><th scope="col">Time</th><th scope="col">Patient / appointment</th><th scope="col">Provider</th><th scope="col">Location</th><th scope="col">Status</th></tr></thead><tbody>${entries.map(a=>`<tr data-schedule-id="${a.id}" class="${a.kind==='block'?'schedule-block':esc(a.status)}"><td class="schedule-table-time"><b>${esc(time(a.starts_at))}</b><small>${esc(time(a.ends_at))}</small></td><td><button type="button" class="schedule-patient-link" ${a.kind==='block'?`data-schedule-block="${a.id}"`:`data-schedule-open="${a.id}"`}>${esc(a.kind==='block'?a.label:a.patient_name)}</button><small>${esc(a.kind==='block'?'Provider unavailable':a.title)}${a.source_history_id?' · Imported':''}</small></td><td><span class="provider-label">${esc(a.kind==='block'?scheduleProviders.find(p=>p.id===a.clinician_id)?.label:a.provider_label)}</span></td><td>${esc(a.facility||'—')}<small>${a.room?'Room '+esc(a.room):''}</small></td><td><span class="status-badge ${a.kind==='block'?'blocked':esc(a.status)}">${esc(a.kind==='block'?'Blocked':scheduleLabel(a.status))}</span></td></tr>`).join('')||'<tr><td colspan="5" class="table-empty">No appointments or provider blocks in this period.</td></tr>'}</tbody></table></div></section>`;}).join('')}<p class="schedule-footnote">${scheduleState.appointments.length} appointments shown · Times displayed in ${esc(tz)}</p></div><section id="schedule-detail" class="schedule-detail" aria-label="Appointment details" hidden></section></div></section>`;
-}
 async function appointmentDetail(id){
  const a=await api(`/api/v1/appointments/${id}`);scheduleSelected=id;
  let p=scheduleState.appointments.find(x=>x.id===id);if(!p){const patient=await api(`/api/v1/patients/${a.patient_id}`);p={patient_name:`${patient.family_name}, ${patient.given_name}`};}const h=await api(`/api/v1/appointments/${id}/history`);
- schedulePanel(`<div class="section-head"><h3>${esc(p?.patient_name||'Patient appointment')}</h3><span class="pill">${esc(scheduleLabel(a.status))}</span></div><h2>${esc(a.title)}</h2><p>${esc(date(a.starts_at))}<br>to ${esc(date(a.ends_at))}</p><p>${esc(a.category)}${a.facility?' · '+esc(a.facility):''}${a.room?' / '+esc(a.room):''}</p><p class="note-text">${esc(a.notes)}</p><p class="muted">${a.source_history_id?'Reconciled source appointment · Source history preserved':'Native appointment'} · v${a.version}</p><div class="actions"><button type="button" data-schedule-chart="${a.patient_id}" data-appointment="${a.id}">Open patient chart</button>${canSchedule()&&a.status==='booked'?`<button type="button" data-schedule-edit="${a.id}">Edit / reschedule</button>${scheduleMode==='week_grid'?`<button type="button" data-schedule-pick-move="${a.id}">Choose calendar slot to move</button>`:''}`:''}${['owner','clinician'].includes(me.role)&&a.clinician_id===me.user_id&&a.status==='checked_in'?`<button type="button" class="primary" data-schedule-start="${a.id}" data-patient="${a.patient_id}">Start visit</button>`:''}</div>
- ${canSchedule()&&['booked','checked_in'].includes(a.status)?`<form id="schedule-action" data-id="${a.id}" data-version="${a.version}"><h3>Appointment action</h3><label>Action<select name="action">${a.status==='booked'?'<option value="check_in">Check in</option>':''}<option value="cancel">Cancel appointment</option>${a.status==='booked'&&new Date(a.starts_at)<=new Date()?'<option value="no_show">Mark no-show</option>':''}</select></label><label>Reason<input name="reason" required maxlength="1000"></label><button type="submit">Record action</button></form>`:''}
- <h3>Appointment history</h3>${h.items.map(r=>`<details class="amendment"><summary>v${r.version} · ${esc(scheduleLabel(r.snapshot.status))} · ${esc(r.reason)}</summary><p>${esc(date(r.snapshot.starts_at))} – ${esc(date(r.snapshot.ends_at))}</p><p>${esc(r.snapshot.title)} · ${esc(r.snapshot.facility)} ${esc(r.snapshot.room)}</p><small>Recorded ${esc(date(r.created_at))} · Actor ${esc(r.actor_id)}</small></details>`).join('')}<div id="appointment-extras"></div>`);
+ schedulePanel(schedulePanelHtml({...p,...a},p.patient_name,h.items));
+ void loadSchedulePanelAllergies(a);
  if(typeof renderAppointmentExtras==='function')await renderAppointmentExtras(a);
 }
 async function loadSchedulePatients(){const page=await api('/api/v1/patients');schedulePatients=page.items;scheduleCursor=page.next_cursor;}
@@ -220,14 +184,15 @@ document.addEventListener('click',e=>{
 },true);
 document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||b.type==='submit'||(!b.closest('#schedule-workspace')&&!b.dataset.mapAppointment))return;
  run(async()=>{
+ if(typeof scheduleBoardClick==='function'&&b.closest('#schedule-workspace')&&await scheduleBoardClick(b))return;
  if(b.dataset.mapAppointment){const patient=selected,m=await api(`/api/v1/patients/${patient}/history/${b.dataset.mapAppointment}/appointment-mapping`);await showSchedule();if(m.native_appointment_id)await appointmentDetail(m.native_appointment_id);else await appointmentEditor(null,{...m,patient_id:patient});return;}
  if(b.dataset.scheduleShift){shiftSchedulePeriod(Number(b.dataset.scheduleShift));await showSchedule();return;}
  if(b.dataset.calendarDay){scheduleDate=b.dataset.calendarDay;scheduleMode='day';await showSchedule();return;}
  if(b.dataset.slotBook){if(scheduleDrag){const drag=scheduleDrag;scheduleDrag=undefined;await reviewScheduleMove(drag.id,b.dataset.slotBook,b.dataset.slotProvider,drag.version);return;}scheduleSelected=undefined;await appointmentEditor(null,null,null,b.dataset.slotBook.slice(0,10),b.dataset.slotBook,b.dataset.slotProvider);return;}
- if(b.dataset.calendarBook){scheduleSelected=undefined;await appointmentEditor(null,null,null,b.dataset.calendarBook);return;}
+ if(b.dataset.calendarBook){scheduleSelected=undefined;await appointmentEditor(null,null,null,b.dataset.calendarBook,undefined,b.dataset.slotProvider||undefined);return;}
  if(b.hasAttribute('data-schedule-today')){scheduleDate=localTime(new Date().toISOString()).slice(0,10);await showSchedule();return;}
  if(b.hasAttribute('data-new-appointment')){scheduleSelected=undefined;await appointmentEditor();return;}
- if(b.dataset.schedulePickMove){const a=scheduleState.appointments.find(x=>x.id===b.dataset.schedulePickMove);if(!a||!canSchedule()||a.status!=='booked')throw new Error('Reload the booked appointment.');scheduleDrag={id:a.id,version:a.version};closeSchedulePane();notice('Choose the + button in the destination time slot to review this appointment move.');return;}
+ if(b.dataset.schedulePickMove){const a=scheduleState.appointments.find(x=>x.id===b.dataset.schedulePickMove);if(!a||!canSchedule()||a.status!=='booked')throw new Error('Reload the booked appointment.');scheduleDrag={id:a.id,version:a.version,provider:a.clinician_id};closeSchedulePane();notice('Click the new time on the calendar. You will review the move before it is saved.');return;}
  if(b.dataset.scheduleEdit){await appointmentEditor(await api(`/api/v1/appointments/${b.dataset.scheduleEdit}`));return;}
  if(b.dataset.scheduleOpen){await appointmentDetail(b.dataset.scheduleOpen);return;}
  if(b.hasAttribute('data-new-block')){scheduleSelected=undefined;blockEditor();return;}
@@ -237,7 +202,7 @@ document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||
  if(b.dataset.scheduleStart){const v=await api('/api/v1/visits','POST',{appointment_id:b.dataset.scheduleStart});await showClinical();await selectPatient(b.dataset.patient,v.id);return;}
  if(b.dataset.scheduleBlock){scheduleSelected=b.dataset.scheduleBlock;const block=scheduleState.blocks.find(x=>x.id===b.dataset.scheduleBlock);schedulePanel(`<h2>${esc(block.label)}</h2><p>${esc(date(block.starts_at))} – ${esc(date(block.ends_at))}</p>${canSchedule()?`<form id="schedule-block-cancel" data-id="${block.id}" data-version="${block.version}"><label>Reason for removing block<input name="reason" required maxlength="1000"></label><button type="submit">Remove time block</button></form>`:''}`);}
  });});
-document.addEventListener('change',e=>{const f=e.target.closest?.('#schedule-filter');if(!f||!['date','view','provider'].includes(e.target.name))return;const d=Object.fromEntries(new FormData(f));if(!d.date||!scheduleModes.has(d.view))return;scheduleDate=d.date;scheduleMode=d.view;scheduleProvider=d.provider||'';if(e.target.name==='view')saveSchedulePreference();run(()=>showSchedule());});
+document.addEventListener('change',e=>{const f=e.target.closest?.('#schedule-filter');if(!f||!['date','view','provider'].includes(e.target.name))return;const d=Object.fromEntries(new FormData(f));if(!d.date||!scheduleModes.has(d.view))return;scheduleDate=d.date;scheduleMode=d.view;scheduleProvider=d.provider||'';if(e.target.name==='provider')saveSchedulePreference('provider');run(()=>showSchedule());});
 document.addEventListener('submit',e=>{const f=e.target;if(!['schedule-filter','schedule-booking','schedule-action','schedule-block-form','schedule-block-cancel','schedule-move-form'].includes(f.id))return;e.preventDefault();run(async()=>{const d=Object.fromEntries(new FormData(f));delete d.repeat_frequency;delete d.repeat_interval;delete d.repeat_count;
  if(f.id==='schedule-move-form'){
   if(!scheduleMove||scheduleMove.id!==f.dataset.id||scheduleMove.version!==Number(f.dataset.version))throw new Error('Reload the appointment move before saving.');
@@ -245,7 +210,7 @@ document.addEventListener('submit',e=>{const f=e.target;if(!['schedule-filter','
   try{const saved=await api(`/api/v1/appointments/${scheduleMove.id}`,'PUT',{...scheduleMove.body,reason:d.reason},scheduleMove.version);scheduleMove=undefined;await showSchedule();await appointmentDetail(saved.id);notice('Appointment rescheduled after server conflict checks.');}
   catch(error){const host=$('schedule-move-error');if(host){host.hidden=false;host.textContent=`Move not saved: ${error.message} Reload the schedule to verify its current state before retrying; a connection failure may occur after a save.`;}else throw error;}finally{button.disabled=false;}return;
  }
- if(f.id==='schedule-filter'){scheduleDate=d.date;scheduleMode=d.view;scheduleProvider=d.provider;saveSchedulePreference();await showSchedule();return;}
+ if(f.id==='schedule-filter'){scheduleDate=d.date;scheduleProvider=d.provider||'';await showSchedule();return;}
  if(f.id==='schedule-booking'){if(f.dataset.chartPatient&&selected!==f.dataset.chartPatient)throw new Error('Patient context changed. Open the current patient’s appointment editor before saving.');delete d.source_reviewed;d.starts_at=scheduleInstant(d.starts_at);d.ends_at=scheduleInstant(d.ends_at);let saved;
  if(f.dataset.id){delete d.patient_id;saved=await api(`/api/v1/appointments/${f.dataset.id}`,'PUT',d,Number(f.dataset.version));}else{d.request_id=f.dataset.request;d.source_history_id=f.dataset.source||null;saved=await api('/api/v1/appointments','POST',d);}
  if(f.dataset.chartPatient){if(selected===f.dataset.chartPatient){await selectPatient(f.dataset.chartPatient,f.dataset.chartVisit||undefined);showChartSection('visits');notice('Appointment booked. Review its arrival before starting the encounter.');}return;}

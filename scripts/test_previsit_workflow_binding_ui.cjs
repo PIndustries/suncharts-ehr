@@ -4,7 +4,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
 const source=fs.readFileSync('web/previsit.js','utf8');
-const schedulingSource=fs.readFileSync('web/scheduling.js','utf8');
+const schedulingSource=fs.readFileSync('web/scheduling.js','utf8')+fs.readFileSync('web/schedule-board.js','utf8');
 assert.match(schedulingSource,/data-previsit-refresh>Intake readiness<\/button>/);
 const host={innerHTML:'',querySelector(selector){const match=selector.match(/data-intake-loading="(\d+)"/);return match&&this.innerHTML.includes(`data-intake-loading="${match[1]}"`)?{}:null;}};
 let request;

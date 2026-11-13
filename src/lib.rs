@@ -84,6 +84,7 @@ pub mod retrieval;
 pub mod ringcentral_adapter;
 pub mod rooming;
 pub mod saved_card_payments;
+pub mod schedule_markers;
 pub mod scheduling;
 pub mod settlements;
 pub mod sftp_transport;
@@ -408,6 +409,7 @@ pub fn app(state: State) -> Router {
         .merge(erx_setup::router())
         .merge(labs::router())
         .merge(scheduling::router())
+        .merge(schedule_markers::router())
         .merge(recurrence::router())
         .merge(reminders::router())
         .merge(connect_services::router())
@@ -1196,6 +1198,26 @@ pub fn app(state: State) -> Router {
                     "scheduling.js",
                     "application/javascript",
                     include_str!("../web/scheduling.js"),
+                )
+            }),
+        )
+        .route(
+            "/schedule-board.js",
+            get(|| async {
+                web_asset(
+                    "schedule-board.js",
+                    "application/javascript",
+                    include_str!("../web/schedule-board.js"),
+                )
+            }),
+        )
+        .route(
+            "/schedule-board.css",
+            get(|| async {
+                web_asset(
+                    "schedule-board.css",
+                    "text/css",
+                    include_str!("../web/schedule-board.css"),
                 )
             }),
         )
