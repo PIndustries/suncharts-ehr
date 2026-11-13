@@ -123,6 +123,17 @@ Release. It never substitutes a mutable tag for the digest. Connect must verify
 the GitHub attestation, repository, workflow identity, source tag/commit and
 release asset checksums before an administrator can approve the release.
 
+Every merge to `main` also publishes a dev preview through a separate workflow
+(`publish-dev-preview.yml`) that does not wait for the full regression. A dev
+preview is never a production release: its manifest uses contract
+`dev-preview-1` (`deploy/dev-preview-manifest.schema.json`), names no source
+tag, is eligible for the `dev` channel only and states
+`production_eligible: false`; its assets are attached to a `dev-<short commit>`
+prerelease, its image tag is `dev-sha-<commit>`, and its attestations are signed
+by the dev preview workflow on `refs/heads/main` rather than by the image
+workflow on a version tag. Production verification must keep rejecting all of
+these.
+
 Approval assigns a supported release to one or both channels:
 
 - **preview** — administrator-selected installations or cohorts only;

@@ -1,0 +1,133 @@
+name: Publish dev preview image
+
+# Every merge to main gets a deployable image for the dev environment without
+# waiting for the full release regression. A dev preview can never stand in for
+# a production release:
+#   * it is built by this workflow on refs/heads/main, so its attestations are
+#     signed by a different workflow identity than publish-image.yml on a v* tag;
+#   * its manifest uses contract "dev-preview-1", has no source tag, is eligible
+#     for the "dev" channel only and states production_eligible: false;
+#   * its assets live on a "dev-<short commit>" prerelease and its image tag is
+#     "dev-sha-<commit>", never the v<BUILD_VERSION> release or "sha-<commit>".
+# Production still requires the v<BUILD_VERSION> tag, the complete regression
+# and publish-image.yml, exactly as before.
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: publish-dev-preview-${{ github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: ghcr.io/pindustries/suncharts-ehr
+  RUST_IMAGE: rust:1.89-bookworm@sha256:948f9b08a66e7fe01b03a98ef1c7568292e07ec2e4fe90d88c07bb14563c84ff
+  RUNTIME_IMAGE: debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
+  DEBIAN_SNAPSHOT: 20250910T000000Z
+
+jobs:
+  publish_dev_preview:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Name this dev preview
+        id: preview
+        run: |
+          version="$(tr -d '[:space:]' < BUILD_VERSION)"
+          echo "release=dev-${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
+          echo "title=Dev preview $version (${GITHUB_SHA:0:12})" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish the dev preview image
+        id: image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: ${{ env.IMAGE_NAME }}:dev-sha-${{ github.sha }}
+          build-args: |
+            RUST_IMAGE=${{ env.RUST_IMAGE }}
+            RUNTIME_IMAGE=${{ env.RUNTIME_IMAGE }}
+            DEBIAN_SNAPSHOT=${{ env.DEBIAN_SNAPSHOT }}
+          cache-from: type=gha,scope=suncharts-ehr-amd64
+          cache-to: type=gha,mode=max,scope=suncharts-ehr-amd64
+          provenance: mode=max
+          sbom: true
+      - name: Record immutable provisioning input
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          test -n "$IMAGE_DIGEST"
+          printf '%s@%s\n' "$IMAGE_NAME" "$IMAGE_DIGEST" > image-reference.txt
+          sha256sum Dockerfile Cargo.lock BUILD_VERSION > build-inputs.sha256
+          printf 'GIT_SHA=%s\nRUST_IMAGE=%s\nRUNTIME_IMAGE=%s\nDEBIAN_SNAPSHOT=%s\n' \
+            "$GITHUB_SHA" "$RUST_IMAGE" "$RUNTIME_IMAGE" "$DEBIAN_SNAPSHOT" > build-inputs.env
+      - id: image-attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+      - name: Build dev preview manifest
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          python3 scripts/build_release_manifest.py \
+            --dev-preview \
+            --image-reference "$IMAGE_NAME@$IMAGE_DIGEST" \
+            --source-commit "$GITHUB_SHA" \
+            --workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --rust-image "$RUST_IMAGE" \
+            --runtime-image "$RUNTIME_IMAGE" \
+            --debian-snapshot "$DEBIAN_SNAPSHOT" \
+            --output release-manifest.json
+      - name: Attest dev preview manifest
+        id: manifest-attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release-manifest.json
+      - name: Prepare immutable dev preview assets
+        env:
+          IMAGE_ATTESTATION: ${{ steps.image-attestation.outputs.bundle-path }}
+          MANIFEST_ATTESTATION: ${{ steps.manifest-attestation.outputs.bundle-path }}
+        run: |
+          cp "$IMAGE_ATTESTATION" image.attestation.json
+          cp "$MANIFEST_ATTESTATION" release-manifest.attestation.json
+          sha256sum release-manifest.json image-reference.txt build-inputs.sha256 build-inputs.env \
+            image.attestation.json release-manifest.attestation.json > release-assets.sha256
+      # The prerelease stays a draft until every asset is attached, then it is
+      # published once. An existing dev-<commit> release is never overwritten.
+      - name: Publish the dev preview prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE: ${{ steps.preview.outputs.release }}
+          TITLE: ${{ steps.preview.outputs.title }}
+        run: |
+          if gh release view "$RELEASE" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "dev preview $RELEASE already exists and is immutable" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE" --repo "$GITHUB_REPOSITORY" \
+            --draft --prerelease --latest=false --target "$GITHUB_SHA" --title "$TITLE" \
+            --notes "Dev preview of commit $GITHUB_SHA on main. Built without the full release regression. Not eligible for production: production releases are the v<BUILD_VERSION> tags only."
+          gh release upload "$RELEASE" \
+            release-manifest.json release-assets.sha256 image-reference.txt build-inputs.sha256 build-inputs.env \
+            image.attestation.json release-manifest.attestation.json \
+            --repo "$GITHUB_REPOSITORY"
+          gh release edit "$RELEASE" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false

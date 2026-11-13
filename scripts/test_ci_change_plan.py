@@ -71,6 +71,15 @@ class ChangePlanTest(unittest.TestCase):
         self.assertTrue(plan["deploy_contract"])
         self.assertIn("scripts.test_deploy_artifacts", plan["python_tests"])
 
+    def test_dev_preview_and_manifest_changes_keep_release_contract_test(self):
+        for path in (
+            ".github/workflows/publish-dev-preview.yml",
+            "scripts/build_release_manifest.py",
+        ):
+            plan = build_plan([path])
+            self.assertTrue(plan["deploy_contract"], path)
+            self.assertIn("scripts.test_deploy_artifacts", plan["python_tests"])
+
     def test_api_json_gets_structural_validation(self):
         plan = build_plan(["api/openapi.json"])
         self.assertEqual(plan["openapi_files"], ["api/openapi.json"])
@@ -89,8 +98,21 @@ class ChangePlanTest(unittest.TestCase):
         self.assertIn("  verify:\n", development)
         self.assertIn("needs: [plan, fast-rust, targeted-scripts]", development)
         self.assertNotIn("cargo test --locked\n", development)
-        self.assertIn("cargo test --locked\n", release)
+        self.assertNotIn("cargo test --locked --no-run", development)
+        # The release compiles every test target once, then runs every
+        # binary across the shards and the documentation tests.
+        self.assertIn("cargo test --locked --no-run", release)
+        self.assertIn("scripts/ci_rust_shards.py package", release)
+        self.assertIn("scripts/ci_rust_shards.py run", release)
+        self.assertIn("cargo test --locked --doc\n", release)
+        self.assertNotIn("--test ", release)
         self.assertIn("cargo clippy --locked --all-targets -- -D warnings", release)
+
+    def test_test_binary_changes_recheck_the_release_shard_plan(self):
+        plan = build_plan(["tests/care_pathways.rs"])
+        self.assertIn("scripts.test_ci_rust_shards", plan["python_tests"])
+        plan = build_plan([".github/workflows/full-regression.yml"])
+        self.assertIn("scripts.test_ci_rust_shards", plan["python_tests"])
 
     def test_ci_actions_are_supply_chain_pinned(self):
         root = Path(__file__).resolve().parents[1]
@@ -105,7 +127,10 @@ class ChangePlanTest(unittest.TestCase):
             for action in actions:
                 self.assertRegex(
                     action,
-                    re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$"),
+                    # owner/repo or owner/repo/path, always at a full commit.
+                    re.compile(
+                        r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*@[0-9a-f]{40}$"
+                    ),
                 )
 
     def test_github_outputs_are_single_line_and_shell_safe(self):

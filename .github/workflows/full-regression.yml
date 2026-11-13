@@ -1,7 +1,18 @@
 name: Production release regression
 
+# Every check a release must pass, run side by side instead of one after
+# another. The Rust test binaries are compiled once, then every binary runs in
+# exactly one shard (scripts/ci_rust_shards.py owns and verifies the split).
+# The last job fails unless every other job succeeded, so a caller that needs
+# this workflow still waits for the complete regression.
+
 on:
   workflow_call:
+  # Also runs for every merge to main, next to (never in front of) the dev
+  # preview image. That gives early warning before a release tag and keeps the
+  # Rust caches every later release restores warm. It gates nothing here.
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       promotion_target:
@@ -13,10 +24,109 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  full-regression:
-    name: Full Rust, UI, and security regression
+  rust-lint:
+    name: Rust format and lint
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt, clippy
+      - id: cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-release-lint-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+      - name: Format and lint every Rust target
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+      # A cache saved from a tag can only be read by that tag, so only the
+      # default branch seeds the cache every later release restores.
+      - name: Seed the lint cache from the default branch
+        if: >-
+          steps.cache.outputs.cache-hit != 'true' && github.ref_type == 'branch' &&
+          github.ref_name == github.event.repository.default_branch
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+  rust-build:
+    name: Build every Rust test binary once
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - id: cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-release-test-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+      - name: Compile the full Rust and PostgreSQL regression
+        run: |
+          cargo test --locked --no-run --message-format=json-render-diagnostics \
+            > "$RUNNER_TEMP/cargo-test-build.jsonl"
+      - name: Verify every test binary is assigned to exactly one shard
+        run: |
+          python3 scripts/ci_rust_shards.py package \
+            --messages "$RUNNER_TEMP/cargo-test-build.jsonl" \
+            --output "$RUNNER_TEMP/rust-test-binaries"
+          python3 scripts/ci_rust_shards.py plan
+          tar -C "$RUNNER_TEMP" -cf - rust-test-binaries \
+            | zstd -q -T0 -3 --long=27 -o "$RUNNER_TEMP/rust-test-binaries.tar.zst"
+          ls -l "$RUNNER_TEMP/rust-test-binaries.tar.zst"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rust-test-binaries
+          path: ${{ runner.temp }}/rust-test-binaries.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+          overwrite: true
+      - name: Run Rust documentation tests
+        run: cargo test --locked --doc
+      - name: Seed the test cache from the default branch
+        if: >-
+          steps.cache.outputs.cache-hit != 'true' && github.ref_type == 'branch' &&
+          github.ref_name == github.event.repository.default_branch
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+  rust-tests:
+    name: Rust and PostgreSQL regression (${{ matrix.shard }})
+    needs: rust-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Must list every shard in scripts/ci_rust_shards.py; the Python
+        # contracts fail when the two differ.
+        shard: [unit, security, '1', '2', '3', '4', '5', '6']
     services:
       postgres:
         image: postgres:16-alpine
@@ -30,21 +140,13 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       TEST_DATABASE_URL: postgres://engine_test:synthetic-ci-only@127.0.0.1:55473/engine_test
+      SHARD: ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          components: rustfmt, clippy
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '22'
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: rust-release-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          name: rust-test-binaries
+          path: ${{ runner.temp }}/rust-test-archive
       - name: Size PostgreSQL for parallel schema-isolated tests
         run: |
           docker exec "${{ job.services.postgres.id }}" \
@@ -58,23 +160,85 @@ jobs:
             sleep 1
           done
           exit 1
-      - name: Format and lint every Rust target
+      - name: Unpack this shard's test binaries
         run: |
-          cargo fmt --check
-          cargo clippy --locked --all-targets -- -D warnings
-      - name: Run focused authentication boundary first
-        run: cargo test --locked --test partner_support_sso
-      - name: Run full Rust and PostgreSQL regression
-        run: cargo test --locked
+          mapfile -t members < <(python3 scripts/ci_rust_shards.py members --shard "$SHARD")
+          test "${#members[@]}" -ge 2
+          zstd -d --long=27 -c "$RUNNER_TEMP/rust-test-archive/rust-test-binaries.tar.zst" \
+            | tar -C "$RUNNER_TEMP" -xf - "${members[@]}"
+      - name: Run this shard of the Rust and PostgreSQL regression
+        run: |
+          python3 scripts/ci_rust_shards.py run \
+            --binaries "$RUNNER_TEMP/rust-test-binaries" --shard "$SHARD"
+
+  python-contracts:
+    name: Python contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
       - name: Run all Python contracts
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
+  browser-fixtures:
+    name: Browser fixture contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
       - name: Run all browser fixture contracts
         run: |
           for test in scripts/test_*.cjs; do
             node "$test"
           done
+
+  javascript-syntax:
+    name: Browser JavaScript syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
       - name: Check every browser JavaScript file
         run: |
           for file in web/*.js; do
             node --check "$file"
           done
+
+  full-regression:
+    name: Full Rust, UI, and security regression
+    needs:
+      - rust-lint
+      - rust-build
+      - rust-tests
+      - python-contracts
+      - browser-fixtures
+      - javascript-syntax
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every regression job to succeed
+        env:
+          RUST_LINT: ${{ needs.rust-lint.result }}
+          RUST_BUILD: ${{ needs.rust-build.result }}
+          RUST_TESTS: ${{ needs.rust-tests.result }}
+          PYTHON_CONTRACTS: ${{ needs.python-contracts.result }}
+          BROWSER_FIXTURES: ${{ needs.browser-fixtures.result }}
+          JAVASCRIPT_SYNTAX: ${{ needs.javascript-syntax.result }}
+        run: |
+          test "$RUST_LINT" = success
+          test "$RUST_BUILD" = success
+          test "$RUST_TESTS" = success
+          test "$PYTHON_CONTRACTS" = success
+          test "$BROWSER_FIXTURES" = success
+          test "$JAVASCRIPT_SYNTAX" = success
