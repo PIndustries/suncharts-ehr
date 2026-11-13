@@ -8,17 +8,18 @@ const importIssueLabels={source_count_mismatch:'The file is incomplete. Upload i
 const importCount=(n,kind)=>{const label=importKindLabels[kind]||[kind.replaceAll('_',' '),kind.replaceAll('_',' ')];return `${n} ${esc(n===1?label[0]:label[1])}`;};
 const importPerson=p=>`${esc(p.given_name)} ${esc(p.family_name)}`;
 const importPeople=(n,one,many)=>`${n} ${n===1?one:many}`;
-function importDecisionState(p){
- if(p.decision?.action==='attach')return 'Records will go on the chart you chose.';
- if(p.decision?.action==='create')return 'A new chart will be created.';
+function importDecisionState(p,done){
+ if(p.decision?.action==='attach')return done?'Records were added to this chart.':'Records will go on the chart you chose.';
+ if(p.decision?.action==='create')return done?'A new chart was created.':'A new chart will be created.';
  return 'Choose one to continue.';
 }
 // One imported patient who looks like a chart the clinic already has: the patient from
 // the file beside each possible chart, with the two choices as buttons.
 function importDecisionRow(job,p){
  const locked=job.status==='imported',attached=p.decision?.action==='attach'?p.decision.patient_id:null,create=p.decision?.action==='create';
- const choice=(pressed,attrs,label)=>`<button type="button" class="${pressed?'primary':''}" aria-pressed="${pressed}" data-import-job="${esc(job.id)}" data-import-source="${esc(p.source_id)}" ${attrs} ${locked?'disabled':''}>${label}</button>`;
- return `<li class="import-decision ${p.decision?'':'undecided'}" data-import-patient="${esc(p.source_id)}"><div class="import-decision-person"><small>In the import file</small><b>${importPerson(p)}</b><span>Born ${esc(p.birth_date)}</span></div><div class="import-decision-charts">${p.candidates.map(c=>`<div class="import-decision-chart"><div class="import-decision-person"><small>${c.match==='exact'?'Chart you already have':'Possible match'}</small><b>${importPerson(c)}</b><span>Born ${esc(c.birth_date)} · MRN ${esc(c.mrn)}${c.archived?' · Archived':''}</span></div>${choice(attached===c.patient_id,`data-import-attach="${esc(c.patient_id)}"`,'Attach to this chart')}</div>`).join('')}<div class="import-decision-chart"><span class="muted">Not the same person?</span>${choice(create,'data-import-create','Create a new chart')}</div></div><p class="import-decision-state" role="status">${importDecisionState(p)}</p></li>`;
+ const done={'Attach to this chart':'Added to this chart','Create a new chart':'New chart created'};
+ const choice=(pressed,attrs,label)=>locked?(pressed?`<span class="pill" ${attrs}>${done[label]||label}</span>`:''):`<button type="button" class="${pressed?'primary':''}" aria-pressed="${pressed}" data-import-job="${esc(job.id)}" data-import-source="${esc(p.source_id)}" ${attrs} >${label}</button>`;
+ return `<li class="import-decision ${p.decision?'':'undecided'}" data-import-patient="${esc(p.source_id)}"><div class="import-decision-person"><small>In the import file</small><b>${importPerson(p)}</b><span>Born ${esc(p.birth_date)}</span></div><div class="import-decision-charts">${p.candidates.map(c=>`<div class="import-decision-chart"><div class="import-decision-person"><small>${c.match==='exact'?'Chart you already have':'Possible match'}</small><b>${importPerson(c)}</b><span>Born ${esc(c.birth_date)} · MRN ${esc(c.mrn)}${c.archived?' · Archived':''}</span></div>${choice(attached===c.patient_id,`data-import-attach="${esc(c.patient_id)}"`,'Attach to this chart')}</div>`).join('')}${locked&&!create?'':`<div class="import-decision-chart"><span class="muted">${locked?'':'Not the same person?'}</span>${choice(create,'data-import-create','Create a new chart')}</div>`}</div><p class="import-decision-state" role="status">${importDecisionState(p,locked)}</p></li>`;
 }
 function importPatients(job){
  const people=job.report?.patients||[];if(!people.length)return '';

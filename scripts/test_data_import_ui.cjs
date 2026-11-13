@@ -77,7 +77,7 @@ function fixture(jobs){
 
  current=job({status:'imported'});await f.run('showMigrations()');
  assert.doesNotMatch(f.html,/data-commit=/);
- assert.equal((f.html.match(/data-import-attach="[^"]*" disabled>/g)||[]).length,3,'choices are closed after import');
+ assert.equal((f.html.match(/<button[^>]*data-import-(attach|create)/g)||[]).length,0,'no choice buttons remain after import');assert.match(f.html,/Added to this chart|New chart created/,'the finished choice is shown as text');
  current=job({status:'collecting'});current.report.errors=[{kind:'patient',error:'source_count_mismatch'},{kind:'form',error:'something_new'}];await f.run('showMigrations()');
  text=visible(f.html);assert.match(text,/The file is incomplete\. Upload it again\./);assert.match(text,/This file has a problem\. Upload a fresh copy\./);assert.doesNotMatch(text,/source_count_mismatch|something_new/);
  assert.match(f.html,/data-reconcile="job-1">Check again<\/button>/);assert.doesNotMatch(text,internalTerms);
