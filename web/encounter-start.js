@@ -18,14 +18,14 @@ async function renderEncounterStartBenefits(hostId,serviceDate){
  if(!workspace.billing){host.innerHTML=heading+'<p class="muted">Insurance details are unavailable with the current access. Confirm benefits with authorized billing staff.</p>';return;}
  if(!coverage){host.innerHTML=heading+'<p>No insurance on file for this visit date.</p><button type="button" data-chart-section="insurance">Review insurance</button>';return;}
  const summary=heading+`<p><b>${esc(payerName(coverage.content.payer_id))}</b> · ${esc(coverage.content.plan_name||'Plan name not recorded')}</p><p>Recorded plan copay: <b>${coverage.content.copay_cents==null?'Not recorded':money(coverage.content.copay_cents)}</b>. Review the payer benefits and visit type before collecting.</p><button type="button" data-chart-section="insurance">Review coverage & copay</button>`;
- host.innerHTML=summary+'<p class="muted">Loading recorded eligibility benefits…</p>';
+ host.innerHTML=summary+'<p class="muted">Loading eligibility…</p>';
  try{
   const history=await api(`/api/v1/patients/${patient}/coverages/${coverage.id}/claimmd-eligibility`);if(!current())return;
   const items=[...(history.items||[])].sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at))),check=items.find(c=>(c.request_snapshot?.request?.service_date||c.request_snapshot?.service_date)===serviceDate)||items[0];
-  if(!check){host.innerHTML=summary+'<p class="muted">No eligibility response is recorded. Review insurance to request benefits for this service date.</p>';return;}
+  if(!check){host.innerHTML=summary+'<p class="muted">Not checked with the insurer yet. Open Review insurance to check it.</p>';return;}
   const checkedDate=check.request_snapshot?.request?.service_date||check.request_snapshot?.service_date,matching=checkedDate===serviceDate;
-  host.innerHTML=summary+`<p><b>${check.status==='completed'?'Payer response received':esc(human(check.status))}</b> · Requested ${esc(date(check.created_at))} · Service ${esc(checkedDate||'not recorded')}</p>${matching?'':'<p class="mapping-notice">This response is for a different service date. Verify benefits for this encounter.</p>'}${check.status==='completed'?claimmdEligibilityRows(check):'<p>No completed benefit response from this request. Coverage remains unconfirmed.</p>'}<p class="muted">Payer responses do not guarantee coverage or payment. Recorded plan copays are not automatically changed by eligibility results.</p>`;
- }catch{if(current())host.innerHTML=summary+'<p class="muted">Eligibility history could not be loaded. Coverage remains unconfirmed.</p>';}
+  host.innerHTML=summary+`${matching?'':`<p class="mapping-notice">The last eligibility check was for ${esc(checkedDate||'another date')}, not this visit date.</p>`}${check.status==='completed'?claimmdEligibilityRows(check):'<p>The last eligibility check did not get an answer from the insurer. Open Review insurance to see why.</p>'}<p class="muted">An insurer\'s answer is not a promise to pay. The recorded plan copay only changes when staff save it.</p>`;
+ }catch{if(current())host.innerHTML=summary+'<p class="muted">The eligibility history could not be loaded.</p>';}
 }
 async function openEncounterStartFlow(){
  if(!canStartEncounterFlow()||!selected)throw new Error('Only the assigned clinician can start an encounter here.');

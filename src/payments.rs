@@ -1687,6 +1687,7 @@ mod tests {
             .await
             .unwrap();
         crate::MIGRATOR.run(&pool).await.unwrap();
+        let _key_file = crate::test_db::credential_key_lock().lock().await;
         let key_dir =
             std::env::temp_dir().join(format!("suncharts-payment-test-{}", Uuid::new_v4()));
         std::env::set_var("ENGINE_CREDENTIAL_KEY_FILE", key_dir.join("master.key"));
