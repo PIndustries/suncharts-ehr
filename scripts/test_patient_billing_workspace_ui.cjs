@@ -59,7 +59,7 @@ const html=f=>f.nodes['patient-billing-panel'].innerHTML;
 
  // Resuming a durable pending request does not create a new operation after navigation.
  f=fixture();const durableApi=f.ctx.api;f.ctx.api=async(path,...args)=>{const result=await durableApi(path,...args);if(path.includes('/payment-profile'))result.active_setup={request_id:request,status:'open'};if(path.includes('/payment-setups/'))result.status='open';return result;};
- await f.ctx.showPatientBillingWorkspace({patientId:patient,tab:'methods'});await flush();assert.match(f.nodes['patient-billing-profile-section'].innerHTML,/Open Stripe/);assert.ok(!f.nodes['patient-billing-profile-section'].innerHTML.includes('data-hub-add-method'));assert.equal(f.calls.filter(c=>c[1]==='POST').length,0);
+ await f.ctx.showPatientBillingWorkspace({patientId:patient,tab:'methods'});await flush();assert.match(f.nodes['patient-billing-profile-section'].innerHTML,/Enter it on this computer/);assert.ok(!f.nodes['patient-billing-profile-section'].innerHTML.includes('data-hub-add-method'));assert.equal(f.calls.filter(c=>c[1]==='POST').length,0);
  // The form must carry explicit consent; retry is explicit and uses the same UUID.
  f=fixture();await f.ctx.showPatientBillingWorkspace({patientId:patient,tab:'methods'});await flush();
  for(const handler of f.handlers.submit)handler({target:{id:'patient-billing-setup-form',elements:{consent:{checked:false}},closest:()=>state(f).host},preventDefault(){}});assert.equal(f.calls.filter(c=>c[1]==='POST').length,0);
