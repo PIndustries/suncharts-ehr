@@ -146,6 +146,50 @@ struct Failure {
     kind: &'static str,
     http_status: Option<u16>,
     provider_codes: Vec<String>,
+    // Which of a fixed list of ordinary words the provider's message used. The message
+    // itself is never kept, so nothing the provider echoes back can be stored.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    provider_hints: Vec<&'static str>,
+}
+const PROVIDER_HINTS: &[&str] = &[
+    "account",
+    "birth",
+    "contract",
+    "date",
+    "duplicate",
+    "eligibility",
+    "enroll",
+    "gender",
+    "insured",
+    "invalid",
+    "key",
+    "member",
+    "missing",
+    "name",
+    "not authorized",
+    "not enabled",
+    "not found",
+    "not supported",
+    "npi",
+    "patient",
+    "payer",
+    "provider",
+    "relationship",
+    "required",
+    "service",
+    "subscriber",
+    "tax",
+    "taxonomy",
+    "timeout",
+    "unavailable",
+];
+fn provider_hints(failure: &mut Failure, message: &str) {
+    let message = message.to_ascii_lowercase();
+    for hint in PROVIDER_HINTS {
+        if message.contains(hint) && !failure.provider_hints.contains(hint) {
+            failure.provider_hints.push(hint);
+        }
+    }
 }
 impl Failure {
     fn new(kind: &'static str, http_status: Option<u16>) -> Self {
@@ -153,6 +197,7 @@ impl Failure {
             kind,
             http_status,
             provider_codes: Vec::new(),
+            provider_hints: Vec::new(),
         }
     }
     fn error(&self) -> Error {
@@ -186,6 +231,20 @@ fn normalized_response(value: Value) -> std::result::Result<Value, Failure> {
             .map(|items| items.iter().take(10).collect())
             .unwrap_or_else(|| vec![error]);
         for entry in entries {
+            if let Some(text) = entry.as_str() {
+                provider_hints(&mut failure, text);
+            }
+            for name in [
+                "error_mesg",
+                "error_message",
+                "error_msg",
+                "message",
+                "mesg",
+            ] {
+                if let Some(text) = entry.get(name).and_then(Value::as_str) {
+                    provider_hints(&mut failure, text);
+                }
+            }
             if let Some(code) = entry.get("error_code") {
                 let code = code
                     .as_str()
@@ -813,7 +872,24 @@ mod tests {
         let saved = serde_json::to_value(failure).unwrap();
         assert_eq!(
             saved,
-            json!({"kind":"provider_rejected","http_status":200,"provider_codes":["42"]})
+            json!({"kind":"provider_rejected","http_status":200,"provider_codes":["42"],"provider_hints":["patient"]})
+        );
+        let text = serde_json::to_string(&saved).unwrap();
+        assert!(
+            !text.contains("000000017") && !text.contains("secret") && !text.contains("Synthetic")
+        );
+        let plain = normalized_response(
+            json!({"error":"Provider NPI 1234567893 is not enrolled for payer SYN"}),
+        )
+        .unwrap_err();
+        assert_eq!(
+            serde_json::to_value(plain).unwrap(),
+            json!({"kind":"provider_rejected","http_status":200,"provider_codes":[],"provider_hints":["enroll","npi","payer","provider"]})
+        );
+        let quiet = normalized_response(json!({"error":{"error_code":"7"}})).unwrap_err();
+        assert_eq!(
+            serde_json::to_value(quiet).unwrap(),
+            json!({"kind":"provider_rejected","http_status":200,"provider_codes":["7"]})
         );
         let payer=normalized_response(json!({"result":{"elig":{"error":[{"error_code":"72","error_message":"Synthetic payer response"}]}}})).unwrap();
         assert!(
