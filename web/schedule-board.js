@@ -386,10 +386,16 @@ async function loadSchedulePanelAllergies(a){
  if(!scheduleAllowed('clinical'))return;
  let clinical;try{clinical=await api(`/api/v1/patients/${a.patient_id}/clinical`);}catch{return;}
  const host=$('appt-panel-allergies');if(!host||scheduleSelected!==a.id||host.isConnected===false)return;
- const allergies=(clinical.items||[]).filter(e=>e.kind==='allergy'&&e.content?.status==='active'&&!['refuted','entered_in_error'].includes(e.content.verification));
- const known=(clinical.reviews||[]).find(r=>r.kind==='allergy')?.review_state==='no_known';
- host.textContent=allergies.length?`Allergies: ${allergies.map(e=>e.content.title).join(', ')}`:known?'No known allergies':'Allergies not confirmed';
- host.className=`appt-panel-allergies${allergies.length?' has-allergies':''}`;host.hidden=false;
+ // The same wording and rules as the patient banner in the chart.
+ let names,text;
+ if(typeof patientBannerAllergies==='function'){const found=patientBannerAllergies(clinical);names=found.names;text=found.text;}
+ else{
+  names=(clinical.items||[]).filter(e=>e.kind==='allergy'&&e.content?.status==='active'&&!['refuted','entered_in_error'].includes(e.content.verification)).map(e=>e.content.title);
+  const review=(clinical.reviews||[]).find(r=>r.kind==='allergy')?.review_state;
+  text=review==='no_known'?'No known allergies':review==='reviewed'?'No allergies recorded':'Allergies not reviewed';
+ }
+ host.textContent=names.length?`Allergies: ${names.join(', ')}`:text;
+ host.className=`appt-panel-allergies${names.length?' has-allergies':''}`;host.hidden=false;
 }
 async function scheduleOpenChartStep(a,section,focusId){
  await showClinical();await selectPatient(a.patient_id);
