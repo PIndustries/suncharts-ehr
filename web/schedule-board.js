@@ -17,17 +17,25 @@ const scheduleIcons={
  charges:'<path d="M4 2.5h8v11l-2-1.2-2 1.2-2-1.2-2 1.2z"/><path d="M6 6h4M6 8.5h4"/>'
 };
 function scheduleIcon(kind){return `<svg class="marker-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${scheduleIcons[kind]||''}</svg>`;}
+// Wording, names, times and counts come from the shared display helpers when they are loaded.
 function scheduleStatusLabel(status){
  if(scheduleStatusLabels[status])return scheduleStatusLabels[status];
+ if(typeof displayStatus==='function')return displayStatus(status);
  const text=String(status||'').replaceAll('_',' ');return text?text[0].toUpperCase()+text.slice(1):'';
 }
+function scheduleCountLabel(count,singular,plural){return typeof displayCount==='function'?displayCount(count,singular,plural):`${count} ${count===1?singular:(plural||singular+'s')}`;}
 function scheduleVisitType(a){
  const text=String(a.category||'').toLowerCase();
  return /new/.test(text)?'new':/follow/.test(text)?'followup':/tele|video|virtual/.test(text)?'telehealth':/procedure|surgery/.test(text)?'procedure':/office|visit/.test(text)?'office':'other';
 }
 function scheduleVisitTitle(a){return a.title&&a.title!==a.category?a.title:(a.category||a.title||'Visit');}
-function scheduleProviderName(entry){return scheduleProviders.find(p=>p.id===entry.clinician_id)?.label||entry.provider_label||'';}
-function scheduleClock(value){return new Date(value).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});}
+function scheduleProviderName(entry){
+ const listed=scheduleProviders.find(p=>p.id===entry.clinician_id)?.label||'',recorded=entry.provider_label||'';
+ // A name wins over a sign-in email wherever either source has one.
+ return typeof displayPerson==='function'?displayPerson(listed,displayPerson(recorded,listed)):listed||recorded;
+}
+function scheduleClock(value){return typeof displayTime==='function'?displayTime(value):new Date(value).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});}
+function scheduleWhen(value){return typeof displayDateTime==='function'?displayDateTime(value):date(value);}
 function scheduleClockRange(entry){return `${scheduleClock(entry.starts_at)} – ${scheduleClock(entry.ends_at)}`;}
 function scheduleMoney(cents){return new Intl.NumberFormat(undefined,{style:'currency',currency:'USD',minimumFractionDigits:cents%100?2:0,maximumFractionDigits:2}).format(cents/100);}
 function scheduleDayLabel(day,options={weekday:'long',month:'long',day:'numeric',year:'numeric'}){return new Date(`${day}T12:00:00`).toLocaleDateString(undefined,options);}
@@ -88,10 +96,12 @@ function scheduleMarkerList(a){
 function scheduleMarkerHtml(a,marker){
  return `<button type="button" class="appt-marker tone-${marker.tone}" data-marker="${marker.kind}" data-marker-appointment="${esc(a.id)}" title="${esc(marker.tip)}">${scheduleIcon(marker.kind)}<span>${esc(marker.label)}</span></button>`;
 }
-// Day cards show everything; week, month and list cards show the two most urgent.
+// Day cards show everything, what needs attention first, so a card too small for all
+// of them cuts off the ones that are fine. Week, month and list cards show the two most urgent.
+const scheduleToneOrder={red:0,amber:1,info:2,grey:3,green:4};
 function scheduleMarkersHtml(a,variant='day'){
  const all=scheduleMarkerList(a),m=scheduleMarker(a.id);
- const shown=variant==='day'?all:all.filter(marker=>marker.rank<20).sort((x,y)=>x.rank-y.rank).slice(0,2);
+ const shown=variant==='day'?all.map((marker,index)=>[marker,index]).sort((x,y)=>scheduleToneOrder[x[0].tone]-scheduleToneOrder[y[0].tone]||x[1]-y[1]).map(pair=>pair[0]):all.filter(marker=>marker.rank<20).sort((x,y)=>x.rank-y.rank).slice(0,2);
  const offer=variant==='day'&&m&&!m.forms&&['booked','checked_in'].includes(a.status)&&scheduleCanSendForms()?`<button type="button" class="appt-marker appt-marker-offer" data-board-action="send-intake" data-appointment="${esc(a.id)}" title="Make a link the patient can use to fill in their intake form.">${scheduleIcon('forms')}<span>Send intake form</span></button>`:'';
  return shown.map(marker=>scheduleMarkerHtml(a,marker)).join('')+offer;
 }
@@ -196,7 +206,7 @@ function scheduleWeekColumns(){
 function scheduleGridHtml(columns,variant){
  const range=scheduleGridRange(columns),today=scheduleToday(),hours=[],scale=scheduleZoomScale[scheduleZoom]||scheduleZoomScale.comfortable;
  for(let minute=range.first;minute<range.last;minute+=60)hours.push(minute);
- const count=column=>{const n=column.appointments.filter(a=>!scheduleClosed(a)).length;return n?`${n} ${n===1?'appointment':'appointments'}`:'No appointments';};
+ const count=column=>{const n=column.appointments.filter(a=>!scheduleClosed(a)).length;return n?scheduleCountLabel(n,'appointment'):'No appointments';};
  const head=columns.map(column=>`<div class="grid-col-head${column.day===today?' is-today':''}">${column.weekday?`<button type="button" class="grid-day-link" data-calendar-day="${column.day}" aria-label="Open ${esc(scheduleDayLabel(column.day))}">${esc(column.label)}</button>`:`<strong>${esc(column.label)}</strong>`}<small>${count(column)}</small>${canSchedule()?`<button type="button" class="grid-add" data-calendar-book="${column.day}" data-slot-provider="${esc(column.provider)}" aria-label="Book an appointment${column.weekday?' on '+esc(scheduleDayLabel(column.day)):column.provider?' with '+esc(column.label):''}">+</button>`:''}</div>`).join('');
  const body=columns.map(column=>{
   const cards=scheduleLayoutColumn(column.appointments,column.day).map(item=>`<div class="grid-item${(item.shownEnd-item.start)*scale<50?' is-short':''}${item.lanes>1?' is-narrow':''}" data-start="${item.start}" data-len="${item.shownEnd-item.start}" data-lane="${item.lane}" data-lanes="${item.lanes}">${scheduleCard(item.a,variant,column.day)}</div>`).join('');
@@ -213,14 +223,14 @@ function scheduleMonthCalendar(){
  const days=scheduleCalendarDays(),today=scheduleToday(),month=scheduleDate.slice(0,7),monthLabel=scheduleDayLabel(scheduleDate,{month:'long',year:'numeric'});
  return `<section class="schedule-month" aria-label="${esc(monthLabel)}"><div class="calendar-scroll"><table class="month-calendar"><caption class="sr-only">${esc(monthLabel)} appointments and provider time blocks</caption><thead><tr>${days.slice(0,7).map(day=>`<th scope="col">${esc(scheduleDayLabel(day,{weekday:'short'}))}</th>`).join('')}</tr></thead><tbody>${Array.from({length:6},(_,week)=>`<tr>${days.slice(week*7,week*7+7).map(day=>{
   const entries=scheduleEntriesForDay(day),label=scheduleDayLabel(day),visits=entries.filter(e=>e.kind==='appointment').length;
-  return `<td class="calendar-day ${day.slice(0,7)!==month?'outside-month ':''}${day===today?'calendar-today ':''}${day===scheduleDate?'calendar-selected':''}"><div class="calendar-date-row"><button type="button" data-calendar-day="${day}" aria-label="Open ${esc(label)}${visits?`, ${visits} ${visits===1?'appointment':'appointments'}`:''}" ${day===today?'aria-current="date"':''}>${Number(day.slice(-2))}</button>${canSchedule()?`<button type="button" class="calendar-add" data-calendar-book="${day}" aria-label="Book appointment on ${esc(label)}">+</button>`:''}</div><div class="calendar-events">${entries.slice(0,3).map(entry=>entry.kind==='block'?`<button type="button" class="calendar-event calendar-block" data-schedule-id="${esc(entry.id)}" data-schedule-block="${esc(entry.id)}"><span class="calendar-event-time">${esc(scheduleClock(entry.starts_at))}</span><strong>${esc(entry.label)}</strong><span>${esc(scheduleProviderName(entry))} unavailable</span></button>`:scheduleCard(entry,'compact',day)).join('')}${entries.length>3?`<button type="button" class="calendar-more" data-calendar-day="${day}" aria-label="${entries.length-3} more on ${esc(label)}">+${entries.length-3} more</button>`:''}</div></td>`;
+  return `<td class="calendar-day ${day.slice(0,7)!==month?'outside-month ':''}${day===today?'calendar-today ':''}${day===scheduleDate?'calendar-selected':''}"><div class="calendar-date-row"><button type="button" data-calendar-day="${day}" aria-label="Open ${esc(label)}${visits?`, ${scheduleCountLabel(visits,'appointment')}`:''}" ${day===today?'aria-current="date"':''}>${Number(day.slice(-2))}</button>${canSchedule()?`<button type="button" class="calendar-add" data-calendar-book="${day}" aria-label="Book appointment on ${esc(label)}">+</button>`:''}</div><div class="calendar-events">${entries.slice(0,3).map(entry=>entry.kind==='block'?`<button type="button" class="calendar-event calendar-block" data-schedule-id="${esc(entry.id)}" data-schedule-block="${esc(entry.id)}"><span class="calendar-event-time">${esc(scheduleClock(entry.starts_at))}</span><strong>${esc(entry.label)}</strong><span>${esc(scheduleProviderName(entry))} unavailable</span></button>`:scheduleCard(entry,'compact',day)).join('')}${entries.length>3?`<button type="button" class="calendar-more" data-calendar-day="${day}" aria-label="${entries.length-3} more on ${esc(label)}">+${entries.length-3} more</button>`:''}</div></td>`;
  }).join('')}</tr>`).join('')}</tbody></table></div></section>`;
 }
 function scheduleListView(){
  const days=Array.from({length:7},(_,i)=>{const d=new Date(`${scheduleDate}T12:00:00`);d.setDate(d.getDate()+i);return scheduleDayKey(d);});
  return days.map(day=>{
   const entries=scheduleEntriesForDay(day),visits=entries.filter(e=>e.kind==='appointment'&&!scheduleClosed(e)).length;
-  return `<section class="schedule-day schedule-list-day"><h3>${esc(scheduleDayLabel(day))}${visits?`<small>${visits} ${visits===1?'appointment':'appointments'}</small>`:''}</h3><div class="schedule-list">${entries.map(entry=>entry.kind==='block'?`<button type="button" class="schedule-list-block" data-schedule-id="${esc(entry.id)}" data-schedule-block="${esc(entry.id)}"><span>${esc(scheduleClockRange(entry))}</span><strong>${esc(entry.label)}</strong><span>${esc(scheduleProviderName(entry))} unavailable</span></button>`:scheduleCard(entry,'row',day)).join('')||'<p class="schedule-list-empty">No appointments</p>'}</div></section>`;
+  return `<section class="schedule-day schedule-list-day"><h3>${esc(scheduleDayLabel(day))}${visits?`<small>${scheduleCountLabel(visits,'appointment')}</small>`:''}</h3><div class="schedule-list">${entries.map(entry=>entry.kind==='block'?`<button type="button" class="schedule-list-block" data-schedule-id="${esc(entry.id)}" data-schedule-block="${esc(entry.id)}"><span>${esc(scheduleClockRange(entry))}</span><strong>${esc(entry.label)}</strong><span>${esc(scheduleProviderName(entry))} unavailable</span></button>`:scheduleCard(entry,'row',day)).join('')||'<p class="schedule-list-empty">No appointments</p>'}</div></section>`;
  }).join('');
 }
 
@@ -334,7 +344,7 @@ function schedulePanelFacts(a){
  const forms=markers.get('forms'),canSend=open&&scheduleCanSendForms();
  if(!closed)rows.push(schedulePanelRow('Intake form',forms?forms.tip:'No intake form has been sent.',forms?.tone,m.forms?.status==='submitted'?schedulePanelButton('review-intake',a,'Review answers'):m.forms?.status==='reviewed'?schedulePanelButton('review-intake',a,'View answers'):canSend?schedulePanelButton('send-intake',a,m.forms?'Send a new link':'Send intake form'):''));
  if(m.insurance&&!closed){
-  const insurance=markers.get('insurance'),checked=m.insurance.checked_at?` Checked ${date(m.insurance.checked_at)}.`:'';
+  const insurance=markers.get('insurance'),checked=m.insurance.checked_at?` Checked ${scheduleWhen(m.insurance.checked_at)}.`:'';
   rows.push(schedulePanelRow('Insurance',insurance.tip+checked,insurance.tone,(m.insurance.coverage_id&&!closed&&scheduleCanCheckInsurance()?schedulePanelButton('check-eligibility',a,m.insurance.status==='not_checked'?'Check eligibility':'Check again'):'')+schedulePanelButton('insurance',a,m.insurance.status==='self_pay'?'Add insurance':'Open insurance')));
  }
  if('copay' in m&&(!closed||markers.has('copay'))){
@@ -356,7 +366,7 @@ function schedulePanelNext(a){
 function schedulePanelLink(a){
  const link=scheduleIntakeLink;if(!link||link.identity!==me||link.appointment!==a.id)return '';
  const mail=typeof patientIntakeMailto==='function'?patientIntakeMailto(a.patient_id,link.url,link.practice):'';
- return `<section class="mapping-notice intake-link" aria-live="polite"><h4>Send this link to the patient</h4><p>This link is shown only now. Copy or email it before you close this panel. It works until ${esc(date(link.expires))}.${link.replaced?' The earlier link no longer works.':''}</p><div class="actions"><button type="button" class="primary" data-board-action="copy-link" data-appointment="${esc(a.id)}">Copy link</button>${mail?`<a class="button" href="${esc(mail)}">Email the link</a>`:''}<button type="button" data-board-action="link-done" data-appointment="${esc(a.id)}">Done</button></div><label class="card-setup-link" hidden>Intake form link<input readonly value="${esc(link.url)}" data-schedule-intake-link></label></section>`;
+ return `<section class="mapping-notice intake-link" aria-live="polite"><h4>Send this link to the patient</h4><p>This link is shown only now. Copy or email it before you close this panel. It works until ${esc(scheduleWhen(link.expires))}.${link.replaced?' The earlier link no longer works.':''}</p><div class="actions"><button type="button" class="primary" data-board-action="copy-link" data-appointment="${esc(a.id)}">Copy link</button>${mail?`<a class="button" href="${esc(mail)}">Email the link</a>`:''}<button type="button" data-board-action="link-done" data-appointment="${esc(a.id)}">Done</button></div><label class="card-setup-link" hidden>Intake form link<input readonly value="${esc(link.url)}" data-schedule-intake-link></label></section>`;
 }
 function schedulePanelHtml(a,patientName,history){
  const provider=scheduleProviderName(a),place=[a.facility,a.room?'Room '+a.room:''].filter(Boolean).join(' · '),next=schedulePanelNext(a);
@@ -368,7 +378,7 @@ function schedulePanelHtml(a,patientName,history){
  ${a.notes?`<p class="note-text">${esc(a.notes)}</p>`:''}
  ${canSchedule()&&a.status==='booked'?`<div class="actions"><button type="button" data-schedule-edit="${esc(a.id)}">Reschedule or edit</button>${['week_grid','day'].includes(scheduleMode)?`<button type="button" data-schedule-pick-move="${esc(a.id)}">Pick a new time on the calendar</button>`:''}</div>`:''}
  ${canAct?`<details class="appt-panel-cancel"><summary>Cancel${late?' or mark as no-show':''}</summary><form id="schedule-action" data-id="${esc(a.id)}" data-version="${a.version}"><label>What happened<select name="action"><option value="cancel">Cancel appointment</option>${late?'<option value="no_show">Patient did not show up</option>':''}</select></label><label>Reason<input name="reason" required maxlength="1000"></label><button type="submit">Save</button></form></details>`:''}
- <details class="appt-panel-history"><summary>Appointment history</summary>${history.map(r=>`<div class="amendment"><p><b>${esc(scheduleStatusLabel(r.snapshot.status))}</b> · ${esc(r.reason)}</p><p>${esc(date(r.snapshot.starts_at))} – ${esc(scheduleClock(r.snapshot.ends_at))} · ${esc(r.snapshot.title)}${r.snapshot.facility?' · '+esc(r.snapshot.facility):''}${r.snapshot.room?' '+esc(r.snapshot.room):''}</p><small>Recorded ${esc(date(r.created_at))}</small></div>`).join('')||'<p class="muted">No changes recorded.</p>'}</details>
+ <details class="appt-panel-history"><summary>Appointment history</summary>${history.map(r=>`<div class="amendment"><p><b>${esc(scheduleStatusLabel(r.snapshot.status))}</b> · ${esc(r.reason)}</p><p>${esc(scheduleWhen(r.snapshot.starts_at))} – ${esc(scheduleClock(r.snapshot.ends_at))} · ${esc(r.snapshot.title)}${r.snapshot.facility?' · '+esc(r.snapshot.facility):''}${r.snapshot.room?' '+esc(r.snapshot.room):''}</p><small>Recorded ${esc(scheduleWhen(r.created_at))}</small></div>`).join('')||'<p class="muted">No changes recorded.</p>'}</details>
  <details class="appt-panel-reminders"><summary>Reminders and repeat visits</summary><div id="appointment-extras"></div></details></div>`;
 }
 // One line about allergies, read when the panel opens.

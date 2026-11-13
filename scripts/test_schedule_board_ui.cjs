@@ -5,7 +5,7 @@
 process.env.TZ='America/Chicago';
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const root=path.resolve(__dirname,'..'),read=file=>fs.readFileSync(path.join(root,file),'utf8');
-const sources=['web/scheduling.js','web/schedule-board.js'].map(read);
+const sources=['web/display-format.js','web/scheduling.js','web/schedule-board.js'].map(read);
 const plain=value=>JSON.parse(JSON.stringify(value));
 // A fixed Friday that is never today, so the current-time line is predictable.
 const DAY='2030-11-15',at=(time,day=DAY)=>new Date(`${day}T${time}:00-06:00`).toISOString();
@@ -145,6 +145,7 @@ async function main(){
  assert.match(html,/<span class="appt-status">Checked in<\/span>/,'the status is always written out, never colour alone');
  assert.match(html,/<span class="appt-time">9:00 AM<span class="appt-time-end"> – 9:30 AM<\/span><\/span><strong class="appt-patient">Example, a<\/strong><span class="appt-meta">Video visit · Dr. Dana Owner<\/span>/);
  assert.doesNotMatch(html,/owner@example\.test/,'the provider is named, not shown by sign-in email');
+ f.run("scheduleProviders=[{id:'p1',label:'owner@example.test'}]");assert.match(f.run(`scheduleCard(${JSON.stringify(appointment('a','09:00','09:30',{provider_label:'Dr. Recorded Name'}))},'day')`),/Dr\. Recorded Name/,'a name recorded with the visit beats an email in the provider list');
  f.run('scheduleProviders=[]');assert.match(f.run(`scheduleCard(${JSON.stringify(appointment('a','09:00','09:30'))},'day')`),/owner@example\.test/,'the email is the last resort when no name exists');
  f.run("scheduleProviders=[{id:'p1',label:'Dr. Dana Owner'},{id:'p2',label:'Dr. Sam Rivera'}]");
  assert.deepEqual(plain(f.run("['Office visit','New patient','Follow-up','Telehealth','Procedure','Nurse check',''].map(category=>scheduleVisitType({category}))")),['office','new','followup','telehealth','procedure','other','other']);
@@ -198,11 +199,11 @@ async function main(){
  assert.deepEqual(markersFor(busy,'booked','week').map(m=>m.label),['Not active','$15 due']);
  assert.deepEqual(markersFor(busy,'booked','compact').map(m=>m.label),['Not active','$15 due']);
  assert.deepEqual(markersFor({forms:{status:'reviewed',packet_id:'k'},insurance:{status:'active',coverage_id:'c'},copay:{due_cents:1500,paid_cents:1500,test_paid_cents:0}},'booked','week'),[],'nothing urgent, nothing shown');
- assert.equal(markersFor(busy,'booked','day').length,5,'the day view shows everything');
+ assert.deepEqual(markersFor({...busy,forms:{status:'reviewed',packet_id:'k'}},'booked','day').map(m=>m.label),['Not active','$15 due','Owes $45','New patient','Forms done'],'the day view shows everything, what needs attention first');
 
  // ---- A role without billing access ----
  f.load([appointment('a','09:00','09:30',{status:'completed'})],[{appointment_id:'a',patient_id:'patient-a',new_patient:true,visit_id:'v',forms:{status:'submitted',packet_id:'k'},note:'in_progress'}]);
- assert.deepEqual(markerLabels(f.run("scheduleMarkersHtml(scheduleState.appointments[0],'day')")).map(m=>m.kind),['new','forms','note'],'no insurance, copay, balance or charges markers without billing facts');
+ assert.deepEqual(markerLabels(f.run("scheduleMarkersHtml(scheduleState.appointments[0],'day')")).map(m=>m.kind),['forms','note','new'],'no insurance, copay, balance or charges markers without billing facts');
  html=f.run('schedulePanelFacts(scheduleState.appointments[0])');assert.match(html,/Intake form/);assert.match(html,/Visit note/);assert.doesNotMatch(html,/Insurance|Copay|Balance|Charges|collect-copay|check-eligibility/);
  assert.doesNotMatch(f.run('scheduleSummaryHtml()'),/insurance not checked/);
 
