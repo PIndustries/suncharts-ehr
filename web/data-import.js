@@ -70,8 +70,9 @@ function importFilesStatus(id){
  if(s.problem)return `<p class="notice error" role="status">${esc(s.problem)}</p>`;
  const failed=s.failed.length,line=`${s.done} of ${s.total} uploaded`;
  if(s.running)return `<p role="status" aria-live="polite"><b>${line}</b>${failed?` · ${failed} could not be added so far`:''}. Keep this page open until it finishes.</p>`;
- if(!failed)return `<p class="notice" role="status"><b>${line}.</b> The files are on each patient's chart, under Files.</p>`;
- return `<div class="notice error" role="status"><b>${line}. ${failed} ${importFilesWord(failed)} could not be added.</b><ul>${s.failed.slice(0,50).map(f=>`<li>${esc(f.entry.original_name||f.entry.upload_name||'File')}: ${esc(f.reason)}</li>`).join('')}${failed>50?`<li>And ${failed-50} more.</li>`:''}</ul><div class="actions"><button type="button" data-import-files-retry="${esc(id)}">Try the failed ones again</button></div></div>`;
+ const same=s.same?` ${s.same} ${importFilesWord(s.same)} ${s.same===1?'was':'were'} already on the chart and ${s.same===1?'was':'were'} not added again.`:'';
+ if(!failed)return `<p class="notice" role="status"><b>${line}.</b> The files are on each patient's chart, under Files.${same}</p>`;
+ return `<div class="notice error" role="status"><b>${line}. ${failed} ${importFilesWord(failed)} could not be added.</b>${same}<ul>${s.failed.slice(0,50).map(f=>`<li>${esc(f.entry.original_name||f.entry.upload_name||'File')}: ${esc(f.reason)}</li>`).join('')}${failed>50?`<li>And ${failed-50} more.</li>`:''}</ul><div class="actions"><button type="button" data-import-files-retry="${esc(id)}">Try the failed ones again</button></div></div>`;
 }
 function importFilesSection(job){
  const running=importFilesState[job.id]?.running;
@@ -103,18 +104,35 @@ async function importFilesChoose(job,chosen){
  if(!manifest||!Array.isArray(manifest.files)||!manifest.files.every(valid))return importFilesProblem(id,'This files folder is damaged. Ask for it to be prepared again.');
  if(manifest.source_instance!==job.source_instance)return importFilesProblem(id,'This files folder was prepared for a different import. Choose the folder prepared for this import.');
  if(!manifest.files.length)return importFilesProblem(id,'This files folder is empty.');
- importFilesState[id]={files,charts:null,total:manifest.files.length,done:0,failed:[],running:false};
+ importFilesState[id]={files,charts:null,held:new Map(),same:0,total:manifest.files.length,done:0,failed:[],running:false};
  await importFilesRun(id,manifest.files);
+}
+// Every file a chart already holds, by content, so the same file is never put on it twice.
+async function importFilesHeld(state,chart){
+ let held=state.held.get(chart);if(held)return held;
+ held=new Set();let after='';
+ for(let page=0;page<200;page+=1){
+  const data=await api(`/api/v1/patients/${chart}/documents?_count=100${after?'&_after='+encodeURIComponent(after):''}`);
+  for(const d of data?.items||[])if(d.sha256)held.add(d.sha256);
+  after=data?.next_cursor||'';if(!after)break;
+ }
+ state.held.set(chart,held);return held;
 }
 async function importFilesSend(state,entry){
  const chart=state.charts.get(entry.source_patient_id);if(!chart)throw new Error('This patient has no chart from this import.');
+ let held;try{held=await importFilesHeld(state,chart);}
+ catch(error){
+  if(!error.status&&/sign in/i.test(error.message||''))throw Object.assign(new Error('You were signed out. Sign in and try again.'),{stop:true});
+  throw new Error(error.status?'The chart could not be checked for this file.':'The connection was interrupted.');
+ }
+ if(held.has(entry.sha256))return 'same';
  const file=state.files.get(entry.file);if(!file)throw new Error('This file was not in the folder you chose.');
  if(file.size!==entry.size)throw new Error('This file is damaged. Ask for the folder to be prepared again.');
  const buffer=await file.arrayBuffer(),digest=await importFilesDigest(buffer);
  if(digest&&digest!==entry.sha256)throw new Error('This file is damaged. Ask for the folder to be prepared again.');
  const body={request_id:entry.request_id,filename:entry.upload_name||entry.original_name||entry.file,content_type:entry.content_type,content_base64:await importFilesBase64(buffer),reason:'Imported from the previous record system',
   content:{title:entry.title||'Imported file',category:entry.category||'other',document_date:null,visit_id:null,notes:entry.notes||'Imported from the previous record system.',status:'active'}};
- try{await api(`/api/v1/patients/${chart}/documents`,'POST',body);}
+ try{await api(`/api/v1/patients/${chart}/documents`,'POST',body);held.add(entry.sha256);}
  catch(error){
   // The chart already holds this file from an earlier run (the same request saved before).
   if(error.status===409)return;
@@ -131,7 +149,7 @@ async function importFilesRun(id,entries){
   let stopped=null;
   for(const entry of entries){
    if(stopped){state.failed.push({entry,reason:stopped});continue;}
-   try{await importFilesSend(state,entry);state.done+=1;}
+   try{if(await importFilesSend(state,entry)==='same')state.same+=1;state.done+=1;}
    catch(error){state.failed.push({entry,reason:error.message});if(error.stop)stopped=error.message;}
    importFilesShow(id);
   }
