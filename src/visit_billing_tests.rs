@@ -290,7 +290,8 @@ impl Fixture {
         let remit = self.ok("POST","/api/v1/billing/remittances",json!({"request_id":Uuid::new_v4(),"payer_id":id(payer),"format":"normalized","document":{"payer_code":payer["content"]["payer_code"],"trace":trace,"payment_date":"2026-10-26","total_paid_cents":paid,"currency":"USD","claims":[{"control_number":claim["control_number"],"payer_control_number":format!("PCN-{trace}"),"status":status,"patient_name":"Avery Synthetic","charged_cents":charged,"paid_cents":paid,"patient_responsibility_cents":patient,"adjustments":adjustments,"services":[{"code":"HC:99213","charged_cents":charged,"paid_cents":paid,"line_control":"1"}]}]},"reason":"Reviewed synthetic ERA"}),None).await;
         let path = format!("/api/v1/billing/remittances/{}", id(&remit));
         // A denial's contractual amount stays on the balance; a payment's is written off.
-        let chosen: Vec<usize> = if writeoff > 0 && status == "1" {
+        // A trace ending in KEEP leaves the contractual amount on the balance for review.
+        let chosen: Vec<usize> = if writeoff > 0 && status == "1" && !trace.ends_with("KEEP") {
             vec![0]
         } else {
             vec![]
@@ -348,6 +349,58 @@ impl Fixture {
         )
         .await
     }
+    /// One ledger entry on the visit; returns its id.
+    async fn entry(
+        &self,
+        p: Uuid,
+        account: Uuid,
+        kind: &str,
+        cents: Option<i64>,
+        reverses: Option<&Value>,
+    ) -> Value {
+        let current = self
+            .ok(
+                "GET",
+                &format!("/api/v1/patients/{p}/billing"),
+                json!(null),
+                None,
+            )
+            .await["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["id"] == json!(account))
+            .unwrap()
+            .clone();
+        self.ok("POST",&format!("/api/v1/patients/{p}/billing/accounts/{account}/entries"),json!({"request_id":Uuid::new_v4(),"kind":kind,"amount_cents":cents,"reverses_id":reverses,"party":"patient","method":if kind=="payment" {"cash"} else {"none"},"reference":"SYN-REVIEW","occurred_on":"2026-10-26","reason":"Synthetic reviewed entry"}),Some(version(&current))).await["id"].clone()
+    }
+    async fn owes(&self, p: Uuid, visit: Uuid) -> i64 {
+        let s = self.summary(&self.owner, p, visit).await;
+        adds_up(&s);
+        s["patient"]["owes_now_cents"].as_i64().unwrap()
+    }
+    async fn statement(&self, p: Uuid, account: Uuid) -> Value {
+        self.ok(
+            "POST",
+            &format!("/api/v1/patients/{p}/billing/accounts/{account}/statement"),
+            json!({}),
+            None,
+        )
+        .await
+    }
+    /// A prepared claim with every detail filled in, sent, for a visit with no directory.
+    async fn sent_claim(&self, p: Uuid, account: Uuid) -> Value {
+        let (_, out) = self.prepare(&self.owner, p, account, json!({})).await;
+        let claim = self.claim(&out["claim_id"]).await;
+        self.ok(
+            "PUT",
+            &format!("/api/v1/billing/claims/{}", id(&claim)),
+            json!({"content":filled(&claim["content"]),"reason":"Synthetic correction"}),
+            Some(version(&claim)),
+        )
+        .await;
+        self.send(&out["claim_id"]).await
+    }
     async fn count(&self, sql: &str) -> i64 {
         sqlx::query_scalar(sql)
             .bind(self.owner.tenant_id)
@@ -355,6 +408,21 @@ impl Fixture {
             .await
             .unwrap()
     }
+}
+fn filled(content: &Value) -> Value {
+    let mut content = content.clone();
+    for (key, value) in [
+        ("billing_provider_name", "Synthetic Practice"),
+        ("billing_npi", "1234567893"),
+        ("rendering_npi", "1234567893"),
+        ("tax_id", "000000001"),
+        ("billing_address", "1 Synthetic Way, Austin TX 78701"),
+        ("patient_address", "1 Synthetic Way, Austin TX 78701"),
+        ("subscriber_address", "1 Synthetic Way, Austin TX 78701"),
+    ] {
+        content[key] = json!(value);
+    }
+    content
 }
 fn id(v: &Value) -> Uuid {
     Uuid::parse_str(
@@ -1207,4 +1275,171 @@ async fn every_screen_shows_the_same_patient_owes_now_and_support_sessions_never
         many["summary"]["accounts"]["reviewed_patient_due_cents"],
         14500 + 12 * 5000
     );
+}
+
+/// The independent money review's cases, with its numbers.
+#[tokio::test]
+async fn an_automatic_statement_never_pins_what_the_patient_owes() {
+    let f = setup().await;
+    // Refund after a statement: copay $30, charges $200, patient pays $100, statement,
+    // staff refund $70. Nothing is owed.
+    let (p, _, visit) = f.visit(true).await;
+    let (_, policy) = f.coverage(p, "primary", "SYN-A", Some(3000)).await;
+    let account = id(&f
+        .post(p, &f.charges(p, visit, Some(id(&policy)), 20000).await)
+        .await);
+    f.entry(p, account, "payment", Some(10000), None).await;
+    assert_eq!(f.owes(p, visit).await, 0);
+    assert_eq!(f.statement(p, account).await["created"], true);
+    f.entry(p, account, "adjustment_debit", Some(7000), None)
+        .await;
+    assert_eq!(
+        f.owes(p, visit).await,
+        0,
+        "the refund leaves the $30 copay covered"
+    );
+    assert_eq!(f.banner(p).await, 0);
+
+    // Bounced payment: pays $50, statement, payment reversed. The copay is owed again.
+    let (p, _, visit) = f.visit(true).await;
+    let (_, policy) = f.coverage(p, "primary", "SYN-B", Some(3000)).await;
+    let account = id(&f
+        .post(p, &f.charges(p, visit, Some(id(&policy)), 20000).await)
+        .await);
+    let payment = f.entry(p, account, "payment", Some(5000), None).await;
+    f.statement(p, account).await;
+    f.entry(p, account, "reversal", None, Some(&payment)).await;
+    assert_eq!(f.owes(p, visit).await, 3000);
+    assert_eq!(f.banner(p).await, 3000);
+
+    // Self-pay $200 with a $50 adjustment, statement at $150, adjustment reversed: $200,
+    // and the next statement is a new one for $200.
+    let (p, _, visit) = f.visit(true).await;
+    let account = id(&f.post(p, &f.charges(p, visit, None, 20000).await).await);
+    let discount = f
+        .entry(p, account, "adjustment_credit", Some(5000), None)
+        .await;
+    assert_eq!(f.owes(p, visit).await, 15000);
+    let first = f.statement(p, account).await;
+    assert_eq!(first["invoice"]["snapshot"]["amount_due_cents"], 15000);
+    f.entry(p, account, "reversal", None, Some(&discount)).await;
+    assert_eq!(f.owes(p, visit).await, 20000);
+    let second = f.statement(p, account).await;
+    assert_eq!(second["created"], true);
+    assert_eq!(second["invoice"]["snapshot"]["amount_due_cents"], 20000);
+    assert_eq!(f.banner(p).await, 20000);
+
+    // An unapplied desk receipt is taken off once, not twice. Self-pay $200, a $50 receipt
+    // left unapplied because an open payment link reserves the balance.
+    let (p, appointment, visit) = f.visit(true).await;
+    let account = id(&f.post(p, &f.charges(p, visit, None, 20000).await).await);
+    sqlx::query("DO $$ DECLARE c record; BEGIN FOR c IN SELECT conname FROM pg_constraint WHERE conrelid='payment_attempts'::regclass AND confrelid='payment_credentials'::regclass LOOP EXECUTE 'ALTER TABLE payment_attempts DROP CONSTRAINT '||quote_ident(c.conname); END LOOP; END $$").execute(&f.db).await.unwrap();
+    sqlx::query("INSERT INTO payment_attempts(tenant_id,id,account_id,setting_id,credential_revision,request_id,creation_hash,requested_by,amount_cents,status,provider_account_id,provider_mode) VALUES($1,$2,$3,$2,1,$2,'synthetic',$4,20000,'open','acct_synthetic','own_stripe')").bind(f.owner.tenant_id).bind(Uuid::new_v4()).bind(account).bind(f.owner.sub).execute(&f.db).await.unwrap();
+    f.copay(p, appointment, 5000).await;
+    let s = f.summary(&f.owner, p, visit).await;
+    assert_eq!(s["patient"]["unapplied_cents"], 5000, "{s}");
+    assert_eq!(s["patient"]["owes_now_cents"], 15000);
+    assert_eq!(
+        f.statement(p, account).await["invoice"]["snapshot"]["amount_due_cents"],
+        15000
+    );
+    // The $50 not yet applied explains the rest of the $200 balance.
+    let after = f.summary(&f.owner, p, visit).await;
+    assert_eq!(
+        after["patient"]["owes_now_cents"], 15000,
+        "still $150 after the statement is saved"
+    );
+    assert_eq!(after["patient"]["unapplied_cents"], 5000);
+    assert_eq!(f.banner(p).await, 15000);
+}
+
+#[tokio::test]
+async fn a_reviewed_invoice_and_an_earlier_answer_keep_their_amounts() {
+    let f = setup().await;
+    // Insurer says the patient owes $50; staff then review an invoice at $80; the patient
+    // pays $30. $50 of the invoice remains.
+    let (p, _, visit) = f.visit(true).await;
+    let (payer, policy) = f.coverage(p, "primary", "SYN-R", None).await;
+    let account = id(&f
+        .post(p, &f.charges(p, visit, Some(id(&policy)), 20000).await)
+        .await);
+    let sent = f.sent_claim(p, account).await;
+    f.respond(
+        p,
+        &payer,
+        &sent,
+        20000,
+        10000,
+        5000,
+        "1",
+        "SYN-REVIEWED-KEEP",
+    )
+    .await;
+    assert_eq!(f.owes(p, visit).await, 5000);
+    let current = f
+        .ok(
+            "GET",
+            &format!("/api/v1/patients/{p}/billing"),
+            json!(null),
+            None,
+        )
+        .await["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["id"] == json!(account))
+        .unwrap()
+        .clone();
+    f.ok("POST", &format!("/api/v1/patients/{p}/billing/accounts/{account}/invoices"), json!({"request_id":Uuid::new_v4(),"responsibility_cents":8000,"reason":"Reviewed synthetic responsibility"}), Some(version(&current))).await;
+    assert_eq!(f.owes(p, visit).await, 8000);
+    f.entry(p, account, "payment", Some(3000), None).await;
+    let s = f.summary(&f.owner, p, visit).await;
+    adds_up(&s);
+    assert_eq!(s["patient"]["responsibility_source"], "reviewed_statement");
+    assert_eq!(
+        s["patient"]["owes_now_cents"], 5000,
+        "a payment does not discard the reviewed invoice"
+    );
+    assert_eq!(f.banner(p).await, 5000);
+
+    // Primary answered with $50 for the patient; a replacement claim is then rejected.
+    // The $50 does not disappear.
+    let (p, _, visit) = f.visit(true).await;
+    let (payer, policy) = f.coverage(p, "primary", "SYN-K", Some(1000)).await;
+    let account = id(&f
+        .post(p, &f.charges(p, visit, Some(id(&policy)), 20000).await)
+        .await);
+    let sent = f.sent_claim(p, account).await;
+    f.respond(p, &payer, &sent, 20000, 10000, 5000, "1", "SYN-ANSWERED")
+        .await;
+    assert_eq!(f.owes(p, visit).await, 5000);
+    let primary = f.claim(&sent["id"]).await;
+    let current = f
+        .ok(
+            "GET",
+            &format!("/api/v1/patients/{p}/billing"),
+            json!(null),
+            None,
+        )
+        .await["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["id"] == json!(account))
+        .unwrap()
+        .clone();
+    let replacement = f.ok("POST", &format!("/api/v1/patients/{p}/billing/accounts/{account}/claims"), json!({"request_id":Uuid::new_v4(),"frequency":"replacement","parent_id":id(&primary),"content":primary["content"],"reason":"Synthetic correction"}), Some(version(&current))).await;
+    // While the corrected claim is open the answer is not final: the plan copay applies.
+    assert_eq!(f.owes(p, visit).await, 1000);
+    let submitted = f.send(&replacement["id"]).await;
+    f.ok("POST", &format!("/api/v1/billing/claims/{}/actions", id(&submitted)), json!({"action":"record_rejection","reference":"SYNTHETIC-REJECTION","event_date":"2026-10-27","reason":"Synthetic rejection"}), Some(version(&submitted))).await;
+    let s = f.summary(&f.owner, p, visit).await;
+    adds_up(&s);
+    assert_eq!(s["state"], "denied");
+    assert_eq!(s["patient"]["responsibility_source"], "insurer_response");
+    assert_eq!(
+        s["patient"]["owes_now_cents"], 5000,
+        "the primary's answer still stands"
+    );
+    assert_eq!(f.banner(p).await, 5000);
 }

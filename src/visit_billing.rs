@@ -13,9 +13,13 @@
 //!   claim and no other claim is still open), the patient's share is the patient
 //!   responsibility the insurer reported on that remittance.
 //! - Without insurance the patient's share is the whole charge.
-//! - Once a statement has been saved for the visit, the patient's share is the
-//!   responsibility on the latest one, so the figure never disagrees with the statement the
-//!   patient holds. An insurer's answer that arrives after that statement replaces it.
+//! - A statement staff reviewed by hand (the invoice form) sets the patient's share until an
+//!   insurer's answer posted after it replaces it; payments, refunds and adjustments only
+//!   change what is left of it. A statement saved automatically from this summary never
+//!   sets the share: it is a copy of the figure, not a source for it.
+//! - The insurer's answer is the latest adjudicated, not denied, claim; a later rejected
+//!   replacement or secondary claim does not erase it. While any claim is still open the
+//!   answer is not final and the plan copay applies.
 //! - "Patient owes now" is that share less patient payments, credits and usable unapplied
 //!   receipts, never below zero and never above the balance.
 use crate::{
@@ -70,7 +74,7 @@ struct Receipts {
     needs_review: bool,
     items: Vec<Value>,
 }
-fn receipts(rows: Vec<Value>, appointment: Option<Uuid>) -> Receipts {
+fn receipts(rows: Vec<Value>, appointment: Option<Uuid>, production: bool) -> Receipts {
     let mut out = Receipts::default();
     let Some(appointment) = appointment else {
         return out;
@@ -88,7 +92,8 @@ fn receipts(rows: Vec<Value>, appointment: Option<Uuid>) -> Receipts {
             out.net_received += (amount - cents(&hosted["refunded_cents"])).max(0);
             out.needs_review |= reversed || held;
         }
-        if !voided && !reversed && !held {
+        let test_only = production && hosted["livemode"] == false;
+        if !voided && !reversed && !held && !test_only {
             out.usable_unapplied += (amount
                 - cents(&row["allocated_cents"])
                 - cents(&hosted["refunded_unapplied_cents"]))
@@ -175,7 +180,7 @@ const BALANCES: &str = r#"WITH acct AS (
   btrim(coalesce(b.coverage_snapshot->'payer'->'content'->>'payer_code',''))<>'' AS electronic,
   CASE WHEN jsonb_typeof(b.coverage_snapshot->'coverage'->'content'->'copay_cents')='number' THEN (b.coverage_snapshot->'coverage'->'content'->>'copay_cents')::bigint END AS copay
  FROM billing_accounts b LEFT JOIN visits v ON v.tenant_id=b.tenant_id AND v.id=b.visit_id AND v.patient_id=b.patient_id
- WHERE b.tenant_id=$1 AND b.status<>'void' AND ($2::uuid[] IS NULL OR b.patient_id=ANY($2)) AND ($3::uuid[] IS NULL OR b.id=ANY($3))
+ WHERE b.tenant_id=$1 AND b.status<>'void' AND (NOT $6 OR b.status='posted') AND ($2::uuid[] IS NULL OR b.patient_id=ANY($2)) AND ($3::uuid[] IS NULL OR b.id=ANY($3))
 ), ledger AS (
  SELECT x.account_id,sum(x.effect_cents)::bigint AS net,
   coalesce(-sum(x.effect_cents) FILTER (WHERE x.party='patient'),0)::bigint AS patient_credit,
@@ -190,7 +195,7 @@ const BALANCES: &str = r#"WITH acct AS (
   WHERE e.tenant_id=$1 AND e.account_id IN (SELECT id FROM acct)) x GROUP BY x.account_id
 ), desk AS (
  SELECT r.appointment_id,
-  sum(CASE WHEN y.voided OR y.reversed>0 OR coalesce(o.status='needs_review',false) THEN 0 ELSE greatest(0,r.amount_cents-y.allocated-y.refunded_unapplied) END)::bigint AS unapplied
+  sum(CASE WHEN y.voided OR y.reversed>0 OR coalesce(o.status='needs_review',false) OR ($5 AND coalesce(o.livemode=false,false)) THEN 0 ELSE greatest(0,r.amount_cents-y.allocated-y.refunded_unapplied) END)::bigint AS unapplied
  FROM billing_copay_receipts r LEFT JOIN copay_checkout_attempts o ON o.tenant_id=r.tenant_id AND o.receipt_id=r.id
  CROSS JOIN LATERAL (SELECT
    coalesce((SELECT sum(a.amount_cents) FROM billing_copay_allocations a WHERE a.tenant_id=r.tenant_id AND a.receipt_id=r.id),0)::bigint AS allocated,
@@ -202,37 +207,41 @@ const BALANCES: &str = r#"WITH acct AS (
  SELECT a.*,a.total_cents+coalesce(l.net,0) AS balance,coalesce(l.patient_credit,0) AS patient_credit,coalesce(l.patient_payments,0) AS patient_payments,
   coalesce(l.insurer_paid,0) AS insurer_paid,coalesce(l.receipts_applied,0) AS receipts_applied,coalesce(d.unapplied,0) AS unapplied,
   coalesce(l.test_activity,false) OR coalesce((i.snapshot->>'test_activity')::boolean,false) AS test_activity,
-  c.id AS claim_id,c.status AS claim_status,c.response_to_review,c.answer_paid,c.answer_responsibility,
-  coalesce(c.status='adjudicated' AND c.answered AND NOT c.denied,false) AS answered,
+  c.id AS claim_id,c.status AS claim_status,c.response_to_review,
+  n.claim_id IS NOT NULL AND coalesce(c.status NOT IN ('draft','ready','submitted','accepted'),false) AS answered,n.responsibility AS settled_responsibility,n.answered_at,
   coalesce(c.status='rejected' OR (c.status='adjudicated' AND c.answered AND c.denied),false) AS denied,
   EXISTS(SELECT 1 FROM ehr_claims z WHERE z.tenant_id=a.tenant_id AND z.account_id=a.id AND z.status='void') AS any_void,
-  i.id IS NOT NULL AND i.account_version=a.version AND (l.last_entry_at IS NULL OR l.last_entry_at<=i.created_at) AS statement_current,
-  CASE WHEN jsonb_typeof(i.snapshot->'responsibility_cents')='number' THEN (i.snapshot->>'responsibility_cents')::bigint END AS statement_responsibility
+  m.id IS NOT NULL AND m.account_version=a.version AND (l.last_entry_at IS NULL OR l.last_entry_at<=m.created_at) AS statement_current,m.created_at AS statement_at,
+  CASE WHEN jsonb_typeof(m.snapshot->'responsibility_cents')='number' THEN (m.snapshot->>'responsibility_cents')::bigint END AS statement_responsibility
  FROM acct a LEFT JOIN ledger l ON l.account_id=a.id LEFT JOIN desk d ON d.appointment_id=a.appointment_id
- LEFT JOIN LATERAL (SELECT i.id,i.account_version,i.created_at,i.snapshot FROM patient_invoice_snapshots i WHERE i.tenant_id=a.tenant_id AND i.account_id=a.id ORDER BY i.created_at DESC,i.id DESC LIMIT 1) i ON true
+ LEFT JOIN LATERAL (SELECT i.id,i.snapshot FROM patient_invoice_snapshots i WHERE i.tenant_id=a.tenant_id AND i.account_id=a.id ORDER BY i.created_at DESC,i.id DESC LIMIT 1) i ON true
+ LEFT JOIN LATERAL (SELECT i.id,i.account_version,i.created_at,i.snapshot FROM patient_invoice_snapshots i WHERE i.tenant_id=a.tenant_id AND i.account_id=a.id AND a.posted AND i.snapshot->>'reason' IS DISTINCT FROM $7 ORDER BY i.created_at DESC,i.id DESC LIMIT 1) m ON true
  LEFT JOIN LATERAL (SELECT c.id,c.status,h.remittance_id IS NOT NULL AS answered,coalesce(r.document->'claims'->h.row_index->>'status'='4',false) AS denied,
-   coalesce(p.patient_responsibility_cents,CASE WHEN jsonb_typeof(r.document->'claims'->h.row_index->'patient_responsibility_cents')='number' THEN (r.document->'claims'->h.row_index->>'patient_responsibility_cents')::bigint END,0) AS answer_responsibility,
-   CASE WHEN jsonb_typeof(r.document->'claims'->h.row_index->'paid_cents')='number' THEN (r.document->'claims'->h.row_index->>'paid_cents')::bigint ELSE 0 END AS answer_paid,
-   (SELECT s.id FROM era_remittances s WHERE s.tenant_id=c.tenant_id AND s.status IN ('staged','reconciled') AND (s.matches @> jsonb_build_array(jsonb_build_object('claim_id',c.id)) OR EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(s.document->'claims')='array' THEN s.document->'claims' ELSE '[]'::jsonb END) q WHERE q->>'control_number'=c.control_number)) ORDER BY s.created_at LIMIT 1) AS response_to_review
+   CASE WHEN $6 THEN NULL ELSE (SELECT s.id FROM era_remittances s WHERE s.tenant_id=c.tenant_id AND s.status IN ('staged','reconciled') AND (s.matches @> jsonb_build_array(jsonb_build_object('claim_id',c.id)) OR EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(s.document->'claims')='array' THEN s.document->'claims' ELSE '[]'::jsonb END) q WHERE q->>'control_number'=c.control_number)) ORDER BY s.created_at LIMIT 1) END AS response_to_review
   FROM ehr_claims c LEFT JOIN era_claim_heads h ON h.tenant_id=c.tenant_id AND h.claim_id=c.id
   LEFT JOIN era_remittances r ON r.tenant_id=h.tenant_id AND r.id=h.remittance_id
-  LEFT JOIN era_postings p ON p.tenant_id=h.tenant_id AND p.remittance_id=h.remittance_id AND p.row_index=h.row_index
   WHERE c.tenant_id=a.tenant_id AND c.account_id=a.id AND c.status<>'void' AND a.posted AND a.insured
   ORDER BY (c.status IN ('draft','ready','submitted','accepted')) DESC,c.created_at DESC,c.id DESC LIMIT 1) c ON true
+ LEFT JOIN LATERAL (SELECT c.id AS claim_id,
+   coalesce(p.patient_responsibility_cents,CASE WHEN jsonb_typeof(r.document->'claims'->h.row_index->'patient_responsibility_cents')='number' THEN (r.document->'claims'->h.row_index->>'patient_responsibility_cents')::bigint END,0) AS responsibility,
+   (SELECT max(v.created_at) FROM claim_revisions v WHERE v.tenant_id=c.tenant_id AND v.claim_id=c.id AND v.evidence->>'remittance_id'=h.remittance_id::text) AS answered_at
+  FROM ehr_claims c JOIN era_claim_heads h ON h.tenant_id=c.tenant_id AND h.claim_id=c.id
+  JOIN era_remittances r ON r.tenant_id=h.tenant_id AND r.id=h.remittance_id
+  LEFT JOIN era_postings p ON p.tenant_id=h.tenant_id AND p.remittance_id=h.remittance_id AND p.row_index=h.row_index
+  WHERE c.tenant_id=a.tenant_id AND c.account_id=a.id AND c.status='adjudicated' AND a.posted AND a.insured
+   AND coalesce(r.document->'claims'->h.row_index->>'status','')<>'4'
+  ORDER BY c.created_at DESC,c.id DESC LIMIT 1) n ON true
 ), shares AS (
  SELECT f.*,
   CASE WHEN NOT f.posted THEN 0
-   WHEN f.statement_responsibility IS NOT NULL AND (f.statement_current OR NOT f.answered) THEN least(greatest(f.statement_responsibility,0),f.total_cents)
+   WHEN f.reviewed THEN least(greatest(f.statement_responsibility,0),f.total_cents)
    WHEN NOT f.insured THEN f.total_cents
-   WHEN f.answered THEN least(greatest(f.answer_responsibility,0),f.total_cents)
+   WHEN f.answered THEN least(greatest(f.settled_responsibility,0),f.total_cents)
    WHEN f.copay IS NOT NULL THEN least(greatest(f.copay,0),f.total_cents) ELSE 0 END AS responsibility,
-  CASE WHEN NOT f.posted THEN 'not_final'
-   WHEN f.statement_responsibility IS NOT NULL AND (f.statement_current OR NOT f.answered) AND NOT f.insured AND f.statement_responsibility>=f.total_cents THEN 'self_pay'
-   WHEN f.statement_responsibility IS NOT NULL AND (f.statement_current OR NOT f.answered) AND f.answered AND f.statement_responsibility=least(greatest(f.answer_responsibility,0),f.total_cents) THEN 'insurer_response'
-   WHEN f.statement_responsibility IS NOT NULL AND (f.statement_current OR NOT f.answered) THEN 'reviewed_statement'
+  CASE WHEN NOT f.posted THEN 'not_final' WHEN f.reviewed THEN 'reviewed_statement'
    WHEN NOT f.insured THEN 'self_pay' WHEN f.answered THEN 'insurer_response'
    WHEN f.copay IS NOT NULL THEN 'plan_copay' ELSE 'copay_not_recorded' END AS responsibility_source
- FROM facts f
+ FROM (SELECT g.*,g.statement_responsibility IS NOT NULL AND (NOT g.answered OR g.statement_at>=g.answered_at OR (g.answered_at IS NULL AND g.statement_current)) AS reviewed FROM facts g) f
 ), owed AS (
  SELECT s.*,CASE WHEN s.posted THEN least(greatest(s.responsibility-s.patient_credit-s.unapplied,0),greatest(s.balance,0)) ELSE 0 END AS owes_now FROM shares s
 )
@@ -261,6 +270,14 @@ pub(crate) fn balances_query<'q>(
         .bind(patients)
         .bind(accounts)
         .bind(test)
+        .bind(production())
+        .bind(accounts.is_none())
+        .bind(STATEMENT_REASON)
+}
+/// Test-mode card receipts are never applied to charges on production, so they must not
+/// reduce what a patient owes there either.
+fn production() -> bool {
+    std::env::var("ENGINE_ENVIRONMENT").as_deref() == Ok("production")
 }
 pub(crate) async fn balances(
     tx: &mut Transaction<'_, Postgres>,
@@ -505,7 +522,11 @@ pub(crate) async fn summarize(
         .as_ref()
         .and_then(|(content, _)| content["copay_cents"].as_i64());
 
-    let paid_at_desk = receipts(billing::copay_rows(tx, a, p, None).await?, appointment);
+    let paid_at_desk = receipts(
+        billing::copay_rows(tx, a, p, None).await?,
+        appointment,
+        production(),
+    );
 
     // Money comes from the one calculation every screen shares.
     let total = account.as_ref().map(|b| b.total_cents).unwrap_or(0);
@@ -1322,11 +1343,22 @@ mod tests {
             json!({"appointment_id":appointment,"amount_cents":700,"allocated_cents":0,"reversed_cents":0,"voided":true,"hosted_checkout":null}),
             json!({"appointment_id":Uuid::new_v4(),"amount_cents":9900,"allocated_cents":0,"reversed_cents":0,"voided":false,"hosted_checkout":null}),
         ];
-        let out = receipts(rows, Some(appointment));
+        let out = receipts(rows.clone(), Some(appointment), false);
         assert_eq!(out.net_received, 3000);
         assert_eq!(out.usable_unapplied, 2000);
         assert_eq!(out.items.len(), 3);
         assert!(!out.needs_review);
+        // On production a test-mode card receipt is never applied to charges, so it is
+        // not usable credit there either.
+        let test_card = json!({"appointment_id":appointment,"amount_cents":4000,"allocated_cents":0,"reversed_cents":0,"voided":false,"hosted_checkout":{"status":"paid","livemode":false,"refunded_cents":0,"refunded_unapplied_cents":0}});
+        assert_eq!(
+            receipts(vec![test_card.clone()], Some(appointment), false).usable_unapplied,
+            4000
+        );
+        assert_eq!(
+            receipts(vec![test_card], Some(appointment), true).usable_unapplied,
+            0
+        );
     }
 
     #[test]
