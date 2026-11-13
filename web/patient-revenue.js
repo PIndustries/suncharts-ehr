@@ -123,7 +123,7 @@ async function loadInsuranceEligibility(coverageId,force=false){
 }
 // The visit's billing card. Every amount and the next step come from the server's summary
 // for this visit; nothing here adds or subtracts money.
-function visitBillingContext(extra={}){return {canCreate:billingCan('create'),canWrite:billingCan(),claimsAllowed:typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('claims','view'),...extra};}
+function visitBillingContext(extra={}){return {delegated:typeof me!=='undefined'&&me?.delegated===true||encounterRevenueState.data?.summary?.viewer?.delegated===true,canCreate:billingCan('create'),canWrite:billingCan(),claimsAllowed:typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('claims','view'),...extra};}
 function encounterRevenueStatusMarkup(account,data={}){
  if(data.summary)return visitBillingCardMarkup(data.summary,visitBillingContext({prepareError:data.prepareError,preparing:data.preparing}))+(data.stale?'<p role="status">These amounts could not be refreshed just now. Refresh before relying on them.</p>':'');
  return `<section class="visit-billing-card"><div class="section-head"><h3>Visit billing</h3>${data.error?'<button type="button" class="text-button" data-refresh-revenue>Refresh</button>':''}</div><p ${data.error?'role="status"':'class="muted"'}>${data.error?'Billing for this visit could not be loaded. Refresh before relying on any amount.':'Loading billing for this visit…'}</p></section>`;
@@ -154,7 +154,7 @@ async function loadEncounterRevenueStatus(account,force=false){
    let prepareError=state.data.prepareError||null;
    // The claim prepares itself once the charges are final: on posting, and the first time an
    // older posted visit is opened. It stays a draft; a person still reviews and sends it.
-   if(summary.state==='prepare_claim'&&summary.account&&billingCan('create')&&!state.prepared){
+   if(summary.state==='prepare_claim'&&summary.account&&billingCan('create')&&!state.prepared&&me?.delegated!==true&&summary.viewer?.delegated!==true){
     state.prepared=true;state.data={summary,preparing:true};render();
     try{await api(`/api/v1/patients/${encodeURIComponent(state.patient)}/billing/accounts/${encodeURIComponent(summary.account.id)}/claims/prepare`,'POST',{});prepareError=null;}catch(error){prepareError=visitBillingPrepareMessage(error);}
     if(!current())return;summary=await read();if(!current())return;

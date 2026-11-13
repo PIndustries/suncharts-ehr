@@ -13,7 +13,7 @@ const sent=[];let reply=()=>visitSummary();
 const ctx={console,Date,Intl,URL,Map,Set,Array,Math,Number,String,JSON,encodeURIComponent,crypto:{randomUUID:()=>'request'},setTimeout:()=>0,clearTimeout(){},document:{addEventListener:(name,fn)=>(handlers[name]??=[]).push(fn),createElement:()=>({setAttribute(){}})},$:node,me:{role:'front_desk'},selected:'patient',billingSelected:null,chartSection:'visits',encounterSection:'charges',activeVisit:{id:'visit',appointment_id:'appointment',status:'signed',version:3},workspace:{patient:{id:'patient'},demographics:{patient_id:'patient',content:{}},appointments:[appointment],visits:[{id:'visit',appointment_id:'appointment'}],billing:{accounts:[account],coverages:[],entries:[],copays:[]}},esc,human:v=>String(v).replaceAll('_',' '),date:v=>v,money:v=>`$${(v/100).toFixed(2)}`,dollars:v=>(v/100).toFixed(2),cents:v=>Math.round(Number(v)*100),payerName:()=>'Synthetic Medicare PPO',billingCan:()=>true,showChartSection(){},setEncounterSection(){},notice:message=>ctx.noticed=message,run:fn=>ctx.pending=Promise.resolve().then(fn),openBillingEditor:html=>{ctx.editor=html;},patientInvoiceDocument:()=>'<html>statement</html>',showBillingAccount(){},showEncounterClaim:async(id,accountId)=>{ctx.openedClaim=[id,accountId];},claimEditor:(snapshot,claim)=>{ctx.editedClaim=claim.id;},api:async(url,method='GET',body)=>{sent.push([url,method,body]);return reply(url,method,body);}};
 vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/visit-billing.js','utf8'),ctx);vm.runInContext(fs.readFileSync('web/patient-revenue.js','utf8'),ctx);
 ctx.loadHostedCopays=()=>{};
-const all={canCreate:true,canWrite:true,claimsAllowed:true};
+const all={canCreate:true,canWrite:true,claimsAllowed:true};let b0;
 const card=(summary,context=all)=>ctx.visitBillingCardMarkup(summary,context);
 const primaries=html=>[...html.matchAll(/<button type="button" class="primary" ([^>]*)>([^<]*)</g)].map(match=>match[2]);
 const click=dataset=>{const button={dataset,disabled:false,hasAttribute:name=>name.replace(/^data-/,'').replace(/-([a-z])/g,(_,c)=>c.toUpperCase()) in dataset,closest:()=>null};for(const handler of handlers.click)handler({target:{closest:selector=>selector==='button'?button:null},preventDefault(){}});return button;};
@@ -35,6 +35,7 @@ const states=[
  [visitSummary({state:'review_response',insurance:{status:'answered',paid_cents:20000,pending_cents:0,unassigned_cents:7000},claim:{status:'adjudicated'}}),'Insurance paid $200.00','Review insurer answer','data-revenue-claim="claim"',/\$70\.00 is not paid, written off or assigned to the patient yet/],
  [visitSummary({state:'patient_owes',waiting_on:'patient',insurance:{status:'answered',paid_cents:20000,adjusted_cents:4000,pending_cents:0},patient:{responsibility_cents:4000,responsibility_source:'insurer_response',owes_now_cents:3000},balance_cents:3000,claim:{status:'adjudicated',answer:{payment_date:'2026-11-20'}}}),'Patient owes $30.00','Collect payment','data-visit-collect',/Insurance paid \$200\.00\. Waiting on the patient/],
  [visitSummary({state:'insurance_outside',claim:null,insurance:{electronic:false,status:'outside'}}),'Synthetic Medicare PPO is billed outside SunCharts','Record insurer payment','data-new-ledger',/no claim is sent from SunCharts/],
+ [selfPay({state:'review_balance',waiting_on:'staff',insurance:{unassigned_cents:7000},patient:{owes_now_cents:0,responsibility_source:'reviewed_statement'},balance_cents:7000}),'$70.00 is not on the patient’s statement','Write off or adjust','data-new-ledger',/Write the rest off or adjust it/],
  [selfPay({state:'patient_credit',waiting_on:'staff',patient:{owes_now_cents:0,unapplied_cents:2000,credit_cents:2000},balance_cents:0}),'Patient has a $20.00 credit','Review payments','data-visit-history="payments"',/Refund the credit or keep it/],
 ];
 for(const [summary,headline,label,attribute,detail] of states){
@@ -44,6 +45,9 @@ for(const [summary,headline,label,attribute,detail] of states){
  assert.ok(html.includes(`class="primary" ${attribute}>`),`${summary.state} action target`);
  assert.match(html,detail,summary.state);assert.ok(html.includes(`data-visit-billing-state="${summary.state}"`));
 }
+// A delegated support session is told who prepares the claim and is given no way to do it.
+const support=card(visitSummary({state:'prepare_claim',claim:null}),{...all,delegated:true});assert.match(support,/Claim not prepared yet/);assert.match(support,/A member of the practice prepares the claim to Synthetic Medicare PPO by opening this visit/);assert.deepEqual(primaries(support),[]);assert.doesNotMatch(support,/data-visit-claim-prepare/);
+b0=ctx.visitBillingBreakdown(selfPay({state:'review_balance',insurance:{unassigned_cents:7000},patient:{owes_now_cents:0,responsibility_source:'reviewed_statement'}}),all);assert.match(b0,/<th scope="row">Not on the statement<\/th><td>Write it off, adjust it or send a new statement<\/td><td class="money-cell">\$70\.00/);assert.match(b0,/What the latest statement says, less what they paid/);
 const done=card(selfPay({state:'paid_in_full',waiting_on:'nobody',patient:{owes_now_cents:0},balance_cents:0}));
 assert.match(done,/<span class="eyebrow">Status<\/span><p class="visit-billing-headline">Paid in full<\/p>/);assert.deepEqual(primaries(done),[]);
 // The old one-after-another buttons are gone from the normal view in every state.
@@ -118,6 +122,9 @@ assert.match(claimsSource,/function claimStatusLabel\(claim\)\{return typeof vis
 // No hard-coded colours anywhere in the card's styles or markup.
 const css=fs.readFileSync('web/visit-billing.css','utf8');assert.doesNotMatch(css,/#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|[:\s](white|black|red|green|blue|gray|grey|orange|yellow)[;}\s]/);assert.match(css,/var\(--line\)/);
 assert.doesNotMatch(fs.readFileSync('web/visit-billing.js','utf8'),/style="|#[0-9a-fA-F]{6}\b|rgb\(/);
+// The claim page gives the same instruction as its one button; nothing tells staff to prepare or mark ready by hand.
+const nativeSource=fs.readFileSync('web/claimmd-native.js','utf8');assert.match(nativeSource,/'Check the details, then continue to send\.'/);
+for(const source of [claimsSource,nativeSource])assert.doesNotMatch(source,/mark (it|the claim) ready|Mark claim ready|Create a claim from the billing section|Prepare insurance claim/);
 const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/visit-billing.js')<index.indexOf('/patient-revenue.js'));assert.match(index,/href="\/visit-billing\.css"/);
 
 (async()=>{
@@ -174,8 +181,11 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
  assert.equal(sent.filter(c=>c[1]==='POST').length,1);await ctx.loadEncounterRevenueStatus(ctx.workspace.billing.accounts[0],true);assert.equal(sent.filter(c=>c[1]==='POST').length,1,'no retry loop');
  reply=(url,method,body)=>url.endsWith('/claims/prepare')?{outcome:'prepared'}:visitSummary({account:{version:3}});click({visitClaimPrepare:'again'});await ctx.pending;await settle();
  assert.equal(JSON.stringify(sent.filter(c=>c[1]==='POST').at(-1)[2]),'{"again":true}');assert.equal(ctx.noticed,'Claim prepared from this visit. Nothing was sent.');assert.match(node('encounter-revenue-status').innerHTML,/Claim ready to send/);
+ // A delegated support session never triggers the automatic draft, by its own flag or the server's.
+ for(const [identity,viewer] of [[{role:'owner',delegated:true},{delegated:false}],[{role:'owner'},{delegated:true}]]){ctx.me=identity;node('encounter-revenue').dataset.revenueKey='';ctx.workspace.billing.accounts=[{...account,version:ctx.workspace.billing.accounts[0].version+1}];sent.length=0;reply=()=>visitSummary({state:'prepare_claim',claim:null,account:{version:ctx.workspace.billing.accounts[0].version},viewer});ctx.renderEncounterRevenue();await settle();assert.equal(sent.filter(c=>c[1]==='POST').length,0,'support session wrote nothing');assert.match(node('encounter-revenue-status').innerHTML,/Claim not prepared yet/);assert.deepEqual(primaries(node('encounter-revenue-status').innerHTML),[]);}
+ ctx.me={role:'front_desk'};
  // People who cannot prepare claims never trigger it.
- ctx.billingCan=()=>false;node('encounter-revenue').dataset.revenueKey='';ctx.workspace.billing.accounts=[{...account,version:4}];sent.length=0;reply=()=>visitSummary({state:'prepare_claim',claim:null,account:{version:4}});ctx.renderEncounterRevenue();await settle();
+ ctx.billingCan=()=>false;node('encounter-revenue').dataset.revenueKey='';ctx.workspace.billing.accounts=[{...account,version:40}];sent.length=0;reply=()=>visitSummary({state:'prepare_claim',claim:null,account:{version:40}});ctx.renderEncounterRevenue();await settle();
  assert.equal(sent.filter(c=>c[1]==='POST').length,0);assert.match(node('encounter-revenue-status').innerHTML,/Billing staff prepare the claim to Synthetic Medicare PPO/);assert.deepEqual(primaries(node('encounter-revenue-status').innerHTML),[]);
  console.log('PASS visit billing card: one next step per state, self-explaining breakdown, automatic claim draft, statement on first use, one history, owner-only details, escaping and theme colours');
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -329,6 +329,25 @@ impl Fixture {
     async fn copay(&self, p: Uuid, appointment: Uuid, cents: i64) {
         self.ok("POST",&format!("/api/v1/patients/{p}/billing/copays"),json!({"request_id":Uuid::new_v4(),"appointment_id":appointment,"coverage_id":null,"amount_cents":cents,"method":"cash","reference":"","occurred_on":"2026-10-25","reason":"Synthetic copay at the desk","received_confirmed":true}),None).await;
     }
+    async fn banner(&self, p: Uuid) -> Value {
+        self.ok(
+            "GET",
+            &format!("/api/v1/patients/{p}/banner"),
+            json!(null),
+            None,
+        )
+        .await["billing"]["patient_due_cents"]
+            .clone()
+    }
+    async fn overview(&self, query: &str) -> Value {
+        self.ok(
+            "GET",
+            &format!("/api/v1/billing/overview{query}"),
+            json!(null),
+            None,
+        )
+        .await
+    }
     async fn count(&self, sql: &str) -> i64 {
         sqlx::query_scalar(sql)
             .bind(self.owner.tenant_id)
@@ -505,10 +524,14 @@ async fn insured_visit_prepares_its_claim_once_and_splits_insurance_from_patient
     assert_eq!(s["state"], "add_charges");
     assert_eq!(s["insurance"]["insurer"], "Synthetic primary plan");
     assert_eq!(s["patient"]["copay_cents"], 2500);
-    assert_eq!(s["patient"]["owes_now_cents"], 2500);
+    assert_eq!(s["patient"]["copay_due_cents"], 2500);
+    assert_eq!(
+        s["patient"]["owes_now_cents"], 0,
+        "nothing is a balance until the charges are posted"
+    );
     f.copay(p, appointment, 1000).await;
     assert_eq!(
-        f.summary(&f.owner, p, visit).await["patient"]["owes_now_cents"],
+        f.summary(&f.owner, p, visit).await["patient"]["copay_due_cents"],
         1500
     );
 
@@ -993,5 +1016,195 @@ async fn missing_details_denials_deductibles_secondary_and_overpayment_are_repor
     assert_eq!(
         f.prepare(&stranger, p, account, json!({})).await.0,
         StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn every_screen_shows_the_same_patient_owes_now_and_support_sessions_never_prepare_claims() {
+    let f = setup().await;
+    let (p, _, visit) = f.visit(true).await;
+    let (_, policy) = f.coverage(p, "primary", "SYN-P", Some(2500)).await;
+    let posted = f
+        .post(p, &f.charges(p, visit, Some(id(&policy)), 10000).await)
+        .await;
+    let account = id(&posted);
+    // A posted insured visit: the copay is the patient's, the rest is insurance pending.
+    let card = f.summary(&f.owner, p, visit).await;
+    assert_eq!(card["patient"]["owes_now_cents"], 2500);
+    assert_eq!(card["insurance"]["pending_cents"], 7500);
+    assert_eq!(f.banner(p).await, 2500, "banner agrees with the card");
+    let page = f.overview(&format!("?patient_id={p}")).await;
+    assert_eq!(
+        page["summary"]["accounts"]["reviewed_patient_due_cents"],
+        2500
+    );
+    assert_eq!(page["summary"]["accounts"]["patient_owes_now_cents"], 2500);
+    let row = &page["accounts"]["items"][0];
+    assert_eq!(row["patient_owes_now_cents"], 2500);
+    assert_eq!(
+        row["insurance_pending_cents"], 7500,
+        "never part of the patient's balance"
+    );
+    assert_eq!(row["billing_state"], card["state"]);
+    assert_eq!(row["billing_state"], "prepare_claim");
+
+    // A delegated support session has the owner's authority but is not the practice:
+    // opening the visit prepares nothing, automatically or by request.
+    let support = Actor {
+        sub: Uuid::new_v4(),
+        ..f.owner.clone()
+    };
+    sqlx::query("INSERT INTO partner_support_sessions(token_hash,tenant_id,grant_id,partner_id,customer_id,order_id,issuer,audience,expires_at,actor_subject,delegated_role) VALUES($1,$2,$3,gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),'https://connect.suncharts.app','https://clinic.suncharts.app',clock_timestamp()+interval '15 minutes','synthetic-support','partner_admin')").bind(support.sub.to_string()).bind(support.tenant_id).bind(support.sub).execute(&f.db).await.unwrap();
+    let seen = f.summary(&support, p, visit).await;
+    assert_eq!(seen["viewer"]["delegated"], true);
+    assert_eq!(seen["state"], "prepare_claim");
+    assert_eq!(card["viewer"]["delegated"], false);
+    for body in [json!({}), json!({"again":true})] {
+        let (status, out) = f.prepare(&support, p, account, body).await;
+        assert_eq!(
+            (status, out),
+            (StatusCode::OK, json!({"outcome":"delegated"}))
+        );
+    }
+    assert_eq!(
+        f.count("SELECT count(*) FROM ehr_claims WHERE tenant_id=$1")
+            .await,
+        0
+    );
+    assert_eq!(
+        f.count("SELECT count(*) FROM claim_revisions WHERE tenant_id=$1")
+            .await,
+        0
+    );
+    // A member of the practice opening the visit prepares it, in their own name.
+    let (_, out) = f.prepare(&f.owner, p, account, json!({})).await;
+    assert_eq!(out["outcome"], "prepared");
+    let preparer: Uuid =
+        sqlx::query_scalar("SELECT actor_id FROM claim_revisions WHERE tenant_id=$1")
+            .bind(f.owner.tenant_id)
+            .fetch_one(&f.db)
+            .await
+            .unwrap();
+    assert_eq!(preparer, f.owner.sub);
+    // Exactly what the first open writes: one draft claim, its first revision, one audit row.
+    assert_eq!(
+        f.count("SELECT count(*) FROM ehr_claims WHERE tenant_id=$1 AND status='draft'")
+            .await,
+        1
+    );
+    assert_eq!(
+        f.count("SELECT count(*) FROM claim_revisions WHERE tenant_id=$1")
+            .await,
+        1
+    );
+    assert_eq!(
+        f.count("SELECT count(*) FROM audit_events WHERE tenant_id=$1 AND action='claim.change'")
+            .await,
+        1
+    );
+    for table in [
+        "edi_submissions",
+        "edi_delivery_jobs",
+        "patient_invoice_snapshots",
+        "billing_entries",
+    ] {
+        assert_eq!(
+            f.count(&format!("SELECT count(*) FROM {table} WHERE tenant_id=$1"))
+                .await,
+            0,
+            "{table}"
+        );
+    }
+    assert_eq!(
+        f.count("SELECT count(*) FROM billing_account_revisions WHERE tenant_id=$1")
+            .await,
+        2,
+        "charges untouched"
+    );
+    // A reader without claims access is shown the same money.
+    let hidden = f
+        .summary(&f.staff(Role::Nurse, "nurse").await, p, visit)
+        .await;
+    assert_eq!(hidden["patient"]["owes_now_cents"], 2500);
+
+    // A second visit for the same patient, self-pay: the banner is the sum of the cards.
+    let (appointment2, visit2) = (Uuid::new_v4(), Uuid::new_v4());
+    sqlx::query("INSERT INTO appointments(tenant_id,id,patient_id,clinician_id,starts_at,ends_at,status) VALUES($1,$2,$3,$4,'2026-10-26T14:00:00Z','2026-10-26T14:30:00Z','checked_in')").bind(f.owner.tenant_id).bind(appointment2).bind(p).bind(f.owner.sub).execute(&f.db).await.unwrap();
+    sqlx::query("INSERT INTO visits(tenant_id,id,patient_id,appointment_id,clinician_id,status,note,vitals,signed_by,signed_at) VALUES($1,$2,$3,$4,$5,'signed',$6,'{}'::jsonb,$5,now())").bind(f.owner.tenant_id).bind(visit2).bind(p).bind(appointment2).bind(f.owner.sub).bind(json!({"subjective":"Synthetic","objective":"Synthetic","assessment":"Synthetic","plan":"Synthetic"})).execute(&f.db).await.unwrap();
+    // Draft charges are not a balance anywhere.
+    let draft = f.charges(p, visit2, None, 12000).await;
+    assert_eq!(f.banner(p).await, 2500);
+    let second = f.post(p, &draft).await;
+    f.pay(p, id(&second), 2000).await;
+    let cards = [
+        f.summary(&f.owner, p, visit).await,
+        f.summary(&f.owner, p, visit2).await,
+    ];
+    assert_eq!(cards[1]["patient"]["owes_now_cents"], 10000);
+    let total: i64 = cards
+        .iter()
+        .map(|card| card["patient"]["owes_now_cents"].as_i64().unwrap())
+        .sum();
+    assert_eq!(total, 12500);
+    assert_eq!(f.banner(p).await, total);
+    let page = f.overview(&format!("?patient_id={p}")).await;
+    assert_eq!(
+        page["summary"]["accounts"]["reviewed_patient_due_cents"],
+        total
+    );
+    let rows: i64 = page["accounts"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["patient_owes_now_cents"].as_i64().unwrap())
+        .sum();
+    assert_eq!(rows, total, "rows, tile, banner and cards are one figure");
+
+    // A reviewed statement keeps its amount until the insurer answers or the account changes.
+    let current = f
+        .ok(
+            "GET",
+            &format!("/api/v1/patients/{p}/billing"),
+            json!(null),
+            None,
+        )
+        .await["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["id"] == json!(account))
+        .unwrap()
+        .clone();
+    f.ok("POST", &format!("/api/v1/patients/{p}/billing/accounts/{account}/invoices"), json!({"request_id":Uuid::new_v4(),"responsibility_cents":4500,"reason":"Reviewed synthetic coinsurance"}), Some(version(&current))).await;
+    let card = f.summary(&f.owner, p, visit).await;
+    assert_eq!(
+        card["patient"]["responsibility_source"],
+        "reviewed_statement"
+    );
+    assert_eq!(card["patient"]["owes_now_cents"], 4500);
+    assert_eq!(card["insurance"]["pending_cents"], 5500);
+    adds_up(&card);
+    assert_eq!(f.banner(p).await, 14500);
+
+    // The practice-wide page costs the same number of balance statements for many visits
+    // as for one.
+    for _ in 0..12 {
+        let (other, _, other_visit) = f.visit(true).await;
+        f.post(other, &f.charges(other, other_visit, None, 5000).await)
+            .await;
+    }
+    super::query_log::take(f.owner.tenant_id);
+    let one = f.overview("?limit=1").await;
+    let for_one = super::query_log::take(f.owner.tenant_id);
+    let many = f.overview("?limit=50").await;
+    let for_many = super::query_log::take(f.owner.tenant_id);
+    assert_eq!(one["accounts"]["items"].as_array().unwrap().len(), 1);
+    assert_eq!(many["accounts"]["items"].as_array().unwrap().len(), 14);
+    // Two balance statements (totals and rows), plus one for every open draft on the page
+    // together: 2 for one self-pay row, 3 for fourteen rows that include a draft claim.
+    assert_eq!((for_one, for_many), (2, 3), "no per-row statements");
+    assert_eq!(
+        many["summary"]["accounts"]["reviewed_patient_due_cents"],
+        14500 + 12 * 5000
     );
 }

@@ -363,7 +363,8 @@ async fn banner_leaves_out_money_and_insurance_answers_for_roles_without_billing
     let before = banner(&r, &owner, p).await;
     assert_eq!(
         before["billing"],
-        json!({"patient_due_cents":0,"open_invoice_count":0,"invoice_review_count":0,"card_on_file":false})
+        // Posted charges with no insurance on the visit are the patient's from the start.
+        json!({"patient_due_cents":10000,"open_invoice_count":0,"invoice_review_count":0,"card_on_file":false})
     );
     let (status, invoice) = call(&r, &owner, "POST", &format!("{account}/invoices"), json!({"request_id":Uuid::new_v4(),"responsibility_cents":4500,"reason":"Reviewed synthetic patient responsibility"}), Some(2)).await;
     assert_eq!(status, StatusCode::OK, "{invoice}");

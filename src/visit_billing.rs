@@ -13,6 +13,9 @@
 //!   claim and no other claim is still open), the patient's share is the patient
 //!   responsibility the insurer reported on that remittance.
 //! - Without insurance the patient's share is the whole charge.
+//! - Once a statement has been saved for the visit, the patient's share is the
+//!   responsibility on the latest one, so the figure never disagrees with the statement the
+//!   patient holds. An insurer's answer that arrives after that statement replaces it.
 //! - "Patient owes now" is that share less patient payments, credits and usable unapplied
 //!   receipts, never below zero and never above the balance.
 use crate::{
@@ -162,6 +165,222 @@ async fn claim_views(
         .collect())
 }
 
+/// Money and claim position of charge accounts, for any number of them in a fixed number
+/// of queries. Every screen that shows what a patient owes reads it from here: the visit
+/// card, the patient banner, the schedule and the patient billing page.
+const BALANCES: &str = r#"WITH acct AS (
+ SELECT b.tenant_id,b.id,b.patient_id,b.status,b.version,b.total_cents,v.status AS visit_status,v.appointment_id,
+  b.status='posted' AS posted,
+  b.coverage_snapshot IS NOT NULL AS insured,
+  btrim(coalesce(b.coverage_snapshot->'payer'->'content'->>'payer_code',''))<>'' AS electronic,
+  CASE WHEN jsonb_typeof(b.coverage_snapshot->'coverage'->'content'->'copay_cents')='number' THEN (b.coverage_snapshot->'coverage'->'content'->>'copay_cents')::bigint END AS copay
+ FROM billing_accounts b LEFT JOIN visits v ON v.tenant_id=b.tenant_id AND v.id=b.visit_id AND v.patient_id=b.patient_id
+ WHERE b.tenant_id=$1 AND b.status<>'void' AND ($2::uuid[] IS NULL OR b.patient_id=ANY($2)) AND ($3::uuid[] IS NULL OR b.id=ANY($3))
+), ledger AS (
+ SELECT x.account_id,sum(x.effect_cents)::bigint AS net,
+  coalesce(-sum(x.effect_cents) FILTER (WHERE x.party='patient'),0)::bigint AS patient_credit,
+  coalesce(-sum(x.effect_cents) FILTER (WHERE x.party='patient' AND (x.kind='payment' OR (x.kind='reversal' AND x.original_kind='payment') OR (x.kind='adjustment_debit' AND (x.content->>'managed_payment_id' IS NOT NULL OR x.content->>'hosted_copay_operation_id' IS NOT NULL OR x.content->>'invoice_checkout_operation_id' IS NOT NULL)))),0)::bigint AS patient_payments,
+  coalesce(-sum(x.effect_cents) FILTER (WHERE x.party='insurer' AND (x.kind='payment' OR (x.kind='reversal' AND x.original_kind='payment'))),0)::bigint AS insurer_paid,
+  coalesce(-sum(x.effect_cents) FILTER (WHERE x.source ? 'copay_receipt_id'),0)::bigint AS receipts_applied,
+  coalesce(bool_or(x.content->>'test_mode'='true'),false) AS test_activity,
+  max(x.created_at) AS last_entry_at
+ FROM (SELECT e.account_id,e.effect_cents,e.kind,e.content,e.created_at,o.kind AS original_kind,coalesce(o.content,e.content) AS source,
+   CASE WHEN e.kind='reversal' THEN o.content->>'party' ELSE e.content->>'party' END AS party
+  FROM billing_entries e LEFT JOIN billing_entries o ON o.tenant_id=e.tenant_id AND o.account_id=e.account_id AND o.id=e.reverses_id
+  WHERE e.tenant_id=$1 AND e.account_id IN (SELECT id FROM acct)) x GROUP BY x.account_id
+), desk AS (
+ SELECT r.appointment_id,
+  sum(CASE WHEN y.voided OR y.reversed>0 OR coalesce(o.status='needs_review',false) THEN 0 ELSE greatest(0,r.amount_cents-y.allocated-y.refunded_unapplied) END)::bigint AS unapplied
+ FROM billing_copay_receipts r LEFT JOIN copay_checkout_attempts o ON o.tenant_id=r.tenant_id AND o.receipt_id=r.id
+ CROSS JOIN LATERAL (SELECT
+   coalesce((SELECT sum(a.amount_cents) FROM billing_copay_allocations a WHERE a.tenant_id=r.tenant_id AND a.receipt_id=r.id),0)::bigint AS allocated,
+   coalesce((SELECT sum(a.amount_cents) FROM billing_copay_allocations a JOIN billing_entries e ON e.tenant_id=a.tenant_id AND e.reverses_id=a.entry_id WHERE a.tenant_id=r.tenant_id AND a.receipt_id=r.id),0)::bigint AS reversed,
+   coalesce((SELECT sum(f.unapplied_cents) FROM copay_checkout_refund_events f WHERE f.tenant_id=o.tenant_id AND f.operation_id=o.id),0)::bigint AS refunded_unapplied,
+   EXISTS(SELECT 1 FROM billing_copay_voids d WHERE d.tenant_id=r.tenant_id AND d.receipt_id=r.id) AS voided) y
+ WHERE r.tenant_id=$1 AND r.appointment_id IN (SELECT appointment_id FROM acct WHERE appointment_id IS NOT NULL) GROUP BY r.appointment_id
+), facts AS (
+ SELECT a.*,a.total_cents+coalesce(l.net,0) AS balance,coalesce(l.patient_credit,0) AS patient_credit,coalesce(l.patient_payments,0) AS patient_payments,
+  coalesce(l.insurer_paid,0) AS insurer_paid,coalesce(l.receipts_applied,0) AS receipts_applied,coalesce(d.unapplied,0) AS unapplied,
+  coalesce(l.test_activity,false) OR coalesce((i.snapshot->>'test_activity')::boolean,false) AS test_activity,
+  c.id AS claim_id,c.status AS claim_status,c.response_to_review,c.answer_paid,c.answer_responsibility,
+  coalesce(c.status='adjudicated' AND c.answered AND NOT c.denied,false) AS answered,
+  coalesce(c.status='rejected' OR (c.status='adjudicated' AND c.answered AND c.denied),false) AS denied,
+  EXISTS(SELECT 1 FROM ehr_claims z WHERE z.tenant_id=a.tenant_id AND z.account_id=a.id AND z.status='void') AS any_void,
+  i.id IS NOT NULL AND i.account_version=a.version AND (l.last_entry_at IS NULL OR l.last_entry_at<=i.created_at) AS statement_current,
+  CASE WHEN jsonb_typeof(i.snapshot->'responsibility_cents')='number' THEN (i.snapshot->>'responsibility_cents')::bigint END AS statement_responsibility
+ FROM acct a LEFT JOIN ledger l ON l.account_id=a.id LEFT JOIN desk d ON d.appointment_id=a.appointment_id
+ LEFT JOIN LATERAL (SELECT i.id,i.account_version,i.created_at,i.snapshot FROM patient_invoice_snapshots i WHERE i.tenant_id=a.tenant_id AND i.account_id=a.id ORDER BY i.created_at DESC,i.id DESC LIMIT 1) i ON true
+ LEFT JOIN LATERAL (SELECT c.id,c.status,h.remittance_id IS NOT NULL AS answered,coalesce(r.document->'claims'->h.row_index->>'status'='4',false) AS denied,
+   coalesce(p.patient_responsibility_cents,CASE WHEN jsonb_typeof(r.document->'claims'->h.row_index->'patient_responsibility_cents')='number' THEN (r.document->'claims'->h.row_index->>'patient_responsibility_cents')::bigint END,0) AS answer_responsibility,
+   CASE WHEN jsonb_typeof(r.document->'claims'->h.row_index->'paid_cents')='number' THEN (r.document->'claims'->h.row_index->>'paid_cents')::bigint ELSE 0 END AS answer_paid,
+   (SELECT s.id FROM era_remittances s WHERE s.tenant_id=c.tenant_id AND s.status IN ('staged','reconciled') AND (s.matches @> jsonb_build_array(jsonb_build_object('claim_id',c.id)) OR EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(s.document->'claims')='array' THEN s.document->'claims' ELSE '[]'::jsonb END) q WHERE q->>'control_number'=c.control_number)) ORDER BY s.created_at LIMIT 1) AS response_to_review
+  FROM ehr_claims c LEFT JOIN era_claim_heads h ON h.tenant_id=c.tenant_id AND h.claim_id=c.id
+  LEFT JOIN era_remittances r ON r.tenant_id=h.tenant_id AND r.id=h.remittance_id
+  LEFT JOIN era_postings p ON p.tenant_id=h.tenant_id AND p.remittance_id=h.remittance_id AND p.row_index=h.row_index
+  WHERE c.tenant_id=a.tenant_id AND c.account_id=a.id AND c.status<>'void' AND a.posted AND a.insured
+  ORDER BY (c.status IN ('draft','ready','submitted','accepted')) DESC,c.created_at DESC,c.id DESC LIMIT 1) c ON true
+), shares AS (
+ SELECT f.*,
+  CASE WHEN NOT f.posted THEN 0
+   WHEN f.statement_responsibility IS NOT NULL AND (f.statement_current OR NOT f.answered) THEN least(greatest(f.statement_responsibility,0),f.total_cents)
+   WHEN NOT f.insured THEN f.total_cents
+   WHEN f.answered THEN least(greatest(f.answer_responsibility,0),f.total_cents)
+   WHEN f.copay IS NOT NULL THEN least(greatest(f.copay,0),f.total_cents) ELSE 0 END AS responsibility,
+  CASE WHEN NOT f.posted THEN 'not_final'
+   WHEN f.statement_responsibility IS NOT NULL AND (f.statement_current OR NOT f.answered) AND NOT f.insured AND f.statement_responsibility>=f.total_cents THEN 'self_pay'
+   WHEN f.statement_responsibility IS NOT NULL AND (f.statement_current OR NOT f.answered) AND f.answered AND f.statement_responsibility=least(greatest(f.answer_responsibility,0),f.total_cents) THEN 'insurer_response'
+   WHEN f.statement_responsibility IS NOT NULL AND (f.statement_current OR NOT f.answered) THEN 'reviewed_statement'
+   WHEN NOT f.insured THEN 'self_pay' WHEN f.answered THEN 'insurer_response'
+   WHEN f.copay IS NOT NULL THEN 'plan_copay' ELSE 'copay_not_recorded' END AS responsibility_source
+ FROM facts f
+), owed AS (
+ SELECT s.*,CASE WHEN s.posted THEN least(greatest(s.responsibility-s.patient_credit-s.unapplied,0),greatest(s.balance,0)) ELSE 0 END AS owes_now FROM shares s
+)
+SELECT jsonb_build_object('id',o.id,'patient_id',o.patient_id,'status',o.status,'visit_status',o.visit_status,'posted',o.posted,'insured',o.insured,'electronic',o.electronic,
+ 'total_cents',o.total_cents,'balance_cents',o.balance,'patient_credit_cents',o.patient_credit,'patient_payments_cents',o.patient_payments,'insurer_paid_cents',o.insurer_paid,
+ 'receipts_applied_cents',o.receipts_applied,'unapplied_cents',CASE WHEN o.posted THEN o.unapplied ELSE 0 END,'responsibility_cents',o.responsibility,'responsibility_source',o.responsibility_source,
+ 'owes_now_cents',o.owes_now,
+ 'pending_cents',CASE WHEN o.posted AND o.insured AND NOT o.answered THEN greatest(o.balance-o.owes_now,0) ELSE 0 END,
+ 'unassigned_cents',CASE WHEN o.posted AND ((o.insured AND o.answered) OR (NOT o.insured AND o.responsibility_source='reviewed_statement')) THEN greatest(o.balance-o.owes_now,0) ELSE 0 END,
+ 'overpaid_cents',CASE WHEN o.posted THEN greatest(CASE WHEN o.answered OR NOT o.insured THEN greatest(o.patient_credit-o.responsibility,0) ELSE 0 END,-o.balance) ELSE 0 END,
+ 'answered',o.answered,'denied',o.denied,'any_void',o.any_void,'claim_id',o.claim_id,'claim_status',o.claim_status,'response_to_review',o.response_to_review,'test_activity',o.test_activity)
+FROM owed o WHERE $4::boolean IS NULL OR o.test_activity=$4"#;
+
+/// One row per charge account that is not void. `patients` and `accounts` narrow the set;
+/// `test` keeps only accounts with (or without) test processor activity.
+pub(crate) async fn balances(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    patients: Option<&[Uuid]>,
+    accounts: Option<&[Uuid]>,
+    test: Option<bool>,
+) -> Result<Vec<Value>> {
+    #[cfg(test)]
+    query_log::count(tenant);
+    Ok(sqlx::query_scalar(BALANCES)
+        .bind(tenant)
+        .bind(patients)
+        .bind(accounts)
+        .bind(test)
+        .fetch_all(&mut **tx)
+        .await?)
+}
+/// What each patient owes now across their visits, in one query. Insurance-pending money
+/// is never part of it.
+pub(crate) async fn patients_owe(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    patients: Option<&[Uuid]>,
+    test: Option<bool>,
+) -> Result<std::collections::HashMap<Uuid, i64>> {
+    let mut out = std::collections::HashMap::new();
+    for row in balances(tx, tenant, patients, None, test).await? {
+        if let Some(patient) = row["patient_id"]
+            .as_str()
+            .and_then(|v| Uuid::parse_str(v).ok())
+        {
+            *out.entry(patient).or_insert(0) += cents(&row["owes_now_cents"]);
+        }
+    }
+    Ok(out)
+}
+/// The state name of a visit's billing, from its balance row. `draft_needs_details` says
+/// whether the open draft claim fails the readiness checks.
+pub(crate) fn state_of(
+    row: &Value,
+    draft_needs_details: bool,
+    claims_visible: bool,
+) -> (&'static str, &'static str) {
+    let posted = row["posted"] == true;
+    let insured = row["insured"] == true;
+    let owes = cents(&row["owes_now_cents"]);
+    let credit = cents(&row["unapplied_cents"]) + cents(&row["overpaid_cents"]);
+    if !posted {
+        return if row["visit_status"].is_null() || row["visit_status"] == "signed" {
+            ("post_charges", "staff")
+        } else {
+            ("sign_visit", "clinician")
+        };
+    }
+    let settled = || {
+        if credit > 0 {
+            ("patient_credit", "staff")
+        } else {
+            ("paid_in_full", "nobody")
+        }
+    };
+    if !insured {
+        return if owes > 0 {
+            ("self_pay_collect", "patient")
+        } else if cents(&row["unassigned_cents"]) > 0 {
+            ("review_balance", "staff")
+        } else {
+            settled()
+        };
+    }
+    if !claims_visible {
+        return ("claim_restricted", "staff");
+    }
+    match row["claim_status"].as_str() {
+        None if row["electronic"] != true => ("insurance_outside", "staff"),
+        None if row["any_void"] == true => ("claim_cancelled", "staff"),
+        None => ("prepare_claim", "staff"),
+        Some("draft") if draft_needs_details => ("fix_claim", "staff"),
+        Some("draft" | "ready") => ("send_claim", "staff"),
+        Some("submitted" | "accepted") if row["response_to_review"].is_string() => {
+            ("post_response", "staff")
+        }
+        Some("submitted" | "accepted") => ("waiting_insurer", "insurer"),
+        _ if row["denied"] == true => ("denied", "staff"),
+        _ if owes > 0 => ("patient_owes", "patient"),
+        _ if cents(&row["unassigned_cents"]) > 0 => ("review_response", "staff"),
+        _ => settled(),
+    }
+}
+/// State names for a page of balance rows: one extra query for the open drafts.
+pub(crate) async fn states(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    rows: &[Value],
+    claims_visible: bool,
+) -> Result<std::collections::HashMap<Uuid, &'static str>> {
+    let drafts: Vec<Uuid> = rows
+        .iter()
+        .filter(|row| row["claim_status"] == "draft")
+        .filter_map(|row| {
+            row["claim_id"]
+                .as_str()
+                .and_then(|v| Uuid::parse_str(v).ok())
+        })
+        .collect();
+    let mut needs = std::collections::HashSet::new();
+    if claims_visible && !drafts.is_empty() {
+        #[cfg(test)]
+        query_log::count(a.tenant_id);
+        let claims: Vec<claims::Claim> =
+            sqlx::query_as("SELECT * FROM ehr_claims WHERE tenant_id=$1 AND id=ANY($2)")
+                .bind(a.tenant_id)
+                .bind(&drafts)
+                .fetch_all(&mut **tx)
+                .await?;
+        for claim in claims {
+            if !claims::preflight(&claim)?.is_empty() {
+                needs.insert(claim.id);
+            }
+        }
+    }
+    Ok(rows
+        .iter()
+        .filter_map(|row| {
+            let id = Uuid::parse_str(row["id"].as_str()?).ok()?;
+            let draft = row["claim_id"]
+                .as_str()
+                .and_then(|v| Uuid::parse_str(v).ok())
+                .is_some_and(|claim| needs.contains(&claim));
+            Some((id, state_of(row, draft, claims_visible).0))
+        })
+        .collect())
+}
 fn plain_issue(issue: &str) -> Value {
     let (code, text) = if issue.starts_with("Tax ID") {
         ("tax_id", "billing organization tax ID")
@@ -274,32 +493,39 @@ pub(crate) async fn summarize(
 
     let paid_at_desk = receipts(billing::copay_rows(tx, a, p, None).await?, appointment);
 
-    // Ledger: the same sums the account balance, invoices and claims already use.
+    // Money comes from the one calculation every screen shares.
     let total = account.as_ref().map(|b| b.total_cents).unwrap_or(0);
-    let (
-        mut balance,
-        mut patient_credit,
-        mut patient_payments,
-        mut insurer_paid,
-        mut receipts_applied,
-    ) = (0i64, 0i64, 0i64, 0i64, 0i64);
-    if let Some(b) = account.as_ref().filter(|_| posted) {
-        let (net, insurer, applied): (i64, i64, i64) = sqlx::query_as(
-            "SELECT coalesce(sum(e.effect_cents),0)::bigint,\
-             coalesce(-sum(e.effect_cents) FILTER (WHERE (CASE WHEN e.kind='reversal' THEN o.content->>'party' ELSE e.content->>'party' END)='insurer' AND (e.kind='payment' OR (e.kind='reversal' AND o.kind='payment'))),0)::bigint,\
-             coalesce(-sum(e.effect_cents) FILTER (WHERE coalesce(o.content,e.content) ? 'copay_receipt_id'),0)::bigint \
-             FROM billing_entries e LEFT JOIN billing_entries o ON o.tenant_id=e.tenant_id AND o.account_id=e.account_id AND o.id=e.reverses_id WHERE e.tenant_id=$1 AND e.account_id=$2",
-        )
-        .bind(a.tenant_id)
-        .bind(b.id)
-        .fetch_one(&mut **tx)
-        .await?;
-        balance = b.total_cents + net;
-        insurer_paid = insurer;
-        receipts_applied = applied;
-        (patient_credit, patient_payments) =
-            billing::patient_ledger_totals(tx, a.tenant_id, b.id).await?;
-    }
+    let money = match account.as_ref().filter(|_| posted) {
+        Some(b) => balances(tx, a.tenant_id, None, Some(&[b.id]), None)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or(Error::NotFound)?,
+        None => {
+            json!({"posted":false,"insured":insured,"visit_status":visit_row.as_ref().map(|row| row.1.clone()),"responsibility_source":"not_final"})
+        }
+    };
+    let balance = cents(&money["balance_cents"]);
+    let patient_credit = cents(&money["patient_credit_cents"]);
+    let patient_payments = cents(&money["patient_payments_cents"]);
+    let insurer_paid = cents(&money["insurer_paid_cents"]);
+    let receipts_applied = cents(&money["receipts_applied_cents"]);
+    let usable_unapplied = if posted {
+        cents(&money["unapplied_cents"])
+    } else {
+        paid_at_desk.usable_unapplied
+    };
+    let responsibility = cents(&money["responsibility_cents"]);
+    let source = money["responsibility_source"]
+        .as_str()
+        .unwrap_or("not_final")
+        .to_owned();
+    let owes_now = cents(&money["owes_now_cents"]);
+    let pending = cents(&money["pending_cents"]);
+    let unassigned = cents(&money["unassigned_cents"]);
+    let overpaid = cents(&money["overpaid_cents"]);
+    let credit = usable_unapplied + overpaid;
+    let denied = money["denied"] == true;
     // Everything on the ledger that is neither an insurer payment nor the patient's.
     let adjusted = if posted {
         total - balance - patient_credit - insurer_paid
@@ -314,60 +540,6 @@ pub(crate) async fn summarize(
     let live: Vec<&ClaimView> = views.iter().filter(|c| c.status() != "void").collect();
     let open = live.iter().copied().find(|c| c.open());
     let latest = open.or_else(|| live.last().copied());
-    // A denial is not the insurer's final word on what the patient owes: the claim is
-    // corrected and resent, so the plan copay still stands until it is answered.
-    let answered = open.is_none()
-        && latest.is_some_and(|c| {
-            c.status() == "adjudicated" && c.answer.as_ref().is_some_and(|x| !x.denied)
-        });
-    let answer = latest.filter(|_| answered).and_then(|c| c.answer.as_ref());
-
-    // The patient's share and what is still with the insurer.
-    let (responsibility, source) = if !posted {
-        match (insured, plan_copay) {
-            (true, Some(copay)) => (copay, "plan_copay"),
-            (true, None) => (0, "copay_not_recorded"),
-            _ => (0, "not_final"),
-        }
-    } else if !insured {
-        (total, "self_pay")
-    } else if let Some(answer) = answer {
-        (
-            answer.patient_responsibility.clamp(0, total),
-            "insurer_response",
-        )
-    } else {
-        match plan_copay {
-            Some(copay) => (copay.clamp(0, total), "plan_copay"),
-            None => (0, "copay_not_recorded"),
-        }
-    };
-    let owes_now = if posted {
-        (responsibility - patient_credit - paid_at_desk.usable_unapplied).clamp(0, balance.max(0))
-    } else {
-        (responsibility - paid_at_desk.net_received).max(0)
-    };
-    let remainder = if posted {
-        (balance - owes_now).max(0)
-    } else {
-        0
-    };
-    let (pending, unassigned) = if !insured {
-        (0, 0)
-    } else if answered {
-        (0, remainder)
-    } else {
-        (remainder, 0)
-    };
-    // Paid more than the patient's share, or (an insurer payment can do this) more than
-    // the whole charge: a credit to refund or apply, never a negative amount owed.
-    let overpaid = if posted && (answered || !insured) {
-        (patient_credit - responsibility).max(0)
-    } else {
-        0
-    }
-    .max(-balance);
-    let credit = paid_at_desk.usable_unapplied + overpaid;
 
     // The current draft's readiness, with the same checks the manual flow runs.
     let mut issues: Vec<Value> = vec![];
@@ -382,50 +554,10 @@ pub(crate) async fn summarize(
     }
 
     let restricted = posted && insured && !opt.claims;
-    let any_void = views.iter().any(|c| c.status() == "void");
-    let denied = open.is_none()
-        && latest.is_some_and(|c| {
-            c.status() == "rejected"
-                || (c.status() == "adjudicated" && c.answer.as_ref().is_some_and(|x| x.denied))
-        });
     let (state, waiting_on) = match &account {
         None => ("add_charges", "staff"),
         Some(_) if void => ("add_charges", "staff"),
-        Some(_) if !posted => {
-            if visit_row.as_ref().is_none_or(|row| row.1 == "signed") {
-                ("post_charges", "staff")
-            } else {
-                ("sign_visit", "clinician")
-            }
-        }
-        Some(_) if !insured => {
-            if owes_now > 0 {
-                ("self_pay_collect", "patient")
-            } else if credit > 0 {
-                ("patient_credit", "staff")
-            } else {
-                ("paid_in_full", "nobody")
-            }
-        }
-        Some(_) if restricted => ("claim_restricted", "staff"),
-        Some(_) => match latest {
-            None if !electronic => ("insurance_outside", "staff"),
-            None if any_void => ("claim_cancelled", "staff"),
-            None => ("prepare_claim", "staff"),
-            Some(c) => match c.status() {
-                "draft" if !issues.is_empty() => ("fix_claim", "staff"),
-                "draft" | "ready" => ("send_claim", "staff"),
-                "submitted" | "accepted" if c.row["response_to_review"].is_string() => {
-                    ("post_response", "staff")
-                }
-                "submitted" | "accepted" => ("waiting_insurer", "insurer"),
-                _ if denied => ("denied", "staff"),
-                _ if owes_now > 0 => ("patient_owes", "patient"),
-                _ if unassigned > 0 => ("review_response", "staff"),
-                _ if credit > 0 => ("patient_credit", "staff"),
-                _ => ("paid_in_full", "nobody"),
-            },
-        },
+        Some(_) => state_of(&money, !issues.is_empty(), opt.claims),
     };
 
     let insurance_status = if !insured {
@@ -497,7 +629,7 @@ pub(crate) async fn summarize(
             } + patient_payments
                 - receipts_applied,
             "adjustment_cents": patient_credit - patient_payments,
-            "unapplied_cents": paid_at_desk.usable_unapplied,
+            "unapplied_cents": usable_unapplied,
             "overpaid_cents": overpaid,
             "credit_cents": credit,
             "receipt_needs_review": paid_at_desk.needs_review,
@@ -861,6 +993,16 @@ async fn claim_defaults(
     })
 }
 
+/// Whether the actor is a delegated partner or platform support session, not practice staff.
+async fn delegated(tx: &mut Transaction<'_, Postgres>, a: &Actor) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM partner_support_sessions WHERE tenant_id=$1 AND grant_id=$2)",
+    )
+    .bind(a.tenant_id)
+    .bind(a.sub)
+    .fetch_one(&mut **tx)
+    .await?)
+}
 /// Prepares the visit's insurance claim draft when its charges are posted and no claim
 /// exists yet. The draft is the same record the claim form saves, attributed to the person
 /// whose action or page opened it; it is never marked ready or sent here. Calling it again
@@ -876,7 +1018,13 @@ pub(crate) async fn prepare_claim(
     a.scheduling()?;
     let mut tx = pool.begin().await?;
     let account = claims::account(&mut tx, a, account_id, Some(p)).await?;
+    let support = delegated(&mut tx, a).await?;
     tx.commit().await?;
+    // A delegated support session acts with the owner's authority, but a claim is prepared
+    // by the practice: nothing is written for it, whether asked for or not.
+    if support {
+        return Ok(json!({"outcome":"delegated"}));
+    }
     let skipped = |reason: &str| Ok(json!({"outcome":"not_needed","reason":reason}));
     if account.status != "posted" {
         return skipped("charges_not_posted");
@@ -1057,6 +1205,8 @@ async fn read(
         },
     )
     .await?;
+    let mut out = out;
+    out["viewer"] = json!({"delegated":delegated(&mut tx, &a).await?});
     crate::postgres::audit(&mut tx, &a, "billing.visit_summary_read", p).await?;
     tx.commit().await?;
     Ok(Json(out))
@@ -1094,6 +1244,31 @@ pub fn router() -> Router<State> {
             "/api/v1/patients/{p}/billing/accounts/{id}/statement",
             post(make_statement),
         )
+}
+
+/// Counts the set-based statements run for a practice, so a test can show a page of rows
+/// costs the same number of them as one row.
+#[cfg(test)]
+pub(crate) mod query_log {
+    use std::{collections::HashMap, sync::Mutex};
+    use uuid::Uuid;
+    static CALLS: Mutex<Option<HashMap<Uuid, usize>>> = Mutex::new(None);
+    pub(crate) fn count(tenant: Uuid) {
+        *CALLS
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::new)
+            .entry(tenant)
+            .or_insert(0) += 1;
+    }
+    pub(crate) fn take(tenant: Uuid) -> usize {
+        CALLS
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::new)
+            .remove(&tenant)
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(test)]
