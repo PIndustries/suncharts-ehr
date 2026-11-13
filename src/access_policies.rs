@@ -306,6 +306,8 @@ fn action(method: &Method, path: &str) -> Option<Action> {
                 "read",
                 "reader-cancel",
                 "reconcile",
+                "patient-decisions",
+                "use-contact",
                 "refresh",
                 "reschedule",
                 "review",
@@ -401,6 +403,7 @@ fn action(method: &Method, path: &str) -> Option<Action> {
             if end == "{}"
                 && (path.contains("/inbox/")
                     || path.contains("/clinical-review/")
+                    || path.contains("/clinical-reconcile/")
                     || path.contains("/portal-inbox/")
                     || path.contains("/portal/avs/"))
             {

@@ -46,6 +46,7 @@ pub mod fhir;
 pub mod gmail_referral_adapter;
 pub mod health_history;
 pub mod immunizations;
+pub mod import_matching;
 pub mod installments;
 pub mod instance_integrations;
 pub mod labs;

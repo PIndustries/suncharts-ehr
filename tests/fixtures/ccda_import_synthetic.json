@@ -26,6 +26,20 @@
    "patient_source_id": null,
    "source_data": {
     "administrative_gender": "F",
+    "contact": {
+     "address": {
+      "city": "Testville",
+      "country": "US",
+      "line1": "1 Synthetic Way",
+      "line2": "Suite 2",
+      "postal_code": "75000",
+      "region": "TX"
+     },
+     "administrative_gender": "female",
+     "email": "synthetic.patient@example.test",
+     "language": "Spanish",
+     "phone": "+1-555-0100"
+    },
     "format": "hl7-ccda",
     "id": "1001",
     "id_root": "2.16.999.1"
@@ -391,17 +405,37 @@
   },
   {
    "data": {
-    "address": "1 Synthetic Way, Testville",
+    "address": "1 Synthetic Way, Suite 2, Testville, TX, 75000, USA",
+    "email": "synthetic.patient@example.test; not an address",
+    "language": "es-US",
     "phone_mobile": "+1-555-0100",
+    "phone_work": "+1-555-0199",
     "sex": "Female",
     "title": "Demographics (previous record system)"
    },
    "kind": "form",
    "patient_source_id": "1001",
    "source_data": {
+    "contact": {
+     "address": {
+      "city": "Testville",
+      "country": "US",
+      "line1": "1 Synthetic Way",
+      "line2": "Suite 2",
+      "postal_code": "75000",
+      "region": "TX"
+     },
+     "administrative_gender": "female",
+     "email": "synthetic.patient@example.test",
+     "language": "Spanish",
+     "phone": "+1-555-0100"
+    },
     "demographics": {
-     "address": "1 Synthetic Way, Testville",
+     "address": "1 Synthetic Way, Suite 2, Testville, TX, 75000, USA",
+     "email": "synthetic.patient@example.test; not an address",
+     "language": "es-US",
      "phone_mobile": "+1-555-0100",
+     "phone_work": "+1-555-0199",
      "sex": "Female"
     },
     "format": "hl7-ccda",
@@ -516,6 +550,15 @@
       "system_oid": "2.16.840.1.113883.3.221.5"
      }
     ],
+    "coverage": {
+     "effective_date": "2023-01-01",
+     "group_number": "SYN-GROUP",
+     "member_id": "SYN-MEMBER-1",
+     "payer_name": "Synthetic Payer",
+     "plan_name": "Synthetic PPO",
+     "priority": "primary",
+     "relationship": "self"
+    },
     "entry": {
      "attrs": {
       "classCode": "ACT",
@@ -1459,6 +1502,20 @@
    "patient_source_id": null,
    "source_data": {
     "administrative_gender": "F",
+    "contact": {
+     "address": {
+      "city": "Testville",
+      "country": "US",
+      "line1": "1 Synthetic Way",
+      "line2": "Suite 2",
+      "postal_code": "75000",
+      "region": "TX"
+     },
+     "administrative_gender": "female",
+     "email": "synthetic.patient@example.test",
+     "language": "Spanish",
+     "phone": "+1-555-0100"
+    },
     "format": "hl7-ccda",
     "id": "2002",
     "id_root": "2.16.999.1"
@@ -1824,17 +1881,37 @@
   },
   {
    "data": {
-    "address": "1 Synthetic Way, Testville",
+    "address": "1 Synthetic Way, Suite 2, Testville, TX, 75000, USA",
+    "email": "synthetic.patient@example.test; not an address",
+    "language": "es-US",
     "phone_mobile": "+1-555-0100",
+    "phone_work": "+1-555-0199",
     "sex": "Female",
     "title": "Demographics (previous record system)"
    },
    "kind": "form",
    "patient_source_id": "2002",
    "source_data": {
+    "contact": {
+     "address": {
+      "city": "Testville",
+      "country": "US",
+      "line1": "1 Synthetic Way",
+      "line2": "Suite 2",
+      "postal_code": "75000",
+      "region": "TX"
+     },
+     "administrative_gender": "female",
+     "email": "synthetic.patient@example.test",
+     "language": "Spanish",
+     "phone": "+1-555-0100"
+    },
     "demographics": {
-     "address": "1 Synthetic Way, Testville",
+     "address": "1 Synthetic Way, Suite 2, Testville, TX, 75000, USA",
+     "email": "synthetic.patient@example.test; not an address",
+     "language": "es-US",
      "phone_mobile": "+1-555-0100",
+     "phone_work": "+1-555-0199",
      "sex": "Female"
     },
     "format": "hl7-ccda",
@@ -1949,6 +2026,15 @@
       "system_oid": "2.16.840.1.113883.3.221.5"
      }
     ],
+    "coverage": {
+     "effective_date": "2023-01-01",
+     "group_number": "SYN-GROUP",
+     "member_id": "SYN-MEMBER-1",
+     "payer_name": "Synthetic Payer",
+     "plan_name": "Synthetic PPO",
+     "priority": "primary",
+     "relationship": "self"
+    },
     "entry": {
      "attrs": {
       "classCode": "ACT",
@@ -2901,15 +2987,12 @@
   "limitations": [
    "Operator asserted a read-only source export; a frozen source was not independently verified.",
    "C-CDA health summaries only: sections the previous system left empty or did not export are absent.",
-   "Patients map to name, birth date and a generated MRN; other demographics, insurance and every clinical section are preserved as read-only source history.",
-   "Problems, medications and allergies need clinician reconciliation before they appear in the native lists; source codes are kept as text.",
+   "Patients who look like an existing chart are attached to it or created as new charts by the owner's decision before import.",
+   "New charts get name, birth date, a generated MRN and contact details; insurance and every clinical section are preserved as read-only source history.",
+   "Problems, medications and allergies need clinician reconciliation before they appear in the native lists; their source codes are carried over.",
    "Attached files are not part of this package and are uploaded separately as patient documents."
   ],
   "source_instance": "synthetic-emr",
   "source_revision": "export-1"
- },
- "patient_digests": {
-  "1001": "3892b2beb564326c50ea64d7f5fc293d0816991c14dc08db9f2cfa03c4f30c4b",
-  "2002": "cc41fbf96ee61a1bab81331b57dfb96a7e97a3b0894b303a3b51aa5bed8031b6"
  }
 }

@@ -8906,15 +8906,14 @@ async fn claimmd_empty_terminal_era_page_finishes_only_previously_persisted_high
 }
 
 /// Stages the package `scripts/import_ccda.py` builds from synthetic C-CDA documents.
-/// Patients are matched by stable source identifier only: a hand-entered chart for the
-/// same person is duplicated unless an identity link was recorded beforehand.
+/// Both patients already have a hand-entered chart; the owner attaches one and asks for
+/// a new chart for the other. A repeated import follows the recorded links.
 #[tokio::test]
-async fn ccda_package_imports_as_history_and_only_source_identifiers_prevent_duplicates() {
+async fn ccda_package_imports_onto_the_charts_the_owner_chose_and_reimports_cleanly() {
     let (r, db, a, _) = setup().await;
     let auth = bearer(&a);
     let fixture: Value =
         serde_json::from_str(include_str!("fixtures/ccda_import_synthetic.json")).unwrap();
-    let source = fixture["manifest"]["source_instance"].as_str().unwrap();
     let mut manual = Vec::new();
     for (given, family, birth) in [
         ("Avery Q", "Synthetic", "1990-01-01"),
@@ -8932,15 +8931,6 @@ async fn ccda_package_imports_as_history_and_only_source_identifiers_prevent_dup
         assert_eq!(status, StatusCode::CREATED);
         manual.push(patient["id"].as_str().unwrap().parse::<Uuid>().unwrap());
     }
-    // Operator-reviewed link for the second patient, using the digest the tool emits.
-    sqlx::query("INSERT INTO source_identifiers (tenant_id,source_instance,kind,source_id,target_id,source_digest) VALUES ($1,$2,'patient','2002',$3,$4)")
-        .bind(a.tenant_id)
-        .bind(source)
-        .bind(manual[1])
-        .bind(fixture["patient_digests"]["2002"].as_str().unwrap())
-        .execute(&db)
-        .await
-        .unwrap();
     let items = fixture["items"].as_array().unwrap();
     let mut imported = Value::Null;
     for round in 0..2 {
@@ -8988,6 +8978,26 @@ async fn ccda_package_imports_as_history_and_only_source_identifiers_prevent_dup
         assert_eq!(report["errors"], json!([]), "round {round}");
         assert_eq!(report["ready_to_import"], true);
         assert_eq!(report["counts"], fixture["manifest"]["expected_counts"]);
+        let people = report["patients"].as_array().unwrap();
+        if round == 0 {
+            // Both match a hand-entered chart exactly, so attaching is pre-selected.
+            assert!(people.iter().all(|p| p["status"] == "match"
+                && p["decision"]["action"] == "attach"
+                && p["decision"]["preselected"] == true));
+            let (status, _, decided) = json_call(
+                &r,
+                "POST",
+                &format!("/api/v1/migrations/{id}/patient-decisions"),
+                Some(&auth),
+                None,
+                json!({"source_id":"1001","action":"create"}),
+            )
+            .await;
+            assert_eq!(status, 200, "{decided}");
+            assert_eq!(decided["report"]["ready_to_import"], true);
+        } else {
+            assert!(people.iter().all(|p| p["status"] == "linked"));
+        }
         let (status, _, done) = json_call(
             &r,
             "POST",
@@ -9012,7 +9022,7 @@ async fn ccda_package_imports_as_history_and_only_source_identifiers_prevent_dup
         assert_eq!(
             people,
             vec![("Example".to_string(), 1), ("Synthetic".to_string(), 2)],
-            "the linked chart is reused; the unlinked same-name chart is duplicated"
+            "the attached chart is reused; the declined match became a second chart"
         );
         let history: i64 = sqlx::query_scalar("SELECT count(*) FROM historical_records")
             .fetch_one(&db)
@@ -9071,10 +9081,56 @@ async fn ccda_package_imports_as_history_and_only_source_identifiers_prevent_dup
     assert_eq!(mapping["content"]["title"], "Synthetic spasticity");
     assert_eq!(mapping["content"]["onset_date"], "2020-03-04");
     assert_eq!(mapping["content"]["status"], "active");
-    assert!(mapping["content"]["notes"]
-        .as_str()
+    assert_eq!(
+        mapping["content"]["codes"],
+        json!([{"system":"ICD-10-CM","code":"G80.1","display":"Synthetic spasticity"},
+            {"system":"SNOMED CT","code":"1234567","display":"Synthetic finding"}])
+    );
+    // The attached chart keeps its own contact details; the imported block sits beside the history.
+    let block = linked["items"]
+        .as_array()
         .unwrap()
-        .contains("ICD-10-CM G80.1"));
+        .iter()
+        .find(|i| i["source_data"]["contact"].is_object())
+        .unwrap();
+    assert_eq!(block["source_data"]["contact"]["phone"], "+1-555-0100");
+    let (_, _, native) = json_call(
+        &r,
+        "GET",
+        &format!("/api/v1/patients/{}/demographics", manual[1]),
+        Some(&auth),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(native["version"], 0);
+    let insurance = linked["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "insurance")
+        .unwrap();
+    assert_eq!(
+        insurance["source_data"]["coverage"]["member_id"],
+        "SYN-MEMBER-1"
+    );
+    // The committed job tells the attachment upload where each patient's files go.
+    let (status, _, links) = json_call(
+        &r,
+        "GET",
+        &format!(
+            "/api/v1/migrations/{}/patient-links",
+            imported["id"].as_str().unwrap()
+        ),
+        Some(&auth),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(links["items"][1]["source_patient_id"], "2002");
+    assert_eq!(links["items"][1]["patient_id"], json!(manual[1]));
+    assert_ne!(links["items"][0]["patient_id"], json!(manual[0]));
     // A converted attachment is stored through the patient documents route; a retry replays.
     let mut stored = Vec::new();
     for _ in 0..2 {

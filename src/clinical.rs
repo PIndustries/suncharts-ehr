@@ -268,6 +268,10 @@ pub fn router() -> Router<State> {
             post(review),
         )
         .route(
+            "/api/v1/patients/{patient}/clinical-reconcile/{kind}",
+            post(reconcile_all),
+        )
+        .route(
             "/api/v1/patients/{patient}/history/{id}/mapping",
             get(mapping),
         )
@@ -442,8 +446,56 @@ fn source_date(row: &Value, key: &str, issues: &mut Vec<String>) -> Option<Naive
         }
     }
 }
+/// Code systems carried from an imported entry into the native entry's codes.
+const CARRIED_SYSTEMS: &[&str] = &["ICD-10-CM", "SNOMED CT", "RxNorm", "NDC"];
+/// Structured source codes split into the ones carried into the native entry and a
+/// text list of the rest. `None` when the source has no structured codes.
+fn source_codes(row: &Value) -> Option<(Vec<Coding>, Vec<String>)> {
+    let listed = row.get("codes")?.as_array()?;
+    let (mut carried, mut other): (Vec<Coding>, Vec<String>) = (vec![], vec![]);
+    for c in listed {
+        let (Some(system), Some(code)) = (c["system"].as_str(), c["code"].as_str()) else {
+            continue;
+        };
+        let (system, code) = (system.trim(), code.trim());
+        let display: String = c["display"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .take(200)
+            .collect();
+        // A code whose system label disagrees with its identifier stays as text for review.
+        if CARRIED_SYSTEMS.contains(&system)
+            && c["system_conflict"] != true
+            && !code.is_empty()
+            && code.chars().count() <= 120
+            && carried.len() < 20
+        {
+            if !carried.iter().any(|x| x.system == system && x.code == code) {
+                carried.push(Coding {
+                    system: system.into(),
+                    code: code.into(),
+                    display,
+                });
+            }
+        } else if !system.is_empty() || !code.is_empty() {
+            other.push(if display.is_empty() {
+                format!("{system} {code}")
+            } else {
+                format!("{system} {code} ({display})")
+            });
+        }
+    }
+    Some((carried, other))
+}
 pub fn map_source(k: &str, row: &Value) -> Result<Value> {
-    let mut issues=vec!["Review every suggested value before creating a native entry. Terminology codes are preserved as source text until explicitly mapped.".to_string()];
+    let structured = source_codes(row);
+    let mut issues = vec![if structured.as_ref().is_some_and(|(c, _)| !c.is_empty()) {
+        "Check each value before saving. Codes from the previous system are carried over as recorded.".to_string()
+    } else {
+        "Review every suggested value before creating a native entry. Terminology codes are preserved as source text until explicitly mapped.".to_string()
+    }];
     let onset_date = source_date(row, "begdate", &mut issues);
     let end_date = source_date(row, "enddate", &mut issues);
     let closed = end_date.is_some() || source_text(row, "activity") == "0";
@@ -484,23 +536,44 @@ pub fn map_source(k: &str, row: &Value) -> Result<Value> {
     if title.is_empty() {
         issues.push("Source title is missing; enter a clinically meaningful name.".into());
     }
-    let notes = format!(
-        "{}{}Source diagnosis/code text (unmapped): {}",
-        source_text(row, "comments"),
-        if source_text(row, "comments").is_empty() {
-            ""
-        } else {
-            "\n"
-        },
-        source_text(row, "diagnosis")
-    );
+    let comments = source_text(row, "comments");
+    let (codes, notes) = match structured {
+        // Structured codes travel with the entry; anything not carried is kept as text.
+        Some((codes, other)) => (
+            codes,
+            [
+                comments,
+                if other.is_empty() {
+                    String::new()
+                } else {
+                    format!("Other codes from the previous system: {}", other.join("; "))
+                },
+            ]
+            .into_iter()
+            .filter(|v| !v.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .chars()
+            .take(10000)
+            .collect(),
+        ),
+        None => (
+            vec![],
+            format!(
+                "{}{}Source diagnosis/code text (unmapped): {}",
+                comments,
+                if comments.is_empty() { "" } else { "\n" },
+                source_text(row, "diagnosis")
+            ),
+        ),
+    };
     let suggested = Content {
         title,
         status: status.into(),
         verification: "unconfirmed".into(),
         onset_date,
         end_date,
-        codes: vec![],
+        codes,
         notes,
         detail,
     };
@@ -531,4 +604,81 @@ async fn mapping(
     crate::postgres::audit(&mut tx, &a, "patient.clinical_mapping.read", p).await?;
     tx.commit().await?;
     Ok(Json(v))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReconcileAll {
+    history_ids: Vec<Uuid>,
+}
+/// Accepts a reviewed set of imported problems or medications into the native list in
+/// one action. Every entry keeps its own source link, source codes and attributed
+/// revision; entries that need a closer look are returned instead of being guessed.
+async fn reconcile_all(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((p, k)): Path<(Uuid, String)>,
+    Json(input): Json<ReconcileAll>,
+) -> Result<Json<Value>> {
+    a.clinical()?;
+    choice(&k, &["problem", "medication"])?;
+    if input.history_ids.is_empty() || input.history_ids.len() > 200 {
+        return Err(Error::Invalid("choose between 1 and 200 imported entries"));
+    }
+    let source_kind = if k == "problem" {
+        "medical_problem"
+    } else {
+        k.as_str()
+    };
+    let mut tx = db(&s)?.begin().await?;
+    list_lock(&mut tx, &a, p, &k).await?;
+    let (mut created, mut needs_review, mut already) = (Vec::new(), Vec::new(), 0u64);
+    let mut seen = std::collections::HashSet::new();
+    for h in input.history_ids {
+        if !seen.insert(h) {
+            continue;
+        }
+        let raw: Option<Value> = sqlx::query_scalar("SELECT source_data FROM historical_records WHERE tenant_id=$1 AND patient_id=$2 AND id=$3 AND kind=$4")
+            .bind(a.tenant_id)
+            .bind(p)
+            .bind(h)
+            .bind(source_kind)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let raw = raw.ok_or(Error::Invalid(
+            "source history kind or patient does not match",
+        ))?;
+        let linked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM clinical_entries WHERE tenant_id=$1 AND source_history_id=$2)")
+            .bind(a.tenant_id)
+            .bind(h)
+            .fetch_one(&mut *tx)
+            .await?;
+        if linked {
+            already += 1;
+            continue;
+        }
+        let content: Content =
+            serde_json::from_value(map_source(source_kind, &raw)?["content"].take())
+                .map_err(|_| Error::Invalid("imported entry could not be read"))?;
+        if content.validate().is_err() {
+            needs_review.push(h);
+            continue;
+        }
+        let e:Entry=sqlx::query_as("INSERT INTO clinical_entries(tenant_id,id,patient_id,kind,content,source_history_id,created_by,updated_by) VALUES($1,$2,$3,$4,$5,$6,$7,$7) RETURNING id,patient_id,kind,version,content,source_history_id,created_by,updated_by,created_at,updated_at").bind(a.tenant_id).bind(Uuid::new_v4()).bind(p).bind(&k).bind(json!(content)).bind(h).bind(a.sub).fetch_one(&mut *tx).await?;
+        revision(
+            &mut tx,
+            &a,
+            &e,
+            "Reconciled from previous system records after clinician review",
+        )
+        .await?;
+        crate::postgres::audit(&mut tx, &a, "patient.clinical.create", p).await?;
+        created.push(e);
+    }
+    if !created.is_empty() {
+        invalidate(&mut tx, &a, p, &k).await?;
+    }
+    tx.commit().await?;
+    Ok(Json(
+        json!({"created":created,"already_reconciled":already,"needs_review":needs_review}),
+    ))
 }

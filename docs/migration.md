@@ -28,23 +28,60 @@ export. Output is written atomically with mode 0600, never overwriting a file.
 It does not fetch document bytes, complete labs, claims, messages, eRx-network state
 or all source system modules. Every package declares its limitations explicitly.
 
-The owner uploads the package under **Data migration**. The GUI creates a job,
-stages batches (up to 50 records within 64KiB), and reconciles declared counts,
-patient references, MRN collisions and external identities. It shows the report
-before a separate **Import reconciled history** action. The commit requires the
+The owner uploads the package under **Data import**. The page creates a job,
+stages batches (up to 50 records within 64KiB), and checks declared counts,
+patient references, MRN collisions and external identities. It shows the result
+before a separate **Import records** action. The commit requires the
 current SHA-256 digest of the manifest and ordered records. Changed source data
 within a snapshot or against an existing source mapping blocks import; exact
 retries and re-imports are idempotent. Source updates need a future explicit
 reconciliation/correction workflow, not blind overwrite.
 
-Patients become native demographics. Other domains are immutable source history,
+### Patients who already have a chart
+
+Checking a job compares every staged patient that has no link from an earlier
+import with the clinic's existing charts, using normalized names (accents folded,
+letters only, lower case; first given name) and the birth date:
+
+| Result | Meaning | Before import |
+|---|---|---|
+| New chart | No existing chart is similar | Nothing to decide |
+| Matches a chart you already have | Exactly one chart with the same family name, first given name and birth date, and no other candidate | **Attach to this chart** is pre-selected; the owner can switch to **Create a new chart** |
+| Possible match | A weaker match (family name with the same first initial, or the same first given name, on that birth date) or more than one candidate | The owner must choose a chart or a new chart |
+| Already imported | An earlier import linked this patient | Records follow that link |
+
+The decisions are stored with the job (`patient_decisions`) and recorded through
+`POST /api/v1/migrations/{id}/patient-decisions`. Import is refused while any
+matching patient has no decision, or when a chosen chart is no longer a candidate.
+Attaching creates the patient link inside the import transaction with a
+`migration.patient_attach` audit event, and every record of that patient lands on
+the existing chart. The chart's name, birth date, MRN and contact details are not
+changed. One chart takes the records of one imported patient. There is still no
+patient merge: two charts that already exist stay separate.
+
+A chart created by the import gets the address, phone, email, administrative sex
+and language of the staged patient as its own contact details, attributed to the
+import in the contact history. Values the contact profile would reject are left
+out one by one. For an attached chart nothing is written; the imported records show
+a **From previous system** block with **Use this** beside each field the chart
+does not have yet. A filled field is never replaced.
+
+Patients become charts. Other domains are immutable source history,
 with `signature_origin=external_unverified` and
 `release_policy=staff_only_pending_review`. The chart exposes these records to
 staff separately from newly authored notes. No source note becomes a newly signed
 native encounter; no history is automatically released to the patient portal.
 Problems/allergies/medications can now be explicitly reconciled into native list
 entries by a clinician, with immutable links to source history; see
-[clinical workflow](clinical.md). Other archival rows remain read-only.
+[clinical workflow](clinical.md). Structured source codes (ICD-10-CM, SNOMED CT,
+RxNorm, NDC) are carried into the native entry; other code systems stay as text in
+its notes. **Reconcile all** on a patient's imported problems, and separately
+medications, accepts the reviewed list in one action; each entry still gets its
+own source link and attributed revision, entries that share a name with one
+already on the list are left for individual review, and entries that are not valid
+as they stand are handed back. An imported insurance record offers **Add as
+coverage**, which pre-fills the coverage form for staff to confirm and save;
+nothing is created automatically. Other archival rows remain read-only.
 Directory entries can be preserved but are not native identity accounts. Recognizing
 a kind name in the preservation schema does not implement that domain's workflow.
 
@@ -65,11 +102,11 @@ outside the repository. Run it with `python3 -I`.
 
 | C-CDA section | Imported as |
 |---|---|
-| Record target | `patient` (name, birth date, generated `IM-` MRN); other demographics as `form` |
-| Problems, Medications, Allergies | `medical_problem`, `medication`, `allergy` with the fields clinician reconciliation reads |
+| Record target | `patient` (name, birth date, generated `IM-` MRN, structured contact details); everything else the previous system held as `form` |
+| Problems, Medications, Allergies | `medical_problem`, `medication`, `allergy` with the fields and codes clinician reconciliation reads |
 | Encounters, Clinical Notes, Vital Signs | `encounter`, `soap_note`, `vital` |
 | Immunizations, Results, Procedures | `immunization`, `lab_result`, `procedure` |
-| Insurance Providers, Reason for Referral | `insurance`, `referral` |
+| Insurance Providers, Reason for Referral | `insurance` (with the coverage form's fields), `referral` |
 | Every other section with content | `form`: attributed read-only narrative with its coded entries |
 
 Source codes (SNOMED CT, RxNorm, NDC, ICD-10-CM, LOINC, CVX, CPT) are kept on each
@@ -81,32 +118,29 @@ produces identical records; a later document of the same patient supersedes an
 earlier version of the same entry. Likely test records are excluded by name and
 listed in the private index; `--keep-test-patients` and `--exclude P07` override.
 
-Patients are matched to existing charts by source identifier only. There is no
-name or birth date matching and no patient merge: a person who was already
-registered by hand is imported as a second chart. Before staging, run the
-generated read-only `match-query.sql` against the database; it compares salted
-SHA-256 hashes of normalized family name, first given name and birth date and
-returns matching hashes without names. Passing those hashes back with `--matches`
-moves the matched patients into `package-held-matches.json`. With
-`hash,existing_patient_id` lines the tool also writes `link-existing-patients.sql`,
-which records the reviewed identity in `source_identifiers` with the record digest
-the importer expects; after it runs, importing the held package attaches the
-history to the existing chart and creates no patient. That link is a reviewed
-operator database change, not an application feature.
+Every patient in the export is staged. Whether a patient already has a chart is
+decided on the Data import page as described above, so no database change is
+needed before staging. The generated read-only `match-query.sql` is an optional
+pre-check: it compares salted SHA-256 hashes of normalized family name, first
+given name and birth date and returns matching hashes without names, which tells
+you beforehand how many patients the page will ask about.
 
-`import_ccda.py attach` uploads the files in each archive to the imported patient
-through the patient documents route once the import is committed, with a request
-identifier derived from the file so a retry never stores a second copy. PDF, PNG
-and JPEG are sent unchanged. HEIC photos and JPEG files without a proper end
-marker are re-encoded to JPEG with the macOS `sips` tool; HTML is stored as plain
-text. `--dry-run` converts and validates without sending anything. Uploading
-needs `SUNCHARTS_ACCESS_TOKEN`, an OAuth access token with `clinical.read` and
-`clinical.write` granted by an owner or clinician. Linked patients need
-`--patient-map`.
+`import_ccda.py attach --job-id <job>` uploads the files in each archive through
+the patient documents route once the import is committed. It asks
+`GET /api/v1/migrations/{id}/patient-links` (owner only) where each source patient
+went, so files reach attached charts and new charts alike without a hand-written
+patient map. Each upload carries a request identifier derived from the file so a
+retry never stores a second copy. PDF, PNG and JPEG are sent unchanged. HEIC photos
+and JPEG files without a proper end marker are re-encoded to JPEG with the macOS
+`sips` tool; HTML is stored as plain text. `--dry-run` converts and validates
+without sending anything. Uploading needs `SUNCHARTS_ACCESS_TOKEN`, an OAuth access
+token granted by the owner with `migration.manage`, `clinical.read` and
+`clinical.write`.
 
 Imported history cannot be removed: `historical_records` rejects updates and
 deletes, a stored document can only be marked archived or entered in error, no
-route deletes a patient, and there is no rollback route. Take a database backup first; restoring it is the only undo. A wrongly
+route deletes a patient, a patient link cannot be undone, and there is no rollback
+route. Take a database backup first; restoring it is the only undo. A wrongly
 created chart can only be archived. The chart lists at most 100 imported
 records per patient.
 

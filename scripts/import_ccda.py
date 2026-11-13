@@ -9,17 +9,20 @@ extracting or changing it and writes, into a private 0700 work directory:
   package.json          {"manifest", "items"} for Data import / POST /api/v1/migrations
   batches/              manifest.json plus batch-NNNN.json bodies for .../items
   patient-index.json    P01.. labels to archives (contains patient data)
-  match-hashes.json     salted SHA-256 identity hashes, and match-query.sql
+  match-hashes.json     salted SHA-256 identity hashes, and match-query.sql (optional pre-check)
   attachments.json      per-file upload plan (contains patient data)
   report.json           counts only; the same report is printed
 
 `attach` uploads the planned files to already imported patients through
-POST /api/v1/patients/{id}/documents. Nothing else in this tool uses the network.
+POST /api/v1/patients/{id}/documents, finding each patient's chart through the
+committed import job. Nothing else in this tool uses the network.
 
 Only the printed report is free of patient data. Everything else stays in the work
 directory and must never be committed. This is not a complete EHI import: patients
-become native demographics (name, birth date, MRN) and every other record is
-preserved as attributed, read-only source history.
+become charts (name, birth date, MRN and contact details), and every other record
+is preserved as attributed, read-only source history. Patients who look like an
+existing chart are matched on the Data import page, where the owner attaches them
+or creates a new chart.
 """
 import argparse
 import base64
@@ -655,7 +658,14 @@ def insurance(entry, narrative, stats, position=None):
             data = flat(title=title, plan=row.get("Insurance Plan") or plan, policy_id=policy_number, group_number=row.get("Insurance Group Number"),
                         relationship=relationship, subscriber=subscriber, priority=sequence.get("value") if sequence is not None else None,
                         effective=low, ended=high, coverage_type=display(policy.find(HL7 + "code")))
-            yield None, identity, data, flat(narrative=row or None, codes=codes, entry=xml_json(act, stats))
+            day = lambda value: value[:10] if value and re.fullmatch(r"\d{4}-\d{2}-\d{2}.*", value) else None  # noqa: E731
+            kin = next((native for word, native in RELATIONSHIPS if word in relationship.lower()), "other") if relationship else None
+            # The fields the coverage form asks for, so staff confirm rather than re-key.
+            coverage = flat(payer_name=title if title != "Insurance" else None, member_id=policy_number, group_number=data.get("group_number"),
+                            plan_name=data.get("plan"), subscriber_name=subscriber, relationship=kin,
+                            priority={"1": "primary", "2": "secondary", "3": "tertiary"}.get(data.get("priority")),
+                            effective_date=day(low), end_date=day(high))
+            yield None, identity, data, flat(narrative=row or None, codes=codes, coverage=coverage, entry=xml_json(act, stats))
 
 
 def results(entry, narrative, stats):
@@ -752,7 +762,58 @@ def patient_identity(root, stats):
     demographics.update({k: "; ".join(v) for k, v in contacts.items()})
     return {"id_root": identifier[0], "id": identifier[1], "given": given, "family": family, "birth": birth,
             "gender": patient.find(HL7 + "administrativeGenderCode").get("code") if patient is not None and patient.find(HL7 + "administrativeGenderCode") is not None else None,
-            "demographics": demographics}
+            "demographics": demographics, "contact": structured_contact(role, patient)}
+
+
+LANGUAGES = {"en": "English", "eng": "English", "es": "Spanish", "spa": "Spanish", "fr": "French", "fra": "French", "fre": "French",
+             "zh": "Chinese", "zho": "Chinese", "chi": "Chinese", "vi": "Vietnamese", "vie": "Vietnamese", "ar": "Arabic", "ara": "Arabic",
+             "ko": "Korean", "kor": "Korean", "ru": "Russian", "rus": "Russian", "de": "German", "deu": "German", "ger": "German",
+             "pt": "Portuguese", "por": "Portuguese", "it": "Italian", "ita": "Italian", "ja": "Japanese", "jpn": "Japanese",
+             "hi": "Hindi", "hin": "Hindi", "tl": "Tagalog", "tgl": "Tagalog", "pl": "Polish", "pol": "Polish", "ht": "Haitian Creole", "hat": "Haitian Creole"}
+SEXES = {"f": "female", "female": "female", "m": "male", "male": "male", "un": "other", "other": "other", "unk": "unknown", "unknown": "unknown"}
+COUNTRIES = {"USA": "US", "UNITED STATES": "US", "UNITED STATES OF AMERICA": "US"}
+RELATIONSHIPS = (("self", "self"), ("spouse", "spouse"), ("sps", "spouse"), ("husband", "spouse"), ("wife", "spouse"),
+                 ("child", "child"), ("son", "child"), ("daughter", "child"), ("chd", "child"))
+
+
+def structured_contact(role, patient):
+    """Contact details in the shape of the chart's own contact profile (src/demographics.rs).
+
+    Values the profile would reject are left out here; the unstructured demographics
+    record still shows everything the previous system held.
+    """
+    out, address = {}, role.find(HL7 + "addr")
+    if address is not None and not address.get("nullFlavor"):
+        lines = [clean(n.text) for n in address.findall(HL7 + "streetAddressLine") if clean(n.text)]
+        country = clean(address.findtext(HL7 + "country")).upper()
+        country = COUNTRIES.get(country, country)
+        parts = flat(line1=lines[0][:200] if lines else None, line2=", ".join(lines[1:])[:200] or None,
+                     city=clean(address.findtext(HL7 + "city"))[:100], region=clean(address.findtext(HL7 + "state"))[:100],
+                     postal_code=clean(address.findtext(HL7 + "postalCode"))[:32], country=country if re.fullmatch(r"[A-Z]{2}", country) else None)
+        if parts:
+            out["address"] = parts
+    phones, emails = [], []
+    for telecom in role.findall(HL7 + "telecom"):
+        scheme, _, rest = (telecom.get("value") or "").partition(":")
+        rest = clean(urllib.parse.unquote(rest))
+        if scheme == "tel" and re.fullmatch(r"[0-9+(). xX#-]{1,40}", rest) and re.search(r"[0-9]", rest):
+            phones.append(({"MC": 0, "HP": 1, "WP": 3}.get(telecom.get("use") or "", 2), len(phones), rest))
+        elif scheme == "mailto" and len(rest) <= 254 and re.fullmatch(r"[^@\s]+@[^@\s.][^@\s]*\.[^@\s.]+", rest):
+            emails.append(rest)
+    if phones:
+        out["phone"] = min(phones)[2]  # mobile, then home, then unlabelled, then work
+    if emails:
+        out["email"] = emails[0]
+    if patient is not None:
+        gender = patient.find(HL7 + "administrativeGenderCode")
+        sex = SEXES.get((gender.get("code") or "").lower()) or SEXES.get((gender.get("displayName") or "").lower()) if gender is not None else None
+        if sex:
+            out["administrative_gender"] = sex
+        language = patient.find(f"{HL7}languageCommunication/{HL7}languageCode")
+        code = clean(language.get("code")) if language is not None else ""
+        if code:
+            out["language"] = LANGUAGES.get(re.split(r"[-_]", code.lower())[0], code)[:100]
+    return out
 
 
 def looks_like_test(patient):
@@ -870,6 +931,8 @@ def identity_hashes(salt, family, given, birth):
 MATCH_SQL = """-- Read-only overlap check. Contains salted hashes only; keep it private all the same.
 -- v1 = family name + first given name + birth date; v2 = family name + first initial + birth date;
 -- v3 = first given name + birth date (catches a changed or misspelt family name; review by hand).
+-- Optional: it only tells you beforehand how many patients the Data import page will ask you
+-- to attach or create. The page does the matching itself; nothing here changes the database.
 BEGIN TRANSACTION READ ONLY;
 WITH staged(variant, hash) AS (VALUES
 {values}
@@ -888,7 +951,6 @@ WITH staged(variant, hash) AS (VALUES
   SELECT tenant_id, id, 'v3', encode(sha256(convert_to('{salt}|v3|' || giv || '|' || dob, 'UTF8')), 'hex') FROM existing
 )
 SELECT s.variant, s.hash, count(*) OVER (PARTITION BY s.variant) AS matches_for_variant
-     -- , h.id AS existing_patient_id   -- uncomment to build the --matches file (hash,existing_patient_id)
 FROM staged s JOIN hashed h USING (variant, hash)
 ORDER BY s.variant, s.hash;
 ROLLBACK;
@@ -947,13 +1009,12 @@ def new_stats():
             "skipped_files": collections.Counter()}
 
 
-def collect(export_dir, source_instance, revision, *, mrn_prefix="IM", keep_test=False, exclude_labels=(), salt=None, matches=None):
+def collect(export_dir, source_instance, revision, *, mrn_prefix="IM", keep_test=False, exclude_labels=(), salt=None):
     """Parse every archive. Returns (packages, private, report); only `report` is free of patient data."""
     stats = new_stats()
     salt = salt or secrets.token_hex(16)
-    matches = matches or {}
     archives = discover(export_dir, stats)
-    index, items, held, attachments, hashes = [], [], [], [], []
+    index, items, attachments, hashes = [], [], [], []
     section_presence = collections.defaultdict(collections.Counter)
     counters = collections.Counter()
     seen_patients = {}
@@ -1010,23 +1071,19 @@ def collect(export_dir, source_instance, revision, *, mrn_prefix="IM", keep_test
             pid = patient["id"]
             mrn = f"{mrn_prefix}-{hashlib.sha256((patient['id_root'] + ':' + pid).encode()).hexdigest()[:12].upper()}"
             entry["mrn"] = mrn
-            own_hashes = identity_hashes(salt, patient["family"], patient["given"], patient["birth"])
-            hashes.append({"label": label, **own_hashes})
-            matched = next((matches[h] for h in own_hashes.values() if h in matches), None)
-            if any(h in matches for h in own_hashes.values()):
-                entry["status"] = "held_matches_existing_patient"
-                entry["existing_patient_id"] = matched or None
-                counters["held_matches_existing_patient"] += 1
-            target = held if entry["status"].startswith("held") else items
+            hashes.append({"label": label, **identity_hashes(salt, patient["family"], patient["given"], patient["birth"])})
+            target = items
+            # `contact` fills a new chart's contact details; an existing chart is never overwritten.
             patient_item = {"kind": "patient", "source_id": pid, "patient_source_id": None,
                             "data": {"mrn": mrn, "given_name": patient["given"], "family_name": patient["family"], "birth_date": patient["birth"]},
-                            "source_data": flat(format="hl7-ccda", id_root=patient["id_root"], id=pid, administrative_gender=patient["gender"])}
+                            "source_data": flat(format="hl7-ccda", id_root=patient["id_root"], id=pid, administrative_gender=patient["gender"],
+                                                contact=patient["contact"] or None)}
             target.append(patient_item)
-            entry["patient_digest"] = item_digest(patient_item)
             merged = {}
             if patient["demographics"]:
                 merged[("form", "demographics")] = ("Demographics", dict(title="Demographics (previous record system)", **patient["demographics"]),
-                                                    {"format": "hl7-ccda", "section": "Demographics", "demographics": patient["demographics"]})
+                                                    flat(format="hl7-ccda", section="Demographics", demographics=patient["demographics"],
+                                                         contact=patient["contact"] or None))
             presence = {}
             for _, meta, records, doc_presence, _ in documents:
                 for name, state in doc_presence.items():
@@ -1078,7 +1135,7 @@ def collect(export_dir, source_instance, revision, *, mrn_prefix="IM", keep_test
                     stats["quality"]["duplicate_attachments_within_patient"] += 1
                     continue
                 file_hashes.add(plan["sha256"])
-                plan.update(label=label, archive=archive.name, patient_source_id=pid, mrn=mrn, held=entry["status"].startswith("held"),
+                plan.update(label=label, archive=archive.name, patient_source_id=pid, mrn=mrn,
                             request_id=str(uuid.uuid5(UUID_NAMESPACE, f"{source_instance}|{pid}|{plan['sha256']}")))
                 attachments.append(plan)
         except (ImportProblem, zipfile.BadZipFile, OSError, UnicodeError) as error:
@@ -1093,30 +1150,36 @@ def collect(export_dir, source_instance, revision, *, mrn_prefix="IM", keep_test
             stats = totals
     if len(items) > MAX_JOB_ITEMS:
         raise ImportProblem("package exceeds the 100000 record job limit")
-    report = build_report(index, items, held, attachments, stats, section_presence, counters, per_patient_history)
+    report = build_report(index, items, attachments, stats, section_presence, counters, per_patient_history)
     limitations = [
         "Operator asserted a read-only source export; a frozen source was not independently verified.",
         "C-CDA health summaries only: sections the previous system left empty or did not export are absent.",
-        "Patients map to name, birth date and a generated MRN; other demographics, insurance and every clinical section are preserved as read-only source history.",
-        "Problems, medications and allergies need clinician reconciliation before they appear in the native lists; source codes are kept as text.",
+        "Patients who look like an existing chart are attached to it or created as new charts by the owner's decision before import.",
+        "New charts get name, birth date, a generated MRN and contact details; insurance and every clinical section are preserved as read-only source history.",
+        "Problems, medications and allergies need clinician reconciliation before they appear in the native lists; their source codes are carried over.",
         "Attached files are not part of this package and are uploaded separately as patient documents.",
     ]
 
-    def package(records):
-        counts = dict(sorted(collections.Counter(r["kind"] for r in records).items()))
-        counts.setdefault("patient", 0)
-        return {"manifest": {"source_instance": source_instance, "source_revision": revision, "expected_counts": counts,
-                             "consistency": "read_only_export", "limitations": limitations}, "items": records}
+    counts = dict(sorted(collections.Counter(r["kind"] for r in items).items()))
+    counts.setdefault("patient", 0)
+    package = {"manifest": {"source_instance": source_instance, "source_revision": revision, "expected_counts": counts,
+                            "consistency": "read_only_export", "limitations": limitations}, "items": items}
     private = {"index": index, "hashes": {"salt": salt, "normalization": "accents folded, ASCII letters only, lower case; first given name; birth date YYYY-MM-DD", "patients": hashes},
                "attachments": attachments}
-    return {"package": package(items), "held": package(held) if held else None}, private, report
+    return {"package": package}, private, report
 
 
-def build_report(index, items, held, attachments, stats, section_presence, counters, per_patient_history):
+def build_report(index, items, attachments, stats, section_presence, counters, per_patient_history):
     statuses = collections.Counter(e["status"] for e in index)
-    included = statuses["imported"] + statuses["held_matches_existing_patient"]
+    included = statuses["imported"]
     coverage, fields = {}, {}
-    for item in items + held:
+    contact = collections.Counter()
+    for item in items:
+        if item["kind"] == "patient":
+            contact.update(item["source_data"].get("contact", {}).keys())
+        if item["kind"] == "insurance":
+            contact.update("coverage_" + key for key in item["source_data"].get("coverage", {}))
+    for item in items:
         present = fields.setdefault(item["kind"], collections.Counter())
         present["records"] += 1
         present.update(item["data"].keys())
@@ -1146,12 +1209,11 @@ def build_report(index, items, held, attachments, stats, section_presence, count
                           "import_kind": dict((v[0], v[1]) for v in SECTIONS.values()).get(name, "form")}
     return {
         "archives": len(index), "patients_parsed": len(index) - statuses["failed"], "patients_staged": statuses["imported"],
-        "patients_held_as_existing_matches": statuses["held_matches_existing_patient"],
         "patients_excluded_as_test_records": statuses["excluded_test_record"], "patients_excluded_by_operator": statuses["excluded_by_operator"],
         "patients_failed": statuses["failed"], "failure_reasons": dict(collections.Counter(e.get("reason") for e in index if e["status"] == "failed")),
         "patients_with_several_documents": counters["patients_with_several_documents"], "documents": sum(e["documents"] for e in index),
         "staged_counts": dict(sorted(collections.Counter(i["kind"] for i in items).items())),
-        "held_counts": dict(sorted(collections.Counter(i["kind"] for i in held).items())),
+        "structured_fields": dict(sorted(contact.items())),
         "sections": sections, "code_coverage": {k: dict(sorted(v.items())) for k, v in sorted(coverage.items())},
         "field_coverage": {k: dict(sorted(v.items())) for k, v in sorted(fields.items())},
         "sections_kept_as_narrative_only": dict(stats["narrative_only_by_section"]), "skipped_files": dict(stats["skipped_files"]),
@@ -1211,12 +1273,10 @@ def dump(value):
 
 
 def write_outputs(work, packages, private, report, source_instance):
-    for name, package in (("package.json", packages["package"]), ("package-held-matches.json", packages["held"])):
-        if package is None:
-            if (work / name).exists():
-                (work / name).unlink()
-            continue
-        write_private(work / name, json.dumps(package, ensure_ascii=False) + "\n")
+    write_private(work / "package.json", json.dumps(packages["package"], ensure_ascii=False) + "\n")
+    for stale in ("package-held-matches.json", "link-existing-patients.sql"):  # outputs of earlier versions
+        if (work / stale).exists():
+            (work / stale).unlink()
     folder = work / "batches"
     folder.mkdir(mode=0o700, exist_ok=True)
     for stale in folder.glob("batch-*.json"):
@@ -1232,14 +1292,6 @@ def write_outputs(work, packages, private, report, source_instance):
     values = ",\n".join(f"  ('{variant}', '{row[variant]}')" for row in private["hashes"]["patients"] for variant in ("v1", "v2", "v3"))
     write_private(work / "match-query.sql", MATCH_SQL.format(values=values or "  ('v1', '')", salt=private["hashes"]["salt"], fold_from=FOLD_FROM, fold_to=FOLD_TO))
     write_private(work / "attachments.json", dump(private["attachments"]))
-    links = [e for e in private["index"] if e.get("existing_patient_id")]
-    if links:
-        rows = ",\n".join(f"  (:'tenant_id'::uuid, '{source_instance}', 'patient', '{e['patient_source_id']}', '{uuid.UUID(e['existing_patient_id'])}'::uuid, '{e['patient_digest']}')" for e in links)
-        write_private(work / "link-existing-patients.sql",
-                      "-- Operator-reviewed identity links. Run once, inside a transaction, before staging package-held-matches.json.\n"
-                      "-- psql -v tenant_id=<practice tenant uuid> -f link-existing-patients.sql\n"
-                      "BEGIN;\nINSERT INTO source_identifiers (tenant_id, source_instance, kind, source_id, target_id, source_digest) VALUES\n"
-                      + rows + ";\nCOMMIT;\n")
     write_private(work / "report.json", dump(report))
 
 
@@ -1272,15 +1324,10 @@ class Api:
         except (urllib.error.URLError, ValueError):
             raise ImportProblem("connection failed or returned an unexpected response") from None
 
-    def patients_by_mrn(self):
-        found, after = {}, None
-        while True:
-            page = self.call("GET", "/api/v1/patients" + (f"?after={after}" if after else ""))
-            for patient in page["items"]:
-                found[patient["mrn"]] = patient["id"]
-            after = page.get("next_cursor")
-            if not after:
-                return found
+    def patient_links(self, job_id):
+        """Source patient id to chart id for a committed import, new and attached charts alike."""
+        page = self.call("GET", f"/api/v1/migrations/{uuid.UUID(job_id)}/patient-links")
+        return {link["source_patient_id"]: str(uuid.UUID(link["patient_id"])) for link in page["items"]}
 
 
 class TextOnly(html.parser.HTMLParser):
@@ -1354,10 +1401,9 @@ def prepare_upload(plan, raw, work):
             "content": {"title": title, "category": plan["category"], "document_date": None, "visit_id": None, "notes": note, "status": "active"}}
 
 
-def attach(export_dir, work, api, *, patient_map=None, dry_run=False, only_label=None):
+def attach(export_dir, work, api, *, job_id=None, dry_run=False, only_label=None):
     plans = json.loads((work / "attachments.json").read_text(encoding="utf-8"))
-    patient_map = dict(patient_map or {})
-    by_mrn = None if dry_run else api.patients_by_mrn()
+    charts = {} if dry_run else api.patient_links(job_id)
     outcome, log = collections.Counter(), []
     for plan in plans:
         if only_label and plan["label"] != only_label:
@@ -1370,7 +1416,7 @@ def attach(export_dir, work, api, *, patient_map=None, dry_run=False, only_label
             if dry_run:
                 result["status"] = "ready"
             else:
-                patient = patient_map.get(plan["patient_source_id"]) or by_mrn.get(plan["mrn"])
+                patient = charts.get(plan["patient_source_id"])
                 if not patient:
                     raise ImportProblem("patient is not imported yet")
                 result["document_id"] = api.call("POST", f"/api/v1/patients/{uuid.UUID(patient)}/documents", body)["id"]
@@ -1385,18 +1431,6 @@ def attach(export_dir, work, api, *, patient_map=None, dry_run=False, only_label
 
 # --- command line ---------------------------------------------------------------------------
 
-def read_matches(path):
-    matches = {}
-    for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines():
-        fields = [f.strip() for f in re.split(r"[,|\t]", line) if f.strip()]
-        fields = [f for f in fields if re.fullmatch(r"[0-9a-f]{64}", f) or re.fullmatch(r"[0-9a-fA-F-]{36}", f)]
-        hashes = [f for f in fields if len(f) == 64]
-        ids = [f for f in fields if len(f) == 36]
-        for value in hashes:
-            matches[value] = str(uuid.UUID(ids[0])) if ids else ""
-    return matches
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1408,13 +1442,12 @@ def main(argv=None):
     pack.add_argument("--mrn-prefix", default="IM")
     pack.add_argument("--keep-test-patients", action="store_true")
     pack.add_argument("--exclude", action="append", default=[], metavar="LABEL", help="leave out a patient by index label, e.g. P07")
-    pack.add_argument("--matches", help="file of matching hashes from match-query.sql, optionally 'hash,existing_patient_id' per line")
     pack.add_argument("--confirm-source-read-only", action="store_true", required=True)
     send = commands.add_parser("attach", help="upload planned files as patient documents after the import is committed")
     send.add_argument("--export-dir", required=True)
     send.add_argument("--work-dir", required=True)
     send.add_argument("--api-base", help="https://... base of the SunCharts EHR; token is read from SUNCHARTS_ACCESS_TOKEN")
-    send.add_argument("--patient-map", help="JSON object of source patient id to existing patient id, for linked patients")
+    send.add_argument("--job-id", help="ID of the committed import job; each patient's chart is looked up through it")
     send.add_argument("--only", metavar="LABEL")
     send.add_argument("--dry-run", action="store_true", help="convert and validate without sending anything")
     args = parser.parse_args(argv)
@@ -1427,15 +1460,13 @@ def main(argv=None):
             if (work / "match-hashes.json").exists():
                 salt = json.loads((work / "match-hashes.json").read_text(encoding="utf-8")).get("salt")
             packages, private, report = collect(args.export_dir, args.source_instance, args.source_revision, mrn_prefix=args.mrn_prefix,
-                                                keep_test=args.keep_test_patients, exclude_labels=set(args.exclude), salt=salt,
-                                                matches=read_matches(args.matches) if args.matches else None)
+                                                keep_test=args.keep_test_patients, exclude_labels=set(args.exclude), salt=salt)
             write_outputs(work, packages, private, report, args.source_instance)
         else:
-            if not args.dry_run and not args.api_base:
-                raise ImportProblem("--api-base is required unless --dry-run is given")
+            if not args.dry_run and not (args.api_base and args.job_id):
+                raise ImportProblem("--api-base and --job-id are required unless --dry-run is given")
             api = None if args.dry_run else Api(args.api_base, os.environ.get("SUNCHARTS_ACCESS_TOKEN"))
-            patient_map = json.loads(pathlib.Path(args.patient_map).read_text(encoding="utf-8")) if args.patient_map else None
-            report = {"attachments": attach(args.export_dir, work, api, patient_map=patient_map, dry_run=args.dry_run, only_label=args.only)}
+            report = {"attachments": attach(args.export_dir, work, api, job_id=args.job_id, dry_run=args.dry_run, only_label=args.only)}
     except (ImportProblem, OSError, ValueError) as error:
         parser.exit(1, f"Import preparation failed: {error if isinstance(error, ImportProblem) else type(error).__name__}\n")
     print(json.dumps(report, indent=1, sort_keys=True))  # counts only; never patient data

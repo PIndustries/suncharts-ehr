@@ -4,6 +4,7 @@ import base64
 import contextlib
 import hashlib
 import http.server
+import io
 import json
 import os
 import pathlib
@@ -117,8 +118,11 @@ def document(patient_id="1001", given="Avery", family="Synthetic", birth="199001
     return (f"<?xml version='1.0' encoding='UTF-8'?><ClinicalDocument xmlns='urn:hl7-org:v3'><id root='2.16.999.19' extension='{doc_id}'/>"
             f"<title>Synthetic Clinic: Health Summary</title><effectiveTime value='{effective}'/>"
             f"<recordTarget><patientRole><id root='{SOURCE_ROOT}' extension='{patient_id}'/><id root='2.16.840.1.113883.4.1' extension='000-00-0000'/>{extra_ids}"
-            "<addr><streetAddressLine>1 Synthetic Way</streetAddressLine><city>Testville</city></addr><telecom use='MC' value='tel:+1-555-0100'/>"
-            f"<patient><name use='L'><given>{given}</given><given>Q</given><family>{family}</family></name><administrativeGenderCode code='F' displayName='Female'/>{birth_xml}</patient>"
+            "<addr><streetAddressLine>1 Synthetic Way</streetAddressLine><streetAddressLine>Suite 2</streetAddressLine><city>Testville</city><state>TX</state>"
+            "<postalCode>75000</postalCode><country>USA</country></addr><telecom use='WP' value='tel:+1-555-0199'/><telecom use='MC' value='tel:+1-555-0100'/>"
+            "<telecom value='mailto:synthetic.patient@example.test'/><telecom value='mailto:not an address'/>"
+            f"<patient><name use='L'><given>{given}</given><given>Q</given><family>{family}</family></name><administrativeGenderCode code='F' displayName='Female'/>{birth_xml}"
+            "<languageCommunication><languageCode code='es-US'/></languageCommunication></patient>"
             "</patientRole></recordTarget><custodian><assignedCustodian><representedCustodianOrganization><name>Synthetic Clinic</name>"
             f"</representedCustodianOrganization></assignedCustodian></custodian><component><structuredBody>{body}</structuredBody></component></ClinicalDocument>").encode()
 
@@ -215,9 +219,36 @@ class PackageTest(unittest.TestCase):
             self.assertEqual(note["data"]["note"], "Synthetic progress note line one.\nLine two.")
             self.assertEqual(note["source_data"]["source_encounter"], f"{SOURCE_ROOT}:enc-1")
             self.assertEqual(by("insurance")["data"]["policy_id"], "SYN-MEMBER-1")
+            # What "Add as coverage" pre-fills, in the coverage form's own field names.
+            self.assertEqual(by("insurance")["source_data"]["coverage"], {
+                "payer_name": "Synthetic Payer", "member_id": "SYN-MEMBER-1", "group_number": "SYN-GROUP", "plan_name": "Synthetic PPO",
+                "relationship": "self", "priority": "primary", "effective_date": "2023-01-01"})
             self.assertEqual(by("lab_result")["source_data"]["codes"][0]["code"], "2345-7")
             self.assertTrue(by("procedure")["source_id"].startswith("1001/47519-4/sha256:"))
             self.assertEqual(by("referral")["data"]["reasons"], "ICD-10-CM G80.1 (Synthetic spasticity)")
+
+    def test_contact_details_are_structured_for_the_chart_and_kept_beside_the_history(self):
+        with Export() as fixture:
+            packages, _, report = fixture.standard().collect()
+            items = packages["package"]["items"]
+            contact = {"address": {"line1": "1 Synthetic Way", "line2": "Suite 2", "city": "Testville", "region": "TX", "postal_code": "75000", "country": "US"},
+                       "phone": "+1-555-0100", "email": "synthetic.patient@example.test", "administrative_gender": "female", "language": "Spanish"}
+            patient = next(i for i in items if i["kind"] == "patient" and i["source_id"] == "1001")
+            self.assertEqual(patient["source_data"]["contact"], contact)
+            self.assertEqual(set(patient["data"]), {"mrn", "given_name", "family_name", "birth_date"})
+            # The same block rides on the read-only demographics record, for charts that already existed.
+            form = next(i for i in items if i["source_id"] == "1001/demographics")
+            self.assertEqual(form["source_data"]["contact"], contact)
+            self.assertEqual(report["structured_fields"]["phone"], 2)
+            self.assertEqual(report["structured_fields"]["coverage_member_id"], 2)
+
+    def test_contact_values_the_chart_would_reject_are_left_out(self):
+        role = import_ccda.parse_xml(
+            b"<patientRole xmlns='urn:hl7-org:v3'><addr><city>Testville</city><country>Atlantis</country></addr>"
+            b"<telecom value='tel:call the neighbour'/><telecom use='HP' value='tel:(555)%20555-0101'/><telecom value='mailto:a@b'/>"
+            b"<patient><administrativeGenderCode code='X'/><languageCommunication><languageCode code='tlh'/></languageCommunication></patient></patientRole>")
+        contact = import_ccda.structured_contact(role, role.find(import_ccda.HL7 + "patient"))
+        self.assertEqual(contact, {"address": {"city": "Testville"}, "phone": "(555) 555-0101", "language": "tlh"})
 
     def test_sections_without_a_kind_become_attributed_narrative_and_placeholders_are_skipped(self):
         with Export() as fixture:
@@ -333,8 +364,7 @@ class ImporterFixtureTest(unittest.TestCase):
             packages, private, _ = fixture.standard().collect()
             plan = next(p for p in private["attachments"] if p["member"] == "note.html")
             upload = import_ccda.prepare_upload(plan, HTML, fixture.work)
-        digests = {e["patient_source_id"]: e["patient_digest"] for e in private["index"] if e.get("patient_digest")}
-        text = json.dumps(dict(packages["package"], patient_digests=digests, document_upload=upload), ensure_ascii=False, indent=1, sort_keys=True) + "\n"
+        text = json.dumps(dict(packages["package"], document_upload=upload), ensure_ascii=False, indent=1, sort_keys=True) + "\n"
         if os.environ.get("UPDATE_CCDA_FIXTURE"):
             FIXTURE.write_text(text, encoding="utf-8")
         self.assertEqual(FIXTURE.read_text(encoding="utf-8"), text)
@@ -351,21 +381,23 @@ class IdentityTest(unittest.TestCase):
         self.assertEqual(base["v3"], identity_hashes("salt", "Married", "Avery", "1990-01-01")["v3"])
         self.assertNotEqual(base, identity_hashes("pepper", "O'Synthetic-Example", "Avery Q", "1990-01-01"))
 
-    def test_matched_patients_are_held_back_with_a_link_plan(self):
+    def test_every_patient_is_staged_and_the_overlap_check_stays_read_only(self):
+        """Matching to existing charts is decided on the Data import page, not held back here."""
         with Export() as fixture:
             fixture.standard()
-            hashes = identity_hashes("00" * 16, "Example", "Blake", "1985-12-31")
-            existing = "11111111-2222-4333-8444-555555555555"
-            (fixture.work / "matches.csv").write_text(f"v1,{hashes['v1']},{existing}\n")
-            matches = import_ccda.read_matches(fixture.work / "matches.csv")
-            packages, private, report = fixture.collect(matches=matches)
-            self.assertEqual((report["patients_staged"], report["patients_held_as_existing_matches"]), (1, 1))
-            self.assertEqual({i["patient_source_id"] or i["source_id"] for i in packages["package"]["items"]}, {"1001"})
-            self.assertEqual({i["patient_source_id"] or i["source_id"] for i in packages["held"]["items"]}, {"2002"})
+            (fixture.work / "package-held-matches.json").write_text("{}")
+            (fixture.work / "link-existing-patients.sql").write_text("-- stale")
+            packages, private, report = fixture.collect()
+            self.assertEqual(set(packages), {"package"})
+            self.assertEqual({i["source_id"] for i in packages["package"]["items"] if i["kind"] == "patient"}, {"1001", "2002"})
+            self.assertNotIn("patients_held_as_existing_matches", report)
             import_ccda.write_outputs(fixture.work, packages, private, report, "synthetic-emr")
-            link = (fixture.work / "link-existing-patients.sql").read_text()
-            held_patient = packages["held"]["items"][0]
-            self.assertIn(f"'synthetic-emr', 'patient', '2002', '{existing}'::uuid, '{import_ccda.item_digest(held_patient)}'", link)
+            self.assertFalse((fixture.work / "package-held-matches.json").exists() or (fixture.work / "link-existing-patients.sql").exists())
+            sql = (fixture.work / "match-query.sql").read_text()
+            self.assertIn("BEGIN TRANSACTION READ ONLY", sql)
+            self.assertIn(identity_hashes("00" * 16, "Example", "Blake", "1985-12-31")["v1"], sql)
+            self.assertNotIn("INSERT", sql.upper())
+            self.assertNotIn("source_identifiers", sql)
 
     def test_digest_matches_the_importer_serialization(self):
         item = {"kind": "patient", "source_id": "p\"1", "patient_source_id": None,
@@ -376,7 +408,7 @@ class IdentityTest(unittest.TestCase):
 
 
 class Stub(http.server.BaseHTTPRequestHandler):
-    uploads, patients = [], []
+    uploads, links, requests = [], [], []
 
     def log_message(self, *_):
         pass
@@ -392,7 +424,8 @@ class Stub(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.headers.get("Authorization") != "Bearer synthetic-token":
             return self.reply({}, 401)
-        self.reply({"items": Stub.patients, "next_cursor": None})
+        Stub.requests.append(self.path)
+        self.reply({"items": Stub.links})
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -423,8 +456,10 @@ class AttachmentTest(unittest.TestCase):
             fixture.standard()
             packages, private, report = fixture.collect()
             import_ccda.write_outputs(fixture.work, packages, private, report, "synthetic-emr")
-            mrn = private["index"][0]["mrn"]
-            Stub.uploads, Stub.patients = [], [{"id": "aaaaaaaa-0000-4000-8000-000000000001", "mrn": mrn}]
+            job = "bbbbbbbb-0000-4000-8000-000000000002"
+            # The committed job says where each imported patient went, whether the chart was new or attached.
+            Stub.uploads, Stub.requests = [], []
+            Stub.links = [{"source_patient_id": "1001", "patient_id": "aaaaaaaa-0000-4000-8000-000000000001"}]
             server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Stub)
             threading.Thread(target=server.serve_forever, daemon=True).start()
             try:
@@ -433,8 +468,8 @@ class AttachmentTest(unittest.TestCase):
                 convert = lambda raw, suffix, work: JPEG
                 original, import_ccda.to_jpeg = import_ccda.to_jpeg, convert
                 try:
-                    first = import_ccda.attach(fixture.export, fixture.work, api)
-                    again = import_ccda.attach(fixture.export, fixture.work, api)
+                    first = import_ccda.attach(fixture.export, fixture.work, api, job_id=job)
+                    again = import_ccda.attach(fixture.export, fixture.work, api, job_id=job)
                 finally:
                     import_ccda.to_jpeg = original
             finally:
@@ -442,6 +477,10 @@ class AttachmentTest(unittest.TestCase):
                 server.server_close()
             self.assertEqual(first, {"uploaded": 6})
             self.assertEqual(first, again)
+            self.assertEqual(Stub.requests, [f"/api/v1/migrations/{job}/patient-links"] * 2)
+            Stub.links = []
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                import_ccda.main(["attach", "--export-dir", str(fixture.export), "--work-dir", str(fixture.work), "--api-base", "https://example.invalid"])
             self.assertIn("ready", "".join(ready))
             bodies = [body for _, body in Stub.uploads[:6]]
             self.assertEqual([body["request_id"] for _, body in Stub.uploads[6:]], [b["request_id"] for b in bodies])
