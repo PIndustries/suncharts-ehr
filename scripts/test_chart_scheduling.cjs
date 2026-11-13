@@ -2,6 +2,9 @@
 // Fixture-only checks: no browser or live server access.
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+// Staff display helpers load before every feature script, exactly as index.html loads them.
+{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
+
 const root=path.resolve(__dirname,'..');
 function fixture(){
  const nodes=new Map(),listeners=new Map(),calls=[];
@@ -83,7 +86,7 @@ async function main(){
  const entries=JSON.parse(JSON.stringify(h.evaluate('patientEncounterHistoryEntries()')));
  assert.deepEqual(entries.map(row=>row.visit?.id||row.appointment.id),['appointment-booked','visit-1','visit-complete','visit-orphan','appointment-unlinked'],'history sorts by service date instead of later signature date');
  const timeline=h.evaluate('patientAppointmentWorkspace()');
- assert.equal([...timeline.matchAll(/data-history-visit="visit-complete"/g)].length,1);assert.doesNotMatch(timeline,/data-history-appointment="appointment-complete"/);assert.match(timeline,/data-visit="visit-complete">Open completed encounter/);assert.match(timeline,/Completed · Signed encounter/);assert.match(timeline,/data-visit="visit-orphan"/);assert.match(timeline,/data-history-appointment="appointment-unlinked"/);assert.match(timeline,/No encounter record is linked/);assert.match(timeline,/data-check-in="appointment-booked"/);
+ assert.equal([...timeline.matchAll(/data-history-visit="visit-complete"/g)].length,1);assert.doesNotMatch(timeline,/data-history-appointment="appointment-complete"/);assert.match(timeline,/data-visit="visit-complete">Open completed encounter/);assert.match(timeline,/Completed · Signed/);assert.match(timeline,/data-visit="visit-orphan"/);assert.match(timeline,/data-history-appointment="appointment-unlinked"/);assert.match(timeline,/No visit note was started/);assert.match(timeline,/data-check-in="appointment-booked"/);
  h.c.me.role='read_only';assert.doesNotMatch(h.evaluate('patientAppointmentWorkspace()'),/data-check-in=|data-start=|data-chart-book=/);assert.match(h.evaluate('patientAppointmentWorkspace()'),/data-visit="visit-complete"/);assert.equal(h.calls.length,0,'history rendering performs no mutation or fetch');
  h.c.activeVisit=null;assert.match(h.evaluate('patientAppointmentWorkspace()'),/<details id="patient-encounter-history" open>/);
  console.log('PASS chart booking: full editor, pinned patient, actual provider, roles, no opening rerender, capture close, native POST, visit-preserving return and stale-context rejection');

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+// Staff display helpers load before every feature script, exactly as index.html loads them.
+{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
+
 const handlers={},nodes={},calls=[];
 const node=id=>nodes[id]??={id,dataset:{},innerHTML:'',hidden:false,scrollIntoView(){},querySelector(){return null;}};
 const old={id:'appointment-old',title:'Earlier signed office visit',starts_at:'2026-11-07T15:00:00Z',timezone:'America/Chicago',status:'completed',clinician_id:'owner'},next={id:'appointment-next',title:'Upcoming office visit',starts_at:'2026-11-12T15:00:00Z',timezone:'America/Chicago',status:'booked',clinician_id:'owner'};

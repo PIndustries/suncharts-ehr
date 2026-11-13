@@ -22,6 +22,9 @@ assert.match(claims,/Send claims, see payer responses and post insurance payment
 console.log('PASS Claim.MD is presented as a native revenue-cycle connection');
 
 const vm=require('node:vm');
+// Staff display helpers load before every feature script, exactly as index.html loads them.
+{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
+
 const context=vm.createContext({document:{addEventListener(){}},esc:value=>String(value??'').replaceAll('<','&lt;'),human:String,date:String});
 vm.runInContext(native,context);
 const claim={status:'adjudicated',snapshot:{account:{coverage_snapshot:{coverage:{id:'synthetic'}}}}};

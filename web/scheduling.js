@@ -11,7 +11,7 @@ function scheduleInstant(value){
  for(const delta of [-7200000,-3600000,-1800000,1800000,3600000,7200000])if(localTime(new Date(d.getTime()+delta).toISOString())===value)throw new Error('This local time occurs twice during a clock change. Use the API with an explicit UTC offset or choose another time.');
  return d.toISOString();
 }
-const scheduleLabel=s=>String(s).replaceAll('_',' ');
+const scheduleLabel=s=>typeof displayStatus==='function'?displayStatus(s):String(s).replaceAll('_',' ');
 function scheduleDayKey(value){return localTime(value.toISOString()).slice(0,10);}
 function scheduleCalendarDays(){
  const first=new Date(`${scheduleDate}T12:00:00`);first.setDate(1);first.setDate(first.getDate()-first.getDay());
@@ -148,15 +148,15 @@ function patientEncounterHistoryRows(limit,compact=false){
  const entries=patientEncounterHistoryEntries(),rows=Number.isInteger(limit)?entries.slice(0,limit):entries;
  return rows.map(({visit:v,appointment:a})=>{
   const providerId=a?.clinician_id||v?.clinician_id,provider=scheduleProviders.find(p=>p.id===providerId)?.label||(providerId===me.user_id?'You':'Assigned clinician');
-  const signed=v?.status==='signed',completed=a?.status==='completed',status=v?(signed?(completed?'Completed · Signed encounter':'Signed encounter'):'Encounter in progress'):scheduleLabel(a.status);
+  const signed=v?.status==='signed',completed=a?.status==='completed',status=v?(signed?(completed?'Completed · Signed':'Signed'):'In progress'):scheduleLabel(a.status);
   const when=a?.starts_at||v?.created_at||v?.signed_at;
   const action=v?`<button type="button" class="quiet" data-visit="${esc(v.id)}">${signed?'Open completed encounter':'Continue encounter'}</button>`:a.status==='booked'&&canSchedule()?`<button type="button" data-check-in="${esc(a.id)}">Check in</button>`:a.status==='checked_in'&&((typeof isRoomingStaff==='function'&&isRoomingStaff())||(['owner','clinician'].includes(me.role)&&a.clinician_id===me.user_id))?`<button type="button" class="primary" data-start="${esc(a.id)}">Start encounter</button>`:'';
-  return `<div class="${compact?'chart-history-row':'timeline-row encounter-history-row'}${v?.id===activeVisit?.id?' selected-encounter':''}" ${v?`data-history-visit="${esc(v.id)}"`:`data-history-appointment="${esc(a.id)}"`}><div><strong>${esc(a?.title||'Office visit')}</strong><small>${when?esc(date(when)):'Service date unavailable'} · ${esc(status)}</small>${compact?'':`<small>${esc(provider)}${a?.category?' · '+esc(a.category):''}${a?.facility?' · '+esc(a.facility):''}${a?.room?' · Room '+esc(a.room):''}</small>${!v&&['completed','in_progress'].includes(a.status)?'<small>No encounter record is linked to this appointment.</small>':''}${v?.id===activeVisit?.id?'<small>Selected encounter</small>':''}`}</div>${action}</div>`;
- }).join('')||'<p class="muted">No appointments or encounters recorded for this patient.</p>';
+  return `<div class="${compact?'chart-history-row':'timeline-row encounter-history-row'}${v?.id===activeVisit?.id?' selected-encounter':''}" ${v?`data-history-visit="${esc(v.id)}"`:`data-history-appointment="${esc(a.id)}"`}><div><strong>${esc(a?.title||'Office visit')}</strong><small>${when?esc(date(when)):'No date'} · ${esc(status)}</small>${compact?'':`<small>${esc(provider)}${a?.category?' · '+esc(a.category):''}${a?.facility?' · '+esc(a.facility):''}${a?.room?' · Room '+esc(a.room):''}</small>${!v&&['completed','in_progress'].includes(a.status)?'<small>No visit note was started for this appointment.</small>':''}${v?.id===activeVisit?.id?'<small>Selected encounter</small>':''}`}</div>${action}</div>`;
+ }).join('')||'<p class="muted">No visits or appointments yet.</p>';
 }
 function patientAppointmentWorkspace(){
  const count=patientEncounterHistoryEntries().length;
- return `<section id="appointments-panel" class="panel patient-appointments patient-encounter-history"><div class="section-head"><div><h2>Encounter history</h2><p class="muted">Appointments and clinical encounters in one timeline.</p></div>${canSchedule()?`<button type="button" data-chart-book="${esc(selected)}">Book appointment</button>`:''}</div><details id="patient-encounter-history" ${activeVisit?'':'open'}><summary>${activeVisit?'Choose an appointment or encounter':'Appointments & encounters'} <span class="pill">${count} loaded</span></summary>${patientEncounterHistoryRows()}</details><div id="chart-booking-editor"></div></section>`;
+ return `<section id="appointments-panel" class="panel patient-appointments patient-encounter-history"><div class="section-head"><div><h2>Encounter history</h2></div>${canSchedule()?`<button type="button" data-chart-book="${esc(selected)}">Book appointment</button>`:''}</div><details id="patient-encounter-history" ${activeVisit?'':'open'}><summary>${activeVisit?'Other visits and appointments':'Visits and appointments'} <span class="pill">${count}</span></summary>${patientEncounterHistoryRows()}</details><div id="chart-booking-editor"></div></section>`;
 }
 async function openPatientAppointmentEditor(patientId){
  if(!canSchedule()||selected!==patientId)throw new Error('Open the patient chart before booking an appointment.');

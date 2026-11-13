@@ -2,6 +2,9 @@
 // Synthetic DOM fixtures; real browser acceptance is a separate check.
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
+// Staff display helpers load before every feature script, exactly as index.html loads them.
+{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
+
 const root=path.resolve(__dirname,'..');
 function fixture(){
  const nodes=new Map(),events=new Map(),pending=[];
@@ -18,12 +21,12 @@ async function main(){
  assert.match(f.node('visit-checkout').innerHTML,/Release after-visit summary/);
  assert.doesNotMatch(f.node('visit-checkout').innerHTML,/id="avs-delivery-form"|id="checkout-complete-form"/);
  f.run(`checkoutState.visit={...activeVisit,status:'in_progress'};renderVisitCheckoutContent()`);
- assert.match(f.node('visit-checkout').innerHTML,/Sign the encounter before/);assert.doesNotMatch(f.node('visit-checkout').innerHTML,/id="avs-release-form"/);
+ assert.match(f.node('visit-checkout').innerHTML,/Sign the note before/);assert.doesNotMatch(f.node('visit-checkout').innerHTML,/id="avs-release-form"/);
  for(const role of ['front_desk','read_only']){f.run(`me.role=${JSON.stringify(role)};checkoutState.visit=activeVisit;renderVisitCheckoutContent()`);assert.doesNotMatch(f.node('visit-checkout').innerHTML,/id="avs-release-form"/);}
  console.log('PASS unsigned encounters and role-protected AVS release');
  f=fixture();f.run(`checkoutState.current_avs={version:2,content:{instructions:'<script>unsafe()</script>',follow_up_instructions:'Call <clinic>'},snapshot:checkoutState.preview_snapshot,released_at:'2026-10-25T12:00:00Z'};checkoutState.releases=[checkoutState.current_avs];renderVisitCheckoutContent()`);
- let html=f.node('visit-checkout').innerHTML;assert.match(html,/&lt;script&gt;unsafe\(\)&lt;\/script&gt;/);assert.doesNotMatch(html,/<script>/);assert.match(html,/data-avs-version="2"/);assert.match(html,/Viewing or opening the print dialog does not record delivery/);assert.match(html,/checkout does not collect a payment/);
- f.run(`checkoutState.checkout={completed:true,checked_out_at:'2026-10-25T13:00:00Z'};renderVisitCheckoutContent()`);assert.match(f.node('visit-checkout').innerHTML,/type="submit" disabled>Complete administrative checkout/);
+ let html=f.node('visit-checkout').innerHTML;assert.match(html,/&lt;script&gt;unsafe\(\)&lt;\/script&gt;/);assert.doesNotMatch(html,/<script>/);assert.match(html,/data-avs-version="2"/);assert.match(html,/opening the print dialog does not record that the summary was given/);assert.match(html,/Checking out does not collect a payment/);
+ f.run(`checkoutState.checkout={completed:true,checked_out_at:'2026-10-25T13:00:00Z'};renderVisitCheckoutContent()`);assert.match(f.node('visit-checkout').innerHTML,/type="submit" disabled>Complete checkout/);
  console.log('PASS released summaries escaped and handoff/payment statuses independent');
  f=fixture();f.run(`checkoutDrafts.set(checkoutContext.key,{instructions:'Retained instruction edits',follow_up_instructions:'',version:1,digest:'old-digest'});checkoutState.version=2;renderVisitCheckoutContent()`);
  assert.match(f.node('visit-checkout').innerHTML,/Retained instruction edits/);assert.match(f.node('visit-checkout').innerHTML,/data-version="1" data-digest="old-digest"/);assert.match(f.node('visit-checkout').innerHTML,/data-checkout-rebase/);
@@ -33,7 +36,7 @@ async function main(){
  const sent=JSON.parse(JSON.stringify(f.context.calls[0]));assert.equal(sent.v,1);assert.equal(sent.b.reviewed_snapshot_digest,'old-digest');assert.equal(sent.b.reviewed,true);assert.equal(sent.p,'/api/v1/patients/patient-1/visits/visit-1/checkout/actions');
  console.log('PASS stale AVS edits retained with their original version and review digest');
  f=fixture();f.run(`followupAssignees=[{id:'staff-1',label:'Staff <unsafe>',role:'front_desk'}];checkoutState.followups=[{id:'task-1',patient_id:selected,visit_id:activeVisit.id,title:'Call <patient>',instructions:'Confirm follow-up',assignee_id:'staff-1',assignee_label:'Staff <unsafe>',due_date:'2026-10-24',status:'open',version:3,can_update:false}];renderVisitCheckoutContent()`);
- html=f.node('visit-checkout').innerHTML;assert.match(html,/Call &lt;patient&gt;/);assert.match(html,/Staff &lt;unsafe&gt;/);assert.doesNotMatch(html,/class="followup-action-form"/);assert.match(html,/Create assigned follow-up/);
+ html=f.node('visit-checkout').innerHTML;assert.match(html,/Call &lt;patient&gt;/);assert.match(html,/Staff &lt;unsafe&gt;/);assert.doesNotMatch(html,/class="followup-action-form"/);assert.match(html,/Add task/);
  console.log('PASS follow-up rendering respects task permissions and escapes clinical text');
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});

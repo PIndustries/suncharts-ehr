@@ -34,6 +34,7 @@ SECURITY_SOURCES = {
 }
 GLOBAL_UI_FILES = {
     "web/app.js",
+    "web/display-format.js",
     "web/index.html",
     "web/shell.js",
     "web/style.css",

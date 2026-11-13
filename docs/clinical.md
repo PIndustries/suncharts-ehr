@@ -25,10 +25,13 @@ unknown until explicitly reviewed; an empty allergy list is not an assertion of
 no known allergies. An empty native billing list does not establish that imported
 coverage, payments or balances do not exist.
 
-**Patients** returns to the patient directory. The directory stays visible when
-opening a chart; **Hide patients** and **Show patients** control its visibility.
+**Patients** returns to the patient directory. Opening a chart hides the directory
+so the visit has the full width; **Show patients** and **Hide patients** control its
+visibility, and the browser remembers that choice on the device.
 The directory initially shows active patients. Choose **Archived patients** or
-**All patients** to find a retained chart. **Archive patient** and **Restore patient**
+**All patients** to find a retained chart. **Archive this patient** is under the
+chart's **Patient record** menu; an archived chart shows **Restore patient** at the
+top. **Archive patient** and **Restore patient**
 require a reason and explicit confirmation from an owner, clinician or front-desk
 user with clinical edit access. Archiving never deletes or rewrites visits, files,
 signed notes, insurance claims or payments, and does not cancel appointments.

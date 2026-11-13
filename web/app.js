@@ -125,10 +125,12 @@ async function acceptConnectLaunch(){
  }finally{code=undefined;issuer=undefined;}
 }
 const connectLaunchAcceptance=acceptConnectLaunch();
-let chartSection='overview',encounterSection='documentation',patientDirectoryPreference=true;
+let chartSection='overview',encounterSection='documentation',patientDirectoryPreference=storedPatientDirectoryPreference(),patientLifecycleRevealed=false;
+// The patient list stays out of the way of an open chart unless this device asked to keep it.
+function storedPatientDirectoryPreference(){try{return localStorage.getItem('suncharts.patientDirectory.besideChart')==='shown';}catch{return false;}}
+function rememberPatientDirectoryPreference(visible){patientDirectoryPreference=Boolean(visible);try{localStorage.setItem('suncharts.patientDirectory.besideChart',visible?'shown':'hidden');}catch{}}
 let patientWorkspaceGeneration=0;
 function setPatientDirectoryVisible(visible){
- patientDirectoryPreference=Boolean(visible);
  $('clinical-workspace')?.classList.toggle('directory-collapsed',!visible);
  const button=$('toggle-directory');if(!button)return;
  button.textContent=visible?'Hide patients':'Show patients';
@@ -137,7 +139,7 @@ function setPatientDirectoryVisible(visible){
  button.setAttribute('aria-label',button.title);
 }
 function patientDirectoryLanding(){
- return '<section class="panel empty patient-directory-landing"><h2>Patient directory</h2><p>Select a patient to open their chart and encounter history.</p><p class="muted">Use the search to find a patient by name or medical record number.</p></section>';
+ return '<section class="panel empty patient-directory-landing"><h2>Patient directory</h2><p>Choose a patient from the list, or search by name or MRN.</p></section>';
 }
 // Unsaved clinical edits live only in this tab, isolated by encounter and patient.
 const visitDrafts=new Map();
@@ -274,7 +276,7 @@ function captureVisitDrafts(includeRooming=true){
 function updateDraftStatus(){
  const status=$('visit-draft-status');if(!status||!activeVisit)return;
  const draft=visitDrafts.get(activeVisit.id),parts=['note','vitals'].filter(k=>draft?.[k]);
- status.textContent=parts.length?`Unsaved ${parts.join(' and ')} edits retained in this tab. Save before closing or reloading.`:'Current note and vitals match the saved record.';
+ status.textContent=parts.length?`Unsaved ${parts.join(' and ')} edits retained in this tab. Save before closing or reloading.`:'';
  if(parts.some(k=>draft[k].version!==activeVisit.version))status.textContent+=' The saved encounter changed. Your edits are preserved; compare with the current record before saving.';
  if(parts.length)status.innerHTML+=' <button type="button" class="text-button" data-action="discard-visit-draft">Discard unsaved edits and use saved record</button>';
 }
@@ -326,7 +328,7 @@ function signInScreen() {
   if(typeof visitDiagnosisDrafts!=='undefined'){visitDiagnosisDrafts.clear();visitDiagnosisStates.clear();visitDiagnosisPending.clear();visitDiagnosisGeneration++;}
   if(typeof practiceAdminGeneration!=='undefined'){practiceAdminState=null;practiceAdminGeneration++;}
   if(typeof checkoutDrafts!=='undefined'){checkoutDrafts.clear();checkoutStates.clear();checkoutGeneration++;checkoutState=undefined;checkoutContext=undefined;}
-  patientWorkspaceGeneration++;patientDirectoryPreference=true;
+  patientWorkspaceGeneration++;patientDirectoryPreference=storedPatientDirectoryPreference();patientLifecycleRevealed=false;
   me = undefined; patients = []; selected = undefined; workspace = undefined; activeVisit = undefined;
   closeNavigation();
   $('app').hidden = true; $('login-screen').hidden = false;
@@ -429,7 +431,7 @@ function renderPatients() {
   const q=$('search').value.trim().toLowerCase();
   const filtered=patients.filter(p=>`${p.given_name} ${p.family_name} ${p.mrn}`.toLowerCase().includes(q));
   $('patient-count').textContent=patients.length;
-  $('patients').innerHTML=filtered.length ? filtered.map(p=>`<button class="patient-row ${p.id===selected?'selected':''}" data-patient="${esc(p.id)}">${esc(p.family_name)}, ${esc(p.given_name)}<small>${esc(p.mrn)} · ${esc(p.birth_date)}${p.archived?' · Archived':''}</small></button>`).join('') : '<p class="muted">No patients found.</p>';
+  $('patients').innerHTML=filtered.length ? filtered.map(p=>`<button class="patient-row ${p.id===selected?'selected':''}" data-patient="${esc(p.id)}">${esc(p.family_name)}, ${esc(p.given_name)}<small>${esc(displayBirthDate(p.birth_date))} · <span class="record-id">MRN ${esc(p.mrn)}</span>${p.archived?' · Archived':''}</small></button>`).join('') : '<p class="muted">No patients found.</p>';
   $('load-more').hidden=!cursor;
 }
 async function selectPatient(id, keepVisit, stillCurrent=()=>true) {
@@ -448,12 +450,12 @@ async function selectPatient(id, keepVisit, stillCurrent=()=>true) {
   if(me!==openingIdentity||openingGeneration!==patientWorkspaceGeneration||!stillCurrent())return;
   captureVisitDrafts(); // Include edits made while the chart reads were in flight.
   next.history=history?.items??null;next.clinical=clinical;next.labs=labs;next.billing=billing;next.demographics=demographics;
-  if(id!==selected){chartSection='overview';encounterSection=['nurse','medical_assistant'].includes(me?.role)?'intake':'documentation';}
+  if(id!==selected){patientLifecycleRevealed=false;chartSection='overview';encounterSection=['nurse','medical_assistant'].includes(me?.role)?'intake':'documentation';}
   if(keepVisit&&activeVisit?.id!==keepVisit){chartSection='visits';encounterSection=['nurse','medical_assistant'].includes(me?.role)?'intake':'documentation';}
   workspace=next;billingPayers=payers.items;selected=id;
   activeVisit=keepVisit===null ? undefined : keepVisit ? workspace.visits.find(v=>v.id===keepVisit) : workspace.visits.find(v=>v.status==='in_progress'&&v.clinician_id===me.user_id)||workspace.visits.find(v=>v.status==='in_progress');
   renderPatients();renderChart();
-  setPatientDirectoryVisible(patientDirectoryPreference!==false);
+  setPatientDirectoryVisible(patientDirectoryPreference===true);
 }
 
 async function openPatientEncounter(id){
@@ -468,6 +470,13 @@ async function openPatientEncounter(id){
 }
 
 const date = s => new Date(s).toLocaleString(undefined,{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
+function revealPatientLifecycle(){
+ patientLifecycleRevealed=true;applyChartSection();
+ const host=$('patient-lifecycle');if(!host)return;
+ const menu=$('patient-record-navigation');if(menu)menu.open=false;
+ const disclosure=host.querySelector?.('details');if(disclosure)disclosure.open=true;
+ host.scrollIntoView?.({block:'center'});host.querySelector?.('summary,button')?.focus?.({preventScroll:true});
+}
 function renderChart() {
   captureVisitAmendmentDraft();
   if(typeof capturePatientLifecycleDraft==='function')capturePatientLifecycleDraft();
@@ -481,7 +490,7 @@ function renderChart() {
   const p=workspace.patient;
   const allergies=workspace.clinical.items.filter(e=>e.kind==='allergy'&&e.content.status==='active'&&!['refuted','entered_in_error'].includes(e.content.verification));
   const allergyReview=workspace.clinical.reviews.find(r=>r.kind==='allergy');
-  const allergyText=allergies.length?allergies.map(e=>`${e.content.title} (${e.content.verification})`).join(', '):allergyReview?.review_state==='no_known'?'No known allergies — reviewed':'Allergy status not confirmed';
+  const allergyText=allergies.length?allergies.map(e=>`${e.content.title} (${e.content.verification})`).join(', '):allergyReview?.review_state==='no_known'?'No known allergies':'Allergies not reviewed yet';
   if(typeof capturePrescribingDraft==='function')capturePrescribingDraft();
   let tabs=[['overview','Summary'],['profile','Patient details'],['clinical','Clinical lists'],['care_pathways','Care pathways'],['prescribing','Prescribing'],['immunizations','Immunizations'],['functional_status','Functional status'],['specialty_care','Specialty care'],['history','Surgical & dental history'],['documents','Documents'],['referrals','Referrals'],['orders','Orders & results'],['visits','Encounters'],['checkout','Checkout & AVS'],['billing','Financials'],['source','Source records']];
   if(typeof configuredChartTabs==='function')tabs=configuredChartTabs(tabs);
@@ -490,7 +499,7 @@ function renderChart() {
   const birth=new Date(p.birth_date+'T12:00:00'),now=new Date();let age=now.getFullYear()-birth.getFullYear();if(now.getMonth()<birth.getMonth()||(now.getMonth()===birth.getMonth()&&now.getDate()<birth.getDate()))age--;
   const encounter=activeVisit?workspace.appointments.find(a=>a.id===activeVisit.appointment_id):null;
   $('chart').innerHTML=`<div class="chart-context"><div class="chart-header"><div class="avatar">${esc(p.given_name[0])}${esc(p.family_name[0])}</div><div class="patient-heading"><p class="chart-record-label">PATIENT CHART${preferred?' · Preferred name '+esc(preferred):''}</p><h2>${esc(p.family_name)}, ${esc(p.given_name)} <span class="chart-age">${age>=0?esc(age)+' years':''}</span></h2><p><span>MRN <b>${esc(p.mrn)}</b></span><span>DOB <b>${esc(p.birth_date)}</b></span></p>${chartHeaderContact()}</div><div class="chart-header-context">${activeVisit?`<span class="status-badge ${activeVisit.status==='signed'?'completed':'in_progress'}">${activeVisit.status==='signed'?'Signed encounter':'Active encounter'}</span><small>${esc(encounterDateLabel(activeVisit))}</small>`:'<span class="muted">Longitudinal record</span>'}</div>${chartAreaEnabled('profile')?'<button type="button" data-chart-section="profile">Contact details</button>':''}<button class="quiet" data-action="reload" aria-label="Reload patient chart">↻ Refresh</button>${['owner','clinician','front_desk'].includes(me?.role)?`<button type="button" data-portal-access="${esc(selected)}">Patient portal</button>`:''}${typeof supportHelpButton==='function'?supportHelpButton('patient'):''}</div><div class="patient-safety ${allergies.length?'has-allergies':''}"><b>Allergies</b><span>${esc(allergyText)}</span></div>${chartNavigation(tabs)}</div>
-  <section id="patient-lifecycle" class="panel"></section>
+  <section id="patient-lifecycle" class="panel" hidden></section>
   <div id="encounter-progress">${encounterWorkflow()}</div>
   <div id="encounter-start-editor"></div>
   ${chartOverview()}
@@ -588,7 +597,7 @@ function chartHeaderContact(){
 function chartContactSummary(){
  if(typeof workspaceResourceAllowed==='function'&&!workspaceResourceAllowed('clinical'))return '';
  const contact=workspace.demographics?.content||{},canDetails=chartAreaEnabled('profile');
- return `<section class="panel chart-summary-section patient-contact-summary"><div class="section-head"><h2>Contact details</h2>${canDetails?'<button type="button" class="text-button" data-chart-section="profile">View / edit contact</button>':''}</div><dl><div><dt>Phone</dt><dd data-chart-contact="phone">${esc(contact.phone||'Not recorded')}</dd></div><div><dt>Email</dt><dd data-chart-contact="email">${esc(contact.email||'Not recorded')}</dd></div></dl><div class="chart-summary-footer"><span id="patient-intake-summary" role="status">Loading patient intake forms…</span>${chartAreaEnabled('documents')?'<button type="button" class="text-button" data-patient-intakes-open>View submitted intake forms</button>':''}</div></section>`;
+ return `<section class="panel chart-summary-section patient-contact-summary"><div class="section-head"><h2>Contact details</h2>${canDetails?'<button type="button" class="text-button" data-chart-section="profile">View / edit contact</button>':''}</div><dl><div><dt>Phone</dt><dd data-chart-contact="phone">${esc(contact.phone||'Not recorded')}</dd></div><div><dt>Email</dt><dd data-chart-contact="email">${esc(contact.email||'Not recorded')}</dd></div></dl><div class="chart-summary-footer"><span id="patient-intake-summary" role="status">Loading intake forms…</span>${chartAreaEnabled('documents')?'<button type="button" class="text-button" data-patient-intakes-open>View submitted intake forms</button>':''}</div></section>`;
 }
 function refreshChartContactSummary(){
  const chart=$('chart'),contact=workspace.demographics?.content||{};
@@ -603,9 +612,9 @@ function chartOverview(){
  const recordedVisit=activeVisit?.vitals?activeVisit:workspace.visits.find(v=>v.vitals),vitals=recordedVisit?.vitals;
  const observations=vitals?[['Blood pressure',`${vitals.systolic_mm_hg}/${vitals.diastolic_mm_hg}`,'mmHg'],['Pulse',vitals.heart_rate_bpm,'bpm'],['Temperature',vitals.temperature_c,'°C'],['Oxygen saturation',vitals.oxygen_saturation_pct,'%'],['Weight',vitals.weight_kg,'kg'],['Height',vitals.height_cm,'cm']]:[];
  const row=(title,detail)=>`<div class="chart-data-row"><strong>${esc(title)}</strong><small>${esc(detail)}</small></div>`;
- const problemRows=problems.slice(0,6).map(e=>row(e.content.title,`${e.content.verification.replaceAll('_',' ')}${e.content.onset_date?' · Onset '+e.content.onset_date:''}`)).join('');
- const medRows=meds.slice(0,6).map(e=>row(e.content.title,[e.content.detail?.dose,e.content.detail?.route,e.content.detail?.frequency].filter(Boolean).join(' · ')||'Dosing not recorded')).join('');
- return `${patientWorkflowActions()}<section id="chart-overview" class="chart-overview-workbench"><div class="chart-primary-column"><section class="panel chart-summary-section"><div class="section-head"><h2>Clinical summary</h2><div class="clinical-summary-links" aria-label="Clinical record"><button type="button" class="text-button" data-clinical-focus="allergy">Allergies</button><button type="button" class="text-button" data-clinical-focus="problem">Problems</button><button type="button" class="text-button" data-clinical-focus="medication">Medications</button></div></div><div class="clinical-summary-columns"><section><h3>Active problems <span class="pill">${problems.length}</span></h3>${problemRows||'<div class="chart-empty-row">No active problems recorded.<small>Review the clinical list to confirm status.</small></div>'}${problems.length>6?'<button type="button" class="text-button" data-chart-section="clinical">View all recorded problems</button>':''}</section><section><h3>Medication statements <span class="pill">${meds.length}</span></h3>${medRows||'<div class="chart-empty-row">No active medications recorded.<small>Review the medication list to confirm status.</small></div>'}${meds.length>6?'<button type="button" class="text-button" data-chart-section="clinical">View all recorded medications</button>':''}</section></div></section><section class="panel chart-summary-section"><div class="section-head"><h2>Results awaiting review <span class="pill">${reports.length}</span></h2><button type="button" class="text-button" data-chart-section="orders">Orders & results →</button></div>${reports.length?`<table class="chart-results-table"><thead><tr><th>Report / laboratory</th><th>Status</th><th>Reported</th></tr></thead><tbody>${reports.slice(0,5).map(r=>`<tr><td><strong>${esc(r.content.accession)}</strong><small>${esc(r.content.performing_lab||'Laboratory not recorded')}</small></td><td>${critical(r)?'<span class="critical-label">Critical</span>':esc(r.status)}<small>Revision ${r.version}</small></td><td>${esc(date(r.content.reported_at))}</td></tr>`).join('')}</tbody></table>`:'<div class="chart-empty-row">No unacknowledged report revisions returned.<small>Orders and follow-up retain independent statuses.</small></div>'}<div class="chart-summary-footer">${workspace.labs.orders.length} recorded orders · ${reports.length} revisions awaiting acknowledgment</div></section></div><aside class="chart-secondary-column">${chartContactSummary()}<section class="panel chart-summary-section"><div class="section-head"><h2>Recorded vitals</h2><button type="button" class="text-button" data-encounter-step="vitals">Open →</button></div>${observations.length?`<dl class="chart-vital-list">${observations.map(([label,value,unit])=>`<div><dt>${label}</dt><dd>${esc(value)} <small>${unit}</small></dd></div>`).join('')}</dl><p class="chart-summary-footer">${recordedVisit.id===activeVisit?.id?'Selected encounter':'Most recent encounter with saved vitals'} · ${esc(encounterDateLabel(recordedVisit))}</p>`:'<div class="chart-empty-row">No saved vitals found.<small>Open an encounter to record observations.</small></div>'}</section><section class="panel chart-summary-section"><div class="section-head"><h2>Encounter history</h2><button type="button" class="text-button" data-encounter-history>View all →</button></div>${patientEncounterHistoryRows(4,true)}<p class="chart-summary-footer">${patientEncounterHistoryEntries().length} appointments and encounters loaded</p></section></aside></section>`;
+ const problemRows=problems.slice(0,6).map(e=>row(e.content.title,`${displayStatus(e.content.verification)}${e.content.onset_date?' · Since '+displayDate(e.content.onset_date):''}`)).join('');
+ const medRows=meds.slice(0,6).map(e=>row(e.content.title,[e.content.detail?.dose,e.content.detail?.route,e.content.detail?.frequency].filter(Boolean).join(' · ')||'No dose recorded')).join('');
+ return `${patientWorkflowActions()}<section id="chart-overview" class="chart-overview-workbench"><div class="chart-primary-column"><section class="panel chart-summary-section"><div class="section-head"><h2>Clinical summary</h2><div class="clinical-summary-links" aria-label="Clinical record"><button type="button" class="text-button" data-clinical-focus="allergy">Allergies</button><button type="button" class="text-button" data-clinical-focus="problem">Problems</button><button type="button" class="text-button" data-clinical-focus="medication">Medications</button></div></div><div class="clinical-summary-columns"><section><h3>Active problems <span class="pill">${problems.length}</span></h3>${problemRows||'<div class="chart-empty-row">No problems recorded. <button type="button" class="text-button" data-clinical-focus="problem">Add problem</button></div>'}${problems.length>6?'<button type="button" class="text-button" data-chart-section="clinical">View all recorded problems</button>':''}</section><section><h3>Medications <span class="pill">${meds.length}</span></h3>${medRows||'<div class="chart-empty-row">No medications recorded. <button type="button" class="text-button" data-clinical-focus="medication">Add medication</button></div>'}${meds.length>6?'<button type="button" class="text-button" data-chart-section="clinical">View all recorded medications</button>':''}</section></div></section><section class="panel chart-summary-section"><div class="section-head"><h2>Results to review <span class="pill">${reports.length}</span></h2><button type="button" class="text-button" data-chart-section="orders">Orders & results →</button></div>${reports.length?`<table class="chart-results-table"><thead><tr><th>Report</th><th>Status</th><th>Reported</th></tr></thead><tbody>${reports.slice(0,5).map(r=>`<tr><td><strong>${esc(r.content.accession)}</strong><small>${esc(r.content.performing_lab||'Laboratory not recorded')}</small></td><td>${critical(r)?'<span class="critical-label">Critical</span>':esc(displayStatus(r.status))}</td><td>${esc(date(r.content.reported_at))}</td></tr>`).join('')}</tbody></table>`:'<div class="chart-empty-row">No results to review.</div>'}${workspace.labs.orders.length?`<div class="chart-summary-footer">${displayCount(workspace.labs.orders.length,'order')} on file</div>`:''}</section></div><aside class="chart-secondary-column">${chartContactSummary()}<section class="panel chart-summary-section"><div class="section-head"><h2>Latest vitals</h2><button type="button" class="text-button" data-encounter-step="vitals">Open →</button></div>${observations.length?`<dl class="chart-vital-list">${observations.map(([label,value,unit])=>`<div><dt>${label}</dt><dd>${esc(value)} <small>${unit}</small></dd></div>`).join('')}</dl><p class="chart-summary-footer">${recordedVisit.id===activeVisit?.id?'This visit':'Last recorded'} · ${esc(encounterDateLabel(recordedVisit))}</p>`:'<div class="chart-empty-row">No vitals recorded yet.</div>'}</section><section class="panel chart-summary-section"><div class="section-head"><h2>Encounter history</h2><button type="button" class="text-button" data-encounter-history>View all →</button></div>${patientEncounterHistoryRows(4,true)}</section></aside></section>`;
 }
 function chartAreaEnabled(key){
  return typeof workspaceChartTabEnabled!=='function'||workspaceChartTabEnabled(key==='insurance'?'billing':key);
@@ -620,6 +629,7 @@ function applyChartSection(){
  if(typeof encounterSection!=='undefined'&&typeof encounterSections==='function'&&!encounterSections().some(([key])=>key===encounterSection))encounterSection='documentation';
  const groups={overview:['chart-overview','patient-next-action'],profile:['patient-identity-panel','patient-demographics'],clinical:['clinical-lists'],care_pathways:['care-pathways-panel'],prescribing:['prescribing-panel'],immunizations:['immunizations-panel'],functional_status:['functional-status-panel'],specialty_care:['specialty-care-panel'],history:['health-history-panel'],documents:['documents-panel','patient-intake-panel'],referrals:['referrals-panel'],orders:['lab-workspace'],insurance:['insurance-workspace'],billing:['billing-workspace'],checkout:['visit-checkout'],source:['source-history']};
  for(const [key,ids] of Object.entries(groups))for(const id of ids)if($(id))$(id).hidden=!patientSectionVisible(key);
+ if($('patient-lifecycle'))$('patient-lifecycle').hidden=!(patientLifecycleRevealed||(typeof workspace!=='undefined'&&Boolean(workspace?.patient?.archived)));
  const inEncounter=chartSection==='visits',hasVisit=typeof activeVisit!=='undefined'&&Boolean(activeVisit),step=typeof encounterSection==='undefined'?'documentation':encounterSection;
  if($('appointments-panel'))$('appointments-panel').hidden=!inEncounter;
  if($('visit-editor'))$('visit-editor').hidden=!(inEncounter&&hasVisit&&['intake','documentation'].includes(step));
@@ -642,7 +652,7 @@ function chartNavigation(tabs){
  const names={billing:'Account summary',profile:'Contact & demographics',clinical:'Problems, allergies & medications',history:'Surgical & dental history',care_pathways:'Practice workflows',functional_status:'Function & assessments',source:'Imported records'};
  const records=tabs.filter(([key])=>!mainKeys.has(key)&&key!=='checkout');
  const button=([key,label])=>`<button type="button" aria-label="${esc(label)}" data-chart-section="${key}" aria-pressed="${key===chartSection}">${esc(label)}</button>`;
- return `<nav class="chart-tabs patient-workspace-tabs" aria-label="Patient workspace"><div class="chart-tab-row chart-primary-tabs">${main.map(button).join('')}${records.length?`<details class="patient-record-navigation" id="patient-record-navigation"><summary>Patient record</summary><div>${records.map(([key,label])=>button([key,names[key]||label])).join('')}</div></details>`:''}</div></nav>`;
+ return `<nav class="chart-tabs patient-workspace-tabs" aria-label="Patient workspace"><div class="chart-tab-row chart-primary-tabs">${main.map(button).join('')}<details class="patient-record-navigation" id="patient-record-navigation"${records.length?'':' data-archive-only hidden'}><summary>Patient record</summary><div>${records.map(([key,label])=>button([key,names[key]||label])).join('')}<button type="button" id="chart-archive-entry" data-patient-lifecycle-show hidden>Archive this patient</button></div></details></div></nav>`;
 }
 function patientWorkflowActions(){
  if(workspace.patient?.archived&&!activeVisit)return '<section class="patient-next-action"><div><b>Archived patient chart</b><p>Review the encounter history below. Restore the patient to book or start a new visit.</p></div></section>';
@@ -670,6 +680,7 @@ function showChartSection(key){
  if(key==='checkout'){if(activeVisit)encounterSection='checkout';key='visits';}
  if(key==='orders'&&activeVisit&&chartSection==='visits'){encounterSection='orders';key='visits';}
  const recordMenu=$('patient-record-navigation');if(recordMenu)recordMenu.open=false;
+ patientLifecycleRevealed=false;
  chartSection=key;applyChartSection();
  if(key==='insurance'&&typeof renderPatientInsurance==='function')void renderPatientInsurance();
  if(key==='documents'&&typeof renderEncounterFiles==='function')renderEncounterFiles();
@@ -830,7 +841,8 @@ document.addEventListener('click',e=>{
   const button=e.target.closest('button');if(!button||(button.type==='submit' && button.form))return;
   if(button.dataset.action==='focus-amendment'){if(!busy)focusVisitAmendment();return;}
   if(button.dataset.action==='review-amendment-version'){if(!busy)reviewVisitAmendmentVersion(button);return;}
-  if(button.id==='toggle-directory'){setPatientDirectoryVisible($('clinical-workspace').classList.contains('directory-collapsed'));return;}
+  if(button.id==='toggle-directory'){const show=$('clinical-workspace').classList.contains('directory-collapsed');setPatientDirectoryVisible(show);if(selected&&workspace)rememberPatientDirectoryPreference(show);return;}
+  if(button.hasAttribute('data-patient-lifecycle-show')){revealPatientLifecycle();return;}
   if(button.hasAttribute('data-encounter-history')){showChartSection('visits');const history=$('patient-encounter-history');if(history){history.open=true;history.scrollIntoView({block:'start'});}return;}
   if(button.dataset.clinicalFocus){showChartSection('clinical');if(chartSection!=='clinical')return;const label=({allergy:'Allergies',problem:'Problems',medication:'Medications'})[button.dataset.clinicalFocus];const section=Array.from($('clinical-lists')?.querySelectorAll('.clinical-domain')||[]).find(node=>node.querySelector('h3')?.textContent===label);section?.scrollIntoView({block:'start'});return;}
   if(button.dataset.chartSection){showChartSection(button.dataset.chartSection);return;}

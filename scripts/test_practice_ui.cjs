@@ -5,6 +5,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+// Staff display helpers load before every feature script, exactly as index.html loads them.
+{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
+
 const root = path.resolve(__dirname, '..');
 
 function fixture({search = '', practice = false} = {}) {
@@ -167,7 +170,7 @@ async function testPracticeQueues() {
   f.evaluate(`practiceBoardMode='unfinished';renderPracticeWorkspace()`);
   let html = practiceHtml(f);
   assert.match(html, /No unfinished encounters/);
-  assert.match(html, /No results awaiting acknowledgment/);
+  assert.match(html, /No results to review/);
   assert.doesNotMatch(html, /could not be loaded/);
   const values = empty();
   values.schedule.appointments = [
@@ -206,7 +209,7 @@ async function testPracticeQueues() {
   await f.evaluate('showPracticeWorkspace()');
   html = practiceHtml(f);
   assert.match(html, /Results queue could not be loaded/);
-  assert.doesNotMatch(html, /No results awaiting acknowledgment|<script>/);
+  assert.doesNotMatch(html, /No results to review|<script>/);
   assert.match(html, /&lt;script&gt;fixture failure&lt;\/script&gt;/);
   f.evaluate(`practiceBoardMode='unfinished';renderPracticeWorkspace()`);
   assert.match(practiceHtml(f), /No unfinished encounters/); // An independent queue remains usable.
@@ -245,7 +248,7 @@ async function testPracticeFilters() {
   assert.doesNotMatch(f.node('practice-worklist').innerHTML,/First Patient|Third Patient/);
   await dispatch({practiceBoard:'unfinished'},'data-practice-board');
   assert.match(f.node('practice-worklist').innerHTML,/Dr Fixture/);
-  assert.match(f.node('practice-row-summary').textContent,/101 total open/);
+  assert.match(f.node('practice-row-summary').textContent,/of 101 unsigned encounters/);
   await dispatch({practiceResultFilter:'critical'},'data-practice-result-filter');
   assert.match(f.node('practice-results').innerHTML,/data-practice-result="urgent"/);
   assert.doesNotMatch(f.node('practice-results').innerHTML,/data-practice-result="routine"/);

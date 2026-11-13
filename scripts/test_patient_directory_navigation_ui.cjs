@@ -23,10 +23,10 @@ const tests=[];const test=(name,fn)=>tests.push([name,fn]);
 test('Patients clears selection after capturing drafts and displays the expanded directory',async()=>{
  const f=fixture(),c=f.ctx;f.evaluate('setPatientDirectoryVisible(false)');assert.equal(f.node('toggle-directory').textContent,'Show patients');
  await c.showClinical();assert.equal(c.selected,undefined);assert.equal(c.activeVisit,undefined);assert.equal(c.workspace,undefined);assert.equal(f.drafts.get('visit-a'),'SYNTHETIC UNSAVED NOTE');
- assert.equal(f.node('clinical-workspace').hidden,false);assert.equal(f.node('clinical-workspace').classList.contains('directory-collapsed'),false);assert.equal(f.node('toggle-directory').textContent,'Hide patients');assert.equal(f.node('toggle-directory').attributes['aria-expanded'],'true');assert.equal(f.node('search').focused,true);assert.match(f.node('chart').innerHTML,/Select a patient/);assert.equal(f.calls[0][0],'capture');assert(!f.calls.some(([method])=>['POST','PUT','DELETE'].includes(method)));
+ assert.equal(f.node('clinical-workspace').hidden,false);assert.equal(f.node('clinical-workspace').classList.contains('directory-collapsed'),false);assert.equal(f.node('toggle-directory').textContent,'Hide patients');assert.equal(f.node('toggle-directory').attributes['aria-expanded'],'true');assert.equal(f.node('search').focused,true);assert.match(f.node('chart').innerHTML,/Choose a patient/);assert.equal(f.calls[0][0],'capture');assert(!f.calls.some(([method])=>['POST','PUT','DELETE'].includes(method)));
 });
-test('selecting a patient does not automatically collapse the directory; explicit collapse can be reversed',async()=>{
- const f=fixture();await f.ctx.selectPatient('patient-a');assert.equal(f.node('clinical-workspace').classList.contains('directory-collapsed'),false);assert.equal(f.node('toggle-directory').textContent,'Hide patients');
+test('an open chart hides the patient list by default; the toggle reverses it',async()=>{
+ const f=fixture();await f.ctx.selectPatient('patient-a');assert.equal(f.node('clinical-workspace').classList.contains('directory-collapsed'),true);assert.equal(f.node('toggle-directory').textContent,'Show patients');assert.equal(f.node('toggle-directory').attributes['aria-expanded'],'false');
  f.evaluate('setPatientDirectoryVisible(false)');await f.ctx.selectPatient('patient-a');assert.equal(f.node('toggle-directory').textContent,'Show patients');assert.equal(f.node('toggle-directory').attributes['aria-expanded'],'false');f.evaluate('setPatientDirectoryVisible(true)');assert.equal(f.node('toggle-directory').textContent,'Hide patients');
 });
 test('a late patient load cannot overwrite a newer directory navigation',async()=>{

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+// Staff display helpers load before every feature script, exactly as index.html loads them.
+{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
+
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const revenue=fs.readFileSync('web/patient-revenue.js','utf8'),billing=fs.readFileSync('web/billing.js','utf8'),app=fs.readFileSync('web/app.js','utf8'),hub=fs.readFileSync('web/patient-billing-workspace.js','utf8');
 const receipt={id:'receipt-old',patient_id:'patient',appointment_id:'appointment-old',amount_cents:2500,allocated_cents:0,reversed_cents:0,voided:false,method:'external',occurred_on:'2026-10-25',created_at:'2026-10-25T14:00:00Z',reference:'SYNTHETIC-RECEIPT<&',reason:'PRIVATE STAFF EVIDENCE',hosted_checkout:{livemode:false,status:'paid',refunded_cents:0}};

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+// Staff display helpers load before every feature script, exactly as index.html loads them.
+{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
+
 const nodes=new Map(),handlers={},calls=[];
 const node=id=>nodes.get(id)||(()=>{const item={id,innerHTML:'',dataset:{},values:{},hidden:false,scrollIntoView(){},replaceChildren(){this.innerHTML='';},insertAdjacentHTML(_where,html){this.innerHTML+=html;},querySelector(){return null;},querySelectorAll(){return [];}};nodes.set(id,item);return item;})();
 const account={id:'account',patient_id:'patient',version:3,status:'posted',total_cents:15000,content:{visit_id:'visit',service_date:'2026-11-10',lines:[{code:'99213',diagnosis_codes:['M62.81']}]},coverage_snapshot:{coverage:{content:{relationship:'self'}},payer:{content:{name:'Synthetic payer'}}}};

@@ -606,6 +606,16 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/display-format.js",
+            get(|| async {
+                web_asset(
+                    "display-format.js",
+                    "application/javascript",
+                    include_str!("../web/display-format.js"),
+                )
+            }),
+        )
+        .route(
             "/shell.js",
             get(|| async {
                 web_asset(
