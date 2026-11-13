@@ -59,7 +59,7 @@ pub struct ClaimContent {
     pub synthetic_test: bool,
 }
 impl ClaimContent {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         for (s, n) in [
             (&self.billing_provider_name, 200),
             (&self.billing_npi, 10),
@@ -588,12 +588,58 @@ async fn create_claim(
     if let Some(source_id) = v.source_history_id {
         source(&mut tx, &a, source_id, Some(p), "claim").await?;
     }
+    let c = insert_claim(
+        &mut tx,
+        &a,
+        p,
+        &b,
+        payer_id,
+        &NewClaimRecord {
+            request_id: v.request_id,
+            digest: &digest,
+            frequency: &v.frequency,
+            parent_id: v.parent_id,
+            content: &v.content,
+            source_history_id: v.source_history_id,
+            coordination: coordination.map(|evidence| json!(evidence)),
+            tracking,
+            reason: &v.reason,
+            automatic: false,
+        },
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(c))
+}
+/// One new claim row with its frozen account, patient and ledger snapshot and first
+/// revision. Callers hold the tenant billing lock and have checked the account, payer and
+/// frequency rules; staff-entered and automatically prepared claims are stored the same way.
+pub(crate) struct NewClaimRecord<'a> {
+    pub(crate) request_id: Uuid,
+    pub(crate) digest: &'a str,
+    pub(crate) frequency: &'a str,
+    pub(crate) parent_id: Option<Uuid>,
+    pub(crate) content: &'a ClaimContent,
+    pub(crate) source_history_id: Option<Uuid>,
+    pub(crate) coordination: Option<Value>,
+    pub(crate) tracking: bool,
+    pub(crate) reason: &'a str,
+    pub(crate) automatic: bool,
+}
+pub(crate) async fn insert_claim(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    p: Uuid,
+    b: &billing::Account,
+    payer_id: Uuid,
+    v: &NewClaimRecord<'_>,
+) -> Result<Claim> {
     let patient: Value = sqlx::query_scalar(
         "SELECT to_jsonb(p)-'tenant_id' FROM patients p WHERE tenant_id=$1 AND id=$2",
     )
     .bind(a.tenant_id)
     .bind(p)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await?;
     let mut ledger: Value = sqlx::query_scalar(
         "SELECT jsonb_build_object(\
@@ -609,18 +655,18 @@ async fn create_claim(
          ) FROM billing_entries WHERE tenant_id=$1 AND account_id=$2",
     )
     .bind(a.tenant_id)
-    .bind(id)
+    .bind(b.id)
     .bind(b.total_cents)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await?;
     ledger["patient_payments_cents"] = json!(
-        crate::billing::patient_ledger_totals(&mut tx, a.tenant_id, id)
+        crate::billing::patient_ledger_totals(tx, a.tenant_id, b.id)
             .await?
             .1
     );
     let mut snapshot = json!({"account":b,"patient":patient,"financial_summary":ledger});
-    if let Some(evidence) = coordination {
-        snapshot["coordination_of_benefits"] = json!(evidence);
+    if let Some(evidence) = &v.coordination {
+        snapshot["coordination_of_benefits"] = evidence.clone();
     }
     let payer_control = snapshot["coordination_of_benefits"]["crossover"]["claim"]
         ["payer_control_number"]
@@ -629,17 +675,12 @@ async fn create_claim(
         .to_owned();
     let claim = Uuid::new_v4();
     let control_number = new_control_number(claim, v.content.synthetic_test);
-    sqlx::query("INSERT INTO ehr_claims (tenant_id,id,patient_id,account_id,payer_id,control_number,frequency,parent_id,content,snapshot,request_id,creation_hash,source_history_id,status,payer_control_number) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)").bind(a.tenant_id).bind(claim).bind(p).bind(id).bind(payer_id).bind(control_number).bind(v.frequency).bind(v.parent_id).bind(json!(v.content)).bind(snapshot).bind(v.request_id).bind(digest).bind(v.source_history_id).bind(if tracking {"submitted"}else{"draft"}).bind(payer_control).execute(&mut *tx).await?;
-    let c = revision(
-        &mut tx,
-        &a,
-        claim,
-        &v.reason,
-        json!({"transport":"none","crossover_tracking_only":tracking,"network_transmitted":false}),
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(Json(c))
+    sqlx::query("INSERT INTO ehr_claims (tenant_id,id,patient_id,account_id,payer_id,control_number,frequency,parent_id,content,snapshot,request_id,creation_hash,source_history_id,status,payer_control_number) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)").bind(a.tenant_id).bind(claim).bind(p).bind(b.id).bind(payer_id).bind(control_number).bind(v.frequency).bind(v.parent_id).bind(json!(v.content)).bind(snapshot).bind(v.request_id).bind(v.digest).bind(v.source_history_id).bind(if v.tracking {"submitted"}else{"draft"}).bind(payer_control).execute(&mut **tx).await?;
+    let mut evidence = json!({"transport":"none","crossover_tracking_only":v.tracking,"network_transmitted":false});
+    if v.automatic {
+        evidence["prepared"] = json!("automatic");
+    }
+    revision(tx, a, claim, v.reason, evidence).await
 }
 async fn secondary_review(
     a: Actor,

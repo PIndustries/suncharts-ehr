@@ -20,6 +20,7 @@ pub mod claimmd_eligibility;
 pub mod claimmd_extended;
 pub mod claimmd_operations;
 pub mod claims;
+mod visit_billing;
 pub mod claude_adapter;
 pub mod clearinghouse;
 pub mod clinical;
@@ -436,6 +437,7 @@ pub fn app(state: State) -> Router {
         .merge(installments::router())
         .merge(reader_payments::router())
         .merge(claims::router())
+        .merge(visit_billing::router())
         .merge(checkout::router())
         .merge(era_batches::router())
         .merge(era_chains::router())

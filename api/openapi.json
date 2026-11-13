@@ -38027,6 +38027,189 @@
           }
         }
       }
+    },
+    "/api/v1/patients/{p}/billing/visit-summary": {
+      "get": {
+        "summary": "Read one visit's billing summary: next step, charges, insurance and what the patient owes now",
+        "operationId": "readVisitBillingSummary",
+        "parameters": [
+          {
+            "name": "visit_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Read-only summary computed from stored charges, ledger entries, receipts, claims and posted remittances. Nothing is written except the read audit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown patient, visit or charges"
+          }
+        },
+        "security": [
+          {
+            "oauth2": [
+              "billing.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ]
+      },
+      "parameters": [
+        {
+          "name": "p",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ]
+    },
+    "/api/v1/patients/{p}/billing/accounts/{id}/claims/prepare": {
+      "post": {
+        "summary": "Prepare the visit's draft insurance claim from its posted charges when none exists; never marks it ready or sends it",
+        "operationId": "prepareVisitClaim",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "again": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "prepared, exists, cancelled or not_needed. Repeating the call returns the existing claim.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Role cannot prepare claims"
+          },
+          "409": {
+            "description": "Charges changed while preparing"
+          }
+        },
+        "security": [
+          {
+            "oauth2": [
+              "billing.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ]
+      },
+      "parameters": [
+        {
+          "name": "p",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ]
+    },
+    "/api/v1/patients/{p}/billing/accounts/{id}/statement": {
+      "post": {
+        "summary": "Return the stored patient statement for what the patient owes on this visit now, saving one when none matches; never charges or sends anything",
+        "operationId": "prepareVisitStatement",
+        "responses": {
+          "200": {
+            "description": "The matching immutable invoice snapshot, created only when the current one does not match",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Charges are not posted"
+          }
+        },
+        "security": [
+          {
+            "oauth2": [
+              "billing.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ]
+      },
+      "parameters": [
+        {
+          "name": "p",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ]
     }
   },
   "components": {
