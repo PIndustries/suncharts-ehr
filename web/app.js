@@ -139,7 +139,7 @@ function postSignReminderMarkup(){
  if(encounterSection==='charges')return '';
  // Once the visit's charges are posted the reminder has done its job; nothing is kept in the browser.
  if(typeof encounterChargeAccount==='function'&&encounterChargeAccount()?.status==='posted'){postSignReminder=null;return '';}
- return `<div id="sign-charge-reminder" class="notice notice-with-action" role="status"><span>${esc(postSignReminder.message)}</span><button type="button" class="text-button" data-encounter-section="charges">Open Procedures &amp; billing</button></div>`;
+ return `<div id="sign-charge-reminder" class="notice notice-with-action" role="status"><span>${esc(postSignReminder.message)}</span><button type="button" class="text-button" data-encounter-section="charges">Open Charges &amp; billing</button></div>`;
 }
 function setPatientDirectoryVisible(visible){
  $('clinical-workspace')?.classList.toggle('directory-collapsed',!visible);
@@ -561,7 +561,7 @@ function renderChart() {
   if(typeof captureAccountDiagnosisLinkDraft==='function')captureAccountDiagnosisLinkDraft();
   if(typeof captureHealthHistoryDraft==='function')captureHealthHistoryDraft(); if(typeof captureImmunizationDraft==='function')captureImmunizationDraft();
   if(typeof capturePrescribingDraft==='function')capturePrescribingDraft();
-  let tabs=[['overview','Summary'],['profile','Patient details'],['clinical','Clinical lists'],['care_pathways','Care pathways'],['prescribing','Prescribing'],['immunizations','Immunizations'],['functional_status','Functional status'],['specialty_care','Specialty care'],['history','Surgical & dental history'],['documents','Documents'],['referrals','Referrals'],['orders','Orders & results'],['visits','Encounters'],['checkout','Checkout & AVS'],['billing','Financials'],['source','Source records']];
+  let tabs=[['overview','Summary'],['profile','Patient details'],['clinical','Clinical lists'],['care_pathways','Care pathways'],['prescribing','Prescribing'],['immunizations','Immunizations'],['functional_status','Functional status'],['specialty_care','Specialty care'],['history','Surgical & dental history'],['documents','Documents'],['referrals','Referrals'],['orders','Orders & results'],['visits','Encounters'],['checkout','Checkout & visit summary'],['billing','Financials'],['source','Source records']];
   if(typeof configuredChartTabs==='function')tabs=configuredChartTabs(tabs);
   if(tabs.some(([key])=>key==='billing'))tabs.splice(tabs.findIndex(([key])=>key==='billing'),0,['insurance','Insurance']);
   $('chart').innerHTML=`<section id="patient-banner" class="patient-banner" aria-label="Patient summary">${typeof patientBannerMarkup==='function'?patientBannerMarkup():''}</section><div class="chart-context">${chartNavigation(tabs)}</div>
@@ -616,7 +616,7 @@ function encounterWorkflow(){
 }
 function encounterSections(){
  const canView=resource=>typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed(resource);
- return [['intake','Rooming'],['documentation','Notes & diagnoses (ICD-10)'],...(chartAreaEnabled('billing')&&canView('billing')?[['charges','Procedures (CPT/HCPCS) & billing']]:[]),...(chartAreaEnabled('orders')&&canView('clinical')?[['orders','Orders & prescriptions']]:[]),...(chartAreaEnabled('documents')&&canView('clinical')?[['files','Files & voice']]:[]),...(chartAreaEnabled('checkout')?[['checkout','Checkout & AVS']]:[])];
+ return [['intake','Rooming'],['documentation','Notes & diagnoses'],...(chartAreaEnabled('billing')&&canView('billing')?[['charges','Charges & billing']]:[]),...(chartAreaEnabled('orders')&&canView('clinical')?[['orders','Orders & prescriptions']]:[]),...(chartAreaEnabled('documents')&&canView('clinical')?[['files','Files & recordings']]:[]),...(chartAreaEnabled('checkout')?[['checkout','Checkout & visit summary']]:[])];
 }
 function renderEncounterOrderActions(){
  const host=$('encounter-orders-actions');if(!host||!activeVisit)return;
@@ -978,7 +978,7 @@ document.addEventListener('click',e=>{
       if(me!==signer||activeVisit!==signing)return;
       const v=await api(`/api/v1/visits/${activeVisit.id}/sign`,'POST',undefined,activeVisit.version);
       // Nothing is posted yet and the charges step is visible, so leave a short reminder with
-      // a link to the visit's Procedures & billing step. It never blocks signing or checkout.
+      // a link to the visit's Charges & billing step. It never blocks signing or checkout.
       const billingVisible=encounterSections().some(([step])=>step==='charges');
       const posted=(workspace.billing?.accounts||[]).some(a=>a.status==='posted'&&a.status!=='void'&&String(a.content?.visit_id||'')===v.id);
       postSignReminder=billingVisible&&!posted&&v.status==='signed'?{visitId:v.id,message:'No charges are posted for this visit yet.'}:null;
