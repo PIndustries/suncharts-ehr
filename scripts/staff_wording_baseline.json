@@ -1,7 +1,7 @@
 {
   "app.js": {
     "catalog": 4,
-    "encounter": 38
+    "encounter": 19
   },
   "automation-center.js": {
     "JSON": 1,
@@ -11,72 +11,35 @@
   },
   "billing.js": {
     "catalog": 1,
-    "encounter": 16,
-    "snapshot": 3
-  },
-  "care-pathways.js": {
-    "encounter": 6
+    "snapshot": 2
   },
   "checkout.js": {
-    "encounter": 4,
     "snapshot": 1
   },
   "claims.js": {
-    "JSON": 2,
-    "encounter": 8
+    "JSON": 2
   },
   "clearinghouse.js": {
     "JSON": 1
   },
-  "document-files.js": {
-    "encounter": 5
-  },
-  "documents.js": {
-    "encounter": 2
-  },
-  "encounter-start.js": {
-    "encounter": 17
-  },
   "fees.js": {
-    "JSON": 1,
-    "encounter": 2
+    "JSON": 1
   },
   "immunizations.js": {
-    "catalog": 1,
-    "encounter": 2
+    "catalog": 1
   },
   "integrations.js": {
     "endpoint": 3
   },
   "labs.js": {
-    "encounter": 9,
-    "snapshot": 3
-  },
-  "navigation-history.js": {
-    "encounter": 1
-  },
-  "patient-billing-workspace.js": {
-    "encounter": 3
+    "snapshot": 2
   },
   "patient-payment-plans.js": {
-    "catalog": 1,
-    "encounter": 5
+    "catalog": 1
   },
   "patient-portal.js": {
     "JSON": 3,
     "snapshot": 8
-  },
-  "patient-revenue.js": {
-    "encounter": 11
-  },
-  "payments.js": {
-    "encounter": 2
-  },
-  "practice.js": {
-    "encounter": 2
-  },
-  "prescribing.js": {
-    "encounter": 2
   },
   "previsit.js": {
     "JSON": 1
@@ -84,17 +47,8 @@
   "provider-settings.js": {
     "JSON": 1
   },
-  "referrals.js": {
-    "encounter": 3
-  },
   "retrieval.js": {
     "endpoint": 1
-  },
-  "scheduling.js": {
-    "encounter": 1
-  },
-  "specialty-workspace.js": {
-    "encounter": 1
   },
   "sun-workflow.js": {
     "JSON": 4,
@@ -111,9 +65,6 @@
     "JSON": 2,
     "catalog": 40,
     "encounter": 1
-  },
-  "visit-diagnoses.js": {
-    "encounter": 4
   },
   "workflow-editor.js": {
     "JSON": 1,
