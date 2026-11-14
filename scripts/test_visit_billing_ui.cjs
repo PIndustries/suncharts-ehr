@@ -128,7 +128,7 @@ const grouped=card(visitSummary({state:'fix_claim',claim:{id:'claim',issues:[
  {missing:'Subscriber name'}, // keyword match, not a known code
  {code:'',missing:'plan year is not supported',detail:'x'}, // nothing matches: stays with the claim
 ]}}));
-const missingLines=[...grouped.matchAll(/<p class="visit-billing-missing" data-missing-group="(\w+)"><b>([^<]*)<\/b>([^<]*)<button type="button"([^>]*)>([^<]*)<\/button>/g)].map(m=>({group:m[1],label:m[2],items:m[3].trim(),attrs:m[4].trim(),action:m[5]}));
+const missingLines=[...grouped.matchAll(/<p class="visit-billing-missing" data-missing-group="(\w+)"><b>([^<]*)<\/b>([^<]*?)(?: <button type="button"([^>]*)>([^<]*)<\/button>)?<\/p>/g)].map(m=>({group:m[1],label:m[2],items:m[3].trim(),attrs:(m[4]||'').trim(),action:m[5]||''}));
 assert.deepEqual(missingLines.map(line=>line.group),['practice','patient','insurance','claim'],'lines come in practice, patient, insurance, then claim order');
 assert.deepEqual(missingLines.map(line=>line.label),['Practice billing setup:','Patient:','Insurance:','Claim:']);
 // Each group holds only its own items, joined on one line; the duplicate "billing organization tax ID" appears once.
@@ -137,16 +137,20 @@ assert.equal((grouped.match(/billing organization tax ID/g)||[]).length,1,'a rep
 assert.equal(missingLines[1].items,'patient address');
 assert.equal(missingLines[2].items,'Subscriber name','a keyword match lands with insurance even without a known code');
 assert.equal(missingLines[3].items,'plan year is not supported','anything unrecognised stays with the claim');
-// Each line's one button opens exactly the right place.
+// Each line's one button opens exactly the right place; the claim line has none of its own.
 const buttonWiring={
  'Open practice billing setup':'data-billing-organizations',
  'Edit patient details':'data-chart-section="profile"',
  'Edit insurance':'data-chart-section="insurance"',
- 'Fix claim details':'data-visit-claim-fix="claim"',
 };
-for(const line of missingLines)assert.equal(line.attrs,buttonWiring[line.action],`${line.action} button carries the right hook`);
-// One "Fix claim details" appears per card (the status action plus the claim line), and the three new buttons appear once each.
-for(const [action] of Object.entries(buttonWiring))assert.equal((grouped.match(new RegExp(`>${action}<\\/button>`,'g'))||[]).length,action==='Fix claim details'?2:1,`${action} appears the expected number of times`);
+for(const line of missingLines.filter(line=>line.action))assert.equal(line.attrs,buttonWiring[line.action],`${line.action} button carries the right hook`);
+assert.equal(missingLines.find(line=>line.group==='claim').action,'','the Claim line lists its items as text only');
+// The three setup buttons appear once each, and the card has exactly one "Fix claim details": its main action.
+for(const [action] of Object.entries(buttonWiring))assert.equal((grouped.match(new RegExp(`>${action}<\\/button>`,'g'))||[]).length,1,`${action} appears once`);
+assert.equal((grouped.match(/data-visit-claim-fix/g)||[]).length,1,'exactly one Fix claim details button when claim-group items are missing');
+// Only practice/patient/insurance items missing: the main action is still the one Fix claim details.
+const nonClaimOnly=card(visitSummary({state:'fix_claim',claim:{id:'claim',issues:[{code:'tax_id',missing:'billing organization tax ID'},{code:'patient_address',missing:'patient address'},{code:'subscriber_name',missing:'subscriber name'}]}}));
+assert.equal((nonClaimOnly.match(/data-visit-claim-fix/g)||[]).length,1,'exactly one Fix claim details button when only practice/patient/insurance items are missing');
 // Dates and vocabulary.
 assert.equal(ctx.visitBillingDate('2026-11-12'),'Nov 12, 2026');assert.equal(ctx.visitBillingDate(''),'');assert.equal(ctx.visitBillingDate('not a date'),'');
 assert.equal(ctx.visitBillingClaimState({status:'ready'}),'Send claim');assert.equal(ctx.visitBillingClaimState({status:'accepted'}),'Waiting on insurer');assert.equal(ctx.visitBillingClaimState({status:'rejected'}),'Denied: fix and resend');assert.equal(ctx.visitBillingClaimState({status:'submitted',crossover_tracking_only:true}),'Secondary insurer answered');
