@@ -265,6 +265,39 @@ function renderEncounterRevenue(){
  if(appointment&&billingCan('create'))void loadHostedCopays(appointment.id);
  if(typeof resumeEncounterChargeDraft==='function')resumeEncounterChargeDraft();
 }
+// The card's "Post charges" asks first, then sends exactly what the lower form would send
+// with its reason box left as rendered. A payer with no electronic ID still needs the
+// acknowledgement in that form, so the button only scrolls down to it.
+async function postVisitChargesFromCard(){
+ const account=encounterChargeAccount(),state=encounterRevenueState;if(!account||account.status!=='draft')return;
+ if(typeof encounterRevenueVisitUnsigned==='function'&&encounterRevenueVisitUnsigned(account))return;
+ if(account.content.coverage_id){
+  const coverage=(workspace.billing?.coverages||[]).find(c=>c.id===account.content.coverage_id);
+  const payer=(typeof billingPayers!=='undefined'?billingPayers:[]).find(p=>p.id===coverage?.content.payer_id);
+  if(!String(payer?.content.payer_code||'').trim()){
+   billingSelected=account.id;showBillingAccount(account.id,false);
+   $('encounter-charge-details')?.scrollIntoView({behavior:'smooth',block:'start'});
+   return;
+  }
+ }
+ const insured=state.data?.summary?.insurance?.insured===true&&account.content.coverage_id!=null;
+ const message=insured?`Charges of ${money(account.total_cents)} become final and the insurance claim is prepared.`:`Charges of ${money(account.total_cents)} become final.`;
+ if(!await confirmAction(message,{title:'Post these charges?',confirmLabel:'Post charges'}))return;
+ const patient=selected,identity=me;
+ await api(`${billingBase()}/${account.id}/actions`,'POST',{action:'post',reason:'',local_only:false},account.version);
+ if(selected!==patient||me!==identity)return;
+ // The same refresh the lower form does: this visit reopened on its billing step. Then the
+ // card's own state is dropped so it reads what the server now says. A chart opened on
+ // another page stays on that page.
+ const returnSection=typeof chartSection!=='undefined'?chartSection:'billing';
+ await selectPatient(patient,typeof activeVisit!=='undefined'?activeVisit?.id:undefined);
+ if(selected!==patient||me!==identity)return;
+ showChartSection(returnSection==='visits'?'visits':'billing');
+ if(returnSection==='visits'&&typeof showEncounterSection==='function')showEncounterSection('charges');
+ if(encounterRevenueState===state)encounterRevenueState={patient:null,identity:null,account:null,pending:null,data:null,loadedAt:0};
+ await loadEncounterRevenueStatus(encounterChargeAccount(),true);
+ notice('Insurance saved.');
+}
 function openEncounterCharges(){
  if(typeof activeVisit==='undefined'||!activeVisit){showChartSection('visits');notice('Select or start the encounter before entering its procedures.',true);return;}
  if(typeof setEncounterSection==='function')setEncounterSection('charges');else showChartSection('visits');
@@ -296,6 +329,7 @@ document.addEventListener('click',event=>{
  if(button.dataset.visitHistory){event.preventDefault();openVisitHistory(button.dataset.visitHistory);return;}
  if(button.dataset.visitHistoryFilter){event.preventDefault();openVisitHistory(button.dataset.visitHistoryFilter);return;}
  if(button.hasAttribute('data-revenue-documentation')){event.preventDefault();setEncounterSection('documentation');return;}
+ if(button.dataset.visitPostCharges){event.preventDefault();run(()=>postVisitChargesFromCard());return;}
  if(button.dataset.revenueAccount){event.preventDefault();if(billingSelected!==button.dataset.revenueAccount||!$('encounter-billing-detail')?.innerHTML)showBillingAccount(button.dataset.revenueAccount,false);const details=$('encounter-charge-details');if(details)details.open=true;$('encounter-billing-detail')?.scrollIntoView({behavior:'smooth',block:'start'});return;}
  if(button.dataset.revenueClaim||button.dataset.revenueRemittance){event.preventDefault();run(async()=>{if(button.dataset.revenueClaim){const account=encounterChargeAccount();if(!account)throw new Error('Select the encounter charge account.');await showEncounterClaim(button.dataset.revenueClaim,account.id);}else{await showClaimsWorkspace();await showEra(button.dataset.revenueRemittance);}});return;}
  if(button.dataset.revenueInvoice||button.dataset.revenueInvoices){event.preventDefault();billingSelected=button.dataset.revenueInvoice||button.dataset.revenueInvoices;run(async()=>{if(button.dataset.revenueInvoice)patientInvoiceEditor();else await showPatientInvoices();});return;}
