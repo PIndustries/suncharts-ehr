@@ -616,7 +616,9 @@ impl ClinicalBackend for PostgresBackend {
             &note.plan,
         ] {
             if section.trim().is_empty() {
-                return Err(Error::Invalid("text is empty or too long"));
+                return Err(Error::Invalid(
+                    "a complete SOAP note is required before signing",
+                ));
             }
         }
         sqlx::query("UPDATE visits SET status='signed',signed_by=$3,signed_at=now(),version=version+1 WHERE tenant_id=$1 AND id=$2")

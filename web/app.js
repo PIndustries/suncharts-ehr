@@ -143,7 +143,7 @@ function patientDirectoryLanding(){
 }
 // Unsaved clinical edits live only in this tab, isolated by encounter and patient.
 const visitDrafts=new Map();
-// Note text sections in display order. Procedure is optional; the first four are required.
+// Note text sections in display order. A draft saves with any subset filled; Procedure is optional, and signing needs the first four.
 const noteSectionKeys=['subjective','objective','assessment','plan','procedure'];
 const noteProcedureHint='Procedure performed, site, medication and dose, lot number, guidance, tolerance, complications';
 // The earlier note a draft was started from, as stable text so the form, the retained draft and the saved note compare equal.
@@ -317,7 +317,7 @@ function keepNoteDraft(){
  notice('Your text is kept. Save note to replace the saved note with it.');
 }
 // Saves the note. If the visit moved on, the current record is loaded first: a change that left the note text alone is retried once, a change to the note itself is shown and never overwritten.
- async function saveVisitNote(form,data){
+async function saveVisitNote(form,data){
  // A draft is kept with any section filled; a note with nothing in it says so beside the buttons.
  if(!hasVisitNoteText(form)){showVisitNoteMessage('Write something in the note before saving.');return;}
  hideVisitNoteMessage();
@@ -336,7 +336,7 @@ function keepNoteDraft(){
    throw new Error(`${noteSaverName(current.note)||'Someone else'} saved this note while you were writing. Nothing was overwritten and your text is still here.`);
   }
  }
- if(typeof visitNoteSaved==='function')visitNoteSaved(activeVisit);else notice('Note saved.');
+ if(typeof visitNoteSaved==='function')visitNoteSaved(activeVisit);
 }
 
 let me, patients = [], cursor, selected, workspace, activeVisit, busy = false;

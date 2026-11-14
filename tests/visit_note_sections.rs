@@ -443,7 +443,10 @@ async fn a_draft_saves_with_only_some_sections_and_signing_still_refuses_an_empt
             json!({"subjective":"  ","objective":"\n\t","assessment":"","plan":"   ","procedure":" \n "}),
             "all blank",
         ),
-        (json!({"subjective":"","objective":"","assessment":"","plan":""}), "all missing"),
+        (
+            json!({"subjective":"","objective":"","assessment":"","plan":""}),
+            "all missing",
+        ),
     ] {
         let (status, _) = save(&app, &doctor, &before, blank).await;
         assert_eq!(status, 400, "{why}");
@@ -457,7 +460,10 @@ async fn a_draft_saves_with_only_some_sections_and_signing_still_refuses_an_empt
         None,
     )
     .await;
-    assert_eq!(after["version"], before["version"], "a refused save changes nothing");
+    assert_eq!(
+        after["version"], before["version"],
+        "a refused save changes nothing"
+    );
 
     // Signing refuses a draft with an empty section, however often it is tried.
     let partial = json!({"subjective":"Synthetic history","objective":"","assessment":"Synthetic assessment","plan":"Synthetic plan"});
@@ -485,7 +491,10 @@ async fn a_draft_saves_with_only_some_sections_and_signing_still_refuses_an_empt
         None,
     )
     .await;
-    assert_eq!(still["status"], "in_progress", "a refused sign leaves the draft");
+    assert_eq!(
+        still["status"], "in_progress",
+        "a refused sign leaves the draft"
+    );
     assert_eq!(audits(&db, "visit.sign", id(&saved)).await, 0);
 
     // Filling the missing section as a draft, then signing, goes through.
