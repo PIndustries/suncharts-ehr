@@ -69,10 +69,16 @@ the same request: the EHR reads the existing appointment/visit before progressin
 The rooming view shows the available benefits for that service date. Starting an
 encounter does not automatically submit an eligibility request.
 
-Browser Back/Forward and the in-app Back control restore the patient, selected
-encounter, local step and supported worklist detail. History contains view
-identifiers, not clinical drafts or file bytes. Returning to a screen reloads it;
-it never repeats the preceding payment, claim submission or other mutation.
+Browser reload, Back/Forward and the in-app Back control restore the patient,
+selected encounter, local step and supported worklist detail. Screen addresses and
+history contain record identifiers, not clinical drafts, file bytes or patient
+names. A chart that can no longer be opened — deleted, or outside the signed-in
+person's access — is not reported as a failure: an address that named only that
+chart returns to the patient directory, and one that also named a deleted
+encounter keeps the patient record with the encounter dropped from the address.
+Signing out clears the address, so the next person never reopens the previous
+person's chart. Returning to a screen reloads it; it never repeats the preceding
+payment, claim submission or other mutation.
 
 ## Clinical lists
 

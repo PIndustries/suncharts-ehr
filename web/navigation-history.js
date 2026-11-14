@@ -125,31 +125,62 @@
   };
  }
  async function invoke(name,...args){if(typeof window[name]!=='function')throw new Error('This screen is not available.');return window[name](...args);}
+ // A chart that cannot be reopened is not announced as a failure. The chart pane
+ // returns to the same prompt the app shows before any chart is opened, so staff
+ // are simply invited to choose a patient from the directory beside it.
+ function chartUnavailable(){
+  $('chart').innerHTML='<div class="panel empty"><span class="empty-mark" aria-hidden="true">⊕</span><h2>Open a patient chart</h2><p>Select a patient from the directory to review their record,<br>manage orders, or document an encounter.</p></div>';
+ }
+ // The chart a screen address asks for, or null when the address names no record.
+ // Addresses carry identifiers only, so this can never name a patient.
+ function addressChart(hash){
+  const route=routeFromAddress(hash);
+  return route?.view==='patient'&&route.patient?route:null;
+ }
  async function restoreRoute(route,valid){
   if(!route||typeof route!=='object')throw new Error('This history entry is unavailable.');
   if(route.view==='patient'){
-   if(!route.patient){selected=undefined;activeVisit=undefined;workspace=undefined;$('chart').innerHTML='<div class="panel empty"><h2>Open a patient chart</h2><p>Select a patient from the directory.</p></div>';}
+   // The chart pane always has something to show, so an address that names no
+   // record — the patient directory — is settled here rather than opened.
+   const opens=Boolean(route.patient);
+   if(!opens){selected=undefined;activeVisit=undefined;workspace=undefined;chartSection='overview';$('chart').innerHTML='<div class="panel empty"><h2>Open a patient chart</h2><p>Select a patient from the directory.</p></div>';}
    await invoke('showClinical');
    if(!valid())return;
-   if(route.patient){
-    await invoke('selectPatient',route.patient,route.visit||null);
-    if(!valid())return;
-    if(route.visit&&!activeVisit)throw new Error('The earlier encounter is no longer available.');
-    if(route.section==='insurance'&&typeof insuranceAppointmentSelection!=='undefined'){
-     insuranceAppointmentSelection.delete(route.patient);
-     if(route.appointment&&workspace.appointments?.some(a=>a.id===route.appointment))insuranceAppointmentSelection.set(route.patient,route.appointment);
-    }
-    showChartSection(route.section||'overview');
-    if(chartSection==='visits'&&activeVisit)setEncounterSection(route.step||'documentation');
-    if(valid()&&route.billing&&chartSection==='billing')await invoke('restorePatientBillingRoute',route.billing);
-    if(!route.billing&&route.account&&workspace.billing?.accounts.some(a=>a.id===route.account))showBillingAccount(route.account,false);
-    if(route.order&&workspace.labs?.orders.some(o=>o.id===route.order))showOrder(route.order,false);
-    if(route.claim&&chartSection==='visits'&&encounterSection==='charges'&&workspace.billing?.accounts.some(a=>a.id===route.claim.account&&a.content.visit_id===activeVisit?.id)){
-     if(route.claim.claim)await invoke('showEncounterClaim',route.claim.claim,route.claim.account);
-     else await invoke('beginClaim',route.claim.account);
-    }
-    if(valid()&&route.file&&(chartSection==='documents'||chartSection==='visits'&&encounterSection==='files'))await invoke('restoreEncounterFileRoute',route.file);
+   if(!opens)return;
+   // The screen address decides how a failed reopen is cleaned up; a bad record
+   // identifier is refused by the address parser either way it arrived.
+   const addressForm=addressChart(location.hash);
+   // A chart that is gone, or not visible to this person, is not announced as a
+   // failure: staff are left on the patient directory instead.
+   try{await invoke('selectPatient',route.patient,route.visit||null)}
+   catch{
+    selected=undefined;activeVisit=undefined;workspace=undefined;chartSection='overview';
+    if(addressForm)history.replaceState(history.state,'',url()+address({view:'tool',nav:'nav-clinical'}));
+    chartUnavailable();return;
    }
+   if(!valid())return;
+   if(route.visit&&!activeVisit){
+    // The encounter this step belonged to is gone. The chart returns to the patient
+    // record and the address drops the encounter it can no longer open.
+    chartSection='overview';
+    if(addressForm)history.replaceState(history.state,'',url()+address({...route,visit:null,step:'documentation'}));
+    showChartSection('overview');
+    return;
+   }
+   if(route.section==='insurance'&&typeof insuranceAppointmentSelection!=='undefined'){
+    insuranceAppointmentSelection.delete(route.patient);
+    if(route.appointment&&workspace.appointments?.some(a=>a.id===route.appointment))insuranceAppointmentSelection.set(route.patient,route.appointment);
+   }
+   showChartSection(route.section||'overview');
+   if(chartSection==='visits'&&activeVisit)setEncounterSection(route.step||'documentation');
+   if(valid()&&route.billing&&chartSection==='billing')await invoke('restorePatientBillingRoute',route.billing);
+   if(!route.billing&&route.account&&workspace.billing?.accounts.some(a=>a.id===route.account))showBillingAccount(route.account,false);
+   if(route.order&&workspace.labs?.orders.some(o=>o.id===route.order))showOrder(route.order,false);
+   if(route.claim&&chartSection==='visits'&&encounterSection==='charges'&&workspace.billing?.accounts.some(a=>a.id===route.claim.account&&a.content.visit_id===activeVisit?.id)){
+    if(route.claim.claim)await invoke('showEncounterClaim',route.claim.claim,route.claim.account);
+    else await invoke('beginClaim',route.claim.account);
+   }
+   if(valid()&&route.file&&(chartSection==='documents'||chartSection==='visits'&&encounterSection==='files'))await invoke('restoreEncounterFileRoute',route.file);
    return;
   }
   if(route.view==='patientBilling'){await invoke('restorePatientBillingRoute',route.billing);return;}
