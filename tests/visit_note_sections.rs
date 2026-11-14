@@ -161,13 +161,19 @@ async fn started(app: &Router, desk: &Actor, doctor: &Actor, patient: Uuid, day:
     visit
 }
 async fn save(app: &Router, doctor: &Actor, visit: &Value, note: Value) -> (StatusCode, Value) {
+    // Every save uses the version of the last accepted response, which the visit JSON
+    // carries; a visit starts at version 1. Callers that save repeatedly must pass the
+    // response of the previous save, never the version the visit originally started with.
+    let version = visit["version"]
+        .as_i64()
+        .expect("a visit response carries its current version");
     call(
         app,
         Some(doctor),
         "PUT",
         &format!("/api/v1/visits/{}/note", id(visit)),
         note,
-        visit["version"].as_i64(),
+        Some(version),
     )
     .await
 }
@@ -333,11 +339,14 @@ async fn procedure_round_trips_through_draft_sign_amend_and_read() {
     assert_ne!(save(&app, &doctor, &visit, note.clone()).await.0, 200);
     note.as_object_mut().unwrap().remove("unexpected");
     // The four original sections may be blank in a draft; only the length limit remains per section.
+    // A blank plan still saves (and bumps the version), so the accepted save that follows
+    // must use the version that save returned, not the one the visit started with.
     let mut blank_sections = note.clone();
     blank_sections["plan"] = json!("  ");
-    assert_eq!(save(&app, &doctor, &visit, blank_sections).await.0, 200);
+    let (status, after_blank) = save(&app, &doctor, &visit, blank_sections).await;
+    assert_eq!(status, 200, "{after_blank}");
 
-    let (status, saved) = save(&app, &doctor, &visit, note.clone()).await;
+    let (status, saved) = save(&app, &doctor, &after_blank, note.clone()).await;
     assert_eq!(status, 200, "{saved}");
     assert_eq!(text_of(&saved["note"]), note);
     let (status, done) = call(
@@ -401,8 +410,10 @@ async fn a_draft_saves_with_only_some_sections_and_signing_still_refuses_an_empt
     let p = patient(&app, &desk, "Synthetic").await;
     let visit = started(&app, &desk, &doctor, p, 7).await;
 
-    // A draft is kept with text in only one section, Procedure included; the other four
-    // save as empty.
+    // A draft is kept with text in only one section, Procedure included. Each iteration
+    // starts from the same draft body, but a save replaces the note entirely, so the
+    // version sent must be the one the previous save returned.
+    let mut last = visit.clone();
     for (section, text) in [
         ("subjective", "Only the history so far"),
         ("objective", "Only the exam so far"),
@@ -413,7 +424,7 @@ async fn a_draft_saves_with_only_some_sections_and_signing_still_refuses_an_empt
         let mut draft =
             json!({"subjective":"","objective":"","assessment":"","plan":"","procedure":""});
         draft[section] = json!(text);
-        let (status, saved) = save(&app, &doctor, &visit, draft).await;
+        let (status, saved) = save(&app, &doctor, &last, draft).await;
         assert_eq!(status, 200, "{section} alone: {saved}");
         assert_eq!(saved["note"][section], text, "{section} alone");
         for other in ["subjective", "objective", "assessment", "plan"] {
@@ -421,6 +432,7 @@ async fn a_draft_saves_with_only_some_sections_and_signing_still_refuses_an_empt
                 assert_eq!(saved["note"][other], "", "{other} stays empty");
             }
         }
+        last = saved;
     }
 
     // A save with no text in any section, including Procedure, is refused and changes
@@ -467,7 +479,7 @@ async fn a_draft_saves_with_only_some_sections_and_signing_still_refuses_an_empt
 
     // Signing refuses a draft with an empty section, however often it is tried.
     let partial = json!({"subjective":"Synthetic history","objective":"","assessment":"Synthetic assessment","plan":"Synthetic plan"});
-    let (status, saved) = save(&app, &doctor, &visit, partial).await;
+    let (status, saved) = save(&app, &doctor, &last, partial).await;
     assert_eq!(status, 200, "{saved}");
     assert_eq!(saved["note"]["objective"], "");
     for _ in 0..2 {
