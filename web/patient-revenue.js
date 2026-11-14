@@ -296,7 +296,7 @@ async function postVisitChargesFromCard(){
  if(returnSection==='visits'&&typeof showEncounterSection==='function')showEncounterSection('charges');
  if(encounterRevenueState===state)encounterRevenueState={patient:null,identity:null,account:null,pending:null,data:null,loadedAt:0};
  await loadEncounterRevenueStatus(encounterChargeAccount(),true);
- notice('Insurance saved.');
+ notice('Charges posted.');
 }
 function openEncounterCharges(){
  if(typeof activeVisit==='undefined'||!activeVisit){showChartSection('visits');notice('Select or start the encounter before entering its procedures.',true);return;}

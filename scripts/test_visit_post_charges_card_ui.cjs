@@ -52,7 +52,8 @@ const useAccount=coverageId=>{ctx.workspace.billing={...ctx.workspace.billing,ac
  assert.equal(typeof postedReason,'string');assert.ok(postedReason.trim().length>0&&postedReason.length<=1000,'the post carries a non-empty reason of at most 1000 characters');
  assert.ok(sent.some(call=>call[0]==='rerender'),'the visit is reopened the way the lower form reopens it');
  assert.deepEqual(sent.at(-1),['/api/v1/patients/patient/billing/visit-summary?visit_id=visit'],'then the card reads what the server now says');
- assert.equal(ctx.revealed,'charges','the billing step is shown again after posting');
+  assert.equal(ctx.revealed,'charges','the billing step is shown again after posting');
+  assert.equal(ctx.noticed,'Charges posted.','the card says the charges were posted, not something else');
  assert.equal(opened.length,0,'a direct post never opens the lower form');assert.equal(scrolled.length,0);
  // Cancelling sends nothing and opens nothing.
  ctx.answer=false;reset();press();await settle();if(ctx.failed)throw new Error(ctx.failed);
