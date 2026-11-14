@@ -74,6 +74,20 @@ const row=(extra={})=>({packet_id:'form-open',packet_version:1,status:'sent',def
  // "Send a new link" on a row keeps that row's appointment.
  click(f,['data-patient-intake-resend'],{patientIntakeResend:'appointment-1'});await c.pending;
  assert.deepEqual(plain(f.calls.filter(call=>call[1]==='POST').at(-1)[2]),{appointment_id:'appointment-1'});
+ // The chart button names no appointment on purpose: the server attaches the
+ // patient's next visit, so the row that comes back shows its date and the
+ // patient's form says which visit it is for.
+ assert.equal(f.calls.filter(call=>call[1]==='POST').at(-1)[2].appointment_id,'appointment-1');
+ c.reply=(path,method)=>method==='POST'&&path.endsWith('/intake-forms')?{packet_id:'form-today',intake_url:'/intake#token=synthetic-today',secret_shown_once:true,expires_at:'2026-11-14T15:00:00Z',replaced:0,practice_name:'Synthetic Family Clinic'}:{patient_id:'patient-one',items:[row({packet_id:'form-today',appointment_id:'appointment-2',starts_at:'2026-11-13T14:30:00Z',appointment_title:'New patient visit',appointment_status:'booked'})],summary:{total:1,submitted:0,reviewed:0,cancelled:0}};
+ click(f,['data-patient-intake-send']);await c.pending;
+ assert.deepEqual(plain(f.calls.filter(call=>call[1]==='POST').at(-1)[2]),{});
+ assert.deepEqual(plain(f.calls.filter(call=>call[1]==='POST').at(-1).slice(0,2)),['/api/v1/patients/patient-one/intake-forms','POST']);
+ html=f.panel.innerHTML;
+ assert.match(html,/2026-11-13<small>New patient visit · booked<\/small>/,'a patient booked today is not shown as having no appointment');
+ assert.doesNotMatch(html,/No appointment/);
+ // Only a patient with nothing booked is shown without a visit, in plain words.
+ c.reply=()=>({patient_id:'patient-one',items:[row()],summary:{total:1,submitted:0,reviewed:0,cancelled:0}});await c.renderPatientIntakePackets();
+ assert.match(f.panel.innerHTML,/<span class="muted">No appointment<\/span>/);
  // Another patient or another signed-in person never sees the link.
  c.selected='patient-two';c.reply=()=>({patient_id:'patient-two',items:[],summary:{total:0,submitted:0,reviewed:0}});await c.renderPatientIntakePackets();assert.doesNotMatch(f.panel.innerHTML,/synthetic-link-secret/);assert.match(f.panel.innerHTML,/No intake forms have been sent to this patient yet\./);
  // Cancelling asks why first, then sends the reason with the form's current version.
