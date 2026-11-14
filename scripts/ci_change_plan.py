@@ -39,6 +39,10 @@ GLOBAL_UI_FILES = {
     "web/shell.js",
     "web/style.css",
 }
+# The wording baseline guards every web/*.js screen, so any browser-script or
+# baseline change has to re-run it.
+STAFF_WORDING_TEST = "test_staff_wording.cjs"
+STAFF_WORDING_BASELINE = "scripts/staff_wording_baseline.json"
 UI_ALIASES = {
     "web/appointment-workflows.js": {"test_appointment_workflows_ui.cjs"},
     "web/clinical.js": {
@@ -138,6 +142,9 @@ def build_plan(changed_files: list[str]) -> dict[str, object]:
             ui_tests.add(Path(path).name)
         if path.startswith("web/") and path.endswith(".js"):
             javascript_files.add(path)
+            ui_tests.add(STAFF_WORDING_TEST)
+        if path == STAFF_WORDING_BASELINE:
+            ui_tests.add(STAFF_WORDING_TEST)
 
         if path.startswith("scripts/") and path.endswith(".py"):
             name = Path(path).name
