@@ -39,7 +39,6 @@ function scheduleWhen(value){return typeof displayDateTime==='function'?displayD
 function scheduleClockRange(entry){return `${scheduleClock(entry.starts_at)} – ${scheduleClock(entry.ends_at)}`;}
 function scheduleMoney(cents){return new Intl.NumberFormat(undefined,{style:'currency',currency:'USD',minimumFractionDigits:cents%100?2:0,maximumFractionDigits:2}).format(cents/100);}
 function scheduleDayLabel(day,options={weekday:'long',month:'long',day:'numeric',year:'numeric'}){return new Date(`${day}T12:00:00`).toLocaleDateString(undefined,options);}
-function scheduleToday(){return localTime(new Date().toISOString()).slice(0,10);}
 function scheduleClosed(a){return ['cancelled','no_show'].includes(a.status);}
 function scheduleAllowed(resource,action='view'){return typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed(resource,action);}
 function scheduleCanBill(){return ['owner','clinician','front_desk'].includes(me?.role)&&scheduleAllowed('billing','create');}
