@@ -16,7 +16,7 @@ function billingChargeDraftSession(){if(billingChargeDraftIdentity!==me)clearBil
 // One editor host is shared by the charge form and non-charge forms (copay receipt, ledger entry,
 // statement). A non-charge render replaces the charge form, detaching it; a detached charge form
 // holds no live input, so its retained draft must stay exactly as it was until it is opened again.
-function chargeFormLive(){const form=$('billing-account-form');if(!form)return false;const host=billingEditorHost();return !!host&&host.contains(form);}
+function chargeFormLive(){const form=$('billing-account-form');if(!form)return false;const host=billingEditorHost();return !host||typeof host.contains!=='function'||host.contains(form);}
 function billingChargeKey(account,source,visit){return selected+':'+(account?'account:'+account:source?'source:'+source:'visit:'+(visit||'unlinked'));}
 function billingChargeMarkup(form){
  if(!form?.cloneNode)return null;
