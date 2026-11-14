@@ -7,7 +7,7 @@ const source=fs.readFileSync('web/navigation-history.js','utf8');
 const landing=fs.readFileSync('web/app.js','utf8').match(/function patientDirectoryLanding\(\)\{\n return '([^']*)'/)[1];
 const patient='22222222-2222-4222-8222-222222222222',other='55555555-5555-4555-8555-555555555555',visit='33333333-3333-4333-8333-333333333333';
 const clone=value=>value==null?value:JSON.parse(JSON.stringify(value));
-function fixture({hash='',visits=[visit]}={}){
+function fixture({hash='',visits=[visit],enterLandsOnHome=false}={}){
  const handlers={},events={},calls=[],drafts=new Map();
  const nodes={'clinical-workspace':{hidden:true},'workspace-back':{hidden:true,disabled:false},chart:{innerHTML:''},tools:{innerHTML:''}};
  let activeNav=null,entries=[{value:null,url:'/'}],index=0;
@@ -37,8 +37,10 @@ function fixture({hash='',visits=[visit]}={}){
  ctx.renderVisit=()=>{ctx.chartSection='visits';};ctx.showBillingAccount=id=>{ctx.billingSelected=id;};ctx.showOrder=id=>{ctx.labSelected=id;};
  ctx.signInScreen=()=>{ctx.me=null;ctx.selected=null;ctx.activeVisit=null;ctx.workspace=null;ctx.formText='';drafts.clear();nodes['clinical-workspace'].hidden=true;activeNav=null;ctx.page='Sign in';};
  ctx.encounterClaimRoute=()=>null;ctx.encounterFileRoute=()=>null;
- ctx.enter=async()=>ctx.showPracticeWorkspace();
- vm.createContext(ctx);vm.runInContext(source,ctx);
+  ctx.enter=async()=>ctx.showPracticeWorkspace();
+  vm.createContext(ctx);vm.runInContext(source,ctx);
+  // The real reload: whatever enter() leaves in the address bar says #/home.
+  if(enterLandsOnHome){const real=ctx.history.replaceState.bind(ctx.history);let armed=true;ctx.history.replaceState=(value,_,url)=>{if(armed&&url!=='/'){armed=false;return real(value,_,'/#/home');}return real(value,_,url);};}
  const settle=async()=>{for(let i=0;i<40;i++)await new Promise(r=>setImmediate(r));};
  return {ctx,history,nodes,calls,drafts,settle,entries:()=>clone(entries),directoryShown:()=>/Open a patient chart|Patient directory/.test(nodes.chart.innerHTML)};
 }
@@ -52,6 +54,29 @@ test('reload reopens the same patient, encounter and step of that encounter',asy
  assert.equal(f.directoryShown(),false,'the reopened chart does not fall back to the directory');
  assert.equal(f.entries().length,1,'reopening the address on reload does not add a history entry');
  assert.equal(c.location.hash,`#/patients/${patient}/encounter/${visit}/charges`,'the address still names the reopened encounter');
+});
+
+// The browser bug: the address the page was loaded with is read before enter() runs, because
+// enter() shows Home and its remember() overwrites the address with #/home first.
+test('a real reload where enter() leaves #/home in the address still reopens the loaded chart',async()=>{
+ const f=fixture({hash:`#/patients/${patient}/encounter/${visit}/documentation`,enterLandsOnHome:true}),c=f.ctx;
+ await c.enter();await f.settle();
+ assert.equal(c.selected,patient,'the loaded patient is opened');
+ assert.equal(c.activeVisit?.id,visit,'the loaded visit is opened');
+ assert.equal(c.chartSection,'visits');assert.equal(c.encounterSection,'documentation','the loaded step is shown');
+ assert.equal(c.location.hash,`#/patients/${patient}/encounter/${visit}/documentation`,'the final address is the loaded one, not #/home');
+ assert.equal(c.page,'Patients & encounters');assert.equal(c.mutations,0,'the reopen only reads the record back');
+});
+
+test('a reload loaded on #/home or no address behaves as before',async()=>{
+ for(const hash of ['#/home','']){
+  const f=fixture({hash,enterLandsOnHome:true}),c=f.ctx;
+  await c.enter();await f.settle();
+  assert.equal(c.page,'Practice home',`loaded address ${hash||'(none)'} stays on Home`);
+  assert.equal(c.selected,null);assert.equal(c.activeVisit,null);
+  assert.equal(c.location.hash,'#/home');
+  assert.equal(c.mutations,0);
+ }
 });
 
 test('reload whose encounter was deleted keeps the chart and drops the dead step',async()=>{

@@ -14,8 +14,10 @@
  const detailMethods={claim:'showClaim',era:'showEra',eraBatch:'showEraBatch',payment:'openPaymentStatus',paymentSettings:'openPaymentSettings',cardReaders:'openCardReaders',support:'showSupportTicket',portal:'showPortalThread'};
  const screenMethods={sun:'showSunPage',support:'showSupportTickets',connect:'showConnectServices',inbox:'showIntegrationInbox',outbound:'showOutboundWorkspace',previsit:'showPrevisit',reminders:'showReminderWorkspace'};
  const identity=()=>typeof me==='undefined'||!me?null:[me.tenant_id,me.user_id,me.role].join(':');
- let hadSession=false,generation=0,depth=0,restoring=false,current=null,pendingRoute=null,queued=null,restoreRunning=false,bouncing=false;
- const initial=history.state?.[tag];let initialPending=Boolean(initial);
+  let hadSession=false,generation=0,depth=0,restoring=false,current=null,pendingRoute=null,queued=null,restoreRunning=false,bouncing=false;
+  // The address the page was loaded with, captured before any screen can overwrite it.
+  const loadedHash=location.hash;let loadRouteDone=false;
+  const initial=history.state?.[tag];let initialPending=Boolean(initial);
  history.scrollRestoration='manual';
  const url=()=>location.pathname+location.search;
  const position=()=>({x:Math.max(0,Math.round(window.scrollX||0)),y:Math.max(0,Math.round(window.scrollY||0))});
@@ -116,7 +118,7 @@
     release();if(started!==generation||(actor!==identity()&&name!=='enter'&&!(name==='run'&&!actor)))return;
     if(route){const value=route(args);if(value)pendingRoute=value;}
     if(name==='enter'&&initialPending){initialPending=false;if(initial.identity===identity()&&initial.version===version&&initial.url===url()){queued=initial;void drain();return;}}
-    if(name==='enter'){hadSession=true;if(openAddress())return;}
+    if(name==='enter'){hadSession=true;openLoadedAddress();if(openAddress())return;}
     remember();
    };
    let result;try{result=original.apply(this,args);}catch(error){release();throw error;}
@@ -224,12 +226,24 @@
    }
   }finally{restoring=false;restoreRunning=false;remember();backControl();}
  }
- // Open the screen named by the address bar: a bookmark, a pasted link, or an edited address.
- function openAddress(){
-  const route=routeFromAddress(location.hash);if(!route||!identity())return false;
-  if(current&&same(current.route,route))return false;
-  queued={version,identity:identity(),route,scroll:{x:0,y:0},url:url(),index:current?.index||0};void drain();return true;
- }
+  // Open the screen named by the address bar: a bookmark, a pasted link, or an edited address.
+  function openAddress(){
+   const route=routeFromAddress(location.hash);if(!route||!identity())return false;
+   if(current&&same(current.route,route))return false;
+   queued={version,identity:identity(),route,scroll:{x:0,y:0},url:url(),index:current?.index||0};void drain();return true;
+  }
+  // A reload lands on the address it was loaded with: enter() has already shown Home and
+  // overwritten the address, so the captured load-time address is opened through the same
+  // queue openAddress uses. Once per page load, only while the signed-in session is established;
+  // a later sign-out then sign-in is a new person's page and never reopens this address.
+  function openLoadedAddress(){
+   if(loadRouteDone)return;loadRouteDone=true;
+   if(!hadSession||!identity())return;
+   const route=routeFromAddress(loadedHash);if(!route)return;
+   if(route.view==='tool'&&route.nav==='nav-practice')return;
+   if(current&&same(current.route,route))return;
+   queued={version,identity:identity(),route,scroll:{x:0,y:0},url:url(),index:current?.index||0};void drain();
+  }
  window.addEventListener('hashchange',()=>{if(!restoring&&!depth)openAddress();});
  // A browser Back/Forward action reads saved data; it never repeats a form submission.
  window.addEventListener('popstate',event=>{
