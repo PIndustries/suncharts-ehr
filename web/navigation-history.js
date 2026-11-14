@@ -131,7 +131,7 @@
  // returns to the same prompt the app shows before any chart is opened, so staff
  // are simply invited to choose a patient from the directory beside it.
  function chartUnavailable(){
-  $('chart').innerHTML='<div class="panel empty"><span class="empty-mark" aria-hidden="true">⊕</span><h2>Open a patient chart</h2><p>Select a patient from the directory to review their record,<br>manage orders, or document an encounter.</p></div>';
+  $('chart').innerHTML='<div class="panel empty"><span class="empty-mark" aria-hidden="true">⊕</span><h2>Open a patient chart</h2><p>Select a patient from the directory to review their record,<br>manage orders, or document a visit.</p></div>';
  }
  // The chart a screen address asks for, or null when the address names no record.
  // Addresses carry identifiers only, so this can never name a patient.
