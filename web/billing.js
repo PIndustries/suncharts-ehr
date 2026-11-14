@@ -13,6 +13,10 @@ const billBalance=b=>b.status==='posted'?b.total_cents+entrySum(b.id):null;
 const billingChargeDrafts=new Map();let billingChargeDraftIdentity;let billingChargeBaselines=new WeakMap();
 function clearBillingChargeDrafts(){billingChargeDrafts.clear();billingChargeBaselines=new WeakMap();billingChargeDraftIdentity=me;}
 function billingChargeDraftSession(){if(billingChargeDraftIdentity!==me)clearBillingChargeDrafts();}
+// One editor host is shared by the charge form and non-charge forms (copay receipt, ledger entry,
+// statement). A non-charge render replaces the charge form, detaching it; a detached charge form
+// holds no live input, so its retained draft must stay exactly as it was until it is opened again.
+function chargeFormLive(){const form=$('billing-account-form');if(!form)return false;const host=billingEditorHost();return !!host&&host.contains(form);}
 function billingChargeKey(account,source,visit){return selected+':'+(account?'account:'+account:source?'source:'+source:'visit:'+(visit||'unlinked'));}
 function billingChargeMarkup(form){
  if(!form?.cloneNode)return null;
@@ -25,6 +29,10 @@ function billingChargeMarkup(form){
 }
 function captureBillingChargeDraft(){
  billingChargeDraftSession();const form=$('billing-account-form');if(!form||form.dataset?.patient!==selected||form.dataset.draftReadOnly)return;
+ // The editor host is shared with non-charge forms (copay receipts, ledger entries, statements).
+ // Once one is on top, the charge form is detached; a detached form is not live input and must
+ // never be captured. Its draft stays exactly as it was until the charge editor is opened again.
+ if(!chargeFormLive())return;
  const baseline=billingChargeBaselines.get(form),html=billingChargeMarkup(form);if(!baseline||html===null)return;
  const key=form.dataset.draftKey;if(html===baseline)billingChargeDrafts.delete(key);else billingChargeDrafts.set(key,{key,patient:selected,account:form.dataset.id||null,visit:form.elements.visit_id?.value||null,version:Number(form.dataset.version),html,baseline});
 }
@@ -42,6 +50,9 @@ function restoreBillingChargeDraft(account,source,visit){
 function resumeEncounterChargeDraft(){
  if(typeof activeVisit==='undefined'||!activeVisit||chartSection!=='visits')return;
  const host=$('encounter-billing-editor');if(!host||host.innerHTML.trim())return;
+ // A charge editor still attached to another host was never replaced; its form is live and its
+ // draft belongs to that editor. Resuming here would render a second copy of the same form.
+ const form=$('billing-account-form');if(chargeFormLive())return;
  const account=(workspace.billing?.accounts||[]).find(a=>a.status!=='void'&&a.content.visit_id===activeVisit.id);
  if(billingChargeDraftFor(account?.id,null,activeVisit.id))restoreBillingChargeDraft(account,null,activeVisit.id);
 }
