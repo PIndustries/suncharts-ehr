@@ -141,8 +141,17 @@ class DeploymentArtifactsTest(unittest.TestCase):
     def test_release_publication_requires_full_regression(self):
         workflow = (ROOT / ".github" / "workflows" / "publish-image.yml").read_text()
         amd64 = workflow.split("  publish_amd64:", 1)[1].split("  publish_arm64:", 1)[0]
-        self.assertIn("needs: [full_regression, build_amd64]", amd64)
+        self.assertIn(
+            "needs: [prior_regression, full_regression, build_amd64]", amd64
+        )
         self.assertIn("needs.full_regression.result == 'success'", amd64)
+        # A regression that already passed on main for this exact commit lets
+        # the skipped in-run regression stand in for a fresh one.
+        self.assertIn(
+            "needs.prior_regression.outputs.passed == 'true' && "
+            "needs.full_regression.result == 'skipped'",
+            amd64,
+        )
         self.assertIn("needs.build_amd64.result == 'success'", amd64)
         full = (ROOT / ".github" / "workflows" / "full-regression.yml").read_text()
         self.assertIn("cargo clippy --locked --all-targets -- -D warnings", full)
@@ -184,7 +193,10 @@ class DeploymentArtifactsTest(unittest.TestCase):
 
         # The parallel build waits for nothing and can publish nothing.
         self.assertNotIn("needs:", build)
-        self.assertNotIn("needs:", regression)
+        # The regression waits only for the cheap prior-run lookup; it can
+        # publish nothing.
+        self.assertIn("needs: prior_regression", regression)
+        self.assertNotIn("build_amd64", regression)
         self.assertIn("permissions:\n      contents: read\n", build)
         self.assertIn("push: false", build)
         self.assertIn("outputs: type=cacheonly", build)

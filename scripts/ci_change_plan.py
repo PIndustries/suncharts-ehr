@@ -161,6 +161,7 @@ def build_plan(changed_files: list[str]) -> dict[str, object]:
         if path.startswith(".github/workflows/"):
             python_tests.add("scripts.test_ci_change_plan")
             python_tests.add("scripts.test_ci_rust_shards")
+            python_tests.add("scripts.test_release_workflow")
         if path.startswith("tests/") and path.endswith(".rs"):
             # Adding, renaming or removing a test binary changes the release
             # shard plan; catch a broken plan here, not on the release tag.
