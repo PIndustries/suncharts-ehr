@@ -16,7 +16,7 @@ function fixture(role='front_desk'){
   esc:escape,date:value=>String(value??'').slice(0,10),human:value=>String(value).replaceAll('_',' '),notice:message=>notices.push(message),showTool(){},run:work=>ctx.pending=work(),
   $:id=>id==='patient-intake-panel'?panel:id==='patient-intake-summary'?summary:id==='tools'?tools:null,workspaceResourceAllowed:()=>true};
  ctx.api=async(path,method='GET',body,version)=>{calls.push([path,method,body,version]);return ctx.reply(path,method,body);};
- vm.createContext(ctx);vm.runInContext(source,ctx);
+ vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/display-format.js','utf8'),ctx);vm.runInContext(source,ctx);
  return {ctx,panel,tools,handlers,calls,notices};
 }
 const click=(f,attributes,dataset={})=>{const button={dataset,textContent:'',hasAttribute:name=>attributes.includes(name),closest:()=>null};f.handlers.click[0]({target:{closest:()=>button},preventDefault(){},stopImmediatePropagation(){}});return button;};
@@ -42,7 +42,19 @@ const row=(extra={})=>({packet_id:'form-open',packet_version:1,status:'sent',def
  assert.match(html,/A form that is not tied to an appointment is already waiting\. Sending again cancels that link and makes a new one\. Forms sent for an appointment keep their own link\./);
  // The counts match the list: cancelled forms are listed and counted as cancelled, and left out of the chart overview.
  assert.match(html,/7 forms · 1 filled in and waiting for review · 1 reviewed · 1 cancelled/);assert.equal(c.$('patient-intake-summary').textContent,'6 intake forms · 1 submitted awaiting review');
+ assert.doesNotMatch(html,/1 forms|1 intake forms/,'one form is never written as a plural');
  assert.doesNotMatch(html,/intake-link|synthetic-link-secret/,'no link is shown until one is made');
+
+ // A single form reads as one, on both the panel and the chart overview.
+ {
+  const solo=fixture(),sc=solo.ctx;
+  sc.reply=()=>({patient_id:'patient-one',items:[row()],summary:{total:1,submitted:1,reviewed:0,cancelled:0},next_cursor:null});
+  await sc.renderPatientIntakePackets();
+  assert.match(solo.panel.innerHTML,/>1 form · 1 filled in and waiting for review · 0 reviewed</);
+   assert.match(solo.panel.innerHTML,/>1 form · 1 filled in and waiting for review · 0 reviewed</);
+  assert.equal(sc.$('patient-intake-summary').textContent,'1 intake form · 1 submitted awaiting review');
+  assert.match(solo.panel.innerHTML,/data-patient-intake-packet="form-open"/);
+ }
 
  // Sending shows the link once, with copy, email, expiry and the only-now note.
  click(f,['data-patient-intake-send']);await c.pending;html=f.panel.innerHTML;

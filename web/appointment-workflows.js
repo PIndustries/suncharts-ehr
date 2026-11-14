@@ -167,7 +167,7 @@ document.addEventListener('submit',e=>{
  if(!['series-cancel-form','reminder-preferences-form','appointment-reminder-create','reminder-filter-form','reminder-settings-form'].includes(form.id)&&!form.classList.contains('reminder-action-form'))return;
  e.preventDefault();e.stopImmediatePropagation();run(async()=>{
   const d=Object.fromEntries(new FormData(form));
-  if(form.id==='series-cancel-form'){await api(`/api/v1/schedule/series/${form.dataset.series}/actions`,'POST',{action:'cancel_upcoming',reason:d.reason,occurrence_versions:JSON.parse(form.dataset.occurrences)},Number(form.dataset.version));await showSchedule();await showAppointmentSeries(form.dataset.series);notice('Future booked series visits cancelled with history.');return;}
+  if(form.id==='series-cancel-form'){await api(`/api/v1/schedule/series/${form.dataset.series}/actions`,'POST',{action:'cancel_upcoming',reason:d.reason,occurrence_versions:JSON.parse(form.dataset.occurrences)},Number(form.dataset.version));await showSchedule();await showAppointmentSeries(form.dataset.series);notice('Upcoming visits in this series are cancelled.');return;}
   if(form.id==='reminder-preferences-form'){await api(`/api/v1/patients/${form.dataset.patient}/reminder-preferences`,'PUT',{channel:d.channel,destination:d.destination,consented:d.consented==='on',verified:d.verified==='on',automatic_email:d.automatic_email==='on',reason:d.reason},Number(form.dataset.version));await appointmentDetail(reminderAppointment.id);notice('Patient reminder preferences saved.');return;}
   if(form.id==='appointment-reminder-create'){await api(`/api/v1/appointments/${form.dataset.appointment}/reminders`,'POST',{request_id:form.dataset.request,before_minutes:Number(d.before_minutes),reason:d.reason},Number(form.dataset.version));await appointmentDetail(form.dataset.appointment);notice('Appointment reminder scheduled.');return;}
   if(form.id==='reminder-filter-form'){reminderFilter=d.state;await showReminderWorkspace();return;}
@@ -175,7 +175,7 @@ document.addEventListener('submit',e=>{
   if(form.dataset.liveStale==='true')throw new Error('This reminder changed. Retain or discard your unsent action before continuing.');
   await api(`/api/v1/schedule/reminders/${form.dataset.id}/actions`,'POST',d,Number(form.dataset.version));
   if($('reminders-workspace'))await showReminderWorkspace();else if(reminderAppointment)await appointmentDetail(reminderAppointment.id);
-  notice('Reminder outcome recorded with history.');
+  notice('Reminder updated.');
  });
 },true);
 document.addEventListener('click',e=>{
