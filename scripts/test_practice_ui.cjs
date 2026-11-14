@@ -206,7 +206,7 @@ async function testPracticeQueues() {
   await f.evaluate('showPracticeWorkspace()');
   f.evaluate(`practiceBoardMode='unfinished';renderPracticeWorkspace()`);
   let html = practiceHtml(f);
-  assert.match(html, /No unfinished encounters/);
+  assert.match(html, /No unfinished visits/);
   assert.match(html, /No results to review/);
   assert.doesNotMatch(html, /could not be loaded/);
   const values = empty();
@@ -249,7 +249,7 @@ async function testPracticeQueues() {
   assert.doesNotMatch(html, /No results to review|<script>/);
   assert.match(html, /&lt;script&gt;fixture failure&lt;\/script&gt;/);
   f.evaluate(`practiceBoardMode='unfinished';renderPracticeWorkspace()`);
-  assert.match(practiceHtml(f), /No unfinished encounters/); // An independent queue remains usable.
+  assert.match(practiceHtml(f), /No unfinished visits/); // An independent queue remains usable.
 }
 
 async function testPracticeFilters() {
