@@ -70,6 +70,6 @@ document.addEventListener('submit',event=>{
   if(activeVisit?.id!==id||selected!==patient)return;
   rememberVisit(data.visit,'diagnoses');
   const host=$('visit-diagnoses');if(host)showVisitDiagnoses(host,data,id,patient);
-  notice('Encounter diagnoses saved with revision history.');
+  notice('Diagnoses saved.');
  });
 },true);
