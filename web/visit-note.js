@@ -6,7 +6,7 @@
 const visitNoteSources=new Map(),visitNoteUndo=new Map(),visitNotePeople=new Map();
 function clearVisitNoteSession(){visitNoteSources.clear();visitNoteUndo.clear();visitNotePeople.clear();}
 function visitNoteSaved(visit){if(!visit)return;visitNoteUndo.delete(visit.id);visitNoteBar(visit.id);if($('note-message')?.isConnected!==false)showVisitNoteMessage('Note saved.');showVisitNoteAuthorship();}
-// Messages shown beside Save note and Sign encounter note, where the person just clicked.
+// Messages shown beside Save note and Sign note, where the person just clicked.
 function showVisitNoteMessage(message){
  const host=$('note-message');if(!host||host.isConnected===false)return;
  host.textContent=message;host.hidden=!message;

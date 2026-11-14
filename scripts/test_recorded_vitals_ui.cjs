@@ -9,7 +9,7 @@ function card(visits,activeVisit){
  const c=vm.createContext({console,Number,Object,Boolean,activeVisit,workspace:{visits,clinical:{items:[]},labs:{reports:[],acknowledgments:[],orders:[]}},esc:v=>String(v??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])),date:String,
   displayStatus:String,displayDate:String,displayCount:(n,word)=>`${n} ${word}`,patientWorkflowActions:()=>'',chartContactSummary:()=>'',patientEncounterHistoryRows:()=>'',patientEncounterHistoryEntries:()=>[],encounterDateLabel:v=>'Nov 10, 2026 · '+v.id});
  vm.runInContext(overview,c);const html=vm.runInContext('chartOverview()',c);
- return html.slice(html.indexOf('Latest vitals'),html.indexOf('Encounter history'));
+ return html.slice(html.indexOf('Latest vitals'),html.indexOf('Visit history'));
 }
 const full={systolic_mm_hg:120,diastolic_mm_hg:80,heart_rate_bpm:72,temperature_c:36.8,oxygen_saturation_pct:98,weight_kg:70,height_cm:170};
 const rows=html=>[...html.matchAll(/<dt>([^<]+)<\/dt><dd>([^<]*) <small>([^<]*)<\/small><\/dd>/g)].map(match=>`${match[1]}: ${match[2]} ${match[3]}`);
