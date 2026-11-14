@@ -371,6 +371,20 @@ impl ClinicalBackend for PostgresBackend {
         mut note: SoapNote,
     ) -> Result<Visit> {
         note.validate()?;
+        // Any sections may be empty in a draft, but saving a note with nothing in it is
+        // refused, so the record never holds an empty note under someone's name.
+        if [
+            &note.subjective,
+            &note.objective,
+            &note.assessment,
+            &note.plan,
+            &note.procedure,
+        ]
+        .into_iter()
+        .all(|section| section.trim().is_empty())
+        {
+            return Err(Error::Invalid("at least one section needs text"));
+        }
         if note.procedure.trim().is_empty() {
             note.procedure.clear();
         }
@@ -594,6 +608,17 @@ impl ClinicalBackend for PostgresBackend {
         ))?)
         .map_err(|_| Error::Conflict("invalid SOAP note"))?;
         note.validate()?;
+        // A draft may hold anything; signing still needs the four SOAP sections filled.
+        for section in [
+            &note.subjective,
+            &note.objective,
+            &note.assessment,
+            &note.plan,
+        ] {
+            if section.trim().is_empty() {
+                return Err(Error::Invalid("text is empty or too long"));
+            }
+        }
         sqlx::query("UPDATE visits SET status='signed',signed_by=$3,signed_at=now(),version=version+1 WHERE tenant_id=$1 AND id=$2")
             .bind(a.tenant_id).bind(id).bind(a.sub).execute(&mut *tx).await?;
         sqlx::query("UPDATE appointments SET status='completed',version=version+1 WHERE tenant_id=$1 AND id=$2")

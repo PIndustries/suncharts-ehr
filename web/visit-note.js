@@ -5,7 +5,20 @@
 // this tab only and are dropped when the signed-in person changes.
 const visitNoteSources=new Map(),visitNoteUndo=new Map(),visitNotePeople=new Map();
 function clearVisitNoteSession(){visitNoteSources.clear();visitNoteUndo.clear();visitNotePeople.clear();}
-function visitNoteSaved(visit){if(!visit)return;visitNoteUndo.delete(visit.id);visitNoteBar(visit.id);showVisitNoteAuthorship();}
+function visitNoteSaved(visit){if(!visit)return;visitNoteUndo.delete(visit.id);visitNoteBar(visit.id);if($('note-message')?.isConnected!==false)showVisitNoteMessage('Note saved.');showVisitNoteAuthorship();}
+// Messages shown beside Save note and Sign encounter note, where the person just clicked.
+function showVisitNoteMessage(message){
+ const host=$('note-message');if(!host||host.isConnected===false)return;
+ host.textContent=message;host.hidden=!message;
+}
+function hideVisitNoteMessage(){const host=$('note-message');if(host&&host.isConnected!==false){host.textContent='';host.hidden=true;}}
+// A draft needs at least some text; signing needs Subjective, Objective, Assessment and Plan.
+function hasVisitNoteText(form){return noteSectionKeys.some(key=>String(form?.elements[key]?.value??'').trim());}
+function noteMissingForSign(form){return noteSectionKeys.slice(0,4).filter(key=>!String(form?.elements[key]?.value??'').trim());}
+function refuseVisitNoteSigning(form,missing){
+ showVisitNoteMessage(`Fill in ${visitNoteNames(missing)} before signing.`);
+ form?.elements?.[missing[0]]?.focus?.();
+}
 // Names of the people on a note: who the visit is assigned to, who signed it and who corrected it.
 // The signed-in person is known already; anyone else is asked for once per saved version.
 function visitNotePersonIds(visit){return [visit.clinician_id,visit.signed_by,...(workspace?.amendments||[]).filter(a=>a.visit_id===visit.id).map(a=>a.author_id)].filter(Boolean);}

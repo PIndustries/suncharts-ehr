@@ -332,10 +332,10 @@ async fn procedure_round_trips_through_draft_sign_amend_and_read() {
     note["unexpected"] = json!("x");
     assert_ne!(save(&app, &doctor, &visit, note.clone()).await.0, 200);
     note.as_object_mut().unwrap().remove("unexpected");
-    // The four original sections stay required.
-    let mut missing = note.clone();
-    missing["plan"] = json!("  ");
-    assert_eq!(save(&app, &doctor, &visit, missing).await.0, 400);
+    // The four original sections may be blank in a draft; only the length limit remains per section.
+    let mut blank_sections = note.clone();
+    blank_sections["plan"] = json!("  ");
+    assert_eq!(save(&app, &doctor, &visit, blank_sections).await.0, 200);
 
     let (status, saved) = save(&app, &doctor, &visit, note.clone()).await;
     assert_eq!(status, 200, "{saved}");
@@ -389,6 +389,125 @@ async fn procedure_round_trips_through_draft_sign_amend_and_read() {
     .await;
     assert_eq!(status, 200, "{chart}");
     assert_eq!(chart["visits"][0]["note"]["procedure"], note["procedure"]);
+}
+
+#[tokio::test]
+async fn a_draft_saves_with_only_some_sections_and_signing_still_refuses_an_empty_one() {
+    let db = database().await;
+    let app = application(db.clone());
+    let tenant = Uuid::new_v4();
+    let doctor = actor(tenant, Role::Clinician, None);
+    let desk = actor(tenant, Role::FrontDesk, None);
+    let p = patient(&app, &desk, "Synthetic").await;
+    let visit = started(&app, &desk, &doctor, p, 7).await;
+
+    // A draft is kept with text in only one section, Procedure included; the other four
+    // save as empty.
+    for (section, text) in [
+        ("subjective", "Only the history so far"),
+        ("objective", "Only the exam so far"),
+        ("assessment", "Only the assessment so far"),
+        ("plan", "Only the plan so far"),
+        ("procedure", "Only the procedure so far"),
+    ] {
+        let mut draft =
+            json!({"subjective":"","objective":"","assessment":"","plan":"","procedure":""});
+        draft[section] = json!(text);
+        let (status, saved) = save(&app, &doctor, &visit, draft).await;
+        assert_eq!(status, 200, "{section} alone: {saved}");
+        assert_eq!(saved["note"][section], text, "{section} alone");
+        for other in ["subjective", "objective", "assessment", "plan"] {
+            if other != section {
+                assert_eq!(saved["note"][other], "", "{other} stays empty");
+            }
+        }
+    }
+
+    // A save with no text in any section, including Procedure, is refused and changes
+    // nothing about the note.
+    let (_, before) = call(
+        &app,
+        Some(&doctor),
+        "GET",
+        &format!("/api/v1/visits/{}", id(&visit)),
+        Value::Null,
+        None,
+    )
+    .await;
+    for (blank, why) in [
+        (
+            json!({"subjective":"","objective":"","assessment":"","plan":"","procedure":""}),
+            "all empty",
+        ),
+        (
+            json!({"subjective":"  ","objective":"\n\t","assessment":"","plan":"   ","procedure":" \n "}),
+            "all blank",
+        ),
+        (json!({"subjective":"","objective":"","assessment":"","plan":""}), "all missing"),
+    ] {
+        let (status, _) = save(&app, &doctor, &before, blank).await;
+        assert_eq!(status, 400, "{why}");
+    }
+    let (_, after) = call(
+        &app,
+        Some(&doctor),
+        "GET",
+        &format!("/api/v1/visits/{}", id(&visit)),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(after["version"], before["version"], "a refused save changes nothing");
+
+    // Signing refuses a draft with an empty section, however often it is tried.
+    let partial = json!({"subjective":"Synthetic history","objective":"","assessment":"Synthetic assessment","plan":"Synthetic plan"});
+    let (status, saved) = save(&app, &doctor, &visit, partial).await;
+    assert_eq!(status, 200, "{saved}");
+    assert_eq!(saved["note"]["objective"], "");
+    for _ in 0..2 {
+        let (status, refused) = call(
+            &app,
+            Some(&doctor),
+            "POST",
+            &format!("/api/v1/visits/{}/sign", id(&saved)),
+            Value::Null,
+            saved["version"].as_i64(),
+        )
+        .await;
+        assert_eq!(status, 400, "an empty Objective refuses signing: {refused}");
+    }
+    let (_, still) = call(
+        &app,
+        Some(&doctor),
+        "GET",
+        &format!("/api/v1/visits/{}", id(&saved)),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(still["status"], "in_progress", "a refused sign leaves the draft");
+    assert_eq!(audits(&db, "visit.sign", id(&saved)).await, 0);
+
+    // Filling the missing section as a draft, then signing, goes through.
+    let (status, completed) = save(
+        &app,
+        &doctor,
+        &still,
+        json!({"subjective":"Synthetic history","objective":"Synthetic exam","assessment":"Synthetic assessment","plan":"Synthetic plan"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{completed}");
+    let (status, done) = call(
+        &app,
+        Some(&doctor),
+        "POST",
+        &format!("/api/v1/visits/{}/sign", id(&completed)),
+        Value::Null,
+        completed["version"].as_i64(),
+    )
+    .await;
+    assert_eq!(status, 200, "{done}");
+    assert_eq!(done["status"], "signed");
 }
 
 #[tokio::test]
