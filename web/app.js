@@ -130,6 +130,15 @@ let chartSection='overview',encounterSection='documentation',patientDirectoryPre
 function storedPatientDirectoryPreference(){try{return localStorage.getItem('suncharts.patientDirectory.besideChart')==='shown';}catch{return false;}}
 function rememberPatientDirectoryPreference(visible){patientDirectoryPreference=Boolean(visible);try{localStorage.setItem('suncharts.patientDirectory.besideChart',visible?'shown':'hidden');}catch{}}
 let patientWorkspaceGeneration=0;
+// After a note is signed, a short reminder that nothing is billed yet sits above the
+// encounter until the clinician moves on. Text and a step link only — never amounts.
+let postSignReminder=null;
+function postSignReminderMarkup(){
+ if(!postSignReminder||typeof activeVisit==='undefined'||activeVisit?.id!==postSignReminder.visitId)return '';
+ // Once the visit's charges are posted the reminder has done its job; nothing is kept in the browser.
+ if(typeof encounterChargeAccount==='function'&&encounterChargeAccount()?.status==='posted'){postSignReminder=null;return '';}
+ return `<div id="sign-charge-reminder" class="notice notice-with-action" role="status"><span><strong>Heads up:</strong> ${esc(postSignReminder.message)}</span><button type="button" class="text-button" data-encounter-section="charges">Open Procedures &amp; billing</button></div>`;
+}
 function setPatientDirectoryVisible(visible){
  $('clinical-workspace')?.classList.toggle('directory-collapsed',!visible);
  const button=$('toggle-directory');if(!button)return;
@@ -396,6 +405,7 @@ function signInScreen() {
   $('login-error').textContent='';
   $('patients').replaceChildren(); $('chart').replaceChildren(); $('patient-form').reset(); $('patient-form').hidden=true;
   $('search').value=''; $('notice').hidden=true; $('tools').replaceChildren(); $('tools').hidden=true;
+  postSignReminder=null;
   void refreshSignInMode();
 }
 async function refreshSignInMode(){
@@ -512,9 +522,12 @@ async function selectPatient(id, keepVisit, stillCurrent=()=>true) {
   captureVisitDrafts(); // Include edits made while the chart reads were in flight.
   next.history=history?.items??null;next.clinical=clinical;next.labs=labs;next.billing=billing;next.demographics=demographics;
   if(id!==selected){chartSection='overview';encounterSection=['nurse','medical_assistant'].includes(me?.role)?'intake':'documentation';}
-  if(keepVisit&&activeVisit?.id!==keepVisit){chartSection='visits';encounterSection=['nurse','medical_assistant'].includes(me?.role)?'intake':'documentation';}
+  if(keepVisit&&activeVisit?.id!==keepVisit){chartSection='visits';encounterSection=['nurse','medical_assistant'].includes(me?.role)?'intake':'documentation';postSignReminder=null;}
   workspace=next;billingPayers=payers.items;selected=id;
   activeVisit=keepVisit===null ? undefined : keepVisit ? workspace.visits.find(v=>v.id===keepVisit) : workspace.visits.find(v=>v.status==='in_progress'&&v.clinician_id===me.user_id)||workspace.visits.find(v=>v.status==='in_progress');
+  // Opening a different encounter retires the sign reminder; signing then re-opening the
+  // same visit keeps it, because the charges may still be missing.
+  if(postSignReminder&&postSignReminder.visitId!==id)postSignReminder=null;
   renderPatients();renderChart();
   setPatientDirectoryVisible(patientDirectoryPreference===true);
 }
@@ -527,7 +540,10 @@ async function openPatientEncounter(id){
  const visit=await api(`/api/v1/visits/${id}`);
  if(me!==openingIdentity||selected!==openingPatient||workspace!==openingWorkspace||openingGeneration!==patientWorkspaceGeneration)return;
  if(visit.id!==id||visit.patient_id!==openingPatient)throw new Error('This encounter does not belong to the selected patient.');
- captureVisitDrafts();rememberVisit(visit);chartSection='visits';encounterSection=isRoomingStaff()?'intake':'documentation';renderChart();
+ captureVisitDrafts();rememberVisit(visit);chartSection='visits';encounterSection=isRoomingStaff()?'intake':'documentation';
+ // Opening a different encounter retires the sign reminder; re-opening the same visit keeps it.
+ if(postSignReminder&&postSignReminder.visitId!==id)postSignReminder=null;
+ renderChart();
 }
 
 const date = s => new Date(s).toLocaleString(undefined,{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
@@ -547,7 +563,7 @@ function renderChart() {
   if(tabs.some(([key])=>key==='billing'))tabs.splice(tabs.findIndex(([key])=>key==='billing'),0,['insurance','Insurance']);
   $('chart').innerHTML=`<section id="patient-banner" class="patient-banner" aria-label="Patient summary">${typeof patientBannerMarkup==='function'?patientBannerMarkup():''}</section><div class="chart-context">${chartNavigation(tabs)}</div>
   <section id="patient-lifecycle" class="panel" hidden></section>
-  <div id="encounter-progress">${encounterWorkflow()}</div>
+  <div id="encounter-progress">${postSignReminderMarkup()}${encounterWorkflow()}</div>
   <div id="encounter-start-editor"></div>
   ${chartOverview()}
   <section id="patient-demographics"></section>
@@ -610,7 +626,7 @@ function setEncounterSection(key){
  if(key==='charges'&&typeof renderEncounterRevenue==='function')void renderEncounterRevenue();
  if(key==='files'&&typeof renderEncounterFiles==='function')void renderEncounterFiles();
 }
-function refreshEncounterProgress(){if(workspace&&$('encounter-progress'))$('encounter-progress').innerHTML=encounterWorkflow();}
+function refreshEncounterProgress(){if(workspace&&$('encounter-progress'))$('encounter-progress').innerHTML=postSignReminderMarkup()+encounterWorkflow();}
 function openEncounterStep(step){
  if(step==='checkout'){setEncounterSection('checkout');return;}
  if(step==='clinical'){showChartSection('clinical');return;}
@@ -957,7 +973,13 @@ document.addEventListener('click',e=>{
         if(!await confirmAction(`Signing locks the note and records you as the signer. The visit stays assigned to ${name}. Check the rendering provider on the claim if you saw the patient.`,{eyebrow:'COVERING A VISIT',title:`Sign as yourself for ${name}’s visit?`,confirmLabel:'Sign',cancelLabel:'Cancel'}))return;
       }else if(!await confirmAction('Signing locks the clinical note. Continue to charges and checkout after signing. Later corrections are preserved as signed amendments.',{title:'Sign encounter note?',confirmLabel:'Sign note'}))return;
       if(me!==signer||activeVisit!==signing)return;
-      const v=await api(`/api/v1/visits/${activeVisit.id}/sign`,'POST',undefined,activeVisit.version);if(typeof clearVisitNoteSession==='function')clearVisitNoteSession();await selectPatient(selected,v.id);setEncounterSection(chartAreaEnabled('billing')?'charges':'checkout');notice('Encounter signed. Review procedures and charges, then complete checkout.');
+      const v=await api(`/api/v1/visits/${activeVisit.id}/sign`,'POST',undefined,activeVisit.version);
+      // Nothing is posted yet and the charges step is visible, so leave a short reminder with
+      // a link to the visit's Procedures & billing step. It never blocks signing or checkout.
+      const billingVisible=encounterSections().some(([step])=>step==='charges');
+      const posted=(workspace.billing?.accounts||[]).some(a=>a.status==='posted'&&a.status!=='void'&&String(a.content?.visit_id||'')===v.id);
+      postSignReminder=billingVisible&&!posted&&v.status==='signed'?{visitId:v.id,message:'No charges are posted for this visit yet.'}:null;
+      if(typeof clearVisitNoteSession==='function')clearVisitNoteSession();await selectPatient(selected,v.id);setEncounterSection(chartAreaEnabled('billing')?'charges':'checkout');notice('Encounter signed. Review procedures and charges, then complete checkout.');
     }
   });
 });

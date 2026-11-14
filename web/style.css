@@ -467,3 +467,5 @@ td.money-cell,th.money-cell{text-align:right;font-variant-numeric:tabular-nums}
 .note-source{margin:-6px 0 10px;font-size:var(--fs-sm)}.note-source[hidden]{display:none}
 .note-authorship{margin:-4px 0 8px;font-size:var(--fs-sm)}.note-authorship[hidden]{display:none}.note-message{margin:0 0 -6px;font-size:var(--fs-sm)}.note-message[hidden]{display:none}.note-conflict{margin:8px 0 12px}.note-conflict[hidden]{display:none}.note-conflict p{margin:0 0 8px}.note-conflict .actions{margin:0}.note-saved-copy{margin:8px 0 12px;padding:10px 12px;border:1px solid var(--line);border-radius:5px;background:var(--surface-soft)}.note-saved-copy[hidden]{display:none}.note-saved-copy h4{margin:0 0 6px}.note-saved-copy p{margin:2px 0}
 .app-dialog footer{flex-wrap:wrap}
+.notice-with-action{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 14px}
+.notice-with-action button{min-height:0;border:0;background:transparent;color:inherit;text-decoration:underline;padding:0}
