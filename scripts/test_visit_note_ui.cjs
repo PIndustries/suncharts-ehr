@@ -67,8 +67,9 @@ async function main(){
  let note=f.noteForm();
  const order=[...note.matchAll(/<textarea name="([a-z]+)"/g)].map(match=>match[1]);
  assert.deepEqual(order,sections,'Procedure is the fifth section, after Plan');
- assert.match(note,/<div class="note-section note-procedure"><label>Procedure<textarea name="procedure" maxlength="10000" placeholder="Procedure performed, site, medication and dose, lot number, guidance, tolerance, complications" >/);
- assert.equal([...note.matchAll(/ required /g)].length,4,'only the four original sections are required');
+ assert.match(note,/<div class="note-section note-procedure"><label>Procedure<textarea name="procedure" maxlength="10000" placeholder="Procedure performed, site, medication and dose, lot number, guidance, tolerance, complications">/);
+ assert.doesNotMatch(note,/required/,'nothing is required while drafting: Save note takes any text, and signing is checked separately');
+ assert.match(note,/<div id="note-message" class="note-message muted" role="status" hidden><\/div><div class="actions"><button type="submit">Save note<\/button>/,'a message line sits next to Save note and Sign encounter note, inside the form');
  assert.match(style,/\.note-section\.note-procedure\{grid-column:1\/-1\}/,'Procedure spans the row below Plan');
  assert.match(index,/<script src="\/visit-diagnoses\.js" defer><\/script><script src="\/visit-note\.js" defer><\/script>/);
  console.log('PASS Procedure appears below Plan in the editor with its hint and stays optional');
@@ -171,6 +172,33 @@ async function main(){
  assert.ok(f.requests.some(r=>r.path.endsWith('/sign')),'a saved note with an origin can be signed');
  f=fixture();await f.settle();f.type({subjective:'S',objective:'O',assessment:'A',plan:'P',procedure:'Synthetic procedure text'});await f.submit();
  put=f.requests.find(r=>r.method==='PUT');assert.deepEqual(JSON.parse(JSON.stringify(put.body)),{subjective:'S',objective:'O',assessment:'A',plan:'P',procedure:'Synthetic procedure text'},'a note written from scratch carries no origin');
+ // An empty note is never sent: the reason shows beside the buttons, not in the banner.
+ const emptyDraft=fixture({previous:null});await emptyDraft.settle();emptyDraft.requests.length=0;
+ await emptyDraft.submit();assert.equal(emptyDraft.requests.length,0,'an empty note sends nothing');
+ assert.equal(emptyDraft.nodes.get('note-message').hidden,false);assert.equal(emptyDraft.nodes.get('note-message').textContent,'Write something in the note before saving.');
+ assert.equal(emptyDraft.requests.some(r=>r.method==='PUT'),false,'an empty note is not sent');
+ assert.match(emptyDraft.editor(),/<div id="note-message" class="note-message muted" role="status" hidden><\/div><div class="actions"><button type="submit">Save note<\/button>/,'the empty message line sits inside the note form, right beside Save note and Sign encounter note');
+ assert.equal(emptyDraft.nodes.get('notice').hidden,true,'the reason shows next to the buttons, not in the banner out of view');
+ // A draft saves with any one section filled.
+ emptyDraft.type({procedure:'Procedure only'});await emptyDraft.submit();
+ assert.equal(emptyDraft.requests.filter(r=>r.method==='PUT').length,1,'a note with only Procedure filled is a draft worth saving');assert.equal(emptyDraft.nodes.get('note-message').textContent,'Note saved.');
+ emptyDraft.type({procedure:''});
+ emptyDraft.type({plan:'Plan only'});await emptyDraft.submit();
+ put=emptyDraft.requests.filter(r=>r.method==='PUT').at(-1);assert.deepEqual(JSON.parse(JSON.stringify(put.body)),{subjective:'',objective:'',assessment:'',plan:'Plan only'},'Save note keeps a draft with only Plan filled; empty sections are sent as empty');
+ assert.equal(emptyDraft.nodes.get('note-message').textContent,'Note saved.','a saved note is confirmed beside the buttons');
+ assert.equal(emptyDraft.nodes.get('note-message').hidden,false);
+ // Signing refuses quietly-wrong sections: no question is asked, the missing fields are named and the first one takes the caret.
+ let focused=[];for(const key of ['subjective','objective','assessment'])emptyDraft.form().elements[key].focus=()=>focused.push(key);
+ await emptyDraft.click({action:'sign'});
+ assert.equal(emptyDraft.asked.length,0,'the sign question never opens while sections are missing');
+ assert.equal(emptyDraft.nodes.get('note-message').textContent,'Fill in Subjective, Objective and Assessment before signing.');
+ assert.equal(emptyDraft.nodes.get('note-message').hidden,false);assert.deepEqual(focused,['subjective'],'the first missing section takes the caret');
+ assert.equal(emptyDraft.requests.some(r=>r.path.endsWith('/sign')),false);
+ emptyDraft.type({subjective:'S',objective:'O',assessment:'A'});await emptyDraft.submit();
+ assert.equal(emptyDraft.nodes.get('note-message').textContent,'Note saved.');
+ await emptyDraft.click({action:'sign'},[true]);assert.ok(emptyDraft.requests.some(r=>r.path.endsWith('/sign')),'with all four sections filled the usual sign question opens and signs');
+ console.log('PASS an empty note is refused with a word beside the buttons; any one section saves; signing names what is missing and focuses it');
+
  // A draft saved before the Procedure section existed still signs without a re-save.
  f=fixture({note:{subjective:'S',objective:'O',assessment:'A',plan:'P'},previous:null});await f.settle();
  assert.equal(f.run('visitDrafts.has("visit-1")'),false);f.run('captureVisitDrafts()');assert.equal(f.run('visitDrafts.has("visit-1")'),false,'an older saved note is not mistaken for an unsaved edit');
@@ -184,7 +212,7 @@ async function main(){
  assert.equal([...note.matchAll(/readonly/g)].length,4);assert.doesNotMatch(f.editor(),/Procedure|note-source|Started from|note-previous|data-note-same|started_from/,'an older signed note renders exactly as before');
  f=signed({subjective:'Frozen S',objective:'Frozen O',assessment:'Frozen A',plan:'Frozen P',procedure:'Frozen <procedure>',started_from:{visit_id:'visit-0',version:3,sections:['plan','procedure'],visit_date:'2026-11-04T15:00:00Z'}});await f.settle();note=f.noteForm();
  assert.equal([...note.matchAll(/readonly/g)].length,5);
- assert.match(note,/name="plan" maxlength="10000" required readonly>Frozen P<\/textarea><\/label><\/div><div class="note-section note-procedure"><label>Procedure<textarea name="procedure" maxlength="10000"  readonly>Frozen &lt;procedure&gt;<\/textarea>/,'signed Procedure is read-only, below Plan');
+ assert.match(note,/name="plan" maxlength="10000" readonly>Frozen P<\/textarea><\/label><\/div><div class="note-section note-procedure"><label>Procedure<textarea name="procedure" maxlength="10000" readonly>Frozen &lt;procedure&gt;<\/textarea>/,'signed Procedure is read-only, below Plan');
  assert.match(f.editor(),/<p id="note-source-line" class="note-source muted">Started from the visit on [^<]*2026\.<\/p>/,'a reviewer can see the signed note was started from an earlier one');
  assert.doesNotMatch(f.editor(),/Review every section|note-previous|data-note-same|name="started_from"|placeholder="Procedure performed/);
  assert.ok(!f.requests.some(r=>r.path.endsWith('/previous-note')),'a signed note never asks for the earlier note');

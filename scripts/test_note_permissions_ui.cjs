@@ -137,7 +137,7 @@ async function main(){
 
  // Saving updates "Last saved by" to the writer.
  f=fixture({user:'covering',role:'clinician',note:draft});await f.settle();f.type({plan:'Covering plan'});await f.submit();
- assert.equal(f.notice(),'Note saved.');assert.equal(f.requests.find(r=>r.method==='PUT').version,4);
+ assert.equal(f.line('note-message'),'Note saved.');assert.equal(f.requests.find(r=>r.method==='PUT').version,4);
  assert.match(f.line('note-authorship'),/^Drafting for Dr\. Avery Assigned · Last saved by Dr\. Casey Covering, /);
  assert.equal(f.run('visitDrafts.has("visit-1")'),false);
  console.log('PASS “Last saved by” follows each save');
@@ -145,7 +145,7 @@ async function main(){
  // Someone saved vitals meanwhile: the note text is as it was opened, so the save goes through.
  f=fixture({user:'covering',role:'clinician',note:draft});await f.settle();f.type({plan:'My plan'});
  f.server.current={...f.run('activeVisit'),version:5,vitals:{heart_rate_bpm:70}};await f.submit();
- assert.deepEqual(f.requests.filter(r=>r.method==='PUT').map(r=>r.version),[4,5]);assert.equal(f.notice(),'Note saved.');
+ assert.deepEqual(f.requests.filter(r=>r.method==='PUT').map(r=>r.version),[4,5]);assert.equal(f.line('note-message'),'Note saved.');
  assert.equal(f.run('activeVisit.note.plan'),'My plan');assert.equal(f.run('activeVisit.vitals.heart_rate_bpm'),70,'the colleague’s vitals are kept');
  console.log('PASS a colleague saving vitals or intake does not block the note being written');
 
@@ -164,7 +164,7 @@ async function main(){
  assert.match(f.nodes.get('note-saved-copy').innerHTML,/<p class="muted">Plan<\/p><p class="note-text">Assistant &lt;plan&gt;<\/p>/);assert.equal(f.nodes.get('note-saved-copy').hidden,false);
  await f.submit();assert.equal(count(f,'PUT','/note'),2);assert.equal(f.server.current.note.plan,'Assistant <plan>','saving again without choosing still overwrites nothing');
  await f.click({action:'keep-note-draft'});assert.equal(f.form().dataset.version,'5');assert.doesNotMatch(status.textContent,/saved this note/);assert.equal(conflict.hidden,true);assert.equal(conflict.innerHTML,'');
- await f.submit();assert.equal(f.notice(),'Note saved.');assert.equal(f.server.current.note.plan,'My plan');assert.equal(f.server.current.note.saved_by.name,'Dr. Casey Covering');
+ await f.submit();assert.equal(f.line('note-message'),'Note saved.');assert.equal(f.server.current.note.plan,'My plan');assert.equal(f.server.current.note.saved_by.name,'Dr. Casey Covering');
  // Choosing the saved note instead discards only the text in this tab.
  f=fixture({user:'covering',role:'clinician',note:draft});await f.settle();f.type({plan:'My plan'});
  f.server.current={...f.run('activeVisit'),version:5,note:{...soap,plan:'Assistant plan',saved_by:savedBy('assistant')}};await f.submit();

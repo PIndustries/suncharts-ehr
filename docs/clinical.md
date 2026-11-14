@@ -257,8 +257,9 @@ clinician must review the current record before signing the retained correction.
 
 The note has Subjective, Objective, Assessment and Plan, followed by an optional
 **Procedure** section for the procedure performed, site, medication and dose, lot
-number, guidance, tolerance and complications. The first four are required to
-save; Procedure may be left empty. An empty Procedure is not stored and is not
+number, guidance, tolerance and complications. A draft saves with any subset of
+the sections filled, as long as at least one holds text; signing requires text in
+Subjective, Objective, Assessment and Plan. An empty Procedure is not stored and is not
 shown on the signed note, so notes signed before the section existed look exactly
 as they did. Each section holds up to 10,000 characters. Corrections to any
 section after signing, including Procedure, use an amendment.
