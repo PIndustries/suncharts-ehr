@@ -264,6 +264,15 @@ Printing does not submit a claim. **Review & submit to Claim.MD** opens the exis
 submission review before staff explicitly queue delivery. Manual activity performed
 outside SunCharts is recorded separately.
 
+The claims list above the table carries a filter chip per claim status — All, Draft,
+Ready to send, Sent, Accepted, Rejected, Adjudicated and Voided — each showing how
+many claims are in that state. **All** is selected by default and clicking a chip
+shows only claims in that state. The claims worklist is cursor-paginated, so the
+counts come from `GET /api/v1/billing/claims/status-counts`, which counts every
+claim in the practice rather than only the page on screen. A claim is never stored
+as paid or denied: a payer denial arrives as **Rejected** and money paid lands as
+an insurance payment, so there is no Paid or Denied chip.
+
 Transport delivery, technical acknowledgment, claim acceptance and payer adjudication
 are distinct. Review TA1/999 evidence and matched 277CA rows with their control
 identities; an HTTP success or mailbox transfer is not payer acceptance.

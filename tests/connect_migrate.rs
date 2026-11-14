@@ -3493,6 +3493,79 @@ async fn encounter_claim_list_filters_patient_account_and_tenant() {
 }
 
 #[tokio::test]
+async fn claim_status_counts_cover_the_tenant_and_follow_the_claim_lifecycle() {
+    let (r, _db, a, _) = setup().await;
+    let (_patient, _payer, _account, claim) = claim_fixture(&r, &a).await;
+    let (status, empty) = schedule_call(
+        &r,
+        &a,
+        "GET",
+        "/api/v1/billing/claims/status-counts",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{empty}");
+    assert_eq!(empty, json!({"counts":{"draft":1}}));
+    let mut foreign = a.clone();
+    foreign.tenant_id = Uuid::new_v4();
+    let (status, other) = schedule_call(
+        &r,
+        &foreign,
+        "GET",
+        "/api/v1/billing/claims/status-counts",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{other}");
+    assert_eq!(other["counts"], json!({}), "another tenant sees no counts");
+    let mut patient_actor = a.clone();
+    patient_actor.role = Role::Patient;
+    patient_actor.patient_id =
+        Some(Uuid::parse_str(claim["patient_id"].as_str().unwrap()).unwrap());
+    assert_eq!(
+        schedule_call(
+            &r,
+            &patient_actor,
+            "GET",
+            "/api/v1/billing/claims/status-counts",
+            Value::Null,
+            None,
+        )
+        .await
+        .0,
+        403
+    );
+    let path = format!("/api/v1/billing/claims/{}", claim["id"].as_str().unwrap());
+    let (status, ready) = schedule_call(
+        &r,
+        &a,
+        "POST",
+        &format!("{path}/actions"),
+        json!({"action":"ready","reason":"Synthetic claim reviewed before sending"}),
+        Some(1),
+    )
+    .await;
+    assert_eq!(status, 200, "{ready}");
+    let (status, counted) = schedule_call(
+        &r,
+        &a,
+        "GET",
+        "/api/v1/billing/claims/status-counts",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{counted}");
+    assert_eq!(
+        counted,
+        json!({"counts":{"ready":1}}),
+        "a moved claim leaves the count it was in"
+    );
+}
+
+#[tokio::test]
 async fn claims_era_posting_and_reversal_are_scoped_atomic_and_exact() {
     let (r, db, a, _) = setup().await;
     let (p, payer, b, c) = claim_fixture(&r, &a).await;

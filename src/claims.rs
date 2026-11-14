@@ -466,7 +466,7 @@ async fn claim_status_counts(
     a.staff()?;
     let mut tx = db(&s)?.begin().await?;
     let counts: Value = sqlx::query_scalar(
-        "SELECT coalesce(jsonb_object_agg(status,count), '{}'::jsonb) FROM ehr_claims WHERE tenant_id=$1",
+        "SELECT coalesce((SELECT jsonb_object_agg(status,count) FROM (SELECT status,count(*) count FROM ehr_claims WHERE tenant_id=$1 GROUP BY status) per_status),'{}'::jsonb)",
     )
     .bind(a.tenant_id)
     .fetch_one(&mut *tx)

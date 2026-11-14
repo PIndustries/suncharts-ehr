@@ -93,6 +93,13 @@ Use stable request UUIDs where the contract supports idempotent creation. Reusin
 an identity with changed content is rejected. After a network failure, retrieve
 the saved resource before deciding to repeat a write. Do not retry mutations blindly.
 
+`GET /api/v1/billing/claims/status-counts` returns `{"counts":{...}}` with the number
+of claims per stored status inside the authenticated tenant (`draft`, `ready`,
+`submitted`, `accepted`, `rejected`, `adjudicated`, `void`; a status with no claims is
+absent). Counts cover every claim in the tenant, not only the cursor-paginated
+`GET /api/v1/billing/claims` page, so a client can label filter chips without paging
+the whole list.
+
 Clinical responses use `no-store`. Bounded worklists report their limits or
 truncation flags; do not treat a loaded page as the complete chart. Native clinical
 errors, patient-scoped reads and FHIR OperationOutcome errors have different

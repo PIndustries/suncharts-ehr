@@ -6796,6 +6796,43 @@
         }
       }
     },
+    "/api/v1/billing/claims/status-counts": {
+      "get": {
+        "operationId": "claimStatusCounts",
+        "description": "Count native claims per status inside the authenticated tenant. Counts cover every claim in the tenant, including rows beyond the cursor-paginated worklist page.",
+        "security": [
+          {
+            "oauth2": [
+              "billing.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimStatusCounts"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Role or billing scope denied"
+          },
+          "500": {
+            "description": "Database/audit failure; transaction rolled back"
+          }
+        }
+      }
+    },
     "/api/v1/patients/{p}/billing/accounts/{account}/claims": {
       "post": {
         "operationId": "createClaim",
@@ -43198,6 +43235,14 @@
       "ClaimPacket": {
         "type": "object",
         "description": "SunCharts JSON packet with frozen patient, payer, account and reviewed provider/diagnosis content. not_x12_837=true. No transmission or automatic claim state change."
+      },
+      "ClaimStatusCounts": {
+        "type": "object",
+        "description": "Claims per stored status inside the authenticated tenant. A status with no claims is absent; an empty object means no claims. Statuses a claim can hold are draft, ready, submitted, accepted, rejected, adjudicated and void.",
+        "additionalProperties": {
+          "type": "integer",
+          "minimum": 0
+        }
       },
       "ClaimWorklist": {
         "type": "object",
