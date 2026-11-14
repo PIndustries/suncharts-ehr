@@ -96,6 +96,7 @@ pub mod sun_tools;
 pub mod terminology;
 #[doc(hidden)]
 pub mod test_db;
+mod visit_billing;
 pub mod visit_diagnoses;
 pub mod workflow_dispatcher;
 pub mod workflow_evidence;
@@ -436,6 +437,7 @@ pub fn app(state: State) -> Router {
         .merge(installments::router())
         .merge(reader_payments::router())
         .merge(claims::router())
+        .merge(visit_billing::router())
         .merge(checkout::router())
         .merge(era_batches::router())
         .merge(era_chains::router())
@@ -1269,6 +1271,26 @@ pub fn app(state: State) -> Router {
                     "billing.js",
                     "application/javascript",
                     include_str!("../web/billing.js"),
+                )
+            }),
+        )
+        .route(
+            "/visit-billing.js",
+            get(|| async {
+                web_asset(
+                    "visit-billing.js",
+                    "application/javascript",
+                    include_str!("../web/visit-billing.js"),
+                )
+            }),
+        )
+        .route(
+            "/visit-billing.css",
+            get(|| async {
+                web_asset(
+                    "visit-billing.css",
+                    "text/css",
+                    include_str!("../web/visit-billing.css"),
                 )
             }),
         )

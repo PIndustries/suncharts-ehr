@@ -47,12 +47,23 @@ pub(crate) async fn account_summary(
     test: bool,
     patient: Option<Uuid>,
 ) -> Result<Value> {
-    Ok(sqlx::query_scalar(&format!("{ACCOUNTS} {ACCOUNT_SUMMARY}"))
+    let mut summary: Value = sqlx::query_scalar(&format!("{ACCOUNTS} {ACCOUNT_SUMMARY}"))
         .bind(tenant)
         .bind(test)
         .bind(patient)
         .fetch_one(&mut **tx)
-        .await?)
+        .await?;
+    // What patients owe now is the visit billing figure, the same one each visit's card
+    // shows. Insurance-pending money is never part of it. The key keeps its name for
+    // existing readers.
+    let patients = patient.map(|id| vec![id]);
+    let owed: i64 = crate::visit_billing::patients_owe(tx, tenant, patients.as_deref(), Some(test))
+        .await?
+        .values()
+        .sum();
+    summary["reviewed_patient_due_cents"] = json!(owed);
+    summary["patient_owes_now_cents"] = json!(owed);
+    Ok(summary)
 }
 pub(super) fn router() -> Router<State> {
     Router::new()
@@ -112,6 +123,38 @@ async fn overview(
         limit,
     )
     .await?;
+    // Each visit row carries the same state name and patient amount as its billing card,
+    // read for the whole page at once.
+    let mut accounts = accounts;
+    let claims_visible = crate::access_policies::require_native(&s, &a, "claims", "view")
+        .await
+        .is_ok();
+    let ids: Vec<Uuid> = accounts["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row["id"].as_str().and_then(|v| Uuid::parse_str(v).ok()))
+        .collect();
+    if !ids.is_empty() {
+        let rows =
+            crate::visit_billing::balances(&mut tx, a.tenant_id, None, Some(&ids), None).await?;
+        let states = crate::visit_billing::states(&mut tx, &a, &rows, claims_visible).await?;
+        let by_id: std::collections::HashMap<&str, &Value> = rows
+            .iter()
+            .filter_map(|row| Some((row["id"].as_str()?, row)))
+            .collect();
+        for row in accounts["items"].as_array_mut().into_iter().flatten() {
+            let Some(money) = row["id"].as_str().and_then(|id| by_id.get(id)) else {
+                continue;
+            };
+            let state = Uuid::parse_str(row["id"].as_str().unwrap_or(""))
+                .ok()
+                .and_then(|id| states.get(&id).copied());
+            row["billing_state"] = json!(state);
+            row["patient_owes_now_cents"] = money["owes_now_cents"].clone();
+            row["insurance_pending_cents"] = money["pending_cents"].clone();
+        }
+    }
     let copays = page(
         &mut tx,
         &a,

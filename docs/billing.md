@@ -120,7 +120,7 @@ statements and financial close are not implemented. Eligibility answers report
 what the insurer returned for one service date; decide what to collect from the
 plan's benefits for the visit type.
 
-## Copay, patient invoice and insurance claim
+## Copay, charges, insurance claim and patient statement
 
 1. Review insurance and the applicable copay for the appointment. **Record received
    copay** records confirmed cash, check or an external payment already received.
@@ -147,43 +147,87 @@ plan's benefits for the visit type.
    Once allocated, use **Review ledger** and correct the original ledger entry.
    A reversal preserves the original evidence and prevents silent reapplication
    of that receipt. Refund movement must be handled separately.
-4. Choose **Build patient invoice** on the posted account. Enter total reviewed
-   patient responsibility before patient payments and credits, with its evidence.
-   The server subtracts net recorded patient ledger activity, including reversals
-   and refunds, without treating the gross insured balance as patient responsibility.
-   A stale account version requires a reload. Saving retains an immutable, audited
-   snapshot and does not collect money, email a bill or submit insurance.
-5. Open **Saved patient invoices** to print or save a PDF. New snapshots include
-   itemized services, codes, quantities, full line totals and patient payment
-   activity, with separate payment and adjustment subtotals. They do not include
-   internal staff evidence notes. Amounts describe the ledger at issuance; confirm
-   the current ledger before requesting payment. Older saved invoices keep their
-   original totals and explicitly state when itemization was not saved; current
-   charges are never substituted into a historical invoice.
-   Snapshots containing test processor activity are marked TEST. A later corrected
-   snapshot does not add another charge to the ledger.
-6. Create/review the insurance claim after recording the copay. The claim freezes
-   the gross charge and net patient payments independently. Copay reversals and
-   confirmed managed refunds reduce net patient payments. Review the claim, mark
-   it ready and explicitly submit through the clinic's active Claim.MD connection.
-   A later payment does not rewrite a previously frozen claim snapshot.
+4. Posting the charges prepares the insurance claim. The draft is filled in from the
+   visit: diagnoses and their links from the charge lines, the visit's clinician and
+   NPI, the practice's facility name and address, the tax ID of the practice's billing
+   organization when there is exactly one, the patient's address, and the policy
+   holder from the coverage (the patient's own date of birth when the policy is
+   theirs). The place of service repeats the practice's most recent claim and is 11
+   (office) for a first claim. The claim stays a draft: nothing is marked ready or
+   sent. The same happens the first time the billing step of an older posted visit
+   without a claim is shown, attributed to the person who opened it. Opening the visit
+   on its note or another step prepares nothing. A claim a person cancelled is not
+   prepared again until they choose **Prepare a new claim**, which keeps the details
+   they had corrected.
+5. **Review and send claim** opens the claim. Anything missing is listed there and on
+   the visit's billing card with **Fix claim details**. **Details are right: continue
+   to send** records the claim as ready and opens the Claim.MD send form; the claim is
+   sent only when a person chooses **Send claim to Claim.MD**. Posted charges cannot
+   be edited, so a prepared claim always matches its charges; after sending, changes
+   use **Fix and resend** or **Correct or void this claim** on the claim.
+6. The patient's side needs no invoice to be built. **Statement** saves a statement
+   for what the patient owes now the first time it is printed or sent, and reuses it
+   while that amount is unchanged. Earlier statements keep their original charges,
+   payments and totals and are listed under **History → Statements sent**. Statements
+   containing test processor activity are marked TEST. There is no automatic email:
+   **Email the patient** opens a blank message to the address on file for staff to
+   attach the saved PDF.
 
-The encounter summary separates service charges, copay received, copay applied to
-charges and the posted account balance. A captured card copay is already received
-while awaiting allocation; draft charges are not an amount due. **Review and post
-charges** opens the review form without posting automatically. Receipts appear
-once; additional collection, processor activity, coverage snapshots and ledger
-controls remain available in expandable details.
+### The visit billing card
 
-The selected encounter's revenue summary links its current claim and remittance
-evidence. **Insurance claims** also supports patient- and account-filtered lists.
-Review the claim response and post reviewed ERA evidence before determining the
-remaining patient responsibility; charge posting or clearinghouse acceptance
-alone does not complete this work.
+The encounter's **Procedures & billing** step shows one card for the visit.
 
-Patient invoice snapshots are independent of Stripe account setup. They are not
-Stripe-hosted invoices or automatic collection requests. Online invoice delivery,
-and automatic responsibility allocation remain unavailable. Hosted appointment
+- **Next step** names what happens next and who is waiting: Add charges → Post
+  charges → Claim ready to send to the insurer (or Self-pay: collect payment) →
+  Waiting on the insurer → the insurer answered, review the payment → Patient owes →
+  Paid in full. A denial reads *Denied: fix and resend*. There is one main button.
+- The table under it lists the charges, what insurance paid and wrote off, the copay
+  and other patient payments, and **Patient owes now**. Until the insurer answers,
+  the unpaid amount is shown as **Insurance pending**, not as the patient's balance.
+- **Collect payment** opens the ways to take money for the visit: card on a reader,
+  card on file, online payment link, or cash or check. The amount starts at what the
+  patient owes now and can be changed before anything is charged.
+- **More** holds the statement, recording a payment, write-off or adjustment, refunds
+  and card payments, opening the claim (to correct it, void it or bill secondary
+  insurance), the CMS-1500 claim form, and insurance and eligibility.
+- **Charges** and **History** are closed until opened. History is one list for the
+  visit (charges, payments, the claim, the insurer's answers, adjustments and
+  statements) with filters. The practice owner also sees **Details** with record
+  identifiers and versions.
+
+The amounts are calculated by the server from stored records:
+
+| Amount | Rule |
+| --- | --- |
+| Balance | Posted charges plus every ledger entry. |
+| Patient's share, no insurance on the visit | The whole charge. |
+| Patient's share before the insurer answers | The plan copay recorded on the coverage the charges were posted with; nothing when no copay is recorded. |
+| Patient's share after the insurer answers | The patient responsibility on the posted remittance of the latest adjudicated claim that was not denied, when no claim for the visit is still open. A later rejected replacement or secondary claim does not erase it. |
+| Patient's share after staff reviewed an invoice by hand | The responsibility on that invoice, until an insurer's answer posted after it replaces it. Payments, refunds and adjustments change only what is left of it. A statement saved from the card is a copy of the figure and never sets it. |
+| Patient owes now | The patient's share less patient payments, patient credits and usable unapplied receipts; never below zero or above the balance. |
+| Insurance pending | The rest of the balance while the insurer has not answered. |
+| Not assigned yet | The rest of the balance after the insurer answered: review the answer, write it off or bill the next insurer. |
+| Credit | Unapplied receipts (test-mode card receipts never count on production), plus anything the patient paid beyond their share or the whole charge. |
+
+Charges that are not posted are never a balance. The patient banner, the schedule's
+**Owes** marker, the **Patient owes now** total and each row on **Patient billing** show
+this same figure, added up over the patient's posted visits; money still with insurance
+is never part of it.
+
+A delegated partner or platform support session does not prepare claims: the card says
+the claim is not prepared yet, and the draft is created when a member of the practice
+opens the visit.
+
+An eligibility answer is not used for these amounts. The patient's share before the
+insurer answers is only the recorded plan copay, so deductibles and coinsurance appear
+after the remittance is posted.
+
+**Insurance claims** and **Patient billing** list the same state names as the card
+and open the visit's card from each row.
+
+Saved statements are independent of Stripe account setup. They are not
+Stripe-hosted invoices or automatic collection requests. Online statement delivery
+is not available. Hosted appointment
 copay collection is a separate operation with its own receipt and reconciliation.
 
 ## Encounter diagnosis links

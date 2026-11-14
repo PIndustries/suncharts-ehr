@@ -257,30 +257,17 @@ pub(crate) async fn collect(
                 copays.insert(appointment, row);
             }
         }
-        // The same amount the patient billing summary calls "Patient owes": the latest
-        // invoice of each account, unless the account changed after it was issued.
-        for row in reads
-            .rows(
-                sqlx::query_scalar(
-                    "SELECT jsonb_build_object('patient_id',x.patient_id,'due_cents',sum(x.due)::bigint) FROM (
-                      SELECT b.patient_id,(i.snapshot->>'amount_due_cents')::bigint AS due,
-                       (b.status<>'posted' OR b.version<>i.account_version OR EXISTS(SELECT 1 FROM billing_entries e WHERE e.tenant_id=b.tenant_id AND e.account_id=b.id AND e.created_at>i.created_at)) AS needs_review,
-                       (coalesce((i.snapshot->>'test_activity')::boolean,false) OR EXISTS(SELECT 1 FROM billing_entries e WHERE e.tenant_id=b.tenant_id AND e.account_id=b.id AND e.content->>'test_mode'='true')) AS test_activity
-                      FROM billing_accounts b
-                      JOIN LATERAL (SELECT * FROM patient_invoice_snapshots i WHERE i.tenant_id=b.tenant_id AND i.account_id=b.id ORDER BY i.created_at DESC,i.id DESC LIMIT 1) i ON true
-                      WHERE b.tenant_id=$1 AND b.patient_id=ANY($2)) x
-                     WHERE NOT x.needs_review AND NOT x.test_activity GROUP BY x.patient_id HAVING sum(x.due)>0",
-                )
-                .bind(tenant)
-                .bind(&patient_ids),
-            )
-            .await?
-        {
-            if let (Some(patient), Some(due)) = (uuid(&row["patient_id"]), row["due_cents"].as_i64())
-            {
-                balances.insert(patient, due);
-            }
-        }
+        // What each patient owes now: the one figure the visit billing card, the patient
+        // banner and the patient billing page show. Insurance-pending money is not in it.
+        let rows = reads
+            .rows(crate::visit_billing::balances_query(
+                tenant,
+                Some(&patient_ids),
+                None,
+                Some(false),
+            ))
+            .await?;
+        balances = crate::visit_billing::owed_by_patient(&rows);
     }
     if access.insurance {
         let coverage_ids: Vec<Uuid> = coverages

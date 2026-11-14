@@ -1,0 +1,33 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/* One billing card per visit. Colours come from the theme variables only. */
+.visit-billing-card{border:1px solid var(--line);border-radius:7px;padding:20px;margin:20px 0;background:var(--surface)}
+.visit-billing-card>.section-head h3{margin:0}
+.visit-billing-status{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:16px 18px;margin:16px 0;border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:7px;background:var(--surface-soft)}
+.visit-billing-status p{margin:4px 0;line-height:1.5}
+.visit-billing-status .actions{flex-wrap:wrap;justify-content:flex-end}
+.visit-billing-headline{font-size:18px;font-weight:650;color:var(--ink)}
+.visit-billing-missing{color:var(--warning-text);background:var(--warning-bg);border:1px solid var(--warning-line);border-radius:6px;padding:6px 10px;display:inline-block}
+.visit-billing-card[data-visit-billing-state="paid_in_full"] .visit-billing-status{border-left-color:var(--success-line)}
+.visit-billing-card[data-visit-billing-state="denied"] .visit-billing-status,.visit-billing-card[data-visit-billing-state="fix_claim"] .visit-billing-status{border-left-color:var(--warning-line)}
+.visit-billing-breakdown{width:100%;border-collapse:collapse;margin:4px 0 14px}
+.visit-billing-breakdown caption{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.visit-billing-breakdown th,.visit-billing-breakdown td{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:baseline;font-weight:400}
+.visit-billing-breakdown th{width:30%;color:var(--ink)}
+.visit-billing-breakdown td{color:var(--muted)}
+.visit-billing-breakdown td.money-cell{text-align:right;white-space:nowrap;color:var(--ink);font-variant-numeric:tabular-nums;width:1%}
+.visit-billing-breakdown .visit-billing-group th{padding-top:16px;font-size:13px;font-weight:650;letter-spacing:.02em;color:var(--muted);border-bottom-color:var(--line)}
+.visit-billing-breakdown .visit-billing-total th,.visit-billing-breakdown .visit-billing-total td.money-cell{font-weight:700;font-size:16px;color:var(--ink);border-bottom:0;border-top:2px solid var(--line)}
+.visit-billing-breakdown .visit-billing-total td{border-bottom:0;border-top:2px solid var(--line)}
+.visit-billing-breakdown .text-button{margin-right:14px}
+.visit-billing-breakdown .visit-billing-receipts td{color:var(--ink)}
+.visit-billing-more>summary{cursor:pointer;color:var(--muted);width:max-content;padding:4px 0}
+.visit-billing-more .actions{flex-wrap:wrap;margin-top:10px}
+#visit-billing-collect{border:1px solid var(--line);border-radius:7px;padding:18px 20px;margin:0 0 20px;background:var(--surface)}
+#visit-billing-collect[hidden]{display:none}
+.visit-billing-collect-options{flex-wrap:wrap;margin:10px 0}
+.visit-billing-filters{flex-wrap:wrap;margin:12px 0}
+.visit-billing-filters button[aria-pressed="true"]{border-color:var(--accent);color:var(--ink);font-weight:650}
+.visit-billing-timeline{list-style:none;margin:0 0 16px;padding:0}
+.visit-billing-timeline li{display:grid;grid-template-columns:110px minmax(0,1fr) auto;gap:14px;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--line)}
+.visit-billing-timeline time{color:var(--muted);font-variant-numeric:tabular-nums}
+@media(max-width:800px){.visit-billing-status{align-items:start;flex-direction:column}.visit-billing-status .actions{justify-content:flex-start}.visit-billing-breakdown th{width:auto}.visit-billing-timeline li{grid-template-columns:1fr}}

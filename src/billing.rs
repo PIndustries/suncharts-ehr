@@ -50,7 +50,7 @@ fn choice(s: &str, values: &[&str]) -> Result<()> {
         Err(Error::Invalid("unsupported billing classification"))
     }
 }
-fn digest<T: Serialize>(p: &T) -> Result<String> {
+pub(crate) fn digest<T: Serialize>(p: &T) -> Result<String> {
     Ok(crate::oauth::hash(
         &serde_json::to_string(p).map_err(|_| Error::Invalid("invalid billing request"))?,
     ))
@@ -1173,6 +1173,51 @@ async fn patient_invoices(
     tx.commit().await?;
     Ok(Json(json!({"items":rows})))
 }
+/// One immutable patient invoice from the posted account's current charges and ledger.
+/// Callers hold the tenant billing lock and have checked the account is posted and current.
+pub(crate) async fn issue_patient_invoice(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    p: Uuid,
+    account: &Account,
+    request: (Uuid, &str),
+    responsibility_cents: i64,
+    reason: &str,
+) -> Result<Value> {
+    let (request_id, hash) = request;
+    let id = account.id;
+    if !(0..=account.total_cents).contains(&responsibility_cents) {
+        return Err(Error::Invalid(
+            "reviewed patient responsibility must be between zero and total charges",
+        ));
+    }
+    // Sum patient payments and credits, their reversals, and confirmed refunds.
+    // Unconfirmed processor attempts have no ledger entry and cannot reduce an invoice.
+    let (credit, payments) = patient_ledger_totals(tx, a.tenant_id, id).await?;
+    let patient: Value = sqlx::query_scalar("SELECT jsonb_build_object('given_name',given_name,'family_name',family_name,'mrn',mrn) FROM patients WHERE tenant_id=$1 AND id=$2")
+        .bind(a.tenant_id).bind(p).fetch_one(&mut **tx).await?;
+    // Copy only patient-facing fields. A saved invoice must never re-read current
+    // charges or ledger activity, and staff notes are not part of its receipt.
+    let services: Vec<Value> = account.content["lines"]
+        .as_array()
+        .ok_or(Error::Invalid("stored charge lines are unavailable"))?
+        .iter()
+        .map(|line| {
+            json!({"code_system":line["code_system"],"code":line["code"],"description":line["description"],"modifiers":line["modifiers"],"units":line["units"],"line_total_cents":line["amount_cents"]})
+        })
+        .collect();
+    let patient_activity: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('id',e.id,'kind',e.kind,'occurred_on',e.content->'occurred_on','method',e.content->'method','reference',e.content->'reference','effect_cents',e.effect_cents,'reverses_id',e.reverses_id) FROM billing_entries e LEFT JOIN billing_entries original ON original.tenant_id=e.tenant_id AND original.account_id=e.account_id AND original.id=e.reverses_id WHERE e.tenant_id=$1 AND e.account_id=$2 AND CASE WHEN e.kind='reversal' THEN original.content->>'party' ELSE e.content->>'party' END='patient' ORDER BY e.created_at,e.id")
+        .bind(a.tenant_id).bind(id).fetch_all(&mut **tx).await?;
+    let test_activity: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM billing_entries WHERE tenant_id=$1 AND account_id=$2 AND content->>'test_mode'='true')")
+        .bind(a.tenant_id).bind(id).fetch_one(&mut **tx).await?;
+    let invoice = Uuid::new_v4();
+    let net = responsibility_cents - credit;
+    let snapshot = json!({"format_version":2,"practice_name":crate::branding::InstanceBranding::from_env().display_name,"patient":patient,"service_date":account.content["service_date"],"services":services,"patient_activity":patient_activity,"gross_charges_cents":account.total_cents,"responsibility_cents":responsibility_cents,"patient_credit_cents":credit,"patient_payment_cents":payments,"patient_adjustment_credit_cents":credit-payments,"amount_due_cents":net.max(0),"credit_balance_cents":(-net).max(0),"currency":"USD","reason":reason,"test_activity":test_activity,"scope":"at_issuance"});
+    let row: Value = sqlx::query_scalar("INSERT INTO patient_invoice_snapshots(tenant_id,id,patient_id,account_id,request_id,creation_hash,account_version,snapshot,actor_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING to_jsonb(patient_invoice_snapshots)-'tenant_id'-'creation_hash'-'request_id'")
+        .bind(a.tenant_id).bind(invoice).bind(p).bind(id).bind(request_id).bind(hash).bind(account.version).bind(snapshot).bind(a.sub).fetch_one(&mut **tx).await?;
+    crate::postgres::audit(tx, a, "billing.invoice_created", invoice).await?;
+    Ok(row)
+}
 async fn new_patient_invoice(
     a: Actor,
     ExtractState(s): ExtractState<State>,
@@ -1208,36 +1253,16 @@ async fn new_patient_invoice(
             "post the reviewed charge account before building an invoice",
         ));
     }
-    if !(0..=account.total_cents).contains(&input.responsibility_cents) {
-        return Err(Error::Invalid(
-            "reviewed patient responsibility must be between zero and total charges",
-        ));
-    }
-    // Sum patient payments and credits, their reversals, and confirmed refunds.
-    // Unconfirmed processor attempts have no ledger entry and cannot reduce an invoice.
-    let (credit, payments) = patient_ledger_totals(&mut tx, a.tenant_id, id).await?;
-    let patient: Value = sqlx::query_scalar("SELECT jsonb_build_object('given_name',given_name,'family_name',family_name,'mrn',mrn) FROM patients WHERE tenant_id=$1 AND id=$2")
-        .bind(a.tenant_id).bind(p).fetch_one(&mut *tx).await?;
-    // Copy only patient-facing fields. A saved invoice must never re-read current
-    // charges or ledger activity, and staff notes are not part of its receipt.
-    let services: Vec<Value> = account.content["lines"]
-        .as_array()
-        .ok_or(Error::Invalid("stored charge lines are unavailable"))?
-        .iter()
-        .map(|line| {
-            json!({"code_system":line["code_system"],"code":line["code"],"description":line["description"],"modifiers":line["modifiers"],"units":line["units"],"line_total_cents":line["amount_cents"]})
-        })
-        .collect();
-    let patient_activity: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('id',e.id,'kind',e.kind,'occurred_on',e.content->'occurred_on','method',e.content->'method','reference',e.content->'reference','effect_cents',e.effect_cents,'reverses_id',e.reverses_id) FROM billing_entries e LEFT JOIN billing_entries original ON original.tenant_id=e.tenant_id AND original.account_id=e.account_id AND original.id=e.reverses_id WHERE e.tenant_id=$1 AND e.account_id=$2 AND CASE WHEN e.kind='reversal' THEN original.content->>'party' ELSE e.content->>'party' END='patient' ORDER BY e.created_at,e.id")
-        .bind(a.tenant_id).bind(id).fetch_all(&mut *tx).await?;
-    let test_activity: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM billing_entries WHERE tenant_id=$1 AND account_id=$2 AND content->>'test_mode'='true')")
-        .bind(a.tenant_id).bind(id).fetch_one(&mut *tx).await?;
-    let invoice = Uuid::new_v4();
-    let net = input.responsibility_cents - credit;
-    let snapshot = json!({"format_version":2,"practice_name":crate::branding::InstanceBranding::from_env().display_name,"patient":patient,"service_date":account.content["service_date"],"services":services,"patient_activity":patient_activity,"gross_charges_cents":account.total_cents,"responsibility_cents":input.responsibility_cents,"patient_credit_cents":credit,"patient_payment_cents":payments,"patient_adjustment_credit_cents":credit-payments,"amount_due_cents":net.max(0),"credit_balance_cents":(-net).max(0),"currency":"USD","reason":input.reason,"test_activity":test_activity,"scope":"at_issuance"});
-    let row: Value = sqlx::query_scalar("INSERT INTO patient_invoice_snapshots(tenant_id,id,patient_id,account_id,request_id,creation_hash,account_version,snapshot,actor_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING to_jsonb(patient_invoice_snapshots)-'tenant_id'-'creation_hash'-'request_id'")
-        .bind(a.tenant_id).bind(invoice).bind(p).bind(id).bind(input.request_id).bind(hash).bind(account.version).bind(snapshot).bind(a.sub).fetch_one(&mut *tx).await?;
-    crate::postgres::audit(&mut tx, &a, "billing.invoice_created", invoice).await?;
+    let row = issue_patient_invoice(
+        &mut tx,
+        &a,
+        p,
+        &account,
+        (input.request_id, &hash),
+        input.responsibility_cents,
+        &input.reason,
+    )
+    .await?;
     tx.commit().await?;
     Ok(Json(row))
 }
@@ -1255,7 +1280,7 @@ struct CopayInput {
     reason: String,
     received_confirmed: bool,
 }
-async fn copay_rows(
+pub(crate) async fn copay_rows(
     tx: &mut Transaction<'_, Postgres>,
     a: &Actor,
     p: Uuid,
