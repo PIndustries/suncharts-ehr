@@ -23,7 +23,7 @@ async function main(){
  f.run(`checkoutState.visit={...activeVisit,status:'in_progress'};renderVisitCheckoutContent()`);
  assert.match(f.node('visit-checkout').innerHTML,/Sign the note before/);assert.doesNotMatch(f.node('visit-checkout').innerHTML,/id="avs-release-form"/);
  for(const role of ['front_desk','read_only']){f.run(`me.role=${JSON.stringify(role)};checkoutState.visit=activeVisit;renderVisitCheckoutContent()`);assert.doesNotMatch(f.node('visit-checkout').innerHTML,/id="avs-release-form"/);}
- console.log('PASS unsigned encounters and role-protected AVS release');
+ console.log('PASS unsigned visits and role-protected AVS release');
  f=fixture();f.run(`checkoutState.current_avs={version:2,content:{instructions:'<script>unsafe()</script>',follow_up_instructions:'Call <clinic>'},snapshot:checkoutState.preview_snapshot,released_at:'2026-10-25T12:00:00Z'};checkoutState.releases=[checkoutState.current_avs];renderVisitCheckoutContent()`);
  let html=f.node('visit-checkout').innerHTML;assert.match(html,/&lt;script&gt;unsafe\(\)&lt;\/script&gt;/);assert.doesNotMatch(html,/<script>/);assert.match(html,/data-avs-version="2"/);assert.match(html,/opening the print dialog does not record that the summary was given/);assert.match(html,/Checking out does not collect a payment/);
  f.run(`checkoutState.checkout={completed:true,checked_out_at:'2026-10-25T13:00:00Z'};renderVisitCheckoutContent()`);assert.match(f.node('visit-checkout').innerHTML,/type="submit" disabled>Complete checkout/);

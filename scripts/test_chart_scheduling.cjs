@@ -33,7 +33,7 @@ async function main(){
  assert.match(html,/data-chart-book="off-page-patient"/);
  assert.match(html,/Synthetic follow-up/);assert.match(html,/Follow-up/);assert.match(html,/Synthetic clinic · Room 4/);
  assert.match(html,/<details id="patient-encounter-history" >/); // History is collapsed during the active encounter.
- assert.doesNotMatch(html,/id="booking-form"/);assert.match(html,/data-visit="visit-1">Continue encounter/);assert.doesNotMatch(html,/data-history-appointment="appointment-1"/,'linked appointments appear once as their encounter');
+ assert.doesNotMatch(html,/id="booking-form"/);assert.match(html,/data-visit="visit-1">Continue visit/);assert.doesNotMatch(html,/data-history-appointment="appointment-1"/,'linked appointments appear once as their encounter');
  await f.evaluate("openPatientAppointmentEditor('off-page-patient')");
  html=f.node('chart-booking-editor').innerHTML;
  assert.match(html,/data-chart-patient="off-page-patient" data-chart-visit="visit-1"/);

@@ -285,7 +285,7 @@ async function testPracticeFilters() {
   assert.doesNotMatch(f.node('practice-worklist').innerHTML,/First Patient|Third Patient/);
   await dispatch({practiceBoard:'unfinished'},'data-practice-board');
   assert.match(f.node('practice-worklist').innerHTML,/Dr Fixture/);
-  assert.match(f.node('practice-row-summary').textContent,/of 101 unsigned encounters/);
+  assert.match(f.node('practice-row-summary').textContent,/of 101 unsigned visits/);
   await dispatch({practiceResultFilter:'critical'},'data-practice-result-filter');
   assert.match(f.node('practice-results').innerHTML,/data-practice-result="urgent"/);
   assert.doesNotMatch(f.node('practice-results').innerHTML,/data-practice-result="routine"/);

@@ -37,7 +37,7 @@ function harness(){
  assert.equal(h.bookings.size,1);assert.equal(h.visits.length,1);assert.equal(h.ctx.selectedVisit,'visit-1');assert.equal(h.ctx.step,'intake');
  const posts=h.calls.filter(c=>c.path==='/api/v1/appointments');assert.equal(posts.length,2);assert.deepEqual(posts[0].body,posts[1].body);assert.equal(posts[0].body.starts_at,'2026-11-10T09:30:00.000Z');assert.equal(posts[0].body.ends_at,'2026-11-10T10:15:00.000Z');
  assert.equal(h.calls.filter(c=>c.path==='/api/v1/visits').length,1,'recover committed visit without creating another');
- await h.ctx.openEncounterStartFlow();assert.match(h.node('encounter-start-editor').innerHTML,/appointment-1/);assert.match(h.node('encounter-start-editor').innerHTML,/Continue encounter/);
+ await h.ctx.openEncounterStartFlow();assert.match(h.node('encounter-start-editor').innerHTML,/appointment-1/);assert.match(h.node('encounter-start-editor').innerHTML,/Continue visit/);
  h.form.values.appointment_id='appointment-1';const existing=h.ctx.encounterStartInput(h.form);await h.ctx.continueEncounterStart(existing);assert.equal(h.bookings.size,1);assert.equal(h.visits.length,1);
 
  const cross=harness(),crossOp=cross.ctx.encounterStartInput(cross.form),original=cross.ctx.api;
@@ -56,7 +56,7 @@ function harness(){
  rejectedForm.querySelectorAll=()=>[field];rejectedForm.querySelector=()=>submit;
  rejected.ctx.api=async()=>{const error=new Error('Synthetic schedule conflict');error.status=409;throw error;};
  rejected.handlers.submit[0]({target:rejectedForm,preventDefault(){},stopImmediatePropagation(){}});await assert.rejects(rejected.ctx.pending,/schedule conflict/);
- assert.equal(field.disabled,false,'a definite booking rejection allows correcting the service time');assert.equal(submit.textContent,'Start encounter');
+ assert.equal(field.disabled,false,'a definite booking rejection allows correcting the service time');assert.equal(submit.textContent,'Start visit');
  const afterRejection=rejected.ctx.encounterStartInput(rejectedForm);assert.equal(afterRejection.booking.request_id,'request-2','only a definite rejection releases the old request');
  console.log('PASS single encounter start, frozen booking replay, uncertain check-in/start recovery, own-clinician context, service-date benefits and stale chart isolation');
 })().catch(error=>{console.error(error);process.exitCode=1;});

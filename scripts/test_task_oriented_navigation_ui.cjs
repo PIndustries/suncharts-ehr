@@ -17,7 +17,7 @@ assert.match(app,/today\.includes\(title\).*\?'TODAY'/);assert.match(app,/care\.
 assert.match(app,/closest\?\.\('\.nav-more'\)/);assert.match(app,/more\.open=more===activeMore/);assert.match(app,/More tools ·/);
 assert.match(app,/function chartNavigation\(tabs\)/);
 assert.match(app,/patient-workspace-tabs/);assert.match(app,/Patient record/);assert.match(app,/encounter-step-tabs/);
-assert.match(app,/function patientWorkflowActions\(\)/);for(const action of ['Start encounter','Insurance & copay','Continue encounter'])assert.ok(app.includes(action),`missing visible patient action ${action}`);
+assert.match(app,/function patientWorkflowActions\(\)/);for(const action of ['Start visit','Insurance & copay','Continue visit'])assert.ok(app.includes(action),`missing visible patient action ${action}`);
 assert.doesNotMatch(app,/class="patient-workflow-actions"/);
 assert.match(style,/\.patient-next-action/);
 console.log('PASS clinic-flow shell hierarchy, advanced tools disclosure, active state and role gates');
