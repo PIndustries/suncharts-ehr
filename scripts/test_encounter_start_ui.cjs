@@ -58,5 +58,11 @@ function harness(){
  rejected.handlers.submit[0]({target:rejectedForm,preventDefault(){},stopImmediatePropagation(){}});await assert.rejects(rejected.ctx.pending,/schedule conflict/);
  assert.equal(field.disabled,false,'a definite booking rejection allows correcting the service time');assert.equal(submit.textContent,'Start visit');
  const afterRejection=rejected.ctx.encounterStartInput(rejectedForm);assert.equal(afterRejection.booking.request_id,'request-2','only a definite rejection releases the old request');
+ const clash=harness(),clashForm=Object.assign(clash.node('encounter-start-form'),clash.form);
+ clashForm.querySelectorAll=()=>[];clashForm.querySelector=()=>({textContent:''});
+ clash.ctx.api=async()=>{const error=new Error('provider, patient or room is unavailable during that time');error.status=409;throw error;};
+ clash.handlers.submit[0]({target:clashForm,preventDefault(){},stopImmediatePropagation(){}});await assert.rejects(clash.ctx.pending,/unavailable during that time/,'the server error still reaches the shared notice');
+ assert.equal(clash.node('encounter-start-status').textContent,'That time overlaps another appointment for this clinician, patient or room. Choose a different time.','the clash gets one plain message');
+ assert.doesNotMatch(clash.node('encounter-start-status').textContent,/not accepted/);
  console.log('PASS single encounter start, frozen booking replay, uncertain check-in/start recovery, own-clinician context, service-date benefits and stale chart isolation');
 })().catch(error=>{console.error(error);process.exitCode=1;});
