@@ -6,7 +6,7 @@ assert.match(source,/function coveragePayerSetup\(\)[\s\S]*No native payers are 
 assert.match(source,/function coveragePayerForm\(\)[\s\S]*id="coverage-payer-form"[\s\S]*billingField\('payer_code','Claim\.MD payer ID','','text',100,true\)/);
 assert.match(source,/Required here because insured accounts freeze this mapping when they are posted/);
 assert.doesNotMatch(source,/Claim\.MD payer ID \(optional\)/);
-assert.match(source,/button class="primary" type="submit" \$\{billingPayers\.length\?'':'disabled'\}>Save coverage/);
+assert.match(source,/button class="primary" type="submit" \$\{billingPayers\.length\?'':'disabled'\}>Save insurance/);
 assert.match(source,/\['payer-form','coverage-payer-form','coverage-form'/);
 assert.match(source,/f\.id==='coverage-payer-form'[\s\S]*api\('\/api\/v1\/billing\/payers','POST'/);
 assert.match(source,/payer_code:data\.payer_code/);

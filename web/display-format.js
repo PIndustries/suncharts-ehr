@@ -12,11 +12,19 @@ function displayDate(value){
  return parsed.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
 }
 // A timestamp -> "10:59 AM".
+const displayTimeFormatters=new Map();
+// One formatter per option set, built lazily and kept: building a formatter per call costs
+// milliseconds and a day grid asks for the same label thousands of times.
+function displayTimeFormatter(options){
+ let formatter=displayTimeFormatters.get(options);
+ if(!formatter){formatter=new Intl.DateTimeFormat(undefined,JSON.parse(options));displayTimeFormatters.set(options,formatter);}
+ return formatter;
+}
 function displayTime(value){
  if(value===null||value===undefined||value==='')return '';
  const parsed=new Date(value);
  if(Number.isNaN(parsed.getTime()))return String(value);
- return parsed.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
+ return displayTimeFormatter('{"hour":"numeric","minute":"2-digit"}').format(parsed);
 }
 // A timestamp -> "Nov 13, 2026, 10:59 AM".
 function displayDateTime(value){

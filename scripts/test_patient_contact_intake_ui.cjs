@@ -14,12 +14,12 @@ function fixture(){
 }
 (async()=>{
  let f=fixture(),c=f.ctx;
- let html=c.chartContactSummary();assert.match(html,/Phone.*\+1 555 010 2026/s);assert.match(html,/Email.*synthetic@example.test/s);assert.match(html,/data-chart-section="profile"/);assert.match(html,/data-patient-intakes-open/);
+  let html=c.chartContactSummary();assert.match(html,/Phone.*\+1 555 010 2026/s);assert.match(html,/Email.*synthetic@example.test/s);assert.match(html,/data-chart-section="profile"/);assert.match(html,/data-patient-intakes-open/);assert.match(html,/>Send an intake form<\/button>/);assert.match(html,/>No intake form sent yet\.<\/span>/);
  c.workspace.demographics.content={phone:'<img src=x>',email:'<script>private</script>'};html=c.chartContactSummary();assert.doesNotMatch(html,/<img|<script/);assert.match(html,/&lt;script&gt;/);
  c.workspace.demographics={content:{}};assert.equal((c.chartContactSummary().match(/Not recorded/g)||[]).length,2);
  c.workspaceResourceAllowed=()=>false;assert.equal(c.chartContactSummary(),'');await c.renderPatientIntakePackets();assert.equal(f.calls.length,0,'billing-only policy does not issue clinical intake reads');
  f=fixture();c=f.ctx;await c.renderPatientIntakePackets();html=f.nodes['patient-intake-panel'].innerHTML;
- assert.match(html,/Historical completed appointment · completed/);assert.match(html,/2025-01-01/);assert.match(html,/data-patient-intake-packet="packet-one">Review answers/);assert.match(html,/Filled in – needs review/);assert.match(html,/separate from uploaded files/);assert.match(f.nodes['patient-intake-summary'].textContent,/1 intake form · 1 submitted/);
+ assert.match(html,/Historical completed appointment · completed/);assert.match(html,/2025-01-01/);assert.match(html,/data-patient-intake-packet="packet-one">Review answers/);assert.match(html,/Filled in – needs review/);assert.match(html,/separate from uploaded files/);assert.match(f.nodes['patient-intake-summary'].textContent,/1 intake form · 1 form waiting for review/);
  await c.openPatientIntakePacket('packet-one');assert.deepEqual(f.calls.slice(-2),[['capture'],['packet','packet-one']]);assert.ok(f.calls.every(call=>call[1]!=='POST'),'opening retained answers never reviews or promotes them');
  f.handlers.click[1]({target:{closest:()=>({dataset:{},hasAttribute:key=>key==='data-previsit-back'})},preventDefault(){},stopImmediatePropagation(){}});await c.pending;assert.equal(f.nodes['clinical-workspace'].hidden,false,'Back must reveal the native chart, not merely redraw it behind the intake tool');assert.equal(f.nodes.tools.hidden,true);assert.deepEqual(f.calls.slice(-2),[['patient','patient-one'],['section','documents']]);
  const evt={target:{closest:()=>({dataset:{},hasAttribute:key=>key==='data-patient-intakes-open'})},preventDefault(){},stopImmediatePropagation(){}};f.handlers.click[0](evt);assert.equal(f.nodes['patient-intake-panel'].focused,true);

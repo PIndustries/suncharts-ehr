@@ -34,12 +34,13 @@ function scheduleProviderName(entry){
  // A name wins over a sign-in email wherever either source has one.
  return typeof displayPerson==='function'?displayPerson(listed,displayPerson(recorded,listed)):listed||recorded;
 }
-function scheduleClock(value){return typeof displayTime==='function'?displayTime(value):new Date(value).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});}
+function scheduleClock(value){return typeof displayTime==='function'?displayTime(value):new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date(value));}
 function scheduleWhen(value){return typeof displayDateTime==='function'?displayDateTime(value):date(value);}
 function scheduleClockRange(entry){return `${scheduleClock(entry.starts_at)} – ${scheduleClock(entry.ends_at)}`;}
-function scheduleMoney(cents){return new Intl.NumberFormat(undefined,{style:'currency',currency:'USD',minimumFractionDigits:cents%100?2:0,maximumFractionDigits:2}).format(cents/100);}
+const scheduleMoneyFormatter=new Intl.NumberFormat(undefined,{style:'currency',currency:'USD',maximumFractionDigits:2});
+const scheduleMoneyWholeFormatter=new Intl.NumberFormat(undefined,{style:'currency',currency:'USD',minimumFractionDigits:0,maximumFractionDigits:0});
+function scheduleMoney(cents){return cents%100?scheduleMoneyFormatter.format(cents/100):scheduleMoneyWholeFormatter.format(cents/100);}
 function scheduleDayLabel(day,options={weekday:'long',month:'long',day:'numeric',year:'numeric'}){return new Date(`${day}T12:00:00`).toLocaleDateString(undefined,options);}
-function scheduleToday(){return localTime(new Date().toISOString()).slice(0,10);}
 function scheduleClosed(a){return ['cancelled','no_show'].includes(a.status);}
 function scheduleAllowed(resource,action='view'){return typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed(resource,action);}
 function scheduleCanBill(){return ['owner','clinician','front_desk'].includes(me?.role)&&scheduleAllowed('billing','create');}
@@ -189,7 +190,8 @@ function scheduleGridRange(columns){
  for(const column of columns)for(const entry of [...column.appointments,...column.blocks]){const m=scheduleDayMinutes(entry,column.day);first=Math.min(first,m.start);last=Math.max(last,entry.kind==='block'?m.end:Math.max(m.end,m.start+scheduleMinimumMinutes));}
  return {first:Math.floor(first/60)*60,last:Math.min(1440,Math.ceil(last/60)*60)};
 }
-function scheduleHourLabel(minute){return new Date(2001,0,1,Math.floor(minute/60)%24,0).toLocaleTimeString(undefined,{hour:'numeric'});}
+const scheduleHourLabelFormatter=new Intl.DateTimeFormat(undefined,{hour:'numeric'});
+function scheduleHourLabel(minute){return scheduleHourLabelFormatter.format(new Date(2001,0,1,Math.floor(minute/60)%24,0));}
 // Day view: one column per provider when more than one has something that day.
 function scheduleDayColumns(){
  const day=scheduleDate,entries=scheduleEntriesForDay(day),all=scheduleEntriesForDay(day,scheduleState.appointments),ids=[...new Set(all.map(entry=>entry.clinician_id))];

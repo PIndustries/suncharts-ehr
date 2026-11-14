@@ -4,9 +4,11 @@
 .visit-billing-card>.section-head h3{margin:0}
 .visit-billing-status{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:16px 18px;margin:16px 0;border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:7px;background:var(--surface-soft)}
 .visit-billing-status p{margin:4px 0;line-height:1.5}
-.visit-billing-status .actions{flex-wrap:wrap;justify-content:flex-end}
+.visit-billing-status>div:first-child{min-width:0;flex:1 1 auto}
+.visit-billing-status .actions{flex:0 0 auto;flex-wrap:wrap;justify-content:flex-end}
 .visit-billing-headline{font-size:18px;font-weight:650;color:var(--ink)}
-.visit-billing-missing{color:var(--warning-text);background:var(--warning-bg);border:1px solid var(--warning-line);border-radius:6px;padding:6px 10px;display:inline-block}
+.visit-billing-missing{color:var(--warning-text);background:var(--warning-bg);border:1px solid var(--warning-line);border-radius:6px;padding:6px 10px;display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;width:fit-content;max-width:100%;box-sizing:border-box}
+.visit-billing-missing button{font-size:13px;padding:3px 8px}
 .visit-billing-card[data-visit-billing-state="paid_in_full"] .visit-billing-status{border-left-color:var(--success-line)}
 .visit-billing-card[data-visit-billing-state="denied"] .visit-billing-status,.visit-billing-card[data-visit-billing-state="fix_claim"] .visit-billing-status{border-left-color:var(--warning-line)}
 .visit-billing-breakdown{width:100%;border-collapse:collapse;margin:4px 0 14px}

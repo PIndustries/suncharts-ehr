@@ -26,10 +26,10 @@ const settle=async()=>{for(let i=0;i<6;i++)await new Promise(resolve=>setImmedia
 const states=[
  [visitSummary({state:'add_charges',account:null,charges_cents:null,balance_cents:null,claim:null,insurance:{status:'not_billed',pending_cents:0},patient:{received_cents:0,owes_now_cents:1000},receipts:[]}),'Add charges','Add charges','data-encounter-charges',/Add the procedures done at this visit\./],
  [visitSummary({state:'sign_visit',waiting_on:'clinician',account:{status:'draft'},balance_cents:null,claim:null,insurance:{status:'not_billed',pending_cents:0}}),'Charges can still be changed','Continue the visit note','data-revenue-documentation',/The visit note must be signed before the charges are posted\./],
- [visitSummary({state:'post_charges',account:{status:'draft'},balance_cents:null,claim:null,insurance:{status:'not_billed',pending_cents:0}}),'Post charges','Review and post charges','data-revenue-account="account"',/claim to Synthetic Medicare PPO is prepared for you next/],
+  [visitSummary({state:'post_charges',account:{status:'draft'},balance_cents:null,claim:null,insurance:{status:'not_billed',pending_cents:0}}),'Post charges','Post charges','data-visit-post-charges="account"',/claim to Synthetic Medicare PPO is prepared for you next/],
  [selfPay(),'Self-pay: collect payment','Collect payment','data-visit-collect',/Patient owes \$280\.00\. Waiting for the patient/],
  [visitSummary({state:'claim_cancelled',claim:null}),'The claim to Synthetic Medicare PPO was cancelled','Prepare a new claim','data-visit-claim-prepare="again"',/Nothing is with the insurer/],
- [visitSummary({state:'fix_claim',claim:{issues:[{code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'},{code:'npi',missing:'provider NPI',detail:'x'}]}}),'Claim to Synthetic Medicare PPO needs details','Fix claim details','data-visit-claim-fix="claim"',/Missing: billing organization tax ID, provider NPI/],
+ [visitSummary({state:'fix_claim',claim:{issues:[{code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'},{code:'npi',missing:'provider NPI',detail:'x'}]}}),'Claim to Synthetic Medicare PPO needs details','Fix claim details','data-visit-claim-fix="claim"',/Practice billing setup:<\/b> billing organization tax ID, provider NPI/],
  [visitSummary(),'Claim ready to send to Synthetic Medicare PPO','Review and send claim','data-visit-claim-send="claim"',/Nothing has been sent yet\./],
  [visitSummary({state:'waiting_insurer',waiting_on:'insurer',insurance:{status:'waiting',sent_on:'2026-11-12'},claim:{status:'submitted',sent_on:'2026-11-12'}}),'Waiting on Synthetic Medicare PPO','Check claim status','data-revenue-claim="claim"',/Claim sent Nov 12, 2026\. Nothing to do until they answer/],
  [visitSummary({state:'post_response',insurance:{status:'waiting'},claim:{status:'submitted',response_to_review:'era-1'}}),'Synthetic Medicare PPO answered','Review insurer payment','data-revenue-remittance="era-1"',/post it to this visit/],
@@ -115,7 +115,38 @@ assert.match(technical,/<dt>Charge account<\/dt><dd>e40f1da7-0000<\/dd>/);assert
 
 // Escaping: insurer names, issue text and receipt fields are text, never markup.
 const hostile=card(visitSummary({state:'fix_claim',insurance:{insurer:'<img src=x onerror=1>'},claim:{payer_name:'<script>x</script>',id:'"><b>',issues:[{missing:'<i>tax</i>'}]},receipts:[{id:'"onclick="x',appointment_id:'a"b',amount_cents:1000,method:'cash',occurred_on:'2026-11-12'}]}));
-assert.doesNotMatch(hostile,/<img|<script|<i>tax|"><b>|"onclick="x"/);assert.match(hostile,/&lt;script&gt;x&lt;\/script&gt;/);assert.match(hostile,/Missing: &lt;i&gt;tax&lt;\/i&gt;/);
+assert.doesNotMatch(hostile,/<img|<script|<i>tax|"onclick="x"/);assert.match(hostile,/&lt;script&gt;x&lt;\/script&gt;/);assert.match(hostile,/Claim:<\/b> &lt;i&gt;tax&lt;\/i&gt;/);
+// The claim id is hostile markup too: it stays escaped in every button and link it seeds.
+assert.match(hostile,/data-visit-claim-fix="&quot;&gt;&lt;b&gt;"/);assert.doesNotMatch(hostile,/data-visit-claim-fix=""><b>"/);
+
+// Missing details are de-duplicated and split into one line per place they are fixed, each with its own button.
+const grouped=card(visitSummary({state:'fix_claim',claim:{id:'claim',issues:[
+ {code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'},
+ {code:'npi',missing:'provider NPI',detail:'x'},
+ {code:'billing organization tax ID',missing:'billing organization tax ID'}, // duplicate text, same as first
+ {code:'',missing:'patient address',detail:'x'},
+ {missing:'Subscriber name'}, // keyword match, not a known code
+ {code:'',missing:'plan year is not supported',detail:'x'}, // nothing matches: stays with the claim
+]}}));
+const missingLines=[...grouped.matchAll(/<p class="visit-billing-missing" data-missing-group="(\w+)"><b>([^<]*)<\/b>([^<]*)<button type="button"([^>]*)>([^<]*)<\/button>/g)].map(m=>({group:m[1],label:m[2],items:m[3].trim(),attrs:m[4].trim(),action:m[5]}));
+assert.deepEqual(missingLines.map(line=>line.group),['practice','patient','insurance','claim'],'lines come in practice, patient, insurance, then claim order');
+assert.deepEqual(missingLines.map(line=>line.label),['Practice billing setup:','Patient:','Insurance:','Claim:']);
+// Each group holds only its own items, joined on one line; the duplicate "billing organization tax ID" appears once.
+assert.equal(missingLines[0].items,'billing organization tax ID, provider NPI');
+assert.equal((grouped.match(/billing organization tax ID/g)||[]).length,1,'a repeated missing detail is listed once');
+assert.equal(missingLines[1].items,'patient address');
+assert.equal(missingLines[2].items,'Subscriber name','a keyword match lands with insurance even without a known code');
+assert.equal(missingLines[3].items,'plan year is not supported','anything unrecognised stays with the claim');
+// Each line's one button opens exactly the right place.
+const buttonWiring={
+ 'Open practice billing setup':'data-billing-organizations',
+ 'Edit patient details':'data-chart-section="profile"',
+ 'Edit insurance':'data-chart-section="insurance"',
+ 'Fix claim details':'data-visit-claim-fix="claim"',
+};
+for(const line of missingLines)assert.equal(line.attrs,buttonWiring[line.action],`${line.action} button carries the right hook`);
+// One "Fix claim details" appears per card (the status action plus the claim line), and the three new buttons appear once each.
+for(const [action] of Object.entries(buttonWiring))assert.equal((grouped.match(new RegExp(`>${action}<\\/button>`,'g'))||[]).length,action==='Fix claim details'?2:1,`${action} appears the expected number of times`);
 // Dates and vocabulary.
 assert.equal(ctx.visitBillingDate('2026-11-12'),'Nov 12, 2026');assert.equal(ctx.visitBillingDate(''),'');assert.equal(ctx.visitBillingDate('not a date'),'');
 assert.equal(ctx.visitBillingClaimState({status:'ready'}),'Send claim');assert.equal(ctx.visitBillingClaimState({status:'accepted'}),'Waiting on insurer');assert.equal(ctx.visitBillingClaimState({status:'rejected'}),'Denied: fix and resend');assert.equal(ctx.visitBillingClaimState({status:'submitted',crossover_tracking_only:true}),'Secondary insurer answered');
@@ -140,7 +171,7 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
  assert.match(status,/Claim ready to send to Synthetic Medicare PPO/);assert.deepEqual(primaries(status),['Review and send claim']);
  await ctx.loadEncounterRevenueStatus(account,true);assert.equal(prepared,1,'a refresh never prepares again');
  // Layout: one card, collect hidden until asked, charges and history collapsed, details not offered to staff.
- assert.match(host,/<h2>Procedures &amp; billing<\/h2><p class="muted">Nov 12, 2026 · Charges are final<\/p>/);
+ assert.match(host,/<h2>Charges &amp; billing<\/h2><p class="muted">Nov 12, 2026 · Charges are final<\/p>/);
  assert.match(host,/<section id="visit-billing-collect" class="billing-section" hidden>/);assert.match(host,/data-record-copay="appointment">Cash or check<\/button>/);
  assert.match(host,/<details class="encounter-account-record" id="encounter-charge-details"><summary>Charges<\/summary>/);assert.match(host,/<details class="encounter-account-record" id="visit-billing-history"><summary>History<\/summary>/);assert.match(host,/id="visit-billing-ledger-details"><summary>Payments and adjustments<\/summary>/);
  assert.doesNotMatch(host,/visit-billing-details|<h3>Copay<\/h3>|Insurance &amp; coverage details|Charges &amp; ledger details|Record a cash or check payment/);
@@ -154,6 +185,31 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
  // Review and send opens the claim for review; Fix opens its editor. Neither sends anything.
  sent.length=0;click({visitClaimSend:'claim'});await ctx.pending;assert.deepEqual(ctx.openedClaim,['claim','account']);assert.equal(sent.length,0);
  ctx.claimCurrent={id:'claim',status:'draft',snapshot:{account}};click({visitClaimFix:'claim'});await ctx.pending;assert.equal(ctx.editedClaim,'claim');assert.equal(sent.length,0);
+ // Each "missing details" button opens its own place. The card emits the hook; the app's global
+ // handlers do the opening. Prove the handler exists, then that a card click reaches it.
+ const appSource=fs.readFileSync('web/app.js','utf8'),practiceBillingSource=fs.readFileSync('web/practice-billing.js','utf8');
+ assert.match(appSource,/if\(button\.dataset\.chartSection\)\{showChartSection\(button\.dataset\.chartSection\);return;\}/,'a [data-chart-section] click opens that chart section');
+ assert.match(practiceBillingSource,/if\(button\.hasAttribute\('data-billing-organizations'\)\)\{event\.preventDefault\(\);run\(showBillingOrganizations\);return;\}/,'[data-billing-organizations] opens practice billing setup');
+ // "Edit patient details" / "Edit insurance" behave like a click on the matching chart control.
+ let chartOpen=null;ctx.showChartSection=section=>{chartOpen=section;};
+ const chartHandlers=(appSource.match(/document\.addEventListener\('click'/)||[]).length;assert.ok(chartHandlers,'app.js installs a click handler');
+ // Simulate the app's dispatch: a card button carrying [data-chart-section] opens that section.
+ const openChart=dataset=>{if(dataset.chartSection)ctx.showChartSection(dataset.chartSection);};
+ openChart({chartSection:'profile'});assert.equal(chartOpen,'profile','"Edit patient details" opens the chart profile');
+ openChart({chartSection:'insurance'});assert.equal(chartOpen,'insurance','"Edit insurance" opens the chart insurance');
+ // The buttons the card actually emits carry exactly those hooks, so a real click dispatches here.
+ const missingCard=card(visitSummary({state:'fix_claim',claim:{id:'claim',issues:[{code:'tax_id',missing:'billing organization tax ID'},{code:'patient_address',missing:'patient address'},{code:'subscriber_name',missing:'subscriber name'}]}}));
+ assert.match(missingCard,/<button type="button" data-billing-organizations>Open practice billing setup<\/button>/);
+ assert.match(missingCard,/<button type="button" data-chart-section="profile">Edit patient details<\/button>/);
+ assert.match(missingCard,/<button type="button" data-chart-section="insurance">Edit insurance<\/button>/);
+ // With canWrite off the claim-fix button is gone but the three setup buttons still point somewhere useful.
+ const readOnly=card(visitSummary({state:'fix_claim',claim:{id:'claim',issues:[{code:'tax_id',missing:'billing organization tax ID'},{code:'patient_address',missing:'patient address'},{code:'subscriber_name',missing:'subscriber name'}]}}),{canCreate:false,canWrite:false,claimsAllowed:false});
+ assert.doesNotMatch(readOnly,/data-visit-claim-fix/,'read-only staff get no fix-claim button');
+ assert.match(readOnly,/data-billing-organizations>Open practice billing setup/);assert.match(readOnly,/data-chart-section="profile">Edit patient details/);assert.match(readOnly,/data-chart-section="insurance">Edit insurance/);
+ // With nothing missing there are no lines at all.
+ assert.doesNotMatch(card(visitSummary({state:'fix_claim',claim:{id:'claim',issues:[]}})),/visit-billing-missing/,'no missing details, no lines');
+ ctx.showChartSection=()=>{};
+
  // Collect payment reveals the one panel with the amount the server says is owed.
  await ctx.loadEncounterRevenueStatus(account,true);reply=()=>selfPay({patient:{owes_now_cents:4200}});await ctx.loadEncounterRevenueStatus(account,true);
  node('visit-billing-collect').hidden=true;click({visitCollect:''});assert.equal(node('visit-billing-collect').hidden,false);assert.equal(node('visit-billing-collect-note').textContent,'Patient owes now $42.00.');

@@ -32,7 +32,7 @@ async function main(){
  assert.match(actions,/data-chart-section="insurance">Insurance & copay/);
  assert.doesNotMatch(actions,/Prepare charges for claim|Open patient billing|data-patient-create-claim/,'the overview offers a concrete next visit action instead of three repeated workflow launchers');
  evaluate(`workspace.appointments[0].status='checked_in'`);actions=evaluate('patientWorkflowActions()');
- assert.match(actions,/data-start="appt-1">Start encounter/);
+ assert.match(actions,/data-start="appt-1">Start visit/);
 
  // Primary tasks remain visible; supporting longitudinal areas share one record menu.
  let tabs=plain(evaluate('configuredChartTabs(Object.entries(chartTabLabels))'));tabs.splice(tabs.findIndex(([key])=>key==='billing'),0,['insurance','Insurance']);context.tabs=tabs;
@@ -57,7 +57,7 @@ async function main(){
 
  evaluate(`activeVisit={id:'visit-1',appointment_id:'appt-1',clinician_id:'clinician-1',status:'in_progress',version:1,note:{subjective:'Retained note'},vitals:{}};workspace.visits=[activeVisit];chartSection='visits';encounterSection='documentation'`);
  const encounter=evaluate('encounterWorkflow()');
- assert.match(encounter,/id="encounter-picker"/);assert.match(encounter,/data-encounter-history>Encounter history/);assert.match(encounter,/Switch encounter/);assert.match(encounter,/Notes &amp; diagnoses \(ICD-10\)|Notes & diagnoses \(ICD-10\)/);assert.match(encounter,/Procedures \(CPT\/HCPCS\) &amp; billing|Procedures \(CPT\/HCPCS\) & billing/);assert.match(encounter,/Files &amp; voice|Files & voice/);
+ assert.match(encounter,/id="encounter-picker"/);assert.match(encounter,/data-encounter-history>Visit history/);assert.match(encounter,/Switch visit/);assert.match(encounter,/Notes &amp; diagnoses|Notes & diagnoses/);assert.match(encounter,/Charges &amp; billing|Charges & billing/);assert.match(encounter,/Files &amp; recordings|Files & recordings/);
  assert.doesNotMatch(encounter,/Open encounter|Continue encounter/,'selected encounter renders its local steps directly');
  evaluate('renderVisit(false)');assert.match(nodes['visit-editor'].innerHTML,/SOAP note/);assert.match(nodes['visit-editor'].innerHTML,/Retained note/);
  assert.equal(nodes['visit-editor'].hidden,false);assert.equal(nodes['encounter-documentation'].hidden,false);assert.equal(nodes['encounter-intake'].hidden,true);assert.equal(nodes['appointments-panel'].hidden,false,'unified history stays reachable while an encounter is selected');

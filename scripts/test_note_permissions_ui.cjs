@@ -73,7 +73,7 @@ async function main(){
  const draft={...soap,saved_by:savedBy('assistant')};
  for(const [user,role] of [['covering','clinician'],['owner','owner']]){
   const f=fixture({user,role,note:draft});await f.settle();
-  assert.match(f.editor(),/<button type="submit">Save note<\/button><button class="primary" type="button" data-action="sign">Sign encounter note<\/button>/,role);
+  assert.match(f.editor(),/<button type="submit">Save note<\/button><button class="primary" type="button" data-action="sign">Sign note<\/button>/,role);
   assert.doesNotMatch(f.editor(),/ readonly|You can read this note|You can draft this note/,role);
   assert.match(f.line('note-authorship'),/^Drafting for Dr\. Avery Assigned · Last saved by Morgan Assistant, [^·]*2026/,role);
   assert.equal(count(f,'GET','/previous-note'),1,role+' is offered the earlier note');
@@ -117,7 +117,7 @@ async function main(){
  assert.equal(f.line('note-authorship').replace(/, .*/,''),'Last saved by Dr. Avery Assigned');assert.doesNotMatch(f.line('note-authorship'),/Drafting for/);
  assert.equal(count(f,'GET','/note-authorship'),0);
  await f.click({action:'sign'},[true]);
- assert.equal(f.asked[0].options.title,'Sign encounter note?');assert.equal(count(f,'POST','/sign'),1);
+ assert.equal(f.asked[0].options.title,'Sign note?');assert.equal(count(f,'POST','/sign'),1);
  f=fixture({user:'assigned',role:'clinician',note:null});await f.settle();assert.equal(f.line('note-authorship'),'','a note nobody has saved names nobody');
  console.log('PASS the assigned clinician’s own visit keeps its usual editor and signature question');
 

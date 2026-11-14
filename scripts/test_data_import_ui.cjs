@@ -215,8 +215,9 @@ function fixture(jobs){
  let form='';
  const b=vm.createContext({esc,crypto:{randomUUID:()=>'request-1'},me:{role:'front_desk'},workspace:{patient:{given_name:'Avery Q',family_name:'Synthetic',birth_date:'1990-01-01'}},
   billingPayers:[{id:'payer-1',content:{name:'Synthetic Payer',active:true}},{id:'payer-2',content:{name:'Other Payer',active:true}}],
-  showChartSection(){},openBillingEditor:html=>{form=html;},coveragePayerSetup:()=>'',dollars:v=>v??'',sourceNotice:()=>'<div>SOURCE NOTICE</div>',
-  coveragePayerOptions:id=>`<option value="${id}" selected>payer</option>`,
+  showChartSection(){},openBillingEditor:html=>{form=html;},$:()=>null,addEventListener(){},coveragePayerSetup:()=>'',dollars:v=>v??'',sourceNotice:()=>'<div>SOURCE NOTICE</div>',
+  coveragePayerOptions:id=>`<option value="${id}" selected>payer</option>`,patientSelfPolicyHolder(){},
+  insuranceOptionLabels:values=>values.map(v=>({primary:'Primary',secondary:'Secondary',tertiary:'Tertiary',active:'Active',inactive:'Inactive',entered_in_error:'Entered by mistake',self:'Self',spouse:'Spouse',child:'Child',other:'Other',unverified:'Not yet',manually_verified:'Yes, checked by hand'})[v]),
   selectField:(name,label,values,value)=>`<select name="${name}" data-value="${esc(value)}"></select>`,
   billingField:(name,label,value='',type='text',max=0,required=false)=>`<input name="${name}" value="${esc(value)}" ${required?'required':''}>`});
  vm.runInContext(billing.slice(start,end),b);
@@ -226,7 +227,7 @@ function fixture(jobs){
  for(const [name,value] of [['member_id','SYN-MEMBER-1'],['group_number','SYN-GROUP'],['plan_name','Synthetic PPO'],['subscriber_name','Avery Q Synthetic'],['subscriber_birth_date','1990-01-01'],['effective_date','2023-01-01']])assert.match(form,new RegExp(`name="${name}" value="${value}"`));
  assert.match(form,/<option value="payer-1" selected>/);assert.match(form,/name="priority" data-value="secondary"/);assert.match(form,/name="relationship" data-value="self"/);
  assert.match(form,/<input type="hidden" name="reason" value="Added from previous system insurance record">/);
- assert.doesNotMatch(form,/type="checkbox"|SOURCE NOTICE/);assert.match(form,/>Save coverage<\/button>/);assert.doesNotMatch(visible(form),internalTerms);
+ assert.doesNotMatch(form,/type="checkbox"|SOURCE NOTICE/);assert.match(form,/>Save insurance<\/button>/);assert.doesNotMatch(visible(form),internalTerms);
  record.source_data.coverage.payer_name='Unlisted Payer';record.source_data.coverage.relationship='spouse';vm.runInContext('coverageEditor(null,record)',b);
  assert.match(form,/<option value="" selected>/);assert.match(visible(form),/Payer in the previous system: Unlisted Payer \. Choose the matching payer\./);assert.match(form,/name="subscriber_name" value="" required/);
  vm.runInContext('coverageEditor(null,{source_history_id:"h8",policy:"p",source_data:{policy_number:"LEGACY-1"}})',b);
@@ -234,5 +235,52 @@ function fixture(jobs){
  assert.match(app,/r\.kind==='insurance'&&r\.source_data\?\.coverage\?'Add as coverage':/);
  assert.match(app,/typeof importedContactBlock==='function'\?importedContactBlock\(\):''/);
  const panel=app.slice(app.indexOf('function renderHistory() {'),app.indexOf('function encounterWorkflow(){'));assert.match(panel,/<h2>Records from previous system<\/h2>/);assert.doesNotMatch(panel.replace(/\$\{[^`]*?\}/g,' '),/Source record|native chart|source history/i);
- console.log('PASS an imported insurance record pre-fills the coverage form without saving it');
+  console.log('PASS an imported insurance record pre-fills the coverage form without saving it');
+
+ // Opening a new insurance entry or switching the relationship to "self" copies the patient onto the policy holder fields.
+ {
+  const field=value=>({value});
+  const elements={relationship:field(''),subscriber_name:field(''),subscriber_birth_date:field('')};
+  const form={elements,addEventListener(){}};
+  const scope={workspace:{patient:{given_name:'Avery Q',family_name:'Synthetic',birth_date:'1990-01-01'}},form};
+  vm.createContext(scope);
+  vm.runInContext(billing.slice(billing.indexOf('function patientSelfPolicyHolder('),billing.indexOf('function billingEffectiveCoverages(')),scope);
+  vm.runInContext('patientSelfPolicyHolder(form)',scope);
+  assert.equal(elements.subscriber_name.value,'','nothing is copied while the patient is not the policy holder');
+  elements.relationship.value='self';vm.runInContext('patientSelfPolicyHolder(form)',scope);
+  assert.equal(elements.subscriber_name.value,'Avery Q Synthetic');assert.equal(elements.subscriber_birth_date.value,'1990-01-01');
+  elements.subscriber_name.value='Kept Name';elements.subscriber_birth_date.value='1970-01-01';vm.runInContext('patientSelfPolicyHolder(form)',scope);
+  assert.equal(elements.subscriber_name.value,'Kept Name');assert.equal(elements.subscriber_birth_date.value,'1970-01-01','what staff typed is never overwritten');
+  console.log('PASS a new insurance entry with the patient as policy holder fills the policy holder name and date of birth from the chart');
+ }
+
+ // The insurance screen's own form: plain words, no status choice while adding, and a default effective date.
+ {
+  let plain='';
+  const f=vm.createContext({esc,crypto:{randomUUID:()=>'request-2'},me:{role:'front_desk'},Date,workspace:{patient:{given_name:'Avery Q',family_name:'Synthetic',birth_date:'1990-01-01'}},
+   billingPayers:[{id:'payer-1',content:{name:'Synthetic Payer',payer_code:'SYN',active:true}}],
+   coveragePayerSetup:()=>'',dollars:v=>v??'',sourceNotice:()=>'',showChartSection(){},openBillingEditor:html=>{plain=html;},$:id=>id==='coverage-form'?{addEventListener(){},elements:{relationship:{value:'self'},subscriber_name:{value:''},subscriber_birth_date:{value:''}}}:null,
+   patientSelfPolicyHolder(){},insuranceOptionLabels:values=>values.map(v=>({primary:'Primary',secondary:'Secondary',tertiary:'Tertiary',active:'Active',inactive:'Inactive',entered_in_error:'Entered by mistake',self:'Self',spouse:'Spouse',child:'Child',other:'Other',unverified:'Not yet',manually_verified:'Yes, checked by hand'})[v]),
+   coveragePayerOptions:id=>`<option value="${id}" selected>payer</option>`,
+   selectField:(name,label,values,value,labels)=>`<label>${label}<select name="${name}">${values.map((v,i)=>`<option value="${v}">${labels[i]}</option>`).join('')}</select></label>`,
+   billingField:(name,label,value='',type='text',max=0,required=false)=>`<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${required?'required':''}></label>`});
+  vm.runInContext(billing.slice(start,end),f);
+  vm.runInContext('coverageEditor(null,null)',f);
+  const added=plain.slice(0,plain.indexOf('<div id="coverage-payer-setup">'));
+  assert.match(added,/<h3>Add insurance<\/h3>/);assert.doesNotMatch(added,/name="status"/,'a new insurance entry asks for nothing it cannot know yet');
+  assert.match(plain,/>Primary<\/option><option value="secondary">Secondary<\/option><option value="tertiary">Tertiary</);
+  assert.match(plain,/>Not yet<\/option><option value="manually_verified">Yes, checked by hand</);
+  assert.match(plain,/>Self<\/option><option value="spouse">Spouse<\/option><option value="child">Child<\/option><option value="other">Other</);
+  assert.match(plain,/Two active plans cannot share the same order\./);
+  assert.match(plain,new RegExp(`name="effective_date"[^>]*value="${new Date().getFullYear()}-01-01"`),'a new entry starts on the first day of this year');
+  assert.deepEqual([...plain.matchAll(/<label>([^<]*)<input/g)].map(m=>m[1]),['Member ID','Group number','Plan name','Policy holder name','Policy holder date of birth','Effective date','End date','Copay (optional)','Reason / evidence for change']);
+  assert.deepEqual([...plain.matchAll(/<label>([^<]*)<select/g)].map(m=>m[1]),['Insurance company','Order',"Patient is the policy holder's",'Checked by staff']);
+  assert.match(plain,/>Save insurance<\/button>/);assert.doesNotMatch(visible(plain),internalTerms);
+  assert.doesNotMatch(visible(plain),/\bhistory\b|\bcatalog\b|\bnative\b|\brecord\b/i,'the form speaks plain words');
+  vm.runInContext('coverageEditor({id:"coverage-1",version:2,content:{payer_id:"payer-1",priority:"primary",status:"inactive",member_id:"SYN-MEMBER-1",group_number:"",plan_name:"",subscriber_name:"Avery Q Synthetic",subscriber_birth_date:"1990-01-01",relationship:"self",effective_date:"2023-01-01",end_date:"2026-06-30",copay_cents:2500,verification:"unverified",notes:""}})',f);
+  assert.match(plain,/<h3>Edit insurance<\/h3>/);assert.match(plain,/name="status"/);assert.match(plain,/>Entered by mistake<\/option>/);
+  assert.match(plain,/>Inactive<\/option>/,'the saved status is still offered when editing');
+  assert.match(plain,/name="effective_date" type="date" value="2023-01-01" required/,'a saved effective date is never re-defaulted');
+  console.log('PASS the insurance form uses plain field names, hides status while adding and defaults the effective date');
+ }
 })().catch(error=>{console.error(error);process.exit(1);});

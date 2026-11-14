@@ -6,7 +6,7 @@ const procedureAutocompleteStates=new Map(),procedureAutocompleteApplying=new We
 let procedureAutocompleteId=0;
 const terminologySystems=['ICD-10-CM','ICD-10-PCS','HCPCS','CPT'];
 const terminologySystem=value=>({'ICD10CM':'ICD-10-CM','ICD10PCS':'ICD-10-PCS','HCPCS':'HCPCS','CPT':'CPT'})[String(value||'').toUpperCase().replace(/[^A-Z0-9]/g,'')]||null;
-const terminologyLookupButton=scope=>`<button type="button" data-terminology-open="${scope}">${scope==='diagnosis'?'Find ICD-10-CM diagnosis':'Find procedure code'}</button>`;
+const terminologyLookupButton=scope=>`<button type="button" data-terminology-open="${scope}">${scope==='diagnosis'?'Find diagnosis':'Find procedure code'}</button>`;
 const terminologyCatalogButton=()=>me?.role==='owner'?'<button type="button" data-terminology-manage>Terminology catalogs</button>':'';
 function renderTerminologyAdminEntry(){return me?.role==='owner'?'<button type="button" data-terminology-manage>Code catalogs</button>':'';}
 function terminologyReleaseLabel(value){return `${value.system||''} · ${value.edition||'Edition not recorded'} · effective ${value.effective_start||'date not recorded'}${value.effective_end?` through ${value.effective_end}`:' onward'}`;}
@@ -144,7 +144,7 @@ function terminologyPickerStatus(state,text,error=false){const status=state.host
 function terminologyPickerCurrentDate(state){return state.host.querySelector('[data-terminology-date]').value;}
 function terminologyPickerMarkup(state){
  const allowed=state.scope==='diagnosis'?['ICD-10-CM']:['CPT','HCPCS'];
- return `<div class="section-head"><h4>${state.scope==='diagnosis'?'Find an encounter diagnosis':'Find a procedure or service code'}</h4><button type="button" data-terminology-close>Close lookup</button></div><p class="muted">Search installed catalogs. Choosing a code fills this row for review; save the encounter or charge account separately.</p><div class="form-grid"><label>Catalog system<select data-terminology-system>${allowed.map(system=>`<option value="${system}" ${system===state.system?'selected':''}>${system}</option>`).join('')}</select></label><label>Service date<input type="date" data-terminology-date value="${esc(state.serviceDate)}" required></label><label>Catalog release<select data-terminology-release><option value="">Latest release effective on this date</option></select></label><label>Code or description<input data-terminology-query maxlength="200" autocomplete="off" value="${esc(state.query)}" placeholder="Enter a code or a description"></label></div><button type="button" data-terminology-search>Search catalog</button><p data-terminology-status role="status" aria-live="polite">Loading catalog releases…</p><div data-terminology-results></div>`;
+ return `<div class="section-head"><h4>${state.scope==='diagnosis'?'Find a diagnosis':'Find a procedure'}</h4><button type="button" data-terminology-close>Close</button></div><div class="form-grid"><label>Search by code or name<input data-terminology-query maxlength="200" autocomplete="off" value="${esc(state.query)}" placeholder="Enter a code or a name"></label></div><button type="button" data-terminology-search>Search</button><details><summary>More options</summary><div class="form-grid"><label>Catalog system<select data-terminology-system>${allowed.map(system=>`<option value="${system}" ${system===state.system?'selected':''}>${system}</option>`).join('')}</select></label><label>Service date<input type="date" data-terminology-date value="${esc(state.serviceDate)}" required></label><label>Catalog release<select data-terminology-release><option value="">Latest release effective on this date</option></select></div></details><p data-terminology-status role="status" aria-live="polite">Loading catalog releases…</p><div data-terminology-results></div>`;
 }
 async function openTerminologyPicker(button){
  const scope=button.dataset.terminologyOpen,row=button.closest(scope==='diagnosis'?'[data-diagnosis-row]':'.billing-charge-row'),form=row?.closest('form');if(!row||!form)return;
@@ -152,8 +152,9 @@ async function openTerminologyPicker(button){
  const host=document.createElement('section');host.className='amendment';host.dataset.terminologyPicker='';host.setAttribute('aria-label','Terminology lookup');
  const system=scope==='diagnosis'?'ICD-10-CM':terminologySystem(row.querySelector('[name="code_system"]')?.value)||'CPT';
  const state={scope,row,form,host,button,system,serviceDate:terminologyServiceDate(scope,form),query:row.querySelector('[name="code"]')?.value||'',patient:selected,visit:typeof activeVisit!=='undefined'?activeVisit?.id:null,account:me,generation:terminologyGeneration,request:0,items:[],releases:[]};
- terminologyPickers.set(host,state);host.innerHTML=terminologyPickerMarkup(state);row.append(host);host.querySelector('[data-terminology-query]').focus();
- await loadTerminologyReleases(state);
+  terminologyPickers.set(host,state);host.innerHTML=terminologyPickerMarkup(state);row.append(host);host.querySelector('[data-terminology-query]').focus();
+  await loadTerminologyReleases(state);
+  if(state.query.trim().length>=2&&terminologyContextCurrent(state))await searchTerminology(state);
 }
 async function loadTerminologyReleases(state){
  const request=++state.request,system=state.host.querySelector('[data-terminology-system]').value;
@@ -168,7 +169,7 @@ async function loadTerminologyReleases(state){
 }
 function renderTerminologyResults(state){
  const results=state.host.querySelector('[data-terminology-results]');
- results.innerHTML=state.items.map((item,index)=>`<article class="integration-access-row"><div><b>${esc(item.code)} · ${esc(item.display)}</b><small>${esc(terminologyReleaseLabel(item))}</small><small>${esc(item.source_name||'Source not recorded')} · ${item.billable?'Billable code':'Not billable'}${item.active===false?' · Inactive':''}</small></div><button type="button" data-terminology-select="${index}" ${item.active===false||!item.billable?'disabled':''}>Use code</button></article>`).join('')+(state.nextCursor?'<button type="button" data-terminology-more>More matching codes</button>':'');
+ results.innerHTML=state.items.map((item,index)=>`<article class="integration-access-row"><div><b>${esc(item.code)} · ${esc(item.display)}</b></div><button type="button" data-terminology-select="${index}" title="${esc(`${terminologyReleaseLabel(item)} · ${item.source_name||'Source not recorded'} · ${item.billable?'Billable code':'Not billable'}${item.active===false?' · Inactive':''}`)}" ${item.active===false||!item.billable?'disabled':''}>Use this</button></article>`).join('')+(state.nextCursor?'<button type="button" data-terminology-more>More matching codes</button>':'');
 }
 async function searchTerminology(state,more=false){
  const system=state.host.querySelector('[data-terminology-system]').value,serviceDate=terminologyPickerCurrentDate(state),query=state.host.querySelector('[data-terminology-query]').value.trim(),release=state.host.querySelector('[data-terminology-release]').value;
@@ -181,7 +182,7 @@ async function searchTerminology(state,more=false){
   const result=await api(`/api/v1/terminology/codes?${params}`);
   if(!terminologyContextCurrent(state)||request!==state.request)return;
   state.items=append?[...state.items,...(result.items||[])]:result.items||[];state.nextCursor=result.next_cursor||null;state.search={system,serviceDate,query,release};renderTerminologyResults(state);
-  terminologyPickerStatus(state,state.items.length?`${state.items.length} matching code${state.items.length===1?'':'s'} shown for ${serviceDate}. Review the description and release before selecting.`:'No matching billable codes were found for this date and release. Review the date, search, or catalog. Manual entry is still available.');
+   terminologyPickerStatus(state,state.items.length?`${state.items.length} found.`:'No matching billable codes were found for this date and release. Review the date, search, or catalog. Manual entry is still available.');
  }catch(error){if(terminologyContextCurrent(state)&&request===state.request)terminologyPickerStatus(state,`Search could not finish: ${error.message}. Existing entries are unchanged.`,true);}
 }
 function terminologySelectionCurrent(state,item){
