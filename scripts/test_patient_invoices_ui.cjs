@@ -3,7 +3,7 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const source=fs.readFileSync('web/billing.js','utf8');
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const handlers={},ctx={document:{addEventListener:(event,handler)=>(handlers[event]??=[]).push(handler)},esc:escape,date:v=>v,crypto:{randomUUID:()=> 'stable-request'},me:{role:'owner'},workspace:{billing:{accounts:[{id:'account',status:'posted',version:4,total_cents:15000}]}},selected:'patient',FormData:class{constructor(form){return Object.entries(form.values)[Symbol.iterator]();}},run:fn=>ctx.pending=fn()};
+const handlers={},domHandlers={},ctx={document:{addEventListener:(event,handler,useCapture)=>((useCapture?domHandlers:handlers)[event]??=[]).push(handler)},esc:escape,date:v=>v,crypto:{randomUUID:()=> 'stable-request'},me:{role:'owner'},workspace:{billing:{accounts:[{id:'account',status:'posted',version:4,total_cents:15000}]}},selected:'patient',FormData:class{constructor(form){return Object.entries(form.values)[Symbol.iterator]();}},run:fn=>ctx.pending=fn()};
 vm.createContext(ctx);vm.runInContext(source,ctx);
 const invoice={id:'invoice<&',created_at:'2026-11-10',snapshot:{patient:{given_name:'<script>unsafe</script>',family_name:'Synthetic'},service_date:'2026-11-10',gross_charges_cents:15000,responsibility_cents:2500,patient_credit_cents:2500,amount_due_cents:0,credit_balance_cents:0,test_activity:true}};
 let output=ctx.patientInvoiceDocument(invoice);

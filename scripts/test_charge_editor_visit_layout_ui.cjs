@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+// Staff display helpers load before every feature script, exactly as index.html loads them.
+{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(fs.readFileSync('web/display-format.js','utf8'),context);return context;};}
+const nodes={},captureHandlers={},ctx={console,Date,Intl,URL,URLSearchParams,crypto:{randomUUID:()=>'synthetic-request'},selected:'patient',me:{role:'owner'},chartSection:'billing',
+ workspace:{appointments:[],visits:[{id:'visit-a',appointment_id:'appt-a',created_at:'2026-11-13T14:00:00Z'}],billing:{accounts:[],coverages:[],entries:[]}},
+ // The charge form is held as text here, so the editor host never answers for the form itself.
+ $:id=>id==='billing-account-form'?ctx.openedForm:(nodes[id]??={id,innerHTML:'',dataset:{},scrollIntoView(){},replaceChildren(){this.innerHTML='';},querySelector:()=>null,querySelectorAll:()=>[]}),
+ document:{addEventListener:(name,fn,useCapture)=>{if(useCapture&&name==='submit')captureHandlers.submit=fn;}},
+ esc:v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'),human:v=>v,date:v=>String(v),money:n=>'$'+(n/100).toFixed(2),dollars:c=>c==null?'':(c/100).toFixed(2),payerName:()=>'Synthetic payer',billingCan:()=>true,
+ notice(){},run:fn=>fn(),showChartSection(){},setEncounterSection(){}};
+vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/billing.js','utf8'),ctx);vm.runInContext(fs.readFileSync('web/fees.js','utf8'),ctx);
+const chargeLine=html=>html.slice(html.indexOf('<fieldset class="billing-charge-row"'),html.indexOf('</fieldset>'));
+(async()=>{
+ ctx.revenueServiceDate=()=>'2026-11-13';
+ ctx.api=async()=>({version:3,diagnoses:[]});
+ // Opened from inside the visit: the charge lines come first, everything else is tucked away.
+ ctx.chartSection='visits';ctx.activeVisit={id:'visit-a',appointment_id:'appt-a',status:'in_progress'};
+ ctx.accountEditor(null,null,true);
+ const visit=nodes['encounter-billing-editor'].innerHTML,box='<details data-visit-charge-options>';
+ assert.match(visit,/<details data-visit-charge-options><summary>Visit, insurance and fee options<\/summary>/,'the visit details sit in one collapsed box');
+ assert.ok(!/<details[^>]*\bopen/.test(visit),'the box starts closed');
+ const row=chargeLine(visit);
+ assert.ok(!row.includes('<details')||row.indexOf('<details')>row.indexOf('name="code"'),'the procedure code is outside any closed box');
+ assert.match(row,/data-charge-diagnoses/,'the diagnosis ticks stay on the line');
+ assert.ok(visit.indexOf(box)>visit.indexOf('data-add-charge'),'the options box comes after the charge lines');
+ const tucked=visit.slice(visit.indexOf(box),visit.indexOf('Reason / source review'));
+ assert.ok(['visit_id','service_date','coverage_id','notes','fee_facility','fee_setting'].every(name=>tucked.includes(`name="${name}"`)),'the tucked fields are still inside the form and still submitted');
+ assert.match(visit,/<button type="button" data-add-charge>\+ Add another charge<\/button>/);
+ assert.match(visit,/>Save charges</);assert.match(visit,/>Cancel</);
+ assert.match(row,/>Remove</);assert.doesNotMatch(visit,/Remove line/);
+ assert.match(row,/>Amount</);assert.match(row,/>Diagnoses for this charge</);assert.match(row,/>Look up fee</);assert.match(row,/<summary>More<\/summary>/);
+ assert.doesNotMatch(visit,/Account notes|CPT \/ HCPCS|Line total \(USD\)|Reviewed ICD-10|Check approved fee|Catalog release options|Record each service once/,'no long or developer wording is shown in the visit charge form');
+ // Saving with a required field left empty inside the box opens it so the browser can show the problem.
+ const broken={checkValidity:()=>false},ok={checkValidity:()=>true},fields=[ok,broken],tuckedBox={open:false,querySelectorAll:()=>fields};
+ const chargeForm={id:'billing-account-form',querySelector:selector=>selector==='[data-visit-charge-options]'?tuckedBox:null};
+ captureHandlers.submit({target:chargeForm});assert.equal(tuckedBox.open,true,'an empty required field inside the box opens it before the browser validates');
+ tuckedBox.open=false;fields.length=0;fields.push(ok);
+ captureHandlers.submit({target:chargeForm});assert.equal(tuckedBox.open,false,'a complete box stays closed when saving');
+ // Opened from the Billing tab with no visit chosen, the form keeps its full layout.
+ ctx.chartSection='billing';ctx.activeVisit=null;ctx.revenueServiceDate=()=>'';
+ ctx.workspace.billing.coverages=[{id:'cov-p',content:{priority:'primary',payer_id:'payer-a',member_id:'SYN-1',status:'active',effective_date:'2026-01-01'}}];
+ ctx.accountEditor();
+ const flat=nodes['billing-editor'].innerHTML;
+ assert.doesNotMatch(flat,/data-visit-charge-options|Visit, insurance and fee options/,'the Billing tab form is not shortened');
+ assert.ok(flat.indexOf('name="visit_id"')<flat.indexOf('id="billing-charge-lines"'),'the encounter choice still sits above the lines');
+ assert.match(flat,/<p class="muted">Enter the total for each charge; it is not multiplied by units\.<\/p>/);
+ assert.match(flat,/<h4>Insurance on [^<]+<\/h4>/,'the Billing tab form still lists the insurance on file');
+ assert.match(flat,/data-add-charge>\+ Charge line</);assert.match(flat,/<label>Notes<textarea name="notes"/);
+ console.log('PASS shortened visit charge form: charge lines only up front, one closed options box holding the visit fields, opened on save when a field inside is invalid, Billing tab layout unchanged');
+})().catch(error=>{console.error(error);process.exitCode=1;});
