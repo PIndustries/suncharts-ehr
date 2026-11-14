@@ -65,7 +65,7 @@ function clinicalFixture() {
 async function testEncounterStates() {
   const f = clinicalFixture();
   assert.doesNotMatch(f.evaluate('encounterDateLabel(activeVisit)'), /Invalid Date/);
-  assert.equal(f.evaluate("encounterDateLabel({appointment_id:'missing'})"),'Encounter date not recorded');
+  assert.equal(f.evaluate("encounterDateLabel({appointment_id:'missing'})"),'Visit date not recorded');
   f.evaluate('renderVisit(false)');
   assert.match(f.node('encounter-progress').innerHTML, /Notes &amp; diagnoses|Notes & diagnoses/);
   assert.match(f.node('visit-editor').innerHTML, /data-action="sign"/);

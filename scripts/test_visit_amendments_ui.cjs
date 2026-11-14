@@ -78,7 +78,7 @@ async function main(){
  f=fixture();f.type('Reason','Correction');f.run('activeVisit={...activeVisit,version:2};renderVisit(false)');
  assert.equal(f.nodes.get('amendment-form').dataset.version,'1');assert.equal(f.nodes.get('amendment-submit').disabled,true);assert.equal(f.nodes.get('amendment-review-current').hidden,false);
  f.context.api=async(...args)=>{f.calls.push(args);return {...f.run('activeVisit'),version:3};};
- await assert.rejects(f.run("submitVisitAmendment($('amendment-form'))"),/Review the changed encounter/);assert.equal(f.calls.length,0);
+ await assert.rejects(f.run("submitVisitAmendment($('amendment-form'))"),/Review the changed visit/);assert.equal(f.calls.length,0);
  f.click('review-amendment-version',{version:'2'});assert.equal(f.nodes.get('amendment-form').dataset.version,'2');assert.equal(f.nodes.get('amendment-submit').disabled,false);assert.equal(f.focused(),'amendment-form:text');
  f.run("selectPatient=async(p,v)=>{calls.push(['reload',p,v]);activeVisit={...activeVisit,version:3};renderVisit(false);}");
  await f.run("submitVisitAmendment($('amendment-form'))");assert.equal(f.calls[0][0],'/api/v1/visits/visit-1/amendments');assert.equal(f.calls[0][3],2);assert.equal(f.run('visitAmendmentsHaveDrafts()'),false);assert.equal(f.nodes.get('amendment-form').values.text,'');assert.match(f.nodes.get('visit-editor').innerHTML,/Frozen S/);
