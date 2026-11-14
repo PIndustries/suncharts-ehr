@@ -434,6 +434,10 @@ pub fn router() -> Router<State> {
             get(claim_mapping),
         )
         .route("/api/v1/billing/remittance-sources", get(remit_sources))
+        .route(
+            "/api/v1/billing/claims/status-counts",
+            get(claim_status_counts),
+        )
 }
 async fn claims(
     a: Actor,
@@ -452,6 +456,24 @@ async fn claims(
     crate::postgres::audit(&mut tx, &a, "claim.worklist", a.tenant_id).await?;
     tx.commit().await?;
     Ok(Json(json!({"items":rows,"next_cursor":next})))
+}
+// Status chip counts for the claims list. The list itself is cursor paginated, so
+// the chips count every claim in the tenant rather than only the page on screen.
+async fn claim_status_counts(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+) -> Result<Json<Value>> {
+    a.staff()?;
+    let mut tx = db(&s)?.begin().await?;
+    let counts: Value = sqlx::query_scalar(
+        "SELECT coalesce(jsonb_object_agg(status,count), '{}'::jsonb) FROM ehr_claims WHERE tenant_id=$1",
+    )
+    .bind(a.tenant_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    crate::postgres::audit(&mut tx, &a, "claim.status_counts", a.tenant_id).await?;
+    tx.commit().await?;
+    Ok(Json(json!({"counts":counts})))
 }
 async fn create_claim(
     a: Actor,
