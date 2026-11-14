@@ -135,6 +135,8 @@ let patientWorkspaceGeneration=0;
 let postSignReminder=null;
 function postSignReminderMarkup(){
  if(!postSignReminder||typeof activeVisit==='undefined'||activeVisit?.id!==postSignReminder.visitId)return '';
+ // The charges step itself says what to do; the reminder is only for the other steps.
+ if(encounterSection==='charges')return '';
  // Once the visit's charges are posted the reminder has done its job; nothing is kept in the browser.
  if(typeof encounterChargeAccount==='function'&&encounterChargeAccount()?.status==='posted'){postSignReminder=null;return '';}
  return `<div id="sign-charge-reminder" class="notice notice-with-action" role="status"><span>${esc(postSignReminder.message)}</span><button type="button" class="text-button" data-encounter-section="charges">Open Procedures &amp; billing</button></div>`;
@@ -522,12 +524,13 @@ async function selectPatient(id, keepVisit, stillCurrent=()=>true) {
   captureVisitDrafts(); // Include edits made while the chart reads were in flight.
   next.history=history?.items??null;next.clinical=clinical;next.labs=labs;next.billing=billing;next.demographics=demographics;
   if(id!==selected){chartSection='overview';encounterSection=['nurse','medical_assistant'].includes(me?.role)?'intake':'documentation';}
-  if(keepVisit&&activeVisit?.id!==keepVisit){chartSection='visits';encounterSection=['nurse','medical_assistant'].includes(me?.role)?'intake':'documentation';if(typeof postSignReminder!=='undefined')postSignReminder=null;}
+  if(keepVisit&&activeVisit?.id!==keepVisit){chartSection='visits';encounterSection=['nurse','medical_assistant'].includes(me?.role)?'intake':'documentation';}
   workspace=next;billingPayers=payers.items;selected=id;
   activeVisit=keepVisit===null ? undefined : keepVisit ? workspace.visits.find(v=>v.id===keepVisit) : workspace.visits.find(v=>v.status==='in_progress'&&v.clinician_id===me.user_id)||workspace.visits.find(v=>v.status==='in_progress');
   // Opening a different encounter retires the sign reminder; signing then re-opening the
-  // same visit keeps it, because the charges may still be missing.
-  if(typeof postSignReminder!=='undefined'&&postSignReminder&&postSignReminder.visitId!==id)postSignReminder=null;
+  // same visit keeps it, because the charges may still be missing. 'id' here is the patient,
+  // so compare against the visit actually being opened, not the patient id.
+  if(typeof postSignReminder!=='undefined'&&postSignReminder&&activeVisit?.id!==postSignReminder.visitId)postSignReminder=null;
   renderPatients();renderChart();
   setPatientDirectoryVisible(patientDirectoryPreference===true);
 }
