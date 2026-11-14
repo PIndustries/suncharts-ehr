@@ -29,7 +29,7 @@ const states=[
   [visitSummary({state:'post_charges',account:{status:'draft'},balance_cents:null,claim:null,insurance:{status:'not_billed',pending_cents:0}}),'Post charges','Post charges','data-visit-post-charges="account"',/claim to Synthetic Medicare PPO is prepared for you next/],
  [selfPay(),'Self-pay: collect payment','Collect payment','data-visit-collect',/Patient owes \$280\.00\. Waiting for the patient/],
  [visitSummary({state:'claim_cancelled',claim:null}),'The claim to Synthetic Medicare PPO was cancelled','Prepare a new claim','data-visit-claim-prepare="again"',/Nothing is with the insurer/],
- [visitSummary({state:'fix_claim',claim:{issues:[{code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'},{code:'npi',missing:'provider NPI',detail:'x'}]}}),'Claim to Synthetic Medicare PPO needs details','Fix claim details','data-visit-claim-fix="claim"',/Missing: billing organization tax ID, provider NPI/],
+ [visitSummary({state:'fix_claim',claim:{issues:[{code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'},{code:'npi',missing:'provider NPI',detail:'x'}]}}),'Claim to Synthetic Medicare PPO needs details','Fix claim details','data-visit-claim-fix="claim"',/Practice billing setup:<\/b> billing organization tax ID, provider NPI/],
  [visitSummary(),'Claim ready to send to Synthetic Medicare PPO','Review and send claim','data-visit-claim-send="claim"',/Nothing has been sent yet\./],
  [visitSummary({state:'waiting_insurer',waiting_on:'insurer',insurance:{status:'waiting',sent_on:'2026-11-12'},claim:{status:'submitted',sent_on:'2026-11-12'}}),'Waiting on Synthetic Medicare PPO','Check claim status','data-revenue-claim="claim"',/Claim sent Nov 12, 2026\. Nothing to do until they answer/],
  [visitSummary({state:'post_response',insurance:{status:'waiting'},claim:{status:'submitted',response_to_review:'era-1'}}),'Synthetic Medicare PPO answered','Review insurer payment','data-revenue-remittance="era-1"',/post it to this visit/],
@@ -115,7 +115,7 @@ assert.match(technical,/<dt>Charge account<\/dt><dd>e40f1da7-0000<\/dd>/);assert
 
 // Escaping: insurer names, issue text and receipt fields are text, never markup.
 const hostile=card(visitSummary({state:'fix_claim',insurance:{insurer:'<img src=x onerror=1>'},claim:{payer_name:'<script>x</script>',id:'"><b>',issues:[{missing:'<i>tax</i>'}]},receipts:[{id:'"onclick="x',appointment_id:'a"b',amount_cents:1000,method:'cash',occurred_on:'2026-11-12'}]}));
-assert.doesNotMatch(hostile,/<img|<script|<i>tax|"><b>|"onclick="x"/);assert.match(hostile,/&lt;script&gt;x&lt;\/script&gt;/);assert.match(hostile,/Missing: &lt;i&gt;tax&lt;\/i&gt;/);
+assert.doesNotMatch(hostile,/<img|<script|<i>tax|"><b>|"onclick="x"/);assert.match(hostile,/&lt;script&gt;x&lt;\/script&gt;/);assert.match(hostile,/Claim: &lt;i&gt;tax&lt;\/i&gt;/);
 // Dates and vocabulary.
 assert.equal(ctx.visitBillingDate('2026-11-12'),'Nov 12, 2026');assert.equal(ctx.visitBillingDate(''),'');assert.equal(ctx.visitBillingDate('not a date'),'');
 assert.equal(ctx.visitBillingClaimState({status:'ready'}),'Send claim');assert.equal(ctx.visitBillingClaimState({status:'accepted'}),'Waiting on insurer');assert.equal(ctx.visitBillingClaimState({status:'rejected'}),'Denied: fix and resend');assert.equal(ctx.visitBillingClaimState({status:'submitted',crossover_tracking_only:true}),'Secondary insurer answered');
