@@ -587,7 +587,7 @@ pub(crate) fn verify_bound(attempt: &EvidenceBinding, value: &Value) -> Result<V
     }
     let paid = v["status"] == "complete" && v["payment_status"] == "paid";
     let expired = v["status"] == "expired";
-    if !paid && !expired && !(v["status"] == "open" && v["payment_status"] == "unpaid") {
+    if !(paid || expired || (v["status"] == "open" && v["payment_status"] == "unpaid")) {
         return Err(Error::Invalid(
             "payment has not reached a supported confirmed state",
         ));

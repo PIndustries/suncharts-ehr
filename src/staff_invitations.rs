@@ -44,6 +44,8 @@ const WATCH_SECONDS: i64 = 600;
 /// Reads allowed in any hour before the shorter window is given up, which
 /// leaves the rest of Connect's hourly allowance for sending links.
 const WATCH_READS: usize = 40;
+const _: () = assert!(WATCH_READS < 60);
+const _: () = assert!(WATCH_SECONDS as u64 / 20 <= WATCH_READS as u64);
 #[derive(Default)]
 struct Remembered {
     copies: HashMap<Uuid, (Instant, Vec<Value>)>,
@@ -714,8 +716,6 @@ mod tests {
         // The shorter window stops before Connect's 60-an-hour allowance is at risk.
         assert_eq!(trusted_for(&[fresh.clone()], WATCH_READS - 1), WATCH_TTL);
         assert_eq!(trusted_for(&[fresh], WATCH_READS), STATUS_TTL);
-        assert!(WATCH_READS < 60);
-        assert!(WATCH_SECONDS as u64 / WATCH_TTL.as_secs() <= WATCH_READS as u64);
     }
     #[test]
     fn refusals_map_to_reasons_without_echoing_connect_text() {
