@@ -73,12 +73,12 @@ function visitBillingMissingGroupsFor(issues){
  }
  return buckets;
 }
-// Lines in order: practice, patient, insurance, then the claim. The claim line keeps the one
-// "Fix claim details" button, shown whenever anything at all is missing, so no item is stranded.
+// Lines in order: practice, patient, insurance, then the claim. The claim line lists its items as
+// text only; the card's main action button is the one "Fix claim details", never a second one here.
 function visitBillingMissingMarkup(issues,claimId,ctx){
- const buckets=visitBillingMissingGroupsFor(issues||[]),fix=ctx.canWrite?`<button type="button" data-visit-claim-fix="${esc(claimId)}">Fix claim details</button>`:'';
- const line=(group,items,button)=>items.length?`<p class="visit-billing-missing" data-missing-group="${group.key}"><b>${esc(group.label)}:</b> ${items.map(esc).join(', ')} ${button}</p>`:'';
- return visitBillingMissingGroups.map(group=>line(group,buckets[group.key],`<button type="button" ${group.attribute}>${esc(group.action)}</button>`)).join('')+line({key:'claim',label:'Claim'},buckets.claim,fix);
+ const buckets=visitBillingMissingGroupsFor(issues||[]);
+ const line=(group,items,button)=>items.length?`<p class="visit-billing-missing" data-missing-group="${group.key}"><b>${esc(group.label)}:</b> ${items.map(esc).join(', ')}${button?' '+button:''}</p>`:'';
+ return visitBillingMissingGroups.map(group=>line(group,buckets[group.key],`<button type="button" ${group.attribute}>${esc(group.action)}</button>`)).join('')+line({key:'claim',label:'Claim'},buckets.claim,'');
 }
 // One small table: charges, the insurer's side, the patient's side, and what the patient owes now.
 function visitBillingBreakdown(s,ctx={}){
