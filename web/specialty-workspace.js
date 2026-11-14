@@ -77,7 +77,7 @@ function configuredChartTabs(all){
 }
 
 function adminTabs(active){
- return `<nav class="chart-tabs" aria-label="Practice administration">${practiceAdminKinds.map(([key,label])=>`<button type="button" data-admin-tab="${key}" aria-pressed="false">${esc(label)}</button>`).join('')}<button type="button" data-admin-tab="workspace" aria-pressed="${active==='workspace'}">Workspace</button>${typeof renderTerminologyAdminEntry==='function'?renderTerminologyAdminEntry():''}</nav>`;
+ return `<nav class="chart-tabs practice-admin-nav" aria-label="Practice administration">${practiceAdminKinds.map(([key,label])=>`<button type="button" data-admin-tab="${key}" aria-pressed="false">${esc(label)}</button>`).join('')}<button type="button" data-admin-tab="workspace" aria-pressed="${active==='workspace'}">Workspace</button>${typeof renderTerminologyAdminEntry==='function'?renderTerminologyAdminEntry():''}</nav>`;
 }
 function renderWorkspaceSettingsAdmin(target){
  const c=practiceWorkspaceSettings.content;
