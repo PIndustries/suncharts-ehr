@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+// Staff display helpers load before every feature script, exactly as index.html loads them.
+{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(fs.readFileSync('web/display-format.js','utf8'),context);return context;};}
 const handlers={},nodes={},rows=[],ctx={console,selected:'patient',me:{role:'owner'},workspace:{billing:{coverages:[]}},document:{addEventListener:(name,fn)=>(handlers[name]??=[]).push(fn)},$:id=>nodes[id],esc:v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;'),human:v=>v,notice(){},run:fn=>fn()};
 vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/billing.js','utf8'),ctx);let captured=0;ctx.captureBillingChargeDraft=()=>captured++;
 const form={dataset:{patient:'patient'},elements:{visit_id:{value:'visit-a'}},querySelectorAll:()=>rows};nodes['billing-account-form']=form;
@@ -25,7 +27,7 @@ const change=(code,checked)=>{const target={dataset:{chargeDiagnosis:code},check
   const fresh=mk(''),typed=mk('M62.838'),saved=mk('',false),many=Array.from({length:14},(_,i)=>({id:'m'+i,code:'G80.'+String(i).padStart(2,'0'),display:'Synthetic '+i}));
   const form2={dataset:{patient:'patient'},elements:{visit_id:{value:'visit-a'}},querySelectorAll:()=>[fresh.row,typed.row,saved.row]};
   nodes['billing-account-form']=form2;  ctx.selected='patient';ctx.api=async()=>({version:5,diagnoses});const before=captured;await ctx.loadChargeEncounterDiagnoses(form2);
-  assert.equal(fresh.f.value,'G24.3, G25.9');assert.match(fresh.h.innerHTML,/data-charge-diagnosis="G24.3"  checked/);assert.match(fresh.h.innerHTML,/A new line starts with this visit's diagnoses selected\. Untick any that do not support this procedure\./);
+  assert.equal(fresh.f.value,'G24.3, G25.9');assert.match(fresh.h.innerHTML,/data-charge-diagnosis="G24.3"  checked/);assert.match(fresh.h.innerHTML,/The diagnoses from this visit are ticked for you\. Untick any that do not apply\./);
   assert.equal(typed.f.value,'M62.838','codes already entered are kept');assert.equal(saved.f.value,'','a saved line with no codes is not filled in');assert.ok(captured>before);
   fresh.f.value='';ctx.renderChargeEncounterDiagnoses(form2);assert.equal(fresh.f.value,'','unticking everything is respected');
   const capped=mk('');form2.querySelectorAll=()=>[capped.row];ctx.api=async()=>({version:6,diagnoses:many});await ctx.loadChargeEncounterDiagnoses(form2);assert.equal(capped.f.value.split(', ').length,12);

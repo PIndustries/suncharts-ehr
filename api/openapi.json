@@ -1135,7 +1135,7 @@
             "browserSession": []
           }
         ],
-        "description": "While the visit is in progress, the practice's clinical staff may save the note: the assigned clinician, any other clinician, the owner, and an enabled nurse or medical assistant. Front desk and read-only staff may not, and a custom access policy without clinical edit blocks it. A delegated support session may save a draft. The visit does not have to be assigned to the writer. Replaces the whole note; If-Match must carry the current visit version, so two writers cannot overwrite each other. The server records who saved in saved_by. procedure is optional. started_from may name an earlier signed visit of the same patient whose text the note was started from; it is verified, completed with that visit's date and audited once."
+        "description": "While the visit is in progress, the practice's clinical staff may save the note: the assigned clinician, any other clinician, the owner, and an enabled nurse or medical assistant. Front desk and read-only staff may not, and a custom access policy without clinical edit blocks it. A delegated support session may save a draft. The visit does not have to be assigned to the writer. Replaces the whole note; If-Match must carry the current visit version, so two writers cannot overwrite each other. The server records who saved in saved_by. A draft is accepted with any sections filled, including empty strings and text in only one section; a save with no text in any section is refused. procedure is optional. started_from may name an earlier signed visit of the same patient whose text the note was started from; it is verified, completed with that visit's date and audited once."
       }
     },
     "/api/v1/visits/{id}/previous-note": {
@@ -39525,22 +39525,18 @@
         "properties": {
           "subjective": {
             "type": "string",
-            "minLength": 1,
             "maxLength": 10000
           },
           "objective": {
             "type": "string",
-            "minLength": 1,
             "maxLength": 10000
           },
           "assessment": {
             "type": "string",
-            "minLength": 1,
             "maxLength": 10000
           },
           "plan": {
             "type": "string",
-            "minLength": 1,
             "maxLength": 10000
           },
           "procedure": {
@@ -39561,7 +39557,7 @@
           "assessment",
           "plan"
         ],
-        "description": "Visit note text. subjective, objective, assessment and plan are required; procedure and started_from are optional and omitted when unused. saved_by is set by the server. Signed notes are stored once and returned exactly as signed."
+        "description": "Visit note text. A draft may leave any section empty, but every save must carry text in at least one section. On signing the server requires text in subjective, objective, assessment and plan. procedure and started_from are optional and omitted when unused. saved_by is set by the server. Signed notes are stored once and returned exactly as signed."
       },
       "NoteSource": {
         "type": "object",

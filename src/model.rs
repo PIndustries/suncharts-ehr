@@ -151,17 +151,18 @@ pub struct SoapNote {
     pub saved_by: Option<NoteSaved>,
 }
 impl SoapNote {
+    /// Sections must stay within the length limit; a draft may leave any of them empty.
     pub fn validate(&self) -> Result<()> {
         for v in [
             &self.subjective,
             &self.objective,
             &self.assessment,
             &self.plan,
+            &self.procedure,
         ] {
-            text(v, 10000)?;
-        }
-        if self.procedure.chars().count() > 10000 {
-            return Err(Error::Invalid("text is empty or too long"));
+            if v.chars().count() > 10000 {
+                return Err(Error::Invalid("text is too long"));
+            }
         }
         if let Some(source) = &self.started_from {
             let known = source
