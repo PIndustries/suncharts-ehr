@@ -50,7 +50,7 @@ async function main(){
  }
  for(const resource of ['signed_visit','functional_status','neurotoxin','order','referral','follow_up','payment']){
   fixture(resource,'staff_task',{item:{visit_id:null},proof:{ready:false,status:'missing',resource_id:null,action:{module:resource==='payment'?'billing':resource==='follow_up'?'followup':'clinical',patient_id:'patient-1',appointment_id:'appointment-1',visit_id:null}}});
-  assert.match(run('pathwayStepCard(fixtureStep,fixtureItem,fixtureReadiness)'),/Open appointment to start encounter/);
+  assert.match(run('pathwayStepCard(fixtureStep,fixtureItem,fixtureReadiness)'),/Open appointment to start the visit/);
   await run("journeyOpenNative('run-1','step')");assert.deepEqual(calls,[['schedule'],['appointment','appointment-1']],`${resource} never selects another active encounter when this appointment has no visit`);
  }
  fixture('intake_reviewed','patient_form');await run("journeyOpenNative('run-1','step')");assert.deepEqual(calls,[['packet','intake_reviewed-1']]);
@@ -87,7 +87,7 @@ async function main(){
  fixture('eligibility','eligibility_query',{proof:missingEligibility});context.workspace.billing.coverages.push(coverage('coverage-2',{priority:'secondary'}));await run("journeyOpenNative('run-1','step')");
  assert.equal(calls.at(-1)[0],'billing-editor');assert.ok(!calls.some(call=>call[0]==='eligibility'),'multiple coverages require staff choice');
  context.choiceForm=nodes['journey-eligibility-coverage'];context.choiceForm.elements.coverage.value='coverage-2';await run('journeyChooseEligibility(choiceForm)');assert.deepEqual(calls.at(-1),['eligibility','coverage-2','2026-11-07',null,false]);
- context.activeVisit={id:'different-visit'};await assert.rejects(run('journeyChooseEligibility(choiceForm)'),/patient or encounter changed/);
+ context.activeVisit={id:'different-visit'};await assert.rejects(run('journeyChooseEligibility(choiceForm)'),/patient or visit changed/);
  fixture('eligibility');context.workspace.billing.coverages=[coverage('coverage-2'),coverage('coverage-1',{status:'inactive'})];responses.set('/api/v1/patients/patient-1/coverages/coverage-2/claimmd-eligibility',{items:[]});await run("journeyOpenNative('run-1','step')");assert.deepEqual(calls.at(-1),['eligibility','coverage-1','2026-11-07',['eligibility-1'],true],'existing evidence opens its own coverage even when another is currently active');
  fixture('eligibility');responses.get('/api/v1/patients/patient-1/coverages/coverage-1/claimmd-eligibility').items[0].request_snapshot.request.service_date='2026-11-08';await assert.rejects(run("journeyOpenNative('run-1','step')"),/linked eligibility response could not be found/);assert.ok(!calls.some(call=>call[0]==='eligibility'));
  fixture('eligibility');responses.get('/api/v1/appointments/appointment-1').patient_id='different-patient';await assert.rejects(run("journeyOpenNative('run-1','step')"),/appointment no longer matches/);

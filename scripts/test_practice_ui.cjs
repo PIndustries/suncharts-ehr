@@ -65,7 +65,7 @@ function clinicalFixture() {
 async function testEncounterStates() {
   const f = clinicalFixture();
   assert.doesNotMatch(f.evaluate('encounterDateLabel(activeVisit)'), /Invalid Date/);
-  assert.equal(f.evaluate("encounterDateLabel({appointment_id:'missing'})"),'Encounter date not recorded');
+  assert.equal(f.evaluate("encounterDateLabel({appointment_id:'missing'})"),'Visit date not recorded');
   f.evaluate('renderVisit(false)');
   assert.match(f.node('encounter-progress').innerHTML, /Notes &amp; diagnoses|Notes & diagnoses/);
   assert.match(f.node('visit-editor').innerHTML, /data-action="sign"/);
@@ -206,7 +206,7 @@ async function testPracticeQueues() {
   await f.evaluate('showPracticeWorkspace()');
   f.evaluate(`practiceBoardMode='unfinished';renderPracticeWorkspace()`);
   let html = practiceHtml(f);
-  assert.match(html, /No unfinished encounters/);
+  assert.match(html, /No unfinished visits/);
   assert.match(html, /No results to review/);
   assert.doesNotMatch(html, /could not be loaded/);
   const values = empty();
@@ -249,7 +249,7 @@ async function testPracticeQueues() {
   assert.doesNotMatch(html, /No results to review|<script>/);
   assert.match(html, /&lt;script&gt;fixture failure&lt;\/script&gt;/);
   f.evaluate(`practiceBoardMode='unfinished';renderPracticeWorkspace()`);
-  assert.match(practiceHtml(f), /No unfinished encounters/); // An independent queue remains usable.
+  assert.match(practiceHtml(f), /No unfinished visits/); // An independent queue remains usable.
 }
 
 async function testPracticeFilters() {

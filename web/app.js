@@ -218,7 +218,7 @@ function currentAmendmentContext(form){
 function updateVisitAmendmentStatus(){
  const form=$('amendment-form'),context=currentAmendmentContext(form),status=$('amendment-draft-status');if(!context||!status)return;
  const draft=visitAmendmentDrafts.get(amendmentContextKey(context)),stale=context.version!==activeVisit.version;
- status.textContent=stale?'The saved encounter changed. Review the signed note and amendment history, then confirm the current version before signing this correction.':draft?'Unsaved correction retained in this tab. Sign the amendment before closing or reloading.':'The original note stays unchanged. This correction will be signed and appended to its history.';
+ status.textContent=stale?'The saved visit changed. Review the signed note and amendment history, then confirm the current version before signing this correction.':draft?'Unsaved correction retained in this tab. Sign the amendment before closing or reloading.':'The original note stays unchanged. This correction will be signed and appended to its history.';
  const review=$('amendment-review-current');if(review){review.hidden=!stale;review.dataset.version=String(activeVisit.version);}
  const discard=$('amendment-discard');if(discard)discard.hidden=!draft;
  const submit=$('amendment-submit');if(submit)submit.disabled=stale;
@@ -243,13 +243,13 @@ async function discardVisitAmendmentDraft(){
  form.elements.reason.value='';form.elements.text.value='';visitAmendmentDrafts.delete(key);renderVisit(false);focusVisitAmendment();
 }
 async function submitVisitAmendment(form){
- const context=currentAmendmentContext(form);if(!context)throw new Error('Open the signed encounter before signing this correction.');
- if(context.version!==activeVisit.version)throw new Error('Review the changed encounter and confirm its current version before signing this correction.');
+ const context=currentAmendmentContext(form);if(!context)throw new Error('Open the signed visit before signing this correction.');
+ if(context.version!==activeVisit.version)throw new Error('Review the changed visit and confirm its current version before signing this correction.');
  captureVisitAmendmentDraft();
  const submitted=amendmentValues(form),key=amendmentContextKey(context),version=context.version;
  const visit=await api(`/api/v1/visits/${context.visitId}/amendments`,'POST',submitted,version);
  if(context.identity!==me||context.tenantId!==me?.tenant_id)return;
- if(visit.id!==context.visitId||visit.patient_id!==context.patientId)throw new Error('The saved amendment returned an unexpected encounter. Reload the original chart.');
+ if(visit.id!==context.visitId||visit.patient_id!==context.patientId)throw new Error('The saved amendment came back against the wrong visit. Reload the original chart.');
  const visibleForm=$('amendment-form'),visibleContext=currentAmendmentContext(visibleForm),visible=visibleContext&&amendmentContextKey(visibleContext)===key;
  const retained=visitAmendmentDrafts.get(key),latest=visible?amendmentValues(visibleForm):retained?.values||submitted;
  if(sameAmendmentValues(latest,submitted)){
@@ -310,7 +310,7 @@ function updateDraftStatus(){
  if(!status)return;
  status.textContent=parts.length?`Unsaved ${parts.join(' and ')} edits retained in this tab. Save before closing or reloading.`:'';
  if(noteChanged)status.textContent+=' '+changed;
- if(draft?.vitals&&draft.vitals.version!==activeVisit.version)status.textContent+=' The saved encounter changed. Your edits are preserved; compare with the current record before saving.';
+ if(draft?.vitals&&draft.vitals.version!==activeVisit.version)status.textContent+=' The saved visit changed. Your edits are preserved; compare them with the current record before saving.';
  if(parts.length)status.innerHTML+=' <button type="button" class="text-button" data-action="discard-visit-draft">Discard unsaved edits and use saved record</button>';
 }
 // The saved note, read-only, beside the text still being written.
@@ -465,7 +465,7 @@ async function enter() {
   if(me.role==='partner_support')notice('Delegated partner support session. Clinical and administrative changes are disabled.');
   if(typeof finishConnectOnboarding==='function'&&await finishConnectOnboarding())return;
   if (new URLSearchParams(location.search).has('oauth_request')) { await showConsent(); return; }
-  if (!selected) $('chart').innerHTML='<div class="panel empty"><span class="empty-mark" aria-hidden="true">⊕</span><h2>Open a patient chart</h2><p>Select a patient from the directory to review their record,<br>manage orders, or document an encounter.</p><div class="empty-shortcuts"><button type="button" data-open-schedule>View schedule</button></div></div>';
+  if (!selected) $('chart').innerHTML='<div class="panel empty"><span class="empty-mark" aria-hidden="true">⊕</span><h2>Open a patient chart</h2><p>Select a patient from the directory to review their record,<br>manage orders, or write a visit note.</p><div class="empty-shortcuts"><button type="button" data-open-schedule>View schedule</button></div></div>';
   if(new URLSearchParams(location.search).has('payment_membership')&&typeof openPatientMembershipReturn==='function'){await openPatientMembershipReturn(new URLSearchParams(location.search).get('payment_membership'));return;}
   if(new URLSearchParams(location.search).has('invoice_checkout')&&typeof openInvoiceCheckoutReturn==='function'){await openInvoiceCheckoutReturn(new URLSearchParams(location.search).get('invoice_checkout'));return;}
   if(new URLSearchParams(location.search).has('payment_setup')&&typeof openPatientPaymentSetupReturn==='function'){
@@ -537,12 +537,12 @@ async function selectPatient(id, keepVisit, stillCurrent=()=>true) {
 
 async function openPatientEncounter(id){
  const openingIdentity=me,openingPatient=selected,openingWorkspace=workspace;
- if(!openingPatient||!openingWorkspace?.visits?.some(visit=>visit.id===id))throw new Error('Choose an encounter from this patient’s history.');
+ if(!openingPatient||!openingWorkspace?.visits?.some(visit=>visit.id===id))throw new Error('Choose a visit from this patient’s history.');
  const openingGeneration=++patientWorkspaceGeneration;
  captureVisitDrafts();
  const visit=await api(`/api/v1/visits/${id}`);
  if(me!==openingIdentity||selected!==openingPatient||workspace!==openingWorkspace||openingGeneration!==patientWorkspaceGeneration)return;
- if(visit.id!==id||visit.patient_id!==openingPatient)throw new Error('This encounter does not belong to the selected patient.');
+ if(visit.id!==id||visit.patient_id!==openingPatient)throw new Error('This visit does not belong to the selected patient.');
  captureVisitDrafts();rememberVisit(visit);chartSection='visits';encounterSection=isRoomingStaff()?'intake':'documentation';
  // Opening a different encounter retires the sign reminder; re-opening the same visit keeps it.
  if(typeof postSignReminder!=='undefined'&&postSignReminder&&postSignReminder.visitId!==id)postSignReminder=null;
@@ -561,7 +561,7 @@ function renderChart() {
   if(typeof captureAccountDiagnosisLinkDraft==='function')captureAccountDiagnosisLinkDraft();
   if(typeof captureHealthHistoryDraft==='function')captureHealthHistoryDraft(); if(typeof captureImmunizationDraft==='function')captureImmunizationDraft();
   if(typeof capturePrescribingDraft==='function')capturePrescribingDraft();
-  let tabs=[['overview','Summary'],['profile','Patient details'],['clinical','Clinical lists'],['care_pathways','Care pathways'],['prescribing','Prescribing'],['immunizations','Immunizations'],['functional_status','Functional status'],['specialty_care','Specialty care'],['history','Surgical & dental history'],['documents','Documents'],['referrals','Referrals'],['orders','Orders & results'],['visits','Encounters'],['checkout','Checkout & visit summary'],['billing','Financials'],['source','Source records']];
+  let tabs=[['overview','Summary'],['profile','Patient details'],['clinical','Clinical lists'],['care_pathways','Care pathways'],['prescribing','Prescribing'],['immunizations','Immunizations'],['functional_status','Functional status'],['specialty_care','Specialty care'],['history','Surgical & dental history'],['documents','Documents'],['referrals','Referrals'],['orders','Orders & results'],['visits','Visits'],['checkout','Checkout & visit summary'],['billing','Financials'],['source','Source records']];
   if(typeof configuredChartTabs==='function')tabs=configuredChartTabs(tabs);
   if(tabs.some(([key])=>key==='billing'))tabs.splice(tabs.findIndex(([key])=>key==='billing'),0,['insurance','Insurance']);
   $('chart').innerHTML=`<section id="patient-banner" class="patient-banner" aria-label="Patient summary">${typeof patientBannerMarkup==='function'?patientBannerMarkup():''}</section><div class="chart-context">${chartNavigation(tabs)}</div>
@@ -578,7 +578,7 @@ function renderChart() {
   <div id="visit-editor"></div>
   <section id="encounter-revenue" class="panel" hidden></section>
   <section id="encounter-orders-actions" class="panel" hidden></section>
-  <div id="visit-checkout"><div class="panel"><h2>Checkout & after-visit summary</h2><p>Select an encounter from Encounters to review its handoff and follow-up.</p></div></div>
+  <div id="visit-checkout"><div class="panel"><h2>Checkout & after-visit summary</h2><p>Pick a visit in Visits to review its handoff and follow-up.</p></div></div>
   ${patientAppointmentWorkspace()}`;
   if(typeof renderPrescribing==='function')void renderPrescribing(); renderClinical(); renderLabs(); renderBilling(); renderHistory(); if(typeof renderHealthHistory==='function')void renderHealthHistory(); if(typeof renderImmunizations==='function')void renderImmunizations(); if(typeof renderDocuments==='function')void renderDocuments(); if(typeof renderPatientIdentity==='function')void renderPatientIdentity(); if(typeof renderPatientLifecycle==='function')void renderPatientLifecycle(); if(typeof renderReferrals==='function')void renderReferrals(); if(typeof renderDemographics==='function')renderDemographics(selected,workspace.demographics); if(typeof renderPatientIntakePackets==='function')void renderPatientIntakePackets(); if(typeof renderSpecialtyPatientWorkspace==='function')void renderSpecialtyPatientWorkspace(); if(typeof renderCarePathways==='function'&&(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('workflows')))void renderCarePathways(); if(typeof renderPatientInsurance==='function')void renderPatientInsurance(); if(activeVisit) renderVisit(false); applyChartSection(); if(typeof patientBannerChartRendered==='function')void patientBannerChartRendered();
 }
@@ -593,7 +593,7 @@ function renderVisit(activate=true) {
   const correction=canAmend?currentAmendmentDraft(v):null, authorship=typeof visitNoteAuthorshipLine==='function'?visitNoteAuthorshipLine(v):'', supportSession=Boolean(me.delegated);
   const vitalLabels={systolic_mm_hg:'Systolic BP (mmHg)',diastolic_mm_hg:'Diastolic BP (mmHg)',heart_rate_bpm:'Heart rate (bpm)',temperature_c:'Temperature (°C)',weight_kg:'Weight (kg)',height_cm:'Height (cm)',oxygen_saturation_pct:'Oxygen saturation (%)'};
   const amendments=workspace.amendments.filter(a=>a.visit_id===v.id);
-  $('visit-editor').innerHTML=`<section class="panel"><div class="section-head"><h2>${signed?'Signed clinical record':'Visit documentation'}</h2><span class="pill ${signed?'signed':''}">${signed?'Signed':'In progress'}</span></div>${signed?`<div class="signed-notice" id="signed-note-help"><strong>Signed note — read-only.</strong> <span id="note-signed-by">${esc(typeof visitNoteSignedLine==='function'?visitNoteSignedLine(v):`Signed ${date(v.signed_at)}.`)}</span> The original SOAP note and vitals cannot be overwritten.${canAmend?' Add a signed correction to this encounter, or start a new encounter for a new visit.<div class="actions"><button type="button" data-action="focus-amendment" aria-controls="amendment-form">Add a signed correction</button></div>':supportSession?' A clinician at the practice must sign any correction.':' A clinician can add a correction.'}</div>`:''}
+  $('visit-editor').innerHTML=`<section class="panel"><div class="section-head"><h2>${signed?'Signed clinical record':'Visit documentation'}</h2><span class="pill ${signed?'signed':''}">${signed?'Signed':'In progress'}</span></div>${signed?`<div class="signed-notice" id="signed-note-help"><strong>Signed note — read-only.</strong> <span id="note-signed-by">${esc(typeof visitNoteSignedLine==='function'?visitNoteSignedLine(v):`Signed ${date(v.signed_at)}.`)}</span> The original SOAP note and vitals cannot be overwritten.${canAmend?' Add a signed correction to this visit, or start a new visit.<div class="actions"><button type="button" data-action="focus-amendment" aria-controls="amendment-form">Add a signed correction</button></div>':supportSession?' A clinician at the practice must sign any correction.':' A clinician can add a correction.'}</div>`:''}
   <p id="visit-draft-status" class="muted" role="status"></p><div id="encounter-intake"><div class="encounter-context-links"><button type="button" data-chart-section="insurance">Review insurance & copay</button><button type="button" data-chart-section="clinical">Review allergies & medications</button><button type="button" data-chart-section="documents">Review patient documents</button></div><div id="encounter-benefits" class="billing-section"></div><div id="visit-rooming"></div><h3>Vitals</h3><form id="vitals-form" data-visit-id="${v.id}" data-version="${retained?.vitals?.version??v.version}"><div class="form-grid vitals-grid">${Object.entries(vitalLabels).map(([key,label])=>`<label>${label}<input name="${key}" type="number" step="${['systolic_mm_hg','diastolic_mm_hg','heart_rate_bpm'].includes(key)?'1':'any'}" required value="${esc(vitals[key])}" ${vitalsLocked?'disabled':''}></label>`).join('')}</div>${vitalsLocked?'':'<button type="submit">Save vitals</button>'}</form>
   </div><div id="encounter-documentation"><section id="visit-diagnoses"></section><form id="note-form" data-visit-id="${v.id}" data-version="${retained?.note?.version??v.version}"${signed?' aria-describedby="signed-note-help"':''}><h3>${signed?'SOAP note — signed original':'SOAP note'}</h3><p id="note-authorship" class="note-authorship muted"${authorship?'':' hidden'}>${esc(authorship)}</p>${locked?'':'<div id="note-conflict" class="notice error note-conflict" role="alert" hidden></div><div id="note-saved-copy" class="note-saved-copy" hidden></div>'}${locked?'':`<div id="note-previous" class="note-previous" hidden></div><input type="hidden" name="started_from" value="${esc(noteSource)}">`}<div class="form-grid note-grid">${noteSectionKeys.filter(key=>key!=='procedure'||!locked||String(note.procedure??'').trim()).map(key=>{const label=key[0].toUpperCase()+key.slice(1);return `<div class="note-section${key==='procedure'?' note-procedure':''}"><label>${label}<textarea name="${key}" maxlength="10000" ${locked?'readonly':key==='procedure'?`placeholder="${esc(noteProcedureHint)}"`:''}>${esc(note[key])}</textarea></label>${locked?'':`<button type="button" class="text-button note-same" id="note-same-${key}" data-note-same="${key}" aria-label="Same as last visit: ${label}" hidden>Same as last visit</button>`}</div>`;}).join('')}</div>${noteSource||!locked?`<p id="note-source-line" class="note-source muted"${noteSource?'':' hidden'}>${esc(noteSourceLine(noteSource,signed,v.note?.started_from))}</p>`:''}<div id="note-message" class="note-message muted" role="status" hidden></div>${locked?'':`<div class="actions"><button type="submit">Save note</button>${canSign?'<button class="primary" type="button" data-action="sign">Sign note</button><span class="muted">Save your note before signing. Then review procedures and charges, complete checkout, and submit the reviewed claim.</span>':`<span id="note-sign-help" class="muted">${supportSession?'You can draft this note. A clinician at the practice must sign it.':'You can draft this note. A clinician signs it.'}</span>`}</div>`}</form>
   ${signed?`<h3>Amendment history</h3>${amendments.map(a=>`<div class="amendment"><p><b>${esc(a.reason)}</b></p><p class="note-text">${esc(a.text)}</p><small class="muted">Recorded ${esc(date(a.created_at))}<span id="amendment-author-${esc(a.id)}">${esc(typeof visitNoteAmendmentAuthor==='function'?visitNoteAmendmentAuthor(v,a):'')}</span></small></div>`).join('')||'<p class="muted">No amendments.</p>'}${canAmend?`<form id="amendment-form" data-visit-id="${esc(v.id)}" data-patient-id="${esc(selected)}" data-version="${correction?.version??v.version}" aria-describedby="amendment-draft-status"><h3>Add a signed correction</h3><p id="amendment-draft-status" class="muted" role="status"></p><button id="amendment-review-current" type="button" data-action="review-amendment-version" hidden>I reviewed the current record — keep my correction</button><label>Reason<input name="reason" required maxlength="1000" value="${esc(correction?.values.reason||'')}"></label><label>Correction<textarea name="text" required maxlength="10000">${esc(correction?.values.text||'')}</textarea></label><div class="actions"><button id="amendment-submit" type="submit">Sign & append amendment</button><button id="amendment-discard" type="button" data-action="discard-amendment-draft" class="quiet" hidden>Discard unsaved correction</button></div></form>`:''}`:''}${!signed&&!canDraft?'<p id="note-read-only" class="muted">You can read this note. Clinical staff write it and a clinician signs it.</p>':''}</div></section>`;
@@ -608,11 +608,11 @@ function renderHistory() {
 }
 function encounterWorkflow(){
  const v=activeVisit,appointment=v?workspace.appointments.find(a=>a.id===v.appointment_id):workspace.appointments.find(a=>['checked_in','booked'].includes(a.status));
- if(!v&&workspace.patient?.archived)return '<section class="panel encounter-empty"><h2>Archived patient chart</h2><p>Review existing encounter history, or restore the patient before starting a new encounter.</p></section>';
+ if(!v&&workspace.patient?.archived)return '<section class="panel encounter-empty"><h2>Archived patient chart</h2><p>Review the past visits here, or restore the patient before starting a new visit.</p></section>';
  if(!v)return `<section class="panel encounter-empty"><h2>Start the visit</h2><p>Start from an appointment, or enter a date and time for a walk-in.</p>${typeof canStartEncounterFlow==='function'&&canStartEncounterFlow()?'<button type="button" class="primary" data-start-encounter-flow>Start visit</button>':''}<button type="button" data-chart-section="insurance">Review insurance & copay</button>${appointment?.status==='checked_in'&&(isRoomingStaff()||(['owner','clinician'].includes(me.role)&&appointment.clinician_id===me.user_id))?` <button type="button" class="primary" data-start="${esc(appointment.id)}">Start visit</button>`:''}</section>`;
  const steps=encounterSections();
  const runs=typeof patientPathways==='undefined'?[]:patientPathways.filter(item=>item.patient_id===selected&&item.status==='active'&&(!item.appointment_id||item.appointment_id===v.appointment_id));
- return `<section class="encounter-workspace-heading"><div class="section-head"><div><p class="eyebrow">SELECTED ENCOUNTER</p><h2>${esc(appointment?.title||'Office visit')}</h2><p class="muted">${esc(encounterDateLabel(v))} · ${v.status==='signed'?'Signed clinical record':'In progress'}</p></div><div class="encounter-selection"><button type="button" data-encounter-history>Visit history</button>${typeof canStartEncounterFlow==='function'&&canStartEncounterFlow()?'<button type="button" data-start-encounter-flow>+ New visit</button>':''}<label>Switch visit<select id="encounter-picker">${workspace.visits.map(row=>`<option value="${esc(row.id)}" ${row.id===v.id?'selected':''}>${esc(encounterDateLabel(row))} · ${row.status==='signed'?'Signed':'In progress'}</option>`).join('')}</select></label>${runs.length&&chartAreaEnabled('care_pathways')?'<button type="button" data-chart-section="care_pathways">Practice workflow</button>':''}${typeof supportHelpButton==='function'?supportHelpButton('visit'):''}</div></div><nav class="encounter-step-tabs" aria-label="Encounter work">${steps.map(([key,label],index)=>`<button type="button" data-encounter-section="${key}" aria-pressed="${encounterSection===key}"><span>${index+1}</span>${label}</button>`).join('')}</nav></section>`;
+ return `<section class="encounter-workspace-heading"><div class="section-head"><div><p class="eyebrow">SELECTED VISIT</p><h2>${esc(appointment?.title||'Office visit')}</h2><p class="muted">${esc(encounterDateLabel(v))} · ${v.status==='signed'?'Signed clinical record':'In progress'}</p></div><div class="encounter-selection"><button type="button" data-encounter-history>Visit history</button>${typeof canStartEncounterFlow==='function'&&canStartEncounterFlow()?'<button type="button" data-start-encounter-flow>+ New visit</button>':''}<label>Switch visit<select id="encounter-picker">${workspace.visits.map(row=>`<option value="${esc(row.id)}" ${row.id===v.id?'selected':''}>${esc(encounterDateLabel(row))} · ${row.status==='signed'?'Signed':'In progress'}</option>`).join('')}</select></label>${runs.length&&chartAreaEnabled('care_pathways')?'<button type="button" data-chart-section="care_pathways">Practice workflow</button>':''}${typeof supportHelpButton==='function'?supportHelpButton('visit'):''}</div></div><nav class="encounter-step-tabs" aria-label="Visit steps">${steps.map(([key,label],index)=>`<button type="button" data-encounter-section="${key}" aria-pressed="${encounterSection===key}"><span>${index+1}</span>${label}</button>`).join('')}</nav></section>`;
 }
 function encounterSections(){
  const canView=resource=>typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed(resource);
@@ -620,7 +620,7 @@ function encounterSections(){
 }
 function renderEncounterOrderActions(){
  const host=$('encounter-orders-actions');if(!host||!activeVisit)return;
- host.innerHTML=`<div class="section-head"><div><h2>Prescriptions & referrals</h2><p class="muted">Order medication or coordinate a referral for the selected encounter.</p></div><div class="actions">${chartAreaEnabled('prescribing')?'<button type="button" data-chart-section="prescribing">Prescriptions</button>':''}${chartAreaEnabled('referrals')?'<button type="button" data-chart-section="referrals">Referrals</button>':''}</div></div>`;
+ host.innerHTML=`<div class="section-head"><div><h2>Prescriptions & referrals</h2><p class="muted">Order medication or send a referral for the visit you have selected.</p></div><div class="actions">${chartAreaEnabled('prescribing')?'<button type="button" data-chart-section="prescribing">Prescriptions</button>':''}${chartAreaEnabled('referrals')?'<button type="button" data-chart-section="referrals">Referrals</button>':''}</div></div>`;
 }
 function setEncounterSection(key){
  if(!activeVisit){showChartSection('visits');return;}
@@ -648,7 +648,7 @@ function openEncounterStep(step){
 }
 function encounterDateLabel(v){
  const timestamp=workspace.appointments.find(a=>a.id===v.appointment_id)?.starts_at||v.signed_at||v.created_at;
- return timestamp?date(timestamp):'Encounter date not recorded';
+ return timestamp?date(timestamp):'Visit date not recorded';
 }
 // The banner shows who the chart is for and what is under way; nothing else to refresh here.
 function refreshPatientChartContext(){if(typeof renderPatientBanner==='function')renderPatientBanner();}
@@ -701,7 +701,7 @@ function applyChartSection(){
  if(typeof documentFileNavigationChanged==='function')documentFileNavigationChanged();
  document.querySelectorAll('.chart-tabs button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.chartSection===chartSection)));
  const record=$('patient-record-navigation');if(record){record.classList.toggle('active',!primary.includes(chartSection));if(primary.includes(chartSection))record.open=false;}
- const context=$('record-context');if(context){context.hidden=!hasVisit||primary.includes(chartSection);context.innerHTML='<button type="button" data-chart-section="visits">← Return to selected encounter</button>';}
+ const context=$('record-context');if(context){context.hidden=!hasVisit||primary.includes(chartSection);context.innerHTML='<button type="button" data-chart-section="visits">← Return to the selected visit</button>';}
  if(typeof refreshPatientChartContext==='function')refreshPatientChartContext();
  if(chartSection==='billing'&&typeof renderPatientBillingChart==='function')void renderPatientBillingChart();
 }
@@ -713,13 +713,13 @@ function chartNavigation(tabs){
  return `<nav class="chart-tabs patient-workspace-tabs" aria-label="Patient workspace"><div class="chart-tab-row chart-primary-tabs">${main.map(button).join('')}${records.length?`<details class="patient-record-navigation" id="patient-record-navigation"><summary>Patient record</summary><div>${records.map(([key,label])=>button([key,names[key]||label])).join('')}</div></details>`:''}</div></nav>`;
 }
 function patientWorkflowActions(){
- if(workspace.patient?.archived&&!activeVisit)return '<section class="patient-next-action"><div><b>Archived patient chart</b><p>Review the encounter history below. Restore the patient to book or start a new visit.</p></div></section>';
+ if(workspace.patient?.archived&&!activeVisit)return '<section class="patient-next-action"><div><b>Archived patient chart</b><p>Review past visits below. Restore the patient to book or start a new visit.</p></div></section>';
  const v=activeVisit,appointment=v?workspace.appointments.find(a=>a.id===v.appointment_id):workspace.appointments.find(a=>['checked_in','booked'].includes(a.status));
- let action=typeof canStartEncounterFlow==='function'&&canStartEncounterFlow()?'<button type="button" class="primary" data-start-encounter-flow>Start visit</button>':'<button type="button" class="primary" data-chart-section="visits">Appointments & encounters</button>',detail='Check insurance, then start the visit.';
- if(v){action=`<button type="button" class="primary" data-chart-section="visits">${v.status==='signed'?'Review encounter':'Continue visit'}</button>`;detail=`${encounterDateLabel(v)} · ${v.status==='signed'?'Review procedures, checkout and billing for this visit.':'Continue the selected visit, diagnoses and procedures.'}`;}
- else if(appointment?.status==='checked_in'&&(isRoomingStaff()||(['owner','clinician'].includes(me?.role)&&appointment.clinician_id===me.user_id))){action=`<button type="button" class="primary" data-start="${esc(appointment.id)}">Start visit</button>`;detail='The patient is checked in and ready for their encounter.';}
+ let action=typeof canStartEncounterFlow==='function'&&canStartEncounterFlow()?'<button type="button" class="primary" data-start-encounter-flow>Start visit</button>':'<button type="button" class="primary" data-chart-section="visits">Appointments & visits</button>',detail='Check insurance, then start the visit.';
+ if(v){action=`<button type="button" class="primary" data-chart-section="visits">${v.status==='signed'?'Review visit':'Continue visit'}</button>`;detail=`${encounterDateLabel(v)} · ${v.status==='signed'?'Review procedures, checkout and billing for this visit.':'Continue the selected visit, diagnoses and procedures.'}`;}
+ else if(appointment?.status==='checked_in'&&(isRoomingStaff()||(['owner','clinician'].includes(me?.role)&&appointment.clinician_id===me.user_id))){action=`<button type="button" class="primary" data-start="${esc(appointment.id)}">Start visit</button>`;detail='The patient is checked in and ready for their visit.';}
  else if(appointment?.status==='booked'&&['owner','clinician','front_desk'].includes(me?.role)){action=`<button type="button" class="primary" data-check-in="${esc(appointment.id)}">Check in patient</button>`;detail='Review insurance and copay before starting the visit.';}
- return `<section id="patient-next-action" class="patient-next-action"><div><b>${v?'Current encounter':'Visit preparation'}</b><p>${esc(detail)}</p></div><div class="actions">${!v&&chartAreaEnabled('insurance')?'<button type="button" data-chart-section="insurance">Insurance & copay</button>':''}${action}</div></section>`;
+ return `<section id="patient-next-action" class="patient-next-action"><div><b>${v?'Current visit':'Visit preparation'}</b><p>${esc(detail)}</p></div><div class="actions">${!v&&chartAreaEnabled('insurance')?'<button type="button" data-chart-section="insurance">Insurance & copay</button>':''}${action}</div></section>`;
 }
 function showChartSection(key){
  if(!['overview','profile','clinical','care_pathways','prescribing','immunizations','functional_status','specialty_care','history','documents','referrals','orders','visits','checkout','insurance','billing','source'].includes(key))return;
@@ -750,11 +750,11 @@ function setPage(title) {
  if(title!=='Sun'&&typeof sunPanelView!=='undefined'&&sunPanelView==='page'){sunPanelView='chat';if(typeof mountSunWorkspace==='function')mountSunWorkspace();}
  if(!title.startsWith('Patient portal')&&typeof leavePortalStaffWorkspace==='function')leavePortalStaffWorkspace();
  const descriptions={
-  'Practice home':'Today’s schedule, unfinished encounters and clinical work needing attention',
-  'Practice overview':'Today’s schedule, unfinished encounters and clinical work needing attention',
+  'Practice home':'Today’s schedule, visits still open, and clinical work needing attention',
+  'Practice overview':'Today’s schedule, visits still open, and clinical work needing attention',
   'Practice administration':'Manage staff access, providers, facilities and rooms',
   'Terminology catalogs':'Manage dated diagnosis and procedure code catalogs for this practice',
-  'Patients & visits':'Find a patient, review their chart and continue encounter work',
+  'Patients & visits':'Find a patient, review their chart and continue visit work',
   'Schedule':'Book appointments, manage provider availability and follow reminders',
   'Pre-visit readiness':'Review public bookings, patient forms and visit preparation',
   'Appointment reminders':'Review due reminders, contact readiness and delivery history',
@@ -955,7 +955,7 @@ document.addEventListener('click',e=>{
     if(button.dataset.visit){await openPatientEncounter(button.dataset.visit);return;}
     if(button.dataset.action==='reload'){await selectPatient(selected,activeVisit?.id);return;}
     if(button.dataset.action==='discard-amendment-draft'){await discardVisitAmendmentDraft();return;}
-    if(button.dataset.action==='discard-visit-draft'){if(!await confirmAction('The unsaved note and vitals edits in this tab will be removed and the saved record will be shown.',{title:'Discard encounter edits?',confirmLabel:'Discard edits',tone:'danger'}))return;visitDrafts.delete(activeVisit.id);if(typeof visitNoteSaved==='function')visitNoteSaved(activeVisit);renderVisit();notice('Unsaved encounter edits discarded. The saved record is shown.');return;}
+    if(button.dataset.action==='discard-visit-draft'){if(!await confirmAction('The unsaved note and vitals edits in this tab will be removed and the saved record will be shown.',{title:'Discard visit edits?',confirmLabel:'Discard edits',tone:'danger'}))return;visitDrafts.delete(activeVisit.id);if(typeof visitNoteSaved==='function')visitNoteSaved(activeVisit);renderVisit();notice('Unsaved visit edits discarded. The saved record is shown.');return;}
     if(button.dataset.action==='sign'){
       if(!canSignNote())throw new Error('A clinician must sign this note.');
       const noteForm=$('note-form');
