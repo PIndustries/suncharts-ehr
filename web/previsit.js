@@ -216,7 +216,7 @@ function intakeStatus(item){
  if(item.status==='submitted')return {key:'needs-review',label:'Filled in – needs review'};
  if(item.expired)return {key:'expired',label:'Expired'};
  if(item.status==='in_progress')return {key:'started',label:'Started'};
- return {key:'sent',label:'Sent'};
+ return {key:'sent',label:'Waiting for patient'};
 }
 function patientIntakeEmail(patient){
  const email=typeof workspace!=='undefined'&&typeof selected!=='undefined'&&selected===patient?workspace?.demographics?.content?.email:'';
@@ -246,7 +246,7 @@ function showPatientIntakePackets(state){
  if(patientIntakeSent&&state.items.some(item=>item.packet_id===patientIntakeSent.packet&&!['sent','in_progress'].includes(item.status)))patientIntakeSent=null;
  const waiting=state.items.some(item=>item.default_form===true&&!item.appointment_id&&['sent','in_progress'].includes(item.status)),cancelled=Number(state.summary.cancelled)||0;
  state.host.innerHTML=`<div class="section-head"><div><h2>Patient intake forms</h2><p class="muted">Forms the patient fills in online before a visit. These are separate from uploaded files below.</p></div><div class="actions">${intakeCanSend()?'<button type="button" class="primary" data-patient-intake-send>Send intake form</button>':''}<button type="button" data-patient-intakes-refresh>Refresh</button></div></div>${patientIntakeLinkMarkup(state)}${intakeCanSend()&&waiting&&!patientIntakeLinkMarkup(state)?'<p class="muted">A form that is not tied to an appointment is already waiting. Sending again cancels that link and makes a new one. Forms sent for an appointment keep their own link.</p>':''} <p>${displayCount(state.summary.total,'form')} · ${esc(state.summary.submitted)} filled in and waiting for review · ${esc(state.summary.reviewed)} reviewed${cancelled?` · ${cancelled} cancelled`:''}</p><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Form</th><th>Appointment</th><th>Status</th><th></th></tr></thead><tbody>${patientIntakeRows(state)}</tbody></table></div>${state.next?'<button type="button" data-patient-intakes-more>Load older forms</button>':''}<p class="muted">Opening a form does not mark it reviewed or change the chart.</p>`;
- const summary=$('patient-intake-summary');if(summary)summary.textContent=`${displayCount(Number(state.summary.total)-cancelled,'intake form')} · ${state.summary.submitted} submitted awaiting review`;
+ const summary=$('patient-intake-summary');if(summary){const active=Math.max(0,Number(state.summary.total)-cancelled);summary.textContent=active?`${displayCount(active,'intake form')} · ${displayCount(Number(state.summary.submitted)||0,'form','forms')} waiting for review`:'No intake form sent yet.';const link=document.querySelector?.('[data-patient-intakes-open]');if(link)link.textContent=active?'Open intake forms':'Send an intake form';}
 }
 async function sendPatientIntake(appointment){
  const state=patientIntakeState;if(!patientIntakeCurrent(state)||!intakeCanSend())return;
