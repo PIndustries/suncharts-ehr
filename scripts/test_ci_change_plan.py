@@ -120,6 +120,15 @@ class ChangePlanTest(unittest.TestCase):
         self.assertNotIn("--test ", release)
         self.assertIn("cargo clippy --locked --all-targets -- -D warnings", release)
 
+    def test_workflows_also_check_the_release_workflow_gates(self):
+        for path in (
+            ".github/workflows/publish-image.yml",
+            ".github/workflows/full-regression.yml",
+            ".github/workflows/ci.yml",
+        ):
+            plan = build_plan([path])
+            self.assertIn("scripts.test_release_workflow", plan["python_tests"], path)
+
     def test_test_binary_changes_recheck_the_release_shard_plan(self):
         plan = build_plan(["tests/care_pathways.rs"])
         self.assertIn("scripts.test_ci_rust_shards", plan["python_tests"])
