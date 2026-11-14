@@ -16,7 +16,7 @@ function fixture(role='front_desk'){
   esc:escape,date:value=>String(value??'').slice(0,10),human:value=>String(value).replaceAll('_',' '),notice:message=>notices.push(message),showTool(){},run:work=>ctx.pending=work(),
   $:id=>id==='patient-intake-panel'?panel:id==='patient-intake-summary'?summary:id==='tools'?tools:null,workspaceResourceAllowed:()=>true};
  ctx.api=async(path,method='GET',body,version)=>{calls.push([path,method,body,version]);return ctx.reply(path,method,body);};
- vm.createContext(ctx);vm.runInContext(source,ctx);
+ vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/display-format.js','utf8'),ctx);vm.runInContext(source,ctx);
  return {ctx,panel,tools,handlers,calls,notices};
 }
 const click=(f,attributes,dataset={})=>{const button={dataset,textContent:'',hasAttribute:name=>attributes.includes(name),closest:()=>null};f.handlers.click[0]({target:{closest:()=>button},preventDefault(){},stopImmediatePropagation(){}});return button;};
@@ -42,7 +42,19 @@ const row=(extra={})=>({packet_id:'form-open',packet_version:1,status:'sent',def
  assert.match(html,/A form that is not tied to an appointment is already waiting\. Sending again cancels that link and makes a new one\. Forms sent for an appointment keep their own link\./);
  // The counts match the list: cancelled forms are listed and counted as cancelled, and left out of the chart overview.
  assert.match(html,/7 forms · 1 filled in and waiting for review · 1 reviewed · 1 cancelled/);assert.equal(c.$('patient-intake-summary').textContent,'6 intake forms · 1 submitted awaiting review');
+ assert.doesNotMatch(html,/1 forms|1 intake forms/,'one form is never written as a plural');
  assert.doesNotMatch(html,/intake-link|synthetic-link-secret/,'no link is shown until one is made');
+
+ // A single form reads as one, on both the panel and the chart overview.
+ {
+  const solo=fixture(),sc=solo.ctx;
+  sc.reply=()=>({patient_id:'patient-one',items:[row()],summary:{total:1,submitted:1,reviewed:0,cancelled:0},next_cursor:null});
+  await sc.renderPatientIntakePackets();
+  assert.match(solo.panel.innerHTML,/>1 form · 1 filled in and waiting for review · 0 reviewed</);
+   assert.match(solo.panel.innerHTML,/>1 form · 1 filled in and waiting for review · 0 reviewed</);
+  assert.equal(sc.$('patient-intake-summary').textContent,'1 intake form · 1 submitted awaiting review');
+  assert.match(solo.panel.innerHTML,/data-patient-intake-packet="form-open"/);
+ }
 
  // Sending shows the link once, with copy, email, expiry and the only-now note.
  click(f,['data-patient-intake-send']);await c.pending;html=f.panel.innerHTML;
@@ -74,6 +86,20 @@ const row=(extra={})=>({packet_id:'form-open',packet_version:1,status:'sent',def
  // "Send a new link" on a row keeps that row's appointment.
  click(f,['data-patient-intake-resend'],{patientIntakeResend:'appointment-1'});await c.pending;
  assert.deepEqual(plain(f.calls.filter(call=>call[1]==='POST').at(-1)[2]),{appointment_id:'appointment-1'});
+ // The chart button names no appointment on purpose: the server attaches the
+ // patient's next visit, so the row that comes back shows its date and the
+ // patient's form says which visit it is for.
+ assert.equal(f.calls.filter(call=>call[1]==='POST').at(-1)[2].appointment_id,'appointment-1');
+ c.reply=(path,method)=>method==='POST'&&path.endsWith('/intake-forms')?{packet_id:'form-today',intake_url:'/intake#token=synthetic-today',secret_shown_once:true,expires_at:'2026-11-14T15:00:00Z',replaced:0,practice_name:'Synthetic Family Clinic'}:{patient_id:'patient-one',items:[row({packet_id:'form-today',appointment_id:'appointment-2',starts_at:'2026-11-13T14:30:00Z',appointment_title:'New patient visit',appointment_status:'booked'})],summary:{total:1,submitted:0,reviewed:0,cancelled:0}};
+ click(f,['data-patient-intake-send']);await c.pending;
+ assert.deepEqual(plain(f.calls.filter(call=>call[1]==='POST').at(-1)[2]),{});
+ assert.deepEqual(plain(f.calls.filter(call=>call[1]==='POST').at(-1).slice(0,2)),['/api/v1/patients/patient-one/intake-forms','POST']);
+ html=f.panel.innerHTML;
+ assert.match(html,/2026-11-13<small>New patient visit · booked<\/small>/,'a patient booked today is not shown as having no appointment');
+ assert.doesNotMatch(html,/No appointment/);
+ // Only a patient with nothing booked is shown without a visit, in plain words.
+ c.reply=()=>({patient_id:'patient-one',items:[row()],summary:{total:1,submitted:0,reviewed:0,cancelled:0}});await c.renderPatientIntakePackets();
+ assert.match(f.panel.innerHTML,/<span class="muted">No appointment<\/span>/);
  // Another patient or another signed-in person never sees the link.
  c.selected='patient-two';c.reply=()=>({patient_id:'patient-two',items:[],summary:{total:0,submitted:0,reviewed:0}});await c.renderPatientIntakePackets();assert.doesNotMatch(f.panel.innerHTML,/synthetic-link-secret/);assert.match(f.panel.innerHTML,/No intake forms have been sent to this patient yet\./);
  // Cancelling asks why first, then sends the reason with the form's current version.

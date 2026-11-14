@@ -69,10 +69,16 @@ the same request: the EHR reads the existing appointment/visit before progressin
 The rooming view shows the available benefits for that service date. Starting an
 encounter does not automatically submit an eligibility request.
 
-Browser Back/Forward and the in-app Back control restore the patient, selected
-encounter, local step and supported worklist detail. History contains view
-identifiers, not clinical drafts or file bytes. Returning to a screen reloads it;
-it never repeats the preceding payment, claim submission or other mutation.
+Browser reload, Back/Forward and the in-app Back control restore the patient,
+selected encounter, local step and supported worklist detail. Screen addresses and
+history contain record identifiers, not clinical drafts, file bytes or patient
+names. A chart that can no longer be opened — deleted, or outside the signed-in
+person's access — is not reported as a failure: an address that named only that
+chart returns to the patient directory, and one that also named a deleted
+encounter keeps the patient record with the encounter dropped from the address.
+Signing out clears the address, so the next person never reopens the previous
+person's chart. Returning to a screen reloads it; it never repeats the preceding
+payment, claim submission or other mutation.
 
 ## Clinical lists
 
@@ -382,7 +388,13 @@ Each save is kept as a new revision. A form that has already been sent keeps the
 questions it was sent with, whatever is saved later.
 
 **Sending.** In the chart's **Patient intake forms** panel, owner, clinician and
-front-desk staff use **Send intake form**. An appointment is not needed. The link
+front-desk staff use **Send intake form**. An appointment does not have to be
+chosen: when the patient has a visit starting today or later, that next visit is
+attached, so the form names the visit and the row in the panel shows its date
+instead of **No appointment**. A visit whose form the patient has begun, has
+sent in or that has been reviewed is left to itself, and the new form is sent
+without a visit rather than disturbing it. When nothing is booked ahead the form
+is still sent and shows no visit. The link
 is shown once, with **Copy link** and **Email the link**; the email opens in the
 staff member's own mail program, addressed to the patient's email on file, and
 contains only the practice name and the link. The EHR itself sends nothing. A link
@@ -392,7 +404,10 @@ a later visit. Forms sent before this feature have no expiry.
 **Send a new link** issues a fresh link and, in the same step, cancels a form the
 patient has not sent in yet when it is for the same appointment or for no
 appointment; that old link stops working. Forms sent for other appointments keep
-their own links. **Cancel link** asks for a
+their own links. A form that was already waiting with no appointment is replaced
+the same way, except when a send picked up the patient's next visit on its own —
+then the unattached form is left, so a date nobody chose never withdraws it.
+**Cancel link** asks for a
 reason and stops the link without issuing another. Filled-in and reviewed forms
 are never cancelled or replaced. Booking continues to issue the practice's saved
 form automatically when one exists; a practice with no saved form sends the

@@ -94,13 +94,13 @@ document.addEventListener('submit',e=>{
  const f=e.target;if(!['avs-release-form','avs-delivery-form','checkout-complete-form','followup-create-form','followup-filter-form'].includes(f.id)&&!f.classList.contains('followup-action-form'))return;
  e.preventDefault();e.stopImmediatePropagation();
  run(async()=>{
-  const values=formData(f);if(f.id==='followup-filter-form'){followupFilter=$('followup-status').value;followupOwner=$('followup-owner').value;await showFollowupWorkspace();return;}const base=checkoutContext?checkoutBase(checkoutContext.patient,checkoutContext.visit):'';
-  if(f.id==='avs-release-form'){await api(base+'/checkout/actions','POST',{action:'release_avs',instructions:values.instructions,follow_up_instructions:values.follow_up_instructions,reason:values.reason,reviewed:true,reviewed_snapshot_digest:f.dataset.digest},Number(f.dataset.version));checkoutDrafts.delete(checkoutContext.key);f.remove();}
-  else if(f.id==='avs-delivery-form')await api(base+'/checkout/actions','POST',{action:'delivery',method:values.method,reason:values.reason,avs_version:Number(f.dataset.avsVersion)},Number(f.dataset.version));
-  else if(f.id==='checkout-complete-form')await api(base+'/checkout/actions','POST',{action:'checkout',reason:values.reason},Number(f.dataset.version));
-  else if(f.id==='followup-create-form')await api(base+'/follow-ups','POST',{request_id:f.dataset.request,...values});
-  else {const body={action:values.action,reason:values.reason};if(values.action==='reassign')body.assignee_id=values.assignee_id;if(values.action==='reschedule')body.due_date=values.due_date;await api(`/api/v1/follow-up/tasks/${f.dataset.id}/actions`,'POST',body,Number(f.dataset.version));}
-  if(f.closest('#followup-workspace'))await showFollowupWorkspace();else await loadVisitCheckout();
-  notice('Checkout / follow-up change saved with history.');
+  const values=formData(f);if(f.id==='followup-filter-form'){followupFilter=$('followup-status').value;followupOwner=$('followup-owner').value;await showFollowupWorkspace();return;}const base=checkoutContext?checkoutBase(checkoutContext.patient,checkoutContext.visit):'';let saved='Saved.';
+ if(f.id==='avs-release-form'){await api(base+'/checkout/actions','POST',{action:'release_avs',instructions:values.instructions,follow_up_instructions:values.follow_up_instructions,reason:values.reason,reviewed:true,reviewed_snapshot_digest:f.dataset.digest},Number(f.dataset.version));checkoutDrafts.delete(checkoutContext.key);f.remove();saved='After-visit summary released.';}
+ else if(f.id==='avs-delivery-form'){await api(base+'/checkout/actions','POST',{action:'delivery',method:values.method,reason:values.reason,avs_version:Number(f.dataset.avsVersion)},Number(f.dataset.version));saved='Delivery recorded.';}
+ else if(f.id==='checkout-complete-form'){await api(base+'/checkout/actions','POST',{action:'checkout',reason:values.reason},Number(f.dataset.version));saved='Visit checked out.';}
+ else if(f.id==='followup-create-form'){await api(base+'/follow-ups','POST',{request_id:f.dataset.request,...values});saved='Follow-up added.';}
+ else {const body={action:values.action,reason:values.reason};if(values.action==='reassign')body.assignee_id=values.assignee_id;if(values.action==='reschedule')body.due_date=values.due_date;await api(`/api/v1/follow-up/tasks/${f.dataset.id}/actions`,'POST',body,Number(f.dataset.version));saved='Follow-up updated.';}
+ if(f.closest('#followup-workspace'))await showFollowupWorkspace();else await loadVisitCheckout();
+ notice(saved);
  });
 },true);

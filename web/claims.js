@@ -4,8 +4,32 @@ const claimActionLabels={ready:'Release it to send later',void_draft:'Void this 
 const eraStatusLabels={staged:'To review',reconciled:'Matched, ready to post',posted:'Posted',reversed:'Posting undone',rejected:'Rejected'};
 function eraStatusLabel(status){return eraStatusLabels[status]||human(status);}
 function eraCurrentBalance(value){return Number.isSafeInteger(value)?value<0?`${money(-value)} patient credit`:`${money(value)} open`:'Unavailable';}
-let claimRows=[],eraRows=[],claimCurrent,eraCurrent,claimAccount,claimSource,eraSource,claimNext,eraNext;
+var claimRows=[],eraRows=[],claimCurrent,eraCurrent,claimAccount,claimSource,eraSource,claimNext,eraNext,claimStatusCounts={},claimStatusFilter='all';
 const claimsBase='/api/v1/billing/claims',eraBase='/api/v1/billing/remittances';
+// Chips follow the statuses the database can hold: draft, ready, submitted, accepted,
+// rejected, adjudicated, void. A payer denial arrives as rejected and a payment as an
+// insurance payment, so 'Paid' and 'Denied' are not claim statuses here.
+var claimStatusChips=['draft','ready','submitted','accepted','rejected','adjudicated','void'];
+function claimChipStatus(claim){return claimStatusChips.includes(claim.status)?claim.status:'other';}
+function claimMatchesStatusFilter(claim){return claimStatusFilter==='all'||claimChipStatus(claim)===claimStatusFilter;}
+function claimStatusChipLabel(status){return status==='all'?'All':displayStatus(status);}
+function claimStatusCount(status){
+ const counted=status==='all'?claimRows.length:claimRows.filter(claim=>claimChipStatus(claim)===status).length;
+ return Math.max(counted,Number(claimStatusCounts[status])||0);
+}
+function claimStatusChipsHtml(){return `<nav class="practice-status-strip claims-status-strip" aria-label="Filter claims by status">${['all',...claimStatusChips].map(status=>`<button type="button" data-claim-status="${status}" aria-pressed="${claimStatusFilter===status}">${esc(claimStatusChipLabel(status))}<span>${claimStatusCount(status)}</span></button>`).join('')}</nav>`;}
+function claimRowMarkup(claim){return `<tr><td><b>${esc(claim.patient_name)}</b><small class="claim-control">Claim ${esc(claim.control_number)}</small></td><td>${esc(claim.payer_name)}<small>${esc(displayStatus(claim.frequency))}</small></td><td><span class="pill">${esc(claimStatusLabel(claim))}</span></td><td class="money-cell">${money(claim.total_cents)}</td><td><button type="button" data-claim-open="${claim.id}">Open claim</button></td></tr>`;}
+function claimRowsMarkup(claims){return claims.map(claimRowMarkup).join('');}
+function claimEmptyRow(claims){return `<tr><td colspan="5" class="table-empty">${claims.length?'No claims here with this status. Choose All to see every claim.':'No claims yet. A claim is prepared for you when a visit’s charges are posted.'}</td></tr>`;}
+function claimWorkspaceMarkup(){
+ const rows=$('claims-tool')?.querySelector('[data-claim-rows]');if(!rows)return;
+ rows.innerHTML=claimRowsMarkup(claimRows.filter(claimMatchesStatusFilter))||claimEmptyRow(claimRows);
+ const strip=$('claims-tool')?.querySelector('.claims-status-strip');if(strip)strip.outerHTML=claimStatusChipsHtml();
+}
+function selectClaimStatusFilter(status){
+ claimStatusFilter=claimStatusChips.includes(status)?status:'all';
+ claimWorkspaceMarkup();
+}
 let claimViewContext=null;
 let claimDraftIdentity;
 const claimDrafts=new Map();
@@ -75,19 +99,21 @@ const claimTransport=t=>{
  if(claimmd)return `Claim.MD is connected. ${artifact?'A claim file has been prepared for this claim.':'No claim file has been prepared for this claim yet.'} ${health}.`;
  return `No clearinghouse is connected. ${artifact?'A claim file is ready to download and upload to your clearinghouse yourself.':'You can prepare a claim file (837P) and upload it to your clearinghouse yourself.'} Downloading a claim does not send it.`;
 };
+function claimListMarkup(claims,nextCursor){const shown=claims.filter(claimMatchesStatusFilter);return `<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Patient</th><th>Payer</th><th>Status</th><th class="money-cell">Billed</th><th></th></tr></thead><tbody data-claim-rows>${claimRowsMarkup(shown)||claimEmptyRow(claims)}</tbody></table></div><p class="muted claim-filter-note">The counts cover all your claims, not only the ones on this page.</p>${nextCursor?'<button type="button" data-claims-next>Show more claims</button>':''}`;}
 async function showClaimsWorkspace(afterClaim,afterEra){
  captureClaimDraft();
  const context={kind:'worklist',identity:typeof me==='undefined'?undefined:me};claimViewContext=context;
+ if(!afterClaim)claimStatusFilter='all';
  if(typeof loadClaimmdProviderDefaults==='function')await loadClaimmdProviderDefaults();if(!claimContextCurrent(context))return;
- const [c,r,p,s,claimmd]=await Promise.all([api(`${claimsBase}${afterClaim?'?after='+afterClaim:''}`),api(`${eraBase}${afterEra?'?after='+afterEra:''}`),api('/api/v1/billing/payers'),billingWrite()?api('/api/v1/billing/remittance-sources'):{items:[]},loadClaimMdConnection()]);
+ const [c,r,p,s,counts,claimmd]=await Promise.all([api(`${claimsBase}${afterClaim?'?after='+afterClaim:''}`),api(`${eraBase}${afterEra?'?after='+afterEra:''}`),api('/api/v1/billing/payers'),billingWrite()?api('/api/v1/billing/remittance-sources'):{items:[]},api(`${claimsBase}/status-counts`).catch(()=>({})),loadClaimMdConnection()]);
  if(!claimContextCurrent(context))return;
- claimRows=c.items;eraRows=r.items;billingPayers=p.items;claimNext=c.next_cursor;eraNext=r.next_cursor;showTool('Claims & remittances');
+ claimRows=c.items;eraRows=r.items;billingPayers=p.items;claimNext=c.next_cursor;eraNext=r.next_cursor;claimStatusCounts=counts&&typeof counts==='object'&&counts.counts&&typeof counts.counts==='object'?counts.counts:{};showTool('Claims & remittances');
  $('tools').innerHTML=`<section id="claims-tool"><div class="section-head"><div><h2>Claims and insurance payments</h2><p class="muted">Send claims, see payer responses and post insurance payments.</p></div><button type="button" data-claims-refresh>Refresh</button></div><div class="billing-totals"><span>Claims <b>${c.items.length}</b></span><span>Payments to review <b>${r.items.filter(x=>['staged','reconciled'].includes(x.status)).length}</b></span><span>Payments posted <b>${r.items.filter(x=>x.status==='posted').length}</b></span></div>
- <section class="billing-section"><div class="section-head"><div><h3>Claims</h3><p class="muted">Open a claim to check it, send it or see the payer response.</p></div></div><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Patient</th><th>Payer</th><th>Status</th><th class="money-cell">Billed</th><th></th></tr></thead><tbody>${c.items.map(v=>`<tr><td><b>${esc(v.patient_name)}</b><small class="claim-control">Claim ${esc(v.control_number)}</small></td><td>${esc(v.payer_name)}<small>${esc(displayStatus(v.frequency))}</small></td><td><span class="pill">${esc(claimStatusLabel(v))}</span></td><td class="money-cell">${money(v.total_cents)}</td><td><button type="button" data-claim-open="${v.id}">Open claim</button></td></tr>`).join('')||'<tr><td colspan="5" class="table-empty">No claims yet. A claim is prepared for you when a visit’s charges are posted.</td></tr>'}</tbody></table></div>${claimNext?'<button type="button" data-claims-next>Show more claims</button>':''}</section>
+ <section class="billing-section"><div class="section-head"><div><h3>Claims</h3><p class="muted">Open a claim to check it, send it or see the payer response.</p></div></div>${claimStatusChipsHtml()}${claimListMarkup(c.items,claimNext)}</section>
  <section class="billing-section"><div class="section-head"><div><h3>Insurance payments</h3><p class="muted">Payments from Claim.MD appear here to review before they post to patient accounts.</p></div></div><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Payer / trace number</th><th>Payment date</th><th>Claims</th><th>Status</th><th class="money-cell">Payment</th><th></th></tr></thead><tbody>${r.items.map(v=>`<tr><td><b>${esc(v.payer_name)}</b><small>${esc(v.trace)}</small></td><td>${esc(displayDate(v.payment_date))}</td><td>${v.claim_count}</td><td><span class="pill">${esc(eraStatusLabel(v.status))}</span></td><td class="money-cell">${money(v.total_paid_cents)}</td><td><button type="button" data-era-open="${v.id}">Review payment</button></td></tr>`).join('')||'<tr><td colspan="6" class="table-empty">No insurance payments yet.</td></tr>'}</tbody></table></div>${eraNext?'<button type="button" data-era-next>Show more payments</button>':''}</section>
  ${s.items.length?`<details class="amendment"><summary>Insurance payments imported from another system (${s.items.length})</summary>${s.items.map(v=>`<div class="timeline-row"><div><b>${esc(v.source_id)}</b><small>${esc(v.source_instance)}</small></div><button type="button" data-era-source="${v.source_history_id}">${v.native_id?'View payment':'Review and import'}</button></div>`).join('')}</details>`:''}<div id="claims-detail"></div></section>`;
- context.host=$('claims-detail');
- await showEraAutomation('claims-detail','beforebegin');
+  context.host=$('claims-detail');
+  await showEraAutomation('claims-detail','beforebegin');
  if(!claimContextCurrent(context))return;await showRecoupments();
  if(!claimContextCurrent(context))return;await showEraBatches();
  if(!claimContextCurrent(context))return;window.eraSources=s.items;
@@ -225,7 +251,8 @@ async function inspectEraMatch(index){
 
 }
 document.addEventListener('change',e=>{if(e.target.id==='era-file')run(async()=>{const f=e.target.files[0];if(!f)return;if(f.size>1048576)throw new Error('File is larger than 1 MB.');$('era-import').elements.document_text.value=await f.text();});if(e.target.name==='claim_id'||e.target.name==='claim_lookup'){const row=e.target.closest('.era-row');if(row){row.reviewedMatch=null;row.querySelector('.era-match-evidence').textContent='Use Check claim and balance before saving.';}}});
-document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||b.hasAttribute('data-chain-select')||b.closest('.batch-panel')||b.closest('.settlement-panel')||b.closest('.era-automation-panel')||b.dataset.ediClaim||b.type==='submit'||(!b.closest('#claims-tool')&&!b.closest('#encounter-claims')&&!b.dataset.newClaim&&!b.dataset.mapClaim))return;const owned=['newClaim','mapClaim','sourceClaimAccount','claimAccount','claimOpen','claimRelease','claimExistingSubmission','eraOpen','eraSource','eraInspect'].some(key=>b.dataset[key]!==undefined)||['data-claims-refresh','data-claims-next','data-era-next','data-edit-claim','data-secondary-claim','data-replacement-claim','data-new-era','data-close-encounter-claim','data-rebase-claim-draft','data-discard-claim-draft'].some(name=>b.hasAttribute(name));if(!owned)return;run(async()=>{
+document.addEventListener('click',e=>{const chip=e.target.closest?.('#claims-tool [data-claim-status]');if(chip){e.preventDefault();selectClaimStatusFilter(chip.dataset.claimStatus);return;}
+ const b=e.target.closest('button');if(!b||b.hasAttribute('data-chain-select')||b.closest('.batch-panel')||b.closest('.settlement-panel')||b.closest('.era-automation-panel')||b.dataset.ediClaim||b.type==='submit'||(!b.closest('#claims-tool')&&!b.closest('#encounter-claims')&&!b.dataset.newClaim&&!b.dataset.mapClaim))return;const owned=['newClaim','mapClaim','sourceClaimAccount','claimAccount','claimOpen','claimRelease','claimExistingSubmission','eraOpen','eraSource','eraInspect'].some(key=>b.dataset[key]!==undefined)||['data-claims-refresh','data-claims-next','data-era-next','data-edit-claim','data-secondary-claim','data-replacement-claim','data-new-era','data-close-encounter-claim','data-rebase-claim-draft','data-discard-claim-draft'].some(name=>b.hasAttribute(name));if(!owned)return;run(async()=>{
  if(b.hasAttribute('data-rebase-claim-draft')){const form=$('claim-editor-form')||$('claimmd-submit-form');requireClaimContext(form.claimViewContext);form.claimDraftStale=false;form.querySelectorAll('button[type="submit"]').forEach(submit=>submit.disabled=false);form.querySelectorAll('[data-claim-draft-notice]').forEach(n=>n.remove());captureClaimDraft(form);return;}
  if(b.hasAttribute('data-discard-claim-draft')){const form=$('claim-editor-form')||$('claimmd-submit-form');requireClaimContext(form.claimViewContext);claimDrafts.delete(form.claimDraftKey);const account=form.claimAccount,record=form.claimRecord,source=form.claimSource,parent=form.claimParent;form.claimDraftKey=null;if(form.id==='claimmd-submit-form')claimMdSubmitEditor(form.claimMdDetail);else claimEditor(account,record,source,parent);return;}
  if(b.hasAttribute('data-close-encounter-claim')){const context=claimContextSnapshot();requireClaimContext(context);captureClaimDraft();$('encounter-claims').replaceChildren();$('encounter-claims').hidden=true;claimViewContext=null;return;}

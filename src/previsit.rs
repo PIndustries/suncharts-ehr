@@ -770,6 +770,45 @@ async fn issue_default(
     Ok(Some((packet, plain, expires)))
 }
 
+/// The patient's next appointment that has not finished yet, starting today.
+/// Used when a form is sent from the chart without naming an appointment, so
+/// the form still says which visit it is for. Past appointments are never
+/// chosen, and only this practice's own bookings are considered.
+async fn next_upcoming_appointment(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    patient: Uuid,
+) -> Result<Option<(Uuid, DateTime<Utc>)>> {
+    Ok(sqlx::query_as(
+        "SELECT id,starts_at FROM appointments WHERE tenant_id=$1 AND patient_id=$2 AND status IN('booked','checked_in') AND starts_at>=date_trunc('day',now()) ORDER BY starts_at LIMIT 1",
+    )
+    .bind(tenant)
+    .bind(patient)
+    .fetch_optional(&mut **tx)
+    .await?)
+}
+
+/// Whether a visit's own default form has gone beyond a link merely waiting on
+/// the patient — the patient is filling it in, has sent it in, or it has been
+/// reviewed. Those forms keep their link and their answers: nothing here
+/// replaces them, so a send can neither fail on them nor discard work.
+/// Cancelled forms never count, exactly as in every other check for "does this
+/// visit already have a form?".
+async fn visit_form_already_answered(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    appointment: Uuid,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM previsit_intake_packets WHERE tenant_id=$1 AND appointment_id=$2 AND workflow_instance_id IS NULL AND status<>'void' AND status<>'sent')",
+    )
+    .bind(tenant)
+    .bind(appointment)
+    .fetch_optional(&mut **tx)
+    .await?
+    .unwrap_or(false))
+}
+
 /// Issues the practice's saved default form when an appointment is booked.
 /// Booking never starts sending forms on its own for a practice that has not
 /// saved one; staff send the standard form from the chart or the worklist.
@@ -1680,9 +1719,12 @@ struct SendForm {
     appointment_id: Option<Uuid>,
 }
 /// Sends the practice's intake form to a patient from the chart, with or
-/// without an appointment. A form the patient has not sent in yet is cancelled
-/// and replaced when it is for the same appointment or for none; forms for
-/// other appointments keep their own links.
+/// without an appointment. When no appointment is named but the patient is
+/// booked from today onwards, that next visit is used, so the form the patient
+/// receives — and the row staff see straight after sending — say which visit
+/// the form is for. A form the patient has not sent in yet is cancelled and
+/// replaced when it is for the same appointment or for none; forms for other
+/// appointments keep their own links.
 async fn send_patient_form(
     actor: Actor,
     ExtractState(state): ExtractState<State>,
@@ -1701,7 +1743,25 @@ async fn send_patient_form(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(Error::NotFound)?;
-    let visit: Option<DateTime<Utc>> = match input.appointment_id {
+    // An unnamed appointment resolves to the patient's next visit, unless that
+    // visit's form has moved beyond a link merely waiting on the patient: a
+    // form the patient is filling in, has filled in or that has been reviewed
+    // keeps its own link, so this send neither fails nor throws their saved
+    // answers away. A plain link still waiting is renewed, as it is whenever
+    // staff send again.
+    let mut appointment = input.appointment_id;
+    if appointment.is_none() {
+        if let Some((next, _)) =
+            next_upcoming_appointment(&mut tx, actor.tenant_id, patient).await?
+        {
+            if !visit_form_already_answered(&mut tx, actor.tenant_id, next).await? {
+                appointment = Some(next);
+            }
+        }
+    }
+    // Settled before anything is cancelled, so a request that is refused
+    // below leaves every existing link exactly as it was.
+    let visit: Option<DateTime<Utc>> = match appointment {
         None => None,
         Some(appointment) => Some(
             sqlx::query_scalar("SELECT starts_at FROM appointments WHERE tenant_id=$1 AND id=$2 AND patient_id=$3 FOR SHARE")
@@ -1709,8 +1769,23 @@ async fn send_patient_form(
                 .ok_or(Error::Invalid("That appointment does not belong to this patient."))?,
         ),
     };
-    let open: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as("SELECT id,appointment_id FROM previsit_intake_packets WHERE tenant_id=$1 AND patient_id=$2 AND workflow_instance_id IS NULL AND status IN('sent','in_progress') AND (appointment_id IS NULL OR appointment_id=$3) ORDER BY created_at FOR UPDATE")
-        .bind(actor.tenant_id).bind(patient).bind(input.appointment_id).fetch_all(&mut *tx).await?;
+    // A visit whose form is filled in, or further, keeps it: sending is refused
+    // rather than cancelling the patient's work.
+    if let Some(appointment) = appointment {
+        if visit_form_already_answered(&mut tx, actor.tenant_id, appointment).await? {
+            return Err(Error::Conflict(
+                "This appointment already has a filled-in intake form.",
+            ));
+        }
+    }
+    // Links to replace: the one already waiting on this visit, plus — unless
+    // this send settled on the patient's next visit by itself — a form naming
+    // no visit. That keeps the chart's promise of one form waiting at a time,
+    // while sending again about a booked visit never quietly withdraws an
+    // unattached form in favour of a date nobody chose.
+    let replace_unattached = appointment.is_none() || input.appointment_id.is_some();
+    let open: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as("SELECT id,appointment_id FROM previsit_intake_packets WHERE tenant_id=$1 AND patient_id=$2 AND workflow_instance_id IS NULL AND status IN('sent','in_progress') AND (appointment_id=$3 OR ($4 AND appointment_id IS NULL)) ORDER BY created_at FOR UPDATE")
+        .bind(actor.tenant_id).bind(patient).bind(appointment).bind(replace_unattached).fetch_all(&mut *tx).await?;
     for (old, old_appointment) in &open {
         void_packet(
             &mut tx,
@@ -1722,15 +1797,10 @@ async fn send_patient_form(
         )
         .await?;
     }
-    if let Some(appointment) = input.appointment_id {
-        if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM previsit_intake_packets WHERE tenant_id=$1 AND appointment_id=$2 AND workflow_instance_id IS NULL AND status<>'void')").bind(actor.tenant_id).bind(appointment).fetch_one(&mut *tx).await? {
-            return Err(Error::Conflict("This appointment already has a filled-in intake form."));
-        }
-    }
     let (packet, plain, expires) = issue_default(
         &mut tx,
         actor.tenant_id,
-        input.appointment_id,
+        appointment,
         patient,
         actor.sub,
         visit,
