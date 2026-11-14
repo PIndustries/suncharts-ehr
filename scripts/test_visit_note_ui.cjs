@@ -69,7 +69,7 @@ async function main(){
  assert.deepEqual(order,sections,'Procedure is the fifth section, after Plan');
  assert.match(note,/<div class="note-section note-procedure"><label>Procedure<textarea name="procedure" maxlength="10000" placeholder="Procedure performed, site, medication and dose, lot number, guidance, tolerance, complications">/);
  assert.doesNotMatch(note,/required/,'nothing is required while drafting: Save note takes any text, and signing is checked separately');
- assert.match(note,/<div id="note-message" class="note-message muted" role="status" hidden><\/div><div class="actions"><button type="submit">Save note<\/button>/,'a message line sits next to Save note and Sign encounter note, inside the form');
+ assert.match(note,/<div id="note-message" class="note-message muted" role="status" hidden><\/div><div class="actions"><button type="submit">Save note<\/button>/,'a message line sits next to Save note and Sign note, inside the form');
  assert.match(style,/\.note-section\.note-procedure\{grid-column:1\/-1\}/,'Procedure spans the row below Plan');
  assert.match(index,/<script src="\/visit-diagnoses\.js" defer><\/script><script src="\/visit-note\.js" defer><\/script>/);
  console.log('PASS Procedure appears below Plan in the editor with its hint and stays optional');
@@ -177,7 +177,7 @@ async function main(){
  await emptyDraft.submit();assert.equal(emptyDraft.requests.length,0,'an empty note sends nothing');
  assert.equal(emptyDraft.nodes.get('note-message').hidden,false);assert.equal(emptyDraft.nodes.get('note-message').textContent,'Write something in the note before saving.');
  assert.equal(emptyDraft.requests.some(r=>r.method==='PUT'),false,'an empty note is not sent');
- assert.match(emptyDraft.editor(),/<div id="note-message" class="note-message muted" role="status" hidden><\/div><div class="actions"><button type="submit">Save note<\/button>/,'the empty message line sits inside the note form, right beside Save note and Sign encounter note');
+ assert.match(emptyDraft.editor(),/<div id="note-message" class="note-message muted" role="status" hidden><\/div><div class="actions"><button type="submit">Save note<\/button>/,'the empty message line sits inside the note form, right beside Save note and Sign note');
  assert.equal(emptyDraft.nodes.get('notice').hidden,true,'the reason shows next to the buttons, not in the banner out of view');
  // A draft saves with any one section filled.
  emptyDraft.type({procedure:'Procedure only'});await emptyDraft.submit();

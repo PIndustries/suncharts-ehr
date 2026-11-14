@@ -108,6 +108,10 @@ for(const file of ['web/claimmd-native.js','web/provider-settings.js','web/clear
  assert.match(nativeSource,/Test claim\$\{live/);
  assert.match(nativeSource,/synthetic_test_reviewed/);
  assert.match(fs.readFileSync('web/claims.js','utf8'),/SCTEST control number/);
+ // The current step in "Where this claim stands" stays readable in both themes: themed surface, accent left border, normal text.
+ const lifecycleStyle=(fs.readFileSync('web/style.css','utf8').match(/\.claim-lifecycle \.is-current\{[^}]*\}/)||[''])[0];
+ assert.match(lifecycleStyle,/background:var\(--surface-raised/);assert.match(lifecycleStyle,/border-left:3px solid var\(--blue/);assert.doesNotMatch(lifecycleStyle,/color:#fff|background:var\(--accent-soft/);
+ console.log('PASS the current claim step uses theme variables so its title and hint read in light and dark');
  console.log('PASS Connect Claim.MD opens direct AccountKey setup without a trading-partner prerequisite');
  console.log('PASS Claim.MD setup focuses its heading without scrolling the clearinghouse workspace away');
  console.log('PASS native claim lifecycle and reviewed synthetic-test submission remain visible in the EHR');
