@@ -112,7 +112,7 @@ async function main(){
   assert.match(reminder,/role="status"/,'the reminder is announced but never blocks');
   assert.match(reminder,/No charges are posted for this visit yet\./);
   assert.equal(reminder.match(/<span>([\s\S]*?)<\/span>/)?.[1],'No charges are posted for this visit yet.','the reminder is the plain sentence, with no alarm prefix');
-  assert.match(reminder,/data-encounter-section="charges"[^>]*>Open Procedures &amp; billing<\/button>/,'the link goes to the encounter\u2019s Procedures & billing step');
+  assert.match(reminder,/data-encounter-section="charges"[^>]*>Open Charges &amp; billing<\/button>/,'the link goes to the encounter\u2019s Charges & billing step');
   assert.doesNotMatch(reminder,/\$|cents|amount/i,'the reminder names no money');
   const steps=f.sections.map(([kind,key])=>`${kind}:${key}`);
   assert.ok(steps.includes('section:charges'),'billing staff still land on the charges step after signing');
@@ -121,7 +121,7 @@ async function main(){
   f.sections.length=0;
   await f.click({encounterSection:'charges'});
   assert.deepEqual(f.sections.filter(([kind])=>kind==='section'),[['section','charges']]);
-  console.log('PASS signing with nothing posted shows a reminder linked to Procedures & billing');
+  console.log('PASS signing with nothing posted shows a reminder linked to Charges & billing');
 
   // The reminder survives chart re-renders for the same visit and reopens with it.
   f.context.renderChart?null:null;
@@ -156,7 +156,7 @@ async function main(){
     await f.click({action:'sign'});
     assert.ok(f.requests.some(r=>r.path==='/api/v1/visits/visit-1/sign'),label+': signing still works');
     assert.equal(f.reminder(),'',label+': no reminder without billing visibility');
-    assert.doesNotMatch(f.progress(),/sign-charge-reminder|Procedures & billing/,label+': no charges wording anywhere');
+    assert.doesNotMatch(f.progress(),/sign-charge-reminder|Charges & billing/,label+': no charges wording anywhere');
     assert.ok(f.sections.some(([kind])=>kind==='notice'),label+': the signed confirmation still shows');
   }
   console.log('PASS no reminder for staff who cannot see billing');

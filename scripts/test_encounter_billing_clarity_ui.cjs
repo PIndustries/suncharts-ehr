@@ -22,7 +22,7 @@ let html=node('encounter-revenue').innerHTML,status=node('encounter-revenue-stat
 // One breakdown from the server's summary replaces the four tiles.
 assert.match(status,/<th scope="row">Charges<\/th><td>Charges can still be changed<\/td><td class="money-cell">\$200\.00/);assert.match(status,/<th scope="row">Patient payments<\/th><td><\/td><td class="money-cell">\$25\.00/);assert.match(status,/data-copay-receipt="receipt" data-appointment="appt">Receipt: \$25\.00 card, Nov 11, 2026</);
 assert.match(status,/<th scope="row">Paid but not applied yet<\/th>/);assert.match(status,/<th scope="row">Patient owes now<\/th><td>Set when the charges are posted<\/td><td class="money-cell">\$0\.00/);assert.doesNotMatch(status,/revenue-metrics|Applied to this visit|Balance<\/span>/);
-assert.match(html,/Edit CPT/);
+assert.match(html,/Edit charges/);
 assert.equal((status.match(/class="primary"/g)||[]).length,1);assert.match(status,/class="primary" data-visit-post-charges="account">Post charges/);assert.doesNotMatch(html.replace(node('encounter-revenue-status').innerHTML,''),/class="primary"/,'nothing outside the status line competes with the next step');
 assert.equal((status.match(/data-copay-receipt="receipt"/g)||[]).length,1);assert.doesNotMatch(status,/data-hosted-copay-receipt="receipt"/);
 assert.doesNotMatch(html,/<details[^>]*id="encounter-charge-details"[^>]* open/);assert.match(html,/<section id="visit-billing-collect" class="billing-section" hidden>/,'collecting is one action, closed until asked for');
