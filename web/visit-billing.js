@@ -46,6 +46,40 @@ function visitBillingStatus(s,ctx={}){
  }
 }
 function visitBillingReceiptNote(receipt){const how=visitBillingMethod(receipt.method),when=visitBillingDate(receipt.occurred_on);return [how,when].filter(Boolean).join(', ');}
+// What the claim is missing, grouped by where it is fixed. Each group is its own short line
+// with one button that opens the right place; everything else stays with the claim editor.
+const visitBillingMissingGroups=[
+ {key:'practice',label:'Practice billing setup',action:'Open practice billing setup',attribute:'data-billing-organizations',
+  fields:['billing_provider_name','billing_address','billing_npi','tax_id','billing_organization_name','billing_organization_tax_id','billing_organization_address','npi','provider_npi','rendering_npi','provider_directory'],
+  keywords:/\bbilling provider\b|\bbilling organization\b|tax id|\bbilling address\b|\bbilling npi\b|provider npi|\bnpi\b/i},
+ {key:'patient',label:'Patient',action:'Edit patient details',attribute:'data-chart-section="profile"',
+  fields:['patient_address','patient_birth_date','patient_name','patient_date_of_birth','patient'],
+  keywords:/patient address|patient (date of birth|birth date|dob)|patient name/i},
+ {key:'insurance',label:'Insurance',action:'Edit insurance',attribute:'data-chart-section="insurance"',
+  fields:['subscriber_address','subscriber_birth_date','subscriber_name','subscriber','policy_holder_address','policy_holder_birth_date','member_id','payer_name','payer_code','insurer_name','insurer','insurance'],
+  keywords:/policy holder|subscriber|member id|insurer|payer/i},
+];
+function visitBillingMissingGroupsFor(issues){
+ const buckets=Object.fromEntries(visitBillingMissingGroups.map(group=>[group.key,[]]));buckets.claim=[];
+ const seen=new Set();
+ for(const issue of issues){
+  const text=String(issue?.missing??issue?.detail??'').trim();if(!text)continue;
+  const key=text.toLocaleLowerCase();if(seen.has(key))continue;seen.add(key);
+  const code=String(issue?.code??'').trim().toLocaleLowerCase();
+  const group=visitBillingMissingGroups.find(candidate=>code&&candidate.fields.includes(code))
+   ||visitBillingMissingGroups.find(candidate=>candidate.keywords.test(text))
+   ||{key:'claim'};
+  buckets[group.key].push(text);
+ }
+ return buckets;
+}
+// Lines in order: practice, patient, insurance, then the claim. The claim line keeps the one
+// "Fix claim details" button, shown whenever anything at all is missing, so no item is stranded.
+function visitBillingMissingMarkup(issues,claimId,ctx){
+ const buckets=visitBillingMissingGroupsFor(issues||[]),fix=ctx.canWrite?`<button type="button" data-visit-claim-fix="${esc(claimId)}">Fix claim details</button>`:'';
+ const line=(group,items,button)=>items.length?`<p class="visit-billing-missing" data-missing-group="${group.key}"><b>${esc(group.label)}:</b> ${items.map(esc).join(', ')} ${button}</p>`:'';
+ return visitBillingMissingGroups.map(group=>line(group,buckets[group.key],`<button type="button" ${group.attribute}>${esc(group.action)}</button>`)).join('')+line({key:'claim',label:'Claim'},buckets.claim,fix);
+}
 // One small table: charges, the insurer's side, the patient's side, and what the patient owes now.
 function visitBillingBreakdown(s,ctx={}){
  const i=s.insurance,p=s.patient,posted=s.account?.status==='posted',row=(label,note,amount,cls='')=>`<tr class="${cls}"><th scope="row">${label}</th><td>${note||''}</td><td class="money-cell">${amount}</td></tr>`,group=label=>`<tr class="visit-billing-group"><th scope="rowgroup" colspan="3">${label}</th></tr>`;
@@ -91,7 +125,7 @@ function visitBillingMore(s,ctx={}){
 }
 function visitBillingCardMarkup(s,ctx={}){
  const status=visitBillingStatus(s,ctx),owing=['patient_owes','self_pay_collect'].includes(s.state),posted=s.account?.status==='posted';
- const issues=status.issues?.length?`<p class="visit-billing-missing">Missing: ${status.issues.map(issue=>esc(issue.missing)).join(', ')}</p>`:'';
+  const issues=visitBillingMissingMarkup(status.issues,s.claim?.id||'',ctx);
  const secondary=owing&&ctx.canCreate?'<button type="button" data-visit-statement>Statement</button>':'';
  return `<section class="visit-billing-card" data-visit-billing-state="${esc(s.state)}"><div class="section-head"><h3>Visit billing</h3>${s.account?'<button type="button" class="text-button" data-refresh-revenue>Refresh</button>':''}</div><div class="visit-billing-status"><div><span class="eyebrow">${s.waiting_on==='nobody'?'Status':'Next step'}</span><p class="visit-billing-headline">${esc(status.headline)}</p><p class="muted">${esc(status.detail)}</p>${issues}</div><div class="actions">${status.action||''}${secondary}</div></div>${visitBillingBreakdown(s,ctx)}${posted||s.account||s.visit?visitBillingMore(s,ctx):''}</section>`;
 }
