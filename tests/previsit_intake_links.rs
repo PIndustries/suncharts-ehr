@@ -144,6 +144,15 @@ impl Fixture {
             .bind(self.tenant).bind(id).bind(patient).bind(self.user).bind(starts).execute(&self.db).await.unwrap();
         id
     }
+    /// A booking in a chosen state, for cases where the state decides the
+    /// answer: a visit that has finished, been cancelled or missed.
+    async fn book_as(&self, patient: Uuid, starts: DateTime<Utc>, status: &str) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO appointments(tenant_id,id,patient_id,clinician_id,starts_at,ends_at,status,title) VALUES($1,$2,$3,$4,$5,$5+interval '30 minutes',$6,'Synthetic visit')")
+            .bind(self.tenant).bind(id).bind(patient).bind(self.user).bind(starts).bind(status)
+            .execute(&self.db).await.unwrap();
+        id
+    }
     async fn save_template(&self, schema: Value, version: i64, id: Option<Uuid>) -> StatusCode {
         self.staff("POST", "/api/v1/previsit/templates", json!({"id":id,"name":"Synthetic intake","schema":schema,"active":true,"reason":"Synthetic setup"}), Some(version)).await.0
     }
@@ -174,6 +183,30 @@ impl Fixture {
     async fn status_of(&self, packet: Uuid) -> (String, i64) {
         sqlx::query_as("SELECT status,version FROM previsit_intake_packets WHERE id=$1")
             .bind(packet)
+            .fetch_one(&self.db)
+            .await
+            .unwrap()
+    }
+    /// The visit a form is tied to and when it is: what the chart list and the
+    /// patient's own form are both built from. `None` means the form names no
+    /// visit, which is what staff see as "No appointment".
+    async fn attached(&self, packet: Uuid) -> Option<(Uuid, DateTime<Utc>)> {
+        let (appointment, starts_at): (Option<Uuid>, Option<DateTime<Utc>>) = sqlx::query_as(
+            "SELECT p.appointment_id,a.starts_at FROM previsit_intake_packets p LEFT JOIN appointments a ON a.tenant_id=p.tenant_id AND a.id=p.appointment_id WHERE p.id=$1",
+        )
+        .bind(packet)
+        .fetch_one(&self.db)
+        .await
+        .unwrap();
+        match (appointment, starts_at) {
+            (Some(appointment), Some(starts_at)) => Some((appointment, starts_at)),
+            _ => None,
+        }
+    }
+    async fn starts(&self, appointment: Uuid) -> DateTime<Utc> {
+        sqlx::query_scalar("SELECT starts_at FROM appointments WHERE tenant_id=$1 AND id=$2")
+            .bind(self.tenant)
+            .bind(appointment)
             .fetch_one(&self.db)
             .await
             .unwrap()
@@ -720,16 +753,31 @@ async fn appointment_forms_work_without_a_saved_form_and_can_be_resent() {
     assert_eq!(rows.len(), 1, "one worklist row per appointment: {ready}");
     assert_eq!(rows[0]["packet_id"], second.to_string());
     assert_eq!(rows[0]["status"], "sent");
-    // A form for another appointment, or for none, leaves this appointment's link alone.
-    let (loose, _, sent) = f.send(patient, json!({})).await;
-    assert_eq!(sent["replaced"], 0);
-    assert_eq!(f.status_of(second).await.0, "sent");
+    // A form sent with no appointment resolves to the patient's next visit, so
+    // the row names that visit instead of showing "No appointment", and the
+    // link that was waiting on it is the one replaced.
+    let (loose, loose_token, sent) = f.send(patient, json!({})).await;
+    assert_eq!(sent["replaced"], 1);
+    assert_eq!(
+        f.attached(loose).await,
+        Some((soon, f.starts(soon).await)),
+        "the visit the patient is booked for"
+    );
+    assert_eq!(
+        f.status_of(second).await.0,
+        "void",
+        "the link that was waiting on that visit is replaced"
+    );
+    // Naming a visit with no link of its own makes one, and leaves the form
+    // already sent for the nearer visit alone.
     let (for_far, _, sent) = f.send(patient, json!({"appointment_id":far})).await;
-    assert_eq!(sent["replaced"], 1, "only the form with no appointment");
-    assert_eq!(f.status_of(loose).await.0, "void");
-    assert_eq!(f.status_of(second).await.0, "sent");
-    let (_, _, sent) = f.send(patient, json!({})).await;
-    assert_eq!(sent["replaced"], 0);
+    assert_eq!(sent["replaced"], 0, "nothing was waiting on that visit");
+    assert_eq!(
+        f.attached(for_far).await,
+        Some((far, f.starts(far).await)),
+        "the later visit the staff member chose"
+    );
+    assert_eq!(f.status_of(loose).await.0, "sent");
     assert_eq!(f.status_of(for_far).await.0, "sent");
     // An appointment must be this patient's.
     assert_eq!(
@@ -744,13 +792,16 @@ async fn appointment_forms_work_without_a_saved_form_and_can_be_resent() {
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        f.status_of(second).await.0,
+        f.status_of(for_far).await.0,
         "sent",
         "a refused send cancels nothing"
     );
+    assert_eq!(f.status_of(loose).await.0, "sent");
     // Once filled in, the appointment's form is kept and cannot be replaced.
+    // 'loose' is the live link for that visit: sending with no appointment
+    // renews the visit's own link rather than adding a second one.
     assert_eq!(
-        f.patient("submit", submission(&token, standard_answers()))
+        f.patient("submit", submission(&loose_token, standard_answers()))
             .await
             .0,
         StatusCode::OK
@@ -770,6 +821,297 @@ async fn appointment_forms_work_without_a_saved_form_and_can_be_resent() {
     let (_, _, sent) = f.send(patient, json!({"appointment_id":far})).await;
     let expires: DateTime<Utc> = sent["expires_at"].as_str().unwrap().parse().unwrap();
     assert!(expires > Utc::now() + Duration::days(90));
+}
+
+#[tokio::test]
+async fn a_send_that_is_refused_changes_nothing_at_all() {
+    // Staff press "Send intake form", the practice has a link waiting and the
+    // patient is booked. If the request is refused, every live link must still
+    // work afterwards.
+    let f = Fixture::new().await;
+    let patient = f.add_patient().await;
+    let other = f.add_patient().await;
+    let visit = f
+        .add_appointment(patient, Utc::now() + Duration::days(2))
+        .await;
+    let (waiting, _, _) = f.send(patient, json!({})).await;
+    let theirs = f
+        .add_appointment(other, Utc::now() + Duration::days(1))
+        .await;
+    for body in [
+        json!({"appointment_id":theirs}),
+        json!({"appointment_id":Uuid::new_v4()}),
+    ] {
+        assert_eq!(
+            f.staff(
+                "POST",
+                &format!("/api/v1/patients/{patient}/intake-forms"),
+                body,
+                None
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        f.status_of(waiting).await.0,
+        "sent",
+        "the link already sent still works"
+    );
+    assert_eq!(
+        f.attached(waiting).await,
+        Some((visit, f.starts(visit).await))
+    );
+    // A visit whose form is already filled in is refused the same way, without
+    // touching the patient's answers.
+    let answered = f
+        .add_appointment(patient, Utc::now() + Duration::days(3))
+        .await;
+    let (_, token, _) = f.send(patient, json!({"appointment_id":answered})).await;
+    assert_eq!(
+        f.patient("submit", submission(&token, standard_answers()))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        f.staff(
+            "POST",
+            &format!("/api/v1/patients/{patient}/intake-forms"),
+            json!({"appointment_id":answered}),
+            None
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(f.status_of(waiting).await.0, "sent");
+}
+
+#[tokio::test]
+async fn a_chart_send_without_an_appointment_uses_the_next_visit() {
+    // Staff pressing "Send intake form" in the chart never choose an
+    // appointment; the form must still name the visit it belongs to.
+    let f = Fixture::new().await;
+    let patient = f.add_patient().await;
+    let other = f.add_patient().await;
+    // Nothing booked ahead: the form is still sent and names no visit.
+    let (none, _, _) = f.send(patient, json!({})).await;
+    assert_eq!(
+        f.attached(none).await,
+        None,
+        "an unbooked patient has no visit"
+    );
+    let (_, rows) = f
+        .request(
+            "GET",
+            &format!("/api/v1/patients/{patient}/intake-packets"),
+            true,
+            None,
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(rows["items"][0]["appointment_id"], Value::Null);
+    assert_eq!(
+        rows["items"][0]["starts_at"],
+        Value::Null,
+        "the chart has nothing to show, so it must not invent a date"
+    );
+
+    // Booked today: the next send carries that appointment and its date.
+    let today = Utc::now()
+        .date_naive()
+        .and_hms_opt(9, 0, 0)
+        .unwrap()
+        .and_utc();
+    let visit = f.add_appointment(patient, today).await;
+    let later = f
+        .add_appointment(patient, Utc::now() + Duration::days(14))
+        .await;
+    let theirs = f
+        .add_appointment(other, Utc::now() + Duration::hours(2))
+        .await;
+    let (packet, token, _) = f.send(patient, json!({})).await;
+    assert_eq!(
+        f.attached(none).await,
+        None,
+        "an earlier form keeps what it had"
+    );
+    assert_eq!(f.attached(packet).await, Some((visit, today)));
+    let (_, rows) = f
+        .request(
+            "GET",
+            &format!("/api/v1/patients/{patient}/intake-packets"),
+            true,
+            None,
+            None,
+            None,
+        )
+        .await;
+    let row = &rows["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["packet_id"] == packet.to_string())
+        .expect("the form just sent is listed");
+    assert_eq!(row["appointment_id"], visit.to_string());
+    assert_eq!(
+        row["starts_at"],
+        today.to_rfc3339(),
+        "the chart row shows the visit date"
+    );
+    assert_eq!(row["appointment_status"], "booked");
+    // The patient sees the same visit on the form itself.
+    let (_, form) = f.patient("read", json!({"token":token})).await;
+    assert_eq!(form["appointment"]["starts_at"], today.to_rfc3339());
+
+    // Sending again renews the link for the same visit rather than jumping
+    // ahead to a visit further out, so the row still names the visit the
+    // patient is being asked about.
+    let (next, _, sent) = f.send(patient, json!({})).await;
+    assert_eq!(
+        sent["replaced"], 1,
+        "the link that was waiting on this visit"
+    );
+    assert_eq!(
+        f.attached(next).await,
+        Some((visit, today)),
+        "the renewed link still names the same visit"
+    );
+    assert_eq!(
+        f.status_of(packet).await.0,
+        "void",
+        "the link it replaces no longer works"
+    );
+    // Naming a later appointment honours what staff chose.
+    let (chosen, _, _) = f.send(patient, json!({"appointment_id":later})).await;
+    assert_eq!(
+        f.attached(chosen).await,
+        Some((later, f.starts(later).await))
+    );
+    // Another patient's booking is never attached to this patient's form.
+    let (theirs_packet, _, _) = f.send(other, json!({})).await;
+    assert_eq!(
+        f.attached(theirs_packet).await,
+        Some((theirs, f.starts(theirs).await))
+    );
+    // A patient who has begun a form but not sent it is protected too: sending
+    // from the chart never takes over a visit whose form has answers in it.
+    // A clean patient, so nothing sent above gets in the way.
+    let saver = f.add_patient().await;
+    let half = f
+        .add_appointment(saver, Utc::now() + Duration::days(20))
+        .await;
+    let (draft, draft_token, _) = f.send(saver, json!({"appointment_id":half})).await;
+    assert_eq!(
+        f.attached(draft).await,
+        Some((half, f.starts(half).await)),
+        "a form sent for a visit names it"
+    );
+    assert_eq!(
+        f.patient(
+            "save",
+            json!({"token":draft_token,"answers":{"first_name":"Synthetic"}})
+        )
+        .await
+        .0,
+        StatusCode::OK,
+        "the patient begins the form on the link they hold"
+    );
+    assert_eq!(f.status_of(draft).await.0, "in_progress");
+    let (untouched, _, sent) = f.send(saver, json!({})).await;
+    assert_eq!(
+        f.attached(untouched).await,
+        None,
+        "a visit with answers half filled in is not taken over"
+    );
+    assert_eq!(
+        f.status_of(draft).await.0,
+        "in_progress",
+        "what the patient saved is still there and still theirs"
+    );
+    assert_eq!(sent["replaced"], 0);
+    // A visit that is already over, cancelled or a no-show is not "upcoming",
+    // and neither is a booking from a previous day.
+    let over = f.add_patient().await;
+    let ended = f.book_as(over, today, "completed").await;
+    let dropped = f
+        .book_as(over, Utc::now() + Duration::days(4), "cancelled")
+        .await;
+    let missed = f
+        .book_as(over, Utc::now() + Duration::days(5), "no_show")
+        .await;
+    let previous_day = f
+        .book_as(over, Utc::now() - Duration::days(3), "booked")
+        .await;
+    let (nothing_next, _, _) = f.send(over, json!({})).await;
+    assert_eq!(
+        f.attached(nothing_next).await,
+        None,
+        "none of {ended}, {dropped}, {missed} or the past visit {previous_day} is an upcoming visit"
+    );
+    // A visit for later today that the patient has already arrived for still
+    // counts as the visit the form belongs to.
+    let arrived = f
+        .book_as(over, Utc::now() + Duration::hours(1), "checked_in")
+        .await;
+    let (checked_in, _, _) = f.send(over, json!({})).await;
+    assert_eq!(
+        f.attached(checked_in).await,
+        Some((arrived, f.starts(arrived).await))
+    );
+}
+
+#[tokio::test]
+async fn a_chart_send_does_not_disturb_a_filled_in_form_for_the_next_visit() {
+    // The next visit already has the patient's answers. Sending again from the
+    // chart must give a fresh unattached link, not fail and not touch the
+    // submitted form.
+    let f = Fixture::new().await;
+    let patient = f.add_patient().await;
+    let today = Utc::now()
+        .date_naive()
+        .and_hms_opt(9, 0, 0)
+        .unwrap()
+        .and_utc();
+    let visit = f.add_appointment(patient, today).await;
+    let (filled, token, _) = f.send(patient, json!({"appointment_id":visit})).await;
+    assert_eq!(
+        f.patient("submit", submission(&token, standard_answers()))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let (fresh, _, sent) = f.send(patient, json!({})).await;
+    assert_eq!(sent["replaced"], 0, "nothing of ours was open");
+    assert_ne!(fresh, filled);
+    assert_eq!(
+        sqlx::query_scalar::<_, Option<Uuid>>(
+            "SELECT appointment_id FROM previsit_intake_packets WHERE id=$1",
+        )
+        .bind(fresh)
+        .fetch_one(&f.db)
+        .await
+        .unwrap(),
+        None,
+        "the visit with answers already in is left alone"
+    );
+    assert_eq!(f.status_of(filled).await.0, "submitted");
+    // Naming that appointment is still refused, so answers are never lost.
+    assert_eq!(
+        f.staff(
+            "POST",
+            &format!("/api/v1/patients/{patient}/intake-forms"),
+            json!({"appointment_id":visit}),
+            None
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(f.status_of(filled).await.0, "submitted");
 }
 
 #[tokio::test]
