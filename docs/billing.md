@@ -698,10 +698,17 @@ The charge form uses one fee context for its service lines. The provider comes
 from the linked encounter; a facility is preselected only when the saved
 appointment facility name exactly matches one active directory entry. The
 service setting is preselected only from an explicitly approved default for that
-scope. Otherwise staff select it. Fee lookup requires billing-view permission and
-an exact approved code, modifier, date and scope match. Blank, professional and
-technical component modifiers are distinct; no fallback or reduction policy is
-inferred for unmatched modifiers.
+scope. On a new charge draft the form also helps staff along: when only one
+facility is listed it is selected automatically, the service setting starts at
+Non-facility / office, and the last facility and setting chosen in that browser
+are offered again on the next new draft (kept in local storage under
+`suncharts.charge.place`; nothing patient-related is stored). An explicit saved
+value always wins over a remembered one, and a remembered one wins over the
+single-facility default. A preselection triggers the same fee lookup as a manual
+choice. Saved drafts keep their own values. Fee lookup requires billing-view
+permission and an exact approved code, modifier, date and scope match. Blank,
+professional and technical component modifiers are distinct; no fallback or
+reduction policy is inferred for unmatched modifiers.
 
 Only new empty amounts, or untouched new lines already filled by the fee engine,
 receive automatic prices. Unit price times units becomes the complete line
