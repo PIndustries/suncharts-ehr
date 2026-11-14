@@ -137,7 +137,7 @@ function postSignReminderMarkup(){
  if(!postSignReminder||typeof activeVisit==='undefined'||activeVisit?.id!==postSignReminder.visitId)return '';
  // Once the visit's charges are posted the reminder has done its job; nothing is kept in the browser.
  if(typeof encounterChargeAccount==='function'&&encounterChargeAccount()?.status==='posted'){postSignReminder=null;return '';}
- return `<div id="sign-charge-reminder" class="notice notice-with-action" role="status"><span><strong>Heads up:</strong> ${esc(postSignReminder.message)}</span><button type="button" class="text-button" data-encounter-section="charges">Open Procedures &amp; billing</button></div>`;
+ return `<div id="sign-charge-reminder" class="notice notice-with-action" role="status"><span>${esc(postSignReminder.message)}</span><button type="button" class="text-button" data-encounter-section="charges">Open Procedures &amp; billing</button></div>`;
 }
 function setPatientDirectoryVisible(visible){
  $('clinical-workspace')?.classList.toggle('directory-collapsed',!visible);
@@ -522,12 +522,12 @@ async function selectPatient(id, keepVisit, stillCurrent=()=>true) {
   captureVisitDrafts(); // Include edits made while the chart reads were in flight.
   next.history=history?.items??null;next.clinical=clinical;next.labs=labs;next.billing=billing;next.demographics=demographics;
   if(id!==selected){chartSection='overview';encounterSection=['nurse','medical_assistant'].includes(me?.role)?'intake':'documentation';}
-  if(keepVisit&&activeVisit?.id!==keepVisit){chartSection='visits';encounterSection=['nurse','medical_assistant'].includes(me?.role)?'intake':'documentation';postSignReminder=null;}
+  if(keepVisit&&activeVisit?.id!==keepVisit){chartSection='visits';encounterSection=['nurse','medical_assistant'].includes(me?.role)?'intake':'documentation';if(typeof postSignReminder!=='undefined')postSignReminder=null;}
   workspace=next;billingPayers=payers.items;selected=id;
   activeVisit=keepVisit===null ? undefined : keepVisit ? workspace.visits.find(v=>v.id===keepVisit) : workspace.visits.find(v=>v.status==='in_progress'&&v.clinician_id===me.user_id)||workspace.visits.find(v=>v.status==='in_progress');
   // Opening a different encounter retires the sign reminder; signing then re-opening the
   // same visit keeps it, because the charges may still be missing.
-  if(postSignReminder&&postSignReminder.visitId!==id)postSignReminder=null;
+  if(typeof postSignReminder!=='undefined'&&postSignReminder&&postSignReminder.visitId!==id)postSignReminder=null;
   renderPatients();renderChart();
   setPatientDirectoryVisible(patientDirectoryPreference===true);
 }
@@ -542,7 +542,7 @@ async function openPatientEncounter(id){
  if(visit.id!==id||visit.patient_id!==openingPatient)throw new Error('This encounter does not belong to the selected patient.');
  captureVisitDrafts();rememberVisit(visit);chartSection='visits';encounterSection=isRoomingStaff()?'intake':'documentation';
  // Opening a different encounter retires the sign reminder; re-opening the same visit keeps it.
- if(postSignReminder&&postSignReminder.visitId!==id)postSignReminder=null;
+ if(typeof postSignReminder!=='undefined'&&postSignReminder&&postSignReminder.visitId!==id)postSignReminder=null;
  renderChart();
 }
 
@@ -563,7 +563,7 @@ function renderChart() {
   if(tabs.some(([key])=>key==='billing'))tabs.splice(tabs.findIndex(([key])=>key==='billing'),0,['insurance','Insurance']);
   $('chart').innerHTML=`<section id="patient-banner" class="patient-banner" aria-label="Patient summary">${typeof patientBannerMarkup==='function'?patientBannerMarkup():''}</section><div class="chart-context">${chartNavigation(tabs)}</div>
   <section id="patient-lifecycle" class="panel" hidden></section>
-  <div id="encounter-progress">${postSignReminderMarkup()}${encounterWorkflow()}</div>
+  <div id="encounter-progress">${typeof postSignReminderMarkup==='function'?postSignReminderMarkup():''}${encounterWorkflow()}</div>
   <div id="encounter-start-editor"></div>
   ${chartOverview()}
   <section id="patient-demographics"></section>
@@ -626,7 +626,7 @@ function setEncounterSection(key){
  if(key==='charges'&&typeof renderEncounterRevenue==='function')void renderEncounterRevenue();
  if(key==='files'&&typeof renderEncounterFiles==='function')void renderEncounterFiles();
 }
-function refreshEncounterProgress(){if(workspace&&$('encounter-progress'))$('encounter-progress').innerHTML=postSignReminderMarkup()+encounterWorkflow();}
+function refreshEncounterProgress(){if(workspace&&$('encounter-progress'))$('encounter-progress').innerHTML=(typeof postSignReminderMarkup==='function'?postSignReminderMarkup():'')+encounterWorkflow();}
 function openEncounterStep(step){
  if(step==='checkout'){setEncounterSection('checkout');return;}
  if(step==='clinical'){showChartSection('clinical');return;}
