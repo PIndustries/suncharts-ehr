@@ -49,6 +49,7 @@ class ChangePlanTest(unittest.TestCase):
                 "scripts/test_previsit_workflow_binding_ui.cjs",
                 "scripts/test_schedule_board_ui.cjs",
                 "scripts/test_schedule_calendar.cjs",
+                "scripts/test_staff_wording.cjs",
                 "scripts/test_week_calendar.cjs",
             ],
         )
@@ -60,9 +61,23 @@ class ChangePlanTest(unittest.TestCase):
                 "scripts/test_previsit_workflow_binding_ui.cjs",
                 "scripts/test_schedule_board_ui.cjs",
                 "scripts/test_schedule_calendar.cjs",
+                "scripts/test_staff_wording.cjs",
                 "scripts/test_week_calendar.cjs",
             ],
         )
+
+    def test_staff_wording_runs_for_any_browser_script_or_baseline_change(self):
+        for path in (
+            "web/clinical.js",
+            "web/visit-note.js",
+            "scripts/staff_wording_baseline.json",
+        ):
+            plan = build_plan([path])
+            self.assertIn(
+                "scripts/test_staff_wording.cjs", plan["ui_tests"], path
+            )
+        css = build_plan(["web/visit-billing.css"])
+        self.assertNotIn("scripts/test_staff_wording.cjs", css["ui_tests"])
 
     def test_shell_change_runs_every_ui_fixture(self):
         plan = build_plan(["web/shell.js"])
