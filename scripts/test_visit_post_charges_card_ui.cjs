@@ -47,7 +47,9 @@ const useAccount=coverageId=>{ctx.workspace.billing={...ctx.workspace.billing,ac
  // Confirming posts once, with exactly the body the lower form sends when its reason box is left empty.
  ctx.answer=true;reset();press();await settle();if(ctx.failed)throw new Error(ctx.failed);
  assert.deepEqual(ctx.asked,['Charges of $280.00 become final and the insurance claim is prepared.','Post these charges?','Post charges'],'one plain ask, and only before anything is sent');
- assert.deepEqual(posts().map(call=>[call[0],call[1],JSON.stringify(call[2]),call[3]]),[['/api/v1/patients/patient/billing/accounts/account/actions','POST','{"action":"post","reason":"","local_only":false}',4]],'the lower form\'s endpoint, action, default reason and version');
+ assert.deepEqual(posts().map(call=>[call[0],call[1],JSON.stringify(call[2]),call[3]]),[['/api/v1/patients/patient/billing/accounts/account/actions','POST','{"action":"post","reason":"Charges posted","local_only":false}',4]],'the lower form\'s endpoint, action, a default reason and version');
+ const postedReason=posts()[0][2].reason;
+ assert.equal(typeof postedReason,'string');assert.ok(postedReason.trim().length>0&&postedReason.length<=1000,'the post carries a non-empty reason of at most 1000 characters');
  assert.ok(sent.some(call=>call[0]==='rerender'),'the visit is reopened the way the lower form reopens it');
  assert.deepEqual(sent.at(-1),['/api/v1/patients/patient/billing/visit-summary?visit_id=visit'],'then the card reads what the server now says');
  assert.equal(ctx.revealed,'charges','the billing step is shown again after posting');
@@ -69,6 +71,6 @@ const useAccount=coverageId=>{ctx.workspace.billing={...ctx.workspace.billing,ac
  ctx.billingPayers=[{id:'payer',content:{name:'Synthetic Medicare PPO',payer_code:'SYN'}}];
  useAccount(null);reset();press();await settle();if(ctx.failed)throw new Error(ctx.failed);
  assert.deepEqual(ctx.asked,['Charges of $280.00 become final.','Post these charges?','Post charges'],'no insurance, no claim sentence');
- assert.equal(JSON.stringify(posts()[0][2]),'{"action":"post","reason":"","local_only":false}');
+ assert.equal(JSON.stringify(posts()[0][2]),'{"action":"post","reason":"Charges posted","local_only":false}');
  console.log('PASS card posts charges in one step: one ask naming the amount, the lower form\'s exact request, cancel writes nothing, an unsigned note cannot post, a payer with no electronic ID still goes to the form');
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -284,7 +284,7 @@ async function postVisitChargesFromCard(){
  const message=insured?`Charges of ${money(account.total_cents)} become final and the insurance claim is prepared.`:`Charges of ${money(account.total_cents)} become final.`;
  if(!await confirmAction(message,{title:'Post these charges?',confirmLabel:'Post charges'}))return;
  const patient=selected,identity=me;
- await api(`${billingBase()}/${account.id}/actions`,'POST',{action:'post',reason:'',local_only:false},account.version);
+ await api(`${billingBase()}/${account.id}/actions`,'POST',{action:'post',reason:'Charges posted',local_only:false},account.version);
  if(selected!==patient||me!==identity)return;
  // The same refresh the lower form does: this visit reopened on its billing step. Then the
  // card's own state is dropped so it reads what the server now says. A chart opened on
