@@ -77,7 +77,28 @@ function fixture({role='clinician',accounts=[],billingVisible=true,billingAllowe
     for(const callback of listeners.get('click')||[])callback({target:{closest:()=>button}});
     await settle();
   }
-  return {context,nodes,requests,asked,sections,settle,click,
+  // Runs in-sandbox control flow (awaits allowed) without a dynamic import in the vm.
+  // The done-flag lives on a host-visible object so a sandbox-side global can never shadow it.
+  vm.runInContext('globalThis.__runHost={};',context);
+  async function run(source){
+    vm.runInContext('globalThis.__runHost.done=undefined;(async()=>{'+source+'})().then(()=>{globalThis.__runHost.done=true;},e=>{globalThis.__runHost.done=String(e&&e.stack||e);});',context);
+    const host=vm.runInContext('globalThis.__runHost',context);
+    for(let i=0;i<600;i++){
+      await new Promise(done=>setImmediate(done));
+      if(host.done===true){await settle();return;}
+      if(typeof host.done==='string')throw new Error(host.done);
+    }
+    throw new Error('sandbox flow never settled: '+source);
+  }
+  return {context,nodes,requests,asked,sections,settle,click,run,
+    // app.js runs inside a function scope, so an earlier stub cannot be undone by
+    // reassignment; the real selectPatient is taken out of a fresh copy of its source.
+    realSelectPatient:()=>{
+      const start=app.indexOf('async function selectPatient'),end=app.indexOf('async function openPatientEncounter');
+      // app.js itself runs at script top level, so a top-level function declaration
+      // there is a global binding and a plain assignment replaces it.
+      vm.runInContext(app.slice(start,end)+'\nselectPatient=selectPatient;',context);
+    },
     progress:()=>nodes.get('encounter-progress')?.innerHTML||'',
     reminder:()=>nodes.get('encounter-progress')?.innerHTML?.match(/<div id="sign-charge-reminder"[\s\S]*?<\/div>/)?.[0]||'',
     signedReminder:()=>JSON.parse(vm.runInContext('JSON.stringify(typeof postSignReminder==="undefined"?null:postSignReminder)',context))};
@@ -152,6 +173,79 @@ async function main(){
   vm.runInContext('postSignReminder.visitId="visit-other"',f.context);f.context.renderVisit(false);await f.settle();
   assert.equal(f.reminder(),'','a reminder recorded for another visit never renders');
   console.log('PASS the reminder belongs to the signed visit and retires cleanly');
+
+  // Real selectPatient, not a stub: the sign handler calls it with the PATIENT id,
+  // and the reminder used to be compared against that id, so it vanished on reopen.
+  async function realFlow(){
+    const f=fixture();
+    // The reload after signing replaces the whole chart, so cached nodes are dropped
+    // with every read; anything not canned here fails loudly.
+    vm.runInContext(`api=async(path,method='GET')=>{testRequests.push(JSON.parse(JSON.stringify({path,method})));testNodes.clear();
+      if(path==='/api/v1/visits/visit-1/sign'&&method==='POST')return {...activeVisit,status:'signed',version:activeVisit.version+1,signed_at:'2026-11-14T10:00:00Z'};
+      if(path==='/api/v1/billing/payers')return {items:[]};
+      const m=method==='GET'&&path.match(/^\\/api\\/v1\\/patients\\/([^/]+)\\/(workspace|history|clinical|orders|billing|demographics)$/);
+      if(m){const[,patient,part]=m;
+        if(part==='history')return {items:[]};
+        if(part==='demographics')return {};
+        if(part==='clinical')return {items:[],reviews:[]};
+        if(part==='orders')return {orders:[],reports:[],acknowledgments:[]};
+        if(part==='workspace'){
+          // Patient-1 keeps the signed visit-1 and gains a second encounter; patient-2
+          // has one encounter of their own.
+          if(patient==='patient-1')return JSON.parse(JSON.stringify({...workspace,visits:[...workspace.visits,{...workspace.visits[0],id:'visit-2',status:'in_progress'}]}));
+          return JSON.parse(JSON.stringify({...workspace,visits:[{...workspace.visits[0],patient_id:patient,id:'visit-9',status:'in_progress'}]}));
+        }
+        return {accounts:[],coverages:[],copays:[],entries:[]};
+      }
+      throw new Error('Unexpected request '+path);};`,f.context);
+    f.realSelectPatient();
+    // renderChart reaches into scheduling/clinical modules this chart omits; the
+    // reminder lives in #encounter-progress, so rebuild the shell with the real
+    // postSignReminderMarkup + encounterWorkflow and keep the parts renderVisit needs.
+    vm.runInContext(`renderChart=function(){
+      const host=$('chart');
+      host.innerHTML='<section id="patient-banner" class="patient-banner"></section>'
+        +'<div id="encounter-progress">'+postSignReminderMarkup()+encounterWorkflow()+'</div>'
+        +'<div id="encounter-start-editor"></div><div id="visit-editor"></div>'
+        +'<section id="encounter-revenue" class="panel" hidden></section>';
+      if(activeVisit)renderVisit(false);else applyChartSection();
+    };`,f.context);
+    // The stub steps only record; the real setEncounterSection applies the step, so the
+    // charge step must actually be on screen when the sign handler lands staff there.
+    vm.runInContext('setEncounterSection=key=>{record("section",key);showChartSection("visits");encounterSection=key;testRefresh();};',f.context);
+    await f.click({action:'sign'});
+    assert.ok(f.requests.some(r=>r.path==='/api/v1/patients/patient-1/workspace'),'the real selectPatient refetched the chart');
+    assert.equal(f.signedReminder()?.visitId,'visit-1','the real selectPatient leaves the reminder on the signed visit');
+    assert.equal(f.reminder(),'','no reminder while the charges step is on screen');
+    assert.doesNotMatch(f.progress(),/sign-charge-reminder/,'the charges step shows no reminder');
+    await f.run("setEncounterSection('documentation')");
+    assert.match(f.reminder(),/No charges are posted for this visit yet\./,'moving to another step of the same visit shows the reminder');
+    // The reminder must also appear when staff move between steps, so the step switch
+    // has to refresh #encounter-progress (the real setEncounterSection chain does).
+    await f.run("setEncounterSection('charges')");
+    assert.doesNotMatch(vm.runInContext('$("encounter-progress").innerHTML',f.context),/sign-charge-reminder/,'setEncounterSection to charges refreshes the panel empty');
+    await f.run("setEncounterSection('checkout')");
+    assert.match(vm.runInContext('$("encounter-progress").innerHTML',f.context),/No charges are posted for this visit yet\./,'setEncounterSection to another step refreshes the panel');
+    // Re-opening the same visit keeps the reminder.
+    await f.run("await selectPatient('patient-1','visit-1')");
+    assert.equal(f.signedReminder()?.visitId,'visit-1','re-opening the same visit keeps the reminder');
+    await f.run("setEncounterSection('charges')");
+    assert.equal(f.reminder(),'','the charges step stays quiet even on reopen');
+    await f.run("setEncounterSection('documentation')");
+    assert.match(f.reminder(),/No charges are posted for this visit yet\./,'the reminder returns on the other steps');
+    // A different visit retires it — same patient first.
+    await f.run("await selectPatient('patient-1','visit-2')");
+    assert.equal(f.signedReminder(),null,'a different visit of the same patient retires the reminder');
+    assert.equal(f.reminder(),'','the retired reminder renders nothing');
+    // Then re-arm on the signed visit and open a different patient's encounter.
+    await f.run("await selectPatient('patient-1','visit-1');postSignReminder={visitId:'visit-1',message:'No charges are posted for this visit yet.'};setEncounterSection('documentation')");
+    assert.match(f.reminder(),/No charges are posted for this visit yet\./,'the reminder is armed again before the patient switch');
+    await f.run("await selectPatient('patient-2','visit-9')");
+    assert.equal(f.signedReminder(),null,'another patient\u2019s visit retires the reminder');
+    assert.equal(f.reminder(),'','no reminder on the other patient\u2019s chart');
+    console.log('PASS the real selectPatient keeps the reminder for the signed visit only, and never on the charges step');
+  }
+  await realFlow();
 
   // Styling for the linked reminder uses theme variables only, so dark mode follows the theme.
   const rules=style.split('\n').filter(line=>line.startsWith('.notice-with-action')).join('\n');
