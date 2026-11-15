@@ -33,11 +33,14 @@ env:
   DEBIAN_SNAPSHOT: 20250910T000000Z
 
 jobs:
-  # A merge to main already runs the full regression for this exact commit
-  # (full-regression.yml on push). If that run succeeded there is nothing to
-  # gain from repeating it on the release tag, so this job looks for it and
-  # full_regression below skips itself when the match is found. The check can
-  # only read Actions metadata; it can never influence anything but the skip.
+  # Pull requests are squash-merged, so the commit landing on main is brand new
+  # even when the branch was up to date and carries identical files. This job
+  # therefore compares git trees rather than commit shas: any successful run of
+  # full-regression.yml, pushed or dispatched by hand, on a commit whose tree
+  # equals the tagged commit's tree covers the release. Same tree means the same
+  # sources, the same tests and the same workflow files, so full_regression below
+  # skips itself. The check only reads Actions metadata and can never influence
+  # anything but that skip.
   prior_regression:
     if: >-
       github.event_name == 'push' ||
@@ -50,27 +53,12 @@ jobs:
     outputs:
       passed: ${{ steps.match.outputs.passed }}
     steps:
-      - name: Look for a successful regression run on this commit
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Look for a successful regression run on this source tree
         id: match
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          count=$(
-            gh api -X GET repos/${{ github.repository }}/actions/workflows/full-regression.yml/runs \
-              -f head_sha=${{ github.sha }} -f status=success -f event=push \
-              --jq '[.workflow_runs[] | select(.head_sha == env.GITHUB_SHA and .conclusion == "success" and .head_branch == "main")] | length' \
-              2>/dev/null
-          ) || count=0
-          if [ "$count" -ge 1 ] 2>/dev/null; then
-            echo 'passed=true' >> "$GITHUB_OUTPUT"
-            gh api -X GET repos/${{ github.repository }}/actions/workflows/full-regression.yml/runs \
-              -f head_sha=${{ github.sha }} -f status=success -f event=push \
-              --jq '"Reusing successful full-regression run " + ([.workflow_runs[] | select(.head_sha == env.GITHUB_SHA and .conclusion == "success" and .head_branch == "main")] | first | .id | tostring)' \
-              2>/dev/null || echo "Reusing an earlier successful full-regression run for $GITHUB_SHA"
-          else
-            echo 'passed=false' >> "$GITHUB_OUTPUT"
-            echo "No successful full-regression run found for $GITHUB_SHA; the regression will run in this workflow"
-          fi
+        run: python3 scripts/ci_prior_regression.py
 
   full_regression:
     needs: prior_regression
@@ -113,7 +101,7 @@ jobs:
 
   # Nothing is pushed, attested or attached to a release until the complete
   # regression and the image build have both succeeded. The regression may be
-  # the one that already passed on main for this exact commit, in which case
+  # the one that already passed on this exact source tree, in which case
   # full_regression above is skipped and its prior success counts here. The
   # build step below is unchanged; it finds the layers build_amd64 cached for
   # this ref.

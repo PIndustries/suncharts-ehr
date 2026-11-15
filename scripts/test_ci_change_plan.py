@@ -150,6 +150,20 @@ class ChangePlanTest(unittest.TestCase):
         plan = build_plan([".github/workflows/full-regression.yml"])
         self.assertIn("scripts.test_ci_rust_shards", plan["python_tests"])
 
+    def test_prior_regression_helper_rechecks_the_release_gates(self):
+        plan = build_plan(["scripts/ci_prior_regression.py"])
+        self.assertIn("scripts.test_ci_prior_regression", plan["python_tests"])
+        self.assertIn("scripts.test_release_workflow", plan["python_tests"])
+
+    def test_regression_reuse_goes_both_ways_between_helper_and_workflow(self):
+        for path in (
+            "scripts/ci_prior_regression.py",
+            ".github/workflows/publish-image.yml",
+            ".github/workflows/full-regression.yml",
+        ):
+            plan = build_plan([path])
+            self.assertIn("scripts.test_ci_prior_regression", plan["python_tests"], path)
+
     def test_ci_actions_are_supply_chain_pinned(self):
         root = Path(__file__).resolve().parents[1]
         for name in ("ci.yml", "full-regression.yml"):

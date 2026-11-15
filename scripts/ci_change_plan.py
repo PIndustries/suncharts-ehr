@@ -43,6 +43,10 @@ GLOBAL_UI_FILES = {
 # baseline change has to re-run it.
 STAFF_WORDING_TEST = "test_staff_wording.cjs"
 STAFF_WORDING_BASELINE = "scripts/staff_wording_baseline.json"
+# The release gate that decides whether a regression may be reused for a tag.
+# A change here can silence the release regression, so it is planned alongside
+# the workflow gates rather than only through its own unit test.
+RELEASE_GATE_SOURCES = {"scripts/ci_prior_regression.py"}
 UI_ALIASES = {
     "web/appointment-workflows.js": {"test_appointment_workflows_ui.cjs"},
     "web/clinical.js": {
@@ -169,6 +173,15 @@ def build_plan(changed_files: list[str]) -> dict[str, object]:
             python_tests.add("scripts.test_ci_change_plan")
             python_tests.add("scripts.test_ci_rust_shards")
             python_tests.add("scripts.test_release_workflow")
+            # A workflow edit can change how the reuse helper is invoked, and a
+            # helper edit can change what the release gates do, so the two are
+            # always checked together.
+            python_tests.add("scripts.test_ci_prior_regression")
+        if path in RELEASE_GATE_SOURCES:
+            # Same reasoning as a workflow edit: the release gates have to be
+            # re-checked, not just the helper's own unit test.
+            python_tests.add("scripts.test_release_workflow")
+            python_tests.add("scripts.test_ci_prior_regression")
         if path.startswith("tests/") and path.endswith(".rs"):
             # Adding, renaming or removing a test binary changes the release
             # shard plan; catch a broken plan here, not on the release tag.
