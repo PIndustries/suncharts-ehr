@@ -67,8 +67,10 @@ def pick_run(
 
 
 def _gh_json(arguments: list[str]) -> object:
+    # gh api defaults to POST as soon as a -f field is present, which the runs
+    # listing would fail on. Every read here is an explicit GET.
     result = subprocess.run(
-        ["gh", "api", *arguments],
+        ["gh", "api", "--method", "GET", *arguments],
         check=True,
         capture_output=True,
         text=True,
