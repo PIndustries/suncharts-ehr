@@ -34,7 +34,29 @@ async function main(){
  const form={id:'avs-release-form',dataset:{version:'1',digest:'old-digest'},values:{instructions:'Retained instruction edits',follow_up_instructions:'Follow up',reason:'Reviewed patient summary'},remove(){},closest(){return null;}};
  f.events.get('submit').find(e=>e.options===true).callback({target:form,preventDefault(){},stopImmediatePropagation(){}});await Promise.all(f.pending);
  const sent=JSON.parse(JSON.stringify(f.context.calls[0]));assert.equal(sent.v,1);assert.equal(sent.b.reviewed_snapshot_digest,'old-digest');assert.equal(sent.b.reviewed,true);assert.equal(sent.p,'/api/v1/patients/patient-1/visits/visit-1/checkout/actions');
- console.log('PASS stale AVS edits retained with their original version and review digest');
+  console.log('PASS stale AVS edits retained with their original version and review digest');
+  // The reviewed-copy rebase button: label, attribute and click handler path.
+  f=fixture();f.run(`checkoutDrafts.set(checkoutContext.key,{instructions:'Retained instruction edits',follow_up_instructions:'',version:1,digest:'old-digest'});checkoutState.version=2;renderVisitCheckoutContent()`);
+  html=f.node('visit-checkout').innerHTML;
+  assert.match(html,/<button type="button" data-checkout-rebase>Use this reviewed copy<\/button>/);
+  {
+    const attr='data-checkout-rebase';
+    const btn={hasAttribute:a=>a===attr,dataset:{},closest:sel=>sel==='button'?btn:null};
+    let ran=false;
+    f.run(`api=async(p,m,b,v)=>{calls.push({p,m,b,v});return {};};loadVisitCheckout=async()=>{throw new Error('rebase must not reload checkout');};notice=()=>{};captureCheckoutDraft=()=>{ran=true;};run=action=>pending.push(Promise.resolve().then(action));`);
+    f.context.run('ran=false;');
+    f.events.get('click').find(e=>e.options===true).callback({target:btn,preventDefault(){},stopImmediatePropagation(){}});
+    await Promise.all(f.pending);
+    assert.equal(f.context.ran,true,'captureCheckoutDraft (data-checkout-rebase handler) was not reached');
+    assert.equal(f.context.calls.length,0,'rebase handler must not call the api or reload checkout');
+    const draft=f.run(`checkoutDrafts.get(checkoutContext.key)`);
+    assert.equal(draft.version,2);assert.equal(draft.digest,'digest-v1');
+    assert.match(f.node('visit-checkout').innerHTML,/data-version="2" data-digest="digest-v1"/);
+    assert.doesNotMatch(f.node('visit-checkout').innerHTML,/The checkout record or clinical information changed/);
+  }
+  // Every button tag in the checkout markup is closed with '>' before any '<'.
+  for(const m of html.matchAll(/<button\b[^<]*/g))assert.ok(m[0].includes('>'),`unclosed <button tag: ${m[0]}`);
+  console.log('PASS reviewed-copy rebase button rendered, clickable and self-closing');
  f=fixture();f.run(`followupAssignees=[{id:'staff-1',label:'Staff <unsafe>',role:'front_desk'}];checkoutState.followups=[{id:'task-1',patient_id:selected,visit_id:activeVisit.id,title:'Call <patient>',instructions:'Confirm follow-up',assignee_id:'staff-1',assignee_label:'Staff <unsafe>',due_date:'2026-10-24',status:'open',version:3,can_update:false}];renderVisitCheckoutContent()`);
  html=f.node('visit-checkout').innerHTML;assert.match(html,/Call &lt;patient&gt;/);assert.match(html,/Staff &lt;unsafe&gt;/);assert.doesNotMatch(html,/class="followup-action-form"/);assert.match(html,/Add task/);
  console.log('PASS follow-up rendering respects task permissions and escapes clinical text');
