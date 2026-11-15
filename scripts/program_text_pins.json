@@ -1,0 +1,16 @@
+{
+  "files": {
+    "web/sun.js": {
+      "sha256": "36e63c60ec88644919465b8c69911fd567db4891b38257973476c490491c6af9",
+      "why": "Builds the instructions and facts sent to the Sun assistant."
+    },
+    "web/sun-workflow.js": {
+      "sha256": "64eb442982ec0787134023e285b852dc025eee8b5480fed63d73b9cd98512ab2",
+      "why": "Builds the workflow-design request sent to the Sun assistant; the server validates what comes back."
+    },
+    "web/workflow-editor.js": {
+      "sha256": "0c46b008f7ea162dbc440fb5afab39487b7d685eb9221150c19fceeccecdeaeb",
+      "why": "Generated bundle; change the source and rebuild instead of editing it."
+    }
+  }
+}

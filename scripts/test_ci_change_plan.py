@@ -79,6 +79,20 @@ class ChangePlanTest(unittest.TestCase):
         css = build_plan(["web/visit-billing.css"])
         self.assertNotIn("scripts/test_staff_wording.cjs", css["ui_tests"])
 
+    def test_program_text_pins_runs_for_pinned_files_and_pin_file(self):
+        for path in (
+            "web/sun.js",
+            "web/sun-workflow.js",
+            "web/workflow-editor.js",
+            "scripts/program_text_pins.json",
+        ):
+            plan = build_plan([path])
+            self.assertIn(
+                "scripts/test_program_text_pins.cjs", plan["ui_tests"], path
+            )
+        other = build_plan(["web/visit-note.js"])
+        self.assertNotIn("scripts/test_program_text_pins.cjs", other["ui_tests"])
+
     def test_shell_change_runs_every_ui_fixture(self):
         plan = build_plan(["web/shell.js"])
         self.assertGreater(len(plan["ui_tests"]), 20)
