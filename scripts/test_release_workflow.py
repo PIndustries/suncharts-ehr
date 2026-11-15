@@ -48,18 +48,25 @@ class ReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("timeout-minutes: 5", block)
         self.assertIn("passed: ${{ steps.", block)
         self.assertIn("GH_TOKEN: ${{ github.token }}", block)
+        # The tree comparison lives in a script under scripts/, so it is unit
+        # tested and reviewable rather than buried in shell quoting.
+        self.assertIn("run: python3 scripts/ci_prior_regression.py", block)
         self.assertIn(
-            "repos/${{ github.repository }}/actions/workflows/full-regression.yml/runs",
+            "uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4",
             block,
         )
-        self.assertIn("head_sha == env.GITHUB_SHA", block)
-        self.assertIn('.conclusion == "success"', block)
-        self.assertIn('.head_branch == "main"', block)
-        # The gh call can never fail the job: no set -e and every failure path
-        # still emits an output.
         self.assertNotIn("set -e", block)
-        self.assertIn("passed=false", block)
-        self.assertIn("passed=true", block)
+        self.assertNotIn("gh api", block)
+        self.assertNotIn("head_branch", block)
+
+    def test_prior_regression_script_never_fails_the_job(self):
+        # Every failure path has to end in passed=false and exit 0, so a broken
+        # gh call degrades to running the regression as before.
+        source = (ROOT / "scripts/ci_prior_regression.py").read_text()
+        self.assertIn("except Exception", source)
+        self.assertIn("return 0", source)
+        self.assertIn("_write_output(False)", source)
+        self.assertIn("_write_output(True)", source)
 
     def test_full_regression_skips_when_prior_run_passed(self):
         block = _job_block(self.workflow, "full_regression")
