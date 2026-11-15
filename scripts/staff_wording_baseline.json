@@ -2,12 +2,6 @@
   "app.js": {
     "encounter": 19
   },
-  "automation-center.js": {
-    "JSON": 1,
-    "catalog": 1,
-    "endpoint": 1,
-    "tenant": 1
-  },
   "claims.js": {
     "JSON": 2
   },
@@ -19,9 +13,6 @@
   },
   "immunizations.js": {
     "catalog": 1
-  },
-  "integrations.js": {
-    "endpoint": 3
   },
   "patient-payment-plans.js": {
     "catalog": 1
@@ -36,15 +27,8 @@
   "provider-settings.js": {
     "JSON": 1
   },
-  "retrieval.js": {
-    "endpoint": 1
-  },
   "sun-workflow.js": {
-    "JSON": 4,
-    "catalog": 3,
-    "endpoint": 1,
-    "payload": 1,
-    "schema": 2
+    "JSON": 1
   },
   "sun.js": {
     "JSON": 5
@@ -53,14 +37,5 @@
     "JSON": 1,
     "payload": 15,
     "snapshot": 2
-  },
-  "workflow-preparation.js": {
-    "catalog": 1
-  },
-  "workflow-studio.js": {
-    "JSON": 1,
-    "catalog": 1,
-    "encounter": 7,
-    "tenant": 2
   }
 }
