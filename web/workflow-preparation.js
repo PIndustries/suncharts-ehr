@@ -14,7 +14,7 @@ function studioPreparationBlocker(item,step){
  if(!step.manual_approval)return 'This saved revision has no required dispatch approval. Update the workflow for future runs; this action cannot be prepared here.';
  if(!pathwayCanWork(step))return 'This step is assigned to another team or your role cannot prepare actions.';
  if(!item.patient_id&&step.kind!=='communication_send')return 'Link a patient to this journey before preparing this action.';
- if(step.kind==='communication_send'&&me?.role!=='owner')return 'A practice owner must choose the communication connection. The connection catalog is not available to other staff roles.';
+ if(step.kind==='communication_send'&&me?.role!=='owner')return 'A practice owner must choose the communication connection. The list of connections is not available to other staff roles.';
  const permission=step.kind==='communication_send'?['communications','create']:step.kind==='availability_query'?['scheduling','view']:step.kind==='appointment_reschedule'?['scheduling','edit']:step.kind==='appointment_cancel'?['scheduling','delete']:['scheduling','create'];
  if(typeof workspaceResourceAllowed==='function'&&!workspaceResourceAllowed(...permission))return 'Your assigned access policy does not permit this native action.';
  return '';

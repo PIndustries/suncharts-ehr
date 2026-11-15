@@ -44,7 +44,7 @@ vm.runInContext(source,context);
  assert.match(host.innerHTML,/Scroll sideways to see every stage/);assert.match(host.innerHTML,/Selected: Collect patient information/);assert.match(host.innerHTML,/SELECTED NODE · SETTINGS/);assert.match(host.innerHTML,/A referral status changes/);
  for(const section of ['What is this step?','Form setup','When should it run?','What happens next?'])assert.match(host.innerHTML,new RegExp(section));
  assert.match(host.innerHTML,/Edit form fields/);assert.match(host.innerHTML,/Runs after/);assert.match(host.innerHTML,/Workflow start/);assert.match(host.innerHTML,/Change prerequisites/);assert.match(host.innerHTML,/Continues to/);assert.match(host.innerHTML,/Verify benefits/);assert.match(host.innerHTML,/Multiple next steps run in parallel/);assert.match(host.innerHTML,/skipped prerequisite as resolved/);
- assert.match(host.innerHTML,/VISUAL PATH/);assert.match(host.innerHTML,/Developer view: generated workflow definition/);assert.match(host.innerHTML,/id="studio-rete-canvas"/);
+ assert.match(host.innerHTML,/VISUAL PATH/);assert.match(host.innerHTML,/Advanced view: saved workflow definition/);assert.match(host.innerHTML,/id="studio-rete-canvas"/);
  assert.match(host.innerHTML,/class="studio-graph-edges"/);assert.match(host.innerHTML,/data-edge-id="intake--verify"/);assert.match(host.innerHTML,/Approval/);assert.match(host.innerHTML,/Workflow columns/);
  assert.equal(vm.runInContext('studioDraft.definition.columns.length',context),4,'legacy definitions receive the four default columns');
  vm.runInContext("studioDraft._selectedStep='verify';studioStep().condition={field:'/coverage/active',operator:'equals',value:true};studioRender()",context);
