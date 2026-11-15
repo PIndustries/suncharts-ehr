@@ -43,6 +43,11 @@ GLOBAL_UI_FILES = {
 # baseline change has to re-run it.
 STAFF_WORDING_TEST = "test_staff_wording.cjs"
 STAFF_WORDING_BASELINE = "scripts/staff_wording_baseline.json"
+# Some browser-script text is read by a program (the Sun assistant, generated
+# bundle consumers), not by staff, so its exact bytes are pinned. Any change to
+# a pinned file or the pin file itself has to re-run the guard.
+PROGRAM_TEXT_PINS = "scripts/program_text_pins.json"
+PROGRAM_TEXT_PINS_TEST = "test_program_text_pins.cjs"
 # The release gate that decides whether a regression may be reused for a tag.
 # A change here can silence the release regression, so it is planned alongside
 # the workflow gates rather than only through its own unit test.
@@ -71,6 +76,13 @@ UI_ALIASES = {
         "test_schedule_calendar.cjs",
         "test_week_calendar.cjs",
     },
+}
+# Files whose text is read by a program, not staff; the pin file itself is
+# covered too, so editing or deleting an entry re-runs the guard.
+PROGRAM_TEXT_PINNED_FILES = {
+    "web/sun.js",
+    "web/sun-workflow.js",
+    "web/workflow-editor.js",
 }
 
 
@@ -149,6 +161,8 @@ def build_plan(changed_files: list[str]) -> dict[str, object]:
             ui_tests.add(STAFF_WORDING_TEST)
         if path == STAFF_WORDING_BASELINE:
             ui_tests.add(STAFF_WORDING_TEST)
+        if path in PROGRAM_TEXT_PINNED_FILES or path == PROGRAM_TEXT_PINS:
+            ui_tests.add(PROGRAM_TEXT_PINS_TEST)
 
         if path.startswith("scripts/") and path.endswith(".py"):
             name = Path(path).name
