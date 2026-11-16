@@ -18,7 +18,7 @@ async function showPracticeAdmin(requestedTab=null,fresh=false){
  renderPracticeAdmin();
 }
 function practiceAdminInput(name,label,value,max,type='text',required=false){return `<label>${esc(label)}<input name="${name}" type="${type}" maxlength="${max}" value="${esc(value||'')}" ${required?'required':''} autocomplete="${type==='password'?'new-password':'off'}"></label>`;}
-function practiceAdminPatternInput(name,label,value,max,pattern){return `<label>${esc(label)}<input name="${name}" type="text" maxlength="${max}" pattern="${pattern}" value="${esc(value||'')}" autocomplete="off"></label>`;}
+function practiceAdminPatternInput(name,label,value,max,pattern,hint=''){return `<label>${esc(label)}<input name="${name}" type="text" maxlength="${max}" pattern="${pattern}" value="${esc(value||'')}" autocomplete="off">${hint?`<small class="muted">${hint}</small>`:''}</label>`;}
 function practiceAdminSelect(name,label,options,value){return `<label>${esc(label)}<select name="${name}" required>${options.map(([key,label])=>`<option value="${esc(key)}" ${key===value?'selected':''}>${esc(label)}</option>`).join('')}</select></label>`;}
 function practiceStaffInvited(){return practiceAdminState?.staff?.sign_in==='connect';}
 function practiceAdminDay(value){const d=new Date(value);return value&&!Number.isNaN(d.getTime())?d.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}):'';}
@@ -132,7 +132,7 @@ function editPracticeAdmin(id){
  if(kind==='providers'){
  const choices=s.staff.items.filter(x=>!x.disabled&&['owner','clinician'].includes(x.role)&&(!s.providers.items.some(p=>p.id===x.id)||row?.id===x.id)).map(x=>[x.id,`${x.display_name||x.email} · ${x.email}`]);
  if(!row&&!choices.length){$('practice-admin-editor').innerHTML='<p class="notice">Add an enabled clinician or owner staff account before creating its provider profile.</p>';return;}
- fields=`${row?`<p>Staff account: ${esc(s.staff.items.find(x=>x.id===row.id)?.email||row.id)}<input type="hidden" name="staff_id" value="${esc(row.id)}"></p>`:practiceAdminSelect('staff_id','Staff account',choices,choices[0]?.[0])}${input('display_name','Provider display name',200,'text',true)}${input('npi','NPI (optional)',10)}${input('specialty','Specialty',200)}${practiceAdminPatternInput('taxonomy','Taxonomy code',row?.taxonomy,10,'[0-9A-Za-z]{10}')}<p class="muted">10 characters, for example 207Q00000X. Insurers use it on claims.</p>`;
+ fields=`${row?`<p>Staff account: ${esc(s.staff.items.find(x=>x.id===row.id)?.email||row.id)}<input type="hidden" name="staff_id" value="${esc(row.id)}"></p>`:practiceAdminSelect('staff_id','Staff account',choices,choices[0]?.[0])}${input('display_name','Provider display name',200,'text',true)}${input('npi','NPI (optional)',10)}${input('specialty','Specialty',200)}${practiceAdminPatternInput('taxonomy','Taxonomy code',row?.taxonomy,10,'[0-9A-Za-z]{10}','10 characters, for example 207Q00000X. Insurers use it on claims.')}`;
  }
  if(kind==='facilities'){
  const boxes=`${row?.address&&!row?.address_line1?`<p class="muted facility-address-on-file">Address on file: ${esc(row.address)}. Enter it in the boxes below so claims can use it.</p>`:''}${input('address_line1','Street address',55)}${input('address_line2','Suite or unit',55)}${input('city','City',30)}${practiceAdminPatternInput('state','State',row?.state,2,'[A-Za-z]{2}')}${practiceAdminPatternInput('postal_code','ZIP code',row?.postal_code,10,'[0-9]{5}(-?[0-9]{4})?')}`;

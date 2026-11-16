@@ -98,7 +98,7 @@ function form(values){const error={textContent:'',hidden:true};return {values,da
   assert.match(html,/NPI 1234567893 · Taxonomy 207Q00000X/);assert.match(html,/NPI not recorded(?!( · Taxonomy))/);assert.equal((html.match(/Taxonomy /g)||[]).length,1,'taxonomy is listed only when set');
   f.run("editPracticeAdmin('u5')");html=f.element('practice-admin-editor').innerHTML;
   assert.match(html,/name="taxonomy" type="text" maxlength="10" pattern="\[0-9A-Za-z\]\{10\}" value="207Q00000X"/);
-  assert.match(html,/name="specialty"/);assert.match(html,/10 characters, for example 207Q00000X\. Insurers use it on claims\./);
+  assert.match(html,/name="specialty"/);assert.match(html,/name="taxonomy"[^>]*><small class="muted">10 characters, for example 207Q00000X\. Insurers use it on claims\.<\/small><\/label>/);assert.doesNotMatch(html,/<p class="muted">10 characters/);
   f.run("editPracticeAdmin('u1')");html=f.element('practice-admin-editor').innerHTML;assert.match(html,/name="taxonomy" type="text" maxlength="10" pattern="\[0-9A-Za-z\]\{10\}" value=""/,'a provider without a taxonomy gets a blank box');
   f.run("editPracticeAdmin('u5')");
   f.replies['PUT /api/v1/practice/providers/u5']={id:'u5',version:3};edit=form({staff_id:'u5',display_name:'Synthetic Clinician',npi:'1234567893',specialty:'Family medicine',taxonomy:' 207R00000X ',active:'true',reason:'Taxonomy corrected'});f.context.testForm=edit;await f.run('savePracticeAdmin(testForm)');saved=f.requests.find(x=>x.method==='PUT'&&x.path==='/api/v1/practice/providers/u5');assert.equal(saved.body.taxonomy,'207R00000X');assert.equal(saved.version,2);
