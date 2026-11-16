@@ -338,7 +338,8 @@ fn stedi_page(v: Value, usage: &str) -> Result<Page> {
         next: Some(next),
     })
 }
-// Provider status is evidence, never an automatic payer acceptance or ledger posting.
+// A clearinghouse acknowledgement is receipt evidence; a payer sender's acceptance or
+// any rejection on a matched response sets the claim's status. Nothing posts payment.
 fn claimmd_identity_matches(evidence: &Value, frozen: &Value) -> bool {
     let account = &frozen["snapshot"]["account"];
     let content = &frozen["content"];
@@ -367,6 +368,54 @@ fn claimmd_identity_matches(evidence: &Value, frozen: &Value) -> bool {
         && nonempty_equal(&evidence["fdos"], &account["content"]["service_date"])
 }
 
+async fn apply_claimmd_status(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    report: Uuid,
+    submission: Uuid,
+    evidence: &Value,
+) -> Result<&'static str> {
+    let out = crate::clearinghouse::submission(tx, a, submission).await?;
+    let claim = crate::claims::claim_row(tx, a, out.claim_id).await?;
+    let sender_id = evidence["senderid"].as_str().unwrap_or("");
+    let sender_name = evidence["sender_name"].as_str().unwrap_or("");
+    let sender_icn = evidence["sender_icn"].as_str().unwrap_or("");
+    let message = evidence["message"]["message"].as_str().unwrap_or("");
+    let rejected = evidence["status"] == "R" || evidence["message"]["status"] == "R";
+    if out.status != "delivered"
+        || crate::claim_cob::tracking_only(&claim)
+        || crate::delivery::ensure_claim_unreserved(tx, a, claim.id)
+            .await
+            .is_err()
+    {
+        return Ok("none");
+    }
+    if rejected {
+        if !["submitted", "accepted"].contains(&claim.status.as_str()) {
+            return Ok("none");
+        }
+        sqlx::query("UPDATE ehr_claims SET status='rejected',version=version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(claim.id).execute(&mut **tx).await?;
+        crate::claims::revision(tx,a,claim.id,"Claim.MD reported that this claim was rejected",json!({"event":"claimmd_rejection","submission_id":submission,"retrieved_report_id":report,"sender_id":sender_id,"sender_name":sender_name,"message":message,"evidence_origin":"claimmd_status_feed"})).await?;
+        sqlx::query("UPDATE edi_submissions SET technical_status=CASE WHEN $3='CLMMD' THEN 'rejected' ELSE technical_status END,payer_outcome=CASE WHEN $3='CLMMD' THEN payer_outcome ELSE 'rejected' END,version=version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(submission).bind(sender_id).execute(&mut **tx).await?;
+        return Ok("rejected");
+    }
+    if evidence["status"] != "A"
+        || sender_id.is_empty()
+        || sender_id == "CLMMD"
+        || sender_icn.is_empty()
+        || sender_icn.len() > 150
+        || claim.status != "submitted"
+        || out.payer_outcome != "pending"
+        || ["rejected", "needs_review"].contains(&out.technical_status.as_str())
+    {
+        return Ok("none");
+    }
+    sqlx::query("UPDATE ehr_claims SET status=$3,payer_control_number=CASE WHEN $4='' THEN payer_control_number ELSE $4 END,version=version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(claim.id).bind("accepted").bind(sender_icn).execute(&mut **tx).await?;
+    crate::claims::revision(tx,a,claim.id,"The payer accepted this claim",json!({"event":"claimmd_payer_acceptance","submission_id":submission,"retrieved_report_id":report,"sender_id":sender_id,"sender_name":sender_name,"message":message,"payer_control_number":sender_icn,"evidence_origin":"claimmd_status_feed"})).await?;
+    sqlx::query("UPDATE edi_submissions SET payer_outcome=$3,version=version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(submission).bind("accepted").execute(&mut **tx).await?;
+    Ok("accepted")
+}
+
 async fn attach_claimmd_status(
     tx: &mut Transaction<'_, Postgres>,
     a: &Actor,
@@ -374,7 +423,7 @@ async fn attach_claimmd_status(
 ) -> Result<()> {
     // Receipt binding narrows the candidates before inspecting patient identifiers.
     // Imported records are not eligible, and no match/ambiguous matches stay in the review inbox.
-    let reports: Vec<(Uuid, Value)> = sqlx::query_as("SELECT r.id,r.parse_summary FROM edi_remote_reports r WHERE r.tenant_id=$1 AND r.route_key=$2 AND r.format='claimmd_status' AND r.status='retrieved' AND r.native_id IS NULL AND r.metadata->>'source'='claimmd_response_api' AND r.last_result IS DISTINCT FROM 'identity_match_needs_review' AND EXISTS (SELECT 1 FROM edi_delivery_jobs j WHERE j.tenant_id=r.tenant_id AND j.route_key=r.route_key AND j.status='delivered' AND (j.receipt_reference='claimmd-file:'||(r.parse_summary->>'fileid') OR j.receipt_reference='claimmd-claim:'||(r.parse_summary->>'claimmd_id'))) ORDER BY r.received_at,r.id LIMIT 200")
+    let reports: Vec<(Uuid, Value)> = sqlx::query_as("SELECT r.id,r.parse_summary FROM edi_remote_reports r WHERE r.tenant_id=$1 AND r.route_key=$2 AND r.format='claimmd_status' AND r.status='retrieved' AND r.native_id IS NULL AND r.metadata->>'source'='claimmd_response_api' AND r.last_result IS DISTINCT FROM 'identity_match_needs_review' AND EXISTS (SELECT 1 FROM edi_delivery_jobs j WHERE j.tenant_id=r.tenant_id AND j.route_key=r.route_key AND j.status='delivered' AND (j.receipt_reference='claimmd-file:'||(r.parse_summary->>'fileid') OR j.receipt_reference='claimmd-claim:'||(r.parse_summary->>'claimmd_id'))) ORDER BY r.received_at,CASE WHEN r.metadata->>'response_id' ~ '^[0-9]{1,20}$' THEN (r.metadata->>'response_id')::numeric END,r.id LIMIT 200")
         .bind(a.tenant_id).bind(key).fetch_all(&mut **tx).await?;
     for (report, evidence) in reports {
         let references = crate::claimmd::receipt_references(&evidence);
@@ -407,12 +456,13 @@ async fn attach_claimmd_status(
             false,
         )
         .await?;
+        let applied = apply_claimmd_status(tx, a, report, submission, &evidence).await?;
         sqlx::query("UPDATE edi_submissions SET version=version+1 WHERE tenant_id=$1 AND id=$2")
             .bind(a.tenant_id)
             .bind(submission)
             .execute(&mut **tx)
             .await?;
-        crate::clearinghouse::event(tx,a,submission,"Claim.MD status evidence attached automatically",json!({"retrieved_report_id":report,"provider":"claim_md","clinical_status_changed":false,"status_evidence":evidence,"origin":"exact_receipt_and_identity_match"})).await?;
+        crate::clearinghouse::event(tx,a,submission,"Claim.MD status evidence attached automatically",json!({"retrieved_report_id":report,"provider":"claim_md","clinical_status_changed":applied!="none","claim_status":applied,"status_evidence":evidence,"origin":"exact_receipt_and_identity_match"})).await?;
     }
     Ok(())
 }
@@ -901,16 +951,17 @@ async fn link_status(
         ));
     }
     link(&mut tx, &a, id, "submission", out.id, &v.reason).await?;
+    let applied = apply_claimmd_status(&mut tx, &a, id, out.id, &evidence).await?;
     sqlx::query("UPDATE edi_submissions SET version=version+1 WHERE tenant_id=$1 AND id=$2")
         .bind(a.tenant_id)
         .bind(out.id)
         .execute(&mut *tx)
         .await?;
-    crate::clearinghouse::event(&mut tx,&a,out.id,&v.reason,json!({"retrieved_report_id":id,"provider":"claim_md","clinical_status_changed":false,"status_evidence":evidence})).await?;
-    // Evidence-only links still create a distinct submission event version.
+    crate::clearinghouse::event(&mut tx,&a,out.id,&v.reason,json!({"retrieved_report_id":id,"provider":"claim_md","clinical_status_changed":applied!="none","claim_status":applied,"status_evidence":evidence})).await?;
+    // An unlinked response can still carry a payer outcome; other links are evidence only.
     tx.commit().await?;
     Ok(Json(
-        json!({"id":id,"native_id":out.id,"clinical_status_changed":false}),
+        json!({"id":id,"native_id":out.id,"clinical_status_changed":applied!="none","claim_status":applied}),
     ))
 }
 
