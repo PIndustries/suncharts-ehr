@@ -5643,6 +5643,553 @@ async fn claimmd_multipart_delivery_and_responseid_feed_preserve_structured_evid
     claimmd_status_link_fixture(false).await;
 }
 
+struct ClaimMdFeed {
+    receipt: Value,
+    pages: std::collections::HashMap<String, Value>,
+    empty: Value,
+}
+
+async fn claimmd_feed(
+    a: &Actor,
+    p: &Value,
+    feed: ClaimMdFeed,
+) -> (
+    suncharts_engine::delivery::Config,
+    tokio::task::JoinHandle<()>,
+    String,
+) {
+    let pages = Arc::new(std::sync::Mutex::new(feed.pages));
+    let upload = feed.receipt;
+    let empty = feed.empty;
+    let gateway = Router::new()
+        .route(
+            "/services/upload/",
+            axum::routing::post(move || {
+                let upload = upload.clone();
+                async move { axum::Json(upload) }
+            }),
+        )
+        .route(
+            "/services/response/",
+            axum::routing::post(move |body: axum::body::Bytes| {
+                let pages = pages.clone();
+                let empty = empty.clone();
+                async move {
+                    let form: std::collections::HashMap<String, String> =
+                        url::form_urlencoded::parse(&body).into_owned().collect();
+                    axum::Json(
+                        pages
+                            .lock()
+                            .unwrap()
+                            .get(&form["ResponseID"])
+                            .cloned()
+                            .unwrap_or(empty.clone()),
+                    )
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, gateway).await.unwrap() });
+    let config = provider_config(a, p, "claim_md", &format!("{base}/services/upload/"), &base);
+    (config, server, base)
+}
+
+fn claimmd_page(claims: Vec<Value>) -> Value {
+    let last = claims
+        .iter()
+        .flat_map(|claim| {
+            claim["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|message| message["responseid"].as_i64().unwrap())
+        })
+        .max()
+        .unwrap_or(0);
+    json!({"last_responseid":last.to_string(),"claim":claims})
+}
+
+fn claimmd_status_claim(
+    control: &Value,
+    response_id: i64,
+    status: &str,
+    sender: &str,
+    icn: &str,
+) -> Value {
+    json!({"claimid":control,"claimmd_id":"902000001","pcn":control,"bill_npi":"1234567893","bill_taxid":"000000001","ins_number":"SYNTHETIC-POLICY-01","payerid":"SYN-ONLY","senderid":sender,"sender_name":if sender=="CLMMD"{"CLAIM.MD"}else{"SYN PAYER"},"sender_icn":icn,"status":status,"total_charge":"125.50","fdos":"2026-10-01","fileid":"","messages":[{"responseid":response_id,"status":status,"mesgid":if status=="R"{"ERPR1"}else{"ACK"},"message":format!("synthetic {sender} {status} response")}]})
+}
+
+async fn delivered_claimmd_claim(r: &Router, a: &Actor) -> (Value, Value, Value, Value) {
+    let (c, p, out) = automated_fixture(r, a).await;
+    let mut receipt: Value =
+        serde_json::from_str(include_str!("fixtures/claimmd/rejected-upload.json")).unwrap();
+    for key in ["pcn", "claimid", "remote_claimid"] {
+        receipt["claim"][0][key] = c["control_number"].clone();
+    }
+    receipt["claim"][0]["status"] = json!("A");
+    receipt["claim"][0]["messages"] = json!([]);
+    (c, p, out, receipt)
+}
+
+async fn claimmd_outcome(r: &Router, a: &Actor, claim: &Value) -> Value {
+    let cp = format!("/api/v1/billing/claims/{}", claim["id"].as_str().unwrap());
+    let (_, detail) = schedule_call(r, a, "GET", &cp, Value::Null, None).await;
+    json!({
+        "claim_status":detail["claim"]["status"],
+        "payer_control_number":detail["claim"]["payer_control_number"],
+        "technical_status":detail["tracking"]["submissions"][0]["technical_status"],
+        "payer_outcome":detail["tracking"]["submissions"][0]["payer_outcome"],
+    })
+}
+
+// (entry count, entry net, account total, account version) — the whole ledger picture.
+async fn claimmd_ledger(db: &PgPool, a: &Actor, claim: &Value) -> (i64, i64, i64, i64) {
+    let entry = claim["account_id"]
+        .as_str()
+        .unwrap()
+        .parse::<Uuid>()
+        .unwrap();
+    let (count, net): (i64, i64) = sqlx::query_as(
+        "SELECT count(*),coalesce(sum(effect_cents),0)::bigint FROM billing_entries WHERE tenant_id=$1 AND account_id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(entry)
+    .fetch_one(db)
+    .await
+    .unwrap();
+    let account: (i64, i64) = sqlx::query_as(
+        "SELECT total_cents,version FROM billing_accounts WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(entry)
+    .fetch_one(db)
+    .await
+    .unwrap();
+    (count, net, account.0, account.1)
+}
+
+async fn claimmd_payments(db: &PgPool, a: &Actor) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM billing_entries WHERE tenant_id=$1 AND kind='payment'")
+        .bind(a.tenant_id)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn claimmd_clearinghouse_acknowledgement_leaves_the_claim_submitted() {
+    let (r, db, a, _) = setup().await;
+    let (c, p, out, receipt) = delivered_claimmd_claim(&r, &a).await;
+    let control = c["control_number"].clone();
+    let (config, server, _base) = claimmd_feed(
+        &a,
+        &p,
+        ClaimMdFeed {
+            receipt,
+            pages: [
+                (
+                    "0".into(),
+                    claimmd_page(vec![claimmd_status_claim(&control, 1, "A", "CLMMD", "")]),
+                ),
+                ("1".into(), json!({})),
+            ]
+            .into_iter()
+            .collect(),
+            empty: json!({}),
+        },
+    )
+    .await;
+    let ledger = claimmd_ledger(&db, &a, &c).await;
+    queue_provider(&r, &a, &out).await;
+    assert!(suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap());
+    assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap());
+    let outcome = claimmd_outcome(&r, &a, &c).await;
+    assert_eq!(outcome["claim_status"], "submitted");
+    assert_eq!(outcome["payer_outcome"], "pending");
+    assert_eq!(outcome["payer_control_number"], "");
+    assert_eq!(
+        claimmd_ledger(&db, &a, &c).await,
+        ledger,
+        "status responses cannot change the ledger"
+    );
+    assert_eq!(
+        claimmd_payments(&db, &a).await,
+        0,
+        "provider status never posts a payment"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn claimmd_payer_acceptance_sets_the_claim_accepted_without_posting_payment() {
+    let (r, db, a, _) = setup().await;
+    let (c, p, out, receipt) = delivered_claimmd_claim(&r, &a).await;
+    let control = c["control_number"].clone();
+    let (config, server, _base) = claimmd_feed(
+        &a,
+        &p,
+        ClaimMdFeed {
+            receipt,
+            pages: [
+                (
+                    "0".into(),
+                    claimmd_page(vec![claimmd_status_claim(
+                        &control, 1, "A", "SYNPAYER", "PAYER123",
+                    )]),
+                ),
+                ("1".into(), json!({})),
+            ]
+            .into_iter()
+            .collect(),
+            empty: json!({}),
+        },
+    )
+    .await;
+    let ledger = claimmd_ledger(&db, &a, &c).await;
+    queue_provider(&r, &a, &out).await;
+    assert!(suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap());
+    assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap());
+    let outcome = claimmd_outcome(&r, &a, &c).await;
+    assert_eq!(outcome["claim_status"], "accepted");
+    assert_eq!(outcome["payer_control_number"], "PAYER123");
+    assert_eq!(outcome["payer_outcome"], "accepted");
+    assert_eq!(
+        claimmd_ledger(&db, &a, &c).await,
+        ledger,
+        "status responses cannot change the ledger"
+    );
+    assert_eq!(
+        claimmd_payments(&db, &a).await,
+        0,
+        "provider status never posts a payment"
+    );
+    let revisions: i64 = sqlx::query_scalar("SELECT count(*) FROM claim_revisions WHERE tenant_id=$1 AND evidence->>'event'='claimmd_payer_acceptance' AND evidence->>'payer_control_number'='PAYER123'")
+        .bind(a.tenant_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(revisions, 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn claimmd_clearinghouse_rejection_sets_the_claim_rejected() {
+    let (r, db, a, _) = setup().await;
+    let (c, p, out, receipt) = delivered_claimmd_claim(&r, &a).await;
+    let control = c["control_number"].clone();
+    let (config, server, _base) = claimmd_feed(
+        &a,
+        &p,
+        ClaimMdFeed {
+            receipt,
+            pages: [
+                (
+                    "0".into(),
+                    claimmd_page(vec![claimmd_status_claim(&control, 1, "R", "CLMMD", "")]),
+                ),
+                ("1".into(), json!({})),
+            ]
+            .into_iter()
+            .collect(),
+            empty: json!({}),
+        },
+    )
+    .await;
+    let ledger = claimmd_ledger(&db, &a, &c).await;
+    queue_provider(&r, &a, &out).await;
+    assert!(suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap());
+    assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap());
+    let outcome = claimmd_outcome(&r, &a, &c).await;
+    assert_eq!(outcome["claim_status"], "rejected");
+    assert_eq!(outcome["technical_status"], "rejected");
+    assert_eq!(outcome["payer_outcome"], "pending");
+    assert_eq!(
+        claimmd_ledger(&db, &a, &c).await,
+        ledger,
+        "status responses cannot change the ledger"
+    );
+    assert_eq!(
+        claimmd_payments(&db, &a).await,
+        0,
+        "provider status never posts a payment"
+    );
+    let revisions: Vec<Value> = sqlx::query_scalar("SELECT evidence FROM claim_revisions WHERE tenant_id=$1 AND evidence->>'event'='claimmd_rejection'")
+        .bind(a.tenant_id)
+        .fetch_all(&db)
+        .await
+        .unwrap();
+    assert_eq!(revisions.len(), 1);
+    assert_eq!(revisions[0]["sender_id"], "CLMMD");
+    assert_eq!(revisions[0]["evidence_origin"], "claimmd_status_feed");
+    assert_eq!(
+        revisions[0]["message"], "synthetic CLMMD R response",
+        "the rejection revision keeps the provider message text"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn claimmd_message_level_rejection_sets_the_claim_rejected() {
+    let (r, db, a, _) = setup().await;
+    let (c, p, out, receipt) = delivered_claimmd_claim(&r, &a).await;
+    let control = c["control_number"].clone();
+    // The claim line still says A; only the message carries the rejection.
+    let mut response = claimmd_status_claim(&control, 1, "A", "CLMMD", "");
+    response["messages"][0]["status"] = json!("R");
+    response["messages"][0]["mesgid"] = json!("ERPR1");
+    response["messages"][0]["message"] = json!("Synthetic message level rejection");
+    let (config, server, _base) = claimmd_feed(
+        &a,
+        &p,
+        ClaimMdFeed {
+            receipt,
+            pages: [
+                ("0".into(), claimmd_page(vec![response])),
+                ("1".into(), json!({})),
+            ]
+            .into_iter()
+            .collect(),
+            empty: json!({}),
+        },
+    )
+    .await;
+    let ledger = claimmd_ledger(&db, &a, &c).await;
+    queue_provider(&r, &a, &out).await;
+    assert!(suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap());
+    assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap());
+    let outcome = claimmd_outcome(&r, &a, &c).await;
+    assert_eq!(
+        outcome["claim_status"], "rejected",
+        "a message level R rejects the claim even when the claim status is A"
+    );
+    assert_eq!(outcome["technical_status"], "rejected");
+    assert_eq!(
+        claimmd_ledger(&db, &a, &c).await,
+        ledger,
+        "status responses cannot change the ledger"
+    );
+    assert_eq!(
+        claimmd_payments(&db, &a).await,
+        0,
+        "provider status never posts a payment"
+    );
+    let revisions: Vec<Value> = sqlx::query_scalar("SELECT evidence FROM claim_revisions WHERE tenant_id=$1 AND evidence->>'event'='claimmd_rejection'")
+        .bind(a.tenant_id)
+        .fetch_all(&db)
+        .await
+        .unwrap();
+    assert_eq!(revisions.len(), 1);
+    assert_eq!(revisions[0]["message"], "Synthetic message level rejection");
+    server.abort();
+}
+
+#[tokio::test]
+async fn claimmd_payer_acceptance_then_later_rejection_ends_rejected() {
+    let (r, db, a, _) = setup().await;
+    let (c, p, out, receipt) = delivered_claimmd_claim(&r, &a).await;
+    let control = c["control_number"].clone();
+    let (config, server, _base) = claimmd_feed(
+        &a,
+        &p,
+        ClaimMdFeed {
+            receipt,
+            pages: [
+                (
+                    "0".into(),
+                    claimmd_page(vec![
+                        claimmd_status_claim(&control, 4, "R", "SYNPAYER", "PAYER123"),
+                        claimmd_status_claim(&control, 2, "A", "SYNPAYER", "PAYER123"),
+                    ]),
+                ),
+                ("4".into(), json!({})),
+            ]
+            .into_iter()
+            .collect(),
+            empty: json!({}),
+        },
+    )
+    .await;
+    let ledger = claimmd_ledger(&db, &a, &c).await;
+    queue_provider(&r, &a, &out).await;
+    assert!(suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap());
+    assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap());
+    let outcome = claimmd_outcome(&r, &a, &c).await;
+    assert_eq!(outcome["claim_status"], "rejected");
+    assert_eq!(outcome["payer_outcome"], "rejected");
+    assert_eq!(outcome["technical_status"], "pending");
+    assert_eq!(outcome["payer_control_number"], "PAYER123");
+    assert_eq!(
+        claimmd_ledger(&db, &a, &c).await,
+        ledger,
+        "status responses cannot change the ledger"
+    );
+    assert_eq!(
+        claimmd_payments(&db, &a).await,
+        0,
+        "provider status never posts a payment"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn claimmd_rejection_is_never_replaced_by_a_later_payer_acceptance() {
+    let (r, db, a, _) = setup().await;
+    let (c, p, out, receipt) = delivered_claimmd_claim(&r, &a).await;
+    let control = c["control_number"].clone();
+    let (config, server, _base) = claimmd_feed(
+        &a,
+        &p,
+        ClaimMdFeed {
+            receipt,
+            pages: [
+                (
+                    "0".into(),
+                    claimmd_page(vec![
+                        claimmd_status_claim(&control, 2, "A", "SYNPAYER", "PAYER123"),
+                        claimmd_status_claim(&control, 4, "R", "SYNPAYER", "PAYER123"),
+                    ]),
+                ),
+                ("4".into(), json!({})),
+            ]
+            .into_iter()
+            .collect(),
+            empty: json!({}),
+        },
+    )
+    .await;
+    let ledger = claimmd_ledger(&db, &a, &c).await;
+    queue_provider(&r, &a, &out).await;
+    assert!(suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap());
+    assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap());
+    let outcome = claimmd_outcome(&r, &a, &c).await;
+    assert_eq!(outcome["claim_status"], "rejected");
+    assert_eq!(outcome["payer_outcome"], "rejected");
+    assert_eq!(
+        claimmd_ledger(&db, &a, &c).await,
+        ledger,
+        "status responses cannot change the ledger"
+    );
+    assert_eq!(
+        claimmd_payments(&db, &a).await,
+        0,
+        "provider status never posts a payment"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn staff_linking_a_rejection_response_rejects_the_claim() {
+    let (r, db, a, _) = setup().await;
+    let (c, p, out, receipt) = delivered_claimmd_claim(&r, &a).await;
+    let control = c["control_number"].clone();
+    let (config, server, base) = claimmd_feed(
+        &a,
+        &p,
+        ClaimMdFeed {
+            receipt,
+            pages: [
+                (
+                    "0".into(),
+                    claimmd_page(vec![claimmd_status_claim(&control, 1, "R", "CLMMD", "")]),
+                ),
+                ("1".into(), json!({})),
+            ]
+            .into_iter()
+            .collect(),
+            empty: json!({}),
+        },
+    )
+    .await;
+    queue_provider(&r, &a, &out).await;
+    assert!(suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap());
+    // The staff path works on an unlinked response, so no automatic attachment runs.
+    let ledger = claimmd_ledger(&db, &a, &c).await;
+    let version: i64 = sqlx::query_scalar("SELECT version FROM edi_submissions WHERE tenant_id=$1")
+        .bind(a.tenant_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    let claim_version: i64 =
+        sqlx::query_scalar("SELECT version FROM ehr_claims WHERE tenant_id=$1")
+            .bind(a.tenant_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let gateway = reqwest::Client::new();
+    let raw = gateway
+        .post(format!("{base}/services/response/"))
+        .header("Accept", "application/json")
+        .form(&[
+            ("AccountKey", "synthetic-loopback-key"),
+            ("ResponseID", "0"),
+        ])
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let evidence = raw["claim"][0].clone();
+    let original = serde_json::to_string(&evidence).unwrap();
+    let report = Uuid::new_v4();
+    sqlx::query("INSERT INTO edi_remote_reports (tenant_id,id,route_key,remote_id,format,metadata,status,original_text,original_hash,parse_summary,last_result) VALUES ($1,$2,'provider-test',$3,'claimmd_status',$4,'retrieved',$5,$6,$7,'original_received')")
+        .bind(a.tenant_id).bind(report).bind(format!("staff-link-{}", report)).bind(json!({"source":"claimmd_response_api","response_id":"1"})).bind(&original).bind(suncharts_engine::oauth::hash(&original)).bind(&evidence).execute(&db).await.unwrap();
+    let path = format!("/api/v1/billing/retrieved-reports/{report}");
+    let (s, v) = schedule_call(
+        &r,
+        &a,
+        "POST",
+        &format!("{path}/actions"),
+        json!({"action":"link_status_evidence","submission_id":out["id"],"submission_version":version,"claim_version":claim_version,"reason":"Reviewed the provider rejection response"}),
+        Some(1),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["clinical_status_changed"], true);
+    assert_eq!(v["claim_status"], "rejected");
+    let outcome = claimmd_outcome(&r, &a, &c).await;
+    assert_eq!(outcome["claim_status"], "rejected");
+    assert_eq!(outcome["technical_status"], "rejected");
+    assert_eq!(
+        claimmd_ledger(&db, &a, &c).await,
+        ledger,
+        "status responses cannot change the ledger"
+    );
+    assert_eq!(
+        claimmd_payments(&db, &a).await,
+        0,
+        "provider status never posts a payment"
+    );
+    server.abort();
+}
+
 #[tokio::test]
 async fn claimmd_processed_rejection_without_file_id_is_delivered_once_and_linked_exactly() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -5717,10 +6264,30 @@ async fn claimmd_processed_rejection_without_file_id_is_delivered_once_and_linke
         .unwrap();
     let cp = format!("/api/v1/billing/claims/{}", claim["id"].as_str().unwrap());
     let (_, detail) = schedule_call(&r, &a, "GET", &cp, Value::Null, None).await;
+    // Processing rejection on the response feed is an exact match, so the claim is
+    // rejected automatically; the upload receipt alone never changed the claim.
     assert_eq!(
-        detail["claim"]["status"], "submitted",
-        "Transport receipt is not payer acceptance or adjudication"
+        detail["claim"]["status"], "rejected",
+        "A matched Claim.MD rejection response sets the claim rejected"
     );
+    assert_eq!(
+        detail["tracking"]["submissions"][0]["technical_status"],
+        "rejected"
+    );
+    assert_eq!(
+        detail["tracking"]["submissions"][0]["payer_outcome"],
+        "pending"
+    );
+    assert_eq!(
+        detail["claim"]["payer_control_number"], "",
+        "A rejection cannot assign a payer control number"
+    );
+    let rejection: i64 = sqlx::query_scalar("SELECT count(*) FROM claim_revisions WHERE tenant_id=$1 AND evidence->>'event'='claimmd_rejection'")
+        .bind(a.tenant_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(rejection, 1);
     assert_eq!(detail["tracking"]["reports"].as_array().unwrap().len(), 1);
     assert_eq!(detail["tracking"]["reports"][0]["evidence"]["status"], "R");
     assert_eq!(

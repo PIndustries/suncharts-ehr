@@ -115,7 +115,13 @@ retains the saved ERAID; when ending a paginated scan, it completes only through
 the highest ERAID already durably received on earlier pages. Missing cursors in
 nonempty or malformed responses remain failures, with prior cursors retained.
 `start_at` remains recorded as an operator review boundary.
-Claim.MD's `status: A` does not automatically mean payer acceptance. Known response
+A status response sets the claim status in three cases. An `A` from the clearinghouse
+sender `CLMMD` only means the clearinghouse received the claim, so the claim stays
+submitted. An `A` from another sender that carries a payer claim number in `sender_icn`
+sets the claim accepted and records that number as the payer control number. Any `R`,
+at the claim or message level, sets the claim rejected. None of these messages posts a
+payment or touches a balance; payments still come from a reviewed remittance.
+Known response
 fields and each message are retained as canonical JSON, not converted to X12 or
 claimed to be a byte-for-byte copy of the complete provider page. Unknown fields
 are excluded. This adapter does not synthesize 277CAs or ERA payments from messages.
@@ -134,7 +140,8 @@ matching frozen control number, billing NPI, tax ID, member, payer, amount and
 service date. Missing or ambiguous matches remain in the response inbox for
 review; imported records are not automatically linked. Reused response IDs with
 changed content fail the poll without advancing its cursor. Attachment appends
-submission history and does not change the claim's adjudication state or ledger.
+submission history and applies the claim status described above; it never changes
+the ledger.
 
 An upload response must identify exactly one claim with its frozen patient control
 number and billing NPI. Numeric file receipts remain supported; if the file ID is
