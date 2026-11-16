@@ -27004,6 +27004,99 @@
         }
       }
     },
+    "/api/v1/previsit/appointments/{appointment_id}/not-needed": {
+      "post": {
+        "operationId": "markIntakeNotNeeded",
+        "summary": "Mark an appointment as needing no intake form",
+        "description": "Owner, clinician or front desk — exactly the roles that may issue the default form. Most patients are follow-ups; this marks their visit so the worklist shows status not_needed instead of not_issued. An optional reason of up to 200 plain-text characters is kept with the mark. Marking an appointment that is already marked changes nothing and still returns 200 with one active mark. The mark and its audit event commit together.",
+        "security": [
+          {
+            "oauth2": [
+              "scheduling.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "appointment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "maxLength": 200
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "appointment_id and status not_needed."
+          },
+          "404": {
+            "description": "Appointment not found in the authenticated tenant."
+          },
+          "409": {
+            "description": "A form has already been sent for this appointment."
+          }
+        }
+      },
+      "delete": {
+        "operationId": "clearIntakeNotNeeded",
+        "summary": "Undo the \"no intake form needed\" mark on an appointment",
+        "description": "Owner, clinician or front desk. Clears the active mark, recording who cleared it and when, and audits the change in the same transaction; the readiness worklist shows status not_issued again. Clearing an appointment with no active mark changes nothing and still returns 200.",
+        "security": [
+          {
+            "oauth2": [
+              "scheduling.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "appointment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "appointment_id and status not_issued."
+          },
+          "404": {
+            "description": "Appointment not found in the authenticated tenant."
+          }
+        }
+      }
+    },
     "/api/v1/appointments/{id}/intake-packet": {
       "post": {
         "summary": "Issue the practice's default intake form for an appointment",

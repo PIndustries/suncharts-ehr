@@ -93,6 +93,10 @@ pub fn router() -> Router<State> {
         .route("/api/v1/previsit/templates", post(save_template))
         .route("/api/v1/previsit/readiness", get(readiness))
         .route(
+            "/api/v1/previsit/appointments/{appointment_id}/not-needed",
+            post(mark_not_needed).delete(clear_not_needed),
+        )
+        .route(
             "/api/v1/patients/{patient}/intake-packets",
             get(patient_packets),
         )
@@ -807,6 +811,28 @@ async fn visit_form_already_answered(
     .fetch_optional(&mut **tx)
     .await?
     .unwrap_or(false))
+}
+
+/// A form and a "no form needed" mark can never both be active on one
+/// appointment: issuing the form clears the mark in the same transaction.
+pub(crate) async fn clear_not_needed_mark(
+    tx: &mut Transaction<'_, Postgres>,
+    actor: &Actor,
+    appointment: Uuid,
+) -> Result<()> {
+    let cleared: Option<Uuid> = sqlx::query_scalar(
+        "UPDATE previsit_intake_not_needed SET cleared_by=$3,cleared_at=now() WHERE tenant_id=$1 AND appointment_id=$2 AND cleared_at IS NULL RETURNING id",
+    )
+    .bind(actor.tenant_id)
+    .bind(appointment)
+    .bind(actor.sub)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if cleared.is_some() {
+        crate::postgres::audit(tx, actor, "previsit.intake_not_needed_cleared", appointment)
+            .await?;
+    }
+    Ok(())
 }
 
 /// Issues the practice's saved default form when an appointment is booked.
@@ -1672,6 +1698,7 @@ async fn issue_packet(
     .await?;
     let (patient, due) = found.ok_or(Error::NotFound)?;
     if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM previsit_intake_packets WHERE tenant_id=$1 AND appointment_id=$2 AND workflow_instance_id IS NULL AND status<>'void')").bind(actor.tenant_id).bind(appointment).fetch_one(&mut *tx).await?{return Err(Error::Conflict("an intake packet already exists for this appointment"));}
+    clear_not_needed_mark(&mut tx, &actor, appointment).await?;
     let (packet, plain, expires) = issue_default(
         &mut tx,
         actor.tenant_id,
@@ -1797,6 +1824,9 @@ async fn send_patient_form(
         )
         .await?;
     }
+    if let Some(appointment) = appointment {
+        clear_not_needed_mark(&mut tx, &actor, appointment).await?;
+    }
     let (packet, plain, expires) = issue_default(
         &mut tx,
         actor.tenant_id,
@@ -1870,11 +1900,129 @@ async fn cancel_packet(
     ))
 }
 
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct NotNeededForm {
+    #[serde(default)]
+    reason: Option<String>,
+}
+/// A form already waiting on this visit wins: the patient has a live link, so
+/// "no form needed" cannot be marked alongside it.
+async fn form_already_sent(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    appointment: Uuid,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM previsit_intake_packets WHERE tenant_id=$1 AND appointment_id=$2 AND status<>'void')",
+    )
+    .bind(tenant)
+    .bind(appointment)
+    .fetch_optional(&mut **tx)
+    .await?
+    .unwrap_or(false))
+}
+/// Marks an appointment as needing no intake form, for the staff who may issue
+/// the default form. Marking twice changes nothing; the mark stays a single row.
+async fn mark_not_needed(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(appointment): Path<Uuid>,
+    Json(input): Json<NotNeededForm>,
+) -> Result<Json<Value>> {
+    staff_write(&actor)?;
+    let reason = match input.reason.as_deref() {
+        Some(reason) => {
+            let reason = reason.trim();
+            if reason.chars().count() > 200 || reason.chars().any(char::is_control) {
+                return Err(Error::Invalid("this note is too long for this field"));
+            }
+            reason.to_owned()
+        }
+        None => String::new(),
+    };
+    let mut tx = db(&state)?.begin().await?;
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM appointments WHERE tenant_id=$1 AND id=$2 FOR SHARE",
+    )
+    .bind(actor.tenant_id)
+    .bind(appointment)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(Error::NotFound)?;
+    if form_already_sent(&mut tx, actor.tenant_id, appointment).await? {
+        return Err(Error::Conflict(
+            "A form has already been sent for this appointment.",
+        ));
+    }
+    let active: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM previsit_intake_not_needed WHERE tenant_id=$1 AND appointment_id=$2 AND cleared_at IS NULL",
+    )
+    .bind(actor.tenant_id)
+    .bind(appointment)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if active.is_none() {
+        sqlx::query("INSERT INTO previsit_intake_not_needed(tenant_id,id,appointment_id,marked_by,reason) VALUES($1,$2,$3,$4,$5)")
+            .bind(actor.tenant_id).bind(Uuid::new_v4()).bind(appointment).bind(actor.sub).bind(&reason)
+            .execute(&mut *tx).await?;
+        crate::postgres::audit(
+            &mut tx,
+            &actor,
+            "previsit.intake_not_needed_marked",
+            appointment,
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(Json(
+        json!({"appointment_id":appointment,"status":"not_needed"}),
+    ))
+}
+/// Undoes the mark, when there is one; anything else leaves the record as it is.
+async fn clear_not_needed(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path(appointment): Path<Uuid>,
+) -> Result<Json<Value>> {
+    staff_write(&actor)?;
+    let mut tx = db(&state)?.begin().await?;
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM appointments WHERE tenant_id=$1 AND id=$2 FOR SHARE",
+    )
+    .bind(actor.tenant_id)
+    .bind(appointment)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(Error::NotFound)?;
+    let cleared: Option<Uuid> = sqlx::query_scalar(
+        "UPDATE previsit_intake_not_needed SET cleared_by=$3,cleared_at=now() WHERE tenant_id=$1 AND appointment_id=$2 AND cleared_at IS NULL RETURNING id",
+    )
+    .bind(actor.tenant_id)
+    .bind(appointment)
+    .bind(actor.sub)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if cleared.is_some() {
+        crate::postgres::audit(
+            &mut tx,
+            &actor,
+            "previsit.intake_not_needed_cleared",
+            appointment,
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(Json(
+        json!({"appointment_id":appointment,"status":"not_issued"}),
+    ))
+}
+
 async fn readiness(actor: Actor, ExtractState(state): ExtractState<State>) -> Result<Json<Value>> {
     actor.staff()?;
     let mut tx = db(&state)?.begin().await?;
     // The worklist is per appointment; a cancelled form leaves it ready for a new one.
-    let rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('packet_id',p.id,'packet_version',p.version,'status',coalesce(p.status,'not_issued'),'due_at',coalesce(p.due_at,a.starts_at),'submitted_at',p.submitted_at,'reviewed_at',p.reviewed_at,'appointment_id',a.id,'starts_at',a.starts_at,'patient_id',pt.id,'patient_name',pt.family_name||', '||pt.given_name,'mrn',pt.mrn,'template_snapshot',p.template_snapshot,'workflow_instance_id',p.workflow_instance_id,'workflow_step_key',p.workflow_step_key,'workflow_definition_version',p.workflow_definition_version,'response',(SELECT response FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1),'attested_name',(SELECT attested_name FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1)) FROM appointments a JOIN patients pt ON pt.tenant_id=a.tenant_id AND pt.id=a.patient_id LEFT JOIN previsit_intake_packets p ON p.tenant_id=a.tenant_id AND p.appointment_id=a.id AND p.status<>'void' WHERE a.tenant_id=$1 AND a.status='booked' AND a.starts_at>now()-interval '1 day' ORDER BY a.starts_at LIMIT 200").bind(actor.tenant_id).fetch_all(&mut *tx).await?;
+    let rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('packet_id',p.id,'packet_version',p.version,'status',case when p.id is null and nn.appointment_id is not null then 'not_needed' else coalesce(p.status,'not_issued') end,'due_at',coalesce(p.due_at,a.starts_at),'submitted_at',p.submitted_at,'reviewed_at',p.reviewed_at,'appointment_id',a.id,'starts_at',a.starts_at,'patient_id',pt.id,'patient_name',pt.family_name||', '||pt.given_name,'mrn',pt.mrn,'template_snapshot',p.template_snapshot,'workflow_instance_id',p.workflow_instance_id,'workflow_step_key',p.workflow_step_key,'workflow_definition_version',p.workflow_definition_version,'response',(SELECT response FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1),'attested_name',(SELECT attested_name FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1)) FROM appointments a JOIN patients pt ON pt.tenant_id=a.tenant_id AND pt.id=a.patient_id LEFT JOIN previsit_intake_packets p ON p.tenant_id=a.tenant_id AND p.appointment_id=a.id AND p.status<>'void' LEFT JOIN previsit_intake_not_needed nn ON nn.tenant_id=a.tenant_id AND nn.appointment_id=a.id AND nn.cleared_at IS NULL WHERE a.tenant_id=$1 AND a.status='booked' AND a.starts_at>now()-interval '1 day' ORDER BY a.starts_at LIMIT 200").bind(actor.tenant_id).fetch_all(&mut *tx).await?;
     crate::postgres::audit(&mut tx, &actor, "previsit.readiness_read", actor.tenant_id).await?;
     tx.commit().await?;
     Ok(Json(json!({"items":rows})))
