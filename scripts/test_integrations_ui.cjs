@@ -82,5 +82,9 @@ context.FormData=FixtureFormData;
   assert.equal(/status-badge">Ready</.test(card),wantReady,`payments card: ${name}`);
   assert.equal(/status-badge">Setup incomplete</.test(card),!wantReady,`payments card: ${name}`);
  }
+ for(const data of ['{}','undefined']){
+  const card=vm.runInContext(`paymentsIntegrationCard(${data})`,context);
+  assert.match(card,/status-badge">Not configured</,`payments card: no setting (${data})`);
+ }
  console.log('PASS instance-local integrations, Claude/Erebine setup, secret-safe model discovery and account check');
 })().catch(error=>{console.error(error);process.exitCode=1;});
