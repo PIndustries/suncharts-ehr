@@ -87,6 +87,16 @@ pub struct Address {
     pub postal_code: String,
 }
 impl Address {
+    /// True when no part of the address was recorded at all. A blank payer
+    /// address is allowed to be omitted from the interchange; a partly filled one
+    /// is not blank and must still validate.
+    pub fn is_blank(&self) -> bool {
+        self.line1.is_empty()
+            && self.line2.is_empty()
+            && self.city.is_empty()
+            && self.state.is_empty()
+            && self.postal_code.is_empty()
+    }
     fn validate(&self) -> Result<()> {
         element(&self.line1, 1, 55)?;
         element(&self.line2, 0, 55)?;
@@ -200,9 +210,13 @@ pub(crate) fn generate(
         &d.billing_address,
         &d.subscriber_address,
         &d.patient_address,
-        &d.payer_address,
     ] {
         a.validate()?;
+    }
+    // The payer address is not required: a completely blank one is skipped, but a
+    // partly filled one is still validated and rejected.
+    if !d.payer_address.is_blank() {
+        d.payer_address.validate()?;
     }
     for s in [
         &d.subscriber_given_name,
@@ -437,7 +451,9 @@ pub(crate) fn generate(
         ]));
     }
     nm(&mut st, "PR", "2", &payer_name, "", "PI", &payer_code);
-    address(&mut st, &d.payer_address);
+    if !d.payer_address.is_blank() {
+        address(&mut st, &d.payer_address);
+    }
     if !self_patient {
         st.push(seg(&["HL", "3", "2", "23", "0"]));
         st.push(seg(&[
@@ -653,8 +669,11 @@ fn secondary_header(
             ))
         }
     };
-    for a in [&d.subscriber_address, &d.payer_address] {
-        a.validate()?;
+    d.subscriber_address.validate()?;
+    // The payer address is not required: a completely blank one is skipped, but a
+    // partly filled one is still validated and rejected.
+    if !d.payer_address.is_blank() {
+        d.payer_address.validate()?;
     }
     let filing = element(&d.filing_indicator, 2, 2)?;
     let group = element(field(policy, "group_number")?, 0, 50)?;
@@ -696,7 +715,9 @@ fn secondary_header(
         "PI",
         &element(field(payer, "payer_code")?, 1, 80)?,
     );
-    address(out, &d.payer_address);
+    if !d.payer_address.is_blank() {
+        address(out, &d.payer_address);
+    }
     out.push(seg(&[
         "REF",
         "F8",
@@ -958,6 +979,36 @@ mod tests {
         assert!(g
             .payload
             .contains("HL*3*2*23*0~PAT*19~NM1*QC*1*SYNTHETIC*QUINN~"));
+    }
+    #[test]
+    fn blank_payer_address_omits_its_n3_n4_while_partly_filled_is_rejected() {
+        let c = claim();
+        let p = partner();
+        let now: DateTime<Utc> = "2026-10-23T12:34:00Z".parse().unwrap();
+        // A completely blank payer address is allowed and writes no address
+        // segments: the payer NM1*PR is immediately followed by the next loop.
+        let mut d = details();
+        d.payer_address = Address {
+            line1: String::new(),
+            line2: String::new(),
+            city: String::new(),
+            state: String::new(),
+            postal_code: String::new(),
+        };
+        let g = generate(&c, &p, &d, None, 44, now).unwrap();
+        let segs: Vec<&str> = g.payload.split('~').filter(|s| !s.is_empty()).collect();
+        let pr = segs
+            .iter()
+            .position(|s| s.starts_with("NM1*PR*"))
+            .expect("payer NM1*PR present");
+        assert!(
+            !segs[pr + 1].starts_with("N3") && !segs[pr + 1].starts_with("N4"),
+            "blank payer address must emit no N3/N4, next segment was {:?}",
+            segs[pr + 1]
+        );
+        // A partly filled payer address (street only) is still rejected.
+        d.payer_address.line1 = "1 Test Way".into();
+        assert!(generate(&c, &p, &d, None, 45, now).is_err());
     }
     #[test]
     fn unsupported_codes_delimiters_consents_and_replacement_controls_are_guarded() {
