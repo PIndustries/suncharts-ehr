@@ -373,6 +373,8 @@ struct Provider {
     display_name: String,
     npi: String,
     specialty: String,
+    #[serde(default)]
+    taxonomy: String,
     active: bool,
     reason: String,
 }
@@ -386,7 +388,23 @@ fn provider_valid(p: &Provider) -> Result<()> {
             "valid provider name, specialty and NPI checksum are required",
         ));
     }
+    if !valid_taxonomy(&p.taxonomy) {
+        return Err(Error::Invalid(
+            "A taxonomy code has 10 letters and numbers.",
+        ));
+    }
     Ok(())
+}
+/// What is kept: surrounding space removed, letters uppercased.
+fn taxonomy_code(raw: &str) -> String {
+    raw.trim().to_ascii_uppercase()
+}
+/// A code is recorded or absent, never anything in between. Absent covers an
+/// omitted key and one sent empty or blank; a code must then be exactly ten
+/// ASCII letters or digits, and half a code is a mistake the owner fixes.
+fn valid_taxonomy(raw: &str) -> bool {
+    let code = taxonomy_code(raw);
+    code.is_empty() || (code.len() == 10 && code.bytes().all(|b| b.is_ascii_alphanumeric()))
 }
 fn valid_npi(n: &str) -> bool {
     if n.len() != 10
@@ -493,17 +511,19 @@ async fn save_provider(
         eligible(&mut tx, &a, p.staff_id).await?;
     }
     let q = if v.is_none() {
-        "INSERT INTO practice_providers(tenant_id,id,display_name,npi,specialty,active) VALUES($1,$2,$3,$4,$5,$6) RETURNING to_jsonb(practice_providers)-'tenant_id'"
+        "INSERT INTO practice_providers(tenant_id,id,display_name,npi,specialty,active,taxonomy) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING to_jsonb(practice_providers)-'tenant_id'"
     } else {
-        "UPDATE practice_providers SET display_name=$3,npi=$4,specialty=$5,active=$6,version=version+1 WHERE tenant_id=$1 AND id=$2 AND version=$7 RETURNING to_jsonb(practice_providers)-'tenant_id'"
+        "UPDATE practice_providers SET display_name=$3,npi=$4,specialty=$5,active=$6,taxonomy=$7,version=version+1 WHERE tenant_id=$1 AND id=$2 AND version=$8 RETURNING to_jsonb(practice_providers)-'tenant_id'"
     };
+    let taxonomy = taxonomy_code(&p.taxonomy);
     let mut query = sqlx::query_scalar::<_, Value>(q)
         .bind(a.tenant_id)
         .bind(p.staff_id)
         .bind(p.display_name.trim())
         .bind(p.npi)
         .bind(p.specialty.trim())
-        .bind(p.active);
+        .bind(p.active)
+        .bind(&taxonomy);
     if let Some(v) = v {
         query = query.bind(v)
     }
@@ -531,9 +551,79 @@ async fn save_provider(
 struct Facility {
     name: String,
     address: String,
+    #[serde(default)]
+    address_line1: String,
+    #[serde(default)]
+    address_line2: String,
+    #[serde(default)]
+    city: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    postal_code: String,
     phone: String,
     active: bool,
     reason: String,
+}
+struct StreetAddress {
+    line1: String,
+    line2: String,
+    city: String,
+    state: String,
+    postal: String,
+}
+impl StreetAddress {
+    /// The one line a claim and a printed label need, built here from the parts
+    /// the owner recorded rather than from anything the client sent as address.
+    fn line(&self) -> String {
+        let zip = match self.postal.len() {
+            9 => format!("{}-{}", &self.postal[..5], &self.postal[5..]),
+            _ => self.postal.clone(),
+        };
+        if self.line2.is_empty() {
+            format!("{}, {}, {} {}", self.line1, self.city, self.state, zip)
+        } else {
+            format!(
+                "{}, {}, {}, {} {}",
+                self.line1, self.line2, self.city, self.state, zip
+            )
+        }
+    }
+}
+/// Parts are trimmed, the state uppercased and a ZIP hyphen removed. When no
+/// part is given the free-text address is kept exactly as it was sent and
+/// nothing is checked beyond its own bound. Once any part is given the address
+/// is a street address: its required parts are checked and the free-text column
+/// becomes whatever the server builds from them.
+fn street_address(p: &Facility) -> Result<Option<StreetAddress>> {
+    let parts = StreetAddress {
+        line1: p.address_line1.trim().to_string(),
+        line2: p.address_line2.trim().to_string(),
+        city: p.city.trim().to_string(),
+        state: p.state.trim().to_ascii_uppercase(),
+        postal: p.postal_code.trim().replace('-', ""),
+    };
+    if parts.line1.is_empty()
+        && parts.line2.is_empty()
+        && parts.city.is_empty()
+        && parts.state.is_empty()
+        && parts.postal.is_empty()
+    {
+        return Ok(None);
+    }
+    let valid = text(&parts.line1, 1, 55)
+        && text(&parts.line2, 0, 55)
+        && text(&parts.city, 1, 30)
+        && parts.state.len() == 2
+        && parts.state.bytes().all(|b| b.is_ascii_uppercase())
+        && (parts.postal.len() == 5 || parts.postal.len() == 9)
+        && parts.postal.bytes().all(|b| b.is_ascii_digit());
+    if !valid {
+        return Err(Error::Invalid(
+            "Enter the street, city, state and ZIP code.",
+        ));
+    }
+    Ok(Some(parts))
 }
 async fn create_facility(
     ExtractState(s): ExtractState<State>,
@@ -563,6 +653,21 @@ async fn save_facility(
             "valid facility name, address and phone are required",
         ));
     }
+    let street = street_address(&p)?;
+    let address = match &street {
+        Some(street) => street.line(),
+        None => p.address.trim().to_string(),
+    };
+    let (line1, line2, city, state, postal) = match &street {
+        Some(street) => (
+            street.line1.as_str(),
+            street.line2.as_str(),
+            street.city.as_str(),
+            street.state.as_str(),
+            street.postal.as_str(),
+        ),
+        None => ("", "", "", "", ""),
+    };
     let v = if id.is_some() {
         Some(version(&h)?)
     } else {
@@ -595,17 +700,22 @@ async fn save_facility(
         }
     }
     let q = if v.is_none() {
-        "INSERT INTO practice_facilities(tenant_id,id,name,address,phone,active) VALUES($1,$2,$3,$4,$5,$6) RETURNING to_jsonb(practice_facilities)-'tenant_id'"
+        "INSERT INTO practice_facilities(tenant_id,id,name,address,phone,active,address_line1,address_line2,city,state,postal_code) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING to_jsonb(practice_facilities)-'tenant_id'"
     } else {
-        "UPDATE practice_facilities SET name=$3,address=$4,phone=$5,active=$6,version=version+1 WHERE tenant_id=$1 AND id=$2 AND version=$7 RETURNING to_jsonb(practice_facilities)-'tenant_id'"
+        "UPDATE practice_facilities SET name=$3,address=$4,phone=$5,active=$6,address_line1=$7,address_line2=$8,city=$9,state=$10,postal_code=$11,version=version+1 WHERE tenant_id=$1 AND id=$2 AND version=$12 RETURNING to_jsonb(practice_facilities)-'tenant_id'"
     };
     let mut query = sqlx::query_scalar::<_, Value>(q)
         .bind(a.tenant_id)
         .bind(id)
         .bind(p.name.trim())
-        .bind(p.address.trim())
+        .bind(address)
         .bind(p.phone.trim())
-        .bind(p.active);
+        .bind(p.active)
+        .bind(line1)
+        .bind(line2)
+        .bind(city)
+        .bind(state)
+        .bind(postal);
     if let Some(v) = v {
         query = query.bind(v)
     }
@@ -772,5 +882,48 @@ mod tests {
         assert!(role("nurse"));
         assert!(role("medical_assistant"));
         assert!(!role("patient"));
+    }
+    #[test]
+    fn taxonomy_is_trimmed_uppercased_and_counted() {
+        assert_eq!(taxonomy_code("  207r00000x "), "207R00000X");
+        assert!(valid_taxonomy("  207r00000x "));
+        assert!(valid_taxonomy(""));
+        // Blank, in any amount, is the same as never sending the key.
+        assert!(valid_taxonomy("   "));
+        assert!(!valid_taxonomy("207R0000X"));
+        assert!(!valid_taxonomy("207R00000XX"));
+        assert!(!valid_taxonomy("207R00000-"));
+    }
+    #[test]
+    fn a_full_street_address_builds_one_line_and_empty_parts_are_left_alone() {
+        let parts = StreetAddress {
+            line1: "10 Test Way".into(),
+            line2: String::new(),
+            city: "Springfield".into(),
+            state: "IL".into(),
+            postal: "627041234".into(),
+        };
+        assert_eq!(parts.line(), "10 Test Way, Springfield, IL 62704-1234");
+        let suite = StreetAddress {
+            line1: "10 Test Way".into(),
+            line2: "Suite 9".into(),
+            city: "Springfield".into(),
+            state: "IL".into(),
+            postal: "62704".into(),
+        };
+        assert_eq!(suite.line(), "10 Test Way, Suite 9, Springfield, IL 62704");
+        let facility = Facility {
+            name: "Synthetic Clinic".into(),
+            address: "10 Test St".into(),
+            address_line1: String::new(),
+            address_line2: String::new(),
+            city: String::new(),
+            state: String::new(),
+            postal_code: String::new(),
+            phone: String::new(),
+            active: true,
+            reason: "Synthetic".into(),
+        };
+        assert!(street_address(&facility).unwrap().is_none());
     }
 }

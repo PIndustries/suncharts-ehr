@@ -39,7 +39,7 @@ function renderPracticeWorkspace(){
  $('practice-home').outerHTML=`<section id="practice-home" class="practice-home">
  <div class="practice-commandbar"><div><h2>${esc(dateLabel)}</h2><p class="muted" title="Times shown in ${esc(tz)}">All providers · Updated ${esc(practiceTime(loadedAt))}</p></div><div class="actions">${practiceAction('refresh','Refresh')}${practiceAction('patients','Find patient')}${practiceAction('schedule','Open schedule',true)}</div></div>
  <section class="practice-journey-shell" aria-labelledby="practice-journey-heading"><div class="practice-journey-heading"><h3 id="practice-journey-heading">Where patients are today</h3></div><nav class="practice-journey" aria-label="Patient journey">
- ${practiceJourneyStep(1,'intake','Intake','New requests and forms',Array.isArray(previsit?.items)?previsit.items.length:null)}
+ ${practiceJourneyStep(1,'intake','Intake','New requests and forms',Array.isArray(previsit?.items)?previsit.items.filter(item=>['not_issued','submitted'].includes(item.status)).length:null)}
  ${practiceJourneyStep(2,'schedule','Ready','Scheduled and preparing',schedule?appointments.length:null,'active')}
  ${practiceJourneyStep(3,'patients','Visit','Arrivals and open visits',unfinished?unfinished.total:null)}
  ${practiceJourneyStep(4,'patients','Checkout','Instructions, charges and handoff',unfinished?unfinished.items.filter(item=>item.note_saved).length:null)}

@@ -50,7 +50,29 @@ fn money(cents: i64) -> Result<String> {
     }
     Ok(format!("{}.{:02}", cents / 100, cents % 100))
 }
-fn address(target: &mut serde_json::Map<String, Value>, prefix: &str, value: &Value) -> Result<()> {
+fn address(
+    target: &mut serde_json::Map<String, Value>,
+    prefix: &str,
+    value: &Value,
+    optional_when_blank: bool,
+) -> Result<()> {
+    // Claim.MD marks the payer street, city, state and ZIP as not required. A
+    // payer address with nothing recorded writes no fields at all. A partly
+    // filled one is still an incomplete address. Every other party (bill, pat,
+    // ins) stays strictly required.
+    if optional_when_blank
+        && [
+            value["line1"].as_str(),
+            value["line2"].as_str(),
+            value["city"].as_str(),
+            value["state"].as_str(),
+            value["postal_code"].as_str(),
+        ]
+        .into_iter()
+        .all(|part| part.unwrap_or_default().is_empty())
+    {
+        return Ok(());
+    }
     for (source, suffix) in [
         ("line1", "addr_1"),
         ("line2", "addr_2"),
@@ -148,10 +170,10 @@ fn professional_json(out: &Submission) -> Result<Value> {
             native.insert(target.into(), json!(sex));
         }
     }
-    address(&mut native, "bill", &details["billing_address"])?;
-    address(&mut native, "pat", &details["patient_address"])?;
-    address(&mut native, "ins", &details["subscriber_address"])?;
-    address(&mut native, "payer", &details["payer_address"])?;
+    address(&mut native, "bill", &details["billing_address"], false)?;
+    address(&mut native, "pat", &details["patient_address"], false)?;
+    address(&mut native, "ins", &details["subscriber_address"], false)?;
+    address(&mut native, "payer", &details["payer_address"], true)?;
     if let Some(name) = payer["name"].as_str().filter(|v| !v.is_empty()) {
         native.insert("payer_name".into(), json!(name));
     }
@@ -755,5 +777,53 @@ mod tests {
         out.claim_snapshot["frequency"] = json!("original");
         out.details["billing_address"]["city"] = json!("");
         assert!(preflight(&out).is_err());
+    }
+
+    #[test]
+    fn blank_payer_address_omits_payer_addr_fields_but_keeps_payer_identity() {
+        // Claim.MD marks payer_addr_1/city/state/zip as not required. With nothing
+        // recorded, none of those keys are emitted; the payer name and payerid stay.
+        let mut out = submission();
+        out.details["payer_address"] =
+            json!({"line1":"","line2":"","city":"","state":"","postal_code":""});
+        let claim = &professional_json(&out).unwrap()["claim"][0];
+        for key in [
+            "payer_addr_1",
+            "payer_addr_2",
+            "payer_city",
+            "payer_state",
+            "payer_zip",
+        ] {
+            assert!(claim.get(key).is_none(), "{key} must be absent: {claim}");
+        }
+        assert_eq!(claim["payer_name"], "Synthetic Payer");
+        assert_eq!(claim["payerid"], "SYN-payer");
+        // A fully recorded payer address still writes its keys.
+        let filled = professional_json(&submission()).unwrap();
+        assert_eq!(filled["claim"][0]["payer_addr_1"], "1 Test Way");
+        assert_eq!(filled["claim"][0]["payer_city"], "Chicago");
+    }
+
+    #[test]
+    fn partly_filled_payer_address_is_rejected() {
+        // Only line1 present; city/state/ZIP are still required once anything is given.
+        let mut out = submission();
+        out.details["payer_address"] =
+            json!({"line1":"1 Test Way","line2":"","city":"","state":"","postal_code":""});
+        assert!(professional_json(&out).is_err());
+        assert!(preflight(&out).is_err());
+    }
+
+    #[test]
+    fn blank_address_is_still_required_for_bill_pat_and_ins() {
+        let blank = json!({"line1":"","line2":"","city":"","state":"","postal_code":""});
+        for party in ["billing_address", "patient_address", "subscriber_address"] {
+            let mut out = submission();
+            out.details[party] = blank.clone();
+            assert!(
+                professional_json(&out).is_err(),
+                "{party} must stay strictly required"
+            );
+        }
     }
 }

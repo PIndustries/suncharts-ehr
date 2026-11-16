@@ -27004,6 +27004,99 @@
         }
       }
     },
+    "/api/v1/previsit/appointments/{appointment_id}/not-needed": {
+      "post": {
+        "operationId": "markIntakeNotNeeded",
+        "summary": "Mark an appointment as needing no intake form",
+        "description": "Owner, clinician or front desk — exactly the roles that may issue the default form. Most patients are follow-ups; this marks their visit so the worklist shows status not_needed instead of not_issued. An optional reason of up to 200 plain-text characters is kept with the mark. Marking an appointment that is already marked changes nothing and still returns 200 with one active mark. The mark and its audit event commit together.",
+        "security": [
+          {
+            "oauth2": [
+              "scheduling.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "appointment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "maxLength": 200
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "appointment_id and status not_needed."
+          },
+          "404": {
+            "description": "Appointment not found in the authenticated tenant."
+          },
+          "409": {
+            "description": "A form has already been sent for this appointment."
+          }
+        }
+      },
+      "delete": {
+        "operationId": "clearIntakeNotNeeded",
+        "summary": "Undo the \"no intake form needed\" mark on an appointment",
+        "description": "Owner, clinician or front desk. Clears the active mark, recording who cleared it and when, and audits the change in the same transaction; the readiness worklist shows status not_issued again. Clearing an appointment with no active mark changes nothing and still returns 200.",
+        "security": [
+          {
+            "oauth2": [
+              "scheduling.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "appointment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "appointment_id and status not_issued."
+          },
+          "404": {
+            "description": "Appointment not found in the authenticated tenant."
+          }
+        }
+      }
+    },
     "/api/v1/appointments/{id}/intake-packet": {
       "post": {
         "summary": "Issue the practice's default intake form for an appointment",
@@ -48461,6 +48554,11 @@
             "type": "string",
             "maxLength": 200
           },
+          "taxonomy": {
+            "type": "string",
+            "pattern": "^([0-9A-Z]{10})?$",
+            "description": "Optional provider taxonomy code: exactly ten letters or digits. Surrounding space is removed and letters are uppercased before saving. Omitted or empty means not recorded, and the same field is returned."
+          },
           "active": {
             "type": "boolean"
           },
@@ -48477,7 +48575,8 @@
           "specialty",
           "active",
           "reason"
-        ]
+        ],
+        "description": "Owner-only directory write with attributed history; every part is returned, so a saved provider taxonomy and facility street address can fill a claim later."
       },
       "PracticeFacilityChange": {
         "type": "object",
@@ -48491,6 +48590,31 @@
           "address": {
             "type": "string",
             "maxLength": 1000
+          },
+          "address_line1": {
+            "type": "string",
+            "maxLength": 55,
+            "description": "Optional structured street line for claim and label use. Omitted or empty throughout leaves the free-text address exactly as sent and stores empty parts. Once any part is given, address is ignored and rebuilt by the server from the parts; address_line1, city, state and postal_code are then required."
+          },
+          "address_line2": {
+            "type": "string",
+            "maxLength": 55,
+            "description": "Optional suite or floor line. Left out of the address the server builds when empty."
+          },
+          "city": {
+            "type": "string",
+            "maxLength": 30,
+            "description": "Optional structured city."
+          },
+          "state": {
+            "type": "string",
+            "pattern": "^([A-Z]{2})?$",
+            "description": "Optional structured two-letter state, uppercased before saving."
+          },
+          "postal_code": {
+            "type": "string",
+            "pattern": "^([0-9]{5}([0-9]{4})?)?$",
+            "description": "Optional structured five or nine digit ZIP. A hyphen is removed before saving, so 12345-6789 is kept as 123456789 and printed as 12345-6789 in the built address."
           },
           "phone": {
             "type": "string",
@@ -48511,7 +48635,8 @@
           "phone",
           "active",
           "reason"
-        ]
+        ],
+        "description": "Owner-only directory write with attributed history; every part is returned, so a saved provider taxonomy and facility street address can fill a claim later."
       },
       "PracticeRoomChange": {
         "type": "object",

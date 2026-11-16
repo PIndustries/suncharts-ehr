@@ -7,7 +7,8 @@ use axum::{
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use sqlx::{postgres::PgPoolOptions, PgPool};
+use sqlx::{migrate::Migrator, postgres::PgPoolOptions, PgPool};
+use std::borrow::Cow;
 use std::sync::Arc;
 use suncharts_engine::{browser::BrowserAuth, postgres::PostgresBackend, State};
 use tower::ServiceExt;
@@ -950,4 +951,515 @@ async fn booking_rechecks_provider_after_waiting_for_the_schedule_lock() {
     assert_eq!(count, 0);
     waiter.close().await;
     cleanup(f).await;
+}
+#[tokio::test]
+async fn provider_taxonomy_is_saved_uppercase_and_returned() {
+    let f = setup().await;
+    let profile = json!({"staff_id":f.owner,"display_name":"Synthetic Doctor","npi":"","specialty":"","taxonomy":"  207r00000x ","active":true,"reason":"Setup"});
+    let (status, created) = call(
+        &f.app,
+        &f.cookie,
+        "POST",
+        "/api/v1/practice/providers",
+        profile.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["taxonomy"], "207R00000X");
+    let stored: String =
+        sqlx::query_scalar("SELECT taxonomy FROM practice_providers WHERE tenant_id=$1 AND id=$2")
+            .bind(f.tenant)
+            .bind(f.owner)
+            .fetch_one(&f.db)
+            .await
+            .unwrap();
+    assert_eq!(stored, "207R00000X");
+    let (_, history) = call(
+        &f.app,
+        &f.cookie,
+        "GET",
+        &format!("/api/v1/practice/admin-history/provider/{}", f.owner),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(history["items"][0]["content"]["taxonomy"], "207R00000X");
+    let mut listed = profile.clone();
+    listed["taxonomy"] = json!("174F00000X");
+    let (status, updated) = call(
+        &f.app,
+        &f.cookie,
+        "PUT",
+        &format!("/api/v1/practice/providers/{}", f.owner),
+        listed,
+        Some(1),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["taxonomy"], "174F00000X");
+    let (_, directory) = call(
+        &f.app,
+        &f.cookie,
+        "GET",
+        "/api/v1/practice/providers",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(
+        directory["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == f.owner.to_string())
+            .unwrap()["taxonomy"],
+        "174F00000X"
+    );
+    cleanup(f).await;
+}
+#[tokio::test]
+async fn an_invalid_provider_taxonomy_is_rejected() {
+    let f = setup().await;
+    for taxonomy in ["207R0000X", "207R00000XX", "207R00000-", "not-a-taxonomy"] {
+        let profile = json!({"staff_id":f.owner,"display_name":"Synthetic Doctor","npi":"","specialty":"","taxonomy":taxonomy,"active":true,"reason":"Setup"});
+        let (status, body) = call(
+            &f.app,
+            &f.cookie,
+            "POST",
+            "/api/v1/practice/providers",
+            profile,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{taxonomy}: {body}");
+        assert!(
+            body.to_string()
+                .contains("A taxonomy code has 10 letters and numbers."),
+            "{body}"
+        );
+    }
+    // Blank is the same as never sending the key, so it is accepted and stored
+    // as no code; a half-sent code is not.
+    let blank = json!({"staff_id":f.owner,"display_name":"Synthetic Doctor","npi":"","specialty":"","taxonomy":"   ","active":true,"reason":"Setup"});
+    let (status, created) = call(
+        &f.app,
+        &f.cookie,
+        "POST",
+        "/api/v1/practice/providers",
+        blank,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["taxonomy"], "");
+    cleanup(f).await;
+}
+#[tokio::test]
+async fn a_provider_saved_without_the_taxonomy_key_keeps_the_code_empty() {
+    let f = setup().await;
+    let profile = json!({"staff_id":f.owner,"display_name":"Synthetic Doctor","npi":"","specialty":"","active":true,"reason":"Setup"});
+    assert!(profile.get("taxonomy").is_none());
+    let (status, created) = call(
+        &f.app,
+        &f.cookie,
+        "POST",
+        "/api/v1/practice/providers",
+        profile.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["taxonomy"], "");
+    let mut cleared = profile;
+    cleared["taxonomy"] = json!("207R00000X");
+    assert_eq!(
+        call(
+            &f.app,
+            &f.cookie,
+            "PUT",
+            &format!("/api/v1/practice/providers/{}", f.owner),
+            cleared,
+            Some(1)
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    cleanup(f).await;
+}
+#[tokio::test]
+async fn a_facility_address_saved_as_parts_returns_the_parts_and_the_joined_line() {
+    let f = setup().await;
+    let facility = json!({"name":"Parted Clinic","address":"whatever the screen sent","address_line1":" 10 Test Way ","address_line2":" Suite 9 ","city":" Springfield ","state":"il","postal_code":"62704-1234","phone":"5550100","active":true,"reason":"Setup"});
+    let (status, created) = call(
+        &f.app,
+        &f.cookie,
+        "POST",
+        "/api/v1/practice/facilities",
+        facility.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["address_line1"], "10 Test Way");
+    assert_eq!(created["address_line2"], "Suite 9");
+    assert_eq!(created["city"], "Springfield");
+    assert_eq!(created["state"], "IL");
+    assert_eq!(created["postal_code"], "627041234");
+    assert_eq!(
+        created["address"],
+        "10 Test Way, Suite 9, Springfield, IL 62704-1234"
+    );
+    let mut no_suite = facility;
+    no_suite["name"] = json!("Parted Clinic Two");
+    no_suite["address_line2"] = json!("");
+    let (_, second) = call(
+        &f.app,
+        &f.cookie,
+        "POST",
+        "/api/v1/practice/facilities",
+        no_suite,
+        None,
+    )
+    .await;
+    assert_eq!(second["address"], "10 Test Way, Springfield, IL 62704-1234");
+    let fid = created["id"].as_str().unwrap();
+    let mut moved = json!({"name":"Parted Clinic","address":"","address_line1":"22 Other Way","city":"Springfield","state":"IL","postal_code":"62704","phone":"","active":true,"reason":"Moved"});
+    let (status, updated) = call(
+        &f.app,
+        &f.cookie,
+        "PUT",
+        &format!("/api/v1/practice/facilities/{fid}"),
+        moved.clone(),
+        Some(1),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["address"], "22 Other Way, Springfield, IL 62704");
+    assert_eq!(updated["address_line2"], "");
+    // Saving the same parts again with the old free-text form ignored keeps the
+    // parts authoritative: the stored line is still built by the server.
+    moved["address"] = json!("10 Test St");
+    let (_, again) = call(
+        &f.app,
+        &f.cookie,
+        "PUT",
+        &format!("/api/v1/practice/facilities/{fid}"),
+        moved,
+        Some(2),
+    )
+    .await;
+    assert_eq!(again["address"], "22 Other Way, Springfield, IL 62704");
+    cleanup(f).await;
+}
+#[tokio::test]
+async fn a_partial_facility_address_is_rejected() {
+    let f = setup().await;
+    for parts in [
+        json!({"address_line1":"10 Test Way"}),
+        json!({"address_line1":"10 Test Way","city":"Springfield"}),
+        json!({"address_line1":"10 Test Way","city":"Springfield","state":"IL"}),
+        json!({"address_line1":"10 Test Way","city":"Springfield","postal_code":"62704"}),
+        json!({"city":"Springfield","state":"IL","postal_code":"62704"}),
+        json!({"address_line1":"10 Test Way","city":"Springfield","state":"ILL","postal_code":"62704"}),
+        json!({"address_line1":"10 Test Way","city":"Springfield","state":"IL","postal_code":"6270"}),
+        json!({"address_line1":"10 Test Way","city":"Springfield","state":"IL","postal_code":"62704-12"}),
+        json!({"address_line1":"10 Test Way","state":"IL","postal_code":"62704"}),
+        json!({"address_line2":"Suite 9"}),
+    ] {
+        let mut facility = json!({"name":"Partial Clinic","address":"10 Test St","phone":"","active":true,"reason":"Setup"});
+        for (key, value) in parts.as_object().unwrap() {
+            facility[key] = value.clone();
+        }
+        let (status, body) = call(
+            &f.app,
+            &f.cookie,
+            "POST",
+            "/api/v1/practice/facilities",
+            facility,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{parts}: {body}");
+        assert!(
+            body.to_string()
+                .contains("Enter the street, city, state and ZIP code."),
+            "{parts}: {body}"
+        );
+    }
+    let recorded: i64 = sqlx::query_scalar("SELECT count(*) FROM practice_facilities")
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(recorded, 0);
+    cleanup(f).await;
+}
+#[tokio::test]
+async fn a_facility_saved_with_only_free_text_keeps_empty_parts_and_its_address() {
+    let f = setup().await;
+    let facility = json!({"name":"Legacy Clinic","address":" 10 Test St, Springfield, IL. 62704 ","phone":"5550100","active":true,"reason":"Setup"});
+    let (status, created) = call(
+        &f.app,
+        &f.cookie,
+        "POST",
+        "/api/v1/practice/facilities",
+        facility.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["address"], "10 Test St, Springfield, IL. 62704");
+    for field in [
+        "address_line1",
+        "address_line2",
+        "city",
+        "state",
+        "postal_code",
+    ] {
+        assert_eq!(created[field], "", "{created}");
+    }
+    let fid = created["id"].as_str().unwrap();
+    let mut renamed = facility;
+    renamed["name"] = json!("Legacy Clinic Renamed");
+    let (status, updated) = call(
+        &f.app,
+        &f.cookie,
+        "PUT",
+        &format!("/api/v1/practice/facilities/{fid}"),
+        renamed,
+        Some(1),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["address"], "10 Test St, Springfield, IL. 62704");
+    assert_eq!(updated["address_line1"], "");
+    cleanup(f).await;
+}
+#[tokio::test]
+async fn a_nine_digit_zip_with_a_hyphen_is_stored_as_nine_digits() {
+    let f = setup().await;
+    let facility = json!({"name":"Zipped Clinic","address":"","address_line1":"10 Test Way","city":"Springfield","state":"IL","postal_code":" 62704-1234 ","phone":"","active":true,"reason":"Setup"});
+    let (status, created) = call(
+        &f.app,
+        &f.cookie,
+        "POST",
+        "/api/v1/practice/facilities",
+        facility,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["postal_code"], "627041234");
+    let stored: String = sqlx::query_scalar(
+        "SELECT postal_code FROM practice_facilities WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(f.tenant)
+    .bind(Uuid::parse_str(created["id"].as_str().unwrap()).unwrap())
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(stored, "627041234");
+    assert_eq!(
+        created["address"],
+        "10 Test Way, Springfield, IL 62704-1234"
+    );
+    cleanup(f).await;
+}
+#[tokio::test]
+async fn the_claim_identity_migration_backfills_past_addresses_without_rewriting_history() {
+    // tests/migration_smoke.rs runs migrations up to a chosen version through a
+    // filtered Migrator; this does the same to reach 0108 with real rows.
+    let url = std::env::var("TEST_DATABASE_URL").expect("disposable TEST_DATABASE_URL required");
+    let schema = format!("practice_claim_identity_{}", Uuid::new_v4().simple());
+    let base = PgPool::connect(&url).await.unwrap();
+    suncharts_engine::test_db::create_schema(&base, &schema).await;
+    base.close().await;
+    let tenant = Uuid::new_v4();
+    let owner = Uuid::new_v4();
+    let db = PgPoolOptions::new()
+        .max_connections(4)
+        .after_connect({
+            let schema = schema.clone();
+            move |c, _| {
+                let query = format!("SET search_path TO {schema}");
+                Box::pin(async move {
+                    sqlx::query(&query).execute(c).await?;
+                    Ok(())
+                })
+            }
+        })
+        .connect(&url)
+        .await
+        .unwrap();
+    let through_108 = Migrator {
+        migrations: Cow::Owned(
+            suncharts_engine::MIGRATOR
+                .iter()
+                .filter(|migration| migration.version <= 108)
+                .cloned()
+                .collect(),
+        ),
+        ..Migrator::DEFAULT
+    };
+    through_108.run(&db).await.unwrap();
+    sqlx::query("INSERT INTO browser_users(tenant_id,id,email,password_hash,role) VALUES($1,$2,'owner@example.test','synthetic-not-a-login-hash','owner')")
+        .bind(tenant)
+        .bind(owner)
+        .execute(&db)
+        .await
+        .unwrap();
+    let matched = Uuid::new_v4();
+    let hyphen = Uuid::new_v4();
+    let legacy = Uuid::new_v4();
+    let long_street = Uuid::new_v4();
+    let long_city = Uuid::new_v4();
+    for (name, address) in [
+        ("Backfilled Clinic", "10 Test Way, Springfield, IL. 62704"),
+        (
+            "Hyphenated Clinic",
+            "10 Test Way, Suite 9, Springfield, IL 62704-1234",
+        ),
+        ("Legacy Clinic", "10 Test St"),
+        (
+            "Long Street Clinic",
+            "A street line that is definitely more than fifty five characters long, Boston, MA. 02108",
+        ),
+        (
+            "Long City Clinic",
+            "1 Main, a city name far too long to fit inside thirty characters, MA. 02108",
+        ),
+    ] {
+        let id = match name {
+            "Backfilled Clinic" => matched,
+            "Hyphenated Clinic" => hyphen,
+            "Legacy Clinic" => legacy,
+            "Long Street Clinic" => long_street,
+            _ => long_city,
+        };
+        sqlx::query("INSERT INTO practice_facilities(tenant_id,id,name,address) VALUES($1,$2,$3,$4)")
+            .bind(tenant)
+            .bind(id)
+            .bind(name)
+            .bind(address)
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+    // A provider that already exists must also come through the new column with
+    // an empty code, so no historical row can break the taxonomy constraint.
+    sqlx::query("INSERT INTO practice_providers(tenant_id,id,display_name) VALUES($1,$2,'Synthetic Doctor')")
+        .bind(tenant)
+        .bind(owner)
+        .execute(&db)
+        .await
+        .unwrap();
+    let before: Vec<(String, String, i64)> =
+        sqlx::query_as("SELECT id::text,address,version FROM practice_facilities ORDER BY id")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    suncharts_engine::MIGRATOR.run(&db).await.unwrap();
+    let parts: Vec<(String, String, String, String, String, String, String)> = sqlx::query_as(
+        "SELECT id::text,address,address_line1,address_line2,city,state,postal_code FROM practice_facilities ORDER BY id",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    let row = |id: Uuid| {
+        let (stored, address, line1, line2, city, state, postal) = parts
+            .iter()
+            .find(|(stored, ..)| stored == &id.to_string())
+            .unwrap();
+        (
+            stored.clone(),
+            address.clone(),
+            line1.clone(),
+            line2.clone(),
+            city.clone(),
+            state.clone(),
+            postal.clone(),
+        )
+    };
+    assert_eq!(
+        row(matched),
+        (
+            matched.to_string(),
+            "10 Test Way, Springfield, IL. 62704".to_string(),
+            "10 Test Way".to_string(),
+            String::new(),
+            "Springfield".to_string(),
+            "IL".to_string(),
+            "62704".to_string()
+        )
+    );
+    assert_eq!(
+        row(hyphen),
+        (
+            hyphen.to_string(),
+            "10 Test Way, Suite 9, Springfield, IL 62704-1234".to_string(),
+            "10 Test Way, Suite 9".to_string(),
+            String::new(),
+            "Springfield".to_string(),
+            "IL".to_string(),
+            "627041234".to_string()
+        )
+    );
+    // A row whose free text does not fit the shape, or whose street or city is
+    // too long for its column, is left exactly as it was with empty parts.
+    for untouched in [legacy, long_street, long_city] {
+        let address = before
+            .iter()
+            .find(|(id, _, _)| id == &untouched.to_string())
+            .unwrap()
+            .1
+            .clone();
+        assert_eq!(
+            row(untouched),
+            (
+                untouched.to_string(),
+                address,
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new()
+            )
+        );
+    }
+    // No version moved and no history row was written, so the guards that keep
+    // administration history append-only are never reached by the backfill.
+    let versions: Vec<(String, i64)> =
+        sqlx::query_as("SELECT id::text,version FROM practice_facilities ORDER BY id")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        versions,
+        before
+            .iter()
+            .map(|(id, _, v)| (id.clone(), *v))
+            .collect::<Vec<_>>()
+    );
+    let history: i64 = sqlx::query_scalar("SELECT count(*) FROM practice_admin_history")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(history, 0);
+    // An existing provider keeps its own taxonomy space rather than a stray value.
+    let taxonomy: String =
+        sqlx::query_scalar("SELECT taxonomy FROM practice_providers WHERE tenant_id=$1 AND id=$2")
+            .bind(tenant)
+            .bind(owner)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(taxonomy, "");
+    db.close().await;
+    let base = PgPool::connect(&url).await.unwrap();
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&base)
+        .await
+        .unwrap();
+    base.close().await;
 }

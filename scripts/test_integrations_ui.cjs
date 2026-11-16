@@ -72,5 +72,19 @@ context.FormData=FixtureFormData;
  assert.match(source,/redirect_uri:`\$\{location\.origin\}\$\{callback\}`/);
  assert.match(source,/\/actions`,'POST',\{action\}/);
  assert.doesNotMatch(source,/auth_type:integrationDefinitions|settings,reason/);
+ for(const [name,setting,wantReady]of [
+  ['live account verified',{},true],
+  ['live account with payouts paused',{payouts_enabled:false},false],
+  ['unverified account',{last_test_result:''},false],
+  ['test account',{verified:true,last_test_result:'test_account_verified'},true],
+ ]){
+  const card=vm.runInContext(`paymentsIntegrationCard({setting:{mode:'suncharts_connect',verified:false,details_submitted:true,charges_enabled:true,payouts_enabled:true,last_test_result:'live_connection_verified',...${JSON.stringify(setting)}}})`,context);
+  assert.equal(/status-badge">Ready</.test(card),wantReady,`payments card: ${name}`);
+  assert.equal(/status-badge">Setup incomplete</.test(card),!wantReady,`payments card: ${name}`);
+ }
+ for(const data of ['{}','undefined']){
+  const card=vm.runInContext(`paymentsIntegrationCard(${data})`,context);
+  assert.match(card,/status-badge">Not configured</,`payments card: no setting (${data})`);
+ }
  console.log('PASS instance-local integrations, Claude/Erebine setup, secret-safe model discovery and account check');
 })().catch(error=>{console.error(error);process.exitCode=1;});

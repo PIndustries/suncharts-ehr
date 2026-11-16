@@ -796,14 +796,45 @@ async fn claim_submission_defaults(
     .fetch_optional(&mut **tx)
     .await?;
     let rendering_npi = claim.content["rendering_npi"].as_str().unwrap_or_default();
-    let provider_name: Option<String> = if rendering_npi.is_empty() {
+    let provider: Option<(String, String)> = if rendering_npi.is_empty() {
         None
     } else {
-        sqlx::query_scalar("SELECT display_name FROM practice_providers WHERE tenant_id=$1 AND active AND npi=$2 ORDER BY id LIMIT 1")
-            .bind(a.tenant_id)
-            .bind(rendering_npi)
-            .fetch_optional(&mut **tx)
-            .await?
+        sqlx::query_as(
+            "SELECT display_name, taxonomy FROM practice_providers WHERE tenant_id=$1 AND active AND npi=$2 ORDER BY id LIMIT 1",
+        )
+        .bind(a.tenant_id)
+        .bind(rendering_npi)
+        .fetch_optional(&mut **tx)
+        .await?
+    };
+    let provider_name = provider.as_ref().map(|(name, _)| name.clone());
+    let billing_taxonomy = provider
+        .as_ref()
+        .map(|(_, taxonomy)| taxonomy.clone())
+        .unwrap_or_default();
+    // The billing street address is prefilled only when the practice has exactly
+    // one active facility, the same rule visit_billing uses when it prepares a
+    // claim, and only when that facility's parts were recorded. It reflects the
+    // facility as it is now, not the frozen claim.
+    let facilities: Vec<(String, String, String, String, String)> = sqlx::query_as(
+        "SELECT address_line1,address_line2,city,state,postal_code FROM practice_facilities WHERE tenant_id=$1 AND active ORDER BY name,id LIMIT 2",
+    )
+    .bind(a.tenant_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let facility = match facilities.as_slice() {
+        [only] if !only.0.is_empty() => Some(only.clone()),
+        _ => None,
+    };
+    let billing_address = match &facility {
+        Some((line1, line2, city, state, postal_code)) => json!({
+            "line1": line1,
+            "line2": line2,
+            "city": city,
+            "state": state,
+            "postal_code": postal_code,
+        }),
+        None => json!({"line1":"","line2":"","city":"","state":"","postal_code":""}),
     };
     let patient = &claim.snapshot["patient"];
     let coverage = &claim.snapshot["account"]["coverage_snapshot"]["coverage"]["content"];
@@ -831,6 +862,10 @@ async fn claim_submission_defaults(
     } else {
         json!({"line1":"","line2":"","city":"","state":"","postal_code":""})
     };
+    let filing = filing_indicator(
+        payer["name"].as_str().unwrap_or_default(),
+        payer["payer_code"].as_str().unwrap_or_default(),
+    );
     Ok(json!({
         "subscriber_given_name": subscriber_given,
         "subscriber_family_name": subscriber_family,
@@ -838,9 +873,9 @@ async fn claim_submission_defaults(
         "subscriber_sex": if relationship == "self" { patient_sex } else { "U" },
         "rendering_given_name": rendering_given,
         "rendering_family_name": rendering_family,
-        "billing_taxonomy": "",
-        "filing_indicator": "CI",
-        "billing_address": {"line1":"","line2":"","city":"","state":"","postal_code":""},
+        "billing_taxonomy": billing_taxonomy,
+        "filing_indicator": filing,
+        "billing_address": billing_address,
         "subscriber_address": subscriber_address,
         "patient_address": patient_address,
         "payer_address": {"line1":"","line2":"","city":"","state":"","postal_code":""},
@@ -850,6 +885,68 @@ async fn claim_submission_defaults(
             "provider_name": provider_name.unwrap_or_default(),
         }
     }))
+}
+
+/// Filing indicator from the payer on the coverage snapshot, matched
+/// case-insensitively against the payer name. Medicare is checked before
+/// Medicaid so a program named for both resolves to Medicare. The payer code is
+/// passed with the name so callers hand over both identity fields, but the
+/// indicator itself is a property of the payer's name.
+fn filing_indicator(name: &str, _code: &str) -> &'static str {
+    let name = name.to_lowercase();
+    if name.contains("medicare") {
+        "MB"
+    } else if name.contains("medicaid") {
+        "MC"
+    } else if name.contains("tricare") || name.contains("champus") {
+        "CH"
+    } else {
+        "CI"
+    }
+}
+
+#[cfg(test)]
+mod filing_indicator_tests {
+    use super::filing_indicator;
+
+    #[test]
+    fn medicare_name_files_mb() {
+        assert_eq!(filing_indicator("Medicare NJ", ""), "MB");
+        assert_eq!(filing_indicator("MEDICARE Part B", "00101"), "MB");
+        // A Medicare Advantage plan keeps the Medicare indicator.
+        assert_eq!(filing_indicator("Blue Medicare Advantage", ""), "MB");
+    }
+
+    #[test]
+    fn medicare_wins_over_medicaid_in_one_name() {
+        assert_eq!(filing_indicator("Medicare Medicaid Dual", ""), "MB");
+    }
+
+    #[test]
+    fn medicaid_files_mc() {
+        assert_eq!(filing_indicator("Medicaid", ""), "MC");
+        assert_eq!(filing_indicator("State Medicaid Plan", "SYN"), "MC");
+    }
+
+    #[test]
+    fn tricare_and_champus_file_ch() {
+        assert_eq!(filing_indicator("TRICARE West", ""), "CH");
+        assert_eq!(filing_indicator("CHAMPUS Standard", ""), "CH");
+    }
+
+    #[test]
+    fn anything_else_files_ci() {
+        assert_eq!(filing_indicator("Aetna", ""), "CI");
+        assert_eq!(filing_indicator("", ""), "CI");
+        assert_eq!(filing_indicator("Commercial Select", "00199"), "CI");
+    }
+
+    #[test]
+    fn matching_is_case_insensitive() {
+        assert_eq!(filing_indicator("MeDiCaRe", ""), "MB");
+        assert_eq!(filing_indicator("MediCaiD", ""), "MC");
+        assert_eq!(filing_indicator("TriCaRe", ""), "CH");
+    }
 }
 
 async fn clearinghouse_transport(
