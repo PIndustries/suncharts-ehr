@@ -6,9 +6,7 @@ assert.match(native,/function claimMdSubmitEditor\(detail\)/);
 assert.match(native,/detail\.submission_defaults\|\|\{\}/);
 assert.match(native,/claimMdSubmitEditor\(detail\)/);
 for(const field of ['subscriber_given_name','subscriber_family_name','patient_sex','subscriber_sex','rendering_given_name','rendering_family_name','billing_taxonomy','filing_indicator'])assert.match(native,new RegExp(field));
-// Each address block is built from one prefix, so the wire names are made at run time.
-assert.match(native,/defaults\[prefix\+'_address'\]/);
-for(const prefix of ['billing','subscriber','patient','payer'])assert.match(native,new RegExp(`address\\('${prefix}'`));
+for(const address of ['billing_address','subscriber_address','patient_address','payer_address'])assert.match(native,new RegExp(address));
 assert.match(native,/Check these details before sending/);
 assert.match(native,/fields were filled in from the claim and the chart/);
 assert.match(native,/Save claim file without sending/);
@@ -64,7 +62,14 @@ const isRequired=(html,name)=>/\srequired(?=>|\s)/.test(attributeOf(html,name));
 (function emptyDefaultsRender(){
  const html=render({source_references:{}});
  assert.match(html,/Add the provider’s taxonomy code under Practice administration → Providers and it will be filled in here\./);
- assert.match(html,/Add the street, city, state and ZIP under Practice administration → Facilities and it will be filled in here\./);
+ assert.match(html,/<b>No billing address on file.<\/b> Add the street, city, state and ZIP under Practice administration → Facilities and it will be filled in here\./,'a practice with no billing address is told so plainly');
+ assert.doesNotMatch(html,/Billing address on file:<\/b> Not on file/,'the screen must not say "on file: Not on file"');
+})();
+
+(function billingAddressTextOnFileButNotFilled(){
+ const html=render({billing_address:{},source_references:{billing_address:'123 Synthetic St Suite 4, Syntheticton CA 90001'}});
+ assert.match(html,/<b>Billing address on file:<\/b> 123 Synthetic St Suite 4, Syntheticton CA 90001\. Add the street, city, state and ZIP under Practice administration → Facilities and it will be filled in here\./);
+ assert.doesNotMatch(html,/No billing address on file\./,'a billing address that is on file is not called missing');
 })();
 
 (function payerAddressIsOptional(){
