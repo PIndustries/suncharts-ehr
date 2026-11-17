@@ -13,7 +13,7 @@ use suncharts_engine::{
     auth::{Actor, Role},
     backend::ClinicalBackend,
     browser::BrowserAuth,
-    model::{SoapNote, StartVisit, Vitals},
+    model::{SoapNote, StartVisit, Visit, Vitals},
     postgres::PostgresBackend,
     State,
 };
@@ -62,6 +62,18 @@ async fn setup() -> (PgPool, Actor, Actor, Uuid) {
     sqlx::query("INSERT INTO patients(tenant_id,id,mrn,given_name,family_name,birth_date) VALUES($1,$2,'SYN-ROOMING','Avery','Synthetic','1990-01-01')").bind(doc.tenant_id).bind(patient).execute(&db).await.unwrap();
     sqlx::query("INSERT INTO appointments(tenant_id,id,patient_id,clinician_id,starts_at,ends_at,status) VALUES($1,$2,$3,$4,'2026-10-26T14:00:00Z','2026-10-26T14:30:00Z','checked_in')").bind(doc.tenant_id).bind(appointment).bind(patient).bind(doc.sub).execute(&db).await.unwrap();
     (db, doc, nurse, appointment)
+}
+/// A visit assigned to the doctor, started by the nurse.
+async fn opened(db: &PgPool, nurse: &Actor, appointment: Uuid) -> Visit {
+    PostgresBackend(db.clone())
+        .start_visit(
+            nurse,
+            StartVisit {
+                appointment_id: appointment,
+            },
+        )
+        .await
+        .unwrap()
 }
 fn app(db: PgPool) -> Router {
     suncharts_engine::app(State {
@@ -117,6 +129,9 @@ fn vitals() -> Vitals {
         height_cm: 170.,
         oxygen_saturation_pct: 98.,
     }
+}
+fn vitals_json() -> Value {
+    serde_json::to_value(vitals()).expect("synthetic vitals serialize")
 }
 fn note() -> SoapNote {
     SoapNote {
@@ -239,18 +254,149 @@ async fn stale_versions_tenant_bounds_and_disabled_staff_are_enforced() {
     nurse.role = Role::MedicalAssistant;
     let (status, _) = call(&r, &nurse, "PUT", &path, intake(), Some(v.version + 1)).await;
     assert_eq!(status, 200);
-    // A clinician covering the visit records vitals; front desk still cannot.
+    // A clinician covering the visit records vitals. Front desk records vitals too,
+    // but never the rest of rooming/intake, so the intake save above is still refused.
     let desk = actor(doc.tenant_id, Role::FrontDesk);
+    user(&db, &desk, "front_desk").await;
     assert!(b
         .save_vitals(&desk, v.id, v.version + 2, vitals())
         .await
-        .is_err());
+        .is_ok());
     let peer = actor(doc.tenant_id, Role::Clinician);
     let covered = b
-        .save_vitals(&peer, v.id, v.version + 2, vitals())
+        .save_vitals(&peer, v.id, v.version + 3, vitals())
         .await
         .unwrap();
     assert_eq!(covered.clinician_id, doc.sub);
+}
+async fn user(db: &PgPool, a: &Actor, role: &str) {
+    sqlx::query("INSERT INTO browser_users(tenant_id,id,email,password_hash,role) VALUES($1,$2,$3,'synthetic-not-login',$4)")
+        .bind(a.tenant_id)
+        .bind(a.sub)
+        .bind(format!("{}-{}@example.test", role, a.sub.simple()))
+        .bind(role)
+        .execute(db)
+        .await
+        .unwrap();
+}
+#[tokio::test]
+async fn front_desk_records_vitals_and_nothing_else_of_rooming() {
+    let (db, doc, nurse, appointment) = setup().await;
+    let b = PostgresBackend(db.clone());
+    let v = opened(&db, &nurse, appointment).await;
+    let desk = actor(doc.tenant_id, Role::FrontDesk);
+    user(&db, &desk, "front_desk").await;
+    let r = app(db.clone());
+    let rooming = format!("/api/v1/visits/{}/rooming", v.id);
+    let path = format!("/api/v1/visits/{}/vitals", v.id);
+    // Vitals go through over HTTP and through the backend. The revision records the
+    // visit version the save was based on, attributed to front desk, and the audit
+    // event commits with the write.
+    let (status, saved) = call(&r, &desk, "PUT", &path, vitals_json(), Some(v.version)).await;
+    assert_eq!(status, 200, "{saved}");
+    assert_eq!(saved["clinician_id"], doc.sub.to_string(), "still assigned");
+    let version = saved["version"].as_i64().unwrap();
+    assert_eq!(version, v.version + 1);
+    let again = b.save_vitals(&desk, v.id, version, vitals()).await.unwrap();
+    assert_eq!(again.version, version + 1);
+    // An attributed vitals revision and an audit event commit with each save. Each
+    // revision carries the version the save produced.
+    let revisions: Vec<(i64, Uuid)> = sqlx::query_as("SELECT visit_version,actor_id FROM visit_rooming_revisions WHERE tenant_id=$1 AND visit_id=$2 AND kind='vitals' ORDER BY visit_version")
+        .bind(doc.tenant_id).bind(v.id)
+        .fetch_all(&db).await.unwrap();
+    assert_eq!(
+        revisions,
+        vec![(version, desk.sub), (again.version, desk.sub)],
+        "both vitals saves are attributed to front desk"
+    );
+    let audited: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE tenant_id=$1 AND action='visit.vitals_save' AND resource_id=$2 AND actor_id=$3")
+        .bind(doc.tenant_id).bind(v.id).bind(desk.sub)
+        .fetch_one(&db).await.unwrap();
+    assert_eq!(audited, 2);
+    // The rooming screen stays visible but not editable for front desk, and the
+    // intake save itself is refused over HTTP and through the backend.
+    let (status, seen) = call(&r, &desk, "GET", &rooming, Value::Null, None).await;
+    assert_eq!(status, 200, "{seen}");
+    assert_eq!(seen["can_edit"], false);
+    let (status, _) = call(&r, &desk, "PUT", &rooming, intake(), Some(again.version)).await;
+    assert_eq!(status, 403);
+    assert!(b
+        .start_visit(
+            &desk,
+            StartVisit {
+                appointment_id: Uuid::new_v4()
+            }
+        )
+        .await
+        .is_err());
+    // A disabled front-desk account cannot save vitals: the live row is rechecked.
+    let disabled = actor(doc.tenant_id, Role::FrontDesk);
+    user(&db, &disabled, "front_desk").await;
+    sqlx::query("UPDATE browser_users SET disabled=true WHERE tenant_id=$1 AND id=$2")
+        .bind(disabled.tenant_id)
+        .bind(disabled.sub)
+        .execute(&db)
+        .await
+        .unwrap();
+    assert!(b
+        .save_vitals(&disabled, v.id, again.version, vitals())
+        .await
+        .is_err());
+    // An account that is not front_desk any more cannot either, whatever it claims.
+    let demoted = actor(doc.tenant_id, Role::FrontDesk);
+    user(&db, &demoted, "read_only").await;
+    assert!(b
+        .save_vitals(&demoted, v.id, again.version, vitals())
+        .await
+        .is_err());
+    // Read-only staff are refused before any row is touched.
+    let reader = actor(doc.tenant_id, Role::ReadOnly);
+    user(&db, &reader, "read_only").await;
+    let (status, _) = call(
+        &r,
+        &reader,
+        "PUT",
+        &path,
+        vitals_json(),
+        Some(again.version),
+    )
+    .await;
+    assert_eq!(status, 403);
+    assert!(b
+        .save_vitals(&reader, v.id, again.version, vitals())
+        .await
+        .is_err());
+    // A delegated partner-support session stays out: the front-desk grant is for the
+    // practice's own enabled staff, and a support grant is never a staff account.
+    let support = actor(doc.tenant_id, Role::PartnerSupport);
+    assert!(b
+        .save_vitals(&support, v.id, again.version, vitals())
+        .await
+        .is_err());
+    let grant = actor(doc.tenant_id, Role::Owner);
+    sqlx::query("INSERT INTO partner_support_sessions(token_hash,tenant_id,grant_id,partner_id,customer_id,order_id,issuer,audience,expires_at,actor_subject,delegated_role) VALUES($1,$2,$3,$4,$5,$6,'https://connect.example.test','https://ehr.example.test',now()+interval '10 minutes',$7,'partner_admin')")
+        .bind(format!("synthetic-{}", grant.sub.simple()))
+        .bind(doc.tenant_id).bind(grant.sub).bind(Uuid::new_v4()).bind(Uuid::new_v4()).bind(Uuid::new_v4()).bind("platform_admin:synthetic-support")
+        .execute(&db).await.unwrap();
+    assert!(b
+        .save_vitals(&grant, v.id, again.version, vitals())
+        .await
+        .is_err());
+    // Nothing above changed the record: the last save is still the assistant's own.
+    let (version, stored): (i64, Option<Value>) =
+        sqlx::query_as("SELECT version,vitals FROM visits WHERE tenant_id=$1 AND id=$2")
+            .bind(doc.tenant_id)
+            .bind(v.id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(version, again.version);
+    assert!(stored.is_some());
+    let rooming_rows: i64 = sqlx::query_scalar("SELECT count(*) FROM visit_rooming")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(rooming_rows, 0, "front desk wrote no intake");
 }
 #[tokio::test]
 async fn intake_and_vitals_rollback_if_audit_cannot_commit() {

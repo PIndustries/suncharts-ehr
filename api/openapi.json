@@ -1432,7 +1432,7 @@
             "browserSession": []
           }
         ],
-        "description": "Enabled nurse/medical_assistant, the assigned clinician, or another clinician or the owner covering the visit, before signing. Shares Visit.version; each save is recorded with its author."
+        "description": "Enabled nurse/medical_assistant or front_desk, the assigned clinician, or another clinician or the owner covering the visit, before signing. Front desk may record vitals only; the rest of rooming and intake stays forbidden. Shares Visit.version; each save is recorded with its author."
       }
     },
     "/api/v1/visits/{id}/sign": {
