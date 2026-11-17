@@ -71,6 +71,12 @@ impl PayerContent {
         bounded(&self.phone, 50)?;
         bounded(&self.address, 1000)
     }
+    /// A payer is stored without outer whitespace on the fields that reach a
+    /// claim, so a stray saved space never carries into a submitted claim.
+    fn normalize(&mut self) {
+        self.name = self.name.trim().to_string();
+        self.payer_code = self.payer_code.trim().to_string();
+    }
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -112,6 +118,14 @@ impl CoverageContent {
             return Err(Error::Invalid("invalid coverage dates or copay"));
         }
         Ok(())
+    }
+    /// A coverage is stored without outer whitespace on the fields that reach a
+    /// claim, so a stray saved space never freezes into a claim snapshot.
+    fn normalize(&mut self) {
+        self.member_id = self.member_id.trim().to_string();
+        self.group_number = self.group_number.trim().to_string();
+        self.plan_name = self.plan_name.trim().to_string();
+        self.subscriber_name = self.subscriber_name.trim().to_string();
     }
 }
 #[derive(Deserialize, Serialize)]
@@ -555,9 +569,10 @@ async fn payers(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json<V
 async fn new_payer(
     a: Actor,
     ExtractState(s): ExtractState<State>,
-    Json(p): Json<New<PayerContent>>,
+    Json(mut p): Json<New<PayerContent>>,
 ) -> Result<Json<Entity>> {
     owner(&a)?;
+    p.content.normalize();
     p.content.validate()?;
     text(&p.reason, 1000)?;
     let hash = digest(&p)?;
@@ -581,9 +596,10 @@ async fn edit_payer(
     ExtractState(s): ExtractState<State>,
     Path(id): Path<Uuid>,
     h: HeaderMap,
-    Json(p): Json<Edit<PayerContent>>,
+    Json(mut p): Json<Edit<PayerContent>>,
 ) -> Result<Json<Entity>> {
     owner(&a)?;
+    p.content.normalize();
     p.content.validate()?;
     text(&p.reason, 1000)?;
     let version = crate::expected(&h)?;
@@ -608,9 +624,10 @@ async fn new_coverage(
     a: Actor,
     ExtractState(s): ExtractState<State>,
     Path(patient_id): Path<Uuid>,
-    Json(p): Json<New<CoverageContent>>,
+    Json(mut p): Json<New<CoverageContent>>,
 ) -> Result<Json<Entity>> {
     write(&a)?;
+    p.content.normalize();
     p.content.validate()?;
     text(&p.reason, 1000)?;
     let hash = digest(&(patient_id, &p))?;
@@ -636,9 +653,10 @@ async fn edit_coverage(
     ExtractState(s): ExtractState<State>,
     Path((p, id)): Path<(Uuid, Uuid)>,
     h: HeaderMap,
-    Json(v): Json<Edit<CoverageContent>>,
+    Json(mut v): Json<Edit<CoverageContent>>,
 ) -> Result<Json<Entity>> {
     write(&a)?;
+    v.content.normalize();
     v.content.validate()?;
     text(&v.reason, 1000)?;
     let version = crate::expected(&h)?;
