@@ -92,10 +92,10 @@ function scheduleMarkerList(a){
    else if(m.charges==='draft')add('charges','Charges draft',done?'amber':'grey','Charges were entered but are not posted yet.',done?5:11);
    else if(done)add('charges','No charges','amber','The visit is finished but no charges were entered.',5);
   }
-  // What the insurer still owes an answer to. Money facts, so these stay on the card
-  // once the visit is over, exactly like the copay and balance chips.
+  // Where the visit's claim stands. Month and week cards show only two chips, so the claim
+  // ranks ahead of everything except an urgent problem: staff asked to see it at a glance.
   if(m.claim){
-   const claim={not_sent:['Claim not sent','amber','Charges are posted but the claim has not been sent.',10],sent:['Claim sent','grey','The claim was sent. No answer yet.',10],accepted:['Claim accepted','green','The insurer accepted the claim for processing.',20],rejected:['Claim rejected','red','The insurer rejected the claim. It needs fixing and resending.',1],answered:['Insurer answered','green','The insurer has answered. Check the payment.',20]}[m.claim.status];
+   const claim={not_sent:['Claim not sent','amber','Charges are posted but the claim has not been sent.',2],sent:['Claim sent','grey','The claim was sent. No answer yet.',2],accepted:['Claim accepted','green','The insurer accepted the claim for processing.',2],rejected:['Claim rejected','red','The insurer rejected the claim. It needs fixing and resending.',1],answered:['Insurer answered','green','The insurer has answered. Check the payment.',2]}[m.claim.status];
    if(claim)add('claim',...claim);
   }
  return out;
