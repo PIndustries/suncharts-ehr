@@ -60,11 +60,25 @@ const isRequired=(html,name)=>/\srequired(?=>|\s)/.test(attributeOf(html,name));
 })();
 
 (function emptyDefaultsRender(){
- const html=render({source_references:{}});
- assert.match(html,/Add the provider’s taxonomy code under Practice administration → Providers and it will be filled in here\./);
- assert.match(html,/<b>No billing address on file.<\/b> Add the street, city, state and ZIP under Practice administration → Facilities and it will be filled in here\./,'a practice with no billing address is told so plainly');
- assert.doesNotMatch(html,/Billing address on file:<\/b> Not on file/,'the screen must not say "on file: Not on file"');
-})();
+  const html=render({source_references:{}});
+  assert.match(html,/No taxonomy code was found for this provider\. Add it under Practice administration → Providers and it will be filled in here\./);
+  assert.doesNotMatch(html,/Found in the national NPI registry/,'a missing taxonomy is not called found');
+  assert.match(html,/<b>No billing address on file.<\/b> Add the street, city, state and ZIP under Practice administration → Facilities and it will be filled in here\./,'a practice with no billing address is told so plainly');
+  assert.doesNotMatch(html,/Billing address on file:<\/b> Not on file/,'the screen must not say "on file: Not on file"');
+ })();
+
+ (function taxonomyFromNpiRegistry(){
+  const html=render({...filledDefaults,billing_taxonomy_source:'npi_registry'});
+  assert.match(html,/Found in the national NPI registry for this provider\. Check it is right\./,'staff are told the code was found in the national NPI registry');
+  assert.doesNotMatch(html,/Add it under Practice administration → Providers/,'a found taxonomy is not called missing');
+ })();
+
+ (function taxonomyFromProviderRecord(){
+  const html=render({...filledDefaults,billing_taxonomy_source:'provider'});
+  assert.doesNotMatch(html,/Found in the national NPI registry/,'a code on the provider record is not called a registry lookup');
+  assert.doesNotMatch(html,/No taxonomy code was found/,'a filled taxonomy is not called missing');
+  assert.doesNotMatch(html,/Add it under Practice administration → Providers/,'the provider source shows no hint');
+ })();
 
 (function billingAddressTextOnFileButNotFilled(){
  const html=render({billing_address:{},source_references:{billing_address:'123 Synthetic St Suite 4, Syntheticton CA 90001'}});
