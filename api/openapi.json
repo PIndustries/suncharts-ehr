@@ -4970,7 +4970,7 @@
     "/api/v1/schedule/markers": {
       "get": {
         "operationId": "scheduleMarkers",
-        "description": "What each appointment overlapping a UTC half-open range of up to 31 days still needs: intake form state, insurance eligibility for the coverage that pays first, copay, patient balance, note and charge state, and whether it is the patient's first appointment. Read with a fixed number of queries. Requires the same access as the schedule. Insurance, copay, balance and charge facts are omitted when the staff member's access policy hides patient billing (insurance also needs claims access); note state is omitted without clinical access.",
+        "description": "What each appointment overlapping a UTC half-open range of up to 31 days still needs: intake form state, insurance eligibility for the coverage that pays first, copay, patient balance, note and charge state, where the visit's insurance claim stands, and whether it is the patient's first appointment. Read with a fixed number of queries. Requires the same access as the schedule. Insurance, copay, balance, charge and claim facts are omitted when the staff member's access policy hides patient billing (insurance also needs claims access); note state is omitted without clinical access.",
         "parameters": [
           {
             "name": "from",
@@ -41430,6 +41430,37 @@
                     "draft",
                     "posted",
                     null
+                  ]
+                },
+                "claim": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "description": "Where the insurance claim for this visit's charges stands. Present only for a visit whose charges are posted to an insurer: null for a self-pay charge account, charges that are not posted and an appointment with no visit. not_sent covers posted charges with no claim yet and a newest claim still draft or ready; answered means the insurer has paid or denied. A claim counted as voided has no status of its own and reads as not_sent again.",
+                  "additionalProperties": false,
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "not_sent",
+                        "sent",
+                        "accepted",
+                        "rejected",
+                        "answered"
+                      ]
+                    },
+                    "claim_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "claim_id"
                   ]
                 }
               },

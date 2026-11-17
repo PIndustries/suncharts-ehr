@@ -114,6 +114,22 @@ fn coverage_rank(content: &Value) -> u8 {
         _ => 3,
     }
 }
+/// The claim position staff see on the schedule. Charges are already posted when a
+/// claim is prepared, so charges with no claim of their own are a claim not sent yet.
+/// Of the stored claim statuses (migration 0009), 'draft' and 'ready' have not gone
+/// out; 'submitted' and 'accepted' have and wait for an answer; 'rejected' needs
+/// fixing and resending; 'adjudicated' is the insurer's paid or denied answer. A
+/// claim that was voided has no step of its own, so it reads as not sent again.
+fn claim_status(status: Option<&str>) -> &'static str {
+    match status.unwrap_or_default() {
+        "submitted" => "sent",
+        "accepted" => "accepted",
+        "rejected" => "rejected",
+        "adjudicated" => "answered",
+        _ => "not_sent",
+    }
+}
+
 /// The coverage that pays first on the service date, as the chart picks it.
 fn coverage_on<'a>(coverages: Option<&'a Vec<Value>>, service_date: &str) -> Option<&'a Value> {
     coverages?
@@ -236,6 +252,7 @@ pub(crate) async fn collect(
     let mut checks: HashMap<Uuid, Vec<Value>> = HashMap::new();
     let mut copays: HashMap<Uuid, Value> = HashMap::new();
     let mut balances: HashMap<Uuid, i64> = HashMap::new();
+    let mut claims: HashMap<Uuid, Value> = HashMap::new();
     if access.billing {
         for coverage in reads
             .rows(
@@ -287,6 +304,34 @@ pub(crate) async fn collect(
             ))
             .await?;
         balances = crate::visit_billing::owed_by_patient(&rows);
+        // Where each posted charge account stands with the insurer, for the whole range
+        // at once. Posted charges with no claim of their own count as a row with no
+        // status, so the visit shows as a claim that has not been sent. Only staff who may
+        // see claims are told any of it. A voided claim counts for nothing, and so does a
+        // crossover record: it only tracks a claim the primary insurer passed on, which
+        // this practice never sent.
+        if access.insurance {
+            for row in reads
+            .rows(
+                sqlx::query_scalar(
+                    "SELECT jsonb_build_object('appointment_id',v.appointment_id,'status',c.status,'claim_id',c.id)
+                     FROM visits v JOIN billing_accounts b ON b.tenant_id=v.tenant_id AND b.visit_id=v.id AND b.status='posted' AND b.coverage_id IS NOT NULL
+                     LEFT JOIN LATERAL (SELECT c.id,c.status FROM ehr_claims c
+                       WHERE c.tenant_id=b.tenant_id AND c.account_id=b.id AND c.status<>'void'
+                         AND coalesce(jsonb_typeof(c.snapshot->'coordination_of_benefits'->'crossover')='object',false)=false
+                       ORDER BY c.created_at DESC,c.id DESC LIMIT 1) c ON true
+                     WHERE b.tenant_id=$1 AND v.appointment_id=ANY($2)",
+                )
+                .bind(tenant)
+                .bind(&appointment_ids),
+            )
+            .await?
+            {
+                if let Some(appointment) = uuid(&row["appointment_id"]) {
+                    claims.insert(appointment, row);
+                }
+            }
+        }
     }
     if access.insurance {
         let coverage_ids: Vec<Uuid> = coverages
@@ -400,6 +445,20 @@ pub(crate) async fn collect(
                 json!(balances.get(&patient).copied().unwrap_or(0)),
             );
             item.insert("charges".into(), appointment["charges"].clone());
+            if access.insurance {
+                // A claim exists only for posted charges billed to an insurer, so nothing
+                // here is said about self-pay visits, unposted charges or no visit at all.
+                item.insert(
+                    "claim".into(),
+                    match claims.get(&id) {
+                        Some(row) => json!({
+                            "status": claim_status(row["status"].as_str()),
+                            "claim_id": row["claim_id"].clone(),
+                        }),
+                        None => Value::Null,
+                    },
+                );
+            }
         }
         items.push(Value::Object(item));
     }
@@ -518,8 +577,8 @@ mod tests {
         }
         assert_eq!(
             counts,
-            vec![(6, 2); 3],
-            "six reads with billing facts and two without, for 0, 2 and 40 appointments"
+            vec![(7, 2); 3],
+            "seven reads with billing facts and two without, for 0, 2 and 40 appointments"
         );
     }
 
