@@ -152,6 +152,96 @@ pub struct ChargeLine {
     pub fee_snapshot: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fee_override_reason: Option<String>,
+    // An injected drug (a HCPCS J-code such as botulinum toxin) can carry its
+    // NDC code, quantity and unit. All three or none; a stored line or frozen
+    // claim without them still reads and re-serializes exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ndc_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ndc_quantity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ndc_unit: Option<String>,
+}
+impl ChargeLine {
+    /// Validates this line's drug fields, rejecting a partial or malformed set,
+    /// then stores what remains normalised: the NDC as 11 digits (hyphens and
+    /// spaces removed), the quantity and the unit as given.
+    fn normalize_ndc(&mut self) -> Result<()> {
+        let (code, quantity, unit) = validate_ndc(self)?;
+        self.ndc_code = code;
+        self.ndc_quantity = quantity;
+        self.ndc_unit = unit;
+        Ok(())
+    }
+}
+const NDC_UNITS: [&str; 5] = ["UN", "ML", "GR", "F2", "ME"];
+/// An 11-digit NDC, typed with or without hyphens and spaces. Returns the
+/// 11 digits, or None when the text is not exactly 11 digits.
+fn normalize_ndc(s: &str) -> Option<String> {
+    let digits: String = s
+        .chars()
+        .filter(|c| !matches!(c, '-' | ' '))
+        .collect::<String>()
+        .trim()
+        .chars()
+        .filter(|c| !matches!(c, '-' | ' '))
+        .collect();
+    if digits.len() == 11 && digits.bytes().all(|b| b.is_ascii_digit()) {
+        Some(digits)
+    } else {
+        None
+    }
+}
+/// A quantity given as a positive decimal of at most 7 characters including
+/// the point and at most 3 decimals, such as "100" or "2.5". No sign, no
+/// exponent, no leading zeros beyond a plain "0".
+fn ndc_quantity_ok(s: &str) -> bool {
+    if s.is_empty() || s.len() > 7 {
+        return false;
+    }
+    let (whole, decimals) = match s.split_once('.') {
+        Some((w, d)) => (w, d),
+        None => (s, ""),
+    };
+    if whole.is_empty() || !whole.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    if whole.len() > 1 && whole.starts_with('0') {
+        return false;
+    }
+    if !decimals.is_empty() && !decimals.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    decimals.len() <= 3 && (whole != "0" || decimals.bytes().any(|b| b != b'0'))
+}
+/// Checks one charge line's drug fields and returns them normalised.
+fn validate_ndc(line: &ChargeLine) -> Result<(Option<String>, Option<String>, Option<String>)> {
+    let bad = || {
+        Error::Invalid("Enter the drug's 11-digit NDC code, the quantity given and its unit, or leave all three blank.")
+    };
+    let given = [
+        line.ndc_code.as_deref().unwrap_or("").trim(),
+        line.ndc_quantity.as_deref().unwrap_or("").trim(),
+        line.ndc_unit.as_deref().unwrap_or("").trim(),
+    ];
+    if given.iter().all(|v| v.is_empty()) {
+        return Ok((None, None, None));
+    }
+    if given.iter().any(|v| v.is_empty()) {
+        return Err(bad());
+    }
+    let code = normalize_ndc(given[0]).ok_or_else(bad)?;
+    if !ndc_quantity_ok(given[1]) {
+        return Err(bad());
+    }
+    if !NDC_UNITS.contains(&given[2]) {
+        return Err(bad());
+    }
+    Ok((
+        Some(code),
+        Some(given[1].to_string()),
+        Some(given[2].to_string()),
+    ))
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -177,6 +267,9 @@ impl AccountContent {
             ));
         }
         bounded(&self.notes, 2000)?;
+        for l in &self.lines {
+            validate_ndc(l)?;
+        }
         let mut total = 0i64;
         for l in &self.lines {
             text(&l.code_system, 100)?;
@@ -210,6 +303,7 @@ async fn resolve_charge_catalogs(
     content: &mut AccountContent,
 ) -> Result<()> {
     for line in &mut content.lines {
+        line.normalize_ndc()?;
         line.catalog_snapshot = None;
         if let Some(id) = line.catalog_release_id {
             let snapshot =
@@ -1733,4 +1827,141 @@ async fn apply_recorded_copays(
     crate::postgres::audit(&mut tx, &a, "billing.copay_application_review", id).await?;
     tx.commit().await?;
     Ok(Json(json!({"applied_cents":amount})))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn line(code: Option<&str>, quantity: Option<&str>, unit: Option<&str>) -> ChargeLine {
+        ChargeLine {
+            code_system: "HCPCS".into(),
+            code: "J0585".into(),
+            description: "Synthetic injected drug".into(),
+            modifiers: String::new(),
+            units: 1,
+            amount_cents: 1000,
+            diagnosis_codes: vec![],
+            catalog_release_id: None,
+            catalog_snapshot: None,
+            fee_schedule_id: None,
+            fee_entry_key: None,
+            fee_snapshot: None,
+            fee_override_reason: None,
+            ndc_code: code.map(str::to_string),
+            ndc_quantity: quantity.map(str::to_string),
+            ndc_unit: unit.map(str::to_string),
+        }
+    }
+    fn account(lines: Vec<ChargeLine>) -> AccountContent {
+        AccountContent {
+            visit_id: None,
+            coverage_id: None,
+            service_date: "2026-10-25".parse().unwrap(),
+            currency: "USD".into(),
+            lines,
+            fee_context: None,
+            notes: String::new(),
+        }
+    }
+    const DRUG_ERROR: &str = "Enter the drug's 11-digit NDC code, the quantity given and its unit, or leave all three blank.";
+    #[test]
+    fn a_complete_drug_set_is_accepted_and_a_line_without_one_is_untouched() {
+        assert_eq!(account(vec![line(None, None, None)]).total().unwrap(), 1000);
+        assert_eq!(
+            account(vec![line(Some("00023114501"), Some("100"), Some("UN"))])
+                .total()
+                .unwrap(),
+            1000
+        );
+    }
+    #[test]
+    fn a_hyphenated_or_spaced_ndc_is_checked_as_its_11_digits_and_stored_plain() {
+        for typed in ["00023-1145-01", "00023 1145 01", " 00023-1145-01 "] {
+            let mut l = line(Some(typed), Some("2.5"), Some("ML"));
+            l.normalize_ndc().unwrap();
+            assert_eq!(l.ndc_code.as_deref(), Some("00023114501"), "{typed}");
+            assert_eq!(l.ndc_quantity.as_deref(), Some("2.5"));
+            assert_eq!(l.ndc_unit.as_deref(), Some("ML"));
+        }
+        // Eleven digits is the only shape accepted: a wrong length is refused.
+        for typed in ["00023-1145-0", "00023-1145-012", "0002O-1145-01"] {
+            assert!(
+                validate_ndc(&line(Some(typed), Some("1"), Some("UN"))).is_err(),
+                "{typed}"
+            );
+        }
+    }
+    #[test]
+    fn a_partial_drug_set_is_refused_whole() {
+        for (code, quantity, unit) in [
+            (Some("00023114501"), None, None),
+            (None, Some("100"), None),
+            (None, None, Some("UN")),
+            (Some("00023114501"), Some("100"), None),
+            (Some("00023114501"), None, Some("UN")),
+            (None, Some("100"), Some("UN")),
+        ] {
+            let error = account(vec![line(code, quantity, unit)])
+                .total()
+                .err()
+                .unwrap_or_else(|| panic!("{code:?} {quantity:?} {unit:?} must be refused"));
+            assert!(
+                matches!(&error, Error::Invalid(m) if *m == DRUG_ERROR),
+                "{error}"
+            );
+        }
+    }
+    #[test]
+    fn a_unit_outside_the_supported_list_is_refused() {
+        for unit in ["ml", "XX", "EA", "U", "Ml", "F21"] {
+            let error = account(vec![line(Some("00023114501"), Some("100"), Some(unit))])
+                .total()
+                .err()
+                .unwrap_or_else(|| panic!("{unit} must be refused"));
+            assert!(
+                matches!(&error, Error::Invalid(m) if *m == DRUG_ERROR),
+                "{error}"
+            );
+        }
+        for unit in NDC_UNITS {
+            assert!(
+                account(vec![line(Some("00023114501"), Some("100"), Some(unit))])
+                    .total()
+                    .is_ok()
+            );
+        }
+    }
+    #[test]
+    fn a_drug_quantity_is_a_positive_decimal_within_the_form_limits() {
+        for good in ["100", "2.5", "0.5", "1000000", "0.123", "9999.99"] {
+            assert!(
+                account(vec![line(Some("00023114501"), Some(good), Some("UN"))])
+                    .total()
+                    .is_ok(),
+                "{good}"
+            );
+        }
+        for bad in [
+            "0", "0.0", "-1", "1.2345", "9999.999", "12345678", ".5", "abc", "10 mL", "1,000", "",
+        ] {
+            assert!(
+                account(vec![line(Some("00023114501"), Some(bad), Some("UN"))])
+                    .total()
+                    .is_err(),
+                "{bad} must be refused"
+            );
+        }
+    }
+    #[test]
+    fn a_line_without_drug_fields_serializes_exactly_as_before() {
+        let stored = json!({"code_system":"HCPCS","code":"J0585","description":"Synthetic injected drug","modifiers":"","units":1,"amount_cents":1000,"diagnosis_codes":[]});
+        let l: ChargeLine = serde_json::from_value(stored.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&l).unwrap(), stored);
+        // With a drug the three keys appear; a frozen claim line without them
+        // round-trips with no new keys at all.
+        let l = line(Some("00023114501"), Some("100"), Some("UN"));
+        let out = serde_json::to_value(&l).unwrap();
+        assert_eq!(out["ndc_code"], json!("00023114501"));
+        assert_eq!(out["ndc_quantity"], json!("100"));
+        assert_eq!(out["ndc_unit"], json!("UN"));
+    }
 }

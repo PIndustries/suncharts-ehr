@@ -525,6 +525,9 @@ async fn quote(
         fee_entry_key: None,
         fee_snapshot: None,
         fee_override_reason: None,
+        ndc_code: None,
+        ndc_quantity: None,
+        ndc_unit: None,
     };
     let quote = lookup(&mut tx, &a, provider, q.service_date, &ctx, &line).await?;
     Ok(Json(
