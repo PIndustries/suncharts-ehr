@@ -141,6 +141,23 @@ function postSignReminderMarkup(){
  if(typeof encounterChargeAccount==='function'&&encounterChargeAccount()?.status==='posted'){postSignReminder=null;return '';}
  return `<div id="sign-charge-reminder" class="notice notice-with-action" role="status"><span>${esc(postSignReminder.message)}</span><button type="button" class="text-button" data-encounter-section="charges">Open Charges &amp; billing</button></div>`;
 }
+// What comes after signing depends on which chart areas the practice shows. Staff are
+// only pointed at steps that exist for them, so nothing names a hidden area. Each entry
+// is the sign question, the notice after signing, and the step staff are moved to.
+const SIGN_NEXT_TEXT={
+ 'charges,checkout':{ask:'Continue to charges and checkout after signing.',done:'Note signed. Next: charges, then checkout.',step:'charges'},
+ 'charges':{ask:'Continue to charges after signing.',done:'Note signed. Next: charges.',step:'charges'},
+ 'checkout':{ask:'Continue to checkout after signing.',done:'Note signed. Next: checkout.',step:'checkout'},
+ none:{ask:'',done:'Note signed.',step:''},
+};
+function signNextPlan(){
+ const steps=encounterSections().map(([step])=>step);
+ const next=['charges','checkout'].filter(key=>steps.includes(key)).join(',');
+ return SIGN_NEXT_TEXT[next]||SIGN_NEXT_TEXT.none;
+}
+function signAskText(continueText){
+ return `Signing locks the clinical note.${continueText?' '+continueText:''} Later corrections are preserved as signed amendments.`;
+}
 function setPatientDirectoryVisible(visible){
  $('clinical-workspace')?.classList.toggle('directory-collapsed',!visible);
  const button=$('toggle-directory');if(!button)return;
@@ -974,7 +991,10 @@ document.addEventListener('click',e=>{
         const name=(typeof visitNoteAssignedName==='function'?await visitNoteAssignedName(signing):'')||'the assigned clinician';
         if(me!==signer||activeVisit!==signing)return;
         if(!await confirmAction(`Signing locks the note and records you as the signer. The visit stays assigned to ${name}. Check the rendering provider on the claim if you saw the patient.`,{eyebrow:'COVERING A VISIT',title:`Sign as yourself for ${name}’s visit?`,confirmLabel:'Sign',cancelLabel:'Cancel'}))return;
-      }else if(!await confirmAction('Signing locks the clinical note. Continue to charges and checkout after signing. Later corrections are preserved as signed amendments.',{title:'Sign note?',confirmLabel:'Sign note'}))return;
+      }else{
+        const next=signNextPlan();
+        if(!await confirmAction(signAskText(next.ask),{title:'Sign note?',confirmLabel:'Sign note'}))return;
+      }
       if(me!==signer||activeVisit!==signing)return;
       const v=await api(`/api/v1/visits/${activeVisit.id}/sign`,'POST',undefined,activeVisit.version);
       // Nothing is posted yet and the charges step is visible, so leave a short reminder with
@@ -982,7 +1002,7 @@ document.addEventListener('click',e=>{
       const billingVisible=encounterSections().some(([step])=>step==='charges');
       const posted=(workspace.billing?.accounts||[]).some(a=>a.status==='posted'&&a.status!=='void'&&String(a.content?.visit_id||'')===v.id);
       postSignReminder=billingVisible&&!posted&&v.status==='signed'?{visitId:v.id,message:'No charges are posted for this visit yet.'}:null;
-      if(typeof clearVisitNoteSession==='function')clearVisitNoteSession();await selectPatient(selected,v.id);setEncounterSection(chartAreaEnabled('billing')?'charges':'checkout');notice('Note signed. Next: charges, then checkout.');
+      if(typeof clearVisitNoteSession==='function')clearVisitNoteSession();await selectPatient(selected,v.id);const after=signNextPlan();if(after.step)setEncounterSection(after.step);notice(after.done);
     }
   });
 });

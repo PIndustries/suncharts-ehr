@@ -47,6 +47,10 @@ function fixture({search = '', practice = false} = {}) {
   const evaluate = code => vm.runInContext(code, context);
   evaluate(fs.readFileSync(path.join(root, 'web/app.js'), 'utf8'));
   if (practice) evaluate(fs.readFileSync(path.join(root, 'web/practice.js'), 'utf8'));
+  // Home reads the same chart-area setting the patient chart uses. The settings arrive as a
+  // loaded workspace object, so Home only needs the reader; the browser's copy of it lives
+  // in specialty-workspace.js and is reproduced here rather than loading that whole module.
+  evaluate('practiceWorkspaceSettings=undefined;workspaceChartTabEnabled=key=>{const tabs=practiceWorkspaceSettings?.content?.chart_tabs;return !Array.isArray(tabs)||tabs.includes(key);}');
   return {context, evaluate, node, listeners};
 }
 
@@ -252,6 +256,48 @@ async function testPracticeQueues() {
   assert.match(practiceHtml(f), /No unfinished visits/); // An independent queue remains usable.
 }
 
+function journeyStep(html, index) {
+  const nav = (html.split('<nav class="practice-journey"')[1] || '').split('</nav>')[0];
+  return (nav.split('</button>').find(part => part.includes(`<span>${index}</span>`)) || '').trim();
+}
+
+async function testJourneyCheckoutVisibility() {
+  const loaded = {version:1,content:{chart_tabs:['overview','visits','billing','checkout']}};
+  const checkoutOff = {version:1,content:{chart_tabs:['overview','visits','billing']}};
+  const visits = {total:2,has_more:false,items:[
+    {visit_id:'v1',patient_id:'p1',patient_name:'Signed Patient',mrn:'MRN-1',starts_at:'2026-10-25T14:00:00Z',note_saved:true,vitals_saved:true},
+    {visit_id:'v2',patient_id:'p2',patient_name:'Unsigned Patient',mrn:'MRN-2',starts_at:'2026-10-25T15:00:00Z',note_saved:false,vitals_saved:false}
+  ]};
+  async function stepFor(settings){
+    const f = practiceFixture({schedule:{appointments:[],blocks:[]},results:{items:[],limit:100},visits});
+    // Loaded workspace settings are a global every module reads; Home only uses the reader.
+    if (settings) f.context.practiceWorkspaceSettings = settings;
+    await f.evaluate('showPracticeWorkspace()');
+    return journeyStep(practiceHtml(f), 4);
+  }
+
+  let step = await stepFor(loaded);
+  assert.match(step, />Checkout</);
+  assert.match(step, /Instructions, charges and handoff/);
+
+  step = await stepFor(checkoutOff);
+  assert.match(step, />Charges</,'the step is titled Charges when checkout is off');
+  assert.match(step, /Charges for signed visits/);
+  assert.doesNotMatch(step, /checkout/i,'checkout is not mentioned when the practice hid that chart area');
+
+  // Home before the workspace settings have loaded treats checkout as shown.
+  step = await stepFor(null);
+  assert.match(step, />Checkout</,'an unloaded settings read defaults checkout to shown');
+  assert.match(step, /Instructions, charges and handoff/);
+
+  // The count is visits with a saved note, and the click target, whichever title shows.
+  for (const settings of [loaded, checkoutOff]) {
+    const step = await stepFor(settings);
+    assert.match(step, /<em>1<\/em>/,'the count of visits with a saved note is unchanged');
+    assert.match(step, /data-practice-action="patients"/,'the click target is unchanged');
+  }
+}
+
 async function testPracticeFilters() {
   const values = empty();
   values.schedule.appointments = [
@@ -323,6 +369,7 @@ async function testEntryRouting() {
     ['single bundled SunCharts connection setup',testSunChartsConnection],
     ['encounter selection refreshes header and chart context',testEncounterSelectionRefresh],
     ['practice queues, escaping, and encounter routing', testPracticeQueues],
+    ['Home journey follows the practice chart areas', testJourneyCheckoutVisibility],
     ['practice workboard filters, search, and exact resume links', testPracticeFilters],
     ['entry route precedence and deferred bootstrap', testEntryRouting]
   ]) { await test(); console.log(`PASS ${name}`); }
