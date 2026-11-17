@@ -1281,13 +1281,30 @@ fn render_cms1500_review(c: &Claim) -> Result<String> {
             let units = line["units"].as_i64().filter(|v| *v > 0)
                 .map(|v| v.to_string()).unwrap_or_else(|| "Not recorded".into());
             let modifiers = json_text(line, "modifiers").trim();
+            // The form's shaded area above the procedure code carries the drug:
+            // the NDC qualifier and 11 digits, then the unit before the quantity.
+            let ndc = [
+                json_text(line, "ndc_code").trim(),
+                json_text(line, "ndc_quantity").trim(),
+                json_text(line, "ndc_unit").trim(),
+            ];
+            let drug = if ndc.iter().any(|v| !v.is_empty()) {
+                format!(
+                    "N4{} {}{}",
+                    html_escape(ndc[0]),
+                    html_escape(ndc[2]),
+                    html_escape(ndc[1])
+                )
+            } else {
+                String::new()
+            };
             let procedure = if modifiers.is_empty() { html_escape(json_text(line, "code")) }
                 else { format!("{} · {}", html_escape(json_text(line, "code")), html_escape(modifiers)) };
             let cents = line.get("amount_cents").and_then(Value::as_i64).unwrap_or(0);
-            format!("<tr><td>{0}</td><td>{0}</td><td>{1}</td><td></td><td class=procedure>{2}<small>{3}</small></td><td>{4}</td><td class=charge>${5}.{6:02}</td><td>{8}</td><td></td><td>{7}</td></tr>",
+            format!("<tr><td>{0}</td><td>{0}</td><td>{1}</td><td></td><td class=procedure>{9}<br>{2}<small>{3}</small></td><td>{4}</td><td class=charge>${5}.{6:02}</td><td>{8}</td><td></td><td>{7}</td></tr>",
                 html_escape(json_text(&account["content"], "service_date")), html_escape(&content.place_of_service),
                 procedure, html_escape(json_text(line, "description")), review_text(&pointers),
-                cents / 100, cents.abs() % 100, html_escape(&content.rendering_npi), units)
+                cents / 100, cents.abs() % 100, html_escape(&content.rendering_npi), units, drug)
         }).collect::<String>();
     for _ in account["content"]["lines"].as_array().map_or(0, Vec::len)..6 {
         line_rows.push_str("<tr><td>&nbsp;</td><td></td><td></td><td></td><td><small></small></td><td></td><td></td><td></td><td></td><td></td></tr>");

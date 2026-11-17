@@ -41707,6 +41707,36 @@
             ],
             "maxLength": 1000,
             "description": "Required when an approved fee line amount differs from unit fee times units."
+          },
+          "ndc_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 13,
+            "description": "Drug NDC for an injected-drug charge, such as a HCPCS J-code. Entered with or without hyphens; stored as exactly 11 digits. Supplied together with ndc_quantity and ndc_unit, or all three omitted."
+          },
+          "ndc_quantity": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 7,
+            "description": "Quantity of the drug given, as a positive decimal of at most 7 characters including the point and at most 3 decimals, such as 100 or 2.5."
+          },
+          "ndc_unit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "UN",
+              "ML",
+              "GR",
+              "F2",
+              "ME"
+            ],
+            "description": "Unit the quantity is measured in: UN units, ML milliliters, GR grams, F2 international units, ME milligrams."
           }
         },
         "required": [

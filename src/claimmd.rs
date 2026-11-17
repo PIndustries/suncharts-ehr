@@ -258,6 +258,26 @@ fn professional_json(out: &Submission) -> Result<Value> {
             }
             charge[format!("mod{}", position + 1)] = json!(modifier);
         }
+        // A charge carrying an injected drug's NDC sends it in Claim.MD's
+        // published drug fields. A line without an NDC writes none of them.
+        let ndc = [
+            line["ndc_code"].as_str().unwrap_or("").trim(),
+            line["ndc_quantity"].as_str().unwrap_or("").trim(),
+            line["ndc_unit"].as_str().unwrap_or("").trim(),
+        ];
+        if ndc.iter().any(|v| !v.is_empty()) {
+            for v in ndc {
+                if v.is_empty()
+                    || v.len() > 13
+                    || !v.bytes().all(|b| b == b'.' || b.is_ascii_alphanumeric())
+                {
+                    return Err(Error::Invalid("Claim.MD drug field is invalid"));
+                }
+            }
+            charge["ndc_code"] = json!(ndc[0]);
+            charge["ndc_dosage"] = json!(ndc[1]);
+            charge["ndc_measure"] = json!(ndc[2]);
+        }
         charges.push(charge);
     }
     native.insert("charge".into(), Value::Array(charges));
@@ -686,6 +706,34 @@ mod tests {
         assert_eq!(claim["charge"][0]["mod1"], "25");
         assert_eq!(claim["charge"][0]["mod2"], "95");
         assert!(value.get("AccountKey").is_none());
+    }
+
+    #[test]
+    fn a_charge_with_an_ndc_sends_the_claimmd_drug_fields_and_a_line_without_one_does_not() {
+        let mut out = submission();
+        out.claim_snapshot["snapshot"]["account"]["content"]["lines"][0]["ndc_code"] =
+            json!("00023114501");
+        out.claim_snapshot["snapshot"]["account"]["content"]["lines"][0]["ndc_quantity"] =
+            json!("100");
+        out.claim_snapshot["snapshot"]["account"]["content"]["lines"][0]["ndc_unit"] = json!("UN");
+        let charge = &professional_json(&out).unwrap()["claim"][0]["charge"][0];
+        assert_eq!(charge["ndc_code"], "00023114501");
+        assert_eq!(charge["ndc_dosage"], "100");
+        assert_eq!(charge["ndc_measure"], "UN");
+        // The record type stays as it was for every charge, drug or not.
+        assert_eq!(charge["charge_record_type"], "UN");
+        // Without an NDC none of the three drug fields appear at all.
+        let charge = &professional_json(&submission()).unwrap()["claim"][0]["charge"][0];
+        for field in ["ndc_code", "ndc_dosage", "ndc_measure"] {
+            assert!(
+                charge.get(field).is_none(),
+                "a line without an NDC must not send {field}"
+            );
+        }
+        // A half-recorded frozen drug set is refused, not guessed.
+        out.claim_snapshot["snapshot"]["account"]["content"]["lines"][0]["ndc_quantity"] =
+            json!("");
+        assert!(professional_json(&out).is_err());
     }
 
     #[test]
