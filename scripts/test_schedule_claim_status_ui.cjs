@@ -64,7 +64,7 @@ async function main(){
  assert.deepEqual(chipFor({status:'answered',claim_id:CLAIM},'no_show').map(m=>m.label),['Insurer answered']);
  assert.deepEqual(chipFor({status:'rejected',claim_id:CLAIM},'completed'),[{tone:'red',kind:'claim',tip:sentence('rejected'),label:'Claim rejected'}],'money work stays visible after the visit');
  assert.deepEqual(chipFor({status:'not_sent',claim_id:null},'completed','week').map(m=>m.label),['Claim not sent'],'the month and list cards keep a claim that still needs sending');
- assert.deepEqual(chipFor({status:'answered',claim_id:CLAIM},'completed','week'),[],'nothing to do, nothing shown');
+ assert.deepEqual(chipFor({status:'answered',claim_id:CLAIM},'completed','week').map(m=>m.label),['Insurer answered'],'a settled claim still shows where it stands on the small cards');
 
  // ---- The panel row, and where each button leads ----
  const panel=(claim,extra={},denied=[])=>{const g=fixture({denied});g.load([appointment('a','09:00','09:30',{status:'completed'})],[{...base,...extra,claim}]);return g.run('schedulePanelFacts(scheduleState.appointments[0])');};
