@@ -479,7 +479,17 @@ pub(crate) fn generate(
         &content.billing_npi,
     )?;
     address(&mut st, &d.billing_address)?;
-    st.push(seg(&["REF", "EI", &content.tax_id]));
+    // REF qualifier: SY for a Social Security number, EI for an EIN. A claim
+    // frozen before the type was recorded is sent as an EIN, as it always was.
+    st.push(seg(&[
+        "REF",
+        if content.tax_id_type == "S" {
+            "SY"
+        } else {
+            "EI"
+        },
+        &content.tax_id,
+    ]));
     st.push(seg(&[
         "HL",
         "2",
@@ -1055,6 +1065,34 @@ mod tests {
         assert!(g
             .payload
             .contains("HL*3*2*23*0~PAT*19~NM1*QC*1*SYNTHETIC*QUINN~"));
+    }
+    #[test]
+    fn billing_tax_id_qualifier_follows_the_recorded_identity() {
+        // REF*SY carries a Social Security number; REF*EI carries an EIN. A
+        // claim frozen before the type existed (no key at all, or "") is sent
+        // as an EIN, exactly as before the type was recorded.
+        let p = partner();
+        let d = details();
+        let now: DateTime<Utc> = "2026-10-23T12:34:00Z".parse().unwrap();
+        for (stored, qualifier) in [
+            (Value::Null, "EI"),
+            (json!(""), "EI"),
+            (json!("E"), "EI"),
+            (json!("S"), "SY"),
+        ] {
+            let mut c = claim();
+            if stored.is_null() {
+                // An old frozen claim never recorded the type: no key at all.
+                c.content.as_object_mut().unwrap().remove("tax_id_type");
+            } else {
+                c.content["tax_id_type"] = stored.clone();
+            }
+            let g = generate(&c, &p, &d, None, 46, now).unwrap();
+            assert!(
+                g.payload.contains(&format!("REF*{qualifier}*000000001~")),
+                "stored {stored:?} must file as REF*{qualifier}"
+            );
+        }
     }
     #[test]
     fn blank_payer_address_omits_its_n3_n4_while_partly_filled_is_rejected() {
