@@ -56754,6 +56754,10 @@
             "minLength": 1,
             "maxLength": 200
           },
+          "npi": {
+            "type": "string",
+            "pattern": "^$|^[0-9]{10}$"
+          },
           "tax_id": {
             "type": "string",
             "pattern": "^[0-9]{9}$",
@@ -56797,6 +56801,10 @@
             "minLength": 1,
             "maxLength": 200
           },
+          "npi": {
+            "type": "string",
+            "pattern": "^$|^[0-9]{10}$"
+          },
           "tax_id": {
             "type": "string",
             "pattern": "^[0-9]{9}$",
@@ -56824,6 +56832,7 @@
         "required": [
           "id",
           "name",
+          "npi",
           "tax_id_type",
           "tax_id_last4",
           "active",
@@ -56836,6 +56845,10 @@
           },
           "name": {
             "type": "string"
+          },
+          "npi": {
+            "type": "string",
+            "pattern": "^$|^[0-9]{10}$"
           },
           "tax_id_type": {
             "type": "string",

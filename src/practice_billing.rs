@@ -18,7 +18,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 const PURPOSE: &str = "billing-organization-tax";
-const VIEW: &str = "jsonb_build_object('id',id,'name',name,'tax_id_type',tax_id_type,'tax_id_last4',tax_id_last4,'active',active,'version',version)";
+const VIEW: &str = "jsonb_build_object('id',id,'name',name,'npi',npi,'tax_id_type',tax_id_type,'tax_id_last4',tax_id_last4,'active',active,'version',version)";
 fn db(s: &State) -> Result<&PgPool> {
     Ok(&s.browser.as_ref().ok_or(Error::Unauthorized)?.db)
 }
@@ -36,6 +36,8 @@ pub(crate) fn valid_tax_id(v: &str) -> bool {
 struct Save {
     request_id: Option<Uuid>,
     name: String,
+    #[serde(default)]
+    npi: String,
     tax_id: Option<String>,
     tax_id_type: String,
     active: bool,
@@ -119,6 +121,12 @@ async fn save(s: &State, h: &HeaderMap, id: Option<Uuid>, mut v: Save) -> Result
     if tax.as_ref().is_some_and(|t| !valid_tax_id(t)) {
         return Err(Error::Invalid("tax ID must contain exactly nine digits"));
     }
+    let npi = v.npi.trim().to_owned();
+    if !npi.is_empty() && !crate::practice_admin::valid_npi(&npi) {
+        return Err(Error::Invalid(
+            "Enter a valid 10-digit NPI or leave it blank.",
+        ));
+    }
     let creating = id.is_none();
     let id = id
         .or(v.request_id)
@@ -140,14 +148,15 @@ async fn save(s: &State, h: &HeaderMap, id: Option<Uuid>, mut v: Save) -> Result
         None
     };
     let mut tx = crate::practice_admin::locked(s, &a, h).await?;
-    let old:Option<(String,String,Vec<u8>,bool,i64)>=sqlx::query_as("SELECT name,tax_id_type,encrypted_tax_id,active,version FROM practice_billing_organizations WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
+    let old:Option<(String,String,String,Vec<u8>,bool,i64)>=sqlx::query_as("SELECT name,npi,tax_id_type,encrypted_tax_id,active,version FROM practice_billing_organizations WHERE tenant_id=$1 AND id=$2 FOR UPDATE")
  .bind(a.tenant_id).bind(id).fetch_optional(&mut *tx).await?;
     if creating {
-        if let Some((name, kind, cipher, active, version)) = old {
+        if let Some((name, old_npi, kind, cipher, active, version)) = old {
             let existing =
                 crate::provider_settings::open_secret(a.tenant_id, id, PURPOSE, &cipher)?;
             if version != 1
                 || name != v.name.trim()
+                || old_npi != npi
                 || kind != v.tax_id_type
                 || active != v.active
                 || tax.as_ref().is_none_or(|t| existing.expose() != t.as_str())
@@ -172,10 +181,10 @@ async fn save(s: &State, h: &HeaderMap, id: Option<Uuid>, mut v: Save) -> Result
             ));
         }
         let t = tax.as_ref().ok_or(Error::Invalid("tax ID is required"))?;
-        sqlx::query("INSERT INTO practice_billing_organizations(tenant_id,id,name,tax_id_type,encrypted_tax_id,tax_id_last4,active) VALUES($1,$2,$3,$4,$5,$6,$7)")
-  .bind(a.tenant_id).bind(id).bind(v.name.trim()).bind(&v.tax_id_type).bind(encrypted).bind(&t[5..]).bind(v.active).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO practice_billing_organizations(tenant_id,id,name,npi,tax_id_type,encrypted_tax_id,tax_id_last4,active) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
+  .bind(a.tenant_id).bind(id).bind(v.name.trim()).bind(&npi).bind(&v.tax_id_type).bind(encrypted).bind(&t[5..]).bind(v.active).execute(&mut *tx).await?;
     } else {
-        let (_, old_type, _, _, version) = old.ok_or(Error::NotFound)?;
+        let (_, _, old_type, _, _, version) = old.ok_or(Error::NotFound)?;
         if Some(version) != expected {
             return Err(Error::Conflict(
                 "billing organization changed; reload before saving",
@@ -186,8 +195,8 @@ async fn save(s: &State, h: &HeaderMap, id: Option<Uuid>, mut v: Save) -> Result
                 "enter the actual tax ID when changing its type",
             ));
         }
-        sqlx::query("UPDATE practice_billing_organizations SET name=$3,tax_id_type=$4,active=$5,encrypted_tax_id=COALESCE($6,encrypted_tax_id),tax_id_last4=COALESCE($7,tax_id_last4),version=version+1,updated_at=now() WHERE tenant_id=$1 AND id=$2")
-  .bind(a.tenant_id).bind(id).bind(v.name.trim()).bind(&v.tax_id_type).bind(v.active).bind(encrypted).bind(tax.as_ref().map(|t|&t[5..])).execute(&mut *tx).await?;
+        sqlx::query("UPDATE practice_billing_organizations SET name=$3,npi=$4,tax_id_type=$5,active=$6,encrypted_tax_id=COALESCE($7,encrypted_tax_id),tax_id_last4=COALESCE($8,tax_id_last4),version=version+1,updated_at=now() WHERE tenant_id=$1 AND id=$2")
+  .bind(a.tenant_id).bind(id).bind(v.name.trim()).bind(&npi).bind(&v.tax_id_type).bind(v.active).bind(encrypted).bind(tax.as_ref().map(|t|&t[5..])).execute(&mut *tx).await?;
     }
     let result = snapshot(&mut tx, &a, id).await?;
     sqlx::query("INSERT INTO practice_billing_organization_history(tenant_id,organization_id,version,actor_id,reason,content) VALUES($1,$2,$3,$4,$5,$6)")
