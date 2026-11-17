@@ -134,6 +134,30 @@ async fn oauth(db: &PgPool, tenant: Uuid, user: Uuid) -> (String, Uuid) {
 fn change(name: &str, base_role: &str, permissions: Value) -> Value {
     json!({"name":name,"base_role":base_role,"permissions":permissions,"reason":"Synthetic policy review"})
 }
+/// The route middleware classifies every request from the declared contract in
+/// `api/openapi.json`. A role's row is what its custom policy leaves it.
+fn declared_vitals_policy(base_role: &str, flags: Value) -> Value {
+    let spec: Value =
+        serde_json::from_str(include_str!("../api/openapi.json")).expect("contract is valid JSON");
+    let operation = &spec["paths"]["/api/v1/visits/{id}/vitals"]["put"];
+    let known = operation.is_object();
+    let description = operation["description"].as_str().unwrap_or_default();
+    let allowed = match base_role {
+        "clinician" | "nurse" | "medical_assistant" | "front_desk" => true,
+        "read_only" => false,
+        other => panic!("unsupported synthetic base role {other}"),
+    };
+    let vitals_only = description.contains("front_desk") && description.contains("vitals only");
+    json!({
+        "method": "PUT",
+        "path": "/api/v1/visits/{id}/vitals",
+        "known_route": known,
+        "declares_vitals_only_for": description.contains("front_desk"),
+        "vitals_only_wording": vitals_only,
+        "role_may_record": allowed,
+        "edit_permitted": flags["clinical"]["edit"],
+    })
+}
 async fn assign(f: &Fixture, user: Uuid, policy: Value, version: i64) -> (StatusCode, Value) {
     call(
         &f.app,
@@ -175,6 +199,24 @@ async fn custom_policies_are_tenant_scoped_and_intersect_native_roles_for_browse
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{policy}");
+    // The route middleware admits this route only as an `edit` on the clinical
+    // resource, so a policy without clinical edit cannot record vitals whatever the
+    // native role allows. The declared roles come from the contract itself.
+    let declared = declared_vitals_policy("front_desk", flags.clone());
+    assert_eq!(
+        declared,
+        json!({"method":"PUT","path":"/api/v1/visits/{id}/vitals","known_route":true,"declares_vitals_only_for":true,"vitals_only_wording":true,"role_may_record":true,"edit_permitted":true})
+    );
+    let mut no_edit = flags.clone();
+    no_edit["clinical"]["edit"] = json!(false);
+    assert_eq!(
+        declared_vitals_policy("front_desk", no_edit)["edit_permitted"],
+        false
+    );
+    assert_eq!(
+        declared_vitals_policy("read_only", flags.clone())["role_may_record"],
+        false
+    );
     let id = policy["id"].as_str().unwrap();
     let staff = user(&f.db, f.tenant, "front_desk").await;
     let old_session = session(&f.db, f.tenant, staff).await;

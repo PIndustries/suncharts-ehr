@@ -601,7 +601,9 @@ function renderChart() {
 }
 function canRegisterPatient(){return ['owner','clinician','front_desk'].includes(me?.role)&&(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('clinical','create'));}
 function isRoomingStaff(){return ['nurse','medical_assistant'].includes(me?.role);}
-function canRecordVisitVitals(v){return v?.status==='in_progress'&&(isRoomingStaff()||(['owner','clinician'].includes(me?.role)&&(v.clinician_id===me.user_id||!me?.delegated)));}
+// Vitals follow their own rule: rooming staff, the assigned or a covering clinician or
+// owner, and an enabled front desk account. Front desk records vitals and nothing else.
+function canRecordVisitVitals(v){return v?.status==='in_progress'&&(isRoomingStaff()||me?.role==='front_desk'||(['owner','clinician'].includes(me?.role)&&(v.clinician_id===me.user_id||!me?.delegated)));}
 function renderVisit(activate=true) {
   captureVisitAmendmentDraft();
   if(activate){chartSection='visits';}
