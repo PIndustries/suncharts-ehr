@@ -952,6 +952,7 @@ async fn claim_defaults(
     let organizations = crate::practice_billing::choices(pool, a.tenant_id).await?;
     let mut tax_id = String::new();
     let mut organization_name = String::new();
+    let mut organization_npi = String::new();
     if let [organization] = organizations.as_slice() {
         if let Some(id) = organization["id"]
             .as_str()
@@ -962,6 +963,9 @@ async fn claim_defaults(
             {
                 tax_id = secret.expose().to_owned();
                 organization_name = organization["name"].as_str().unwrap_or("").to_owned();
+                // A practice billing under its organization NPI sends the group's code with
+                // its own tax ID; blank leaves the clinician's NPI as the billing provider.
+                organization_npi = organization["npi"].as_str().unwrap_or("").to_owned();
             }
         }
     }
@@ -1004,7 +1008,11 @@ async fn claim_defaults(
             .or_else(|| Some(organization_name).filter(|name| !name.is_empty()))
             .or_else(|| provider.map(|row| row.1.clone()))
             .unwrap_or_default(),
-        billing_npi: provider.map(|row| row.2.clone()).unwrap_or_default(),
+        billing_npi: if organization_npi.is_empty() {
+            provider.map(|row| row.2.clone()).unwrap_or_default()
+        } else {
+            organization_npi
+        },
         tax_id,
         billing_address: facility.map(|row| row.1.clone()).unwrap_or_default(),
         rendering_npi: provider.map(|row| row.2.clone()).unwrap_or_default(),

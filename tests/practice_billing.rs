@@ -115,6 +115,10 @@ async fn billing_identity_is_encrypted_versioned_scoped_and_resolved_before_elig
     let (status, created) = call(&f.app, &f.cookie, "POST", path, body.clone(), None).await;
     assert_eq!(status, StatusCode::OK, "{created}");
     assert_eq!(created["tax_id_last4"], "0017");
+    assert_eq!(
+        created["npi"], "",
+        "an omitted NPI key keeps the organization blank"
+    );
     assert!(!created.to_string().contains(tax));
     let encrypted: Vec<u8> = sqlx::query_scalar(
         "SELECT encrypted_tax_id FROM practice_billing_organizations WHERE tenant_id=$1 AND id=$2",
@@ -237,6 +241,10 @@ async fn billing_identity_is_encrypted_versioned_scoped_and_resolved_before_elig
     assert_eq!(updated["version"], 2);
     assert_eq!(updated["tax_id_last4"], "0017");
     assert_eq!(
+        updated["npi"], "",
+        "an omitted NPI key on update keeps the blank"
+    );
+    assert_eq!(
         call(&f.app, &f.cookie, "PUT", &edit_path, edit, Some(1))
             .await
             .0,
@@ -284,6 +292,98 @@ async fn billing_identity_is_encrypted_versioned_scoped_and_resolved_before_elig
         count, 0,
         "stale or foreign identities never create an external request"
     );
+    cleanup(f).await;
+    std::env::remove_var("ENGINE_CREDENTIAL_KEY_FILE");
+    std::fs::remove_dir_all(key_dir).unwrap();
+}
+
+#[tokio::test]
+async fn organization_npi_is_saved_returned_and_shown_in_history_and_choices() {
+    let _key_file = suncharts_engine::test_db::credential_key_lock()
+        .lock()
+        .await;
+    let f = setup().await;
+    let key_dir = std::env::temp_dir().join(format!("billing-npi-{}", Uuid::new_v4()));
+    std::env::set_var("ENGINE_CREDENTIAL_KEY_FILE", key_dir.join("key"));
+    let path = "/api/v1/practice/billing-organizations";
+    let org_npi = "1234567893";
+    let id = Uuid::new_v4();
+    let body = json!({"request_id":id,"name":"Synthetic Group Practice","npi":org_npi,"tax_id":"000000017","tax_id_type":"E","active":true,"reason":"Synthetic reviewed group NPI"});
+    let (status, created) = call(&f.app, &f.cookie, "POST", path, body.clone(), None).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["npi"], org_npi, "the saved NPI is returned");
+    let stored: String = sqlx::query_scalar(
+        "SELECT npi FROM practice_billing_organizations WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(f.tenant)
+    .bind(id)
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(stored, org_npi);
+    let (_, listed) = call(&f.app, &f.cookie, "GET", path, Value::Null, None).await;
+    assert_eq!(listed["items"][0]["npi"], org_npi);
+    let (_, history) = call(
+        &f.app,
+        &f.cookie,
+        "GET",
+        &format!("{path}/{id}/history"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(
+        history["items"][0]["content"]["npi"], org_npi,
+        "history content carries the NPI the way name and tax ID type do"
+    );
+    // choices() feeds other modules; it must expose the NPI too.
+    let (_, defaults) = call(
+        &f.app,
+        &f.cookie,
+        "GET",
+        "/api/v1/billing/claimmd/provider-defaults",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(defaults["billing_organizations"][0]["npi"], org_npi);
+    // A checksum-invalid or malformed NPI is rejected with the owner-facing text.
+    for bad in ["1234567890", "1234", "123456789x", "0234567893"] {
+        let mut rejected = body.clone();
+        rejected["request_id"] = json!(Uuid::new_v4());
+        rejected["npi"] = json!(bad);
+        let (status, out) = call(&f.app, &f.cookie, "POST", path, rejected, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {out}");
+        assert_eq!(
+            out["message"],
+            "Enter a valid 10-digit NPI or leave it blank."
+        );
+    }
+    // Surrounding space is trimmed before the check and the save.
+    let spaced = json!({"request_id":Uuid::new_v4(),"name":"Synthetic Spaced NPI","npi":"  1234567893  ","tax_id":"000000017","tax_id_type":"E","active":true,"reason":"Synthetic trimmed NPI"});
+    let (status, spaced) = call(&f.app, &f.cookie, "POST", path, spaced, None).await;
+    assert_eq!(status, StatusCode::OK, "{spaced}");
+    assert_eq!(spaced["npi"], org_npi);
+    // An update sets, then clears, the organization NPI.
+    let edit_path = format!("{path}/{id}");
+    let edit = json!({"name":"Synthetic Billing Organization","npi":"","tax_id_type":"E","active":true,"reason":"Synthetic NPI cleared"});
+    let (status, cleared) = call(&f.app, &f.cookie, "PUT", &edit_path, edit.clone(), Some(1)).await;
+    assert_eq!(status, StatusCode::OK, "{cleared}");
+    assert_eq!(
+        cleared["npi"], "",
+        "an update may clear the organization NPI"
+    );
+    let (_, history) = call(
+        &f.app,
+        &f.cookie,
+        "GET",
+        &format!("{path}/{id}/history"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(history["items"][0]["content"]["npi"], "");
+    assert_eq!(history["items"][1]["content"]["npi"], org_npi);
     cleanup(f).await;
     std::env::remove_var("ENGINE_CREDENTIAL_KEY_FILE");
     std::fs::remove_dir_all(key_dir).unwrap();
