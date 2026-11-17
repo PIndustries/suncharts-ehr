@@ -104,9 +104,16 @@ async function testEncounterStates() {
   }
   for (const role of ['front_desk', 'read_only']) {
     f.evaluate(`me.role=${JSON.stringify(role)};activeVisit.clinician_id='author';activeVisit.status='in_progress';renderVisit(false)`);
-    assert.doesNotMatch(f.node('visit-editor').innerHTML, /data-action="sign"|>Save note<|>Save vitals</, role);
+    assert.doesNotMatch(f.node('visit-editor').innerHTML, /data-action="sign"|>Save note<|id="amendment-form"/, role);
     assert.match(f.node('visit-editor').innerHTML, /<p id="note-read-only" class="muted">You can read this note\. Clinical staff write it and a clinician signs it\.<\/p>/, role);
   }
+  // Front desk records vitals on the in-progress visit; read-only staff do not.
+  f.evaluate(`me.role='front_desk';activeVisit.clinician_id='author';activeVisit.status='in_progress';renderVisit(false)`);
+  assert.match(f.node('visit-editor').innerHTML, />Save vitals</, 'front_desk');
+  // The vitals form is the only thing front desk gets: no rooming intake on the screen.
+  assert.doesNotMatch(f.node('visit-editor').innerHTML, /id="rooming-form"/);
+  f.evaluate(`me.role='read_only';renderVisit(false)`);
+  assert.doesNotMatch(f.node('visit-editor').innerHTML, />Save vitals</, 'read_only');
   assert.doesNotMatch(f.node('visit-editor').innerHTML, /Documentation is read-only|Only the assigned clinician/);
 }
 
