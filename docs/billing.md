@@ -695,6 +695,15 @@ and reference amounts remain attached to the proposal. No Medicare dataset or
 CPT descriptions are bundled with the EHR. A source reference does not establish
 coverage, medical necessity or the amount an insurer will pay.
 
+Owners can instead type or paste the practice's own price list on the same
+screen (**Enter your own prices**): one line per code, e.g. `99214 169.81`,
+with an optional modifier between the code and the price. The chosen dates,
+provider, facility and office/facility setting are recorded, each line becomes
+one exact price entry, and a multiplier of 100% applies. Such a schedule
+records no published source: it stores only the practice's own note that the
+prices were entered by the practice. It is still saved as an inactive draft and
+needs the same explicit owner approval before charges use it.
+
 Saving a proposal does not activate prices. Review the complete entries and
 source evidence, acknowledge the scope and approve the current version with a
 reason. Proposals and entries are immutable; correct them by preparing a new

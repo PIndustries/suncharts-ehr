@@ -568,3 +568,198 @@ async fn fee_reads_require_staff_billing_permission_and_billing_oauth_scope() {
     assert_eq!(bearer_call(&f.app, &token, &path).await, StatusCode::OK);
     cleanup(f).await;
 }
+fn practice_body(f: &Fixture, facility: Uuid, extra_source: Option<Value>) -> Value {
+    let mut source = json!({"id":"practice","kind":"practice_entered","entered_by_note":"Entered by the practice"});
+    if let Some(extra) = extra_source {
+        for (k, v) in extra.as_object().unwrap() {
+            source.as_object_mut().unwrap().insert(k.clone(), v.clone());
+        }
+    }
+    json!({"request_id":Uuid::new_v4(),"reason":"Synthetic practice-entered price list","content":{"name":"Practice prices","provider_id":f.owner,"facility_id":facility,"setting":"nonfacility","qp_basis":"not_applicable","locality":"Practice","reference_from":"2026-11-01","reference_to":"2027-12-31","effective_from":"2026-11-01","effective_to":"2027-12-31","multiplier_basis_points":10000,"default_for_scope":true,"sources":[source],"entries":[{"code_system":"CPT","code":"99214","modifiers":"","reference_unit_cents":16981,"source_id":"practice","source_row":1,"qualification":"Practice price"},{"code_system":"CPT","code":"99213","modifiers":"TC","reference_unit_cents":11000,"source_id":"practice","source_row":2,"qualification":"Practice price"}]}})
+}
+#[tokio::test]
+async fn practice_entered_schedule_is_approved_and_prices_charges() {
+    let f = setup().await;
+    let (p, v, facility) = clinical_fixture(&f).await;
+    let body = practice_body(&f, facility, None);
+    let (status, draft) = call(
+        &f.app,
+        &f.cookie,
+        "POST",
+        "/api/v1/practice/fee-schedules",
+        body.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{draft}");
+    assert_eq!(draft["status"], "draft");
+    let item = draft["content"]["sources"][0].as_object().unwrap();
+    assert_eq!(item.get("kind"), Some(&json!("practice_entered")));
+    assert_eq!(
+        item.get("entered_by_note"),
+        Some(&json!("Entered by the practice"))
+    );
+    assert_eq!(item.get("url"), Some(&json!("")));
+    assert_eq!(item.get("sha256"), Some(&json!("")));
+    assert_eq!(item.get("published_on"), Some(&json!(null)));
+    let (_, history) = call(
+        &f.app,
+        &f.cookie,
+        "GET",
+        &format!(
+            "/api/v1/practice/fee-schedules/{}/history",
+            draft["id"].as_str().unwrap()
+        ),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert!(
+        history["items"][0]
+            .to_string()
+            .contains(r#""kind":"practice_entered""#),
+        "the draft history keeps the new fields"
+    );
+    let action_path = format!(
+        "/api/v1/practice/fee-schedules/{}/actions",
+        draft["id"].as_str().unwrap()
+    );
+    let (status, approved) = call(
+        &f.app,
+        &f.cookie,
+        "POST",
+        &action_path,
+        json!({"action":"approve","reason":"Owner reviewed the typed price list","reviewed_scope_and_sources":true}),
+        Some(1),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{approved}");
+    let (_, q) = quote(&f, p, v, facility, "99214", "").await;
+    assert_eq!(q["quote"]["unit_amount_cents"], 16981);
+    assert_eq!(q["quote"]["expected_line_amount_cents"], 33962);
+    assert!(q["quote"]["schedule"]
+        .to_string()
+        .contains(r#""kind":"practice_entered""#));
+    assert!(quote(&f, p, v, facility, "99213", "").await.1["quote"].is_null());
+    let (_, with_mod) = quote(&f, p, v, facility, "99213", "TC").await;
+    assert_eq!(with_mod["quote"]["unit_amount_cents"], 11000);
+    cleanup(f).await;
+}
+#[tokio::test]
+async fn practice_entered_sources_reject_published_evidence_and_keep_defaults() {
+    let f = setup().await;
+    let (_, _, facility) = clinical_fixture(&f).await;
+    let mut carried = practice_body(&f, facility, None);
+    carried["request_id"] = json!(Uuid::new_v4());
+    let source = carried["content"]["sources"][0].as_object_mut().unwrap();
+    source.insert("url".into(), json!(""));
+    source.insert("sha256".into(), json!("a".repeat(64)));
+    assert_eq!(
+        call(
+            &f.app,
+            &f.cookie,
+            "POST",
+            "/api/v1/practice/fee-schedules",
+            carried,
+            None,
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST,
+        "a practice-entered source must not carry published evidence"
+    );
+    let mut without_note = practice_body(&f, facility, None);
+    without_note["request_id"] = json!(Uuid::new_v4());
+    without_note["content"]["sources"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("entered_by_note");
+    assert_eq!(
+        call(
+            &f.app,
+            &f.cookie,
+            "POST",
+            "/api/v1/practice/fee-schedules",
+            without_note,
+            None,
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST,
+        "a practice-entered source requires its note"
+    );
+    let mut unknown_kind = practice_body(&f, facility, Some(json!({"kind":"other"})));
+    unknown_kind["request_id"] = json!(Uuid::new_v4());
+    assert_eq!(
+        call(
+            &f.app,
+            &f.cookie,
+            "POST",
+            "/api/v1/practice/fee-schedules",
+            unknown_kind,
+            None,
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    // A stored proposal without "kind" keeps the published rules exactly as before.
+    let body = proposal(&f, facility);
+    let (status, draft) = call(
+        &f.app,
+        &f.cookie,
+        "POST",
+        "/api/v1/practice/fee-schedules",
+        body.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{draft}");
+    let action_path = format!(
+        "/api/v1/practice/fee-schedules/{}/actions",
+        draft["id"].as_str().unwrap()
+    );
+    let (status, approved) = call(
+        &f.app,
+        &f.cookie,
+        "POST",
+        &action_path,
+        json!({"action":"approve","reason":"Reviewed synthetic published source","reviewed_scope_and_sources":true}),
+        Some(1),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{approved}");
+    assert_eq!(draft["content"]["sources"][0]["kind"], "published");
+    assert!(draft
+        .to_string()
+        .contains(r#""url":"https://www.cms.gov/synthetic-fixture""#));
+    assert_eq!(
+        draft["content"]["sources"][0]
+            .as_object()
+            .unwrap()
+            .get("entered_by_note"),
+        Some(&json!(null)),
+        "a published source carries no practice note"
+    );
+    let mut explicit = body.clone();
+    explicit["request_id"] = json!(Uuid::new_v4());
+    explicit["content"]["sources"][0]
+        .as_object_mut()
+        .unwrap()
+        .insert("kind".into(), json!("published"));
+    assert_eq!(
+        call(
+            &f.app,
+            &f.cookie,
+            "POST",
+            "/api/v1/practice/fee-schedules",
+            explicit,
+            None,
+        )
+        .await
+        .0,
+        StatusCode::OK,
+        "an explicit published kind behaves like the stored default"
+    );
+    cleanup(f).await;
+}

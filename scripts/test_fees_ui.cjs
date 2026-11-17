@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-const events={},context={console,URLSearchParams,Number,Set,Map,WeakMap,JSON,me:{role:'owner'},selected:'patient-a',document:{addEventListener:(kind,fn)=>(events[kind]??=[]).push(fn)},esc:String,money:n=>'$'+(n/100).toFixed(2),dollars:n=>(n/100).toFixed(2),cents:s=>{if(!/^\d+(\.\d{1,2})?$/.test(s))throw Error('invalid');return Math.round(Number(s)*100);},captureBillingChargeDraft:()=>{},api:async()=>({quote:null,reason:'No approved match'})};vm.createContext(context);vm.runInContext(fs.readFileSync('web/fees.js','utf8'),context);
+class FormData{constructor(form){this._e=Object.values(form.elements??{});}[Symbol.iterator](){return this._e.map(f=>[f.name,f.value])[Symbol.iterator]();}}
+const events={},context={console,URLSearchParams,Number,Set,Map,WeakMap,JSON,Error,FormData,me:{role:'owner'},selected:'patient-a',document:{addEventListener:(kind,fn)=>(events[kind]??=[]).push(fn)},esc:String,money:n=>'$'+(n/100).toFixed(2),dollars:n=>(n/100).toFixed(2),cents:s=>{if(!/^\d+(\.\d{1,2})?$/.test(s))throw Error('invalid');return Math.round(Number(s)*100);},captureBillingChargeDraft:()=>{},api:async()=>({quote:null,reason:'No approved match'})};vm.createContext(context);vm.runInContext(fs.readFileSync('web/fees.js','utf8'),context);
 function fixture(amount='',preserved=false){const fields={code_system:{value:'CPT'},code:{value:'99214'},modifiers:{value:''},units:{value:'2'},amount:{value:amount}};const overrideInput={value:'',required:false},label={hidden:true,querySelector:()=>overrideInput},status={textContent:''},apply={hidden:true};const host={dataset:{feeSchedule:'',feeEntry:'',feeExpected:'',...(preserved?{feePreserved:'true'}:{})},querySelector:q=>q==='[name="fee_override_reason"]'?overrideInput:q==='[data-fee-override]'?label:q==='[data-fee-status]'?status:q==='[data-fee-apply]'||q==='[data-fee-manual]'?apply:null};const row={isConnected:true,querySelector:q=>q==='[data-fee-line]'?host:fields[q.match(/name="(.+)"/)?.[1]]};const form={isConnected:true,dataset:{patient:'patient-a'},elements:{visit_id:{value:'visit-a'},service_date:{value:'2026-11-01'}},querySelector:q=>q==='[name="fee_facility"]'?{value:'facility-a'}:q==='[name="fee_setting"]'?{value:'nonfacility'}:null};return {form,row,host,fields,overrideInput,label,status,apply};}
 const q={schedule_id:'schedule-a',entry_key:'CPT:99214:',unit_amount_cents:1234,expected_line_amount_cents:2468,units:2,schedule:{name:'Approved synthetic',qp_basis:'non_qp',locality:'Synthetic'}};
 (async()=>{let f=fixture();context.api=async()=>({quote:q});await context.checkFee(f.form,f.row);assert.equal(f.fields.amount.value,'24.68');assert.equal(f.host.dataset.feeSchedule,'schedule-a');assert.equal(context.feeLineValue(f.row).fee_entry_key,'CPT:99214:');f.fields.amount.value='20.00';context.feeOverrideState(f.row);assert.equal(f.overrideInput.required,true);f.overrideInput.value='Reviewed exception';assert.equal(context.feeLineValue(f.row).fee_override_reason,'Reviewed exception');
@@ -33,4 +34,44 @@ const q={schedule_id:'schedule-a',entry_key:'CPT:99214:',unit_amount_cents:1234,
  p=mkPlace([{id:'facility-a',name:'Synthetic Office A'}],'facility-b','facility');context.api=async path=>path.includes('fee-context')?{facilities:[{id:'facility-a',name:'Synthetic Office A'}],facility_id:'facility-a',setting:'facility',reason:'Approved default'}:{quote:quotes};await context.loadFeeContext(p.form);
  assert.equal(p.facility.value,'facility-b','a saved value beats a remembered one');assert.equal(p.setting.value,'facility','a saved setting beats a remembered one');
  {context.localStorage={getItem:()=>{throw new Error('storage blocked');},setItem:()=>{throw new Error('storage blocked');}};p=mkPlace([{id:'facility-a',name:'Synthetic Office A'}]);context.api=async path=>path.includes('fee-context')?{facilities:[{id:'facility-a',name:'Synthetic Office A'},{id:'facility-b',name:'Synthetic Office B'}],facility_id:'',setting:'',reason:'No automatic default'}:{quote:quotes};await context.loadFeeContext(p.form);assert.equal(p.facility.value,'','a blocked storage still never guesses from a choice list');assert.equal(p.setting.value,'nonfacility','blocked storage still defaults to the office setting');const broken=new Map([['suncharts.charge.place','{not json']]);context.localStorage={getItem:k=>broken.has(k)?broken.get(k):null,setItem:(k,v)=>broken.set(k,String(v))};p=mkPlace([{id:'facility-a',name:'Synthetic Office A'}]);context.api=async path=>path.includes('fee-context')?{facilities:[{id:'facility-a',name:'Synthetic Office A'}],facility_id:'',setting:'',reason:'No automatic default'}:{quote:quotes};await context.loadFeeContext(p.form);assert.equal(p.facility.value,'facility-a','unreadable memory falls back to the single-facility default');context.localStorage={getItem:k=>placeStore.has(k)?placeStore.get(k):null,setItem:(k,v)=>placeStore.set(k,String(v))};}
- console.log('PASS fee UI: inactive proposal conversion, role controls, exact-context quoting, new-line units, preserved manual/saved amounts, override reasons, stale async isolation, and new-draft facility/setting defaults with browser memory');})().catch(e=>{console.error(e);process.exit(1)});
+  // Typed practice price list: the parser, the built draft request, and the plain messages.
+  {
+    const parsed=context.parsePracticePrices('99214 169.81\n99213,25,$110\nJ0585\t7.50');
+    assert.equal(JSON.stringify(parsed.map(e=>[e.code_system,e.code,e.modifiers,e.reference_unit_cents,e.source_row])),JSON.stringify([['CPT','99214','',16981,1],['CPT','99213','25',11000,2],['HCPCS','J0585','',750,3]]));
+    assert.ok(parsed.every(e=>e.source_id==='practice'&&e.qualification==='Practice price'));
+    assert.throws(()=>context.parsePracticePrices('99214 169.81\nnot a line at all\n99215 200'),/^Error: Line 2 is not a code and a price\.$/,'the first unreadable line is named');
+    assert.throws(()=>context.parsePracticePrices('99214 169.81\n99214 200'),/Line 2 repeats .*line 1/,'a repeated code and modifier names both lines');
+    assert.throws(()=>context.parsePracticePrices(''),/at least one line/);
+    const built=context.preparePracticeProposal({name:'Practice prices',provider_id:'provider',facility_id:'facility',setting:'nonfacility',effective_from:'2026-11-17',effective_to:'2027-12-31'},parsed);
+    assert.equal(built.reference_from,'2026-11-17');assert.equal(built.effective_from,'2026-11-17');assert.equal(built.reference_to,'2027-12-31');assert.equal(built.effective_to,'2027-12-31');
+    assert.equal(built.multiplier_basis_points,10000);assert.equal(built.qp_basis,'not_applicable');assert.equal(built.locality,'Practice');assert.equal(built.default_for_scope,true);
+    assert.equal(JSON.stringify(built.sources),JSON.stringify([{id:'practice',kind:'practice_entered',entered_by_note:'Entered by the practice'}]));
+    assert.equal(built.entries.length,3);
+    assert.throws(()=>context.preparePracticeProposal({name:'x',provider_id:'',facility_id:'f',setting:'nonfacility',effective_from:'2026-11-17',effective_to:'2027-12-31'},parsed),/provider/);
+    assert.throws(()=>context.preparePracticeProposal({name:'x',provider_id:'p',facility_id:'f',setting:'nonfacility',effective_from:'2027-12-31',effective_to:'2026-11-17'},parsed));
+    const admin=[],sent=[];
+    const tag=q=>q.startsWith('#')?q.slice(1):null;
+    const select=v=>({value:v});
+    const field=(name,value)=>({name,value});
+    const practiceForm=(prices,overrides={})=>{const fields={provider_id:field('provider_id',overrides.provider_id??'provider-a'),facility_id:field('facility_id',overrides.facility_id??'facility-a'),place:field('place',overrides.place??'nonfacility'),starts:field('starts','2026-11-17'),ends:field('ends','2027-12-31'),name:field('name','Practice prices'),prices:field('prices',prices),reason:field('reason','unused')};const status={textContent:''};return {id:'fee-practice-form',isConnected:true,dataset:{},elements:fields,querySelector:q=>q==='[data-fee-prices-status]'?status:null,querySelectorAll:()=>[],parentElement:{replaceChildren:node=>admin.push(node)}};};
+    const priceEvents=events.submit.filter(fn=>fn.toString().includes("'fee-practice-form'"));assert.equal(priceEvents.length,1,'the typed price list form is wired');
+    context.crypto=require('node:crypto');
+    context.run=action=>action().catch(err=>context.notice(err.message,true));
+    context.$=()=>({hidden:true});
+    context.notice=(m,isError)=>admin.push({notice:m,error:!!isError});
+    context.api=async(path,method,body)=>{if(method==='POST'){sent.push({path,method,body});return {id:'draft-a',status:'draft'};}return {items:[]};};
+    vm.runInContext(`feeAdminState={identity:me,schedules:[],providers:[{id:'provider-a',display_name:'Synthetic Provider',active:true}],facilities:[{id:'facility-a',name:'Synthetic Office',active:true}],proposal:null}`,context);
+    const bad=practiceForm('99214 169.81\nnonsense here');
+    for(const listener of priceEvents)listener({target:bad,preventDefault:()=>{}});
+    await new Promise(setImmediate);
+    assert.equal(sent.length,0,'an unreadable line sends nothing');
+    assert.match(bad.querySelector('[data-fee-prices-status]').textContent,/Line 2 is not a code and a price\./);
+    const good=practiceForm('99214 169.81\n99213,25,$110');
+    for(const listener of priceEvents)listener({target:good,preventDefault:()=>{}});
+    await new Promise(setImmediate);
+    assert.equal(sent.length,1,'a readable list is sent once');
+    assert.equal(sent[0].path,'/api/v1/practice/fee-schedules');assert.equal(sent[0].method,'POST');
+    assert.equal(sent[0].body.content.sources[0].kind,'practice_entered');assert.equal(sent[0].body.content.entries[1].source_row,2);
+    assert.match(sent[0].body.request_id,/^[0-9a-f-]{36}$/,'a stable request id is sent');
+  }
+  console.log('PASS fee UI: inactive proposal conversion, role controls, exact-context quoting, new-line units, preserved manual/saved amounts, override reasons, stale async isolation, new-draft facility/setting defaults with browser memory, and the typed practice price list');})().catch(e=>{console.error(e);process.exit(1)});
