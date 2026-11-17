@@ -39,8 +39,12 @@ pub(crate) fn token(r: &Route) -> Result<String> {
     }
 }
 fn required<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
+    // A stray leading/trailing space saved on a frozen coverage or payer must not
+    // block the send and must not reach Claim.MD, so the value is trimmed before
+    // it is used.
     value[key]
         .as_str()
+        .map(str::trim)
         .filter(|v| !v.is_empty())
         .ok_or(Error::Invalid("Claim.MD professional claim field missing"))
 }
@@ -69,7 +73,7 @@ fn address(
             value["postal_code"].as_str(),
         ]
         .into_iter()
-        .all(|part| part.unwrap_or_default().is_empty())
+        .all(|part| part.unwrap_or_default().trim().is_empty())
     {
         return Ok(());
     }
@@ -80,7 +84,11 @@ fn address(
         ("state", "state"),
         ("postal_code", "zip"),
     ] {
-        if let Some(text) = value[source].as_str().filter(|v| !v.is_empty()) {
+        if let Some(text) = value[source]
+            .as_str()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
             target.insert(format!("{prefix}_{suffix}"), json!(text));
         } else if source != "line2" {
             return Err(Error::Invalid("Claim.MD claim address is incomplete"));
@@ -158,11 +166,16 @@ fn professional_json(out: &Submission) -> Result<Value> {
     native.insert("payer_order".into(), json!("Primary"));
     if let Some(date) = content["subscriber_birth_date"]
         .as_str()
+        .map(str::trim)
         .filter(|v| !v.is_empty())
     {
         native.insert("ins_dob".into(), json!(date));
     }
-    if let Some(group) = coverage["group_number"].as_str().filter(|v| !v.is_empty()) {
+    if let Some(group) = coverage["group_number"]
+        .as_str()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
         native.insert("ins_group".into(), json!(group));
     }
     for (source, target) in [("patient_sex", "pat_sex"), ("subscriber_sex", "ins_sex")] {
@@ -174,7 +187,11 @@ fn professional_json(out: &Submission) -> Result<Value> {
     address(&mut native, "pat", &details["patient_address"], false)?;
     address(&mut native, "ins", &details["subscriber_address"], false)?;
     address(&mut native, "payer", &details["payer_address"], true)?;
-    if let Some(name) = payer["name"].as_str().filter(|v| !v.is_empty()) {
+    if let Some(name) = payer["name"]
+        .as_str()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
         native.insert("payer_name".into(), json!(name));
     }
     let diagnoses = content["diagnosis_codes"]
@@ -188,6 +205,7 @@ fn professional_json(out: &Submission) -> Result<Value> {
             format!("diag_{}", index + 1),
             json!(diagnosis
                 .as_str()
+                .map(str::trim)
                 .filter(|v| !v.is_empty())
                 .ok_or(Error::Invalid("Claim.MD diagnosis is invalid"))?
                 .replace('.', "")),
@@ -825,5 +843,18 @@ mod tests {
                 "{party} must stay strictly required"
             );
         }
+    }
+
+    #[test]
+    fn outer_whitespace_is_trimmed_from_ins_number_names_and_address() {
+        let mut out = submission();
+        out.claim_snapshot["snapshot"]["account"]["coverage_snapshot"]["coverage"]["content"]
+            ["member_id"] = json!("ABC123 ");
+        out.claim_snapshot["snapshot"]["patient"]["given_name"] = json!(" Quinn");
+        out.details["billing_address"]["line1"] = json!("  1 Test Way\t");
+        let claim = &professional_json(&out).unwrap()["claim"][0];
+        assert_eq!(claim["ins_number"], "ABC123");
+        assert_eq!(claim["pat_name_f"], "Quinn");
+        assert_eq!(claim["bill_addr_1"], "1 Test Way");
     }
 }

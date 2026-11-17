@@ -328,7 +328,7 @@ pub(crate) fn preflight(c: &Claim) -> Result<Vec<String>> {
     // failing later when the file is generated.
     let plain = "can only use plain letters, numbers and basic punctuation (no long dashes, accents or curly quotes)";
     if !p.billing_provider_name.trim().is_empty()
-        && crate::x12::element(&p.billing_provider_name, 1, 60).is_err()
+        && crate::x12::element(&p.billing_provider_name, 1, 60, "billing_provider_name").is_err()
     {
         issues.push(format!(
             "Billing provider name {plain}, up to 60 characters"
@@ -337,8 +337,76 @@ pub(crate) fn preflight(c: &Claim) -> Result<Vec<String>> {
     if let Some(payer) =
         c.snapshot["account"]["coverage_snapshot"]["payer"]["content"]["name"].as_str()
     {
-        if crate::x12::element(payer, 1, 60).is_err() {
+        if crate::x12::element(payer, 1, 60, "payer_name").is_err() {
             issues.push(format!("Payer name {plain}, up to 60 characters"));
+        }
+    }
+    // The frozen snapshot carries these as plain strings. element() trims outer
+    // whitespace, so a value that only has a stray leading/trailing space is never
+    // an issue here; an inner bad character or an over-long value is named before
+    // staff reach the send form.
+    let cov = &c.snapshot["account"]["coverage_snapshot"]["coverage"]["content"];
+    let patient = &c.snapshot["patient"];
+    for (value, min, max, label, issue) in [
+        (
+            cov["member_id"].as_str().unwrap_or(""),
+            2,
+            80,
+            "member_id",
+            format!("Member ID {plain}, 2 to 80 characters"),
+        ),
+        (
+            cov["group_number"].as_str().unwrap_or(""),
+            0,
+            50,
+            "group_number",
+            format!("Group number {plain}, up to 50 characters"),
+        ),
+        (
+            cov["plan_name"].as_str().unwrap_or(""),
+            0,
+            50,
+            "plan_name",
+            format!("Insurance plan name {plain}, up to 50 characters"),
+        ),
+        (
+            patient["given_name"].as_str().unwrap_or(""),
+            1,
+            35,
+            "patient_given_name",
+            format!("Patient first name {plain}, 1 to 35 characters"),
+        ),
+        (
+            patient["family_name"].as_str().unwrap_or(""),
+            1,
+            60,
+            "patient_family_name",
+            format!("Patient last name {plain}, 1 to 60 characters"),
+        ),
+        (
+            c.snapshot["account"]["coverage_snapshot"]["payer"]["content"]["name"]
+                .as_str()
+                .unwrap_or(""),
+            1,
+            60,
+            "payer_name",
+            format!("Insurer name {plain}, 1 to 60 characters"),
+        ),
+        (
+            c.snapshot["account"]["coverage_snapshot"]["payer"]["content"]["payer_code"]
+                .as_str()
+                .unwrap_or(""),
+            2,
+            80,
+            "payer_code",
+            format!("Insurer ID {plain}, 2 to 80 characters"),
+        ),
+    ] {
+        if value.trim().is_empty() && min == 0 {
+            continue;
+        }
+        if crate::x12::element(value, min, max, label).is_err() {
+            issues.push(issue);
         }
     }
     if p.tax_id.len() != 9 || !p.tax_id.bytes().all(|b| b.is_ascii_digit()) {
@@ -2096,7 +2164,9 @@ pub(crate) async fn post_rows(
 
 #[cfg(test)]
 mod submission_default_tests {
-    use super::{new_control_number, split_person_name, structured_x12_address, x12_sex};
+    use super::{
+        new_control_number, preflight, split_person_name, structured_x12_address, x12_sex,
+    };
     use serde_json::json;
 
     #[test]
@@ -2155,6 +2225,42 @@ mod submission_default_tests {
                 "state": "IL",
                 "postal_code": "61114"
             })
+        );
+    }
+
+    fn preflight_claim(member_id: &str) -> super::Claim {
+        super::Claim {
+            id: uuid::Uuid::new_v4(),
+            patient_id: uuid::Uuid::new_v4(),
+            account_id: uuid::Uuid::new_v4(),
+            payer_id: uuid::Uuid::new_v4(),
+            control_number: "SCCONTROLCASE0001".into(),
+            frequency: "original".into(),
+            parent_id: None,
+            status: "ready".into(),
+            version: 2,
+            payer_control_number: String::new(),
+            source_history_id: None,
+            content: json!({"billing_provider_name":"Synthetic Practice","billing_npi":"1234567893","tax_id":"000000001","billing_address":"1 Example Way","rendering_npi":"1234567893","patient_address":"1 Example Way","subscriber_address":"1 Example Way","subscriber_birth_date":"1990-01-01","place_of_service":"11","diagnosis_codes":["Z00.00"],"line_diagnosis_pointers":[[1]],"external_control_number":"","notes":"Synthetic"}),
+            snapshot: json!({"patient":{"given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-01"},"account":{"total_cents":10000,"content":{"currency":"USD","service_date":"2026-10-25","lines":[{"code_system":"CPT","code":"99213","modifiers":"","units":1,"amount_cents":10000}]},"coverage_snapshot":{"coverage":{"content":{"priority":"primary","relationship":"self","member_id":member_id,"group_number":"SYN-GROUP","plan_name":"Synthetic plan"}},"payer":{"content":{"name":"Synthetic Payer","payer_code":"SYN-PAYER"}}}}}),
+        }
+    }
+
+    #[test]
+    fn preflight_trims_outer_whitespace_but_names_an_inner_bad_member_id() {
+        let padded = preflight_claim(" ABC123 ");
+        assert!(
+            preflight(&padded).unwrap().is_empty(),
+            "a member ID with only outer whitespace must not be an issue: {:?}",
+            preflight(&padded).unwrap()
+        );
+        let inner = preflight_claim("AB~CD");
+        let issues = preflight(&inner).unwrap();
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.starts_with("Member ID") && i.contains("plain letters")),
+            "expected a named member ID issue, got {issues:?}"
         );
     }
 }

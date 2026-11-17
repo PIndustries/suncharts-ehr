@@ -28,36 +28,84 @@ pub struct PartnerContent {
     pub usage: String,
     pub guide_reference: String,
 }
-pub fn element(s: &str, min: usize, max: usize) -> Result<String> {
-    if s.len() < min
-        || s.len() > max
-        || !s
+/// Every value that reaches a claim file is trimmed of leading/trailing
+/// whitespace first (so tabs and non-breaking spaces too), then the length,
+/// printable-ASCII and delimiter rules apply to the trimmed text and the trimmed
+/// text is returned. A stray outer space saved on a coverage or payer therefore
+/// never blocks sending; an inner bad character or an over-long value still does,
+/// and the refusal names the field so billing staff can see what to fix.
+pub fn element(s: &str, min: usize, max: usize, label: &'static str) -> Result<String> {
+    let t = s.trim();
+    if t.len() < min
+        || t.len() > max
+        || !t
             .bytes()
             .all(|b| (32..=126).contains(&b) && !b"*~:^".contains(&b))
-        || s.trim() != s
     {
-        return Err(Error::Invalid(
-            "EDI field requires bounded printable ASCII without X12 delimiters or outer whitespace",
-        ));
+        return Err(Error::Invalid(field_error(label)));
     }
-    Ok(s.to_string())
+    Ok(t.to_string())
+}
+fn field_error(label: &'static str) -> &'static str {
+    match label {
+        "member_id" => "Member ID can only use plain letters, numbers and basic punctuation, 2 to 80 characters.",
+        "group_number" => "Group number can only use plain letters, numbers and basic punctuation, up to 50 characters.",
+        "plan_name" => "Insurance plan name can only use plain letters, numbers and basic punctuation, up to 50 characters.",
+        "patient_given_name" => "Patient first name can only use plain letters, numbers and basic punctuation, 1 to 35 characters.",
+        "patient_family_name" => "Patient last name can only use plain letters, numbers and basic punctuation, 1 to 60 characters.",
+        "payer_name" => "Insurer name can only use plain letters, numbers and basic punctuation, 1 to 60 characters.",
+        "payer_code" => "Insurer ID can only use plain letters, numbers and basic punctuation, 2 to 80 characters.",
+        "billing_provider_name" => "Billing provider name can only use plain letters, numbers and basic punctuation, 1 to 60 characters.",
+        "billing_npi" => "Billing provider NPI must be ten digits.",
+        "rendering_npi" => "Rendering provider NPI must be ten digits.",
+        "tax_id" => "Tax ID must be nine digits.",
+        "control_number" => "Claim control number can only use plain letters, numbers and basic punctuation, up to 38 characters.",
+        "subscriber_given_name" => "Subscriber first name can only use plain letters, numbers and basic punctuation, 1 to 35 characters.",
+        "subscriber_family_name" => "Subscriber last name can only use plain letters, numbers and basic punctuation, 1 to 35 characters.",
+        "rendering_given_name" => "Rendering provider first name can only use plain letters, numbers and basic punctuation, 1 to 35 characters.",
+        "rendering_family_name" => "Rendering provider last name can only use plain letters, numbers and basic punctuation, 1 to 35 characters.",
+        "parent_control" => "Original claim control number can only use plain letters, numbers and basic punctuation, up to 50 characters.",
+        "service_code" => "Procedure code can only use plain letters, numbers and basic punctuation, and must be five characters.",
+        "filing_indicator" => "Filing indicator code must be two plain letters.",
+        "primary_group_number" => "Primary insurance group number can only use plain letters, numbers and basic punctuation, up to 50 characters.",
+        "primary_plan_name" => "Primary insurance plan name can only use plain letters, numbers and basic punctuation, up to 60 characters.",
+        "primary_member_id" => "Primary insurance member ID can only use plain letters, numbers and basic punctuation, 1 to 80 characters.",
+        "primary_payer_name" => "Primary insurer name can only use plain letters, numbers and basic punctuation, 1 to 60 characters.",
+        "primary_payer_code" => "Primary insurer ID can only use plain letters, numbers and basic punctuation, 1 to 80 characters.",
+        "payer_control_number" => "Payer control number can only use plain letters, numbers and basic punctuation, up to 50 characters.",
+        "partner_name" => "Trading partner name can only use plain letters, numbers and basic punctuation, 1 to 100 characters.",
+        "sender_id" => "Trading partner sender ID can only use plain letters, numbers and basic punctuation, 1 to 15 characters.",
+        "receiver_id" => "Trading partner receiver ID can only use plain letters, numbers and basic punctuation, 1 to 15 characters.",
+        "application_sender" => "Application sender code can only use plain letters, numbers and basic punctuation, 2 to 15 characters.",
+        "application_receiver" => "Application receiver code can only use plain letters, numbers and basic punctuation, 2 to 15 characters.",
+        "submitter_name" => "Submitter name can only use plain letters, numbers and basic punctuation, 1 to 60 characters.",
+        "submitter_id" => "Submitter ID can only use plain letters, numbers and basic punctuation, 2 to 80 characters.",
+        "receiver_name" => "Receiver name can only use plain letters, numbers and basic punctuation, 1 to 60 characters.",
+        "receiver_identifier" => "Receiver identifier can only use plain letters, numbers and basic punctuation, 2 to 80 characters.",
+        "contact_name" => "Contact name can only use plain letters, numbers and basic punctuation, 1 to 60 characters.",
+        "guide_reference" => "Guide reference can only use plain letters, numbers and basic punctuation, 1 to 200 characters.",
+        "address_line1" => "Street address can only use plain letters, numbers and basic punctuation, up to 55 characters.",
+        "address_line2" => "Address line 2 can only use plain letters, numbers and basic punctuation, up to 55 characters.",
+        "address_city" => "City can only use plain letters, numbers and basic punctuation, up to 30 characters.",
+        _ => "This field can only use plain letters, numbers and basic punctuation and is the wrong length.",
+    }
 }
 impl PartnerContent {
     pub fn validate(&self) -> Result<()> {
-        for (v, min, max) in [
-            (&self.name, 1, 100),
-            (&self.sender_id, 1, 15),
-            (&self.receiver_id, 1, 15),
-            (&self.application_sender, 2, 15),
-            (&self.application_receiver, 2, 15),
-            (&self.submitter_name, 1, 60),
-            (&self.submitter_id, 2, 80),
-            (&self.receiver_name, 1, 60),
-            (&self.receiver_identifier, 2, 80),
-            (&self.contact_name, 1, 60),
-            (&self.guide_reference, 1, 200),
+        for (v, min, max, label) in [
+            (&self.name, 1, 100, "partner_name"),
+            (&self.sender_id, 1, 15, "sender_id"),
+            (&self.receiver_id, 1, 15, "receiver_id"),
+            (&self.application_sender, 2, 15, "application_sender"),
+            (&self.application_receiver, 2, 15, "application_receiver"),
+            (&self.submitter_name, 1, 60, "submitter_name"),
+            (&self.submitter_id, 2, 80, "submitter_id"),
+            (&self.receiver_name, 1, 60, "receiver_name"),
+            (&self.receiver_identifier, 2, 80, "receiver_identifier"),
+            (&self.contact_name, 1, 60, "contact_name"),
+            (&self.guide_reference, 1, 200, "guide_reference"),
         ] {
-            element(v, min, max)?;
+            element(v, min, max, label)?;
         }
         for q in [&self.sender_qualifier, &self.receiver_qualifier] {
             if !["ZZ", "01", "14", "30"].contains(&q.as_str()) {
@@ -97,10 +145,21 @@ impl Address {
             && self.state.is_empty()
             && self.postal_code.is_empty()
     }
+    /// The address as it will be written: every part trimmed of outer whitespace
+    /// then uppercased, so a stray saved space never reaches the interchange.
+    fn write(&self) -> Result<Self> {
+        Ok(Self {
+            line1: element(&self.line1, 1, 55, "address_line1")?.to_ascii_uppercase(),
+            line2: element(&self.line2, 0, 55, "address_line2")?.to_ascii_uppercase(),
+            city: element(&self.city, 1, 30, "address_city")?.to_ascii_uppercase(),
+            state: self.state.clone(),
+            postal_code: self.postal_code.clone(),
+        })
+    }
     fn validate(&self) -> Result<()> {
-        element(&self.line1, 1, 55)?;
-        element(&self.line2, 0, 55)?;
-        element(&self.city, 1, 30)?;
+        element(&self.line1, 1, 55, "address_line1")?;
+        element(&self.line2, 0, 55, "address_line2")?;
+        element(&self.city, 1, 30, "address_city")?;
         if !"AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY AS GU MP PR VI".split(' ').any(|s|s==self.state)||![5,9].contains(&self.postal_code.len())||!self.postal_code.bytes().all(|b|b.is_ascii_digit()){return Err(Error::Invalid("supply a US state/territory and five/nine-digit ZIP"));}
         Ok(())
     }
@@ -150,18 +209,11 @@ fn cpt_service_code_syntax(code: &str) -> bool {
 fn seg(parts: &[&str]) -> String {
     format!("{}~", parts.join("*").trim_end_matches('*'))
 }
-fn address(out: &mut Vec<String>, a: &Address) {
-    out.push(seg(&[
-        "N3",
-        &a.line1.to_ascii_uppercase(),
-        &a.line2.to_ascii_uppercase(),
-    ]));
-    out.push(seg(&[
-        "N4",
-        &a.city.to_ascii_uppercase(),
-        &a.state,
-        &a.postal_code,
-    ]));
+fn address(out: &mut Vec<String>, a: &Address) -> Result<()> {
+    let a = a.write()?;
+    out.push(seg(&["N3", &a.line1, &a.line2]));
+    out.push(seg(&["N4", &a.city, &a.state, &a.postal_code]));
+    Ok(())
 }
 fn nm(
     out: &mut Vec<String>,
@@ -171,19 +223,20 @@ fn nm(
     first: &str,
     qual: &str,
     id: &str,
-) {
+) -> Result<()> {
     out.push(seg(&[
         "NM1",
         entity,
         kind,
-        &last.to_ascii_uppercase(),
-        &first.to_ascii_uppercase(),
+        &last.trim().to_ascii_uppercase(),
+        &first.trim().to_ascii_uppercase(),
         "",
         "",
         "",
         qual,
         id,
     ]));
+    Ok(())
 }
 #[derive(Serialize)]
 pub struct Generated {
@@ -218,14 +271,15 @@ pub(crate) fn generate(
     if !d.payer_address.is_blank() {
         d.payer_address.validate()?;
     }
-    for s in [
-        &d.subscriber_given_name,
-        &d.subscriber_family_name,
-        &d.rendering_given_name,
-        &d.rendering_family_name,
-    ] {
-        element(s, 1, 35)?;
-    }
+    let sub_given =
+        element(&d.subscriber_given_name, 1, 35, "subscriber_given_name")?.to_ascii_uppercase();
+    let sub_family =
+        element(&d.subscriber_family_name, 1, 35, "subscriber_family_name")?.to_ascii_uppercase();
+    let rend_given =
+        element(&d.rendering_given_name, 1, 35, "rendering_given_name")?.to_ascii_uppercase();
+    let rend_family =
+        element(&d.rendering_family_name, 1, 35, "rendering_family_name")?.to_ascii_uppercase();
+    let billing_taxonomy = d.billing_taxonomy.trim().to_ascii_uppercase();
     if !["M", "F", "U"].contains(&d.patient_sex.as_str())
         || !["M", "F", "U"].contains(&d.subscriber_sex.as_str())
         || !["CI", "MB", "MC", "MA", "CH", "VA", "TV", "WC", "ZZ"]
@@ -237,11 +291,7 @@ pub(crate) fn generate(
     {
         return Err(Error::Invalid("review demographics, filing indicator, consent/assignment and supported routine professional profile"));
     }
-    if d.billing_taxonomy.len() != 10
-        || !d
-            .billing_taxonomy
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric())
+    if billing_taxonomy.len() != 10 || !billing_taxonomy.bytes().all(|b| b.is_ascii_alphanumeric())
     {
         return Err(Error::Invalid(
             "review ten-character billing provider taxonomy",
@@ -249,6 +299,12 @@ pub(crate) fn generate(
     }
     let content: ClaimContent = serde_json::from_value(c.content.clone())
         .map_err(|_| Error::Invalid("invalid claim packet"))?;
+    let billing_name = element(
+        &content.billing_provider_name,
+        1,
+        60,
+        "billing_provider_name",
+    )?;
     if content.place_of_service != "11" {
         return Err(Error::Invalid("initial 837P profile supports routine office POS 11; facility cases need a broader profile"));
     }
@@ -276,8 +332,10 @@ pub(crate) fn generate(
     if !["self", "spouse", "child"].contains(&relationship) {
         return Err(Error::Invalid("unsupported subscriber relationship"));
     }
-    let first = element(field(patient, "given_name")?, 1, 35)?.to_ascii_uppercase();
-    let last = element(field(patient, "family_name")?, 1, 60)?.to_ascii_uppercase();
+    let first =
+        element(field(patient, "given_name")?, 1, 35, "patient_given_name")?.to_ascii_uppercase();
+    let last =
+        element(field(patient, "family_name")?, 1, 60, "patient_family_name")?.to_ascii_uppercase();
     let dob = NaiveDate::parse_from_str(field(patient, "birth_date")?, "%Y-%m-%d")
         .map_err(|_| Error::Invalid("patient date of birth required"))?;
     let service =
@@ -287,8 +345,8 @@ pub(crate) fn generate(
         return Err(Error::Invalid("invalid patient/service dates"));
     }
     if self_patient
-        && (d.subscriber_given_name.to_ascii_uppercase() != first
-            || d.subscriber_family_name.to_ascii_uppercase() != last
+        && (sub_family != last
+            || sub_given != first
             || content.subscriber_birth_date != Some(dob)
             || d.subscriber_sex != d.patient_sex)
     {
@@ -296,20 +354,19 @@ pub(crate) fn generate(
             "self subscriber must match patient name, birth date and sex",
         ));
     }
-    for (v, min, max) in [
-        (&content.billing_provider_name, 1, 60),
-        (&content.billing_npi, 10, 10),
-        (&content.rendering_npi, 10, 10),
-        (&content.tax_id, 9, 9),
-        (&c.control_number, 1, 38),
+    for (v, min, max, label) in [
+        (&content.billing_npi, 10, 10, "billing_npi"),
+        (&content.rendering_npi, 10, 10, "rendering_npi"),
+        (&content.tax_id, 9, 9, "tax_id"),
+        (&c.control_number, 1, 38, "control_number"),
     ] {
-        element(v, min, max)?;
+        element(v, min, max, label)?;
     }
-    let member = element(field(cov, "member_id")?, 2, 80)?;
-    let group = element(field(cov, "group_number")?, 0, 50)?;
-    let plan = element(field(cov, "plan_name")?, 0, 50)?;
-    let payer_name = element(field(payer, "name")?, 1, 60)?;
-    let payer_code = element(field(payer, "payer_code")?, 2, 80)?;
+    let member = element(field(cov, "member_id")?, 2, 80, "member_id")?;
+    let group = element(field(cov, "group_number")?, 0, 50, "group_number")?;
+    let plan = element(field(cov, "plan_name")?, 0, 50, "plan_name")?;
+    let payer_name = element(field(payer, "name")?, 1, 60, "payer_name")?;
+    let payer_code = element(field(payer, "payer_code")?, 2, 80, "payer_code")?;
     let lines = account["content"]["lines"]
         .as_array()
         .ok_or(Error::Invalid("claim charges missing"))?;
@@ -320,7 +377,7 @@ pub(crate) fn generate(
         _ => return Err(Error::Invalid("invalid claim frequency")),
     };
     if frequency != "1" {
-        element(parent_control.unwrap_or(""), 1, 50)?;
+        element(parent_control.unwrap_or(""), 1, 50, "parent_control")?;
     }
     let ic = format!("{control:09}");
     let gc = control.to_string();
@@ -378,11 +435,11 @@ pub(crate) fn generate(
         "",
         "46",
         &p.submitter_id,
-    );
+    )?;
     st.push(seg(&[
         "PER",
         "IC",
-        &p.contact_name.to_ascii_uppercase(),
+        &p.contact_name.trim().to_ascii_uppercase(),
         "TE",
         &p.contact_phone,
     ]));
@@ -394,24 +451,19 @@ pub(crate) fn generate(
         "",
         "46",
         &p.receiver_identifier,
-    );
+    )?;
     st.push(seg(&["HL", "1", "", "20", "1"]));
-    st.push(seg(&[
-        "PRV",
-        "BI",
-        "PXC",
-        &d.billing_taxonomy.to_ascii_uppercase(),
-    ]));
+    st.push(seg(&["PRV", "BI", "PXC", &billing_taxonomy]));
     nm(
         &mut st,
         "85",
         "2",
-        &content.billing_provider_name,
+        &billing_name,
         "",
         "XX",
         &content.billing_npi,
-    );
-    address(&mut st, &d.billing_address);
+    )?;
+    address(&mut st, &d.billing_address)?;
     st.push(seg(&["REF", "EI", &content.tax_id]));
     st.push(seg(&[
         "HL",
@@ -432,16 +484,8 @@ pub(crate) fn generate(
         "",
         &d.filing_indicator,
     ]));
-    nm(
-        &mut st,
-        "IL",
-        "1",
-        &d.subscriber_family_name,
-        &d.subscriber_given_name,
-        "MI",
-        &member,
-    );
-    address(&mut st, &d.subscriber_address);
+    nm(&mut st, "IL", "1", &sub_family, &sub_given, "MI", &member)?;
+    address(&mut st, &d.subscriber_address)?;
     if self_patient {
         st.push(seg(&[
             "DMG",
@@ -450,9 +494,9 @@ pub(crate) fn generate(
             &d.patient_sex,
         ]));
     }
-    nm(&mut st, "PR", "2", &payer_name, "", "PI", &payer_code);
+    nm(&mut st, "PR", "2", &payer_name, "", "PI", &payer_code)?;
     if !d.payer_address.is_blank() {
-        address(&mut st, &d.payer_address);
+        address(&mut st, &d.payer_address)?;
     }
     if !self_patient {
         st.push(seg(&["HL", "3", "2", "23", "0"]));
@@ -460,8 +504,8 @@ pub(crate) fn generate(
             "PAT",
             if relationship == "spouse" { "01" } else { "19" },
         ]));
-        nm(&mut st, "QC", "1", &last, &first, "", "");
-        address(&mut st, &d.patient_address);
+        nm(&mut st, "QC", "1", &last, &first, "", "")?;
+        address(&mut st, &d.patient_address)?;
         st.push(seg(&[
             "DMG",
             "D8",
@@ -488,7 +532,7 @@ pub(crate) fn generate(
         st.push(seg(&[
             "REF",
             "F8",
-            &element(parent_control.unwrap_or(""), 1, 50)?,
+            &element(parent_control.unwrap_or(""), 1, 50, "parent_control")?,
         ]));
     }
     let mut diagnoses = vec!["HI".to_string()];
@@ -504,18 +548,18 @@ pub(crate) fn generate(
         &mut st,
         "82",
         "1",
-        &d.rendering_family_name,
-        &d.rendering_given_name,
+        &rend_family,
+        &rend_given,
         "XX",
         &content.rendering_npi,
-    );
+    )?;
     if let Some(evidence) = &coordination {
         secondary_header(&mut st, evidence, account)?;
     }
     let mut sum = 0i64;
     for (i, l) in lines.iter().enumerate() {
         let system = field(l, "code_system")?;
-        let code = element(field(l, "code")?, 5, 5)?.to_ascii_uppercase();
+        let code = element(field(l, "code")?, 5, 5, "service_code")?.to_ascii_uppercase();
         if !((system == "CPT" && cpt_service_code_syntax(&code))
             || (system == "HCPCS"
                 && code.as_bytes()[0].is_ascii_alphabetic()
@@ -675,9 +719,14 @@ fn secondary_header(
     if !d.payer_address.is_blank() {
         d.payer_address.validate()?;
     }
-    let filing = element(&d.filing_indicator, 2, 2)?;
-    let group = element(field(policy, "group_number")?, 0, 50)?;
-    let plan = element(field(policy, "plan_name")?, 0, 60)?;
+    let filing = element(&d.filing_indicator, 2, 2, "filing_indicator")?;
+    let group = element(
+        field(policy, "group_number")?,
+        0,
+        50,
+        "primary_group_number",
+    )?;
+    let plan = element(field(policy, "plan_name")?, 0, 60, "primary_plan_name")?;
     out.push(seg(&[
         "SBR", "P", relation, &group, &plan, "", "", "", "", &filing,
     ]));
@@ -700,28 +749,33 @@ fn secondary_header(
         out,
         "IL",
         "1",
-        &element(&d.subscriber_family_name, 1, 35)?,
-        &element(&d.subscriber_given_name, 1, 35)?,
+        &element(&d.subscriber_family_name, 1, 35, "subscriber_family_name")?,
+        &element(&d.subscriber_given_name, 1, 35, "subscriber_given_name")?,
         "MI",
-        &element(field(policy, "member_id")?, 1, 80)?,
-    );
-    address(out, &d.subscriber_address);
+        &element(field(policy, "member_id")?, 1, 80, "primary_member_id")?,
+    )?;
+    address(out, &d.subscriber_address)?;
     nm(
         out,
         "PR",
         "2",
-        &element(field(payer, "name")?, 1, 60)?,
+        &element(field(payer, "name")?, 1, 60, "primary_payer_name")?,
         "",
         "PI",
-        &element(field(payer, "payer_code")?, 1, 80)?,
-    );
+        &element(field(payer, "payer_code")?, 1, 80, "primary_payer_code")?,
+    )?;
     if !d.payer_address.is_blank() {
-        address(out, &d.payer_address);
+        address(out, &d.payer_address)?;
     }
     out.push(seg(&[
         "REF",
         "F8",
-        &element(&e.adjudication.payer_control_number, 1, 50)?,
+        &element(
+            &e.adjudication.payer_control_number,
+            1,
+            50,
+            "payer_control_number",
+        )?,
     ]));
     Ok(())
 }
@@ -1228,5 +1282,74 @@ mod tests {
         let mut unsupported = details();
         unsupported.filing_indicator = "MB".into();
         assert!(generate(&c, &partner(), &unsupported, None, 43, now).is_err());
+    }
+    #[test]
+    fn outer_whitespace_is_trimmed_and_never_blocks_sending() {
+        let mut c = claim();
+        let cov = &mut c.snapshot["account"]["coverage_snapshot"]["coverage"]["content"];
+        cov["member_id"] = json!(" 1AB2CD3EF45 ");
+        cov["plan_name"] = json!("Synthetic Plan\t");
+        cov["group_number"] = json!("  SYN-group ");
+        let payer = &mut c.snapshot["account"]["coverage_snapshot"]["payer"]["content"];
+        payer["name"] = json!(" Synthetic Payer\u{a0}");
+        c.snapshot["patient"]["given_name"] = json!(" Quinn ");
+        c.snapshot["patient"]["family_name"] = json!("Synthetic\t");
+        let g = generate(&c, &partner(), &details(), None, 42, Utc::now()).unwrap();
+        assert!(g
+            .payload
+            .contains("NM1*IL*1*SYNTHETIC*QUINN****MI*1AB2CD3EF45~"));
+        assert!(g.payload.contains("SBR*P*18*SYN-group*Synthetic Plan"));
+        assert!(g
+            .payload
+            .contains("NM1*PR*2*SYNTHETIC PAYER*****PI*SYN-payer~"));
+    }
+    #[test]
+    fn element_trim_and_inner_check() {
+        assert_eq!(element("  ABC  ", 2, 80, "member_id").unwrap(), "ABC");
+        assert_eq!(
+            element("\tABC123\u{a0}".to_string().as_str(), 2, 80, "member_id").unwrap(),
+            "ABC123"
+        );
+        assert_eq!(element("   ", 0, 50, "group_number").unwrap(), "");
+    }
+    #[test]
+    fn inner_delimiter_and_overlong_are_named_and_plain_words() {
+        // generate() runs claims::preflight first, so an inner bad character or an
+        // over-long value is reported by preflight with a named message before the
+        // file is ever built. The member ID and plan name carry the bad value here.
+        let mut c = claim();
+        c.snapshot["account"]["coverage_snapshot"]["coverage"]["content"]["member_id"] =
+            json!("1AB*CD");
+        let issues = crate::claims::preflight(&c).unwrap();
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.starts_with("Member ID") && i.contains("plain letters")),
+            "{issues:?}"
+        );
+
+        let mut c = claim();
+        c.snapshot["account"]["coverage_snapshot"]["coverage"]["content"]["plan_name"] =
+            json!("x".repeat(51));
+        let issues = crate::claims::preflight(&c).unwrap();
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.starts_with("Insurance plan name") && i.contains("plain letters")),
+            "{issues:?}"
+        );
+
+        // No refusal reaches billing staff with the old technical words.
+        for banned in ["EDI", "X12", "ASCII", "delimiter", "whitespace"] {
+            for issue in &issues {
+                assert!(!issue.contains(banned), "{banned} in {issue}");
+            }
+            for label in ["member_id", "plan_name", "payer_name", "address_line1"] {
+                assert!(
+                    !field_error(label).contains(banned),
+                    "{banned} in {label} message"
+                );
+            }
+        }
     }
 }
