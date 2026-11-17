@@ -509,6 +509,14 @@ td.money-cell,th.money-cell{text-align:right;font-variant-numeric:tabular-nums}
 .charge-table [data-fee-line] label{font-size:var(--fs-xs);text-transform:none;letter-spacing:0}
 .charge-table .mapping-notice{font-size:var(--fs-xs);margin:6px 0 0;padding:6px 8px}
 .billing-charge-row[data-charge-problem]>td{background:var(--warning-bg)}
+/* One quiet line above the table for the charges filled in from the patient's last visit. */
+.charge-table-proposal{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0 0 8px}
+.charge-table-proposal p{margin:0;font-size:var(--fs-sm);color:var(--muted)}
+.charge-table-proposal button{font-size:var(--fs-xs);min-height:26px;padding:3px 7px}
+/* One plain sentence on the row itself: an amount still to enter, a drug amount to check. */
+.charge-cell-note{display:none;padding:0!important}
+.billing-charge-row[data-charge-noted] .charge-cell-note{display:table-cell;padding:6px 8px!important}
+.charge-cell-note p{margin:0;font-size:var(--fs-xs)}
 .charge-cell-problem{display:none;padding:0!important;border-bottom:1px solid var(--warning-line)}
 .billing-charge-row[data-charge-problem] .charge-cell-problem{display:table-cell;padding:6px 8px!important;color:var(--warning-text);font-size:var(--fs-xs);background:var(--warning-bg)}
 .charge-table-foot{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;margin-top:10px}

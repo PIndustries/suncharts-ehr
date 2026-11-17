@@ -23,12 +23,16 @@ function visitBillingInsurer(s){return s.claim?.payer_name||s.insurance?.insurer
 // beside the charge table holds the checks, the form and the send itself; until it is loaded
 // the card's own buttons do the same jobs.
 function reviewButton(s,ctx){return typeof visitBillingReviewButton==='function'?visitBillingReviewButton(s,ctx):'';}
+// The charges step fills a visit's table in from the patient's last visit on its own. When that
+// is on the way the card stops telling staff to type charges by hand; with nothing to fill in
+// from it says what it always said. encounterChargesProposed is the charge table's own answer.
+function visitBillingChargesFilled(){return typeof encounterChargesProposed==='function'&&encounterChargesProposed();}
 // The status line: what is happening, who is waiting on whom, and the one next step.
 function visitBillingStatus(s,ctx={}){
  const insurer=visitBillingInsurer(s),owes=money(s.patient.owes_now_cents),paid=money(s.insurance.paid_cents),account=s.account?.id||'',claim=s.claim?.id||'',write=ctx.canWrite,create=ctx.canCreate;
  const button=(label,attribute)=>`<button type="button" class="primary" ${attribute}>${esc(label)}</button>`;
  switch(s.state){
-   case 'add_charges':return {headline:'Add charges',detail:'Add the procedures done at this visit.',action:create?button('Add charges','data-encounter-charges'):''};
+   case 'add_charges':return visitBillingChargesFilled()?{headline:'Check the charges',detail:'Filled in from the last visit.',action:create?button('Check the charges','data-encounter-charges'):''}:{headline:'Add charges',detail:'Add the procedures done at this visit.',action:create?button('Add charges','data-encounter-charges'):''};
    case 'sign_visit':return {headline:'Charges can still be changed',detail:'The visit note must be signed before the charges are posted.',action:reviewButton(s,ctx)||button('Continue the visit note','data-revenue-documentation')};
    case 'post_charges':return {headline:'Post charges',detail:`Check the charges, then post them. ${s.insurance.insured?`The claim to ${insurer} is prepared for you next.`:'The patient is billed next.'}`,action:button(write?'Post charges':'Review charges',`data-visit-post-charges="${esc(account)}"`)};
    case 'self_pay_collect':return {headline:'Self-pay: collect payment',detail:`Patient owes ${owes}. Waiting for the patient.`,action:create?button('Collect payment','data-visit-collect'):''};
