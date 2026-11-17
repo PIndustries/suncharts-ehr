@@ -7,7 +7,7 @@ const app=read('app.js'),style=read('style.css');
 const note={subjective:'Synthetic subjective',objective:'Synthetic objective',assessment:'Synthetic assessment',plan:'Synthetic plan'};
 // A chart is staged so the real sign handler runs: billing accounts, chart-area and
 // resource-visibility stubs, and canned API replies — every path outside the sign flow fails loudly.
-function fixture({role='clinician',accounts=[],billingVisible=true,billingAllowed=true}={}){
+function fixture({role='clinician',accounts=[],billingVisible=true,billingAllowed=true,checkoutVisible=true}={}){
   const nodes=new Map(),listeners=new Map(),requests=[],asked=[],sections=[];
   function node(id){
     if(nodes.has(id))return nodes.get(id);
@@ -64,7 +64,7 @@ function fixture({role='clinician',accounts=[],billingVisible=true,billingAllowe
     showChartSection=key=>record('chart',key);
     notice=message=>record('notice',message);
     workspaceResourceAllowed=resource=>resource!=='billing'||${billingAllowed};
-    workspaceChartTabEnabled=key=>key!=='billing'||${billingVisible};
+    workspaceChartTabEnabled=key=>!(key==='billing'&&!${billingVisible})&&!(key==='checkout'&&!${checkoutVisible});
     me={tenant_id:'tenant-1',user_id:'author',role:${JSON.stringify(role)}};selected='patient-1';
     workspace={appointments:[{id:'appointment-1',title:'Synthetic visit',starts_at:'2026-11-14T09:00:00Z'}],visits:[],amendments:[],billing:{accounts:${JSON.stringify(accounts)},coverages:[],copays:[],entries:[]}};
     activeVisit={id:'visit-1',patient_id:selected,appointment_id:'appointment-1',clinician_id:'author',status:'in_progress',version:1,note:${JSON.stringify(note)},vitals:null};
@@ -128,6 +128,44 @@ async function main(){
   f.context.testRender=null;
   await f.settle();
   assert.ok(f.reminder(),'the reminder stays while the signed visit is open');
+
+  // The sign question and the signed notice only name steps this practice actually shows.
+  async function signNextStepWordings(){
+    const cases=[
+      {label:'charges and checkout',checkout:true,billingVisible:true,billingAllowed:true,
+        asked:'Signing locks the clinical note. Continue to charges and checkout after signing. Later corrections are preserved as signed amendments.',
+        notice:'Note signed. Next: charges, then checkout.',landed:'section:charges'},
+      {label:'checkout off',checkout:false,billingVisible:true,billingAllowed:true,
+        asked:'Signing locks the clinical note. Continue to charges after signing. Later corrections are preserved as signed amendments.',
+        notice:'Note signed. Next: charges.',landed:'section:charges'},
+      {label:'billing off',checkout:true,billingVisible:false,billingAllowed:true,
+        asked:'Signing locks the clinical note. Continue to checkout after signing. Later corrections are preserved as signed amendments.',
+        notice:'Note signed. Next: checkout.',landed:'section:checkout'},
+      {label:'billing not allowed for the role',checkout:true,billingVisible:true,billingAllowed:false,
+        asked:'Signing locks the clinical note. Continue to checkout after signing. Later corrections are preserved as signed amendments.',
+        notice:'Note signed. Next: checkout.',landed:'section:checkout'},
+      {label:'both off',checkout:false,billingVisible:false,billingAllowed:true,
+        asked:'Signing locks the clinical note. Later corrections are preserved as signed amendments.',
+        notice:'Note signed.',landed:null},
+    ];
+    for(const testCase of cases){
+      const options={billingVisible:testCase.billingVisible,billingAllowed:testCase.billingAllowed};
+      if(testCase.checkout===false)options.checkoutVisible=false;
+      const f=fixture(options);
+      await f.click({action:'sign'});
+      assert.ok(f.requests.some(r=>r.path==='/api/v1/visits/visit-1/sign'),testCase.label+': signing still works');
+      assert.equal(f.asked[0]?.message,testCase.asked,testCase.label+': the sign question names only the steps shown');
+      const steps=f.sections.map(([kind,key])=>`${kind}:${key}`);
+      const notice=steps.find(step=>step.startsWith('notice:'));
+      assert.equal(notice,'notice:'+testCase.notice,testCase.label+': the signed notice names only the steps shown');
+      if(testCase.landed)assert.ok(steps.includes(testCase.landed),testCase.label+': staff land on the next visible step');
+      else assert.ok(!steps.some(step=>step.startsWith('section:')),testCase.label+': with no next step the staff stay where they are');
+      const named=/checkout/i.test(testCase.notice+testCase.asked);
+      if(testCase.checkout===false)assert.ok(!named,testCase.label+': checkout is never mentioned');
+    }
+    console.log('PASS the sign question and signed notice skip chart areas the practice hid');
+  }
+  await signNextStepWordings();
 
   // Charges already posted: nothing to remind about.
   f=fixture({accounts:[{id:'account-1',status:'posted',content:{visit_id:'visit-1'}}]});
