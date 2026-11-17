@@ -36,15 +36,31 @@ pub struct FeeContext {
     pub facility_id: Uuid,
     pub setting: String,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Source {
     id: String,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    entered_by_note: Option<String>,
+    #[serde(default)]
     url: String,
+    #[serde(default)]
     sha256: String,
-    published_on: NaiveDate,
+    #[serde(default)]
+    published_on: Option<NaiveDate>,
 }
-#[derive(Deserialize, Serialize)]
+impl Source {
+    fn practice_entered(&self) -> Result<bool> {
+        match self.kind.as_deref() {
+            None | Some("published") => Ok(false),
+            Some("practice_entered") => Ok(true),
+            _ => Err(Error::Invalid("invalid fee source kind")),
+        }
+    }
+}
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Entry {
     code_system: String,
@@ -55,7 +71,7 @@ struct Entry {
     source_row: i64,
     qualification: String,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Proposal {
     name: String,
@@ -151,10 +167,20 @@ fn unit_amount(reference: i64, multiplier: i64) -> Result<i64> {
     Ok(amount)
 }
 impl Proposal {
-    fn validate(&self) -> Result<()> {
+    fn validate(&mut self) -> Result<()> {
         text(&self.name, 200)?;
         text(&self.locality, 200)?;
         setting(&self.setting)?;
+        if self
+            .sources
+            .iter()
+            .any(|s| s.practice_entered().is_ok_and(|p| p))
+            && self.qp_basis != "not_applicable"
+        {
+            return Err(Error::Invalid(
+                "practice-entered prices apply without a QP adjustment",
+            ));
+        }
         if !matches!(self.qp_basis.as_str(), "qp" | "non_qp" | "not_applicable")
             || self.reference_to < self.reference_from
             || self.effective_from < self.reference_from
@@ -170,21 +196,42 @@ impl Proposal {
             ));
         }
         let mut ids = HashSet::new();
-        for s in &self.sources {
+        for s in &mut self.sources {
             text(&s.id, 100)?;
-            let u = url::Url::parse(&s.url)
-                .map_err(|_| Error::Invalid("fee source must be an HTTPS URL"))?;
-            if u.scheme() != "https"
-                || u.host_str().is_none()
-                || !u.username().is_empty()
-                || u.password().is_some()
-                || s.url.len() > 2000
-                || s.sha256.len() != 64
-                || !s.sha256.bytes().all(|b| b.is_ascii_hexdigit())
-                || s.published_on > self.reference_to
-                || !ids.insert(&s.id)
-            {
-                return Err(Error::Invalid("invalid or duplicate fee source"));
+            let practice_entered = s.practice_entered()?;
+            let published_on = s.published_on;
+            let sha = s.sha256.clone();
+            let url_text = s.url.clone();
+            let entered = s.entered_by_note.as_deref().unwrap_or("").trim().to_owned();
+            if practice_entered {
+                text(s.entered_by_note.as_deref().unwrap_or(""), 200)?;
+                if !url_text.is_empty() || !sha.is_empty() || published_on.is_some() {
+                    return Err(Error::Invalid("invalid or duplicate fee source"));
+                }
+                s.kind = Some("practice_entered".into());
+                s.url.clear();
+                s.sha256.clear();
+                s.published_on = None;
+                if !ids.insert(&s.id) {
+                    return Err(Error::Invalid("invalid or duplicate fee source"));
+                }
+            } else {
+                let u = url::Url::parse(&url_text)
+                    .map_err(|_| Error::Invalid("fee source must be an HTTPS URL"))?;
+                if u.scheme() != "https"
+                    || u.host_str().is_none()
+                    || !u.username().is_empty()
+                    || u.password().is_some()
+                    || url_text.len() > 2000
+                    || sha.len() != 64
+                    || !sha.bytes().all(|b| b.is_ascii_hexdigit())
+                    || published_on.unwrap_or(self.reference_to) > self.reference_to
+                    || !entered.is_empty()
+                    || !ids.insert(&s.id)
+                {
+                    return Err(Error::Invalid("invalid or duplicate fee source"));
+                }
+                s.kind = Some("published".into());
             }
         }
         let mut keys = HashSet::new();
@@ -272,7 +319,8 @@ async fn create(
     Json(v): Json<New>,
 ) -> Result<Json<Value>> {
     let a = owner(&s, &h, true).await?;
-    v.content.validate()?;
+    let mut content = v.content.clone();
+    content.validate()?;
     text(&v.reason, 1000)?;
     let hash = format!(
         "{:x}",
@@ -295,12 +343,12 @@ async fn create(
         }
         return Ok(Json(row(&mut tx, &a, id).await?));
     }
-    let scope = scope(&mut tx, &a, &v.content).await?;
-    let mut content = json!(&v.content);
-    content["directory_snapshot"] = scope;
+    let scope = scope(&mut tx, &a, &content).await?;
+    let mut stored = json!(&content);
+    stored["directory_snapshot"] = scope;
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO practice_fee_schedules(tenant_id,id,request_id,creation_hash,content) VALUES($1,$2,$3,$4,$5)").bind(a.tenant_id).bind(id).bind(v.request_id).bind(hash).bind(&content).execute(&mut *tx).await?;
-    for chunk in v.content.entries.chunks(500) {
+    sqlx::query("INSERT INTO practice_fee_schedules(tenant_id,id,request_id,creation_hash,content) VALUES($1,$2,$3,$4,$5)").bind(a.tenant_id).bind(id).bind(v.request_id).bind(hash).bind(&stored).execute(&mut *tx).await?;
+    for chunk in content.entries.chunks(500) {
         let mut q=sqlx::QueryBuilder::<Postgres>::new("INSERT INTO practice_fee_entries(tenant_id,schedule_id,entry_key,code_system,code,modifiers,unit_amount_cents,content) ");
         q.push_values(chunk, |mut b, e| {
             b.push_bind(a.tenant_id)
@@ -310,7 +358,7 @@ async fn create(
                 .push_bind(&e.code)
                 .push_bind(modifiers(&e.modifiers).expect("validated modifiers"))
                 .push_bind(
-                    unit_amount(e.reference_unit_cents, v.content.multiplier_basis_points)
+                    unit_amount(e.reference_unit_cents, content.multiplier_basis_points)
                         .expect("validated fee"),
                 )
                 .push_bind(json!(e));
@@ -477,6 +525,9 @@ async fn quote(
         fee_entry_key: None,
         fee_snapshot: None,
         fee_override_reason: None,
+        ndc_code: None,
+        ndc_quantity: None,
+        ndc_unit: None,
     };
     let quote = lookup(&mut tx, &a, provider, q.service_date, &ctx, &line).await?;
     Ok(Json(

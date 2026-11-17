@@ -57,6 +57,12 @@ pub struct ClaimContent {
     /// callers must use a synthetic patient and reviewed test evidence.
     #[serde(default)]
     pub synthetic_test: bool,
+    /// How the billing organization's `tax_id` is issued: "E" for an EIN,
+    /// "S" for a Social Security number. Claims frozen before this field
+    /// existed carry "" and are sent as an EIN, as they always were.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub tax_id_type: String,
 }
 impl ClaimContent {
     pub(crate) fn validate(&self) -> Result<()> {
@@ -85,6 +91,9 @@ impl ClaimContent {
             return Err(Error::Invalid(
                 "invalid claim diagnoses, pointers or subscriber date",
             ));
+        }
+        if !matches!(self.tax_id_type.as_str(), "" | "E" | "S") {
+            return Err(Error::Invalid("invalid claim tax ID type"));
         }
         Ok(())
     }
@@ -1281,13 +1290,30 @@ fn render_cms1500_review(c: &Claim) -> Result<String> {
             let units = line["units"].as_i64().filter(|v| *v > 0)
                 .map(|v| v.to_string()).unwrap_or_else(|| "Not recorded".into());
             let modifiers = json_text(line, "modifiers").trim();
+            // The form's shaded area above the procedure code carries the drug:
+            // the NDC qualifier and 11 digits, then the unit before the quantity.
+            let ndc = [
+                json_text(line, "ndc_code").trim(),
+                json_text(line, "ndc_quantity").trim(),
+                json_text(line, "ndc_unit").trim(),
+            ];
+            let drug = if ndc.iter().any(|v| !v.is_empty()) {
+                format!(
+                    "N4{} {}{}",
+                    html_escape(ndc[0]),
+                    html_escape(ndc[2]),
+                    html_escape(ndc[1])
+                )
+            } else {
+                String::new()
+            };
             let procedure = if modifiers.is_empty() { html_escape(json_text(line, "code")) }
                 else { format!("{} · {}", html_escape(json_text(line, "code")), html_escape(modifiers)) };
             let cents = line.get("amount_cents").and_then(Value::as_i64).unwrap_or(0);
-            format!("<tr><td>{0}</td><td>{0}</td><td>{1}</td><td></td><td class=procedure>{2}<small>{3}</small></td><td>{4}</td><td class=charge>${5}.{6:02}</td><td>{8}</td><td></td><td>{7}</td></tr>",
+            format!("<tr><td>{0}</td><td>{0}</td><td>{1}</td><td></td><td class=procedure>{9}<br>{2}<small>{3}</small></td><td>{4}</td><td class=charge>${5}.{6:02}</td><td>{8}</td><td></td><td>{7}</td></tr>",
                 html_escape(json_text(&account["content"], "service_date")), html_escape(&content.place_of_service),
                 procedure, html_escape(json_text(line, "description")), review_text(&pointers),
-                cents / 100, cents.abs() % 100, html_escape(&content.rendering_npi), units)
+                cents / 100, cents.abs() % 100, html_escape(&content.rendering_npi), units, drug)
         }).collect::<String>();
     for _ in account["content"]["lines"].as_array().map_or(0, Vec::len)..6 {
         line_rows.push_str("<tr><td>&nbsp;</td><td></td><td></td><td></td><td><small></small></td><td></td><td></td><td></td><td></td><td></td></tr>");
@@ -2261,6 +2287,76 @@ mod submission_default_tests {
                 .iter()
                 .any(|i| i.starts_with("Member ID") && i.contains("plain letters")),
             "expected a named member ID issue, got {issues:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod claim_content_tax_id_type_tests {
+    use super::ClaimContent;
+    use serde_json::json;
+
+    fn content(extra: serde_json::Value) -> serde_json::Value {
+        let mut v = json!({
+            "billing_provider_name":"Synthetic Clinic",
+            "billing_npi":"1234567893",
+            "tax_id":"000000017",
+            "billing_address":"1 Synthetic Way, Austin, TX",
+            "rendering_npi":"1234567893",
+            "patient_address":"1 Synthetic Way, Austin, TX",
+            "subscriber_address":"1 Synthetic Way, Austin, TX",
+            "subscriber_birth_date":"1990-01-01",
+            "place_of_service":"11",
+            "diagnosis_codes":["Z00.00"],
+            "line_diagnosis_pointers":[[1]],
+            "external_control_number":"",
+            "notes":""
+        });
+        if !extra.is_null() {
+            v["tax_id_type"] = extra;
+        }
+        v
+    }
+
+    #[test]
+    fn an_old_claim_without_the_field_still_deserializes_as_blank() {
+        // deny_unknown_fields plus a required field would break every claim
+        // frozen before the type existed; "" keeps them readable and valid.
+        let p: ClaimContent = serde_json::from_value(content(serde_json::Value::Null)).unwrap();
+        assert_eq!(p.tax_id_type, "");
+        p.validate().unwrap();
+    }
+
+    #[test]
+    fn only_the_recorded_types_are_accepted() {
+        for kind in ["E", "S"] {
+            let p: ClaimContent = serde_json::from_value(content(json!(kind))).unwrap();
+            assert_eq!(p.tax_id_type, kind);
+            p.validate().unwrap();
+        }
+        for kind in ["e", "s", "EI", "SY", "0", "SSN"] {
+            let p: ClaimContent = serde_json::from_value(content(json!(kind))).unwrap();
+            assert!(p.validate().is_err(), "{kind} is not a recorded type");
+        }
+    }
+
+    #[test]
+    fn a_blank_type_is_not_reserialized_into_frozen_content() {
+        // Editing an old claim must not stamp a new key into its frozen shape;
+        // a recorded type is kept as it was.
+        let p: ClaimContent = serde_json::from_value(content(serde_json::Value::Null)).unwrap();
+        assert!(
+            !serde_json::to_value(&p)
+                .unwrap()
+                .get("tax_id_type")
+                .is_some(),
+            "a claim that never recorded a type stays without the key"
+        );
+        let p: ClaimContent = serde_json::from_value(content(json!("S"))).unwrap();
+        assert_eq!(
+            serde_json::to_value(&p).unwrap()["tax_id_type"],
+            "S",
+            "a recorded type survives an edit"
         );
     }
 }

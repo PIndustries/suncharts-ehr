@@ -27,6 +27,9 @@ async function showPracticeWorkspace(){
  renderPracticeWorkspace();
 }
 function practiceTab(mode,label,count){return `<button type="button" data-practice-board="${mode}" aria-pressed="${practiceBoardMode===mode}">${label}<span>${count===null?'—':esc(count)}</span></button>`;}
+// The Home step is titled for the areas the practice actually shows. Before the workspace
+// settings have loaded, checkout is treated as shown.
+function practiceCheckoutHidden(){return typeof workspaceChartTabEnabled==='function'&&!workspaceChartTabEnabled('checkout');}
 function practiceJourneyStep(index,action,label,description,count,tone=''){
  const amount=Number.isFinite(count)?count:null;
  const state=amount===null?'unavailable':amount>0?(tone||'attention'):'clear';
@@ -42,7 +45,7 @@ function renderPracticeWorkspace(){
  ${practiceJourneyStep(1,'intake','Intake','New requests and forms',Array.isArray(previsit?.items)?previsit.items.filter(item=>['not_issued','submitted'].includes(item.status)).length:null)}
  ${practiceJourneyStep(2,'schedule','Ready','Scheduled and preparing',schedule?appointments.length:null,'active')}
  ${practiceJourneyStep(3,'patients','Visit','Arrivals and open visits',unfinished?unfinished.total:null)}
- ${practiceJourneyStep(4,'patients','Checkout','Instructions, charges and handoff',unfinished?unfinished.items.filter(item=>item.note_saved).length:null)}
+ ${practiceJourneyStep(4,'patients',...(practiceCheckoutHidden()?['Charges','Charges for signed visits']:['Checkout','Instructions, charges and handoff']),unfinished?unfinished.items.filter(item=>item.note_saved).length:null)}
  ${practiceJourneyStep(5,'claims','Claim','Coding, submission and payer response',Array.isArray(claims?.items)?claims.items.length:null)}
  ${practiceJourneyStep(6,'followup','Follow-up','Tasks, referrals and recall',[followup?.items,referrals?.items].every(Array.isArray)?followup.items.length+referrals.items.length:null)}
  </nav></section>

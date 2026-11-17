@@ -951,17 +951,29 @@ async fn claim_defaults(
     // The tax ID is used only when the practice has exactly one active billing organization.
     let organizations = crate::practice_billing::choices(pool, a.tenant_id).await?;
     let mut tax_id = String::new();
+    let mut tax_id_type = String::new();
     let mut organization_name = String::new();
+    let mut organization_npi = String::new();
     if let [organization] = organizations.as_slice() {
         if let Some(id) = organization["id"]
             .as_str()
             .and_then(|v| Uuid::parse_str(v).ok())
         {
-            if let Some((_, secret)) =
+            if let Some((kind, secret)) =
                 crate::practice_billing::tax_identity(pool, a.tenant_id, id).await?
             {
                 tax_id = secret.expose().to_owned();
+                // The claim must say how this tax ID was issued: a practice
+                // billing under a Social Security number is not sent as an EIN.
+                tax_id_type = match kind.as_str() {
+                    "S" => "S",
+                    _ => "E",
+                }
+                .to_owned();
                 organization_name = organization["name"].as_str().unwrap_or("").to_owned();
+                // A practice billing under its organization NPI sends the group's code with
+                // its own tax ID; blank leaves the clinician's NPI as the billing provider.
+                organization_npi = organization["npi"].as_str().unwrap_or("").to_owned();
             }
         }
     }
@@ -1004,8 +1016,13 @@ async fn claim_defaults(
             .or_else(|| Some(organization_name).filter(|name| !name.is_empty()))
             .or_else(|| provider.map(|row| row.1.clone()))
             .unwrap_or_default(),
-        billing_npi: provider.map(|row| row.2.clone()).unwrap_or_default(),
+        billing_npi: if organization_npi.is_empty() {
+            provider.map(|row| row.2.clone()).unwrap_or_default()
+        } else {
+            organization_npi
+        },
         tax_id,
+        tax_id_type,
         billing_address: facility.map(|row| row.1.clone()).unwrap_or_default(),
         rendering_npi: provider.map(|row| row.2.clone()).unwrap_or_default(),
         subscriber_address: if own_policy {

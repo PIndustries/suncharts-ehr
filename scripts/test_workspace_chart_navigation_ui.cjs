@@ -87,6 +87,19 @@ async function main(){
  plain(evaluate('Object.keys(workspaceModuleIds)')).forEach((key,index)=>{values[`order_${key}`]=index+1;if(key!=='specialty')values[`visible_${key}`]='on';});
  context.form={dataset:{version:'4'},values};await evaluate('saveWorkspaceSettings(form)');
  const savedOrder=[...configured.filter(key=>selected.includes(key)),...selected.filter(key=>!configured.includes(key))];assert.deepEqual(plain(calls.at(-1).body.content.chart_tabs),savedOrder);
+
+ // Saving chart areas keeps the registration-correction setting as it was loaded: this form
+ // does not offer it, so dropping it from the request would silently switch it back on.
+ for(const required of [true,false]){
+  evaluate(`practiceWorkspaceSettings={version:9,content:{module_order:Object.keys(workspaceModuleIds),hidden_modules:[],chart_tabs:${JSON.stringify(configured)},require_identity_correction_reason:${required}}}`);
+  context.form={dataset:{version:'9'},values:{reason:'Synthetic chart visibility change'}};
+  await evaluate('saveWorkspaceSettings(form)');
+  assert.equal(calls.at(-1).body.content.require_identity_correction_reason,required,`the setting is sent as loaded when it is ${required}`);
+ }
+ evaluate("practiceWorkspaceSettings={version:10,content:{module_order:Object.keys(workspaceModuleIds),hidden_modules:[],chart_tabs:['overview']}}");
+ context.form={dataset:{version:'10'},values:{reason:'Synthetic chart visibility change'}};
+ await evaluate('saveWorkspaceSettings(form)');
+ assert.equal(calls.at(-1).body.content.require_identity_correction_reason,true,'a practice that never changed the setting keeps it on');
  evaluate("practiceWorkspaceSettings.content.chart_tabs=['overview','functional_status'];chartSection='overview';applyChartSection()");
  evaluate("showChartSection('specialty_care')");assert.equal(evaluate('chartSection'),'overview');assert.equal(nodes['specialty-care-panel'].hidden,true);
  evaluate("showChartSection('functional_status')");assert.equal(nodes['functional-status-panel'].hidden,false);

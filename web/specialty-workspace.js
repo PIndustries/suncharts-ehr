@@ -93,7 +93,10 @@ async function saveWorkspaceSettings(form){
  const chart_tabs=[...previousTabs.filter(key=>selectedTabs.has(key)),...Object.keys(chartTabLabels).filter(key=>selectedTabs.has(key)&&!previousTabs.includes(key))];
  const module_labels=Object.fromEntries(keys.map(key=>[key,String(values.get(`label_${key}`)||workspaceModuleLabels[key]).trim()||workspaceModuleLabels[key]]));
  const module_groups=Object.fromEntries(keys.map(key=>[key,String(values.get(`group_${key}`)||'')]).filter(([,group])=>group));
- practiceWorkspaceSettings=await api('/api/v1/practice/workspace-settings','PUT',{content:{module_order,hidden_modules,chart_tabs,module_labels,module_groups},reason:values.get('reason')},Number(form.dataset.version));
+ // This form does not offer the registration-correction setting, so send it back as loaded;
+ // leaving it out would silently switch it back on whenever chart areas are saved.
+ const require_identity_correction_reason=practiceWorkspaceSettings.content.require_identity_correction_reason!==false;
+ practiceWorkspaceSettings=await api('/api/v1/practice/workspace-settings','PUT',{content:{module_order,hidden_modules,chart_tabs,module_labels,module_groups,require_identity_correction_reason},reason:values.get('reason')},Number(form.dataset.version));
  applyPracticeWorkspaceSettings();renderWorkspaceSettingsAdmin($('practice-admin-panel'));notice('Workspace configuration saved.');
 }
 

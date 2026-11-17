@@ -192,6 +192,21 @@ fn field<'a>(v: &'a Value, k: &str) -> Result<&'a str> {
     v[k].as_str()
         .ok_or(Error::Invalid("frozen claim evidence is incomplete"))
 }
+/// A service line's drug identity, when it carries one: the 11-digit NDC, the
+/// quantity given and its unit. Partial or malformed frozen values return None
+/// so the line writes no drug segments; saving a charge validates the set first.
+fn drug_line(l: &Value) -> Option<(String, String, String)> {
+    let code = l["ndc_code"].as_str().unwrap_or("").trim();
+    let quantity = l["ndc_quantity"].as_str().unwrap_or("").trim();
+    let unit = l["ndc_unit"].as_str().unwrap_or("").trim();
+    let complete = code.len() == 11
+        && code.bytes().all(|b| b.is_ascii_digit())
+        && !quantity.is_empty()
+        && quantity.len() <= 7
+        && quantity.bytes().all(|b| b == b'.' || b.is_ascii_digit())
+        && matches!(unit, "UN" | "ML" | "GR" | "F2" | "ME");
+    complete.then(|| (code.to_string(), quantity.to_string(), unit.to_string()))
+}
 fn decimal(n: i64) -> String {
     format!("{}.{:02}", n / 100, n % 100)
 }
@@ -464,7 +479,17 @@ pub(crate) fn generate(
         &content.billing_npi,
     )?;
     address(&mut st, &d.billing_address)?;
-    st.push(seg(&["REF", "EI", &content.tax_id]));
+    // REF qualifier: SY for a Social Security number, EI for an EIN. A claim
+    // frozen before the type was recorded is sent as an EIN, as it always was.
+    st.push(seg(&[
+        "REF",
+        if content.tax_id_type == "S" {
+            "SY"
+        } else {
+            "EI"
+        },
+        &content.tax_id,
+    ]));
     st.push(seg(&[
         "HL",
         "2",
@@ -615,6 +640,13 @@ pub(crate) fn generate(
             &service.format("%Y%m%d").to_string(),
         ]));
         st.push(seg(&["REF", "6R", &(i + 1).to_string()]));
+        // Loop 2410: a charge carrying an injected drug's NDC identifies the
+        // drug on its own service line. Lines without an NDC write nothing.
+        let drug = drug_line(l);
+        if let Some((code, quantity, unit)) = &drug {
+            st.push(seg(&["LIN", "", "N4", code]));
+            st.push(seg(&["CTP", "", "", "", quantity, unit]));
+        }
         if let Some(evidence) = &coordination {
             let previous = &evidence.adjudication.services[i];
             let payer = field(&evidence.primary_coverage["payer"]["content"], "payer_code")?;
@@ -1035,6 +1067,34 @@ mod tests {
             .contains("HL*3*2*23*0~PAT*19~NM1*QC*1*SYNTHETIC*QUINN~"));
     }
     #[test]
+    fn billing_tax_id_qualifier_follows_the_recorded_identity() {
+        // REF*SY carries a Social Security number; REF*EI carries an EIN. A
+        // claim frozen before the type existed (no key at all, or "") is sent
+        // as an EIN, exactly as before the type was recorded.
+        let p = partner();
+        let d = details();
+        let now: DateTime<Utc> = "2026-10-23T12:34:00Z".parse().unwrap();
+        for (stored, qualifier) in [
+            (Value::Null, "EI"),
+            (json!(""), "EI"),
+            (json!("E"), "EI"),
+            (json!("S"), "SY"),
+        ] {
+            let mut c = claim();
+            if stored.is_null() {
+                // An old frozen claim never recorded the type: no key at all.
+                c.content.as_object_mut().unwrap().remove("tax_id_type");
+            } else {
+                c.content["tax_id_type"] = stored.clone();
+            }
+            let g = generate(&c, &p, &d, None, 46, now).unwrap();
+            assert!(
+                g.payload.contains(&format!("REF*{qualifier}*000000001~")),
+                "stored {stored:?} must file as REF*{qualifier}"
+            );
+        }
+    }
+    #[test]
     fn blank_payer_address_omits_its_n3_n4_while_partly_filled_is_rejected() {
         let c = claim();
         let p = partner();
@@ -1086,6 +1146,71 @@ mod tests {
         assert!(g
             .payload
             .contains("11:B:7*Y*A*Y*Y~REF*F8*SYN-ORIGINAL-PCN~"));
+    }
+    #[test]
+    fn an_ndc_carrying_line_writes_loop_2410_after_its_ref_6r_and_counts_in_se() {
+        let partner = partner();
+        let details = details();
+        let now = "2026-10-23T12:34:00Z".parse().unwrap();
+        let mut c = claim();
+        c.snapshot["account"]["content"]["lines"][0]["code_system"] = json!("HCPCS");
+        c.snapshot["account"]["content"]["lines"][0]["code"] = json!("J0585");
+        c.snapshot["account"]["content"]["lines"][0]["ndc_code"] = json!("00023114501");
+        c.snapshot["account"]["content"]["lines"][0]["ndc_quantity"] = json!("100");
+        c.snapshot["account"]["content"]["lines"][0]["ndc_unit"] = json!("UN");
+        let g = generate(&c, &partner, &details, None, 42, now).unwrap();
+        let segs: Vec<&str> = g.payload.split('~').filter(|s| !s.is_empty()).collect();
+        let ref6r = segs
+            .iter()
+            .rposition(|s| *s == "REF*6R*1")
+            .expect("the line's REF*6R segment");
+        assert_eq!(segs[ref6r + 1], "LIN**N4*00023114501");
+        assert_eq!(segs[ref6r + 2], "CTP****100*UN");
+        // Both extra segments are inside the count SE reports. A file with a
+        // drug carries exactly two more segments than the same claim without one.
+        let count = |p: &str| {
+            let all: Vec<&str> = p.split('~').filter(|s| !s.is_empty()).collect();
+            all.iter()
+                .find(|s| s.starts_with("SE*"))
+                .expect("the SE segment")
+                .split('*')
+                .nth(1)
+                .unwrap()
+                .parse::<usize>()
+                .unwrap()
+        };
+        let without = generate(&claim(), &partner, &details, None, 42, now)
+            .unwrap()
+            .payload;
+        assert_eq!(
+            count(&g.payload),
+            count(&without) + 2,
+            "SE must count the two drug segments"
+        );
+    }
+    #[test]
+    fn a_claim_without_an_ndc_is_written_byte_identically() {
+        let partner = partner();
+        let details = details();
+        let now = "2026-10-23T12:34:00Z".parse().unwrap();
+        let plain = generate(&claim(), &partner, &details, None, 42, now)
+            .unwrap()
+            .payload;
+        assert!(!plain.contains("LIN*") && !plain.contains("CTP*"));
+        // Empty and blank drug fields from a stored line change nothing on the wire.
+        for blank in [json!(""), json!("   "), json!(null)] {
+            let mut c = claim();
+            c.snapshot["account"]["content"]["lines"][0]["ndc_code"] = blank.clone();
+            c.snapshot["account"]["content"]["lines"][0]["ndc_quantity"] = blank.clone();
+            c.snapshot["account"]["content"]["lines"][0]["ndc_unit"] = blank.clone();
+            assert_eq!(
+                generate(&c, &partner, &details, None, 42, now)
+                    .unwrap()
+                    .payload,
+                plain,
+                "a blank drug field {blank} must not change the file"
+            );
+        }
     }
     #[test]
     fn cpt_syntax_accepts_only_documented_numeric_and_suffix_families() {

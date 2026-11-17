@@ -152,8 +152,8 @@ mod tests {
     fn primary_taxonomy_is_picked() {
         let v = json!({"result_count":1,"results":[{"number":"1234567893","taxonomies":[
             {"code":"207Q00000X","desc":"Family","primary":false,"state":"TX"},
-            {"code":"2081P2900X","desc":"X","primary":true,"state":"NJ"}]}]});
-        assert_eq!(primary_taxonomy_from(&v).as_deref(), Some("2081P2900X"));
+            {"code":"207Q00000X","desc":"X","primary":true,"state":"ZZ"}]}]});
+        assert_eq!(primary_taxonomy_from(&v).as_deref(), Some("207Q00000X"));
     }
 
     #[test]

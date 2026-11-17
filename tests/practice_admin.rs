@@ -64,7 +64,7 @@ async fn registry_handler(
             Json(
                 json!({"result_count":1,"results":[{"number":number,"taxonomies":[
                 {"code":"207Q00000X","desc":"Synthetic family","primary":false,"state":"TX"},
-                {"code":"2081P2900X","desc":"Synthetic primary","primary":true,"state":"NJ"}]}]}),
+                {"code":"207Q00000X","desc":"Synthetic primary","primary":true,"state":"ZZ"}]}]}),
             ),
         ),
     }
@@ -1553,7 +1553,7 @@ async fn a_provider_with_an_npi_and_no_taxonomy_is_filled_from_the_registry() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{created}");
-    assert_eq!(created["taxonomy"], "2081P2900X");
+    assert_eq!(created["taxonomy"], "207Q00000X");
     let stored: String =
         sqlx::query_scalar("SELECT taxonomy FROM practice_providers WHERE tenant_id=$1 AND id=$2")
             .bind(f.tenant)
@@ -1561,7 +1561,7 @@ async fn a_provider_with_an_npi_and_no_taxonomy_is_filled_from_the_registry() {
             .fetch_one(&f.db)
             .await
             .unwrap();
-    assert_eq!(stored, "2081P2900X");
+    assert_eq!(stored, "207Q00000X");
     std::env::set_var("ENGINE_NPI_REGISTRY_URL", "");
     cleanup(f).await;
 }

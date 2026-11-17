@@ -303,6 +303,36 @@ impl Fixture {
         }
         id
     }
+    /// Charges for a visit billed to an insurer. A real coverage is attached first,
+    /// because that is what makes a charge account an insured one.
+    async fn insured_account(
+        &self,
+        patient: Uuid,
+        visit: Uuid,
+        status: &str,
+        coverage: Uuid,
+    ) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO billing_accounts(tenant_id,id,patient_id,visit_id,coverage_id,content,total_cents,status,request_id,creation_hash) VALUES($1,$2,$3,$4,$5,$6,20000,$7,$2,'synthetic')")
+            .bind(self.tenant).bind(id).bind(patient).bind(visit).bind(coverage).bind(json!({"visit_id":visit,"coverage_id":coverage,"service_date":"2031-03-14","lines":[]})).bind(status).execute(&self.db).await.unwrap();
+        id
+    }
+    /// A claim on a charge account, at the given status and of the given age.
+    async fn claim(&self, account: Uuid, status: &str, age: Duration) -> Uuid {
+        let id = Uuid::new_v4();
+        let (patient,): (Uuid,) =
+            sqlx::query_as("SELECT patient_id FROM billing_accounts WHERE tenant_id=$1 AND id=$2")
+                .bind(self.tenant)
+                .bind(account)
+                .fetch_one(&self.db)
+                .await
+                .unwrap();
+        sqlx::query("INSERT INTO ehr_claims(tenant_id,id,patient_id,account_id,payer_id,control_number,frequency,content,snapshot,status,request_id,creation_hash,created_at) VALUES($1,$2,$3,$4,$5,$6,'original','{}'::jsonb,'{}'::jsonb,$7,$8,'synthetic',$9)")
+            .bind(self.tenant).bind(id).bind(patient).bind(account).bind(self.payer)
+            .bind(format!("SYN-{}", id.simple())).bind(status).bind(Uuid::new_v4())
+            .bind(self.day - age).execute(&self.db).await.unwrap();
+        id
+    }
     /// An earlier, finished visit so the patient is not new, optionally leaving a balance.
     async fn earlier_visit(&self, patient: Uuid, owes: Option<i64>) {
         let appointment = self
@@ -518,6 +548,78 @@ async fn intake_form_and_new_patient_facts_follow_each_appointment() {
     assert_eq!(item(&body, after_import)["new_patient"], false);
     assert_eq!(item(&body, first)["new_patient"], true);
     assert_eq!(item(&body, later)["new_patient"], false);
+}
+
+#[tokio::test]
+async fn an_appointment_marked_as_needing_no_form_says_so() {
+    let f = Fixture::new().await;
+    let mark = |appointment: Uuid, tenant: Uuid, marked_by: Uuid| {
+        let db = f.db.clone();
+        async move {
+            sqlx::query("INSERT INTO previsit_intake_not_needed(tenant_id,id,appointment_id,marked_by) VALUES($1,$2,$3,$4)")
+                .bind(tenant).bind(Uuid::new_v4()).bind(appointment).bind(marked_by).execute(&db).await.unwrap();
+        }
+    };
+    // Marked, with nothing sent: the schedule says no form is needed.
+    let (_, marked) = f.visit_today("booked").await;
+    mark(marked, f.tenant, f.owner).await;
+    // The mark is undone: back to "nothing sent".
+    let (_, undone) = f.visit_today("booked").await;
+    mark(undone, f.tenant, f.owner).await;
+    sqlx::query("UPDATE previsit_intake_not_needed SET cleared_by=$3,cleared_at=now() WHERE tenant_id=$1 AND appointment_id=$2 AND cleared_at IS NULL")
+        .bind(f.tenant).bind(undone).bind(f.owner).execute(&f.db).await.unwrap();
+    // Another practice's mark says nothing to this one.
+    let elsewhere = Uuid::new_v4();
+    let (stranger, stranger_cookie) = f.staff(elsewhere, "owner").await;
+    f.practice(elsewhere, Uuid::new_v4(), Uuid::new_v4(), stranger)
+        .await;
+    let their_patient = f.patient(elsewhere).await;
+    let theirs = f
+        .appointment_at(elsewhere, their_patient, stranger, f.day, "booked")
+        .await;
+    mark(theirs, elsewhere, stranger).await;
+
+    let body = f.markers(&f.cookie).await;
+    assert_eq!(
+        item(&body, marked)["forms"],
+        json!({"status":"not_needed","packet_id":Value::Null})
+    );
+    assert_eq!(
+        item(&body, undone)["forms"],
+        Value::Null,
+        "an undone mark asks for a form again"
+    );
+
+    // A form sent for the appointment outranks a mark left on file. Sending a
+    // form clears any mark, so the stale mark is written back after the send.
+    let (form_patient, with_form) = f.visit_today("booked").await;
+    let packet = f
+        .form(
+            f.tenant,
+            f.template,
+            f.owner,
+            form_patient,
+            Some(with_form),
+            "sent",
+            f.day - Duration::days(1),
+            false,
+        )
+        .await;
+    mark(with_form, f.tenant, f.owner).await;
+    let body = f.markers(&f.cookie).await;
+    assert_eq!(
+        item(&body, with_form)["forms"],
+        json!({"status":"sent","packet_id":packet}),
+        "a live form outranks a mark left on file"
+    );
+
+    let outside = f.markers(&stranger_cookie).await;
+    assert_eq!(outside["items"].as_array().unwrap().len(), 1);
+    assert_eq!(item(&outside, theirs)["forms"]["status"], "not_needed");
+    assert!(
+        !outside.to_string().contains(&marked.to_string()),
+        "one practice's appointments never appear in another's markers"
+    );
 }
 
 #[tokio::test]
@@ -780,6 +882,92 @@ async fn insurance_copay_balance_note_and_charge_facts_are_correct() {
 }
 
 #[tokio::test]
+async fn claim_facts_follow_the_insurer_step_for_each_visit() {
+    let f = Fixture::new().await;
+    // A visit with charges posted to an insurer, ready for a claim to be put on it.
+    async fn insured(f: &Fixture) -> (Uuid, Uuid) {
+        let (patient, appointment) = f.visit_today("completed").await;
+        let coverage = f.coverage(patient, json!({})).await;
+        let visit = f.visit(patient, appointment, "signed").await;
+        let account = f.insured_account(patient, visit, "posted", coverage).await;
+        (appointment, account)
+    }
+    let (posted, _) = insured(&f).await;
+    let (draft, draft_account) = insured(&f).await;
+    let draft_claim = f.claim(draft_account, "draft", Duration::days(2)).await;
+    let (ready, ready_account) = insured(&f).await;
+    let ready_claim = f.claim(ready_account, "ready", Duration::days(2)).await;
+    let (sent, sent_account) = insured(&f).await;
+    let sent_claim = f.claim(sent_account, "submitted", Duration::days(2)).await;
+    let (accepted, accepted_account) = insured(&f).await;
+    let accepted_claim = f
+        .claim(accepted_account, "accepted", Duration::days(2))
+        .await;
+    let (rejected, rejected_account) = insured(&f).await;
+    let rejected_claim = f
+        .claim(rejected_account, "rejected", Duration::days(2))
+        .await;
+    let (answered, answered_account) = insured(&f).await;
+    let answered_claim = f
+        .claim(answered_account, "adjudicated", Duration::days(2))
+        .await;
+    // A voided claim counts for nothing, so the visit still needs one sent.
+    let (voided, voided_account) = insured(&f).await;
+    let void_claim = f.claim(voided_account, "void", Duration::days(4)).await;
+    // Charges billed to the patient: nothing to send an insurer.
+    let (self_pay_patient, self_pay) = f.visit_today("completed").await;
+    let self_pay_visit = f.visit(self_pay_patient, self_pay, "signed").await;
+    f.account(self_pay_patient, self_pay_visit, "posted", None)
+        .await;
+    // Charges that never went in, and charges still being written.
+    let (nothing_patient, nothing) = f.visit_today("completed").await;
+    let nothing_visit = f.visit(nothing_patient, nothing, "signed").await;
+    let _ = nothing_visit;
+    let (drafting_patient, drafting) = f.visit_today("completed").await;
+    let drafting_coverage = f.coverage(drafting_patient, json!({})).await;
+    let drafting_visit = f.visit(drafting_patient, drafting, "signed").await;
+    f.insured_account(drafting_patient, drafting_visit, "draft", drafting_coverage)
+        .await;
+    // A booked appointment with no visit at all.
+    let (_, booked) = f.visit_today("booked").await;
+
+    let body = f.markers(&f.cookie).await;
+    let claim = |appointment| item(&body, appointment)["claim"].clone();
+    assert_eq!(claim(posted), json!({"status":"not_sent","claim_id":null}));
+    assert_eq!(
+        claim(draft),
+        json!({"status":"not_sent","claim_id":draft_claim}),
+        "a claim that has not gone out is still work to do"
+    );
+    assert_eq!(
+        claim(ready),
+        json!({"status":"not_sent","claim_id":ready_claim})
+    );
+    assert_eq!(claim(sent), json!({"status":"sent","claim_id":sent_claim}));
+    assert_eq!(
+        claim(accepted),
+        json!({"status":"accepted","claim_id":accepted_claim})
+    );
+    assert_eq!(
+        claim(rejected),
+        json!({"status":"rejected","claim_id":rejected_claim})
+    );
+    assert_eq!(
+        claim(answered),
+        json!({"status":"answered","claim_id":answered_claim}),
+        "the insurer has paid or denied"
+    );
+    assert_eq!(
+        claim(voided),
+        json!({"status":"not_sent","claim_id":null}),
+        "a voided claim counts for nothing: the visit needs another one ({void_claim})"
+    );
+    for appointment in [self_pay, nothing, drafting, booked] {
+        assert_eq!(claim(appointment), Value::Null, "{appointment}");
+    }
+}
+
+#[tokio::test]
 async fn markers_are_scoped_to_the_practice_the_range_and_the_provider() {
     let f = Fixture::new().await;
     let (patient, appointment) = f.visit_today("booked").await;
@@ -968,6 +1156,7 @@ async fn billing_and_clinical_facts_are_left_out_for_staff_without_that_access()
         "appointment_id",
         "balance_cents",
         "charges",
+        "claim",
         "copay",
         "forms",
         "insurance",
@@ -1010,7 +1199,7 @@ async fn billing_and_clinical_facts_are_left_out_for_staff_without_that_access()
     assert_eq!(body["clinical"], true);
     assert_eq!(
         keys(&body),
-        without(&["insurance", "copay", "balance_cents", "charges"])
+        without(&["insurance", "copay", "balance_cents", "charges", "claim"])
     );
     assert_eq!(item(&body, appointment)["forms"]["status"], "submitted");
     assert_eq!(item(&body, appointment)["note"], "in_progress");
@@ -1030,7 +1219,7 @@ async fn billing_and_clinical_facts_are_left_out_for_staff_without_that_access()
         (body["billing"].clone(), body["insurance"].clone()),
         (json!(true), json!(false))
     );
-    assert_eq!(keys(&body), without(&["insurance"]));
+    assert_eq!(keys(&body), without(&["insurance", "claim"]));
     // Without clinical access the note state is left out.
     let (clerk, clerk_cookie) = f.staff(f.tenant, "front_desk").await;
     f.hide(clerk, "front_desk", &["clinical"]).await;
@@ -1087,8 +1276,44 @@ fn the_contract_lists_the_markers_route_and_the_practice_hours() {
         ]),
         "billing and clinical facts are optional because some staff do not receive them"
     );
-    for fact in ["insurance", "copay", "balance_cents", "note", "charges"] {
+    for fact in [
+        "insurance",
+        "copay",
+        "balance_cents",
+        "note",
+        "charges",
+        "claim",
+    ] {
         assert!(marker["properties"][fact].is_object(), "{fact}");
     }
+    assert_eq!(
+        marker["properties"]["claim"]["type"],
+        json!(["object", "null"]),
+        "a self-pay visit, unposted charges or no visit at all carry no claim"
+    );
+    assert_eq!(
+        marker["properties"]["claim"]["properties"]["status"]["enum"],
+        json!(["not_sent", "sent", "accepted", "rejected", "answered"]),
+        "the five positions staff see cover every stored claim status"
+    );
+    assert_eq!(
+        marker["properties"]["claim"]["properties"]["claim_id"]["type"],
+        json!(["string", "null"]),
+        "charges with no claim yet carry no claim identifier"
+    );
+    assert_eq!(
+        marker["properties"]["claim"]["required"],
+        json!(["status", "claim_id"])
+    );
+    assert_eq!(
+        marker["properties"]["forms"]["properties"]["status"]["enum"],
+        json!(["sent", "in_progress", "submitted", "reviewed", "not_needed"]),
+        "a marked appointment reports not_needed with no packet"
+    );
+    assert_eq!(
+        marker["properties"]["forms"]["properties"]["packet_id"]["type"],
+        json!(["string", "null"]),
+        "not_needed carries no packet"
+    );
     assert!(spec["components"]["schemas"]["ScheduleProviders"]["properties"]["hours"].is_object());
 }

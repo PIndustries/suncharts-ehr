@@ -406,7 +406,7 @@ fn valid_taxonomy(raw: &str) -> bool {
     let code = taxonomy_code(raw);
     code.is_empty() || (code.len() == 10 && code.bytes().all(|b| b.is_ascii_alphanumeric()))
 }
-fn valid_npi(n: &str) -> bool {
+pub(crate) fn valid_npi(n: &str) -> bool {
     if n.len() != 10
         || !n.bytes().all(|b| b.is_ascii_digit())
         || !matches!(n.as_bytes()[0], b'1' | b'2')

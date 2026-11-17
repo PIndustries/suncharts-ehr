@@ -4970,7 +4970,7 @@
     "/api/v1/schedule/markers": {
       "get": {
         "operationId": "scheduleMarkers",
-        "description": "What each appointment overlapping a UTC half-open range of up to 31 days still needs: intake form state, insurance eligibility for the coverage that pays first, copay, patient balance, note and charge state, and whether it is the patient's first appointment. Read with a fixed number of queries. Requires the same access as the schedule. Insurance, copay, balance and charge facts are omitted when the staff member's access policy hides patient billing (insurance also needs claims access); note state is omitted without clinical access.",
+        "description": "What each appointment overlapping a UTC half-open range of up to 31 days still needs: intake form state, insurance eligibility for the coverage that pays first, copay, patient balance, note and charge state, where the visit's insurance claim stands, and whether it is the patient's first appointment. Read with a fixed number of queries. Requires the same access as the schedule. Insurance, copay, balance, charge and claim facts are omitted when the staff member's access policy hides patient billing (insurance also needs claims access); note state is omitted without clinical access.",
         "parameters": [
           {
             "name": "from",
@@ -41325,6 +41325,7 @@
                     "object",
                     "null"
                   ],
+                  "description": "The intake form state, or {status:\"not_needed\",packet_id:null} while the appointment is marked as needing no form and no live form exists for it.",
                   "additionalProperties": false,
                   "properties": {
                     "status": {
@@ -41333,11 +41334,15 @@
                         "sent",
                         "in_progress",
                         "submitted",
-                        "reviewed"
+                        "reviewed",
+                        "not_needed"
                       ]
                     },
                     "packet_id": {
-                      "type": "string",
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "format": "uuid"
                     }
                   },
@@ -41425,6 +41430,37 @@
                     "draft",
                     "posted",
                     null
+                  ]
+                },
+                "claim": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "description": "Where the insurance claim for this visit's charges stands. Present only for a visit whose charges are posted to an insurer: null for a self-pay charge account, charges that are not posted and an appointment with no visit. not_sent covers posted charges with no claim yet and a newest claim still draft or ready; answered means the insurer has paid or denied. A claim counted as voided has no status of its own and reads as not_sent again.",
+                  "additionalProperties": false,
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "not_sent",
+                        "sent",
+                        "accepted",
+                        "rejected",
+                        "answered"
+                      ]
+                    },
+                    "claim_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "claim_id"
                   ]
                 }
               },
@@ -41707,6 +41743,36 @@
             ],
             "maxLength": 1000,
             "description": "Required when an approved fee line amount differs from unit fee times units."
+          },
+          "ndc_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 13,
+            "description": "Drug NDC for an injected-drug charge, such as a HCPCS J-code. Entered with or without hyphens; stored as exactly 11 digits. Supplied together with ndc_quantity and ndc_unit, or all three omitted."
+          },
+          "ndc_quantity": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 7,
+            "description": "Quantity of the drug given, as a positive decimal of at most 7 characters including the point and at most 3 decimals, such as 100 or 2.5."
+          },
+          "ndc_unit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "UN",
+              "ML",
+              "GR",
+              "F2",
+              "ME"
+            ],
+            "description": "Unit the quantity is measured in: UN units, ML milliliters, GR grams, F2 international units, ME milligrams."
           }
         },
         "required": [
@@ -42535,6 +42601,14 @@
               "maxItems": 4
             },
             "maxItems": 100
+          },
+          "tax_id_type": {
+            "type": "string",
+            "enum": [
+              "",
+              "E",
+              "S"
+            ]
           }
         },
         "required": [
@@ -56413,26 +56487,39 @@
             "minLength": 1,
             "maxLength": 100
           },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "published",
+              "practice_entered"
+            ],
+            "description": "Defaults to published. A practice_entered source records a price list typed by the practice and carries no URL, hash or publication date."
+          },
+          "entered_by_note": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Required plain-text note for a practice_entered source; must be absent for a published source."
+          },
           "url": {
             "type": "string",
             "format": "uri",
-            "description": "HTTPS source URL; no embedded credentials",
+            "description": "HTTPS source URL; no embedded credentials. Required for a published source; must be empty or absent for a practice_entered source.",
             "maxLength": 2000
           },
           "sha256": {
             "type": "string",
-            "pattern": "^[a-fA-F0-9]{64}$"
+            "pattern": "^[a-fA-F0-9]{64}$",
+            "description": "Required for a published source; must be empty or absent for a practice_entered source."
           },
           "published_on": {
             "type": "string",
-            "format": "date"
+            "format": "date",
+            "description": "Required for a published source; must be absent for a practice_entered source."
           }
         },
         "required": [
-          "id",
-          "url",
-          "sha256",
-          "published_on"
+          "id"
         ]
       },
       "PracticeFeeEntry": {
@@ -56754,6 +56841,10 @@
             "minLength": 1,
             "maxLength": 200
           },
+          "npi": {
+            "type": "string",
+            "pattern": "^$|^[0-9]{10}$"
+          },
           "tax_id": {
             "type": "string",
             "pattern": "^[0-9]{9}$",
@@ -56797,6 +56888,10 @@
             "minLength": 1,
             "maxLength": 200
           },
+          "npi": {
+            "type": "string",
+            "pattern": "^$|^[0-9]{10}$"
+          },
           "tax_id": {
             "type": "string",
             "pattern": "^[0-9]{9}$",
@@ -56824,6 +56919,7 @@
         "required": [
           "id",
           "name",
+          "npi",
           "tax_id_type",
           "tax_id_last4",
           "active",
@@ -56836,6 +56932,10 @@
           },
           "name": {
             "type": "string"
+          },
+          "npi": {
+            "type": "string",
+            "pattern": "^$|^[0-9]{10}$"
           },
           "tax_id_type": {
             "type": "string",

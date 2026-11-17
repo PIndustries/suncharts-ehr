@@ -663,7 +663,7 @@ async fn insured_visit_prepares_its_claim_once_and_splits_insurance_from_patient
     assert_eq!(claim["snapshot"]["account"]["total_cents"], 10000);
     assert_eq!(
         claim["content"],
-        json!({"billing_provider_name":"Synthetic Clinic","billing_npi":"1234567893","tax_id":"000000017","billing_address":"1 Synthetic Way, Austin TX 78701","rendering_npi":"1234567893","patient_address":"1 Synthetic Way, Austin, TX, 78701, US","subscriber_address":"1 Synthetic Way, Austin, TX, 78701, US","subscriber_birth_date":"1990-01-01","place_of_service":"11","diagnosis_codes":["Z00.00"],"line_diagnosis_pointers":[[1]],"external_control_number":"","notes":"","synthetic_test":false})
+        json!({"billing_provider_name":"Synthetic Clinic","billing_npi":"1234567893","tax_id":"000000017","billing_address":"1 Synthetic Way, Austin TX 78701","rendering_npi":"1234567893","patient_address":"1 Synthetic Way, Austin, TX, 78701, US","subscriber_address":"1 Synthetic Way, Austin, TX, 78701, US","subscriber_birth_date":"1990-01-01","place_of_service":"11","diagnosis_codes":["Z00.00"],"line_diagnosis_pointers":[[1]],"external_control_number":"","notes":"","synthetic_test":false,"tax_id_type":"E"})
     );
     // The same audit trail as the manual action, attributed to the person who opened it.
     let (actor, reason, evidence): (Uuid, String, Value) = sqlx::query_as("SELECT actor_id,reason,evidence FROM claim_revisions WHERE tenant_id=$1 AND claim_id=$2 AND version=1").bind(f.owner.tenant_id).bind(id(&claim)).fetch_one(&f.db).await.unwrap();
