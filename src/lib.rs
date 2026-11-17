@@ -1296,6 +1296,16 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/visit-review.js",
+            get(|| async {
+                web_asset(
+                    "visit-review.js",
+                    "application/javascript",
+                    include_str!("../web/visit-review.js"),
+                )
+            }),
+        )
+        .route(
             "/patient-revenue.js",
             get(|| async {
                 web_asset(
