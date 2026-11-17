@@ -56413,26 +56413,39 @@
             "minLength": 1,
             "maxLength": 100
           },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "published",
+              "practice_entered"
+            ],
+            "description": "Defaults to published. A practice_entered source records a price list typed by the practice and carries no URL, hash or publication date."
+          },
+          "entered_by_note": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Required plain-text note for a practice_entered source; must be absent for a published source."
+          },
           "url": {
             "type": "string",
             "format": "uri",
-            "description": "HTTPS source URL; no embedded credentials",
+            "description": "HTTPS source URL; no embedded credentials. Required for a published source; must be empty or absent for a practice_entered source.",
             "maxLength": 2000
           },
           "sha256": {
             "type": "string",
-            "pattern": "^[a-fA-F0-9]{64}$"
+            "pattern": "^[a-fA-F0-9]{64}$",
+            "description": "Required for a published source; must be empty or absent for a practice_entered source."
           },
           "published_on": {
             "type": "string",
-            "format": "date"
+            "format": "date",
+            "description": "Required for a published source; must be absent for a practice_entered source."
           }
         },
         "required": [
-          "id",
-          "url",
-          "sha256",
-          "published_on"
+          "id"
         ]
       },
       "PracticeFeeEntry": {
