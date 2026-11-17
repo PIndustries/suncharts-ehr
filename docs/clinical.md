@@ -205,7 +205,8 @@ are not exported as FHIR Procedure or Condition resources yet.
 | Clinician or owner the visit is assigned to | Yes | Yes | Yes | Yes |
 | Another clinician, or the owner | Yes | Yes | Yes | Yes |
 | Enabled nurse or medical assistant | Yes | Yes | No | No |
-| Front desk or read-only staff | No | No | No | No |
+| Enabled front desk staff | Vitals only | No | No | No |
+| Read-only staff | No | No | No | No |
 | Delegated support session | No | Yes | No | No |
 
 - **Drafting is shared.** The assigned clinician, any other clinician, the owner
@@ -232,7 +233,8 @@ are not exported as FHIR Procedure or Condition resources yet.
   recorded under the support grant in the audit trail, never as a member of the
   practice. They can never sign, amend, or release a patient summary.
 - **Front desk and read-only staff** read the note and see "You can read this
-  note. Clinical staff write it and a clinician signs it."
+  note. Clinical staff write it and a clinician signs it." An enabled front-desk
+  account may also record vitals on an in-progress encounter; drafting stays closed.
 - A custom access policy that removes clinical **edit** from a role removes
   drafting (and signing) for the staff it is assigned to; removing **create**
   removes amendments. There is no separate practice setting that restricts a
@@ -240,8 +242,11 @@ are not exported as FHIR Procedure or Condition resources yet.
 
 Intake and vitals on a started encounter can be recorded by enabled rooming
 staff, the assigned clinician, and a clinician or the owner covering the visit.
-Starting an encounter is unchanged: the assigned clinician or enabled rooming
-staff. Each intake and vitals save keeps its author in the encounter history.
+An enabled front-desk account can additionally record vitals on an in-progress
+encounter — vitals only; the rest of rooming and intake stays closed to it, as
+does everything for read-only staff and a delegated support session. Starting an
+encounter is unchanged: the assigned clinician or enabled rooming staff. Each
+intake and vitals save keeps its author in the encounter history.
 
 Two people cannot overwrite each other's note. Each save carries the version of
 the encounter it was based on. If a colleague saved vitals, intake or diagnoses

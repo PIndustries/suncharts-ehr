@@ -63,6 +63,18 @@ impl Actor {
             Err(Error::Forbidden)
         }
     }
+    /// Recording vitals. The rooming roles plus Front desk, and nothing else: the
+    /// front-desk grant covers vitals only, never the rest of rooming or intake.
+    pub fn vitals(&self) -> Result<()> {
+        if matches!(
+            self.role,
+            Role::Owner | Role::Clinician | Role::Nurse | Role::MedicalAssistant | Role::FrontDesk
+        ) {
+            Ok(())
+        } else {
+            Err(Error::Forbidden)
+        }
+    }
     pub fn clinical(&self) -> Result<()> {
         if matches!(self.role, Role::Owner | Role::Clinician) {
             Ok(())

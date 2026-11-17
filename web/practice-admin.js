@@ -2,6 +2,9 @@
 'use strict';
 let practiceAdminState,practiceAdminGeneration=0;
 const practiceAdminRoles=[['owner','Practice owner'],['clinician','Clinician'],['nurse','Nurse'],['medical_assistant','Medical assistant'],['front_desk','Front desk'],['read_only','Read only']];
+// What each role may do, shown beside the role choice. Front desk records vitals; the
+// rest of rooming and intake, and every note, stays with clinical staff.
+const practiceAdminRoleNotes={front_desk:'Front desk records vitals on an in-progress visit. Rooming intake, notes, diagnoses, orders and signing stay with clinical staff.'};
 const practiceAdminKinds=[['staff','Staff accounts'],['providers','Provider directory'],['facilities','Facilities'],['rooms','Rooms']];
 async function showPracticeAdmin(requestedTab=null,fresh=false){
  if(me?.role!=='owner')throw new Error('Practice owner access is required.');
@@ -125,7 +128,7 @@ function editPracticeAdmin(id){
  const input=(name,label,max,type='text',required=false)=>practiceAdminInput(name,label,row?.[name],max,type,required);
  let fields='';
  if(kind==='staff'){
- const invited=practiceStaffInvited(),own=row?.id===me?.user_id,common=`${input('display_name','Display name',200,'text',true)}${practiceAdminSelect('role','Role',practiceAdminRoles,row?.role||'front_desk')}${row?practiceAdminSelect('disabled','Access',[['false','Enabled'],['true','Disabled']],String(row.disabled)):''}`;
+ const invited=practiceStaffInvited(),own=row?.id===me?.user_id,roleNote=practiceAdminRoleNotes[row?.role]||'',common=`${input('display_name','Display name',200,'text',true)}${practiceAdminSelect('role','Role',practiceAdminRoles,row?.role||'front_desk')}${roleNote?`<p class="muted">${esc(roleNote)}</p>`:''}${row?practiceAdminSelect('disabled','Access',[['false','Enabled'],['true','Disabled']],String(row.disabled)):''}`;
  if(invited)fields=`${row&&own?`<p>Sign-in email: <b>${esc(row.email)}</b></p>`:input('email','Sign-in email',254,'email',true)}${common}${row?.role==='owner'?practiceAdminInput('password','Emergency password (leave blank to keep the current one)','',1024,'password',false):''}<p class="muted">${row?(own?'You sign in with this email through SunCharts.':'If you change the email, we send a sign-in link to the new address and this person signs in with the new email from then on.'):'We email this person a sign-in link. No password is needed.'}${row?.role==='owner'?' The emergency password is only for signing in when SunCharts sign-in is unavailable and emergency access has been switched on for this practice.':''}</p>`;
  else fields=`${input('email','Sign-in email',254,'email',true)}${common}${practiceAdminInput('password',row?'New password (leave blank to keep current password)':'Initial password (at least 14 characters)','',1024,'password',!row)}<p class="muted">Give this password to the staff member in person or by phone. It is not shown again.</p>`;
  }

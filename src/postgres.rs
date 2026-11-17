@@ -116,6 +116,45 @@ pub(crate) async fn intake_authorized(
     rooming_authorized(tx, a, clinician_id).await
 }
 
+/// Vitals on a started visit only. Everything `intake_authorized` allows, plus an
+/// enabled front-desk account: the front-desk grant is checked against the live
+/// `browser_users` row (role `front_desk`, not disabled) the same way a nurse or
+/// medical assistant is, so a stale credential, a disabled account or a delegated
+/// support session never records vitals. This path is deliberately separate from
+/// `rooming_authorized`/`intake_authorized`: front desk gains vitals and nothing else.
+pub(crate) async fn vitals_authorized(
+    tx: &mut Tx<'_>,
+    a: &Actor,
+    clinician_id: Uuid,
+) -> Result<()> {
+    a.vitals()?;
+    if matches!(a.role, Role::Owner | Role::Clinician) && a.sub != clinician_id {
+        return if crate::note_access::delegated(tx, a).await? {
+            Err(Error::Forbidden)
+        } else {
+            Ok(())
+        };
+    }
+    let expected = match a.role {
+        Role::Nurse => Some("nurse"),
+        Role::MedicalAssistant => Some("medical_assistant"),
+        Role::FrontDesk => Some("front_desk"),
+        _ => None,
+    };
+    if let Some(role) = expected {
+        // Shared lock on the live account: stale claims never authorize a disabled
+        // or demoted staff member to write clinical data.
+        let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM browser_users WHERE tenant_id=$1 AND id=$2 AND role=$3 AND NOT disabled FOR SHARE")
+            .bind(a.tenant_id).bind(a.sub).bind(role).fetch_optional(&mut **tx).await?;
+        if exists.is_none() {
+            return Err(Error::Forbidden);
+        }
+    } else if clinician_id != a.sub {
+        return Err(Error::Forbidden);
+    }
+    Ok(())
+}
+
 type PreviousNoteRow = (
     Uuid,
     i64,
@@ -570,7 +609,7 @@ impl ClinicalBackend for PostgresBackend {
         version: i64,
         vitals: Vitals,
     ) -> Result<Visit> {
-        a.rooming()?;
+        a.vitals()?;
         vitals.validate()?;
         let mut tx = self.0.begin().await?;
         let v: Visit =
@@ -580,7 +619,7 @@ impl ClinicalBackend for PostgresBackend {
                 .fetch_optional(&mut *tx)
                 .await?
                 .ok_or(Error::NotFound)?;
-        intake_authorized(&mut tx, a, v.clinician_id).await?;
+        vitals_authorized(&mut tx, a, v.clinician_id).await?;
         if v.version != version {
             return Err(Error::Conflict("visit changed; reload before saving"));
         }

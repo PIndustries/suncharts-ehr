@@ -96,7 +96,21 @@ async function main(){
  }
  console.log('PASS clinicians and the owner write and sign a colleague’s note; nurse and medical assistant draft only; front desk and read-only staff read');
 
- let f=fixture({user:'support',role:'owner',delegated:true,display:'platform_admin:synthetic',note:draft});await f.settle();
+  // The vitals form follows its own rule: an enabled front-desk account records vitals,
+  // while the note stays read-only for it. Read-only staff and a delegated support
+  // session — which may draft a note — still see the vitals form locked.
+  for(const [user,role,enabled] of [['desk','front_desk',true],['desk','read_only',false],['support','owner',false]]){
+   const f=fixture({user,role,delegated:role==='owner',note:draft});await f.settle();
+   const vitals=f.editor().match(/<form id="vitals-form"[\s\S]*?<\/form>/)[0];
+   const inputs=[...vitals.matchAll(/<input\b[^>]*>/g)].map(tag=>tag[0]);
+   assert.ok(inputs.length>=7,role+' renders every measurement');
+   assert.equal(!/<input\b[^>]*\bdisabled/.test(vitals),enabled,role+' vitals editable='+enabled);
+   assert.equal(/<button type="submit">Save vitals<\/button>/.test(vitals),enabled,role+' save button='+enabled);
+   assert.equal(f.nodes.get('note-read-only')?.hidden===false,role!=='owner',role+' keeps the note rule its own');
+  }
+  console.log('PASS the vitals form is enabled for front desk while notes stay closed, and stays locked for read-only staff and a support session');
+
+  let f=fixture({user:'support',role:'owner',delegated:true,display:'platform_admin:synthetic',note:draft});await f.settle();
  assert.match(f.editor(),/<button type="submit">Save note<\/button><span id="note-sign-help" class="muted">You can draft this note\. A clinician at the practice must sign it\.<\/span>/);
  assert.doesNotMatch(f.editor(),/data-action="sign"|You can read this note/);
  await f.click({action:'sign'});assert.equal(count(f,'POST','/sign'),0,'a support session never signs');

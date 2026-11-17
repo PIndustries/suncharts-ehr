@@ -1432,7 +1432,7 @@
             "browserSession": []
           }
         ],
-        "description": "Enabled nurse/medical_assistant, the assigned clinician, or another clinician or the owner covering the visit, before signing. Shares Visit.version; each save is recorded with its author."
+        "description": "Enabled nurse/medical_assistant or front_desk, the assigned clinician, or another clinician or the owner covering the visit, before signing. Front desk may record vitals only; the rest of rooming and intake stays forbidden. Shares Visit.version; each save is recorded with its author."
       }
     },
     "/api/v1/visits/{id}/sign": {
@@ -39877,15 +39877,7 @@
             "maximum": 100
           }
         },
-        "required": [
-          "systolic_mm_hg",
-          "diastolic_mm_hg",
-          "heart_rate_bpm",
-          "temperature_c",
-          "weight_kg",
-          "height_cm",
-          "oxygen_saturation_pct"
-        ]
+        "description": "Every measurement is optional; at least one must be given. Systolic and diastolic blood pressure must be sent together or not at all."
       },
       "Visit": {
         "type": "object",
