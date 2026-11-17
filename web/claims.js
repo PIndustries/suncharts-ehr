@@ -45,8 +45,10 @@ function captureClaimDraft(form=$('claim-editor-form')||$('claimmd-submit-form')
 function restoreClaimDraft(form,account,record,parent,kind='packet',version){
  claimDraftSession();if(!form)return;form.claimDraftKey=claimDraftKey(account,record,parent,kind);form.claimDraftVersion=version??record?.version??account.version;form.claimBaseline=JSON.stringify(Object.fromEntries(new FormData(form)));
  const draft=claimDrafts.get(form.claimDraftKey);if(!draft)return;
- for(const field of Array.from(form.elements||[])){if(!field.name)continue;if(field.type==='checkbox')field.checked=draft.values[field.name]==='on';else if(field.name in draft.values)field.value=draft.values[field.name];}
+ const baseline=form.claimBaseline?JSON.parse(form.claimBaseline):{};let restored=false;
+ for(const field of Array.from(form.elements||[])){if(!field.name)continue;if(field.type==='checkbox'){const checked=draft.values[field.name]==='on';field.checked=checked;if(checked)restored=true;}else if(field.name in draft.values){const saved=draft.values[field.name];if(saved===''&&baseline[field.name]!==undefined&&baseline[field.name]!=='')continue;if(field.value!==saved)restored=true;field.value=saved;}}
  form.dataset.request=draft.request;const stale=draft.version!==form.claimDraftVersion;form.claimDraftStale=stale;
+ if(!restored){claimDrafts.delete(form.claimDraftKey);return;}
  if(stale)form.querySelectorAll?.('button[type="submit"]').forEach(submit=>submit.disabled=true);
  form.insertAdjacentHTML?.('afterbegin',`<section data-claim-draft-notice role="status"><p>${stale?'Saved claim or charge data changed while you were editing. Check the current claim before keeping your edits.':'Your unsaved edits were restored.'}</p>${stale?'<button type="button" data-rebase-claim-draft>Keep my edits</button>':''}<button type="button" data-discard-claim-draft>Discard my edits</button></section>`);
 }

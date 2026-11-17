@@ -1,19 +1,75 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use axum::{
     body::Body,
+    extract::Query,
     http::{Request, StatusCode},
-    Router,
+    routing::get,
+    Json, Router,
 };
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::{migrate::Migrator, postgres::PgPoolOptions, PgPool};
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use suncharts_engine::{browser::BrowserAuth, postgres::PostgresBackend, State};
 use tower::ServiceExt;
 use uuid::Uuid;
 const ORIGIN: &str = "http://127.0.0.1:8099";
+
+/// A stand-in NPI registry bound to a random loopback port, started once for the
+/// whole test binary. It answers the registry path with a fixed body built from
+/// a mode: `primary` returns two taxonomies with one primary, `single` returns a
+/// single non-primary, `error` returns a server error. Tests point
+/// ENGINE_NPI_REGISTRY_URL at it. No test reaches the real registry.
+fn registry_base() -> &'static String {
+    static BASE: OnceLock<String> = OnceLock::new();
+    BASE.get_or_init(|| {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new().route("/api/", get(registry_handler));
+        std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async move {
+                    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                    axum::serve(listener, app).await.unwrap();
+                });
+        });
+        base
+    })
+}
+
+async fn registry_handler(
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> (StatusCode, Json<Value>) {
+    let number = q.get("number").cloned().unwrap_or_default();
+    match std::env::var("NPI_TEST_MODE").as_deref() {
+        Ok("error") => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error":"synthetic"})),
+        ),
+        Ok("single") => (
+            StatusCode::OK,
+            Json(
+                json!({"result_count":1,"results":[{"number":number,"taxonomies":[
+                {"code":"207q00000x","desc":"Synthetic family","primary":false,"state":"TX"}]}]}),
+            ),
+        ),
+        _ => (
+            StatusCode::OK,
+            Json(
+                json!({"result_count":1,"results":[{"number":number,"taxonomies":[
+                {"code":"207Q00000X","desc":"Synthetic family","primary":false,"state":"TX"},
+                {"code":"2081P2900X","desc":"Synthetic primary","primary":true,"state":"NJ"}]}]}),
+            ),
+        ),
+    }
+}
+
 struct Fixture {
     db: PgPool,
     app: Router,
@@ -25,6 +81,9 @@ struct Fixture {
 }
 async fn setup() -> Fixture {
     let url = std::env::var("TEST_DATABASE_URL").expect("disposable TEST_DATABASE_URL required");
+    // By default the lookup is turned off so no ordinary test reaches the network.
+    // Registry tests re-enable it, pointing at the loopback stand-in, under REGISTRY.
+    std::env::set_var("ENGINE_NPI_REGISTRY_URL", "");
     let schema = format!("practice_admin_{}", Uuid::new_v4().simple());
     let schema_clone = schema.clone();
     let base = PgPool::connect(&url).await.unwrap();
@@ -1462,4 +1521,141 @@ async fn the_claim_identity_migration_backfills_past_addresses_without_rewriting
         .await
         .unwrap();
     base.close().await;
+}
+
+/// The registry environment is process-wide, so the tests that drive the lookup
+/// hold this while they set it and make the provider call. Each uses a distinct
+/// NPI so the module's own cache never crosses a test boundary.
+static REGISTRY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn use_registry(mode: &str) {
+    std::env::set_var("NPI_TEST_MODE", mode);
+    std::env::set_var("ENGINE_NPI_REGISTRY_URL", registry_base());
+}
+
+#[tokio::test]
+// The registry environment is process-wide, so this test holds the guard across the
+// provider call to keep it stable. The lock only serialises these tests.
+#[allow(clippy::await_holding_lock)]
+async fn a_provider_with_an_npi_and_no_taxonomy_is_filled_from_the_registry() {
+    let _guard = REGISTRY.lock().unwrap();
+    let f = setup().await;
+    use_registry("primary");
+    // A valid NPI with no taxonomy sent: the registry's primary code is stored.
+    let profile = json!({"staff_id":f.owner,"display_name":"Synthetic Doctor","npi":"1990000006","specialty":"","active":true,"reason":"Setup"});
+    let (status, created) = call(
+        &f.app,
+        &f.cookie,
+        "POST",
+        "/api/v1/practice/providers",
+        profile,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["taxonomy"], "2081P2900X");
+    let stored: String =
+        sqlx::query_scalar("SELECT taxonomy FROM practice_providers WHERE tenant_id=$1 AND id=$2")
+            .bind(f.tenant)
+            .bind(f.owner)
+            .fetch_one(&f.db)
+            .await
+            .unwrap();
+    assert_eq!(stored, "2081P2900X");
+    std::env::set_var("ENGINE_NPI_REGISTRY_URL", "");
+    cleanup(f).await;
+}
+
+#[tokio::test]
+// The registry environment is process-wide, so this test holds the guard across the
+// provider call to keep it stable. The lock only serialises these tests.
+#[allow(clippy::await_holding_lock)]
+async fn a_typed_taxonomy_is_never_replaced_by_the_registry() {
+    let _guard = REGISTRY.lock().unwrap();
+    let f = setup().await;
+    use_registry("primary");
+    let profile = json!({"staff_id":f.owner,"display_name":"Synthetic Doctor","npi":"1990000014","specialty":"","taxonomy":"174F00000X","active":true,"reason":"Setup"});
+    let (status, created) = call(
+        &f.app,
+        &f.cookie,
+        "POST",
+        "/api/v1/practice/providers",
+        profile,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["taxonomy"], "174F00000X");
+    std::env::set_var("ENGINE_NPI_REGISTRY_URL", "");
+    cleanup(f).await;
+}
+
+#[tokio::test]
+// The registry environment is process-wide, so this test holds the guard across the
+// provider call to keep it stable. The lock only serialises these tests.
+#[allow(clippy::await_holding_lock)]
+async fn a_provider_is_filled_from_a_single_non_primary_registry_taxonomy() {
+    let _guard = REGISTRY.lock().unwrap();
+    let f = setup().await;
+    use_registry("single");
+    let profile = json!({"staff_id":f.owner,"display_name":"Synthetic Doctor","npi":"1990000048","specialty":"","active":true,"reason":"Setup"});
+    let (status, created) = call(
+        &f.app,
+        &f.cookie,
+        "POST",
+        "/api/v1/practice/providers",
+        profile,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["taxonomy"], "207Q00000X");
+    std::env::set_var("ENGINE_NPI_REGISTRY_URL", "");
+    cleanup(f).await;
+}
+
+#[tokio::test]
+// Holds the guard so this off-test does not race a registry-on test over the
+// process-wide setting.
+#[allow(clippy::await_holding_lock)]
+async fn with_the_registry_turned_off_the_taxonomy_stays_empty() {
+    let _guard = REGISTRY.lock().unwrap();
+    let f = setup().await; // setup leaves the lookup off
+    let profile = json!({"staff_id":f.owner,"display_name":"Synthetic Doctor","npi":"1990000022","specialty":"","active":true,"reason":"Setup"});
+    let (status, created) = call(
+        &f.app,
+        &f.cookie,
+        "POST",
+        "/api/v1/practice/providers",
+        profile,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["taxonomy"], "");
+    cleanup(f).await;
+}
+
+#[tokio::test]
+// The registry environment is process-wide, so this test holds the guard across the
+// provider call to keep it stable. The lock only serialises these tests.
+#[allow(clippy::await_holding_lock)]
+async fn a_registry_error_still_saves_the_provider_with_an_empty_taxonomy() {
+    let _guard = REGISTRY.lock().unwrap();
+    let f = setup().await;
+    use_registry("error");
+    let profile = json!({"staff_id":f.owner,"display_name":"Synthetic Doctor","npi":"1990000030","specialty":"","active":true,"reason":"Setup"});
+    let (status, created) = call(
+        &f.app,
+        &f.cookie,
+        "POST",
+        "/api/v1/practice/providers",
+        profile,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["taxonomy"], "");
+    std::env::set_var("ENGINE_NPI_REGISTRY_URL", "");
+    cleanup(f).await;
 }

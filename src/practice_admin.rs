@@ -496,6 +496,17 @@ async fn save_provider(
     if id.is_some_and(|id| id != p.staff_id) {
         return Err(Error::Invalid("provider staff identity cannot be changed"));
     }
+    // The taxonomy is filled from the national NPI registry only when the owner
+    // left it empty; a code they typed is never replaced. The lookup runs before
+    // the transaction opens so no database connection is held during the call.
+    let taxonomy = taxonomy_code(&p.taxonomy);
+    let taxonomy = if taxonomy.is_empty() && valid_npi(&p.npi) {
+        crate::npi_registry::primary_taxonomy(&p.npi)
+            .await
+            .unwrap_or_default()
+    } else {
+        taxonomy
+    };
     let mut tx = locked(&s, &a, &h).await?;
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM browser_users WHERE tenant_id=$1 AND id=$2)",
@@ -515,7 +526,6 @@ async fn save_provider(
     } else {
         "UPDATE practice_providers SET display_name=$3,npi=$4,specialty=$5,active=$6,taxonomy=$7,version=version+1 WHERE tenant_id=$1 AND id=$2 AND version=$8 RETURNING to_jsonb(practice_providers)-'tenant_id'"
     };
-    let taxonomy = taxonomy_code(&p.taxonomy);
     let mut query = sqlx::query_scalar::<_, Value>(q)
         .bind(a.tenant_id)
         .bind(p.staff_id)

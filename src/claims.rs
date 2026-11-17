@@ -808,10 +808,27 @@ async fn claim_submission_defaults(
         .await?
     };
     let provider_name = provider.as_ref().map(|(name, _)| name.clone());
-    let billing_taxonomy = provider
+    let stored_taxonomy = provider
         .as_ref()
         .map(|(_, taxonomy)| taxonomy.clone())
         .unwrap_or_default();
+    // When the provider carries no taxonomy, ask the national NPI registry for the
+    // primary code. The lookup is best-effort and not persisted. It runs while this
+    // transaction is open: the value depends on the provider row read above and the
+    // caller holds the transaction for the rest of the request, so lifting it out is
+    // not cheap. The registry client bounds the whole call to four seconds.
+    let mut billing_taxonomy = stored_taxonomy.clone();
+    let mut billing_taxonomy_source = if stored_taxonomy.is_empty() {
+        ""
+    } else {
+        "provider"
+    };
+    if billing_taxonomy.is_empty() && !rendering_npi.is_empty() {
+        if let Some(code) = crate::npi_registry::primary_taxonomy(rendering_npi).await {
+            billing_taxonomy = code;
+            billing_taxonomy_source = "npi_registry";
+        }
+    }
     // The billing street address is prefilled only when the practice has exactly
     // one active facility, the same rule visit_billing uses when it prepares a
     // claim, and only when that facility's parts were recorded. It reflects the
@@ -874,6 +891,7 @@ async fn claim_submission_defaults(
         "rendering_given_name": rendering_given,
         "rendering_family_name": rendering_family,
         "billing_taxonomy": billing_taxonomy,
+        "billing_taxonomy_source": billing_taxonomy_source,
         "filing_indicator": filing,
         "billing_address": billing_address,
         "subscriber_address": subscriber_address,

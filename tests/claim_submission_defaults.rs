@@ -6,15 +6,17 @@
 //! Claim.MD and the 837P profile both treat it as optional.
 use axum::{
     body::Body,
+    extract::Query,
     http::{Request, StatusCode},
-    Router,
+    routing::get,
+    Json, Router,
 };
 use chrono::Utc;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::{postgres::PgPoolOptions, PgPool};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use suncharts_engine::{
     auth::{Actor, Role},
     browser::BrowserAuth,
@@ -31,6 +33,47 @@ const PAT_ADDRESS: &str = "1020 Patient Way";
 const PAT_CITY: &str = "Austin";
 const PAT_STATE: &str = "TX";
 const PAT_ZIP: &str = "78701";
+// The registry stand-in's primary code, asserted when the taxonomy is filled from
+// the lookup. Distinct from TAXONOMY so the two sources are visibly different.
+const REGISTRY_TAXONOMY: &str = "2081P2900X";
+
+/// A stand-in NPI registry on a random loopback port, started once per binary. It
+/// answers the registry path with a single primary taxonomy. Tests point
+/// ENGINE_NPI_REGISTRY_URL at it; no test reaches the real registry.
+fn registry_base() -> &'static String {
+    static BASE: OnceLock<String> = OnceLock::new();
+    BASE.get_or_init(|| {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new().route("/api/", get(registry_handler));
+        std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async move {
+                    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                    axum::serve(listener, app).await.unwrap();
+                });
+        });
+        base
+    })
+}
+
+async fn registry_handler(
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> (StatusCode, Json<Value>) {
+    let number = q.get("number").cloned().unwrap_or_default();
+    (
+        StatusCode::OK,
+        Json(
+            json!({"result_count":1,"results":[{"number":number,"taxonomies":[
+            {"code":"207Q00000X","desc":"Synthetic family","primary":false,"state":"TX"},
+            {"code":"2081P2900X","desc":"Synthetic primary","primary":true,"state":"NJ"}]}]}),
+        ),
+    )
+}
 
 fn app(db: PgPool) -> Router {
     suncharts_engine::app(State {
@@ -59,6 +102,9 @@ async fn user(db: &PgPool, tenant: Uuid, id: Uuid, role: &str) {
 /// facilities exist; `taxonomy` toggles whether the provider carries one.
 async fn setup(taxonomy: &str, active_facilities: usize) -> (PgPool, Actor, Uuid, Uuid, String) {
     let url = std::env::var("TEST_DATABASE_URL").expect("disposable TEST_DATABASE_URL required");
+    // By default the registry lookup is off so no ordinary test reaches the network.
+    // The registry-sourced test re-enables it, under REGISTRY, pointing at the loopback stand-in.
+    std::env::set_var("ENGINE_NPI_REGISTRY_URL", "");
     let schema = format!("claim_defaults_test_{}", Uuid::new_v4().simple());
     let base = PgPool::connect(&url).await.unwrap();
     suncharts_engine::test_db::create_schema(&base, &schema).await;
@@ -365,6 +411,7 @@ async fn submission_defaults_prefill_taxonomy_facility_address_and_filing_indica
     let detail = ok(&r, &a, "GET", &path, Value::Null, None).await;
     let defaults = &detail["submission_defaults"];
     assert_eq!(defaults["billing_taxonomy"], TAXONOMY);
+    assert_eq!(defaults["billing_taxonomy_source"], "provider");
     assert_eq!(defaults["filing_indicator"], "MB");
     assert_eq!(defaults["billing_address"]["line1"], "0 Example Street");
     assert_eq!(defaults["billing_address"]["city"], PAT_CITY);
@@ -496,8 +543,50 @@ async fn a_provider_without_a_taxonomy_prefills_an_empty_taxonomy() {
     .await;
     let defaults = &detail["submission_defaults"];
     assert_eq!(defaults["billing_taxonomy"], "");
+    assert_eq!(defaults["billing_taxonomy_source"], "");
     // Only the taxonomy is missing; the facility and payer still prefill.
     assert_eq!(defaults["filing_indicator"], "MB");
     assert_eq!(defaults["billing_address"]["line1"], "0 Example Street");
+    db.close().await;
+}
+
+/// The registry environment is process-wide, so the test that drives the lookup
+/// holds this while it sets it and reads the claim. It uses the same NPI the
+/// provider row carries, so the claim resolves to a provider with no taxonomy and
+/// the registry supplies the code without anything being stored.
+static REGISTRY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[tokio::test]
+// The registry environment is process-wide, so this test holds the guard across the
+// claim read to keep it stable. The lock only serialises these tests.
+#[allow(clippy::await_holding_lock)]
+async fn a_missing_provider_taxonomy_is_filled_from_the_registry_as_a_source() {
+    let _guard = REGISTRY.lock().unwrap();
+    let (db, a, p, visit, _cookie) = setup("", 1).await;
+    std::env::set_var("ENGINE_NPI_REGISTRY_URL", registry_base());
+    let r = app(db.clone());
+    let claim = draft_medicare_claim(&r, &a, p, visit).await;
+    let detail = ok(
+        &r,
+        &a,
+        "GET",
+        &format!("/api/v1/billing/claims/{}", id(&claim)),
+        Value::Null,
+        None,
+    )
+    .await;
+    let defaults = &detail["submission_defaults"];
+    assert_eq!(defaults["billing_taxonomy"], REGISTRY_TAXONOMY);
+    assert_eq!(defaults["billing_taxonomy_source"], "npi_registry");
+    // Nothing was written back: the provider row still carries no taxonomy.
+    let stored: String =
+        sqlx::query_scalar("SELECT taxonomy FROM practice_providers WHERE tenant_id=$1 AND npi=$2")
+            .bind(a.tenant_id)
+            .bind(NPI)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(stored, "");
+    std::env::set_var("ENGINE_NPI_REGISTRY_URL", "");
     db.close().await;
 }
