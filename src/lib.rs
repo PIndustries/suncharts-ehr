@@ -58,6 +58,7 @@ pub mod managed_connect;
 pub mod migration;
 pub mod model;
 pub mod note_access;
+pub mod npi_registry;
 pub mod oauth;
 pub mod office;
 pub mod partner_scheduling;

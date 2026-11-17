@@ -242,6 +242,18 @@ location identity. Existing appointment text is retained. Directory entries do
 not define working hours or equipment capacity. Lists are bounded; the UI indicates
 when only part of a directory is loaded.
 
+A provider's taxonomy code can be filled in from the national NPI registry instead
+of typed. When a provider is saved with a valid NPI and no taxonomy, the registry's
+primary taxonomy is stored; a code the owner typed is never replaced. A claim's
+send-claim form uses the same lookup (without storing it) when its rendering
+provider has no taxonomy on file. The call is best-effort: it times out after four
+seconds and only the NPI is sent. It is disabled by setting the URL to an empty
+value.
+
+| Setting | Meaning |
+| --- | --- |
+| `ENGINE_NPI_REGISTRY_URL` | Registry base, default `https://npiregistry.cms.hhs.gov`. Must be an http(s) origin; an empty value turns the lookup off. |
+
 ## Credentials and backups
 
 Clearinghouse, payment and reminder credentials are encrypted with a private
