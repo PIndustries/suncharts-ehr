@@ -19,7 +19,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use sqlx::{postgres::PgArguments, query::QueryScalar, Postgres, Transaction};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 /// An intake form sent to the patient without an appointment counts for
@@ -179,16 +179,27 @@ pub(crate) async fn collect(
     patient_ids.sort();
     patient_ids.dedup();
 
+    // Live forms, and one marker row per appointment carrying an active
+    // "no form needed" mark while no live form exists for it.
     let packets = reads
         .rows(
             sqlx::query_scalar(
-                "SELECT jsonb_build_object('id',id,'appointment_id',appointment_id,'patient_id',patient_id,'status',status,'created_at',created_at,
-                 'expired',status IN ('sent','in_progress') AND expires_at IS NOT NULL AND expires_at<=now(),
-                 'default_form',workflow_instance_id IS NULL)
-                 FROM previsit_intake_packets
-                 WHERE tenant_id=$1 AND status<>'void'
-                 AND (appointment_id=ANY($2) OR (appointment_id IS NULL AND patient_id=ANY($3) AND created_at>=$4 AND created_at<$5))
-                 ORDER BY created_at DESC,id DESC LIMIT 5001",
+                "SELECT jsonb_build_object('id',p.id,'appointment_id',p.appointment_id,'patient_id',p.patient_id,'status',p.status,'created_at',p.created_at,
+                 'expired',p.status IN ('sent','in_progress') AND p.expires_at IS NOT NULL AND p.expires_at<=now(),
+                 'default_form',p.workflow_instance_id IS NULL,'not_needed',p.id IS NULL)
+                 FROM (
+                  SELECT p.id,p.appointment_id,p.patient_id,p.status,p.created_at,p.expires_at,p.workflow_instance_id
+                  FROM previsit_intake_packets p
+                  WHERE p.tenant_id=$1 AND p.status<>'void'
+                  AND (p.appointment_id=ANY($2) OR (p.appointment_id IS NULL AND p.patient_id=ANY($3) AND p.created_at>=$4 AND p.created_at<$5))
+                  UNION ALL
+                  SELECT NULL,mark.appointment_id,mark.patient_id,NULL,NULL,NULL,NULL
+                  FROM (SELECT nn.tenant_id,nn.appointment_id,ap.patient_id
+                        FROM previsit_intake_not_needed nn JOIN appointments ap ON ap.tenant_id=nn.tenant_id AND ap.id=nn.appointment_id
+                        WHERE nn.tenant_id=$1 AND nn.cleared_at IS NULL AND nn.appointment_id=ANY($2)) mark
+                  WHERE NOT EXISTS(SELECT 1 FROM previsit_intake_packets f WHERE f.tenant_id=mark.tenant_id AND f.appointment_id=mark.appointment_id AND f.status<>'void')
+                 ) p
+                 ORDER BY p.created_at DESC NULLS LAST,p.id DESC LIMIT 5001",
             )
             .bind(tenant)
             .bind(&appointment_ids)
@@ -198,11 +209,19 @@ pub(crate) async fn collect(
         )
         .await?;
     let mut appointment_forms: HashMap<Uuid, &Value> = HashMap::new();
+    let mut appointment_not_needed: HashSet<Uuid> = HashSet::new();
     let mut patient_forms: HashMap<Uuid, Vec<&Value>> = HashMap::new();
     // Newest first: the practice's own form wins over a journey step's form.
+    // A live form counts for its appointment whatever else is on file; the
+    // "no form needed" mark counts only while no live form exists for it.
+    // Mark rows (NULL created_at) sort last, so a form is always seen first.
     for packet in packets.iter().filter(|p| p["expired"] != true) {
         match (uuid(&packet["appointment_id"]), uuid(&packet["patient_id"])) {
             (Some(appointment), _) => {
+                if packet["not_needed"] == true {
+                    appointment_not_needed.insert(appointment);
+                    continue;
+                }
                 let kept = appointment_forms.entry(appointment).or_insert(packet);
                 if kept["default_form"] != true && packet["default_form"] == true {
                     *kept = packet;
@@ -322,10 +341,13 @@ pub(crate) async fn collect(
         });
         item.insert(
             "forms".into(),
-            form.map_or(
-                Value::Null,
-                |packet| json!({"status":packet["status"],"packet_id":packet["id"]}),
-            ),
+            match form {
+                Some(packet) => json!({"status":packet["status"],"packet_id":packet["id"]}),
+                None if appointment_not_needed.contains(&id) => {
+                    json!({"status":"not_needed","packet_id":null})
+                }
+                None => Value::Null,
+            },
         );
         if access.clinical {
             item.insert("note".into(), appointment["note"].clone());

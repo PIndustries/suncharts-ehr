@@ -521,6 +521,78 @@ async fn intake_form_and_new_patient_facts_follow_each_appointment() {
 }
 
 #[tokio::test]
+async fn an_appointment_marked_as_needing_no_form_says_so() {
+    let f = Fixture::new().await;
+    let mark = |appointment: Uuid, tenant: Uuid, marked_by: Uuid| {
+        let db = f.db.clone();
+        async move {
+            sqlx::query("INSERT INTO previsit_intake_not_needed(tenant_id,id,appointment_id,marked_by) VALUES($1,$2,$3,$4)")
+                .bind(tenant).bind(Uuid::new_v4()).bind(appointment).bind(marked_by).execute(&db).await.unwrap();
+        }
+    };
+    // Marked, with nothing sent: the schedule says no form is needed.
+    let (_, marked) = f.visit_today("booked").await;
+    mark(marked, f.tenant, f.owner).await;
+    // The mark is undone: back to "nothing sent".
+    let (_, undone) = f.visit_today("booked").await;
+    mark(undone, f.tenant, f.owner).await;
+    sqlx::query("UPDATE previsit_intake_not_needed SET cleared_by=$3,cleared_at=now() WHERE tenant_id=$1 AND appointment_id=$2 AND cleared_at IS NULL")
+        .bind(f.tenant).bind(undone).bind(f.owner).execute(&f.db).await.unwrap();
+    // Another practice's mark says nothing to this one.
+    let elsewhere = Uuid::new_v4();
+    let (stranger, stranger_cookie) = f.staff(elsewhere, "owner").await;
+    f.practice(elsewhere, Uuid::new_v4(), Uuid::new_v4(), stranger)
+        .await;
+    let their_patient = f.patient(elsewhere).await;
+    let theirs = f
+        .appointment_at(elsewhere, their_patient, stranger, f.day, "booked")
+        .await;
+    mark(theirs, elsewhere, stranger).await;
+
+    let body = f.markers(&f.cookie).await;
+    assert_eq!(
+        item(&body, marked)["forms"],
+        json!({"status":"not_needed","packet_id":Value::Null})
+    );
+    assert_eq!(
+        item(&body, undone)["forms"],
+        Value::Null,
+        "an undone mark asks for a form again"
+    );
+
+    // A form sent for the appointment outranks a mark left on file. Sending a
+    // form clears any mark, so the stale mark is written back after the send.
+    let (form_patient, with_form) = f.visit_today("booked").await;
+    let packet = f
+        .form(
+            f.tenant,
+            f.template,
+            f.owner,
+            form_patient,
+            Some(with_form),
+            "sent",
+            f.day - Duration::days(1),
+            false,
+        )
+        .await;
+    mark(with_form, f.tenant, f.owner).await;
+    let body = f.markers(&f.cookie).await;
+    assert_eq!(
+        item(&body, with_form)["forms"],
+        json!({"status":"sent","packet_id":packet}),
+        "a live form outranks a mark left on file"
+    );
+
+    let outside = f.markers(&stranger_cookie).await;
+    assert_eq!(outside["items"].as_array().unwrap().len(), 1);
+    assert_eq!(item(&outside, theirs)["forms"]["status"], "not_needed");
+    assert!(
+        !outside.to_string().contains(&marked.to_string()),
+        "one practice's appointments never appear in another's markers"
+    );
+}
+
+#[tokio::test]
 async fn insurance_copay_balance_note_and_charge_facts_are_correct() {
     let f = Fixture::new().await;
     let yesterday = f.day - Duration::days(1);
@@ -1090,5 +1162,15 @@ fn the_contract_lists_the_markers_route_and_the_practice_hours() {
     for fact in ["insurance", "copay", "balance_cents", "note", "charges"] {
         assert!(marker["properties"][fact].is_object(), "{fact}");
     }
+    assert_eq!(
+        marker["properties"]["forms"]["properties"]["status"]["enum"],
+        json!(["sent", "in_progress", "submitted", "reviewed", "not_needed"]),
+        "a marked appointment reports not_needed with no packet"
+    );
+    assert_eq!(
+        marker["properties"]["forms"]["properties"]["packet_id"]["type"],
+        json!(["string", "null"]),
+        "not_needed carries no packet"
+    );
     assert!(spec["components"]["schemas"]["ScheduleProviders"]["properties"]["hours"].is_object());
 }
