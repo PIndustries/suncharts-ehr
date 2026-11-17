@@ -168,6 +168,9 @@ Dollar amounts and percentage values retain their documented units, including
 zero. The check is bound to `request_snapshot.request.service_date`; older or
 failed checks are not presented as current benefits. A completed request does
 not establish active coverage, and benefits never overwrite the recorded copay.
+A visit whose coverage records no copay at all may show a recent office-visit
+copay from this evidence as the expected copay, always named as coming from the
+insurer's check; see [billing](billing.md#copay-charges-insurance-claim-and-patient-statement).
 The response format follows the [official Claim.MD API](https://api.claim.md/).
 
 

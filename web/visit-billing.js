@@ -23,12 +23,16 @@ function visitBillingInsurer(s){return s.claim?.payer_name||s.insurance?.insurer
 // beside the charge table holds the checks, the form and the send itself; until it is loaded
 // the card's own buttons do the same jobs.
 function reviewButton(s,ctx){return typeof visitBillingReviewButton==='function'?visitBillingReviewButton(s,ctx):'';}
+// The charges step fills a visit's table in from the patient's last visit on its own. When that
+// is on the way the card stops telling staff to type charges by hand; with nothing to fill in
+// from it says what it always said. encounterChargesProposed is the charge table's own answer.
+function visitBillingChargesFilled(){return typeof encounterChargesProposed==='function'&&encounterChargesProposed();}
 // The status line: what is happening, who is waiting on whom, and the one next step.
 function visitBillingStatus(s,ctx={}){
  const insurer=visitBillingInsurer(s),owes=money(s.patient.owes_now_cents),paid=money(s.insurance.paid_cents),account=s.account?.id||'',claim=s.claim?.id||'',write=ctx.canWrite,create=ctx.canCreate;
  const button=(label,attribute)=>`<button type="button" class="primary" ${attribute}>${esc(label)}</button>`;
  switch(s.state){
-   case 'add_charges':return {headline:'Add charges',detail:'Add the procedures done at this visit.',action:create?button('Add charges','data-encounter-charges'):''};
+   case 'add_charges':return visitBillingChargesFilled()?{headline:'Check the charges',detail:'Filled in from the last visit.',action:create?button('Check the charges','data-encounter-charges'):''}:{headline:'Add charges',detail:'Add the procedures done at this visit.',action:create?button('Add charges','data-encounter-charges'):''};
    case 'sign_visit':return {headline:'Charges can still be changed',detail:'The visit note must be signed before the charges are posted.',action:reviewButton(s,ctx)||button('Continue the visit note','data-revenue-documentation')};
    case 'post_charges':return {headline:'Post charges',detail:`Check the charges, then post them. ${s.insurance.insured?`The claim to ${insurer} is prepared for you next.`:'The patient is billed next.'}`,action:button(write?'Post charges':'Review charges',`data-visit-post-charges="${esc(account)}"`)};
    case 'self_pay_collect':return {headline:'Self-pay: collect payment',detail:`Patient owes ${owes}. Waiting for the patient.`,action:create?button('Collect payment','data-visit-collect'):''};
@@ -101,15 +105,16 @@ function visitBillingBreakdown(s,ctx={}){
  rows+=group(i.insured?'Patient':'Patient (self-pay)');
  const copay=p.copay_cents,links=receipts.map(r=>`<button type="button" class="text-button" data-copay-receipt="${esc(r.id)}" data-appointment="${esc(r.appointment_id)}">Receipt: ${money(r.amount_cents)}${visitBillingReceiptNote(r)?' '+esc(visitBillingReceiptNote(r)):''}</button>`).join(' ');
  if(copay!=null){
-  const due=p.copay_due_cents,paidTowards=p.copay_paid_cents;
-  rows+=row(`Copay ${money(copay)}`,due===0?'Paid':paidTowards>0?`${money(paidTowards)} paid, ${money(due)} due ${collect}`:`Due ${collect}`,money(paidTowards));
+  const fromCheck=p.copay_from_insurer_check,due=p.copay_due_cents,paidTowards=p.copay_paid_cents;
+  const note=fromCheck?`from the insurer check on ${esc(visitBillingDate(p.copay_source_date))}`:due===0?'Paid':paidTowards>0?`${money(paidTowards)} paid, ${money(due)} due ${collect}`:`Due ${collect}`;
+  rows+=row(`Copay ${money(copay)}`,note,money(paidTowards));
  }else if(i.insured)rows+=row('Copay','No copay recorded for this plan','');
  if(p.other_patient_payments_cents)rows+=row(copay!=null?'Other patient payments':'Patient payments','',money(p.other_patient_payments_cents));
  if(links)rows+=`<tr class="visit-billing-receipts"><th scope="row">Receipts</th><td colspan="2">${links}</td></tr>`;
  if(p.adjustment_cents)rows+=row('Patient adjustments',p.adjustment_cents>0?'Taken off what the patient owes':'Added to what the patient owes',money(Math.abs(p.adjustment_cents)));
  if(p.unapplied_cents>0)rows+=row('Paid but not applied yet',posted&&s.balance_cents>0&&ctx.canWrite?'<button type="button" class="text-button" data-apply-copays>Apply to this visit</button>':'Credit on the patient’s account',money(p.unapplied_cents));
  if(p.overpaid_cents>0)rows+=row('Paid more than owed','Refund it or keep it as a credit',money(p.overpaid_cents));
- const basis={self_pay:'No insurance on this visit',plan_copay:'The plan copay, until the insurer answers',reviewed_statement:'What the latest statement says, less what they paid',copay_not_recorded:posted?'Nothing until the insurer answers':'',insurer_response:'What the insurer says the patient owes, less what they paid',not_final:'Set when the charges are posted'}[p.responsibility_source]||'';
+ const basis=p.copay_from_insurer_check?`Based on the insurer check on ${esc(visitBillingDate(p.copay_source_date))}`:({self_pay:'No insurance on this visit',plan_copay:'The plan copay, until the insurer answers',reviewed_statement:'What the latest statement says, less what they paid',copay_not_recorded:posted?'Nothing until the insurer answers':'',insurer_response:'What the insurer says the patient owes, less what they paid',not_final:'Set when the charges are posted'}[p.responsibility_source]||'');
  rows+=row('Patient owes now',basis,money(p.owes_now_cents),'visit-billing-total');
  return `<table class="visit-billing-breakdown"><caption class="sr-only">Money for this visit</caption><tbody>${rows}</tbody></table>${p.receipt_needs_review?'<p role="status">A payment for this visit needs review. Open History before collecting again.</p>':''}`;
 }

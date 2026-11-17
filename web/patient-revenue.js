@@ -125,6 +125,12 @@ async function loadInsuranceEligibility(coverageId,force=false){
 // for this visit; nothing here adds or subtracts money.
 function visitBillingStateContext(extra={}){return {delegated:typeof me!=='undefined'&&me?.delegated===true||encounterRevenueState.data?.summary?.viewer?.delegated===true,canCreate:billingCan('create'),canWrite:billingCan(),claimsAllowed:typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('claims','view'),...extra};}
 function visitBillingContext(extra={}){return visitBillingStateContext(extra);}
+// Whether this visit's charges are on their way onto the table filled in from the patient's last
+// visit, or already sit there untouched. The billing card asks the charge table's own code (see
+// visitBillingChargesFilled in web/visit-billing.js, which loads first) so the wording the card
+// offers and the table the step builds are always the same answer. With nothing to fill in from
+// the card says what it always said.
+function encounterChargesFilledIn(){return typeof visitBillingChargesFilled==='function'&&visitBillingChargesFilled();}
 function encounterRevenueStatusMarkup(account,data={}){
  // A card with something wrong to answer for keeps its own button: while a claim could not be
  // prepared, or is preparing, the review panel has nothing to offer yet.
@@ -274,6 +280,18 @@ function renderEncounterRevenue(){
   // A chart opened on another page keeps its panel empty; the billing step re-opens it.
   if(chartSection!=='visits'&&typeof visitReviewClose==='function')visitReviewClose();
   if(account&&typeof chartSection!=='undefined'&&chartSection==='visits')showBillingAccount(account.id,false);
+  // Whether this visit's charges are on their way onto the table filled in from the patient's
+  // last visit. A visit opened on its billing step with no charges yet is asked first, because
+  // that is the one case where charges are about to appear without anyone pressing anything.
+  // A visit whose charges already exist is a table staff have dealt with, so it is never offered
+  // charges filled in from an earlier visit. That is decided outside the billing step: on the
+  // step itself, charges the practice is about to fill in are already sitting on the table, and
+  // this same visit would otherwise be written off as finished before its own table is opened.
+  if(account&&typeof encounterSection!=='undefined'&&encounterSection!=='charges'&&typeof chargeProposalTouched==='function')chargeProposalTouched(visit);
+  // A visit that is still being worked on and has no charges yet has its table built when the
+  // step is opened, so the filled-in charges are on it before anyone presses anything. A visit
+  // with nothing to fill in from keeps waiting for its Add charges button.
+  if(!account&&typeof chartSection!=='undefined'&&chartSection==='visits'&&typeof encounterSection!=='undefined'&&encounterSection==='charges'&&encounterChargesFilledIn())openEncounterCharges();
 
  loadEncounterRevenueStatus(account);
  if(appointment&&billingCan('create'))void loadHostedCopays(appointment.id);
