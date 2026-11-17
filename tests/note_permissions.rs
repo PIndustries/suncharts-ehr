@@ -994,9 +994,9 @@ async fn a_covering_clinician_records_intake_and_vitals_but_does_not_start_the_v
             .unwrap();
         assert_eq!(attributed, 2);
     }
-    // Front desk, read-only staff and a support session do not record intake or vitals.
+    // Read-only staff and a support session do not record intake or vitals.
     let support = f.support("platform_admin:synthetic-support").await;
-    for who in [&f.desk, &f.readonly, &support] {
+    for who in [&f.readonly, &support] {
         let (status, _) = f
             .call(
                 who,
@@ -1015,6 +1015,32 @@ async fn a_covering_clinician_records_intake_and_vitals_but_does_not_start_the_v
         assert_eq!(status, 200, "{seen}");
         assert_eq!(seen["can_edit"], false);
     }
+    // Front desk records vitals and nothing else: the grant is vitals only, so the
+    // rooming intake stays forbidden and the rooming view is still read-only.
+    let (status, saved) = f
+        .call(
+            &f.desk,
+            "PUT",
+            &format!("/api/v1/visits/{id}/vitals"),
+            vitals.clone(),
+            Some(version),
+        )
+        .await;
+    assert_eq!(status, 200, "{saved}");
+    version += 1;
+    assert_eq!(saved["version"].as_i64(), Some(version));
+    assert_eq!(saved["clinician_id"], f.doctor.sub.to_string());
+    assert_eq!(
+        f.audited("visit.vitals_save", &visit).await.last(),
+        Some(&f.desk.sub)
+    );
+    let (status, _) = f
+        .call(&f.desk, "PUT", &rooming, intake.clone(), Some(version))
+        .await;
+    assert_eq!(status, 403);
+    let (status, seen) = f.call(&f.desk, "GET", &rooming, Value::Null, None).await;
+    assert_eq!(status, 200, "{seen}");
+    assert_eq!(seen["can_edit"], false);
     // After signing, a covering clinician cannot change them either.
     let (_, current) = f
         .call(
