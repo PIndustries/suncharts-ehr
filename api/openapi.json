@@ -41325,6 +41325,7 @@
                     "object",
                     "null"
                   ],
+                  "description": "The intake form state, or {status:\"not_needed\",packet_id:null} while the appointment is marked as needing no form and no live form exists for it.",
                   "additionalProperties": false,
                   "properties": {
                     "status": {
@@ -41333,11 +41334,15 @@
                         "sent",
                         "in_progress",
                         "submitted",
-                        "reviewed"
+                        "reviewed",
+                        "not_needed"
                       ]
                     },
                     "packet_id": {
-                      "type": "string",
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "format": "uuid"
                     }
                   },

@@ -71,7 +71,7 @@ function scheduleMarkerList(a){
  // A cancelled or missed visit needs nothing done before it; only money matters still.
  if(!closed){
  if(m.new_patient)add('new','New patient','info','This is the patient’s first appointment here.',9);
- const forms={sent:['Forms sent','grey','Intake form sent. The patient has not started it yet.',8],in_progress:['Forms started','grey','The patient started the intake form but has not sent it in.',8],submitted:['Forms in','amber','The patient filled in the intake form. It needs review.',3],reviewed:['Forms done','green','The intake form was reviewed.',20]}[m.forms?.status];
+  const forms={sent:['Forms sent','grey','Intake form sent. The patient has not started it yet.',8],in_progress:['Forms started','grey','The patient started the intake form but has not sent it in.',8],submitted:['Forms in','amber','The patient filled in the intake form. It needs review.',3],reviewed:['Forms done','green','The intake form was reviewed.',20],not_needed:['No form needed','grey','No intake form is needed for this visit.',20]}[m.forms?.status];
  if(forms)add('forms',...forms);
  const insurance={active:['Active','green','Insurance is active.',20],not_active:['Not active','red','The insurer says this coverage is not active.',1],not_checked:['Not checked','grey','Insurance has not been checked for this visit.',7],check_failed:['Check failed','amber','The last insurance check could not confirm coverage.',4],self_pay:['Self-pay','grey','No active insurance is on file for this visit date.',21]}[m.insurance?.status];
  if(insurance)add('insurance',...insurance);
@@ -344,7 +344,7 @@ function schedulePanelFacts(a){
  if(!m)return scheduleMarkerState.failed?'<p class="muted">Forms, insurance and payment details could not be loaded.</p>':scheduleMarkerState.loaded?'':'<p class="muted" role="status">Loading forms, insurance and payment details…</p>';
  const markers=new Map(scheduleMarkerList(a).map(marker=>[marker.kind,marker])),closed=scheduleClosed(a),open=['booked','checked_in'].includes(a.status),rows=[];
  const forms=markers.get('forms'),canSend=open&&scheduleCanSendForms();
- if(!closed)rows.push(schedulePanelRow('Intake form',forms?forms.tip:'No intake form has been sent.',forms?.tone,m.forms?.status==='submitted'?schedulePanelButton('review-intake',a,'Review answers'):m.forms?.status==='reviewed'?schedulePanelButton('review-intake',a,'View answers'):canSend?schedulePanelButton('send-intake',a,m.forms?'Send a new link':'Send intake form'):''));
+ if(!closed)rows.push(schedulePanelRow('Intake form',forms?forms.tip:m.forms?.status==='not_needed'?'No intake form is needed for this visit.':'No intake form has been sent.',forms?.tone,m.forms?.status==='submitted'?schedulePanelButton('review-intake',a,'Review answers'):m.forms?.status==='reviewed'?schedulePanelButton('review-intake',a,'View answers'):m.forms?.status==='not_needed'?'':canSend?schedulePanelButton('send-intake',a,m.forms?'Send a new link':'Send intake form'):''));
  if(m.insurance&&!closed){
   const insurance=markers.get('insurance'),checked=m.insurance.checked_at?` Checked ${scheduleWhen(m.insurance.checked_at)}.`:'';
   rows.push(schedulePanelRow('Insurance',insurance.tip+checked,insurance.tone,(m.insurance.coverage_id&&!closed&&scheduleCanCheckInsurance()?schedulePanelButton('check-eligibility',a,m.insurance.status==='not_checked'?'Check eligibility':'Check again'):'')+schedulePanelButton('insurance',a,m.insurance.status==='self_pay'?'Add insurance':'Open insurance')));
