@@ -33,3 +33,41 @@
 .visit-billing-timeline li{display:grid;grid-template-columns:110px minmax(0,1fr) auto;gap:14px;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--line)}
 .visit-billing-timeline time{color:var(--muted);font-variant-numeric:tabular-nums}
 @media(max-width:800px){.visit-billing-status{align-items:start;flex-direction:column}.visit-billing-status .actions{justify-content:flex-start}.visit-billing-breakdown th{width:auto}.visit-billing-timeline li{grid-template-columns:1fr}}
+/* Review and send: the panel that sits beside the live charge table. */
+.visit-billing-sent{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin:14px 0;padding:10px 12px;border:1px solid var(--line);border-left:4px solid var(--success-line);border-radius:7px;background:var(--surface-soft);font-size:var(--fs-sm)}
+.visit-billing-sent button{font-size:var(--fs-sm);padding:4px 9px}
+.visit-billing-review{border:1px solid var(--line);border-radius:7px;padding:18px 20px;margin:0 0 20px;background:var(--surface);min-width:0}
+.visit-billing-review[hidden]{display:none}
+.visit-billing-review h2{font-size:var(--fs-lg);margin:0}
+.visit-billing-review h3,.visit-billing-review h4{margin:0 0 6px}
+.visit-billing-review h4{font-size:var(--fs-sm);letter-spacing:.02em;text-transform:uppercase;color:var(--muted)}
+.visit-billing-review .section-head{align-items:flex-start;gap:12px;flex-wrap:wrap}
+.visit-billing-review-top{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap}
+.visit-billing-review .actions{flex-wrap:wrap}
+.visit-billing-review p{margin:6px 0;overflow-wrap:anywhere}
+.visit-billing-review-group{margin:14px 0 0;padding:12px 14px;border:1px solid var(--line);border-radius:6px;background:var(--surface-soft);min-width:0}
+.visit-billing-review-group[data-review-level="must"]{border-left:4px solid var(--warning-line);background:var(--warning-bg)}
+.visit-billing-review-group ul{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.visit-billing-review-check{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px 12px;font-size:var(--fs-sm)}
+.visit-billing-review-check>span{flex:1 1 260px;min-width:0;overflow-wrap:anywhere}
+.visit-billing-review-check button{font-size:var(--fs-sm);padding:4px 9px;white-space:normal}
+.visit-billing-review-clear{border-left:4px solid var(--success-line);background:var(--surface-soft);border-radius:6px;padding:10px 12px}
+.visit-billing-review-note{margin:12px 0;padding:10px 12px;border:1px solid var(--warning-line);border-radius:6px;background:var(--warning-bg)}
+.visit-billing-review-note .review-ack{font-size:var(--fs-sm)}
+.visit-billing-review-stalled{border-left:4px solid var(--warning-line);background:var(--warning-bg);border-radius:6px;padding:10px 12px}
+.visit-billing-review-progress{list-style:none;margin:14px 0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
+.visit-billing-review-step{flex:1 1 150px;min-width:0;border:1px solid var(--line);border-radius:6px;padding:8px 10px;background:var(--surface-soft);font-size:var(--fs-xs)}
+.visit-billing-review-step b{display:block;font-size:var(--fs-sm)}
+.visit-billing-review-step-state{display:block;color:var(--muted);overflow-wrap:anywhere}
+.visit-billing-review-step.is-done{border-left:4px solid var(--success-line)}
+.visit-billing-review-step.is-failed{border-left:4px solid var(--warning-line)}
+.visit-billing-review-money{margin:18px 0 0;padding-top:14px;border-top:1px solid var(--line)}
+.visit-billing-review-summary-row{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:6px 14px;padding:6px 0;border-bottom:1px solid var(--line);font-size:var(--fs-sm)}
+.visit-billing-review-summary-row:last-child{border-bottom:0}
+.visit-billing-review-summary-row span{color:var(--muted)}
+.visit-billing-review-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:6px 14px;margin:10px 0}
+.visit-billing-review-field{display:grid;gap:2px;padding:6px 8px;border:1px solid var(--line);border-radius:5px;background:var(--surface-soft);min-width:0}
+.visit-billing-review-field span{font-size:var(--fs-xs);color:var(--muted)}
+.visit-billing-review-field b{font-size:var(--fs-sm);font-weight:600;overflow-wrap:anywhere}
+.visit-billing-review-lines{min-width:0}
+@media(max-width:640px){.visit-billing-review{padding:14px}.visit-billing-review-check{align-items:flex-start}.visit-billing-review-step{flex:1 1 100%}}
