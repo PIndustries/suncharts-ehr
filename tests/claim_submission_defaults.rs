@@ -35,7 +35,7 @@ const PAT_STATE: &str = "TX";
 const PAT_ZIP: &str = "78701";
 // The registry stand-in's primary code, asserted when the taxonomy is filled from
 // the lookup. Distinct from TAXONOMY so the two sources are visibly different.
-const REGISTRY_TAXONOMY: &str = "2081P2900X";
+const REGISTRY_TAXONOMY: &str = "207Q00000X";
 
 /// A stand-in NPI registry on a random loopback port, started once per binary. It
 /// answers the registry path with a single primary taxonomy. Tests point
@@ -70,7 +70,7 @@ async fn registry_handler(
         Json(
             json!({"result_count":1,"results":[{"number":number,"taxonomies":[
             {"code":"207Q00000X","desc":"Synthetic family","primary":false,"state":"TX"},
-            {"code":"2081P2900X","desc":"Synthetic primary","primary":true,"state":"NJ"}]}]}),
+            {"code":"207Q00000X","desc":"Synthetic primary","primary":true,"state":"ZZ"}]}]}),
         ),
     )
 }
