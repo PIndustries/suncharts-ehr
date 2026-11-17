@@ -105,15 +105,16 @@ function visitBillingBreakdown(s,ctx={}){
  rows+=group(i.insured?'Patient':'Patient (self-pay)');
  const copay=p.copay_cents,links=receipts.map(r=>`<button type="button" class="text-button" data-copay-receipt="${esc(r.id)}" data-appointment="${esc(r.appointment_id)}">Receipt: ${money(r.amount_cents)}${visitBillingReceiptNote(r)?' '+esc(visitBillingReceiptNote(r)):''}</button>`).join(' ');
  if(copay!=null){
-  const due=p.copay_due_cents,paidTowards=p.copay_paid_cents;
-  rows+=row(`Copay ${money(copay)}`,due===0?'Paid':paidTowards>0?`${money(paidTowards)} paid, ${money(due)} due ${collect}`:`Due ${collect}`,money(paidTowards));
+  const fromCheck=p.copay_from_insurer_check,due=p.copay_due_cents,paidTowards=p.copay_paid_cents;
+  const note=fromCheck?`from the insurer check on ${esc(visitBillingDate(p.copay_source_date))}`:due===0?'Paid':paidTowards>0?`${money(paidTowards)} paid, ${money(due)} due ${collect}`:`Due ${collect}`;
+  rows+=row(`Copay ${money(copay)}`,note,money(paidTowards));
  }else if(i.insured)rows+=row('Copay','No copay recorded for this plan','');
  if(p.other_patient_payments_cents)rows+=row(copay!=null?'Other patient payments':'Patient payments','',money(p.other_patient_payments_cents));
  if(links)rows+=`<tr class="visit-billing-receipts"><th scope="row">Receipts</th><td colspan="2">${links}</td></tr>`;
  if(p.adjustment_cents)rows+=row('Patient adjustments',p.adjustment_cents>0?'Taken off what the patient owes':'Added to what the patient owes',money(Math.abs(p.adjustment_cents)));
  if(p.unapplied_cents>0)rows+=row('Paid but not applied yet',posted&&s.balance_cents>0&&ctx.canWrite?'<button type="button" class="text-button" data-apply-copays>Apply to this visit</button>':'Credit on the patient’s account',money(p.unapplied_cents));
  if(p.overpaid_cents>0)rows+=row('Paid more than owed','Refund it or keep it as a credit',money(p.overpaid_cents));
- const basis={self_pay:'No insurance on this visit',plan_copay:'The plan copay, until the insurer answers',reviewed_statement:'What the latest statement says, less what they paid',copay_not_recorded:posted?'Nothing until the insurer answers':'',insurer_response:'What the insurer says the patient owes, less what they paid',not_final:'Set when the charges are posted'}[p.responsibility_source]||'';
+ const basis=p.copay_from_insurer_check?`Based on the insurer check on ${esc(visitBillingDate(p.copay_source_date))}`:({self_pay:'No insurance on this visit',plan_copay:'The plan copay, until the insurer answers',reviewed_statement:'What the latest statement says, less what they paid',copay_not_recorded:posted?'Nothing until the insurer answers':'',insurer_response:'What the insurer says the patient owes, less what they paid',not_final:'Set when the charges are posted'}[p.responsibility_source]||'');
  rows+=row('Patient owes now',basis,money(p.owes_now_cents),'visit-billing-total');
  return `<table class="visit-billing-breakdown"><caption class="sr-only">Money for this visit</caption><tbody>${rows}</tbody></table>${p.receipt_needs_review?'<p role="status">A payment for this visit needs review. Open History before collecting again.</p>':''}`;
 }

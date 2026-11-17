@@ -201,7 +201,7 @@ The amounts are calculated by the server from stored records:
 | --- | --- |
 | Balance | Posted charges plus every ledger entry. |
 | Patient's share, no insurance on the visit | The whole charge. |
-| Patient's share before the insurer answers | The plan copay recorded on the coverage the charges were posted with; nothing when no copay is recorded. |
+| Patient's share before the insurer answers | The plan copay recorded on the coverage the charges were posted with; while none is recorded, the office-visit copay from the insurer's recent eligibility answer, shown as such; nothing when neither exists. |
 | Patient's share after the insurer answers | The patient responsibility on the posted remittance of the latest adjudicated claim that was not denied, when no claim for the visit is still open. A later rejected replacement or secondary claim does not erase it. |
 | Patient's share after staff reviewed an invoice by hand | The responsibility on that invoice, until an insurer's answer posted after it replaces it. Payments, refunds and adjustments change only what is left of it. A statement saved from the card is a copy of the figure and never sets it. |
 | Patient owes now | The patient's share less patient payments, patient credits and usable unapplied receipts; never below zero or above the balance. |
@@ -218,9 +218,15 @@ A delegated partner or platform support session does not prepare claims: the car
 the claim is not prepared yet, and the draft is created when a member of the practice
 opens the visit.
 
-An eligibility answer is not used for these amounts. The patient's share before the
-insurer answers is only the recorded plan copay, so deductibles and coinsurance appear
-after the remittance is posted.
+An eligibility answer is only ever used as an expected copay. When the coverage the visit
+is billed against records no copay at all, and the newest completed eligibility check for
+that coverage is no older than 45 days and reports one office-visit copay, the visit card
+shows that amount as **Copay $X · from the insurer check on <date>** and the patient-owes
+line says it is based on that check. A recorded plan copay always wins, a coinsurance
+percentage is never read as a copay, and conflicting copays are not resolved by picking
+one. Nothing is written to the coverage, and the ledger figure — what the patient owes now
+— still comes from the recorded copay or the insurer's answer on the claim, so deductibles
+and coinsurance appear after the remittance is posted.
 
 **Insurance claims** and **Patient billing** list the same state names as the card
 and open the visit's card from each row.

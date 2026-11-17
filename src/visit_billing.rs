@@ -9,6 +9,10 @@
 //! - Patient payments and credits come from `billing::patient_ledger_totals`.
 //! - Before the insurer answers, the patient's share is the plan copay recorded on the
 //!   coverage the charges were posted with; the rest of the balance is insurance pending.
+//! - While no copay is recorded at all, the visit card may name the office-visit copay from
+//!   the coverage's newest completed eligibility answer within `COPAY_CHECK_DAYS` days as the
+//!   expected copay (`insurer_check_copay`). It is presentational only: it is never written to
+//!   the coverage and never changes the ledger's patient share or what the patient owes now.
 //! - After the insurer answers (a posted remittance is the active one for the latest
 //!   claim and no other claim is still open), the patient's share is the patient
 //!   responsibility the insurer reported on that remittance.
@@ -453,6 +457,147 @@ fn plain_issue(issue: &str) -> Value {
     json!({"code":code,"missing":text,"detail":issue})
 }
 
+/// How long an insurer's eligibility answer may stand in for a copay the plan never
+/// recorded. Beyond this the practice is asked to check again rather than shown an
+/// amount the insurer may have changed.
+const COPAY_CHECK_DAYS: i64 = 45;
+/// The office-visit service types an eligibility answer is read for: 98 is an office
+/// visit and 30 the general health-plan benefit the one-click check asks for. The
+/// response carries no separate "professional visit" field, so a benefit written as a
+/// professional visit under any other service type is recognised by its description --
+/// the wording Claim.MD returns, matched the same way the eligibility screen names it.
+const VISIT_SERVICE_TYPES: &[&str] = &["98", "30"];
+const PROFESSIONAL_VISIT: &str = "professional";
+
+/// One flat copay amount in dollars, as Claim.MD writes it. A percentage, a malformed
+/// amount, a negative or an absurd figure is not a copay; coinsurance is never one.
+fn copay_cents(dollars: &Value) -> Option<i64> {
+    let text = match dollars {
+        Value::String(text) => text.clone(),
+        Value::Number(number) => number.to_string(),
+        _ => return None,
+    };
+    let (whole, fraction) = match text.split_once('.') {
+        Some((whole, fraction)) if fraction.len() <= 2 && !whole.is_empty() => (whole, fraction),
+        // A plain whole amount; a decimal point must be followed by at most two digits,
+        // which is as far as dollars are written.
+        Some(_) => return None,
+        None => (text.as_str(), ""),
+    };
+    if whole.is_empty()
+        || whole.len() > 9
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let cents: i64 = whole.parse::<i64>().ok()? * 100
+        + match fraction.len() {
+            0 => 0,
+            1 => fraction.parse::<i64>().ok()? * 10,
+            2 => fraction.parse::<i64>().ok()?,
+            _ => return None,
+        };
+    (cents <= 100_000_000).then_some(cents)
+}
+/// A benefit entry of an eligibility response, however the insurer grouped it.
+fn benefits_of(row: &Value) -> Vec<&Value> {
+    match &row["benefit"] {
+        Value::Array(items) => items.iter().collect(),
+        Value::Object(_) => vec![&row["benefit"]],
+        _ => vec![],
+    }
+}
+fn looks_like_professional_visit(benefit: &Value) -> bool {
+    ["benefit_description", "benefit_coverage_description"]
+        .iter()
+        .filter_map(|key| benefit[*key].as_str())
+        .any(|text| text.to_ascii_lowercase().contains(PROFESSIONAL_VISIT))
+}
+/// The office-visit copay an eligibility answer reports, in cents, or nothing when the
+/// answer cannot be trusted for it: no copay, no office-visit service, a coinsurance
+/// percentage instead, or copays that disagree. One answer is taken for one visit, so a
+/// family-level amount is not read as this patient's.
+fn office_visit_copay(response: &Value) -> Option<i64> {
+    let mut found: Vec<i64> = vec![];
+    for plan in response["elig"].as_array().into_iter().flatten() {
+        for benefit in benefits_of(plan) {
+            if benefit["benefit_coverage_code"].as_str() != Some("B")
+                || benefit["benefit_level_code"].as_str() == Some("FAM")
+            {
+                continue;
+            }
+            let service = benefit["benefit_code"].as_str().unwrap_or("");
+            if !VISIT_SERVICE_TYPES.contains(&service) && !looks_like_professional_visit(benefit) {
+                continue;
+            }
+            let cents = copay_cents(&benefit["benefit_amount"])?;
+            if !found.contains(&cents) {
+                found.push(cents);
+            }
+        }
+    }
+    match found.as_slice() {
+        [only] => Some(*only),
+        _ => None,
+    }
+}
+/// The office-visit copay the insurer reported for a coverage, from its newest completed
+/// eligibility answer no older than [`COPAY_CHECK_DAYS`]. The check's own service date is
+/// the date of the answer; without one the day the insurer answered is used.
+async fn insurer_check_copay(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    patient: Uuid,
+    coverage: Uuid,
+) -> Result<Option<(i64, chrono::NaiveDate)>> {
+    let row: Option<(Value, Option<String>, Option<chrono::DateTime<chrono::Utc>>)> = sqlx::query_as(
+        "SELECT response_snapshot,coalesce(request_snapshot->'request'->>'service_date',request_snapshot->>'service_date'),completed_at
+           FROM claimmd_eligibility_checks
+          WHERE tenant_id=$1 AND patient_id=$2 AND coverage_id=$3 AND status='completed'
+            AND created_at>now()-make_interval(days:=$4)
+          ORDER BY created_at DESC,id DESC LIMIT 1",
+    )
+    .bind(tenant)
+    .bind(patient)
+    .bind(coverage)
+    .bind(COPAY_CHECK_DAYS as i32)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((response, service_date, completed_at)) = row else {
+        return Ok(None);
+    };
+    let Some(copay) = office_visit_copay(&response) else {
+        return Ok(None);
+    };
+    let day = service_date
+        .as_deref()
+        .and_then(|day| chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").ok())
+        .or_else(|| completed_at.map(|at| at.date_naive()))
+        // The row is only as old as the query allows, so an unreadable date is still
+        // inside the window; the day the check was made is the honest fallback.
+        .unwrap_or_else(|| chrono::Utc::now().date_naive());
+    Ok(Some((copay, day)))
+}
+
+/// The copay the front desk is asked for: the plan's own when the coverage records one,
+/// otherwise the office-visit copay the insurer reported -- and only on an insured, posted
+/// visit that nothing has settled yet. `None` leaves the visit exactly as it was.
+fn expected_copay(
+    plan: Option<i64>,
+    insured: bool,
+    source: &str,
+    checked: Option<(i64, chrono::NaiveDate)>,
+) -> Option<i64> {
+    if let Some(copay) = plan.filter(|_| insured) {
+        return Some(copay);
+    }
+    // A check may stand in only where the ledger itself says "no copay recorded" on an
+    // insured visit: posted, not settled by an insurer's answer, not reviewed by hand.
+    (insured && source == "copay_not_recorded")
+        .then(|| checked.map(|(copay, _)| copay))
+        .flatten()
+}
 /// The billing summary of one visit (or one charge account without a visit).
 pub(crate) async fn summarize(
     tx: &mut Transaction<'_, Postgres>,
@@ -492,19 +637,25 @@ pub(crate) async fn summarize(
     let void = account.as_ref().is_some_and(|b| b.status == "void");
 
     // Insurance the charges use: frozen when posted, the chosen coverage while the charges
-    // can still change, otherwise the primary coverage in force on the visit date.
-    let coverage: Option<(Value, Value)> = match &account {
-        Some(b) if b.status != "draft" => b
-            .coverage_snapshot
-            .as_ref()
-            .map(|s| (s["coverage"]["content"].clone(), s["payer"]["content"].clone())),
+    // can still change, otherwise the primary coverage in force on the visit date. The
+    // coverage's id is kept with it so the insurer's own answers can be looked up for it.
+    let coverage: Option<(Uuid, Value, Value)> = match &account {
+        Some(b) if b.status != "draft" => b.coverage_snapshot.as_ref().map(|s| {
+            let id = serde_json::from_value(s["coverage"]["id"].clone())
+                .unwrap_or_else(|_| Uuid::nil());
+            (
+                id,
+                s["coverage"]["content"].clone(),
+                s["payer"]["content"].clone(),
+            )
+        }),
         Some(b) => match b.content["coverage_id"].as_str().and_then(|v| Uuid::parse_str(v).ok()) {
-            Some(id) => sqlx::query_as("SELECT c.content,py.content FROM insurance_coverages c JOIN ehr_payers py ON py.tenant_id=c.tenant_id AND py.id=(c.content->>'payer_id')::uuid WHERE c.tenant_id=$1 AND c.patient_id=$2 AND c.id=$3")
+            Some(id) => sqlx::query_as("SELECT c.id,c.content,py.content FROM insurance_coverages c JOIN ehr_payers py ON py.tenant_id=c.tenant_id AND py.id=(c.content->>'payer_id')::uuid WHERE c.tenant_id=$1 AND c.patient_id=$2 AND c.id=$3")
                 .bind(a.tenant_id).bind(p).bind(id).fetch_optional(&mut **tx).await?,
             None => None,
         },
         None => match &visit_row {
-            Some(row) => sqlx::query_as("SELECT c.content,py.content FROM insurance_coverages c JOIN ehr_payers py ON py.tenant_id=c.tenant_id AND py.id=(c.content->>'payer_id')::uuid WHERE c.tenant_id=$1 AND c.patient_id=$2 AND c.content->>'status'='active' AND c.content->>'priority'='primary' AND c.content->>'effective_date'<=$3 AND (c.content->>'end_date' IS NULL OR c.content->>'end_date'>=$3) ORDER BY c.id LIMIT 1")
+            Some(row) => sqlx::query_as("SELECT c.id,c.content,py.content FROM insurance_coverages c JOIN ehr_payers py ON py.tenant_id=c.tenant_id AND py.id=(c.content->>'payer_id')::uuid WHERE c.tenant_id=$1 AND c.patient_id=$2 AND c.content->>'status'='active' AND c.content->>'priority'='primary' AND c.content->>'effective_date'<=$3 AND (c.content->>'end_date' IS NULL OR c.content->>'end_date'>=$3) ORDER BY c.id LIMIT 1")
                 .bind(a.tenant_id).bind(p).bind(row.3.date_naive().to_string()).fetch_optional(&mut **tx).await?,
             None => None,
         },
@@ -512,15 +663,23 @@ pub(crate) async fn summarize(
     let insured = coverage.is_some();
     let insurer = coverage
         .as_ref()
-        .and_then(|(_, payer)| payer["name"].as_str())
+        .and_then(|(_, _, payer)| payer["name"].as_str())
         .unwrap_or("")
         .to_owned();
     let electronic = coverage
         .as_ref()
-        .is_some_and(|(_, payer)| !payer["payer_code"].as_str().unwrap_or("").trim().is_empty());
+        .is_some_and(|(_, _, payer)| !payer["payer_code"].as_str().unwrap_or("").trim().is_empty());
     let plan_copay = coverage
         .as_ref()
-        .and_then(|(content, _)| content["copay_cents"].as_i64());
+        .and_then(|(_, content, _)| content["copay_cents"].as_i64());
+    // What the insurer last told us the visit costs, used only when the plan has no
+    // recorded copay at all. It never touches the coverage record.
+    let checked = match (insured, plan_copay, coverage.as_ref().map(|row| row.0)) {
+        (true, None, Some(coverage)) if posted => {
+            insurer_check_copay(tx, a.tenant_id, p, coverage).await?
+        }
+        _ => None,
+    };
 
     let paid_at_desk = receipts(
         billing::copay_rows(tx, a, p, None).await?,
@@ -551,10 +710,18 @@ pub(crate) async fn summarize(
         paid_at_desk.usable_unapplied
     };
     let responsibility = cents(&money["responsibility_cents"]);
-    let source = money["responsibility_source"]
+    let mut source = money["responsibility_source"]
         .as_str()
         .unwrap_or("not_final")
         .to_owned();
+    // The copay the card words and totals. The ledger figure is deliberately left alone:
+    // what the patient owes now stays as it was until the insurer answers the claim.
+    let expected = expected_copay(plan_copay, insured, &source, checked);
+    let from_check = expected.is_some() && expected != plan_copay;
+    if from_check {
+        source = "insurer_check_copay".to_owned();
+    }
+    let copay_source_date = from_check.then(|| checked.map(|(_, day)| day)).flatten();
     let owes_now = cents(&money["owes_now_cents"]);
     let pending = cents(&money["pending_cents"]);
     let unassigned = cents(&money["unassigned_cents"]);
@@ -649,16 +816,16 @@ pub(crate) async fn summarize(
             "sent_on": latest.map(|c| c.row["sent_on"].clone()),
         },
         "patient": {
-            "copay_cents": plan_copay.filter(|_| insured),
-            "copay_paid_cents": plan_copay.filter(|_| insured).map(|copay| copay.min(paid_at_desk.net_received)),
-            "copay_due_cents": plan_copay.filter(|_| insured).map(|copay| (copay - paid_at_desk.net_received).max(0)),
-            "paid_above_copay_cents": plan_copay.filter(|_| insured).map(|copay| (paid_at_desk.net_received - copay).max(0)),
+            "copay_cents": expected,
+            "copay_paid_cents": expected.map(|copay| copay.min(paid_at_desk.net_received)),
+            "copay_due_cents": expected.map(|copay| (copay - paid_at_desk.net_received).max(0)),
+            "paid_above_copay_cents": expected.map(|copay| (paid_at_desk.net_received - copay).max(0)),
             "received_cents": paid_at_desk.net_received,
             "receipts_applied_cents": receipts_applied,
             "other_payments_cents": patient_payments - receipts_applied,
             // Everything the patient paid that is not the copay itself: money taken at the
             // desk beyond the copay, plus payments recorded straight on the visit.
-            "other_patient_payments_cents": match plan_copay.filter(|_| insured) {
+            "other_patient_payments_cents": match expected {
                 Some(copay) => (paid_at_desk.net_received - copay).max(0),
                 None => paid_at_desk.net_received,
             } + patient_payments
@@ -671,6 +838,8 @@ pub(crate) async fn summarize(
             "responsibility_cents": responsibility,
             "responsibility_source": source,
             "owes_now_cents": owes_now,
+            "copay_from_insurer_check": copay_source_date.is_some(),
+            "copay_source_date": copay_source_date,
         },
         "charges_cents": account.as_ref().filter(|_| !void).map(|b| b.total_cents),
         "balance_cents": posted.then_some(balance),
@@ -695,9 +864,9 @@ pub(crate) async fn summarize(
             "account_id": account.as_ref().map(|b| b.id),
             "account_version": account.as_ref().map(|b| b.version),
             "source_history_id": account.as_ref().and_then(|b| b.source_history_id),
-            "coverage_verification": coverage.as_ref().map(|(content, _)| content["verification"].clone()),
-            "member_id": coverage.as_ref().map(|(content, _)| content["member_id"].clone()),
-            "payer_code": coverage.as_ref().map(|(_, payer)| payer["payer_code"].clone()),
+            "coverage_verification": coverage.as_ref().map(|(_, content, _)| content["verification"].clone()),
+            "member_id": coverage.as_ref().map(|(_, content, _)| content["member_id"].clone()),
+            "payer_code": coverage.as_ref().map(|(_, _, payer)| payer["payer_code"].clone()),
             "claims": views.iter().map(|c| json!({"id":c.row["id"],"control_number":c.row["control_number"],"version":c.row["version"],"status":c.row["status"],"payer_control_number":c.row["payer_control_number"]})).collect::<Vec<_>>(),
         });
     }
@@ -1401,6 +1570,207 @@ mod tests {
         assert_ne!(
             derived_id(&("x", id, 1)).unwrap(),
             derived_id(&("x", id, 2)).unwrap()
+        );
+    }
+
+    #[test]
+    fn only_a_plan_without_any_recorded_copay_lets_the_insurer_answer_stand_in() {
+        let checked = Some((1500, chrono::NaiveDate::from_ymd_opt(2026, 11, 10).unwrap()));
+        assert_eq!(
+            expected_copay(None, true, "copay_not_recorded", checked),
+            Some(1500)
+        );
+        assert_eq!(
+            expected_copay(Some(4000), true, "copay_not_recorded", checked),
+            Some(4000)
+        );
+        assert_eq!(
+            expected_copay(Some(4000), true, "plan_copay", checked),
+            Some(4000)
+        );
+        // Once the insurer or a person has settled the visit, the check is not the source.
+        for settled in ["insurer_response", "reviewed_statement", "not_final"] {
+            assert_eq!(
+                expected_copay(None, true, settled, checked),
+                None,
+                "{settled}"
+            );
+        }
+        // Without insurance there is no plan copay to stand in for.
+        assert_eq!(expected_copay(None, false, "self_pay", checked), None);
+        assert_eq!(
+            expected_copay(None, false, "copay_not_recorded", checked),
+            None,
+            "an uninsured visit's figure is the whole charge"
+        );
+        // Nothing usable from the insurer leaves the visit as it was.
+        assert_eq!(expected_copay(None, true, "copay_not_recorded", None), None);
+    }
+
+    fn eligibility(benefits: Vec<Value>) -> Value {
+        json!({"elig":[{"ins_number":"SYNTHETIC-MEMBER","benefit":benefits}]})
+    }
+    fn benefit(service: &str, kind: &str, fields: Value) -> Value {
+        let mut row = json!({"benefit_code":service,"benefit_coverage_code":kind});
+        if let Some(map) = fields.as_object() {
+            for (key, value) in map {
+                row[key] = value.clone();
+            }
+        }
+        row
+    }
+
+    #[test]
+    fn an_office_visit_copay_is_read_from_the_insurer_answer() {
+        assert_eq!(
+            office_visit_copay(&eligibility(vec![
+                benefit(
+                    "30",
+                    "1",
+                    json!({"benefit_coverage_description":"Active Coverage"})
+                ),
+                benefit(
+                    "98",
+                    "B",
+                    json!({"benefit_amount":"15","inplan_network":"Y"})
+                ),
+            ])),
+            Some(1500)
+        );
+        // A general health-plan copay (service 30) and a professional visit named only in
+        // its description are both the visit's copay.
+        assert_eq!(
+            office_visit_copay(&eligibility(vec![benefit(
+                "30",
+                "B",
+                json!({"benefit_amount":25.5})
+            )])),
+            Some(2550)
+        );
+        assert_eq!(
+            office_visit_copay(&eligibility(vec![benefit(
+                "A0",
+                "B",
+                json!({"benefit_amount":"20","benefit_description":"Professional (Physician) Visit - Office"})
+            )])),
+            Some(2000)
+        );
+        // A zero copay is a real answer.
+        assert_eq!(
+            office_visit_copay(&eligibility(vec![benefit(
+                "98",
+                "B",
+                json!({"benefit_amount":"0"})
+            )])),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn anything_that_is_not_an_office_visit_copay_is_left_alone() {
+        // Nothing reported, no office-visit service, coinsurance, a deductible, family level.
+        assert_eq!(office_visit_copay(&eligibility(vec![])), None);
+        assert_eq!(
+            office_visit_copay(&eligibility(vec![benefit("30", "1", json!({}))])),
+            None
+        );
+        assert_eq!(
+            office_visit_copay(&eligibility(vec![benefit(
+                "30",
+                "A",
+                json!({"benefit_percent":"20","benefit_amount":"40"})
+            )])),
+            None,
+            "a coinsurance percentage is never a copay"
+        );
+        assert_eq!(
+            office_visit_copay(&eligibility(vec![benefit(
+                "30",
+                "C",
+                json!({"benefit_amount":"3000"})
+            )])),
+            None
+        );
+        assert_eq!(
+            office_visit_copay(&eligibility(vec![benefit(
+                "98",
+                "B",
+                json!({"benefit_amount":"15","benefit_level_code":"FAM"})
+            )])),
+            None,
+            "a family amount is not this patient's copay"
+        );
+        // A specialist copay or a limitation note is not an office visit copay.
+        assert_eq!(
+            office_visit_copay(&eligibility(vec![benefit(
+                "96",
+                "B",
+                json!({"benefit_amount":"40"})
+            )])),
+            None
+        );
+        assert_eq!(
+            office_visit_copay(&eligibility(vec![benefit(
+                "98",
+                "F",
+                json!({"benefit_notes":"20 visits per year"})
+            )])),
+            None
+        );
+        // Malformed, negative-shaped or implausible amounts are not amounts.
+        for amount in [
+            json!("malformed"),
+            json!("-15"),
+            json!("15.000"),
+            json!(""),
+            json!(null),
+            json!(true),
+            json!("1e2"),
+        ] {
+            assert_eq!(
+                office_visit_copay(&eligibility(vec![benefit(
+                    "98",
+                    "B",
+                    json!({"benefit_amount":amount})
+                )])),
+                None,
+                "{amount}"
+            );
+        }
+        // Copays that disagree are not resolved by picking one.
+        assert_eq!(
+            office_visit_copay(&eligibility(vec![
+                benefit(
+                    "98",
+                    "B",
+                    json!({"benefit_amount":"15","inplan_network":"Y"})
+                ),
+                benefit(
+                    "98",
+                    "B",
+                    json!({"benefit_amount":"60","inplan_network":"N"})
+                ),
+            ])),
+            None
+        );
+        // The same amount twice is one answer, not a conflict.
+        assert_eq!(
+            office_visit_copay(&eligibility(vec![
+                benefit("98", "B", json!({"benefit_amount":"15"})),
+                benefit("98", "B", json!({"benefit_amount":"15.00"})),
+            ])),
+            Some(1500)
+        );
+        // A single benefit object, as Claim.MD sometimes returns it.
+        assert_eq!(
+            office_visit_copay(
+                &json!({"elig":[{"benefit":benefit("98","B",json!({"benefit_amount":"15"}))}]})
+            ),
+            Some(1500)
+        );
+        assert_eq!(
+            office_visit_copay(&json!({"failure":{"kind":"timeout"}})),
+            None
         );
     }
 }
