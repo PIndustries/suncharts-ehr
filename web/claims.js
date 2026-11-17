@@ -277,7 +277,7 @@ async function saveClaimEditorForm(form,data){
  if(form.claimDraftStale)throw new Error('The claim changed since you started. See the notice at the top of this form first.');
  const context=form.claimViewContext||claimContextSnapshot(),account=form.claimAccount||claimAccount,record=form.claimRecord||claimCurrent,source=form.claimSource||claimSource;
  requireClaimContext(context,{patient_id:account.patient_id,account_id:account.id});captureClaimDraft(form);
- const content={};for(const key of ['billing_provider_name','billing_npi','tax_id','billing_address','rendering_npi','patient_address','subscriber_address','place_of_service','external_control_number','notes'])content[key]=data[key];
+ const content={};for(const key of ['billing_provider_name','billing_npi','tax_id','billing_address','rendering_npi','patient_address','subscriber_address','place_of_service','external_control_number','notes'])content[key]=data[key];content.tax_id_type=form.claimRecord?.content?.tax_id_type||'';
  content.synthetic_test=data.synthetic_test==='on';content.subscriber_birth_date=data.subscriber_birth_date||null;content.diagnosis_codes=data.diagnosis_codes.split(',').map(s=>s.trim()).filter(Boolean);content.line_diagnosis_pointers=account.content.lines.map((_,i)=>data[`pointer_${i}`].split(',').map(s=>s.trim()).filter(Boolean).map(Number));
  const unlock=lockClaimForm(form);
  try{

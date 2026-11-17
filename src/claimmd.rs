@@ -113,6 +113,12 @@ fn professional_json(out: &Submission) -> Result<Value> {
         _ => return Err(Error::Invalid("Claim.MD patient relationship unsupported")),
     };
     let mut native = serde_json::Map::new();
+    // A practice billing under a Social Security number is sent as one; every
+    // other claim, including one frozen before the type was recorded, is an EIN.
+    let bill_taxid_type = match content["tax_id_type"].as_str() {
+        Some("S") => "S",
+        _ => "E",
+    };
     for (key, value) in [
         ("accept_assign", "Y"),
         ("auto_accident", "N"),
@@ -121,7 +127,7 @@ fn professional_json(out: &Submission) -> Result<Value> {
         ("bill_name", required(content, "billing_provider_name")?),
         ("bill_npi", required(content, "billing_npi")?),
         ("bill_taxid", required(content, "tax_id")?),
-        ("bill_taxid_type", "E"),
+        ("bill_taxid_type", bill_taxid_type),
         ("payerid", required(payer, "payer_code")?),
         ("pcn", required(claim, "control_number")?),
         ("remote_claimid", required(claim, "control_number")?),
@@ -668,6 +674,33 @@ mod tests {
         assert_eq!(claim["charge"][0]["mod1"], "25");
         assert_eq!(claim["charge"][0]["mod2"], "95");
         assert!(value.get("AccountKey").is_none());
+    }
+
+    #[test]
+    fn bill_taxid_type_follows_the_recorded_identity_and_defaults_to_ein() {
+        // A practice billing under a Social Security number is sent as one.
+        // A claim frozen before the type existed (no key at all, or "") is
+        // sent as an EIN, exactly as before the type was recorded.
+        for (stored, expected) in [
+            (None, "E"),
+            (Some(""), "E"),
+            (Some("E"), "E"),
+            (Some("S"), "S"),
+        ] {
+            let mut out = submission();
+            match stored {
+                Some(kind) => out.claim_snapshot["content"]["tax_id_type"] = json!(kind),
+                None => {
+                    out.claim_snapshot["content"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("tax_id_type");
+                }
+            }
+            let claim = &professional_json(&out).unwrap()["claim"][0];
+            assert_eq!(claim["bill_taxid_type"], expected, "stored {stored:?}");
+            assert_eq!(claim["bill_taxid"], "000000001");
+        }
     }
 
     #[test]

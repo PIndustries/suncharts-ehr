@@ -216,6 +216,7 @@ struct OrgSpec<'a> {
     name: &'a str,
     npi: &'a str,
     tax: &'a str,
+    tax_id_type: &'a str,
     active: bool,
 }
 
@@ -231,6 +232,7 @@ async fn organization(
         name,
         npi,
         tax,
+        tax_id_type,
         active,
     } = *spec;
     let org = Uuid::new_v4();
@@ -255,7 +257,7 @@ async fn organization(
         &cookie,
         "POST",
         "/api/v1/practice/billing-organizations",
-        json!({"request_id":org,"name":name,"npi":npi,"tax_id":tax,"tax_id_type":"E","active":active,"reason":"Synthetic reviewed tax identity"}),
+        json!({"request_id":org,"name":name,"npi":npi,"tax_id":tax,"tax_id_type":tax_id_type,"active":active,"reason":"Synthetic reviewed tax identity"}),
         None,
     )
     .await;
@@ -267,7 +269,7 @@ async fn organization(
             &cookie,
             "PUT",
             &path,
-            json!({"name":name,"npi":npi,"tax_id_type":"E","active":false,"reason":"Synthetic retirement"}),
+            json!({"name":name,"npi":npi,"tax_id_type":tax_id_type,"active":false,"reason":"Synthetic retirement"}),
             Some(1),
         )
         .await;
@@ -343,6 +345,7 @@ async fn sole_organization_npi_becomes_the_billing_provider_npi() {
             name: "Synthetic Group Practice",
             npi: ORG_NPI,
             tax: "000000017",
+            tax_id_type: "E",
             active: true,
         },
     )
@@ -358,6 +361,7 @@ async fn sole_organization_npi_becomes_the_billing_provider_npi() {
             name: "Retired Organization",
             npi: ORG_NPI,
             tax: "000000018",
+            tax_id_type: "E",
             active: false,
         },
     )
@@ -374,6 +378,7 @@ async fn sole_organization_npi_becomes_the_billing_provider_npi() {
             name: "Foreign Group",
             npi: FOREIGN_ORG_NPI,
             tax: "000000019",
+            tax_id_type: "E",
             active: true,
         },
     )
@@ -407,6 +412,7 @@ async fn without_an_organization_npi_the_clinician_npi_bills() {
             name: "Synthetic Solo Practice",
             npi: "",
             tax: "000000017",
+            tax_id_type: "E",
             active: true,
         },
     )
@@ -434,6 +440,7 @@ async fn two_active_organizations_fall_back_to_the_clinician_npi() {
             name: "Synthetic Group One",
             npi: ORG_NPI,
             tax: "000000017",
+            tax_id_type: "E",
             active: true,
         },
     )
@@ -448,6 +455,7 @@ async fn two_active_organizations_fall_back_to_the_clinician_npi() {
             name: "Synthetic Group Two",
             npi: SECOND_ORG_NPI,
             tax: "000000018",
+            tax_id_type: "E",
             active: true,
         },
     )
@@ -460,5 +468,63 @@ async fn two_active_organizations_fall_back_to_the_clinician_npi() {
         "an ambiguous practice keeps billing under the clinician"
     );
     assert_eq!(content["rendering_npi"], CLINICIAN_NPI);
+    db.close().await;
+}
+
+#[tokio::test]
+async fn a_practice_billing_under_an_ssn_prepares_the_claim_as_an_ssn() {
+    let _key_file = suncharts_engine::test_db::credential_key_lock()
+        .lock()
+        .await;
+    let db = database().await;
+    let (r, a, p, visit, cookie) = fixture(&db).await;
+    organization(
+        &db,
+        &r,
+        &a,
+        &cookie,
+        &OrgSpec {
+            tenant: a.tenant_id,
+            name: "Synthetic Sole Proprietor",
+            npi: "",
+            tax: "000000017",
+            tax_id_type: "S",
+            active: true,
+        },
+    )
+    .await;
+    let content = prepare_content(&r, &a, &db, p, visit).await;
+    assert_eq!(
+        content["tax_id_type"], "S",
+        "the prepared claim says the tax ID is a Social Security number"
+    );
+    assert_eq!(content["tax_id"], "000000017");
+    db.close().await;
+}
+
+#[tokio::test]
+async fn a_practice_billing_under_an_ein_prepares_the_claim_as_an_ein() {
+    let _key_file = suncharts_engine::test_db::credential_key_lock()
+        .lock()
+        .await;
+    let db = database().await;
+    let (r, a, p, visit, cookie) = fixture(&db).await;
+    organization(
+        &db,
+        &r,
+        &a,
+        &cookie,
+        &OrgSpec {
+            tenant: a.tenant_id,
+            name: "Synthetic Group Practice",
+            npi: "",
+            tax: "000000017",
+            tax_id_type: "E",
+            active: true,
+        },
+    )
+    .await;
+    let content = prepare_content(&r, &a, &db, p, visit).await;
+    assert_eq!(content["tax_id_type"], "E");
     db.close().await;
 }

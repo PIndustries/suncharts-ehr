@@ -42535,6 +42535,14 @@
               "maxItems": 4
             },
             "maxItems": 100
+          },
+          "tax_id_type": {
+            "type": "string",
+            "enum": [
+              "",
+              "E",
+              "S"
+            ]
           }
         },
         "required": [
