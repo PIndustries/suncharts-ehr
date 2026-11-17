@@ -472,3 +472,65 @@ td.money-cell,th.money-cell{text-align:right;font-variant-numeric:tabular-nums}
 .app-dialog footer{flex-wrap:wrap}
 .notice-with-action{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 14px}
 .notice-with-action button{min-height:0;border:0;background:transparent;color:inherit;text-decoration:underline;padding:0}
+/* Live charge table: every line is a row, each edit saves itself, and a line's problem is
+   written on the row. Narrow screens keep the same order as a stack of one-line cards. */
+.charge-table{min-width:0;font-size:var(--fs-sm)}
+.charge-table th{white-space:nowrap}
+.charge-table .billing-charge-row>td{padding:8px 6px;vertical-align:top}
+.charge-table label{display:block;gap:3px;font-size:var(--fs-eyebrow);text-transform:uppercase;letter-spacing:.3px;color:var(--muted)}
+.charge-table input,.charge-table select{width:100%;min-width:0;font-size:var(--fs-sm);padding:5px 7px}
+.charge-table .terminology-combobox label{display:block}
+.charge-cell-code,.charge-cell-description,.charge-cell-diagnoses,.charge-cell-amount{min-width:0}
+.charge-cell-units{width:5.5rem}
+.charge-cell-modifiers{width:6.5rem}
+.charge-cell-remove{width:1%;white-space:nowrap}
+.charge-cell-remove button{font-size:var(--fs-xs);min-height:28px;padding:3px 7px}
+.charge-cell-total{font-size:var(--fs-sm)}
+.charge-table .charge-description-extra{margin-top:4px}
+.charge-table .charge-description-extra button{font-size:var(--fs-xs);min-height:26px;padding:3px 7px}
+.charge-table .charge-description-extra p{font-size:var(--fs-xs);margin:4px 0 0}
+.charge-drug{margin-top:6px}
+.charge-drug[hidden]{display:none}
+.charge-drug-title{margin:0 0 4px;font-size:var(--fs-xs);font-weight:650;color:var(--ink)}
+.charge-drug-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.charge-drug .muted{font-size:var(--fs-xs);margin:4px 0 0}
+.charge-more{margin-top:4px}
+.charge-more summary{font-size:var(--fs-xs);color:var(--muted)}
+.charge-more button,.charge-more p{font-size:var(--fs-xs)}
+.charge-table [data-charge-diagnoses] fieldset{border:0;padding:0;margin:6px 0 0;min-width:0}
+.charge-table [data-charge-diagnoses] legend{font-size:var(--fs-eyebrow);text-transform:uppercase;letter-spacing:.3px;color:var(--muted);padding:0}
+.charge-table [data-charge-diagnoses] .scope-options{display:flex;flex-direction:column;gap:4px;margin:4px 0}
+.charge-table [data-charge-diagnoses] .scope-options label{display:flex;flex-direction:row;align-items:center;gap:6px;text-transform:none;letter-spacing:0;font-size:var(--fs-xs);color:var(--ink)}
+.charge-table [data-charge-diagnoses] .scope-options input{width:auto;min-height:0}
+.charge-table [data-charge-diagnoses] button{font-size:var(--fs-xs);min-height:26px;padding:3px 7px}
+.charge-table [data-fee-line]{margin-top:5px}
+.charge-table [data-fee-line] p{font-size:var(--fs-xs);margin:0 0 3px}
+.charge-table [data-fee-line] button{font-size:var(--fs-xs);min-height:26px;padding:3px 7px}
+.charge-table [data-fee-line] label{font-size:var(--fs-xs);text-transform:none;letter-spacing:0}
+.charge-table .mapping-notice{font-size:var(--fs-xs);margin:6px 0 0;padding:6px 8px}
+.billing-charge-row[data-charge-problem]>td{background:var(--warning-bg)}
+.charge-cell-problem{display:none;padding:0!important;border-bottom:1px solid var(--warning-line)}
+.billing-charge-row[data-charge-problem] .charge-cell-problem{display:table-cell;padding:6px 8px!important;color:var(--warning-text);font-size:var(--fs-xs);background:var(--warning-bg)}
+.charge-table-foot{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;margin-top:10px}
+.charge-table-foot .actions,.charge-table-foot button{margin:0}
+.charge-table-status{margin:0;font-size:var(--fs-xs);color:var(--muted);min-height:20px}
+.charge-table-status:not(:empty){color:var(--ink)}
+.charge-table-status:empty{display:none}
+.charge-table-status button{font-size:var(--fs-xs);min-height:24px;padding:2px 7px;margin-left:6px}
+.charge-undo{display:inline-flex;flex-wrap:wrap;align-items:center}
+.charge-table-totals{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px;margin:12px 0 4px;padding:10px 12px;background:var(--surface-soft);border:1px solid var(--line);border-radius:5px;font-size:var(--fs-sm)}
+.charge-table-totals b{font-size:var(--fs-md);font-weight:650;font-variant-numeric:tabular-nums;margin-left:4px}
+.charge-table-totals .charge-table-hint{font-size:var(--fs-xs);color:var(--muted)}
+.charge-table-totals:empty{display:none}
+.charge-table-finished{margin-top:18px;padding-top:14px;border-top:2px solid var(--line)}
+@media(max-width:760px){
+ .charge-table thead{display:none}
+ .charge-table,.charge-table tbody,.charge-table .billing-charge-row,.charge-table .billing-charge-row>td{display:block;width:100%}
+ .charge-table .billing-charge-row{border:1px solid var(--line);border-radius:5px;margin:10px 0;padding:4px 8px}
+ .charge-table .billing-charge-row>td{padding:6px 0;border-bottom:0}
+ .charge-table .charge-cell-problem{display:none!important}
+ .billing-charge-row[data-charge-problem] .charge-cell-problem{display:block!important;padding:6px 8px!important}
+ .charge-cell-units,.charge-cell-modifiers,.charge-cell-remove{width:100%}
+ .charge-cell-total{text-align:left}
+ .charge-drug-grid{grid-template-columns:1fr}
+}

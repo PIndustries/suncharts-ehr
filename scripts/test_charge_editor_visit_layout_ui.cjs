@@ -11,7 +11,8 @@ const nodes={},captureHandlers={},ctx={console,Date,Intl,URL,URLSearchParams,cry
  esc:v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'),human:v=>v,date:v=>String(v),money:n=>'$'+(n/100).toFixed(2),dollars:c=>c==null?'':(c/100).toFixed(2),payerName:()=>'Synthetic payer',billingCan:()=>true,
  notice(){},run:fn=>fn(),showChartSection(){},setEncounterSection(){}};
 vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/billing.js','utf8'),ctx);vm.runInContext(fs.readFileSync('web/fees.js','utf8'),ctx);
-const chargeLine=html=>html.slice(html.indexOf('<fieldset class="billing-charge-row"'),html.indexOf('</fieldset>'));
+// A row is read up to the diagnosis host that follows it, which is where its cells end.
+const chargeLine=html=>{const start=html.indexOf('<tr class="billing-charge-row"');const end=html.indexOf('</tr>',start);return html.slice(start,end);};
 (async()=>{
  ctx.revenueServiceDate=()=>'2026-11-13';
  ctx.api=async()=>({version:3,diagnoses:[]});
@@ -22,16 +23,22 @@ const chargeLine=html=>html.slice(html.indexOf('<fieldset class="billing-charge-
  assert.match(visit,/<details data-visit-charge-options><summary>Visit, insurance and fee options<\/summary>/,'the visit details sit in one collapsed box');
  assert.ok(!/<details[^>]*\bopen/.test(visit),'the box starts closed');
  const row=chargeLine(visit);
+ assert.match(visit,/<table class="billing-table charge-table" id="billing-charge-lines"><caption class="sr-only">/,  'the lines are one table');
+ assert.match(visit,/<thead><tr><th>Code<\/th><th>Description<\/th><th>Modifiers<\/th><th>Units<\/th><th>Diagnoses<\/th><th>Amount<\/th>/,'the columns staff asked for, in that order');
  assert.ok(!row.includes('<details')||row.indexOf('<details')>row.indexOf('name="code"'),'the procedure code is outside any closed box');
  assert.match(row,/data-charge-diagnoses/,'the diagnosis ticks stay on the line');
+ assert.match(row,/class="charge-drug"/,'the drug fields sit inside the row, not behind a closed box');
  assert.ok(visit.indexOf(box)>visit.indexOf('data-add-charge'),'the options box comes after the charge lines');
- const tucked=visit.slice(visit.indexOf(box),visit.indexOf('Reason / source review'));
+ const tucked=visit.slice(visit.indexOf(box));
  assert.ok(['visit_id','service_date','coverage_id','notes','fee_facility','fee_setting'].every(name=>tucked.includes(`name="${name}"`)),'the tucked fields are still inside the form and still submitted');
  assert.match(visit,/<button type="button" data-add-charge>\+ Add another charge<\/button>/);
- assert.match(visit,/>Save charges</);assert.match(visit,/>Cancel</);
- assert.match(row,/>Remove</);assert.doesNotMatch(visit,/Remove line/);
- assert.match(row,/>Amount</);assert.match(row,/>Diagnoses for this charge</);assert.match(row,/>Look up fee</);assert.match(row,/<summary>More<\/summary>/);
- assert.doesNotMatch(visit,/Account notes|CPT \/ HCPCS|Line total \(USD\)|Reviewed ICD-10|Check approved fee|Catalog release options|Record each service once/,'no long or developer wording is shown in the visit charge form');
+ assert.doesNotMatch(visit,/>Save charges<|>Cancel<|name="reason"/,'the table saves itself: no save button, no cancel, no reason box');
+ assert.doesNotMatch(visit,/name="code_system"/,'no code system field anywhere on a charge line');
+ assert.match(visit,/<button type="button" data-remove-charge>Remove<\/button>/,'each line has one plain Remove');
+ assert.doesNotMatch(visit,/Remove line/);
+ assert.match(visit,/>Amount</);assert.match(visit,/>Diagnoses for this service</);assert.match(visit,/>Use practice price</);assert.match(visit,/<summary>Code list this came from<\/summary>/);
+ assert.match(visit,/data-charge-total/,'the totals sit under the table and move as lines change');
+ assert.doesNotMatch(visit,/Account notes|Line total \(USD\)|Reviewed ICD-10|Check approved fee|Catalog release options|Record each service once|Code system/,'no long or developer wording is shown in the visit charge table');
  // Saving with a required field left empty inside the box opens it so the browser can show the problem.
  const broken={checkValidity:()=>false},ok={checkValidity:()=>true},fields=[ok,broken],tuckedBox={open:false,querySelectorAll:()=>fields};
  const chargeForm={id:'billing-account-form',querySelector:selector=>selector==='[data-visit-charge-options]'?tuckedBox:null};
@@ -45,8 +52,8 @@ const chargeLine=html=>html.slice(html.indexOf('<fieldset class="billing-charge-
  const flat=nodes['billing-editor'].innerHTML;
  assert.doesNotMatch(flat,/data-visit-charge-options|Visit, insurance and fee options/,'the Billing tab form is not shortened');
  assert.ok(flat.indexOf('name="visit_id"')<flat.indexOf('id="billing-charge-lines"'),'the encounter choice still sits above the lines');
- assert.match(flat,/<p class="muted">Enter the total for each charge; it is not multiplied by units\.<\/p>/);
+ assert.match(flat,/<p class="muted">Enter the amount for the whole line, not for one unit\.<\/p>/);
  assert.match(flat,/<h4>Insurance on [^<]+<\/h4>/,'the Billing tab form still lists the insurance on file');
  assert.match(flat,/data-add-charge>\+ Charge line</);assert.match(flat,/<label>Notes<textarea name="notes"/);
- console.log('PASS shortened visit charge form: charge lines only up front, one closed options box holding the visit fields, opened on save when a field inside is invalid, Billing tab layout unchanged');
+ console.log('PASS live visit charge table: one table with the columns staff asked for, no save button or reason box, one closed options box holding the visit fields, opened on save when a field inside is invalid, Billing tab layout unchanged');
 })().catch(error=>{console.error(error);process.exitCode=1;});

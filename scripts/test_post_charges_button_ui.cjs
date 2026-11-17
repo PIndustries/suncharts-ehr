@@ -27,6 +27,8 @@ function runSubmit(target,submitter,entries){const pending=Promise.withResolvers
  for(const handler of handlers.submit||[])handler({target,submitter,preventDefault(){}});return ctx.pending.promise;}
 function submit(submitter){return runSubmit(form,submitter,[['reason','Charges reviewed']]);}
 function submitCharges(){return runSubmit(chargeForm,undefined,[['reason','Charges reviewed'],['visit_id','visit'],['service_date','2026-01-05'],['notes',''],['coverage_id','']]);}
+// A live table that somehow submits is stopped in plain words: it saves itself.
+function submitLiveTable(){chargeForm.dataset.autosave='on';const e=runSubmit(chargeForm,undefined,[['reason','x'],['visit_id','visit'],['service_date','2026-01-05']]);chargeForm.dataset.autosave='off';return e;}
 const actionCall=()=>calls.filter(c=>String(c[0]).endsWith('/actions')).at(-1);
 (async()=>{
  await submit({name:'action',value:'post'});
@@ -46,7 +48,10 @@ const actionCall=()=>calls.filter(c=>String(c[0]).endsWith('/actions')).at(-1);
  assert.equal(notices.at(-1),'Charges posted.','posting charges says Charges posted.');
  notices.length=0;await submit({name:'action',value:'void'});
  assert.equal(notices.at(-1),'Charges removed.','removing charges says Charges removed.');
+ const liveTableError=await submitLiveTable().catch(e=>e);
+ assert.match(liveTableError?.message||'',/save as you edit/i,'a live table never submits; it says so in plain words');
  ctx.billingChargeMarkup=()=>'snapshot';
+ chargeForm.dataset.autosave='off';
  notices.length=0;
  await submitCharges();
  assert.equal(ctx.lastError,undefined,'saving charges must not throw: '+(ctx.lastError?.message||''));

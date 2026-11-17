@@ -302,7 +302,14 @@ function openEncounterCharges(){
  if(typeof activeVisit==='undefined'||!activeVisit){showChartSection('visits');notice('Select or start the visit before entering its procedures.',true);return;}
  if(typeof setEncounterSection==='function')setEncounterSection('charges');else showChartSection('visits');
  if(!$('encounter-billing-editor'))renderEncounterRevenue();
- const account=encounterChargeAccount();if(account){billingSelected=account.id;showBillingAccount(account.id,false);if(account.status==='draft')accountEditor(account,null,true);}else accountEditor(null,null,true);
+ const account=encounterChargeAccount();
+ // Charges for a visit are worked on in one live table: rows, not a form with a save button.
+ if(typeof chargeTableAllowed==='function'&&!(account&&account.status==='draft'&&chargeTableAllowed(account))){
+  if(account){billingSelected=account.id;showBillingAccount(account.id,false);if(account.status==='draft'&&typeof chargeTableFinishedMarkup==='function')openBillingEditor(chargeTableFinishedMarkup(account));return;}
+  if(typeof chargeTableAllowed==='function'&&!chargeTableAllowed(null)){notice('This visit cannot take charges here yet.',true);return;}
+  accountEditor(null,null,true);return;
+ }
+ if(account){billingSelected=account.id;showBillingAccount(account.id,false);if(account.status==='draft')accountEditor(account,null,true);}else accountEditor(null,null,true);
 }
 function openCopayReceiptEditor(appointmentId){
  if(appointmentId)insuranceAppointmentSelection.set(selected,appointmentId);
