@@ -39877,15 +39877,7 @@
             "maximum": 100
           }
         },
-        "required": [
-          "systolic_mm_hg",
-          "diastolic_mm_hg",
-          "heart_rate_bpm",
-          "temperature_c",
-          "weight_kg",
-          "height_cm",
-          "oxygen_saturation_pct"
-        ]
+        "description": "Every measurement is optional; at least one must be given. Systolic and diastolic blood pressure must be sent together or not at all."
       },
       "Visit": {
         "type": "object",

@@ -109,13 +109,13 @@ async fn call(
 }
 fn vitals() -> Vitals {
     Vitals {
-        systolic_mm_hg: 120,
-        diastolic_mm_hg: 80,
-        heart_rate_bpm: 70,
-        temperature_c: 36.7,
-        weight_kg: 70.,
-        height_cm: 170.,
-        oxygen_saturation_pct: 98.,
+        systolic_mm_hg: Some(120),
+        diastolic_mm_hg: Some(80),
+        heart_rate_bpm: Some(70),
+        temperature_c: Some(36.7),
+        weight_kg: Some(70.),
+        height_cm: Some(170.),
+        oxygen_saturation_pct: Some(98.),
     }
 }
 fn note() -> SoapNote {
@@ -291,4 +291,135 @@ async fn intake_and_vitals_rollback_if_audit_cannot_commit() {
             .unwrap();
         assert_eq!(count, 0);
     }
+}
+#[tokio::test]
+async fn partial_vitals_save_while_half_a_blood_pressure_or_nothing_is_refused() {
+    let (db, _doc, nurse, appointment) = setup().await;
+    let b = PostgresBackend(db.clone());
+    let v = b
+        .start_visit(
+            &nurse,
+            StartVisit {
+                appointment_id: appointment,
+            },
+        )
+        .await
+        .unwrap();
+    let r = app(db.clone());
+    let path = format!("/api/v1/visits/{}/vitals", v.id);
+    // Nothing entered at all is refused with plain staff wording.
+    let (status, data) = call(&r, &nurse, "PUT", &path, json!({}), Some(v.version)).await;
+    assert_eq!(status, 400, "{data}");
+    assert_eq!(data["message"], "Enter at least one measurement.");
+    // Half a blood pressure is refused; the other boxes may still be empty.
+    let (status, data) = call(
+        &r,
+        &nurse,
+        "PUT",
+        &path,
+        json!({"systolic_mm_hg":120}),
+        Some(v.version),
+    )
+    .await;
+    assert_eq!(status, 400, "{data}");
+    assert_eq!(
+        data["message"],
+        "Enter both blood pressure numbers, or neither."
+    );
+    let (status, data) = call(
+        &r,
+        &nurse,
+        "PUT",
+        &path,
+        json!({"diastolic_mm_hg":80}),
+        Some(v.version),
+    )
+    .await;
+    assert_eq!(status, 400, "{data}");
+    assert_eq!(
+        data["message"],
+        "Enter both blood pressure numbers, or neither."
+    );
+    // A range check still applies to whatever was given.
+    let (status, _) = call(
+        &r,
+        &nurse,
+        "PUT",
+        &path,
+        json!({"temperature_c":90.0}),
+        Some(v.version),
+    )
+    .await;
+    assert_eq!(status, 400);
+    // Only a pulse is a valid record; the stored JSON carries no key for the rest.
+    let (status, data) = call(
+        &r,
+        &nurse,
+        "PUT",
+        &path,
+        json!({"heart_rate_bpm":72}),
+        Some(v.version),
+    )
+    .await;
+    assert_eq!(status, 200, "{data}");
+    assert_eq!(data["vitals"], json!({"heart_rate_bpm":72}));
+    let stored: Value =
+        sqlx::query_scalar("SELECT vitals FROM visits WHERE tenant_id=$1 AND id=$2")
+            .bind(nurse.tenant_id)
+            .bind(v.id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(stored, json!({"heart_rate_bpm":72}));
+    for key in [
+        "systolic_mm_hg",
+        "diastolic_mm_hg",
+        "temperature_c",
+        "weight_kg",
+        "height_cm",
+        "oxygen_saturation_pct",
+    ] {
+        assert!(!stored.get(key).is_some(), "stored vitals carries {key}");
+    }
+}
+#[tokio::test]
+async fn all_seven_measurements_still_save_and_read_back_identically() {
+    let (db, _doc, nurse, appointment) = setup().await;
+    let b = PostgresBackend(db.clone());
+    let v = b
+        .start_visit(
+            &nurse,
+            StartVisit {
+                appointment_id: appointment,
+            },
+        )
+        .await
+        .unwrap();
+    let updated = b
+        .save_vitals(&nurse, v.id, v.version, vitals())
+        .await
+        .unwrap();
+    let expected = json!({"systolic_mm_hg":120,"diastolic_mm_hg":80,"heart_rate_bpm":70,"temperature_c":36.7,"weight_kg":70.0,"height_cm":170.0,"oxygen_saturation_pct":98.0});
+    assert_eq!(updated.vitals, Some(expected.clone()));
+    let stored: Value =
+        sqlx::query_scalar("SELECT vitals FROM visits WHERE tenant_id=$1 AND id=$2")
+            .bind(nurse.tenant_id)
+            .bind(v.id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(stored, expected);
+    // The same record read back through the HTTP surface is unchanged.
+    let r = app(db.clone());
+    let (status, data) = call(
+        &r,
+        &nurse,
+        "GET",
+        &format!("/api/v1/visits/{}", v.id),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{data}");
+    assert_eq!(data["vitals"], expected);
 }

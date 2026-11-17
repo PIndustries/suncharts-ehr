@@ -211,28 +211,53 @@ pub struct PreviousNoteText {
     pub procedure: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+/// Every measurement is optional: a clinic may record any subset. A field that
+/// was not given is absent from the stored JSON, so records that carry all seven
+/// read back byte-for-byte as before.
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
 pub struct Vitals {
-    pub systolic_mm_hg: u16,
-    pub diastolic_mm_hg: u16,
-    pub heart_rate_bpm: u16,
-    pub temperature_c: f64,
-    pub weight_kg: f64,
-    pub height_cm: f64,
-    pub oxygen_saturation_pct: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub systolic_mm_hg: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diastolic_mm_hg: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heart_rate_bpm: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature_c: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight_kg: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height_cm: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oxygen_saturation_pct: Option<f64>,
 }
 impl Vitals {
     pub fn validate(&self) -> Result<()> {
-        if !(30..=350).contains(&self.systolic_mm_hg)
-            || !(10..=250).contains(&self.diastolic_mm_hg)
-            || self.systolic_mm_hg <= self.diastolic_mm_hg
-            || !(10..=350).contains(&self.heart_rate_bpm)
-            || !(20.0..=50.0).contains(&self.temperature_c)
-            || !(0.1..=700.0).contains(&self.weight_kg)
-            || !(10.0..=300.0).contains(&self.height_cm)
-            || !(0.0..=100.0).contains(&self.oxygen_saturation_pct)
+        if self.systolic_mm_hg.is_none()
+            && self.diastolic_mm_hg.is_none()
+            && self.heart_rate_bpm.is_none()
+            && self.temperature_c.is_none()
+            && self.weight_kg.is_none()
+            && self.height_cm.is_none()
+            && self.oxygen_saturation_pct.is_none()
         {
+            return Err(Error::Invalid("Enter at least one measurement."));
+        }
+        if self.systolic_mm_hg.is_some() != self.diastolic_mm_hg.is_some() {
+            return Err(Error::Invalid(
+                "Enter both blood pressure numbers, or neither.",
+            ));
+        }
+        let outside = matches!(self.systolic_mm_hg, Some(v) if !(30..=350).contains(&v))
+            || matches!(self.diastolic_mm_hg, Some(v) if !(10..=250).contains(&v))
+            || matches!(self.systolic_mm_hg.zip(self.diastolic_mm_hg), Some((s, d)) if s <= d)
+            || matches!(self.heart_rate_bpm, Some(v) if !(10..=350).contains(&v))
+            || matches!(self.temperature_c, Some(v) if !(20.0..=50.0).contains(&v))
+            || matches!(self.weight_kg, Some(v) if !(0.1..=700.0).contains(&v))
+            || matches!(self.height_cm, Some(v) if !(10.0..=300.0).contains(&v))
+            || matches!(self.oxygen_saturation_pct, Some(v) if !(0.0..=100.0).contains(&v));
+        if outside {
             return Err(Error::Invalid("vitals outside supported recording ranges"));
         }
         Ok(())
