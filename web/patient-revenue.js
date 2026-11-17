@@ -123,16 +123,27 @@ async function loadInsuranceEligibility(coverageId,force=false){
 }
 // The visit's billing card. Every amount and the next step come from the server's summary
 // for this visit; nothing here adds or subtracts money.
-function visitBillingContext(extra={}){return {delegated:typeof me!=='undefined'&&me?.delegated===true||encounterRevenueState.data?.summary?.viewer?.delegated===true,canCreate:billingCan('create'),canWrite:billingCan(),claimsAllowed:typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('claims','view'),...extra};}
+function visitBillingStateContext(extra={}){return {delegated:typeof me!=='undefined'&&me?.delegated===true||encounterRevenueState.data?.summary?.viewer?.delegated===true,canCreate:billingCan('create'),canWrite:billingCan(),claimsAllowed:typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('claims','view'),...extra};}
+function visitBillingContext(extra={}){return visitBillingStateContext(extra);}
 function encounterRevenueStatusMarkup(account,data={}){
- if(data.summary)return visitBillingCardMarkup(data.summary,visitBillingContext({prepareError:data.prepareError,preparing:data.preparing}))+(data.stale?'<p role="status">These amounts could not be refreshed just now. Refresh before relying on them.</p>':'');
+ // A card with something wrong to answer for keeps its own button: while a claim could not be
+ // prepared, or is preparing, the review panel has nothing to offer yet.
+ if(data.summary)return visitBillingCardMarkup(data.summary,visitBillingContext({prepareError:data.prepareError,preparing:data.preparing,noReview:!!data.prepareError||!!data.preparing}))+(data.stale?'<p role="status">These amounts could not be refreshed just now. Refresh before relying on them.</p>':'');
  return `<section class="visit-billing-card"><div class="section-head"><h3>Visit billing</h3>${data.error?'<button type="button" class="text-button" data-refresh-revenue>Refresh</button>':''}</div><p ${data.error?'role="status"':'class="muted"'}>${data.error?'Billing for this visit could not be loaded. Refresh before relying on any amount.':'Loading billing for this visit…'}</p></section>`;
 }
 function paintEncounterRevenue(state,current){
  if(!current())return;const node=$('encounter-revenue-status');if(!node)return;
- const open=Array.from(node.querySelectorAll?.('details[data-revenue-disclosure][open]')||[]).map(d=>d.dataset.revenueDisclosure);
- node.innerHTML=encounterRevenueStatusMarkup(encounterChargeAccount(),state.data||{});
- for(const d of node.querySelectorAll?.('details[data-revenue-disclosure]')||[])d.open=open.includes(d.dataset.revenueDisclosure);
+  const open=Array.from(node.querySelectorAll?.('details[data-revenue-disclosure][open]')||[]).map(d=>d.dataset.revenueDisclosure);
+  state.reviewCard=state.data?.summary||null;node.innerHTML=encounterRevenueStatusMarkup(encounterChargeAccount(),state.data||{});
+  for(const d of node.querySelectorAll?.('details[data-revenue-disclosure]')||[])d.open=open.includes(d.dataset.revenueDisclosure);
+  // The review panel beside the table is the person's own working space. A background refresh
+  // redraws the card underneath it; the panel is redrawn only if it was taken out of the DOM.
+  const panel=$('visit-billing-review'),review=state.review;
+  if(panel&&panel.hidden===false){
+    if(panel.isConnected===false&&typeof visitReviewPaint==='function')visitReviewPaint();
+    else if(!review?.busy&&!review?.sent&&!review?.stopped&&typeof visitReviewPanelMarkup==='function'&&state.data?.summary)panel.innerHTML=visitReviewPanelMarkup(state.data.summary,visitReviewContext());
+  }
+
  const summary=state.data?.summary,context=visitBillingContext();if(!summary)return;
  const timeline=$('visit-billing-timeline');if(timeline)timeline.innerHTML=visitBillingTimeline(summary,context,state.filter||'all');
  const technical=$('visit-billing-technical');if(technical)technical.innerHTML=visitBillingTechnical(summary);
@@ -141,7 +152,7 @@ function paintEncounterRevenue(state,current){
 async function loadEncounterRevenueStatus(account,force=false){
  const visit=typeof activeVisit!=='undefined'?activeVisit:null;if(!visit)return;
  let state=encounterRevenueState;
- if(state.patient!==selected||state.identity!==me||state.visit!==visit.id||state.account!==(account?.id||null)||state.version!==(account?.version||null)){if(typeof clearTimeout==='function')clearTimeout(state.timer);state={patient:selected,identity:me,visit:visit.id,account:account?.id||null,version:account?.version||null,pending:null,data:null,loadedAt:0,filter:'all',prepared:false};encounterRevenueState=state;}
+ if(state.patient!==selected||state.identity!==me||state.visit!==visit.id||state.account!==(account?.id||null)||state.version!==(account?.version||null)){if(typeof clearTimeout==='function')clearTimeout(state.timer);state={patient:selected,identity:me,visit:visit.id,account:account?.id||null,version:account?.version||null,pending:null,data:null,loadedAt:0,filter:'all',prepared:false,review:null,reviewCard:null};encounterRevenueState=state;}
  const current=()=>encounterRevenueState===state&&selected===state.patient&&me===state.identity&&activeVisit?.id===state.visit&&(encounterChargeAccount()?.id||null)===state.account;
  const render=()=>paintEncounterRevenue(state,current);
  if(state.pending){render();return state.pending;}
@@ -259,8 +270,11 @@ function renderEncounterRevenue(){
  if(!visit){host.innerHTML='<p>Select a visit to record its procedures and charges.</p>';return;}
  const key=JSON.stringify([selected,visit.id,visit.version,appointment?.id,account?.id,account?.version,(workspace.billing?.coverages||[]).map(c=>[c.id,c.version]),workspace.billing?.copays]);if(host.dataset.revenueKey===key){if(account&&chartSection==='visits'&&!$('encounter-billing-detail')?.innerHTML)showBillingAccount(account.id,false);loadEncounterRevenueStatus(account);if(appointment&&billingCan('create'))void loadHostedCopays(appointment.id);if(typeof resumeEncounterChargeDraft==='function')resumeEncounterChargeDraft();return;}if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();host.dataset.revenueKey=key;
  const owner=typeof me!=='undefined'&&me?.role==='owner';
- host.innerHTML=`<div class="section-head"><div><h2>Charges &amp; billing</h2><p class="muted">${esc(visitBillingDate(serviceDate))} · ${account?account.status==='posted'?'Charges are final':'Charges can still be changed':'No charges yet'}</p></div>${billingCan('create')&&account?.status==='draft'?'<button type="button" data-encounter-charges>Edit charges</button>':''}</div><div id="encounter-revenue-status">${encounterRevenueStatusMarkup(account,encounterRevenueState.visit===visit.id&&encounterRevenueState.patient===selected?encounterRevenueState.data||{}:{})}</div><section id="visit-billing-collect" class="billing-section" hidden><div class="section-head"><h3>Collect payment</h3><button type="button" class="text-button" data-visit-collect-close>Close</button></div><p class="muted" id="visit-billing-collect-note"></p>${hostedCopayPanel(appointment,'encounter-hosted-copay')}${billingCan('create')&&appointment?`<div class="actions"><button type="button" data-record-copay="${esc(appointment.id)}">Cash or check</button></div>`:''}</section><div id="encounter-copay-receipt" hidden></div><div id="encounter-billing-editor"></div>${account?'<details class="encounter-account-record" id="encounter-charge-details"><summary>Charges</summary><div id="encounter-billing-detail"></div></details>':''}<details class="encounter-account-record" id="visit-billing-history"><summary>History</summary><div id="visit-billing-timeline"><p class="muted">Loading history…</p></div>${account?'<details class="encounter-account-record" id="visit-billing-ledger-details"><summary>Payments and adjustments</summary><div id="visit-billing-ledger"></div></details>':''}</details>${owner?`<details class="encounter-account-record" id="visit-billing-details" hidden><summary>Details</summary><div id="visit-billing-technical"></div><p class="muted">${coverage?esc(payerName(coverage.content.payer_id)):'No insurance on file'} · Plan copay ${coverage?.content.copay_cents==null?'not recorded':money(coverage.content.copay_cents)}</p>${typeof billingCoverageOrderMarkup==='function'?billingCoverageOrderMarkup(serviceDate,account?.content.coverage_id||coverage?.id):''}${account?'<div class="actions"><button type="button" data-bill-history>Change log for these charges</button></div><div id="bill-history"></div>':''}</details>`:''}<section id="encounter-claims" hidden></section>`;
- if(account&&typeof chartSection!=='undefined'&&chartSection==='visits')showBillingAccount(account.id,false);
+ host.innerHTML=`<div class="section-head"><div><h2>Charges &amp; billing</h2><p class="muted">${esc(visitBillingDate(serviceDate))} · ${account?account.status==='posted'?'Charges are final':'Charges can still be changed':'No charges yet'}</p></div>${billingCan('create')&&account?.status==='draft'?'<button type="button" data-encounter-charges>Edit charges</button>':''}</div><div id="encounter-revenue-status">${encounterRevenueStatusMarkup(account,encounterRevenueState.visit===visit.id&&encounterRevenueState.patient===selected?encounterRevenueState.data||{}:{})}</div><section id="visit-billing-collect" class="billing-section" hidden><div class="section-head"><h3>Collect payment</h3><button type="button" class="text-button" data-visit-collect-close>Close</button></div><p class="muted" id="visit-billing-collect-note"></p>${hostedCopayPanel(appointment,'encounter-hosted-copay')}${billingCan('create')&&appointment?`<div class="actions"><button type="button" data-record-copay="${esc(appointment.id)}">Cash or check</button></div>`:''}</section><div id="encounter-copay-receipt" hidden></div><section id="visit-billing-review" class="billing-section" hidden></section><div id="encounter-billing-editor"></div>${account?'<details class="encounter-account-record" id="encounter-charge-details"><summary>Charges</summary><div id="encounter-billing-detail"></div></details>':''}<details class="encounter-account-record" id="visit-billing-history"><summary>History</summary><div id="visit-billing-timeline"><p class="muted">Loading history…</p></div>${account?'<details class="encounter-account-record" id="visit-billing-ledger-details"><summary>Payments and adjustments</summary><div id="visit-billing-ledger"></div></details>':''}</details>${owner?`<details class="encounter-account-record" id="visit-billing-details" hidden><summary>Details</summary><div id="visit-billing-technical"></div><p class="muted">${coverage?esc(payerName(coverage.content.payer_id)):'No insurance on file'} · Plan copay ${coverage?.content.copay_cents==null?'not recorded':money(coverage.content.copay_cents)}</p>${typeof billingCoverageOrderMarkup==='function'?billingCoverageOrderMarkup(serviceDate,account?.content.coverage_id||coverage?.id):''}${account?'<div class="actions"><button type="button" data-bill-history>Change log for these charges</button></div><div id="bill-history"></div>':''}</details>`:''}<section id="encounter-claims" hidden></section>`;
+  // A chart opened on another page keeps its panel empty; the billing step re-opens it.
+  if(chartSection!=='visits'&&typeof visitReviewClose==='function')visitReviewClose();
+  if(account&&typeof chartSection!=='undefined'&&chartSection==='visits')showBillingAccount(account.id,false);
+
  loadEncounterRevenueStatus(account);
  if(appointment&&billingCan('create'))void loadHostedCopays(appointment.id);
  if(typeof resumeEncounterChargeDraft==='function')resumeEncounterChargeDraft();
@@ -302,7 +316,14 @@ function openEncounterCharges(){
  if(typeof activeVisit==='undefined'||!activeVisit){showChartSection('visits');notice('Select or start the visit before entering its procedures.',true);return;}
  if(typeof setEncounterSection==='function')setEncounterSection('charges');else showChartSection('visits');
  if(!$('encounter-billing-editor'))renderEncounterRevenue();
- const account=encounterChargeAccount();if(account){billingSelected=account.id;showBillingAccount(account.id,false);if(account.status==='draft')accountEditor(account,null,true);}else accountEditor(null,null,true);
+ const account=encounterChargeAccount();
+ // Charges for a visit are worked on in one live table: rows, not a form with a save button.
+ if(typeof chargeTableAllowed==='function'&&!(account&&account.status==='draft'&&chargeTableAllowed(account))){
+  if(account){billingSelected=account.id;showBillingAccount(account.id,false);if(account.status==='draft'&&typeof chargeTableFinishedMarkup==='function')openBillingEditor(chargeTableFinishedMarkup(account));return;}
+  if(typeof chargeTableAllowed==='function'&&!chargeTableAllowed(null)){notice('This visit cannot take charges here yet.',true);return;}
+  accountEditor(null,null,true);return;
+ }
+ if(account){billingSelected=account.id;showBillingAccount(account.id,false);if(account.status==='draft')accountEditor(account,null,true);}else accountEditor(null,null,true);
 }
 function openCopayReceiptEditor(appointmentId){
  if(appointmentId)insuranceAppointmentSelection.set(selected,appointmentId);

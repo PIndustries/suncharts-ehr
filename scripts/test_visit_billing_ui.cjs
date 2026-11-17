@@ -11,10 +11,17 @@ const appointment={id:'appointment',starts_at:'2026-11-12T15:00:00Z',timezone:'A
 const account={id:'account',version:2,status:'posted',patient_id:'patient',total_cents:28000,coverage_snapshot:{payer:{content:{name:'Synthetic Medicare PPO',payer_code:'SYN'}},coverage:{content:{member_id:'SYN-MEMBER',verification:'manually_verified'}}},content:{visit_id:'visit',service_date:'2026-11-12',coverage_id:'coverage',lines:[],notes:''}};
 const sent=[];let reply=()=>visitSummary();
 const ctx={console,Date,Intl,URL,Map,Set,Array,Math,Number,String,JSON,encodeURIComponent,crypto:{randomUUID:()=>'request'},setTimeout:()=>0,clearTimeout(){},document:{addEventListener:(name,fn)=>(handlers[name]??=[]).push(fn),createElement:()=>({setAttribute(){}})},$:node,me:{role:'front_desk'},selected:'patient',billingSelected:null,chartSection:'visits',encounterSection:'charges',activeVisit:{id:'visit',appointment_id:'appointment',status:'signed',version:3},workspace:{patient:{id:'patient'},demographics:{patient_id:'patient',content:{}},appointments:[appointment],visits:[{id:'visit',appointment_id:'appointment'}],billing:{accounts:[account],coverages:[],entries:[],copays:[]}},esc,human:v=>String(v).replaceAll('_',' '),date:v=>v,money:v=>`$${(v/100).toFixed(2)}`,dollars:v=>(v/100).toFixed(2),cents:v=>Math.round(Number(v)*100),payerName:()=>'Synthetic Medicare PPO',billingCan:()=>true,showChartSection(){},setEncounterSection(){},notice:message=>ctx.noticed=message,run:fn=>ctx.pending=Promise.resolve().then(fn),openBillingEditor:html=>{ctx.editor=html;},patientInvoiceDocument:()=>'<html>statement</html>',showBillingAccount(){},showEncounterClaim:async(id,accountId)=>{ctx.openedClaim=[id,accountId];},claimEditor:(snapshot,claim)=>{ctx.editedClaim=claim.id;},api:async(url,method='GET',body)=>{sent.push([url,method,body]);return reply(url,method,body);}};
-vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/visit-billing.js','utf8'),ctx);vm.runInContext(fs.readFileSync('web/patient-revenue.js','utf8'),ctx);
+vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/visit-billing.js','utf8'),ctx);vm.runInContext(fs.readFileSync('web/patient-revenue.js','utf8'),ctx);vm.runInContext(fs.readFileSync('web/visit-review.js','utf8'),ctx);
 ctx.loadHostedCopays=()=>{};
 const all={canCreate:true,canWrite:true,claimsAllowed:true};let b0;
-const card=(summary,context=all)=>ctx.visitBillingCardMarkup(summary,context);
+ctx.globalThis=ctx;ctx.__DIAG=[];
+const card=(summary,context=all)=>{
+ // The billing step holds one live state object; opening a visit's charges draws its card from
+ // it. That is what the card's main button asks about, so the step is simulated here.
+ if(!ctx.billingStep)ctx.billingStep=vm.runInContext('encounterRevenueState',ctx);
+ Object.assign(ctx.billingStep,{data:{summary},reviewCard:summary});
+ return ctx.visitBillingCardMarkup(summary,context);
+};
 const primaries=html=>[...html.matchAll(/<button type="button" class="primary" ([^>]*)>([^<]*)</g)].map(match=>match[2]);
 const click=dataset=>{const button={dataset,disabled:false,hasAttribute:name=>name.replace(/^data-/,'').replace(/-([a-z])/g,(_,c)=>c.toUpperCase()) in dataset,closest:()=>null};for(const handler of handlers.click)handler({target:{closest:selector=>selector==='button'?button:null},preventDefault(){}});return button;};
 const settle=async()=>{for(let i=0;i<6;i++)await new Promise(resolve=>setImmediate(resolve));};
@@ -29,8 +36,8 @@ const states=[
   [visitSummary({state:'post_charges',account:{status:'draft'},balance_cents:null,claim:null,insurance:{status:'not_billed',pending_cents:0}}),'Post charges','Post charges','data-visit-post-charges="account"',/claim to Synthetic Medicare PPO is prepared for you next/],
  [selfPay(),'Self-pay: collect payment','Collect payment','data-visit-collect',/Patient owes \$280\.00\. Waiting for the patient/],
  [visitSummary({state:'claim_cancelled',claim:null}),'The claim to Synthetic Medicare PPO was cancelled','Prepare a new claim','data-visit-claim-prepare="again"',/Nothing is with the insurer/],
- [visitSummary({state:'fix_claim',claim:{issues:[{code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'},{code:'npi',missing:'provider NPI',detail:'x'}]}}),'Claim to Synthetic Medicare PPO needs details','Fix claim details','data-visit-claim-fix="claim"',/Practice billing setup:<\/b> billing organization tax ID, provider NPI/],
- [visitSummary(),'Claim ready to send to Synthetic Medicare PPO','Review and send claim','data-visit-claim-send="claim"',/Nothing has been sent yet\./],
+ [visitSummary({state:'fix_claim',claim:{issues:[{code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'},{code:'npi',missing:'provider NPI',detail:'x'}]}}),'Claim to Synthetic Medicare PPO needs details','Review and send to Claim.MD','data-visit-review-open="account"',/Practice billing setup:<\/b> billing organization tax ID, provider NPI/],
+ [visitSummary(),'Claim ready to send to Synthetic Medicare PPO','Review and send to Claim.MD','data-visit-review-open="account"',/Nothing has been sent yet\./],
  [visitSummary({state:'waiting_insurer',waiting_on:'insurer',insurance:{status:'waiting',sent_on:'2026-11-12'},claim:{status:'submitted',sent_on:'2026-11-12'}}),'Waiting on Synthetic Medicare PPO','Check claim status','data-revenue-claim="claim"',/Claim sent Nov 12, 2026\. Nothing to do until they answer/],
  [visitSummary({state:'post_response',insurance:{status:'waiting'},claim:{status:'submitted',response_to_review:'era-1'}}),'Synthetic Medicare PPO answered','Review insurer payment','data-revenue-remittance="era-1"',/post it to this visit/],
  [visitSummary({state:'denied',insurance:{status:'denied'},claim:{status:'adjudicated'}}),'Denied by Synthetic Medicare PPO','Fix and resend claim','data-revenue-claim="claim"',/Fix the claim and send it again/],
@@ -40,8 +47,15 @@ const states=[
  [selfPay({state:'review_balance',waiting_on:'staff',insurance:{unassigned_cents:7000},patient:{owes_now_cents:0,responsibility_source:'reviewed_statement'},balance_cents:7000}),'$70.00 is not on the patient’s statement','Write off or adjust','data-new-ledger',/Write the rest off or adjust it/],
  [selfPay({state:'patient_credit',waiting_on:'staff',patient:{owes_now_cents:0,unapplied_cents:2000,credit_cents:2000},balance_cents:0}),'Patient has a $20.00 credit','Review payments','data-visit-history="payments"',/Refund the credit or keep it/],
 ];
-for(const [summary,headline,label,attribute,detail] of states){
- const html=card(summary);
+// The card offers the review button only for the visit whose billing state the screen is on:
+// each state below is put on screen in turn, exactly as opening that visit would.
+// Opening each visit's billing step in turn, so a card is asked only what it would be asked
+// on screen: the card of the visit whose summary the step is holding.
+ctx.setRevenueSummary=summary=>{ctx.shown=summary;return summary;};
+for(const entry of states)entry[5]=ctx.setRevenueSummary(entry[0]);
+
+for(const [summary,headline,label,attribute,detail,shown] of states){
+ const html=card(shown);
  assert.ok(html.includes(`<p class="visit-billing-headline">${esc(headline)}</p>`),`${summary.state}: ${html.slice(0,400)}`);
  assert.deepEqual(primaries(html),[label],`${summary.state} has one primary action`);
  assert.ok(html.includes(`class="primary" ${attribute}>`),`${summary.state} action target`);
@@ -117,7 +131,9 @@ assert.match(technical,/<dt>Charge account<\/dt><dd>e40f1da7-0000<\/dd>/);assert
 const hostile=card(visitSummary({state:'fix_claim',insurance:{insurer:'<img src=x onerror=1>'},claim:{payer_name:'<script>x</script>',id:'"><b>',issues:[{missing:'<i>tax</i>'}]},receipts:[{id:'"onclick="x',appointment_id:'a"b',amount_cents:1000,method:'cash',occurred_on:'2026-11-12'}]}));
 assert.doesNotMatch(hostile,/<img|<script|<i>tax|"onclick="x"/);assert.match(hostile,/&lt;script&gt;x&lt;\/script&gt;/);assert.match(hostile,/Claim:<\/b> &lt;i&gt;tax&lt;\/i&gt;/);
 // The claim id is hostile markup too: it stays escaped in every button and link it seeds.
-assert.match(hostile,/data-visit-claim-fix="&quot;&gt;&lt;b&gt;"/);assert.doesNotMatch(hostile,/data-visit-claim-fix=""><b>"/);
+// The card's main button hands claim fixes to the review panel, so the id travels through the
+// open-claim hook in More instead; either way it is never raw markup.
+assert.match(hostile,/data-revenue-claim="&quot;&gt;&lt;b&gt;"/);assert.doesNotMatch(hostile,/data-visit-claim-fix=""><b>"/);
 
 // Missing details are de-duplicated and split into one line per place they are fixed, each with its own button.
 const grouped=card(visitSummary({state:'fix_claim',claim:{id:'claim',issues:[
@@ -147,10 +163,12 @@ for(const line of missingLines.filter(line=>line.action))assert.equal(line.attrs
 assert.equal(missingLines.find(line=>line.group==='claim').action,'','the Claim line lists its items as text only');
 // The three setup buttons appear once each, and the card has exactly one "Fix claim details": its main action.
 for(const [action] of Object.entries(buttonWiring))assert.equal((grouped.match(new RegExp(`>${action}<\\/button>`,'g'))||[]).length,1,`${action} appears once`);
-assert.equal((grouped.match(/data-visit-claim-fix/g)||[]).length,1,'exactly one Fix claim details button when claim-group items are missing');
+assert.equal((grouped.match(/data-visit-review-open/g)||[]).length,1,'exactly one Review and send button opens the panel, where the claim itself is fixed');
+assert.equal((grouped.match(/data-visit-claim-fix/g)||[]).length,0,'the card hands claim fixes to the review panel');
 // Only practice/patient/insurance items missing: the main action is still the one Fix claim details.
 const nonClaimOnly=card(visitSummary({state:'fix_claim',claim:{id:'claim',issues:[{code:'tax_id',missing:'billing organization tax ID'},{code:'patient_address',missing:'patient address'},{code:'subscriber_name',missing:'subscriber name'}]}}));
-assert.equal((nonClaimOnly.match(/data-visit-claim-fix/g)||[]).length,1,'exactly one Fix claim details button when only practice/patient/insurance items are missing');
+assert.equal((nonClaimOnly.match(/data-visit-review-open/g)||[]).length,1,'the review panel is the one main action');
+assert.equal((nonClaimOnly.match(/data-visit-claim-fix/g)||[]).length,0,'the card hands claim fixes to the review panel');
 // Dates and vocabulary.
 assert.equal(ctx.visitBillingDate('2026-11-12'),'Nov 12, 2026');assert.equal(ctx.visitBillingDate(''),'');assert.equal(ctx.visitBillingDate('not a date'),'');
 assert.equal(ctx.visitBillingClaimState({status:'ready'}),'Send claim');assert.equal(ctx.visitBillingClaimState({status:'accepted'}),'Waiting on insurer');assert.equal(ctx.visitBillingClaimState({status:'rejected'}),'Denied: fix and resend');assert.equal(ctx.visitBillingClaimState({status:'submitted',crossover_tracking_only:true}),'Secondary insurer answered');
@@ -172,7 +190,7 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
  let host=node('encounter-revenue').innerHTML,status=node('encounter-revenue-status').innerHTML;
  assert.deepEqual(sent.map(c=>[c[0],c[1]]),[['/api/v1/patients/patient/billing/visit-summary?visit_id=visit','GET'],['/api/v1/patients/patient/billing/accounts/account/claims/prepare','POST'],['/api/v1/patients/patient/billing/visit-summary?visit_id=visit','GET']]);
  assert.equal(JSON.stringify(sent[1][2]),'{}','preparing sends no amounts and no claim details');
- assert.match(status,/Claim ready to send to Synthetic Medicare PPO/);assert.deepEqual(primaries(status),['Review and send claim']);
+ assert.match(status,/Claim ready to send to Synthetic Medicare PPO/);assert.deepEqual(primaries(status),['Review and send to Claim.MD']);
  await ctx.loadEncounterRevenueStatus(account,true);assert.equal(prepared,1,'a refresh never prepares again');
  // Layout: one card, collect hidden until asked, charges and history collapsed, details not offered to staff.
  assert.match(host,/<h2>Charges &amp; billing<\/h2><p class="muted">Nov 12, 2026 · Charges are final<\/p>/);
@@ -189,6 +207,9 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
  // Review and send opens the claim for review; Fix opens its editor. Neither sends anything.
  sent.length=0;click({visitClaimSend:'claim'});await ctx.pending;assert.deepEqual(ctx.openedClaim,['claim','account']);assert.equal(sent.length,0);
  ctx.claimCurrent={id:'claim',status:'draft',snapshot:{account}};click({visitClaimFix:'claim'});await ctx.pending;assert.equal(ctx.editedClaim,'claim');assert.equal(sent.length,0);
+  // The card's one main button opens the review panel beside the charge table; it sends nothing.
+  click({visitReviewOpen:'account'});assert.equal(node('visit-billing-review').hidden,false);assert.match(node('visit-billing-review').innerHTML,/Check before it goes out/);assert.equal(sent.length,0,'opening the review sends nothing');
+  click({visitReviewClose:''});assert.equal(node('visit-billing-review').hidden,true,'the review closes again');
  // Each "missing details" button opens its own place. The card emits the hook; the app's global
  // handlers do the opening. Prove the handler exists, then that a card click reaches it.
  const appSource=fs.readFileSync('web/app.js','utf8'),practiceBillingSource=fs.readFileSync('web/practice-billing.js','utf8');

@@ -22,10 +22,13 @@ vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/billing.js','utf8'),c
  const html=nodes['billing-editor'].innerHTML,details=html.slice(html.indexOf('<details data-visit-charge-options>')),feeHtml=details.slice(details.indexOf('data-fee-context'),details.indexOf('name="notes"'));
  await new Promise(setImmediate);
  assert.match(html,/<h3>Charges for this visit<\/h3>/);assert.doesNotMatch(html,/Record encounter procedures/);
- assert.match(html,/>Save charges</);assert.doesNotMatch(html,/Save draft account/);
+ assert.doesNotMatch(html,/>Save charges<|Save draft account/,'the charge table saves itself; nothing is pressed');
+ assert.doesNotMatch(html,/name="code_system"|Reason \/ source review/,'no code system box and no reason box are shown for a visit charge');
+ assert.match(html,/data-charge-status role="status"/,'a quiet status line sits beside the table');
  assert.doesNotMatch(html,/Enter the total for each line\.|Tick the diagnoses that support each procedure\.|Record each service once/,'the charge editor shows no duplicate or long claims wording');
  assert.doesNotMatch(html,/Line totals are the complete charge|Search installed procedure catalogs|Catalog selection does not determine fees/);
  assert.doesNotMatch(html,/Choose the saved encounter diagnoses/);
+ assert.match(html,/>Amount</);assert.match(html,/>Diagnoses for this service</);assert.match(html,/>Use practice price</);assert.match(html,/<summary>Code list this came from<\/summary>/);
  assert.match(details,/Insurance on Nov 13, 2026/,'coverage heading uses the friendly date');assert.doesNotMatch(html,/Insurance for 2026-11-13|Insurance for 2026<\/h4>/);
  assert.match(feeHtml,/Choose where the visit took place\./,'the visit-place note is shown above the facility and setting choices');assert.doesNotMatch(feeHtml,/Provider comes from the selected encounter|owner-approved schedule can supply fees/);
  assert.doesNotMatch(html,/Fees require an approved schedule|Manual amounts remain available/,'no jargon fee wording is shown in the charge editor');
@@ -41,5 +44,5 @@ vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/billing.js','utf8'),c
  assert.doesNotMatch(diagnosisHost.innerHTML,/A new line starts with this visit's diagnoses|copied from the visit as saved now/);
  assert.match(diagnosisHost.innerHTML,/data-charge-diagnosis="G24.3"  checked/,'behaviour of the default tick is unchanged');
  assert.equal(diagnosisField.value,'G24.3','the visit diagnosis is still offered on the new line');
- console.log('PASS plain-language charge editor: friendly heading, save label, single line-total note, dated insurance heading and simple fee-context wording');
+ console.log('PASS plain-language charge table: friendly heading, no save button, no code-system or reason box, plain fee and diagnosis wording, dated insurance heading');
 })().catch(error=>{console.error(error);process.exitCode=1;});
