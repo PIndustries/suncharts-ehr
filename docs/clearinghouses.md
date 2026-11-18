@@ -173,6 +173,15 @@ copay from this evidence as the expected copay, always named as coming from the
 insurer's check; see [billing](billing.md#copay-charges-insurance-claim-and-patient-statement).
 The response format follows the [official Claim.MD API](https://api.claim.md/).
 
+The account activity screens refresh Claim.MD's note feed by position. An account
+with no notes answers without a usable `LastNoteID` — the field is absent, `null`
+or blank — and a per-claim note lookup has no feed position at all. Each of those
+shapes means "no notes yet": the saved position is kept, the refresh succeeds, and
+staff see the empty list rather than an error. A position written as text is
+accepted when it is a plain number, as Claim.MD documents; anything the engine
+cannot read at all is reported in general terms in the server log, never on the
+screen, and the notes and changes that did arrive are still stored and shown.
+
 
 Example SFTP route; use `office_ally_sftp` or `availity_sftp` as appropriate:
 
