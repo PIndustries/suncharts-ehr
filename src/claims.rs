@@ -13,6 +13,7 @@ use axum::{
     extract::{DefaultBodyLimit, Path, Query, State as ExtractState},
     http::{header, HeaderMap},
     response::Html,
+    response::IntoResponse,
     routing::{get, post, put},
     Json, Router,
 };
@@ -157,6 +158,11 @@ pub(crate) struct Remittance {
     pub(crate) version: i64,
     pub(crate) matches: Value,
     pub(crate) source_history_id: Option<Uuid>,
+    /// What the automatic posting attempt told the person who brought the
+    /// payment in. Carried in memory only, never read from or written to a row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[sqlx(default, ignore)]
+    pub(crate) note: Option<String>,
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -271,7 +277,8 @@ pub(crate) async fn remit_revision(
     reason: &str,
 ) -> Result<Remittance> {
     let r = remit_row(tx, a, id).await?;
-    sqlx::query("INSERT INTO era_revisions (tenant_id,remittance_id,version,snapshot,actor_id,reason) VALUES ($1,$2,$3,$4,$5,$6)").bind(a.tenant_id).bind(id).bind(r.version).bind(json!({"status":r.status,"matches":r.matches,"document_hash":r.document_hash})).bind(a.sub).bind(reason).execute(&mut **tx).await?;
+    let snapshot = json!({"status":r.status,"matches":r.matches,"document_hash":r.document_hash});
+    sqlx::query("INSERT INTO era_revisions (tenant_id,remittance_id,version,snapshot,actor_id,reason) VALUES ($1,$2,$3,$4,$5,$6)").bind(a.tenant_id).bind(id).bind(r.version).bind(snapshot).bind(a.sub).bind(reason).execute(&mut **tx).await?;
     crate::postgres::audit(tx, a, "remittance.change", id).await?;
     Ok(r)
 }
@@ -468,6 +475,33 @@ pub(crate) fn preflight(c: &Claim) -> Result<Vec<String>> {
     }
     Ok(issues)
 }
+/// Audit reason on every row, ledger entry and revision an automatic posting
+/// writes, and the marker the screens show a payment on.
+pub const AUTO_POST_REASON: &str = "Posted automatically from the insurance payment";
+/// True when the payment's posting was recorded by the automatic path. Checked
+/// against the posting revision's attributed reason, never a flag that could
+/// drift from the ledger.
+pub const AUTO_POSTED_EXISTS: &str =
+    "SELECT EXISTS(SELECT 1 FROM era_revisions WHERE tenant_id=$1 AND remittance_id=$2 AND reason=$3)";
+/// Who brought a payment in. Automatic posting is a staff-facing behaviour: it
+/// is what happens when a person in the practice brings a payment in, and the
+/// practice owner can turn it off. The retrieval worker is not that person, so
+/// a payment it retrieves is staged for review exactly as before.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ImportOrigin {
+    Manual,
+    Worker,
+}
+pub(crate) fn import_origin(h: &HeaderMap) -> ImportOrigin {
+    if h.get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| !v.trim().is_empty())
+    {
+        ImportOrigin::Manual
+    } else {
+        ImportOrigin::Worker
+    }
+}
 pub fn router() -> Router<State> {
     Router::new()
         .route("/api/v1/billing/claims", get(claims))
@@ -514,6 +548,10 @@ pub fn router() -> Router<State> {
         .route(
             "/api/v1/billing/claims/status-counts",
             get(claim_status_counts),
+        )
+        .route(
+            "/api/v1/practice/era-posting-settings",
+            get(era_posting_settings).put(save_era_posting_settings),
         )
 }
 async fn claims(
@@ -1462,7 +1500,7 @@ async fn remittances(
 ) -> Result<Json<Value>> {
     a.staff()?;
     let mut tx = db(&s)?.begin().await?;
-    let mut rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',r.id,'payer_id',r.payer_id,'payer_name',p.content->>'name','trace',r.trace,'status',r.status,'version',r.version,'payment_date',r.document->>'payment_date','total_paid_cents',r.document->'total_paid_cents','claim_count',jsonb_array_length(r.document->'claims')) FROM era_remittances r JOIN ehr_payers p ON p.tenant_id=r.tenant_id AND p.id=r.payer_id WHERE r.tenant_id=$1 AND ($2::uuid IS NULL OR r.id>$2) ORDER BY r.id LIMIT 101").bind(a.tenant_id).bind(q.after).fetch_all(&mut *tx).await?;
+    let mut rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',r.id,'payer_id',r.payer_id,'payer_name',p.content->>'name','trace',r.trace,'status',r.status,'version',r.version,'payment_date',r.document->>'payment_date','total_paid_cents',r.document->'total_paid_cents','claim_count',jsonb_array_length(r.document->'claims'),'auto_posted',EXISTS(SELECT 1 FROM era_revisions x WHERE x.tenant_id=r.tenant_id AND x.remittance_id=r.id AND x.reason=$3)) FROM era_remittances r JOIN ehr_payers p ON p.tenant_id=r.tenant_id AND p.id=r.payer_id WHERE r.tenant_id=$1 AND ($2::uuid IS NULL OR r.id>$2) ORDER BY r.id LIMIT 101").bind(a.tenant_id).bind(q.after).bind(AUTO_POST_REASON).fetch_all(&mut *tx).await?;
     let next = if rows.len() > 100 {
         rows.truncate(100);
         rows.last().map(|r| r["id"].clone())
@@ -1476,10 +1514,12 @@ async fn remittances(
 async fn import_remittance(
     a: Actor,
     ExtractState(s): ExtractState<State>,
+    h: HeaderMap,
     Json(v): Json<Import>,
-) -> Result<Json<Remittance>> {
+) -> Result<axum::response::Response> {
     a.scheduling()?;
     text(&v.reason, 1000)?;
+    let origin = import_origin(&h);
     let digest = hash(&v)?;
     let document = match (v.format.as_str(), &v.document, &v.original_text) {
         ("normalized", Some(d), None) => d.clone(),
@@ -1506,7 +1546,13 @@ async fn import_remittance(
                 "remittance request ID reused with changed evidence",
             ));
         }
-        return Ok(Json(remit_row(&mut tx, &a, id).await?));
+        // A repeat of this exact import returns the payment as it stands, with
+        // the same answer the first import gave. Nothing is posted twice.
+        let mut r = remit_row(&mut tx, &a, id).await?;
+        if origin == ImportOrigin::Manual {
+            r.note = Some(replay_note(&mut tx, &a, id).await?);
+        }
+        return Ok(reply(json!(r)));
     }
     let exists: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM ehr_payers WHERE tenant_id=$1 AND id=$2)")
@@ -1544,12 +1590,431 @@ async fn import_remittance(
     crate::era_batches::check_receipt(&mut tx, &a, v.payer_id, &document.trace).await?;
     let id = Uuid::new_v4();
     sqlx::query("INSERT INTO era_remittances (tenant_id,id,payer_id,trace,document,original_text,document_hash,request_id,creation_hash,source_history_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)").bind(a.tenant_id).bind(id).bind(v.payer_id).bind(&document.trace).bind(json!(document)).bind(&v.original_text).bind(hash(&document)?).bind(v.request_id).bind(digest).bind(v.source_history_id).execute(&mut *tx).await?;
-    let r = remit_revision(&mut tx, &a, id, &v.reason).await?;
+    remit_revision(&mut tx, &a, id, &v.reason).await?;
     if let Some(report) = v.remote_report_id {
         crate::retrieval::link(&mut tx, &a, report, "remittance", id, &v.reason).await?;
     }
+    let note = match origin {
+        ImportOrigin::Manual => {
+            let outcome = auto_post(&mut tx, &a, id).await;
+            match &outcome {
+                Ok(issues) if issues.is_empty() => auto_post_note(Ok(vec![])),
+                // Why the payment is still waiting is recorded in its own
+                // history, so the review screen can show it after the import.
+                Ok(issues) => auto_post_note(Ok(issues.clone())),
+                // An unexpected failure is not a review question. The payment
+                // is already staged durably, so the import succeeds quietly and
+                // staff meet it on the review list as they always did.
+                Err(_) => String::new(),
+            }
+        }
+        // A payment arriving through the retrieval worker stays staged for
+        // review on its own path, exactly as before.
+        ImportOrigin::Worker => String::new(),
+    };
+    // The work above can post the payment, so the answer carries the payment
+    // as it now stands, not as it was staged.
+    let mut r = remit_row(&mut tx, &a, id).await?;
+    r.matches =
+        sqlx::query_scalar("SELECT matches FROM era_remittances WHERE tenant_id=$1 AND id=$2")
+            .bind(a.tenant_id)
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+    r.note = (!note.is_empty()).then_some(note);
     tx.commit().await?;
-    Ok(Json(r))
+    Ok(reply(json!(r)))
+}
+fn reply(v: Value) -> axum::response::Response {
+    ([(header::ETAG, format!("\"{}\"", v["version"]))], Json(v)).into_response()
+}
+/// The answer a repeated manual import gives: the same sentence the first
+/// import gave. A payment that posted automatically says so; one that is still
+/// waiting says what is being checked, exactly as the first import did.
+async fn replay_note(tx: &mut Transaction<'_, Postgres>, a: &Actor, id: Uuid) -> Result<String> {
+    let posted: bool = sqlx::query_scalar(AUTO_POSTED_EXISTS)
+        .bind(a.tenant_id)
+        .bind(id)
+        .bind(AUTO_POST_REASON)
+        .fetch_one(&mut **tx)
+        .await?;
+    if posted {
+        return Ok(format!("Payment posted automatically. {AUTO_POST_REASON}."));
+    }
+    let r = remit_row(tx, a, id).await?;
+    let matches: Vec<Match> = serde_json::from_value(r.matches.clone())
+        .map_err(|_| Error::Invalid("invalid stored matches"))?;
+    Ok(auto_post_note(Ok(review(tx, a, &r, &matches).await?)))
+}
+/// What the automatic post attempt tells the person who brought the payment in.
+pub(crate) fn auto_post_note(outcome: Result<Vec<String>>) -> String {
+    match outcome {
+        Ok(issues) if issues.is_empty() => {
+            format!("Payment posted automatically. {AUTO_POST_REASON}.")
+        }
+        Ok(issues) => format!(
+            "The payment is waiting for you to review. {}",
+            issues.join("; ")
+        ),
+        Err(e) => format!(
+            "The payment is waiting for you to review. Automatic posting was skipped: {}.",
+            error_text(&e)
+        ),
+    }
+}
+/// Only a note written by the automatic check is shown when there is otherwise
+/// nothing to fix; it explains the wait and must never block a person from
+/// posting.
+fn is_placeholder_issue(issue: &str) -> bool {
+    issue.starts_with("Every remittance claim must be explicitly matched")
+}
+fn review_issues_empty(issues: &[String]) -> bool {
+    issues.iter().all(|issue| {
+        is_placeholder_issue(issue)
+            || issue.starts_with("The payment is waiting for you to review. Automatic")
+    })
+}
+/// Staff-facing words for an error. Only the variants that carry a message of
+/// their own add detail; the rest stay generic so an internal description or a
+/// database string never reaches a clinic screen.
+fn error_text(e: &Error) -> &'static str {
+    match e {
+        Error::Invalid(m) | Error::Conflict(m) => m,
+        _ => "the payment could not be checked automatically",
+    }
+}
+/// Called under the tenant billing lock, after the staged original is durable
+/// and its revision recorded. A payment whose every row matches exactly one of
+/// our claims by claim and patient control number, whose paid plus adjustment
+/// amounts reconcile to what was billed on the frozen account, and whose claim
+/// and account are still exactly as staged, posts through the same code path
+/// and ledger entries as the manual Post button. Anything that does not match
+/// cleanly stays unposted for review exactly as before, so an automatic attempt
+/// can never block staff.
+pub(crate) async fn auto_post(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    id: Uuid,
+) -> Result<Vec<String>> {
+    if !auto_post_enabled(tx, a.tenant_id).await? {
+        return Ok(vec![
+            "Automatic posting of insurance payments is turned off for this practice".into(),
+        ]);
+    }
+    let r = remit_row(tx, a, id).await?;
+    if r.status != "staged" {
+        return Ok(vec!["The payment is no longer waiting to be matched".into()]);
+    }
+    let doc: Document = serde_json::from_value(r.document.clone())
+        .map_err(|_| Error::Invalid("invalid stored remittance"))?;
+    if !doc.provider_adjustments.is_empty() {
+        return Ok(vec![
+            "The payment contains provider adjustments, which a person reviews first".into(),
+        ]);
+    }
+    if doc.claims.is_empty() {
+        return Ok(vec!["The payment has no claim lines".into()]);
+    }
+    let mut issues = vec![];
+    let mut matches = vec![];
+    let mut candidates = std::collections::HashSet::new();
+    let mut accounts = std::collections::HashSet::new();
+    for (index, row) in doc.claims.iter().enumerate() {
+        let row_number = index + 1;
+        if row.status == "22" {
+            issues.push(format!(
+                "Row {row_number} is a reversal from the payer, which a person reviews first"
+            ));
+            continue;
+        }
+        let found: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM ehr_claims WHERE tenant_id=$1 AND payer_id=$2 AND (control_number=$3 OR (content->>'external_control_number'=$3 AND content->>'external_control_number'<>'')) ORDER BY id LIMIT 2",
+        )
+        .bind(a.tenant_id)
+        .bind(r.payer_id)
+        .bind(&row.control_number)
+        .fetch_all(&mut **tx)
+        .await?;
+        if found.len() != 1 {
+            issues.push(format!(
+                "Row {row_number}: the claim number on the payment does not match exactly one of our claims"
+            ));
+            continue;
+        }
+        let c = claim_row(tx, a, found[0]).await?;
+        let b = account(tx, a, c.account_id, Some(c.patient_id)).await?;
+        if !candidates.insert(c.id) {
+            issues.push(format!(
+                "Row {row_number}: the same claim appears on more than one payment line"
+            ));
+            continue;
+        }
+        if !accounts.insert(b.id) {
+            issues.push(format!(
+                "Row {row_number}: two payment lines belong to the same charges"
+            ));
+            continue;
+        }
+        let content: ClaimContent = serde_json::from_value(c.content.clone())
+            .map_err(|_| Error::Invalid("invalid stored claim"))?;
+        if row.control_number != c.control_number
+            && (content.external_control_number.is_empty()
+                || row.control_number != content.external_control_number)
+        {
+            issues.push(format!(
+                "Row {row_number}: the patient control number on the payment does not match the claim"
+            ));
+            continue;
+        }
+        let coordination = crate::claim_cob::evidence(&c)?;
+        // A claim billed behind another insurer's payment carries credits that
+        // are already on the account, so its line needs a person's eye.
+        if coordination.is_some() {
+            issues.push(format!(
+                "Row {row_number}: this claim is handled with another insurer's payment, so a person reviews it first"
+            ));
+            continue;
+        }
+        // Only an unposted claim that is still exactly as staged. A claim that
+        // already carries a payer control number has already been answered by
+        // the payer once, so a second posting for it needs a person.
+        if c.payer_id != r.payer_id
+            || !["submitted", "accepted"].contains(&c.status.as_str())
+            || c.frequency == "void_request"
+            || !c.payer_control_number.is_empty()
+            || b.status != "posted"
+        {
+            issues.push(format!(
+                "Row {row_number}: this claim is already answered, reversed or no longer current"
+            ));
+            continue;
+        }
+        if row.charged_cents != b.total_cents {
+            issues.push(format!(
+                "Row {row_number}: the amount billed on the payment differs from the charges on the claim"
+            ));
+            continue;
+        }
+        // Paid plus every adjustment must equal the billed amount, line by
+        // line. PR carries the patient's share inside that total and is never
+        // posted as money; anything left over after the payer's payment and its
+        // credits is a contractual amount a person must tick before it can be
+        // written off.
+        let adjustments: i64 = row.adjustments.iter().map(|v| v.amount_cents).sum();
+        let supported = row
+            .adjustments
+            .iter()
+            .all(|v| matches!(v.group.as_str(), "CO" | "PR"));
+        if !supported || row.adjustments.iter().any(|v| v.amount_cents < 0) {
+            issues.push(format!(
+                "Row {row_number}: the payment carries an adjustment type that a person reviews first"
+            ));
+            continue;
+        }
+        let remaining = match row
+            .charged_cents
+            .checked_sub(row.paid_cents)
+            .and_then(|v| v.checked_sub(adjustments))
+        {
+            Some(v) => v,
+            None => {
+                issues.push(format!(
+                    "Row {row_number}: the amounts on the payment cannot be worked out"
+                ));
+                continue;
+            }
+        };
+        if remaining < 0 {
+            issues.push(format!(
+                "Row {row_number}: the payment and adjustments are more than the amount billed"
+            ));
+            continue;
+        }
+        if remaining > 0 {
+            issues.push(format!(
+                "Row {row_number}: ${}.{:02} is left over after the payment and the credits the payer lists, so the contractual amount needs a person's review",
+                remaining / 100,
+                remaining.abs() % 100
+            ));
+            continue;
+        }
+        let writeoff_adjustments: Vec<usize> = row
+            .adjustments
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.group == "CO")
+            .map(|(i, _)| i)
+            .collect();
+        matches.push(Match {
+            row_index: index,
+            claim_id: c.id,
+            claim_version: c.version,
+            account_version: b.version,
+            writeoff_adjustments,
+            reverses_remittance_id: None,
+            reverses_row_index: None,
+            correction_of_remittance_id: None,
+            correction_of_row_index: None,
+        });
+    }
+    if !issues.is_empty() {
+        return Ok(issues);
+    }
+    // Every row matched. Save the matches first, exactly as a person does, so
+    // the reviewed evidence and the versions it was checked against are on the
+    // record whatever the next check decides.
+    sqlx::query("UPDATE era_remittances SET matches=$3,status='reconciled',version=version+1 WHERE tenant_id=$1 AND id=$2")
+        .bind(a.tenant_id)
+        .bind(id)
+        .bind(json!(matches))
+        .execute(&mut **tx)
+        .await?;
+    let r = remit_revision(tx, a, id, AUTO_POST_REASON).await?;
+    let checked = review(tx, a, &r, &matches).await?;
+    if !checked.is_empty() {
+        return Ok(checked);
+    }
+    if !crate::era_chains::plan(
+        tx,
+        a,
+        &r,
+        &matches,
+        &mut Default::default(),
+        AUTO_POST_REASON,
+    )
+    .await?
+    .is_empty()
+    {
+        return Ok(vec![
+            "The claim or balance changed while the payment was being checked, so it is waiting for review".into(),
+        ]);
+    }
+    crate::settlements::post_entries(tx, a, &r, &doc, AUTO_POST_REASON).await?;
+    sqlx::query(
+        "UPDATE era_remittances SET status='posted',version=version+1 WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    // The last revision is what makes the payment recognisable as automatic,
+    // both on screen and in the history, and the reason on the ledger entries
+    // and claim revisions is the same wording.
+    remit_revision(tx, a, id, AUTO_POST_REASON).await?;
+    Ok(vec![])
+}
+/// Insurance payments only. A patient payment is recorded by a person and is
+/// never moved by this setting.
+pub(crate) async fn auto_post_enabled(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+) -> Result<bool> {
+    Ok(
+        sqlx::query_scalar(
+            "SELECT auto_post FROM practice_era_posting_settings WHERE tenant_id=$1",
+        )
+        .bind(tenant)
+        .fetch_optional(&mut **tx)
+        .await?
+        .unwrap_or(true),
+    )
+}
+async fn era_posting_settings(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+) -> Result<Json<Value>> {
+    a.staff()?;
+    let mut tx = db(&s)?.begin().await?;
+    let saved: Option<(bool, i64, Uuid, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT auto_post,version,updated_by,updated_at FROM practice_era_posting_settings WHERE tenant_id=$1",
+    )
+    .bind(a.tenant_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let items: Vec<Value> = sqlx::query_scalar(
+        "SELECT jsonb_build_object('version',version,'actor_id',actor_id,'reason',reason,'auto_post',auto_post,'created_at',created_at) FROM practice_era_posting_setting_history WHERE tenant_id=$1 ORDER BY version DESC LIMIT 50",
+    )
+    .bind(a.tenant_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    crate::postgres::audit(
+        &mut tx,
+        &a,
+        "practice.era_posting_settings.read",
+        a.tenant_id,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(json!({
+        "auto_post": saved.as_ref().map(|v| v.0).unwrap_or(true),
+        "version": saved.as_ref().map(|v| v.1).unwrap_or(0),
+        "updated_by": saved.as_ref().map(|v| json!(v.2)).unwrap_or(Value::Null),
+        "updated_at": saved.as_ref().map(|v| json!(v.3)).unwrap_or(Value::Null),
+        "items": items,
+        "default": true,
+    })))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EraPostingSettingChange {
+    auto_post: bool,
+    reason: String,
+}
+async fn save_era_posting_settings(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    h: HeaderMap,
+    Json(v): Json<EraPostingSettingChange>,
+) -> Result<Json<Value>> {
+    if !matches!(a.role, crate::auth::Role::Owner) {
+        return Err(Error::Forbidden);
+    }
+    text(&v.reason, 1000)?;
+    // The row does not exist until the first save, so version 0 is a valid
+    // expectation here and means "nothing has been saved yet".
+    let expected = crate::expected_from_zero(&h)?;
+    let mut tx = db(&s)?.begin().await?;
+    billing::tenant_lock(&mut tx, &a).await?;
+    let current: Option<i64> = sqlx::query_scalar(
+        "SELECT version FROM practice_era_posting_settings WHERE tenant_id=$1 FOR UPDATE",
+    )
+    .bind(a.tenant_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if current.unwrap_or(0) != expected {
+        return Err(Error::Conflict(
+            "this setting changed; reload the page before saving",
+        ));
+    }
+    let next = expected + 1;
+    sqlx::query(
+        "INSERT INTO practice_era_posting_settings (tenant_id,auto_post,version,updated_by) VALUES ($1,$2,$3,$4) ON CONFLICT(tenant_id) DO UPDATE SET auto_post=$2,version=$3,updated_by=$4,updated_at=now()",
+    )
+    .bind(a.tenant_id)
+    .bind(v.auto_post)
+    .bind(next)
+    .bind(a.sub)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO practice_era_posting_setting_history (tenant_id,version,actor_id,reason,auto_post) VALUES ($1,$2,$3,$4,$5)",
+    )
+    .bind(a.tenant_id)
+    .bind(next)
+    .bind(a.sub)
+    .bind(v.reason.trim())
+    .bind(v.auto_post)
+    .execute(&mut *tx)
+    .await?;
+    crate::postgres::audit(
+        &mut tx,
+        &a,
+        "practice.era_posting_settings.write",
+        a.tenant_id,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(json!({"auto_post":v.auto_post,"version":next})))
 }
 async fn review(
     tx: &mut Transaction<'_, Postgres>,
@@ -1717,11 +2182,33 @@ async fn remit_detail(
     let r = remit_row(&mut tx, &a, id).await?;
     let matches: Vec<Match> = serde_json::from_value(r.matches.clone())
         .map_err(|_| Error::Invalid("invalid stored matches"))?;
-    let issues = if ["posted", "reversed", "rejected"].contains(&r.status.as_str()) {
+    let mut issues = if ["posted", "reversed", "rejected"].contains(&r.status.as_str()) {
         vec![]
     } else {
         review(&mut tx, &a, &r, &matches).await?
     };
+    let auto_posted: bool = sqlx::query_scalar(AUTO_POSTED_EXISTS)
+        .bind(a.tenant_id)
+        .bind(id)
+        .bind(AUTO_POST_REASON)
+        .fetch_one(&mut *tx)
+        .await?;
+    // A staged payment with nothing wrong it can be shown is usually a payment
+    // the automatic check left for a reason the row check no longer repeats,
+    // so the screen asks the same question the check asked.
+    if r.status == "staged"
+        && issues.iter().all(|issue| is_placeholder_issue(issue))
+        && !auto_posted
+    {
+        let mut probe = tx.begin().await?;
+        let why = auto_post(&mut probe, &a, id).await.unwrap_or_default();
+        probe.rollback().await?;
+        for issue in why {
+            if !issues.iter().any(|seen| seen == &issue) {
+                issues.push(issue);
+            }
+        }
+    }
     let postings:Vec<Value>=sqlx::query_scalar("SELECT to_jsonb(p)-'tenant_id' || jsonb_build_object('current_account_balance_cents',b.total_cents+coalesce(e.total,0)) FROM era_postings p JOIN billing_accounts b ON b.tenant_id=p.tenant_id AND b.id=p.account_id LEFT JOIN LATERAL (SELECT sum(effect_cents)::bigint AS total FROM billing_entries WHERE tenant_id=p.tenant_id AND account_id=p.account_id) e ON true WHERE p.tenant_id=$1 AND p.remittance_id=$2 ORDER BY p.row_index").bind(a.tenant_id).bind(id).fetch_all(&mut *tx).await?;
     let batch_id: Option<Uuid> = sqlx::query_scalar(
         "SELECT batch_id FROM era_batch_items WHERE tenant_id=$1 AND remittance_id=$2",
@@ -1734,7 +2221,7 @@ async fn remit_detail(
     crate::postgres::audit(&mut tx, &a, "remittance.read", id).await?;
     tx.commit().await?;
     Ok(Json(
-        json!({"remittance":r,"batch_id":batch_id,"automation":automation,"issues":issues,"postings":postings,"ready_to_post":batch_id.is_none()&&r.status=="reconciled"&&issues.is_empty()}),
+        json!({"remittance":r,"batch_id":batch_id,"automation":automation,"auto_posted":auto_posted,"issues":issues,"postings":postings,"ready_to_post":batch_id.is_none()&&r.status=="reconciled"&&review_issues_empty(&issues)}),
     ))
 }
 async fn match_remittance(
@@ -2005,6 +2492,16 @@ pub(crate) async fn stage_provider_era(
     .await?;
     remit_revision(tx, a, id, reason).await?;
     crate::retrieval::link_evidence(tx, a, report, "remittance", id, reason, false).await?;
+    // The rows a person has to check stay staged exactly as before: a
+    // contractual amount to tick, a claim already answered, or anything the
+    // suggestion could not place on one claim. Anything that needs no decision
+    // posts through the same check an import gets.
+    issues.extend(
+        auto_post(tx, a, id)
+            .await?
+            .into_iter()
+            .filter(|issue| !issue.starts_with("Automatic posting of insurance payments")),
+    );
     Ok((id, issues))
 }
 
