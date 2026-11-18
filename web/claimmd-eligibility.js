@@ -5,6 +5,7 @@ let claimmdProviderDefaults={providers:[],facilities:[]};
 async function loadClaimmdProviderDefaults(){const identity=me,data=await api('/api/v1/billing/claimmd/provider-defaults');if(me!==identity)throw new Error('Session changed; reload the provider directory.');claimmdProviderDefaults=data;return data;}
 const claimmdEligibilityContexts=new WeakMap();
 let claimmdEligibilityGeneration=0;
+let claimmdCoveragePayerTimer=null;
 function claimmdClaimProviderDefaults(){
  const provider=claimmdProviderDefaults.providers?.find(item=>item.id===claimmdProviderDefaults.default_provider_id)||(claimmdProviderDefaults.providers?.length===1?claimmdProviderDefaults.providers[0]:null);
  const facility=claimmdProviderDefaults.facilities?.find(item=>item.id===claimmdProviderDefaults.default_facility_id)||(claimmdProviderDefaults.facilities?.length===1?claimmdProviderDefaults.facilities[0]:null);
@@ -337,11 +338,40 @@ function claimmdPayerRows(items,selectable=false){
  return `<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Payer</th><th>ID / type</th><th>Eligibility</th><th>Professional / institutional</th><th>ERA</th>${selectable?'<th></th>':''}</tr></thead><tbody>${items.map(item=>`<tr><td><b>${esc(item.payer_name||'Unnamed payer')}</b><small>${esc(item.payer_state||'')}</small></td><td>${esc(item.payerid||'—')}<small>${esc(item.payer_type||'')}</small></td><td>${esc(item.eligibility||'no')}</td><td>${esc(item['1500_claims']||'no')} / ${esc(item.ub_claims||'no')}</td><td>${esc(item.era||'no')}</td>${selectable?`<td><button type="button" data-claimmd-payer-select="${esc(item.payerid||'')}" data-payer-name="${esc(item.payer_name||'')}">Use payer</button></td>`:''}</tr>`).join('')||`<tr><td colspan="${selectable?6:5}">No matching payers returned.</td></tr>`}</tbody></table></div>`;
 }
 
-function claimmdCoveragePayerSearch(){return `<section class="billing-section"><h4>Find payer in Claim.MD</h4><form id="coverage-claimmd-payer-search" class="billing-filter"><label>Payer name<input name="name" minlength="2" maxlength="120" required></label><button type="submit">Search</button></form><div id="coverage-claimmd-payer-results"></div></section>`;}
+function claimmdCoveragePayerSearch(){return `<section class="billing-section"><h4>Look up an insurer in the Claim.MD directory</h4><p class="muted">Type an insurer name and matches appear as you type — there is nothing to press. Choosing one that is already set up here selects it for this insurance record. Choosing one that is not fills in the box below for you to check and add.</p><label>Insurer name in the Claim.MD directory<input name="name" id="coverage-claimmd-payer-query" maxlength="120" autocomplete="off" spellcheck="false" placeholder="Start typing a name"></label><div id="coverage-claimmd-payer-results"></div></section>`;}
+// The Claim.MD directory search runs while the staff member types, through the same lookup
+// this screen already used. The typed name is only a lookup: the choice is made from the
+// table below, where a row is either matched to an insurer already on file or added.
+document.addEventListener('input',event=>{
+ const box=event.target;
+ if(!box||box.id!=='coverage-claimmd-payer-query')return;
+ const query=String(box.value||'').trim();
+ clearTimeout(claimmdCoveragePayerTimer);
+ const host=$('coverage-claimmd-payer-results');
+ // A two-letter search returns almost the whole directory, so the lookup waits for three.
+ if(query.length<3){box.removeAttribute('aria-busy');if(host&&box.dataset.claimmdQuery!=='')host.innerHTML='';box.dataset.claimmdQuery='';return;}
+ if(box.dataset.claimmdQuery===query)return;
+ box.dataset.claimmdQuery=query;
+ // Raised while the search is pending and cleared as the answer is drawn, so the box never
+ // reads as busy after the results are already in front of staff.
+ box.setAttribute('aria-busy','true');
+ claimmdCoveragePayerTimer=setTimeout(()=>{run(async()=>{
+  try{
+   const result=await api(`/api/v1/billing/claimmd/payers?${new URLSearchParams({name:query})}`);
+   if($('coverage-claimmd-payer-query')!==box||box.value.trim()!==query||$('coverage-claimmd-payer-results')!==host)return;
+   box.removeAttribute('aria-busy');
+   host.innerHTML=claimmdPayerRows(result.items,true);
+  }catch(error){
+   if($('coverage-claimmd-payer-query')!==box||box.value.trim()!==query||$('coverage-claimmd-payer-results')!==host)return;
+   box.removeAttribute('aria-busy');
+   host.innerHTML=`<p class="error">The Claim.MD directory could not be searched just now: ${esc(error.message)}. What you typed is still here.</p>`;
+  }
+ });},250);
+});
 
 document.addEventListener('click',event=>{
  const payer=event.target.closest('button[data-claimmd-payer-select]');
- if(payer){event.preventDefault();const native=(billingPayers||[]).find(item=>item.content.payer_code===payer.dataset.claimmdPayerSelect);if(native){const select=document.querySelector('#coverage-form select[name="payer_id"]');if(select){select.value=native.id;select.dispatchEvent(new Event('change',{bubbles:true}));}notice('Existing native payer selected.');return;}const form=document.querySelector('#coverage-payer-form');if(form){form.elements.name.value=payer.dataset.payerName;form.elements.payer_code.value=payer.dataset.claimmdPayerSelect;notice('Payer details copied. Review and add the payer to use it.');}return;}
+ if(payer){event.preventDefault();const native=(billingPayers||[]).find(item=>item.content.payer_code===payer.dataset.claimmdPayerSelect);if(native&&typeof coveragePayerSelected==='function'){coveragePayerSelected(native);notice('Already on file: that insurance company is chosen for this coverage.');return;}if(native){const select=document.querySelector('#coverage-form [name="payer_id"]');if(select){select.value=native.id;select.dispatchEvent(new Event('change',{bubbles:true}));}notice('Existing native payer selected.');return;}const form=document.querySelector('#coverage-payer-form');if(form){form.elements.name.value=payer.dataset.payerName;form.elements.payer_code.value=payer.dataset.claimmdPayerSelect;notice('Payer details copied. Review and add the payer to use it.');}return;}
  const target=event.target.closest('button');if(!target)return;
  const data=target.dataset||{},coverageFor=id=>{const coverage=workspace?.billing?.coverages?.find(item=>item.id===id);if(!coverage)throw new Error('This coverage is no longer available. Reload the chart.');return coverage;};
  const claim=()=>{event.preventDefault();event.stopImmediatePropagation();};

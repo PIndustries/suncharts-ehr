@@ -898,6 +898,26 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/typeahead.js",
+            get(|| async {
+                web_asset(
+                    "typeahead.js",
+                    "application/javascript",
+                    include_str!("../web/typeahead.js"),
+                )
+            }),
+        )
+        .route(
+            "/typeahead.css",
+            get(|| async {
+                web_asset(
+                    "typeahead.css",
+                    "text/css",
+                    include_str!("../web/typeahead.css"),
+                )
+            }),
+        )
+        .route(
             "/sun.css",
             get(|| async { web_asset("sun.css", "text/css", include_str!("../web/sun.css")) }),
         )

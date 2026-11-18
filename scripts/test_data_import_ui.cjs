@@ -213,10 +213,15 @@ function fixture(jobs){
  // Add as coverage: the imported insurance record pre-fills the coverage form for staff to confirm.
  const start=billing.indexOf('function importedCoverage(i){'),end=billing.indexOf('function chargeRow(');assert.ok(start>0&&end>start);
  let form='';
+ const billingPayersList=[{id:'payer-1',content:{name:'Synthetic Payer',active:true}},{id:'payer-2',content:{name:'Other Payer',active:true}}];
  const b=vm.createContext({esc,crypto:{randomUUID:()=>'request-1'},me:{role:'front_desk'},workspace:{patient:{given_name:'Avery Q',family_name:'Synthetic',birth_date:'1990-01-01'}},
-  billingPayers:[{id:'payer-1',content:{name:'Synthetic Payer',active:true}},{id:'payer-2',content:{name:'Other Payer',active:true}}],
+  billingPayers:billingPayersList,
   showChartSection(){},openBillingEditor:html=>{form=html;},$:()=>null,addEventListener(){},coveragePayerSetup:()=>'',dollars:v=>v??'',sourceNotice:()=>'<div>SOURCE NOTICE</div>',
   coveragePayerOptions:id=>`<option value="${id}" selected>payer</option>`,patientSelfPolicyHolder(){},
+  // The insurance company box is typed into, so this harness answers the picker with the
+  // directory above: a chosen id is drawn as its name, plus the hidden id the form submits.
+  typeaheadInit(){},
+  payerPickerMarkup:(name,label,opts={})=>{const rows=billingPayersList;const p=rows.find(x=>x.id===(opts.payerId||''));return `<label>${label}<input type="text" name="${name}_name" value="${p?esc(p.content.name):''}"><input type="hidden" name="${name}_id" value="${p?p.id:''}"></label>`;},
   insuranceOptionLabels:values=>values.map(v=>({primary:'Primary',secondary:'Secondary',tertiary:'Tertiary',active:'Active',inactive:'Inactive',entered_in_error:'Entered by mistake',self:'Self',spouse:'Spouse',child:'Child',other:'Other',unverified:'Not yet',manually_verified:'Yes, checked by hand'})[v]),
   selectField:(name,label,values,value)=>`<select name="${name}" data-value="${esc(value)}"></select>`,
   billingField:(name,label,value='',type='text',max=0,required=false)=>`<input name="${name}" value="${esc(value)}" ${required?'required':''}>`});
@@ -225,11 +230,11 @@ function fixture(jobs){
  vm.runInContext('coverageEditor(null,record)',Object.assign(b,{record}));
  assert.match(form,/<h3>Add coverage from previous system<\/h3>/);assert.match(form,/data-source="h9"/);
  for(const [name,value] of [['member_id','SYN-MEMBER-1'],['group_number','SYN-GROUP'],['plan_name','Synthetic PPO'],['subscriber_name','Avery Q Synthetic'],['subscriber_birth_date','1990-01-01'],['effective_date','2023-01-01']])assert.match(form,new RegExp(`name="${name}" value="${value}"`));
- assert.match(form,/<option value="payer-1" selected>/);assert.match(form,/name="priority" data-value="secondary"/);assert.match(form,/name="relationship" data-value="self"/);
+ assert.match(form,/name="payer_name" value="Synthetic Payer"/);assert.match(form,/name="payer_id" value="payer-1"/);assert.match(form,/name="priority" data-value="secondary"/);assert.match(form,/name="relationship" data-value="self"/);
  assert.match(form,/<input type="hidden" name="reason" value="Added from previous system insurance record">/);
  assert.doesNotMatch(form,/type="checkbox"|SOURCE NOTICE/);assert.match(form,/>Save insurance<\/button>/);assert.doesNotMatch(visible(form),internalTerms);
  record.source_data.coverage.payer_name='Unlisted Payer';record.source_data.coverage.relationship='spouse';vm.runInContext('coverageEditor(null,record)',b);
- assert.match(form,/<option value="" selected>/);assert.match(visible(form),/Payer in the previous system: Unlisted Payer \. Choose the matching payer\./);assert.match(form,/name="subscriber_name" value="" required/);
+ assert.match(form,/name="payer_name" value=""/);assert.match(form,/name="payer_id" value=""/);assert.match(visible(form),/Payer in the previous system: Unlisted Payer \. Choose the matching payer\./);assert.match(form,/name="subscriber_name" value="" required/);
  vm.runInContext('coverageEditor(null,{source_history_id:"h8",policy:"p",source_data:{policy_number:"LEGACY-1"}})',b);
  assert.match(form,/Reconcile source coverage/);assert.match(form,/SOURCE NOTICE/);assert.match(form,/type="checkbox" required/,'records from other import formats keep their review step');
  assert.match(app,/r\.kind==='insurance'&&r\.source_data\?\.coverage\?'Add as coverage':/);
@@ -257,10 +262,15 @@ function fixture(jobs){
  // The insurance screen's own form: plain words, no status choice while adding, and a default effective date.
  {
   let plain='';
-  const f=vm.createContext({esc,crypto:{randomUUID:()=>'request-2'},me:{role:'front_desk'},Date,workspace:{patient:{given_name:'Avery Q',family_name:'Synthetic',birth_date:'1990-01-01'}},
+  const pickerDirectory=[{id:'payer-1',content:{name:'Synthetic Payer',payer_code:'SYN',active:true}}];
+  const f=vm.createContext({esc,crypto:{randomUUID:()=>'request-2'},pickerDirectory,me:{role:'front_desk'},Date,workspace:{patient:{given_name:'Avery Q',family_name:'Synthetic',birth_date:'1990-01-01'}},
    billingPayers:[{id:'payer-1',content:{name:'Synthetic Payer',payer_code:'SYN',active:true}}],
    coveragePayerSetup:()=>'',dollars:v=>v??'',sourceNotice:()=>'',showChartSection(){},openBillingEditor:html=>{plain=html;},$:id=>id==='coverage-form'?{addEventListener(){},elements:{relationship:{value:'self'},subscriber_name:{value:''},subscriber_birth_date:{value:''}}}:null,
    patientSelfPolicyHolder(){},insuranceOptionLabels:values=>values.map(v=>({primary:'Primary',secondary:'Secondary',tertiary:'Tertiary',active:'Active',inactive:'Inactive',entered_in_error:'Entered by mistake',self:'Self',spouse:'Spouse',child:'Child',other:'Other',unverified:'Not yet',manually_verified:'Yes, checked by hand'})[v]),
+  // The insurance company box is typed into, so this harness answers the picker with the
+  // directory above: a chosen id is drawn as its name, plus the hidden id the form submits.
+  typeaheadInit(){},
+  payerPickerMarkup:(name,label,opts={})=>{const p=pickerDirectory.find(x=>x.id===(opts.payerId||''));return `<label>${label}<input type="text" name="${name}_name" value="${p?esc(p.content.name):''}"><input type="hidden" name="${name}_id" value="${p?p.id:''}"></label>`;},
    coveragePayerOptions:id=>`<option value="${id}" selected>payer</option>`,
    selectField:(name,label,values,value,labels)=>`<label>${label}<select name="${name}">${values.map((v,i)=>`<option value="${v}">${labels[i]}</option>`).join('')}</select></label>`,
    billingField:(name,label,value='',type='text',max=0,required=false)=>`<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${required?'required':''}></label>`});
@@ -273,8 +283,8 @@ function fixture(jobs){
   assert.match(plain,/>Self<\/option><option value="spouse">Spouse<\/option><option value="child">Child<\/option><option value="other">Other</);
   assert.match(plain,/Two active plans cannot share the same order\./);
   assert.match(plain,new RegExp(`name="effective_date"[^>]*value="${new Date().getFullYear()}-01-01"`),'a new entry starts on the first day of this year');
-  assert.deepEqual([...plain.matchAll(/<label>([^<]*)<input/g)].map(m=>m[1]),['Member ID','Group number','Plan name','Policy holder name','Policy holder date of birth','Effective date','End date','Copay (optional)','Reason / evidence for change']);
-  assert.deepEqual([...plain.matchAll(/<label>([^<]*)<select/g)].map(m=>m[1]),['Insurance company','Order',"Patient is the policy holder's",'Checked by staff']);
+  assert.deepEqual([...plain.matchAll(/<label>([^<]*)<input/g)].map(m=>m[1]),['Insurance company','Member ID','Group number','Plan name','Policy holder name','Policy holder date of birth','Effective date','End date','Copay (optional)','Reason / evidence for change']);
+  assert.deepEqual([...plain.matchAll(/<label>([^<]*)<select/g)].map(m=>m[1]),['Order',"Patient is the policy holder's",'Checked by staff']);
   assert.match(plain,/>Save insurance<\/button>/);assert.doesNotMatch(visible(plain),internalTerms);
   assert.doesNotMatch(visible(plain),/\bhistory\b|\bcatalog\b|\bnative\b|\brecord\b/i,'the form speaks plain words');
   vm.runInContext('coverageEditor({id:"coverage-1",version:2,content:{payer_id:"payer-1",priority:"primary",status:"inactive",member_id:"SYN-MEMBER-1",group_number:"",plan_name:"",subscriber_name:"Avery Q Synthetic",subscriber_birth_date:"1990-01-01",relationship:"self",effective_date:"2023-01-01",end_date:"2026-06-30",copay_cents:2500,verification:"unverified",notes:""}})',f);
