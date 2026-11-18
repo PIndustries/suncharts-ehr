@@ -310,6 +310,31 @@ function registerClaimDetailAutoRefresh(){
  unregisterAutoRefresh('claim-status');
  registerAutoRefresh('claim-status',{host,load:claimDetailAutoRefreshLoad,everyMs:30000});
 }
+// Fills the timeline container once the claim screen is on screen. It never throws:
+// a provider that will not answer leaves the rest of the claim screen working.
+async function insertClaimStatusTimeline(context,claim,detail,history){
+ // Resolved at call time, and through globalThis: the file order in index.html gives
+ // this file a top-level function, while a test may install the builder afterwards.
+ const build=globalThis.claimTimelineSection;if(typeof build!=='function')return;
+ const host=claimWorkspaceHost(context);
+ // The "Why it came back" box is rendered inside the claim pane markup, so look for it
+ // there and sit the timeline directly under it. The lifecycle panel is inserted later
+ // and separately, so its own anchor stays the fallback.
+ const pane=host?.querySelector?.('.billing-account-detail');
+ const box=pane?.querySelector?.('[data-claim-problem-box]');
+ const anchor=box||host?.querySelector?.('.claim-lifecycle')||pane?.querySelector?.('.section-head');
+ if(!anchor?.insertAdjacentHTML)return;
+ // Directly under the rejection box when there is one; before the lifecycle panel or
+ // the pane heading otherwise.
+ anchor.insertAdjacentHTML(box?'afterend':'beforebegin','<div class="claim-status-timeline-host" data-claim-timeline><p class="muted">Reading what happened to this claim…</p></div>');
+ const slot=host.querySelector('[data-claim-timeline]'),identity=typeof me==='undefined'?undefined:me;
+ let html='<p class="muted">What happened to this claim is not available right now. The claim details below are unaffected.</p>';
+ try{const built=await build(claim,detail,history,{});if(built)html=built;}catch{}
+ // Another claim may have opened while the provider was answering; never write a
+ // stale timeline into the container of the claim now on screen.
+ if(claim!==claimCurrent||(typeof me!=='undefined'&&me!==identity)||!slot?.isConnected)return;
+ slot.innerHTML=html;
+}
 // The insurer's or clearinghouse's own wording for a claim that came back, newest answer first.
 function claimResponseWords(detail={}){
   const reports=(detail.tracking?.reports||[]).map(report=>String(report?.evidence?.message?.message||'').trim()).filter(Boolean).reverse();
@@ -329,6 +354,9 @@ async function showClaim(id){
 
  const lifecycle=typeof claimMdClaimLifecycle==='function'?claimMdClaimLifecycle(c,d,h):'';
  if(lifecycle){const claimDetail=claimWorkspaceHost(context).querySelector('.billing-account-detail'),claimHead=claimDetail.querySelector?.('.section-head');if(claimHead?.insertAdjacentHTML)claimHead.insertAdjacentHTML('afterend',lifecycle);else claimDetail.insertAdjacentHTML('afterbegin',lifecycle);}
+ // "What happened" gets its own container, placed after the rejection box above the
+ // lifecycle panel, so the other panels can be replaced without touching it.
+ insertClaimStatusTimeline(context,c,d,h);
  const action=$('claim-action');if(action){action.claimViewContext=context;action.claimRecord=c;}
  if(typeof startClaimMdTracking==='function')startClaimMdTracking(c.id);
  if(typeof showClaimMdClaimActivity==='function')await showClaimMdClaimActivity(c);

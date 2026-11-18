@@ -14,9 +14,21 @@ function claimMdOperationRows(items){
 function claimMdDocumentRows(items){
  return items.map(item=>`<tr><td>${esc(item.eraid)}</td><td>${esc(human(item.kind))}${item.pcn?`<small>Acct # ${esc(item.pcn)}</small>`:''}</td><td>${esc(date(item.fetched_at))}</td><td><a class="button" href="${claimMdExtendedBase}/era-documents/${esc(item.id)}" target="_blank" rel="noopener noreferrer">Open evidence</a></td></tr>`).join('')||'<tr><td colspan="4">No Claim.MD ERA PDF or structured evidence retrieved.</td></tr>';
 }
-function claimMdEventRows(items){
- return items.map(item=>{const p=item.payload||{};return `<tr><td>${esc(date(item.received_at))}</td><td>${esc(item.event_id)}</td><td>${esc(p.type||p.event_type||p.status||'Claim.MD event')}<small>Account ${esc(item.account_number)}</small></td><td><details><summary>Review original event</summary><pre class="billing-source">${esc(JSON.stringify(p,null,2))}</pre></details></td></tr>`}).join('')||'<tr><td colspan="4">No signed enrollment or appeal events received.</td></tr>';
+// Provider event, as labelled rows. The signed payload stays available under
+// "Show technical details" for support, not as the first thing staff read.
+function claimMdEvidenceCell(content){
+ const rows=typeof timelineProviderRows==='function'?timelineProviderRows(content):[];
+ const table=typeof timelineFieldTable==='function'?timelineFieldTable(rows):'<p class="muted">Nothing readable was recorded for this item.</p>';
+ const technical=typeof timelineTechnical==='function'?timelineTechnical([JSON.stringify(content||{},null,2)]):'';
+ return `<details class="amendment"><summary>Details</summary>${table}${technical}</details>`;
 }
+function claimMdEventRows(items){
+ return items.map(item=>`<tr><td>${esc(date(item.received_at))}</td><td>${esc(item.event_id)}</td><td>${esc(claimMdEventLabel((item.payload||{}).type||(item.payload||{}).event_type||(item.payload||{}).status||'Claim.MD event'))}<small>Claim.MD account ending ${esc(claimMdAccountTail(item.account_number))}</small></td><td>${claimMdEvidenceCell(item.payload)}</td></tr>`).join('')||'<tr><td colspan="4">No signed enrollment or appeal events received.</td></tr>';
+}
+// Event type names come from Claim.MD; spell out the ones we know, keep the rest as given.
+const claimMdEventLabels={enrollment_submitted:'Enrollment started',enrollment_completed:'Enrollment completed',enrollment_approved:'Enrollment approved',enrollment_denied:'Enrollment denied',appeal_submitted:'Appeal started',appeal_completed:'Appeal completed',appeal_approved:'Appeal approved',appeal_denied:'Appeal denied'};
+function claimMdEventLabel(value){return claimMdEventLabels[String(value)]||String(value);}
+function claimMdAccountTail(account){const text=String(account??'').replace(/\s+/g,'');return text?text.slice(-4):'not given'}
 async function showClaimMdExtended(){
  const host=$('edi-automation');if(!host||me.role!=='owner')return;
  const [data,settings,submissions]=await Promise.all([api(`${claimMdExtendedBase}/operations`),api('/api/v1/billing/provider-settings'),api('/api/v1/billing/submissions')]);
@@ -50,8 +62,10 @@ function claimMdClaimRecordMatches(record,claim){
  return identities.some(value=>content.includes(`"${value}"`));
 }
 
+// Claim.MD notes, website edits and archived state, as labelled rows per record.
 function claimMdClaimActivityRows(records){
- return records.map(record=>`<li><span class="pill">${esc(human(record.kind))}</span><div><b>${esc(record.claimmd_id||record.remote_id||record.patient_control_number||'Claim.MD update')}</b><small>${esc(date(record.recorded_at))}</small><details><summary>Review provider evidence</summary><pre class="billing-source">${esc(JSON.stringify(record.content||{},null,2))}</pre></details></div></li>`).join('');
+ const kindLabels=typeof timelineRecordKindLabels==='object'&&timelineRecordKindLabels?timelineRecordKindLabels:{};
+ return records.map(record=>`<li><span class="pill">${esc(kindLabels[record.kind]||human(record.kind))}</span><div><b>${esc(record.claimmd_id||record.remote_id||record.patient_control_number||'Claim.MD update')}</b><small>${esc(date(record.recorded_at))}</small>${claimMdEvidenceCell(record.content)}</div></li>`).join('');
 }
 
 async function showClaimMdClaimActivity(claim){

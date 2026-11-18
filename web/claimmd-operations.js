@@ -3,7 +3,17 @@
 const claimmdOpsBase='/api/v1/billing/claimmd';let claimmdOpsSetting;
 function claimmdSyncProblem(kind,kindLabel){return `<b>Claim.MD ${kindLabel} could not be refreshed</b><p>SunCharts could not read Claim.MD's answer just now. The ${kindLabel} already listed here are unchanged and stay as they were. Try again shortly, and if it keeps happening check the claim in Claim.MD.</p>`}
 function claimmdUploadState(v){return v.claim_id?`<button type="button" data-claim-open="${esc(v.claim_id)}"><b>${esc(v.patient_control_number||'Open claim')}</b></button><small>Sent from SunCharts</small>`:`<b>${esc(v.content?.filename||`File ${v.remote_id}`)}</b><small>Uploaded on the Claim.MD website, not from SunCharts. Nothing to do here.</small>`}
-function claimmdRecords(rows,kind){return rows.filter(v=>v.kind===kind).map(v=>`<tr><td>${esc(v.remote_id)}</td><td>${kind==='uploaded_file'?claimmdUploadState(v):esc(v.claimmd_id||v.patient_control_number||'-')}</td><td>${esc(date(v.recorded_at))}</td><td><details><summary>Details</summary><pre class="billing-source">${esc(JSON.stringify(v.content,null,2))}</pre></details></td></tr>`).join('')||'<tr><td colspan="4">Nothing here yet.</td></tr>'}
+// One Claim.MD record as labelled rows. Staff read the fields that matter; the raw
+// provider payload stays available under "Show technical details" for support.
+function claimmdRecordCell(record){
+ const rows=typeof timelineProviderRows==='function'?timelineProviderRows(record?.content,timelineRecordFieldOrder[record?.kind]):[];
+ const table=typeof timelineFieldTable==='function'?timelineFieldTable(rows):'';
+ const technical=typeof timelineTechnical==='function'?timelineTechnical([JSON.stringify(record.content??{},null,2)]):'';
+ return `<details class="amendment"><summary>Details</summary>${table||'<p class="muted">Nothing readable was recorded for this item.</p>'}${technical}</details>`;
+}
+// Order for each Claim.MD record kind, shared with the timeline's own ordering.
+const timelineRecordFieldOrder=typeof timelineRecordFields==='object'&&timelineRecordFields?timelineRecordFields:{};
+function claimmdRecords(rows,kind){return rows.filter(v=>v.kind===kind).map(v=>`<tr><td>${esc(v.remote_id)}</td><td>${kind==='uploaded_file'?claimmdUploadState(v):esc(v.claimmd_id||v.patient_control_number||'-')}</td><td>${esc(date(v.recorded_at))}</td><td>${claimmdRecordCell(v)}</td></tr>`).join('')||'<tr><td colspan="4">Nothing here yet.</td></tr>'}
 async function claimmdAccountUploads(setting,{refresh=false}={}){
  let warning='';
  if(refresh){try{await api(`${claimmdOpsBase}/${setting}/uploaded-files/sync`,'POST',{page:1,upload_date:null})}catch(error){warning=`<div class="mapping-notice"><b>Could not refresh from Claim.MD</b><p>${esc(error.message||'The list below is from the last successful refresh.')}</p></div>`}}

@@ -1426,6 +1426,16 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/claim-timeline.js",
+            get(|| async {
+                web_asset(
+                    "claim-timeline.js",
+                    "application/javascript",
+                    include_str!("../web/claim-timeline.js"),
+                )
+            }),
+        )
+        .route(
             "/claimmd-operations.js",
             get(|| async {
                 web_asset(
