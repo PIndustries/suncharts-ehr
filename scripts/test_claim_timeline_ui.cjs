@@ -213,15 +213,22 @@ const history={items:[{version:1,created_at:'2026-11-11T15:30:00Z',reason:'Claim
 	function mountingScreen(extra){
 	 const panel={created:[],insertAdjacentHTML(position,html){panel.created.push({position,html});}};
 	 panel.slot={isConnected:true,innerHTML:''};
+
 	 // Mirrors the real claim screen: the lifecycle panel and the timeline container both
 	 // live inside .billing-account-detail, and the workspace host returns that section.
 	 const account={querySelector(selector){
-	  if(selector==='.billing-account-detail')return account;
+	  if(selector==='[data-claim-problem-box]')return account.problem||null;
 	  if(selector.split(',').some(name=>name.trim()==='.claim-lifecycle'))return panel;
 	  if(selector==='[data-claim-timeline]')return panel.slot;
 	  return null;
 	 }};
-	 const host={querySelector:selector=>selector==='[data-claim-timeline]'?panel.slot:account.querySelector(selector)};
+	 const host={querySelector:selector=>{
+	  if(selector==='[data-claim-timeline]')return panel.slot;
+	  if(selector==='[data-claim-problem-box]')return account.problem||null;
+	  if(selector==='.billing-account-detail')return account;
+	  if(selector.includes('.claim-lifecycle'))return panel;
+	  return null;
+	 }};
 	 const scope={console,Date,Math,JSON,Object,Array,String,Number,Boolean,Set,Map,Promise,Error,RegExp,Intl,
 	  esc,human:value=>String(value??''),date:value=>String(value),money:value=>`$${value}`,document:{addEventListener(){}},
 	  claimWorkspaceHost:()=>host,...extra};
@@ -232,7 +239,7 @@ const history={items:[{version:1,created_at:'2026-11-11T15:30:00Z',reason:'Claim
 	 // under test reach the same objects the test installed.
 	 scope.$=()=>host;scope.host=host;scope.panel=panel;
 	 vm.runInContext(fs.readFileSync(path.join(__dirname,'..','web','display-format.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'..','web','claims.js'),'utf8'),context);
-	 return {panel,context};
+	 return {panel,account,host,context};   // account.problem: hang a rejection box on the pane
 	}
 
 	// The claim on screen is the claim the timeline is built for - the guard below this
@@ -241,9 +248,20 @@ const history={items:[{version:1,created_at:'2026-11-11T15:30:00Z',reason:'Claim
 	const fresh=mountingScreen({claimTimelineSection:async()=>'<section class="claim-timeline">built</section>'});
 	fresh.context.claimCurrent=shown;
 	await fresh.context.insertClaimStatusTimeline({}, shown, {}, {});
+
 	assert.equal(fresh.panel.created[0].position,'beforebegin','the timeline container is inserted before the lifecycle panel');
 	assert.match(fresh.panel.created[0].html,/data-claim-timeline/);
 	assert.match(fresh.panel.slot.innerHTML,/built/,'the awaited timeline is written into its own container');
+
+	// With the rejection box on screen, the timeline goes under the box, not the panel.
+	// mountingScreen has no box unless the scenario places one, as the real pane does.
+	const boxed=mountingScreen({claimTimelineSection:async()=>'built'});
+	const box={created:[],insertAdjacentHTML(position,html){box.created.push({position,html});}};
+	boxed.account.problem=box;
+	boxed.context.claimCurrent=shown;
+	await boxed.context.insertClaimStatusTimeline({}, shown, {}, {});
+	assert.equal(box.created[0]?.position,'afterend','the timeline container is inserted directly after the rejection box');
+	assert.equal(boxed.panel.created.length,0,'the lifecycle panel is not the anchor when the rejection box is on screen');
 
 	// A provider that will not answer leaves the container readable, not broken.
 	const stuck=mountingScreen({claimTimelineSection:async()=>{throw new Error('provider down');}});

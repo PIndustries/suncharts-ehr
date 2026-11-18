@@ -179,9 +179,16 @@ async function insertClaimStatusTimeline(context,claim,detail,history){
  // this file a top-level function, while a test may install the builder afterwards.
  const build=globalThis.claimTimelineSection;if(typeof build!=='function')return;
  const host=claimWorkspaceHost(context);
- const anchor=host?.querySelector?.('.claim-rejection-fix,.claim-lifecycle')||host?.querySelector?.('.billing-account-detail .section-head');
+ // The "Why it came back" box is rendered inside the claim pane markup, so look for it
+ // there and sit the timeline directly under it. The lifecycle panel is inserted later
+ // and separately, so its own anchor stays the fallback.
+ const pane=host?.querySelector?.('.billing-account-detail');
+ const box=pane?.querySelector?.('[data-claim-problem-box]');
+ const anchor=box||host?.querySelector?.('.claim-lifecycle')||pane?.querySelector?.('.section-head');
  if(!anchor?.insertAdjacentHTML)return;
- anchor.insertAdjacentHTML('beforebegin','<div class="claim-status-timeline-host" data-claim-timeline><p class="muted">Reading what happened to this claim…</p></div>');
+ // Directly under the rejection box when there is one; before the lifecycle panel or
+ // the pane heading otherwise.
+ anchor.insertAdjacentHTML(box?'afterend':'beforebegin','<div class="claim-status-timeline-host" data-claim-timeline><p class="muted">Reading what happened to this claim…</p></div>');
  const slot=host.querySelector('[data-claim-timeline]'),identity=typeof me==='undefined'?undefined:me;
  let html='<p class="muted">What happened to this claim is not available right now. The claim details below are unaffected.</p>';
  try{const built=await build(claim,detail,history,{});if(built)html=built;}catch{}
