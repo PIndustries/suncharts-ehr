@@ -318,6 +318,22 @@ fn new_control_number(id: Uuid, synthetic: bool) -> String {
     format!("{prefix}{}", String::from_utf8(suffix).expect("ASCII PCN"))
 }
 
+/// How a corrected claim goes back out after it was rejected or denied, decided by the payer's claim
+/// number the caller supplies. A claim the payer already took (their claim number is recorded on it,
+/// here or on the parent a correction is linked to) must go back as a replacement — 837P claim
+/// frequency code 7 — referring to that number; a claim the clearinghouse bounced before the payer
+/// took it on goes back as a new claim, code 1. `create` holds the linked-claim rule the two cases
+/// obey: a replacement needs a rejected or adjudicated parent carrying a payer claim number, and an
+/// original resubmission needs a rejected parent without one. The claim screen and the 837P builder
+/// both use this, so the words staff are shown and the file that goes out cannot disagree.
+pub(crate) fn claim_resend_plan_for(payer_control_number: &str) -> (&'static str, &'static str) {
+    if payer_control_number.trim().is_empty() {
+        ("original", "1")
+    } else {
+        ("replacement", "7")
+    }
+}
+
 pub(crate) fn preflight(c: &Claim) -> Result<Vec<String>> {
     let p: ClaimContent = serde_json::from_value(c.content.clone())
         .map_err(|_| Error::Invalid("invalid stored claim content"))?;
@@ -844,6 +860,22 @@ async fn claim_detail(
     let issues = preflight(&c)?;
     let submission_defaults = claim_submission_defaults(&mut tx, &a, &c).await?;
     let tracking = crate::retrieval::claim_tracking(&mut tx, &a, &c).await?;
+    // A claim that came back needs one more thing than its own row: the answer it carries may sit on
+    // a revision recorded by hand or arrived from Claim.MD, and the response feed is keyed to the
+    // claim file rather than the claim. Staff are shown the plain words for both, and the resend
+    // frequency travels with the claim so the screen and the claim file cannot disagree.
+    let responses: Vec<Value> = sqlx::query_scalar(
+        "SELECT jsonb_strip_nulls(jsonb_build_object('reason',r.reason,'message',r.evidence->>'message','action',r.evidence->>'action','payer_control_number',r.evidence->>'payer_control_number')) FROM claim_revisions r WHERE r.tenant_id=$1 AND r.claim_id=$2 ORDER BY r.version DESC LIMIT 20")
+        .bind(a.tenant_id)
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await?;
+    let feed: Vec<Value> = sqlx::query_scalar(
+        "SELECT jsonb_strip_nulls(jsonb_build_object('message',rp.parse_summary->'message'->>'message','status',rp.parse_summary->>'status','sender',rp.parse_summary->>'senderid','received_at',rp.received_at)) FROM edi_remote_reports rp JOIN edi_submissions s ON s.tenant_id=rp.tenant_id AND s.id=rp.native_id WHERE rp.tenant_id=$1 AND s.claim_id=$2 AND rp.native_kind='submission' AND rp.format='claimmd_status' AND (rp.parse_summary->>'status'='R' OR rp.parse_summary->'message'->>'status'='R') ORDER BY rp.received_at DESC LIMIT 10")
+        .bind(a.tenant_id)
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await?;
     let artifact_generated: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM edi_submissions WHERE tenant_id=$1 AND claim_id=$2)",
     )
@@ -851,11 +883,32 @@ async fn claim_detail(
     .bind(id)
     .fetch_one(&mut *tx)
     .await?;
+    // The resend frequency follows the same rule the create endpoint enforces, so it also has to
+    // look at the claim this one is linked to: a correction whose parent is on file with the payer
+    // goes back as a replacement carrying the parent's number, not as a second first claim.
+    let parent_control: Option<String> = match c.parent_id {
+        Some(parent) => sqlx::query_scalar(
+            "SELECT NULLIF(btrim(payer_control_number),'') FROM ehr_claims WHERE tenant_id=$1 AND id=$2",
+        )
+        .bind(a.tenant_id)
+        .bind(parent)
+        .fetch_optional(&mut *tx)
+        .await?,
+        None => None,
+    };
+    let payer_control = if c.payer_control_number.trim().is_empty() {
+        parent_control.unwrap_or_default()
+    } else {
+        c.payer_control_number.clone()
+    };
     crate::postgres::audit(&mut tx, &a, "claim.read", id).await?;
     tx.commit().await?;
     let transport = clearinghouse_transport(db(&s)?, a.tenant_id, artifact_generated).await?;
+    let (frequency, frequency_code) = claim_resend_plan_for(&payer_control);
     Ok(Json(
-        json!({"claim":c,"preflight_issues":issues,"transport":transport,"submission_defaults":submission_defaults,"tracking":tracking}),
+        json!({"claim":c,"preflight_issues":issues,"transport":transport,"submission_defaults":submission_defaults,"tracking":tracking,
+            "resend":{"frequency":frequency,"frequency_code":frequency_code,"payer_control_number":payer_control},
+            "responses":{"revisions":responses,"feed":feed}}),
     ))
 }
 
@@ -2784,6 +2837,77 @@ mod submission_default_tests {
                 .iter()
                 .any(|i| i.starts_with("Member ID") && i.contains("plain letters")),
             "expected a named member ID issue, got {issues:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod claim_resend_tests {
+    use super::{claim_resend_plan_for, Claim};
+    use serde_json::json;
+
+    fn came_back(status: &str, payer_control_number: &str) -> Claim {
+        Claim {
+            id: uuid::Uuid::new_v4(),
+            patient_id: uuid::Uuid::new_v4(),
+            account_id: uuid::Uuid::new_v4(),
+            payer_id: uuid::Uuid::new_v4(),
+            control_number: "SCCONTROLCASE0002".into(),
+            frequency: "original".into(),
+            parent_id: None,
+            status: status.into(),
+            version: 3,
+            payer_control_number: payer_control_number.into(),
+            source_history_id: None,
+            content: json!({"billing_provider_name":"Synthetic Practice","billing_npi":"1234567893","tax_id":"000000001","billing_address":"1 Example Way","rendering_npi":"1234567893","patient_address":"1 Example Way","subscriber_address":"1 Example Way","subscriber_birth_date":"1990-01-01","place_of_service":"11","diagnosis_codes":["Z00.00"],"line_diagnosis_pointers":[[1]],"external_control_number":"","notes":"Synthetic"}),
+            snapshot: json!({"patient":{"given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-01"},"account":{"total_cents":10000,"content":{"currency":"USD","service_date":"2026-10-25","lines":[{"code_system":"CPT","code":"99213","modifiers":"","units":1,"amount_cents":10000}]},"coverage_snapshot":{"coverage":{"content":{"priority":"primary","relationship":"self","member_id":"SYN-MEMBER","group_number":"SYN-GROUP","plan_name":"Synthetic plan"}},"payer":{"content":{"name":"Synthetic Payer","payer_code":"SYN-PAYER"}}}}}),
+        }
+    }
+
+    /// The frequency code the 837P builder writes is the one the resend plan offers, or the claim
+    /// screen would promise a corrected claim and send a first claim.
+    fn x12_code(frequency: &str) -> &'static str {
+        match frequency {
+            "original" => "1",
+            "replacement" => "7",
+            "void_request" => "8",
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn a_denied_claim_already_taken_by_the_payer_resends_as_replacement_seven() {
+        let denied = came_back("rejected", "123456700001");
+        let (frequency, code) = claim_resend_plan_for(&denied.payer_control_number);
+        assert_eq!((frequency, code), ("replacement", "7"));
+        assert_eq!(x12_code(frequency), code);
+        assert_eq!(claim_resend_plan_for("123456700001"), ("replacement", "7"));
+    }
+
+    #[test]
+    fn a_pure_clearinghouse_rejection_resends_as_a_new_claim() {
+        let rejected = came_back("rejected", "");
+        let (frequency, code) = claim_resend_plan_for(&rejected.payer_control_number);
+        assert_eq!((frequency, code), ("original", "1"));
+        assert_eq!(x12_code(frequency), code);
+        assert_eq!(claim_resend_plan_for(""), ("original", "1"));
+        // A claim number of spaces only is not a claim number: an original resubmission requires a
+        // rejected parent without one, and inventing a replacement would fail that check.
+        assert_eq!(claim_resend_plan_for("   "), ("original", "1"));
+        assert_eq!(
+            claim_resend_plan_for(&came_back("rejected", "  ").payer_control_number),
+            ("original", "1")
+        );
+    }
+
+    #[test]
+    fn an_adjudicated_claim_with_their_number_is_still_a_replacement() {
+        // A payer denial arrives as rejected and a partly-paid claim as adjudicated; both were taken
+        // on, so both correct against the payer's number rather than as a second first claim.
+        assert_eq!(claim_resend_plan_for("123456700002"), ("replacement", "7"));
+        assert_eq!(
+            claim_resend_plan_for(&came_back("accepted", "123456700003").payer_control_number),
+            ("replacement", "7")
         );
     }
 }

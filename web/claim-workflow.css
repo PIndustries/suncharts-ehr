@@ -2,3 +2,9 @@
 .claim-workflow article{padding:1rem;border:1px solid var(--line,#d4dfe4);border-radius:.5rem;background:var(--panel,#fff)}
 .claim-workflow h3{margin:0 0 .5rem}.claim-workflow p{margin:.5rem 0 1rem;line-height:1.5}
 @media(max-width:1050px){.claim-workflow{grid-template-columns:1fr}}
+/* The plain-words answer for a claim that came back: what the insurer said, the likely fix, and
+   the one button that starts it. Deliberately the loudest thing on the claim screen. */
+.claim-problem-box{margin:1rem 0;padding:1rem 1.1rem;border:1px solid #e0b96a;border-left:4px solid #b8791b;border-radius:.5rem;background:#fff8ec}
+.claim-problem-box h3{margin:0 0 .5rem;font-size:1.05rem}
+.claim-problem-box p{margin:.45rem 0;line-height:1.5}
+.claim-problem-box button{margin-top:.5rem}
