@@ -35,11 +35,13 @@ fn db(state: &State) -> Result<&PgPool> {
     Ok(&state.browser.as_ref().ok_or(Error::NotFound)?.db)
 }
 fn token(route: &Route) -> Result<&str> {
-    route
-        .credential_value
-        .as_ref()
-        .map(|value| value.expose())
-        .ok_or(Error::Invalid("Claim.MD AccountKey unavailable"))
+    match route.credential_value.as_ref() {
+        Some(value) => Ok(value.expose()),
+        // A loopback test route carries no saved AccountKey; the same synthetic
+        // stand-in the other Claim.MD adapters use keeps the request shape real.
+        None if route.loopback_test => Ok("synthetic-loopback-key"),
+        None => Err(Error::Invalid("Claim.MD AccountKey unavailable")),
+    }
 }
 fn base(route: &Route) -> Result<String> {
     if route.loopback_test {
@@ -58,6 +60,30 @@ fn numeric(value: &Value, field: &'static str) -> Result<String> {
         .or_else(|| value.as_u64().map(|v| v.to_string()))
         .filter(|v| !v.is_empty() && v.len() <= 24 && v.bytes().all(|b| b.is_ascii_digit()))
         .ok_or(Error::Invalid(field))
+}
+/// Position of Claim.MD's note feed. When the account has no notes the service
+/// leaves `LastNoteID` out or answers `null`, and a per-claim lookup has no feed
+/// position at all; that means "no notes yet" and the saved position stays. The
+/// position itself is accepted as a number or as a text digit string, exactly as
+/// Claim.MD documents it. Every other shape - blank, a word, a boolean, an
+/// object - is treated as no notes as well: it must never break the screen, the
+/// saved position stands, and only the genuinely unreadable ones are mentioned
+/// on the server log so the shape can be followed up there.
+fn note_cursor(response: &Value, previous: &str) -> String {
+    let value = match response.get("LastNoteID") {
+        None | Some(Value::Null) => return previous.to_owned(),
+        Some(value) => value,
+    };
+    if let Ok(cursor) = numeric(value, "Claim.MD note cursor is invalid") {
+        return cursor;
+    }
+    if value.as_str().is_none_or(|text| text.trim().is_empty()) {
+        return previous.to_owned();
+    }
+    eprintln!(
+        "Claim.MD sent a note position this practice cannot read; the previous position was kept"
+    );
+    previous.to_owned()
 }
 fn identifier(value: &Value, field: &'static str) -> Result<String> {
     value
@@ -309,10 +335,23 @@ async fn sync_notes(
     Path(setting): Path<Uuid>,
     Json(input): Json<CursorRequest>,
 ) -> Result<Json<Value>> {
-    billing_operator(&actor)?;
-    let claimmd_id = valid_claimmd_id(input.claimmd_id)?;
-    let cursor = load_cursor(db(&state)?, actor.tenant_id, setting, false).await?;
     let route = route(&state, &actor, setting).await?;
+    let out = sync_notes_with_route(&actor, &state, setting, input.claimmd_id, &route).await?;
+    Ok(Json(out))
+}
+
+/// One notes refresh. A loopback test passes its own stand-in route; every real
+/// request resolves the connection's saved route from the database.
+pub async fn sync_notes_with_route(
+    actor: &Actor,
+    state: &State,
+    setting: Uuid,
+    claimmd_id: Option<String>,
+    route: &Route,
+) -> Result<Value> {
+    billing_operator(actor)?;
+    let claimmd_id = valid_claimmd_id(claimmd_id)?;
+    let cursor = load_cursor(db(state)?, actor.tenant_id, setting, false).await?;
     let mut fields = vec![(
         "NoteID".into(),
         if claimmd_id.is_some() {
@@ -324,13 +363,13 @@ async fn sync_notes(
     if let Some(value) = &claimmd_id {
         fields.push(("ClaimMD_ID".into(), value.clone()));
     }
-    let response = form(db(&state)?, &route, "notes", fields).await?;
-    let last = numeric(&response["LastNoteID"], "Claim.MD note cursor is invalid")?;
+    let response = form(db(state)?, route, "notes", fields).await?;
+    let last = note_cursor(&response, &cursor);
     if claimmd_id.is_none() && last.parse::<u128>().ok() < cursor.parse::<u128>().ok() {
         return Err(Error::Invalid("Claim.MD note cursor regressed"));
     }
     let notes = rows(&response, "notes")?;
-    let mut tx = db(&state)?.begin().await?;
+    let mut tx = db(state)?.begin().await?;
     let locked:String=sqlx::query_scalar("SELECT note_id FROM claimmd_operation_cursors WHERE tenant_id=$1 AND setting_id=$2 FOR UPDATE").bind(actor.tenant_id).bind(setting).fetch_one(&mut *tx).await?;
     if claimmd_id.is_none() && locked != cursor {
         return Err(Error::Conflict(
@@ -347,11 +386,9 @@ async fn sync_notes(
     if claimmd_id.is_none() {
         sqlx::query("UPDATE claimmd_operation_cursors SET note_id=$3,updated_at=clock_timestamp() WHERE tenant_id=$1 AND setting_id=$2").bind(actor.tenant_id).bind(setting).bind(&last).execute(&mut *tx).await?;
     }
-    crate::postgres::audit(&mut tx, &actor, "claimmd.notes_sync", setting).await?;
+    crate::postgres::audit(&mut tx, actor, "claimmd.notes_sync", setting).await?;
     tx.commit().await?;
-    Ok(Json(
-        json!({"inserted":inserted,"last_note_id":last,"cursor_advanced":claimmd_id.is_none()}),
-    ))
+    Ok(json!({"inserted":inserted,"last_note_id":last,"cursor_advanced":claimmd_id.is_none()}))
 }
 
 #[derive(Deserialize)]
@@ -649,6 +686,52 @@ mod tests {
         assert!(billing_operator(&actor(Role::FrontDesk)).is_ok());
         assert!(billing_operator(&actor(Role::ReadOnly)).is_err());
         assert!(billing_operator(&actor(Role::Patient)).is_err());
+    }
+
+    // The provider has been observed answering a note position as a word on an
+    // account whose activity is changes only, and the documented per-claim lookup
+    // has no feed position at all. Both must read as no notes.
+    #[test]
+    fn note_cursor_treats_absent_blank_and_textual_values_as_no_notes_yet() {
+        // The documented shape when notes exist: a numeric string position.
+        assert_eq!(
+            note_cursor(&json!({"LastNoteID": "111111112"}), "0"),
+            "111111112"
+        );
+        assert_eq!(
+            note_cursor(&json!({"LastNoteID": 111111112}), "0"),
+            "111111112"
+        );
+        // No notes yet: the field is missing, null or blank. The saved position stays.
+        assert_eq!(note_cursor(&json!({}), "111111109"), "111111109");
+        assert_eq!(
+            note_cursor(&json!({"LastNoteID": null}), "111111109"),
+            "111111109"
+        );
+        assert_eq!(
+            note_cursor(&json!({"LastNoteID": ""}), "111111109"),
+            "111111109"
+        );
+        // Claim.MD has been seen to echo the position as free text for an account
+        // whose activity is changes only. Treated as no notes, never as an error.
+        assert_eq!(
+            note_cursor(&json!({"LastNoteID": "none"}), "111111109"),
+            "111111109"
+        );
+        // Genuinely garbage values are kept off the screen: the previous position
+        // stands and the refresh continues.
+        assert_eq!(
+            note_cursor(&json!({"LastNoteID": "12ab"}), "111111109"),
+            "111111109"
+        );
+        assert_eq!(
+            note_cursor(&json!({"LastNoteID": true}), "111111109"),
+            "111111109"
+        );
+        assert_eq!(
+            note_cursor(&json!({"LastNoteID": {"a": 1}}), "111111109"),
+            "111111109"
+        );
     }
 
     #[test]
