@@ -127,21 +127,10 @@ struct Work {
     amount: i64,
     label: &'static str,
     target: &'static str,
-    /// Which half of the queue may show this.
-    half: Half,
+    /// Whose delay this is: insurance money is aged, a patient's bill is not.
+    insurance: bool,
     age_days: i64,
     pending_cents: i64,
-}
-
-/// Which half of the practice's policy opens an item: claim work by the claims area, a
-/// patient's own bill by patient billing. Preparing charges that have never reached a
-/// payer is neither yet — no claim exists or nothing was received — so either staff
-/// member reading billing at all is asked to prepare them or chase the signature.
-#[derive(Clone, Copy)]
-enum Half {
-    Claims,
-    Billing,
-    Signature,
 }
 
 /// The balance rows the queue reads, so a test can check the queue against the same
@@ -176,6 +165,7 @@ pub async fn claim_context_for_tests(
 /// billing card and the patient's bill read, so the queue cannot disagree with them.
 fn work_for(row: &Value, claim: &Value, today: chrono::NaiveDate) -> Option<(Work, String)> {
     let age_days = days_before(&text(claim, "service_date"), today).unwrap_or(0);
+    let sent_days = days_before(&text(claim, "sent_on"), today);
     let pending = cents(&row["pending_cents"]);
     let balance = cents(&row["balance_cents"]);
     let owes = cents(&row["owes_now_cents"]);
@@ -183,26 +173,18 @@ fn work_for(row: &Value, claim: &Value, today: chrono::NaiveDate) -> Option<(Wor
     let insured = row["insured"] == true;
     let status = text(row, "claim_status");
     let payer = named(&claim["payer_name"], "the payer");
-    // A claim the queue can actually speak of: the context excludes a voided claim, a
-    // crossover record and a synthetic lifecycle test, exactly as the claim screens do.
-    let has_claim = claim["claim_id"] != Value::Null;
-    // Whether any event says the payer ever received this claim. A crossover record is
-    // itself payer-side evidence that the primary claim went out, so the money waits on
-    // the payer even though the queue names no claim of its own.
-    let sent = claim["sent_on"] != Value::Null || claim["crossover"] == true;
-    // The day the claim reached the payer, when the queue knows it: the submission
-    // event's day; a crossover row's own day is when the primary's payment landed, not
-    // when anything was sent, so that wait is not counted from it.
-    let sent_days = days_before(&text(claim, "sent_on"), today);
-    // The payer's posted row status on the current answer, when there is one.
-    let head_status = text(claim, "head_status");
-    // The engine raises its denial flag when a posted answer's row refused the claim.
-    let denied = row["denied"] == true;
+    // Whether a submission event says the payer ever received this claim.
+    let sent = claim["sent_on"] != Value::Null;
+    // Whether the payer's answer has been posted for this account. Only that makes a
+    // refusal a denial to review; a refusal staff recorded themselves is still a claim
+    // the practice can fix and send again. The engine only raises its denial flag from
+    // the claim's status, so the queue reads the payer's posted row itself.
+    let answered_by_payer = text(claim, "denial_reason") == "4";
     let work = |kind: &'static str,
                 amount: i64,
                 label: &'static str,
                 target: &'static str,
-                half: Half,
+                insurance: bool,
                 age_days: i64,
                 pending_cents: i64,
                 message: String| {
@@ -212,7 +194,7 @@ fn work_for(row: &Value, claim: &Value, today: chrono::NaiveDate) -> Option<(Wor
                 amount,
                 label,
                 target,
-                half,
+                insurance,
                 age_days,
                 pending_cents,
             },
@@ -222,7 +204,7 @@ fn work_for(row: &Value, claim: &Value, today: chrono::NaiveDate) -> Option<(Wor
 
     if !posted {
         // Charges are only ready to send once the clinician has signed the visit.
-        if has_claim {
+        if claim["claim_id"] != Value::Null {
             return None;
         }
         let signed = text(row, "visit_status") == "signed";
@@ -236,7 +218,7 @@ fn work_for(row: &Value, claim: &Value, today: chrono::NaiveDate) -> Option<(Wor
                 "Ask for the visit signature"
             },
             "visit_review",
-            Half::Signature,
+            false,
             age_days,
             pending,
             if signed {
@@ -259,7 +241,7 @@ fn work_for(row: &Value, claim: &Value, today: chrono::NaiveDate) -> Option<(Wor
             owes,
             "Collect from the patient",
             "patient_billing",
-            Half::Billing,
+            false,
             age_days,
             pending,
             format!(
@@ -269,33 +251,16 @@ fn work_for(row: &Value, claim: &Value, today: chrono::NaiveDate) -> Option<(Wor
             ),
         );
     }
-    // The payer's posted answer refused the claim and paid nothing: the whole visit is
-    // at risk, so it comes before routine follow-up and is worked as a review.
-    if insured && denied && head_status == "4" {
-        return work(
-            "denied",
-            balance,
-            "Review the answer",
-            "claim",
-            Half::Claims,
-            age_days,
-            pending,
-            format!(
-                "The payer answered {} and paid nothing on this claim.",
-                status.as_str()
-            ),
-        );
-    }
-    // A refusal the payer's own posted row does not stand behind: the practice can fix
-    // it and send it again. Once a posted status-4 answer sits behind the refusal it is
-    // the denial kind above, worked as a review of the payer's decision, not a fix.
-    if insured && status == "rejected" && head_status != "4" {
+    // A refusal the practice can still fix and resend. When the engine also flags the
+    // account denied, a posted payer answer stands behind it, which is the next kind
+    // down the list and is worked differently.
+    if insured && status == "rejected" && !answered_by_payer {
         return work(
             "rejected",
             balance,
             "Fix the claim",
             "claim",
-            Half::Claims,
+            true,
             age_days,
             pending,
             match rejection_reason(&claim["rejection"]) {
@@ -304,14 +269,37 @@ fn work_for(row: &Value, claim: &Value, today: chrono::NaiveDate) -> Option<(Wor
             },
         );
     }
-    if insured && !has_claim {
+    // The payer answered with no money at all: the engine's own denial flag, or a claim
+    // the posted answer moved out of the sent states with nothing paid and nobody
+    // billed for the charge.
+    // The engine's own denial flag is only raised through a payer answer already
+    // posted, so it cannot fire on a claim the practice has merely prepared.
+    if insured && answered_by_payer && row["denied"] == true {
+        let reason = text(claim, "denial_reason");
+        let reason = if reason.is_empty() {
+            String::new()
+        } else {
+            format!(" The payer's status code is {}.", truncate(&reason, 40))
+        };
+        return work(
+            "denied",
+            balance,
+            "Review the answer",
+            "claim",
+            true,
+            age_days,
+            pending,
+            format!("The payer paid nothing on this claim.{reason}"),
+        );
+    }
+    if insured && status.is_empty() {
         // Posted insured charges with no claim of their own are waiting to be sent.
         return work(
             "ready_to_send",
             balance,
             "Prepare the claim",
             "visit_review",
-            Half::Signature,
+            false,
             age_days,
             pending,
             format!(
@@ -332,7 +320,7 @@ fn work_for(row: &Value, claim: &Value, today: chrono::NaiveDate) -> Option<(Wor
             balance,
             "Prepare the claim",
             "visit_review",
-            Half::Signature,
+            false,
             age_days,
             pending,
             format!(
@@ -350,7 +338,7 @@ fn work_for(row: &Value, claim: &Value, today: chrono::NaiveDate) -> Option<(Wor
                 waiting.max(balance),
                 "Post the payment",
                 "era",
-                Half::Claims,
+                true,
                 age_days,
                 pending,
                 format!(
@@ -362,8 +350,6 @@ fn work_for(row: &Value, claim: &Value, today: chrono::NaiveDate) -> Option<(Wor
         // Sent and still unanswered for long enough to chase. Insurance money owed is
         // what `pending` is while no answer has been posted, so an account that has
         // already been fully paid or fully moved to the patient is not waiting.
-        // Without a submission event the day it went out is unknown, so nothing is
-        // claimed to be overdue.
         let owed_by_insurer = pending > 0 || (balance > 0 && owes == 0);
         if owed_by_insurer && sent_days.is_some_and(|days| days >= WAITING_DAYS) {
             let days = sent_days.unwrap_or_default();
@@ -372,11 +358,11 @@ fn work_for(row: &Value, claim: &Value, today: chrono::NaiveDate) -> Option<(Wor
                 pending,
                 "Follow up with the payer",
                 "claim",
-                Half::Claims,
+                true,
                 days,
                 pending,
                 format!(
-                    "Insurance money on this visit has waited {days} days since the claim went out and {} is still owed.",
+                    "This claim has been with the payer for {days} days and {} is still owed.",
                     dollars(pending)
                 ),
             );
@@ -436,12 +422,7 @@ pub(crate) async fn collect(
     let accounts: Vec<Uuid> = rows
         .iter()
         .filter(|row| cents(&row["balance_cents"]) > 0)
-        .filter(|row| {
-            // With patient billing only, the queue can still hold a patient's own
-            // balance and charges whose claim nobody has prepared or sent yet — the
-            // claim-side answers are not read for an account it cannot show.
-            claims_visible || cents(&row["owes_now_cents"]) > 0 || row["posted"] != true
-        })
+        .filter(|row| claims_visible || cents(&row["owes_now_cents"]) > 0)
         .filter_map(|row| uuid(row, "id"))
         .collect();
     let claims = claim_context(&mut tx, a.tenant_id, &accounts)
@@ -452,6 +433,16 @@ pub(crate) async fn collect(
     let mut items: Vec<(usize, i64, Value)> = vec![];
     let mut money: Vec<(i64, i64)> = vec![];
     for row in rows.iter().filter(|row| cents(&row["balance_cents"]) > 0) {
+        if std::env::var("ATTENTION_DEBUG").is_ok() {
+            println!(
+                "ROW {} CTX {}",
+                row,
+                claims
+                    .get(&uuid(row, "id").unwrap_or_default())
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            );
+        }
         let Some(account) = uuid(row, "id") else {
             continue;
         };
@@ -461,15 +452,7 @@ pub(crate) async fn collect(
         let Some((item, message)) = work_for(row, claim, today) else {
             continue;
         };
-        // Each item belongs to exactly one half of the queue and is shown by the area
-        // that owns it: claim work by the claims area, a patient's bill by patient
-        // billing, and preparing an unseen claim or chasing a signature by either.
-        let visible = match item.half {
-            Half::Claims => claims_visible,
-            Half::Billing => billing_visible,
-            Half::Signature => claims_visible || billing_visible,
-        };
-        if !visible {
+        if (item.insurance && !claims_visible) || (!item.insurance && !billing_visible) {
             continue;
         }
         // Aging counts insurance money the practice has already asked a payer for and
@@ -552,14 +535,10 @@ async fn claim_context(
         "'rejection',(SELECT v.evidence FROM claim_revisions v",
         " WHERE v.tenant_id=k.tenant_id AND v.claim_id=k.id AND v.snapshot->>'status'='rejected'",
         " ORDER BY v.version DESC LIMIT 1),",
-        // The payer's own row status on the current answer, read the way the ledger
-        // reads it: the posting chain's head for this claim, over a posted remittance.
-        // An unposted import is not an answer, and an older posting is not the current
-        // one — a claim worked twice must report the payer's latest decision.
-        "'head_status',(SELECT r.document->'claims'->h.row_index->>'status'",
+        // The payer's own row status on the answer the practice has posted.
+        "'denial_reason',(SELECT coalesce(r.document->'claims'->h.row_index->>'status','')",
         " FROM era_claim_heads h",
         " JOIN era_remittances r ON r.tenant_id=h.tenant_id AND r.id=h.remittance_id",
-        " AND r.status='posted'",
         " WHERE h.tenant_id=k.tenant_id AND h.claim_id=k.id LIMIT 1),",
         // An imported payment nobody has posted yet, matched on the payer's own
         // control number for this claim.

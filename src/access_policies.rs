@@ -594,10 +594,6 @@ fn resources(path: &str) -> Option<Vec<&'static str>> {
         _ => None,
     }
 }
-/// Routes that answer for whichever area's data the policy allows, and say so plainly
-/// to one that allows none: the handler scopes every row itself, so the middleware lets
-/// the request through and the handler does the showing. A patient is still refused.
-const SELF_SCOPED_ROUTES: &[&str] = &["/api/v1/billing/attention"];
 fn permitted(permissions: &PolicyPermissions, method: &Method, path: &str) -> bool {
     let path = normalized_route(path);
     if matches!(
@@ -610,20 +606,15 @@ fn permitted(permissions: &PolicyPermissions, method: &Method, path: &str) -> bo
     if !known_route(method, &path) {
         return false;
     }
-    let Some(action) = action(method, &path) else {
+    let (Some(action), Some(resources)) = (action(method, &path), resources(&path)) else {
         return false;
     };
-    if SELF_SCOPED_ROUTES.contains(&path.as_str()) {
-        return true;
-    }
-    resources(&path).is_some_and(|resources| {
-        resources.iter().all(|resource| {
-            permissions
-                .get(*resource)
-                .copied()
-                .unwrap_or_default()
-                .permits(action)
-        })
+    resources.iter().all(|resource| {
+        permissions
+            .get(*resource)
+            .copied()
+            .unwrap_or_default()
+            .permits(action)
     })
 }
 fn public_callback(path: &str) -> bool {
