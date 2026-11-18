@@ -28,26 +28,99 @@ const cardReaderNotConnected='<div class="notice"><p>Finish payment setup before
 const cardReaderUnavailable='<div class="notice"><p>Reader ordering is not available yet.</p><p><button type="button" data-support-tickets>Support</button></p></div>';
 function cardReaderFailure(message){return `<div class="notice error"><p>${esc(message)}</p><p><button type="button" data-card-readers>Try again</button></p></div>`;}
 const cardReaderLoadFailure='Reader ordering could not load. Try again.';
-// Stripe's ordering page never arrived in this browser: usually an ad or tracker blocker, or a network filter.
-const cardReaderBlocked='This browser could not reach Stripe to show reader ordering. Turn off any ad or tracker blocker for this site, or try another browser or network, then try again.';
+// Stripe's ordering page never arrived in this browser. The line the owner reads names what the
+// browser actually reported, so a slow connection is never blamed on an ad blocker.
+const cardReaderRetryHint='If this keeps happening, turn off any ad or tracker blocker for this site, or try another browser or network.';
+// The page policy can report a blocked address while the page is still being drawn, so the name is
+// kept for the next message shown rather than thrown at a half-built screen.
+let cardReaderViolation='';
+function cardReaderFailureMessage(reason){
+ switch(reason?.kind){
+  case 'blocked':return `Reader ordering could not load. The browser blocked ${cardReaderViolation||'stripe.com'}. ${cardReaderRetryHint}`;
+  case 'timeout':return 'Reader ordering could not load. The connection to Stripe timed out. Check your connection and try again.';
+  case 'unreachable':return `Reader ordering could not load. The browser could not reach stripe.com. ${cardReaderRetryHint}`;
+  // Connect.js arrived but its views could not be started: the browser refused to run it.
+  case 'refused':return `Reader ordering could not start in this browser. ${cardReaderRetryHint}`;
+  default:return cardReaderLoadFailure;
+ }
+}
+function cardReaderHost(uri){
+ const match=/^[a-z][a-z0-9+.-]*:\/\/([^/:?#]+)/i.exec(String(uri||''));
+ return match?match[1].toLowerCase():'';
+}
+function noteCardReaderViolation(event){
+ const uri=String(event?.blockedURI||'');
+ if(!/stripe/i.test(uri)&&!/stripe/i.test(String(event?.violatedDirective||'')))return;
+ cardReaderViolation=cardReaderHost(uri)||'stripe.com';
+}
+// A page policy report is read even on a screen that never asks for the script, so the listener is
+// only attached where the browser offers one.
+const cardReaderPolicyHost=typeof globalThis.window?.addEventListener==='function'?globalThis.window:null;
+if(cardReaderPolicyHost)cardReaderPolicyHost.addEventListener('securitypolicyviolation',event=>noteCardReaderViolation(event));
 
 // Stripe documents this pattern for pages without a bundler: add the script tag to <head>, and
-// Connect.js calls StripeConnect.onLoad when it is ready.
+// Connect.js calls StripeConnect.onLoad when it is ready. The script's own load event is watched as
+// well, and readiness always means StripeConnect.init is a function: a download that finished while
+// init exists is ready even if that callback never fires, which is what made a healthy connection
+// read as a blocked browser. A tag that neither loaded nor failed is retried once before any
+// message, and the wait ends at 30 seconds however it ends.
+const cardReaderLoadTimeout=30000,cardReaderRetryDelay=1000;
 function loadCardReaderScript(){
  if(typeof window.StripeConnect?.init==='function')return Promise.resolve(window.StripeConnect);
  if(cardReaderLoader)return cardReaderLoader;
- const loader=cardReaderLoader=new Promise((resolve,reject)=>{
+ let settle;
+ const loader=cardReaderLoader=new Promise((resolve,reject)=>{settle={resolve,reject};});
+ let deadline=null,wait=null,tag=null,cause=null,attempt=0,reported=null;
+ const live=()=>typeof window.StripeConnect?.init==='function';
+ const stop=()=>{clearTimeout(deadline);clearTimeout(wait);deadline=wait=null;if(reported){window.removeEventListener?.('securitypolicyviolation',reported);reported=null;}};
+ const drop=()=>{tag?.remove?.();tag=null;};
+ // What the browser reported, in the owner's words. An address the page policy refused outranks
+ // everything else, because it also explains a script tag that simply never arrives.
+ const reason=()=>cardReaderViolation?{kind:'blocked'}:{kind:cause||'unreachable'};
+ const finish=()=>{stop();if(cardReaderLoader!==loader)return;cardReaderLoader=null;drop();settle.reject(new Error(cardReaderFailureMessage(reason())));};
+ // The load event and the documented callback both end the wait here, at once. A script that
+ // arrived without StripeConnect.init is only usable if the browser did not also refuse it.
+ const announce=()=>{
+  if(cardReaderLoader!==loader)return;
+  if(cardReaderViolation||(!live()&&cause))return finish();
+  stop();cardReaderLoader=null;drop();settle.resolve(window.StripeConnect);
+ };
+ // One automatic retry with a fresh tag: a single refused request is often only a hiccup. The
+ // reason is kept through it, so a second refusal is the end and is described by what happened.
+ const retry=kind=>{
+  cause=kind;drop();
+  wait=setTimeout(()=>{wait=null;load();},cardReaderRetryDelay);
+ };
+ const load=()=>{
+  // The policy can refuse the address before the browser even reports anything, so a report is
+  // looked for whenever the loader is about to ask for the script again.
+  if(cardReaderViolation)return finish();
+  if(cardReaderLoader!==loader)return;
   const script=document.createElement('script');
-  // The workspace stays busy while this loads, so a stalled download gives up after 20 seconds.
-  const fail=()=>{clearTimeout(timer);if(cardReaderLoader!==loader)return;cardReaderLoader=null;script.remove?.();reject(new Error(cardReaderBlocked));};
-  const timer=setTimeout(fail,20000);
+  script.src=cardReaderScriptUrl;script.async=true;tag=script;
+  script.onerror=()=>{
+   script.remove?.();
+   if(cardReaderLoader!==loader)return;
+   if(cardReaderViolation)return finish();
+   if(attempt>=1)return finish();
+   attempt+=1;retry(cause||'unreachable');
+  };
+  script.onload=announce;
   window.StripeConnect=window.StripeConnect||{};
-  window.StripeConnect.onLoad=()=>{clearTimeout(timer);resolve(window.StripeConnect);};
-  script.src=cardReaderScriptUrl;script.async=true;script.onerror=fail;
+  const earlier=window.StripeConnect.onLoad;
+  // Connect.js calls onLoad with init in place; a callback left by an earlier visit is kept too.
+  window.StripeConnect.onLoad=announce;
+  // A page policy usually refuses the address without ever failing the tag, so the report itself
+  // ends the wait. The page keeps its own listener for reports that arrive later.
+  if(!reported&&typeof window.addEventListener==='function')window.addEventListener('securitypolicyviolation',reported=()=>{if(cardReaderViolation)finish();});
   document.head.appendChild(script);
- });
- return cardReaderLoader;
+  // The workspace stays busy while this loads, so a stalled download gives up after 30 seconds.
+  if(!deadline)deadline=setTimeout(()=>{cause='timeout';finish();},cardReaderLoadTimeout);
+ };
+ load();
+ return loader;
 }
+
 // One Stripe instance per signed-in owner, as Stripe recommends. Stripe calls fetchClientSecret
 // again by itself when a long visit outlasts the first secret.
 function cardReaderConnect(stripe,data,identity){
@@ -115,7 +188,12 @@ async function openCardReaders(){
  if(!current())return;
  show(page('<div id="card-reader-status"></div><section class="billing-section"><h3>Order a reader</h3><p class="muted">Readers that work with SunCharts: BBPOS WisePOS E, Stripe Reader S700, S710 and T600. The Stripe Reader M2 does not.</p><div id="card-reader-shop"></div></section><section class="billing-section"><h3>Your orders</h3><div id="card-reader-orders"></div></section>'));
  try{mountCardReaders(cardReaderConnect(stripe,data,identity),current);}
- catch{endCardReaderConnection();show(page(cardReaderFailure(cardReaderLoadFailure)));}
+ catch{
+  endCardReaderConnection();
+  // The Stripe views never arrived even though Connect.js did: the browser refused to run it.
+  // A policy report names the address, and an unusable script says the page cannot start ordering.
+   show(page(cardReaderFailure(cardReaderFailureMessage(cardReaderViolation?{kind:'blocked'}:{kind:'refused'}))));
+ }
 }
 function endCardReaderConnection(){
  const connection=cardReaderConnection;cardReaderConnection=null;

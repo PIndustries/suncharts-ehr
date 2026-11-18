@@ -464,6 +464,16 @@ pub fn app(state: State) -> Router {
             get(index).post(partner_support::accept),
         )
         .route(
+            "/autorefresh.js",
+            get(|| async {
+                web_asset(
+                    "autorefresh.js",
+                    "text/javascript; charset=utf-8",
+                    include_str!("../web/autorefresh.js"),
+                )
+            }),
+        )
+        .route(
             "/connect-onboarding.js",
             get(|| async {
                 web_asset(
@@ -894,6 +904,26 @@ pub fn app(state: State) -> Router {
                     "terminology.js",
                     "application/javascript",
                     include_str!("../web/terminology.js"),
+                )
+            }),
+        )
+        .route(
+            "/typeahead.js",
+            get(|| async {
+                web_asset(
+                    "typeahead.js",
+                    "application/javascript",
+                    include_str!("../web/typeahead.js"),
+                )
+            }),
+        )
+        .route(
+            "/typeahead.css",
+            get(|| async {
+                web_asset(
+                    "typeahead.css",
+                    "text/css",
+                    include_str!("../web/typeahead.css"),
                 )
             }),
         )
@@ -1386,6 +1416,16 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/claim-timeline.js",
+            get(|| async {
+                web_asset(
+                    "claim-timeline.js",
+                    "application/javascript",
+                    include_str!("../web/claim-timeline.js"),
+                )
+            }),
+        )
+        .route(
             "/claimmd-operations.js",
             get(|| async {
                 web_asset(
@@ -1422,6 +1462,16 @@ pub fn app(state: State) -> Router {
                     "clearinghouse.js",
                     "application/javascript",
                     include_str!("../web/clearinghouse.js"),
+                )
+            }),
+        )
+        .route(
+            "/claim-problems.js",
+            get(|| async {
+                web_asset(
+                    "claim-problems.js",
+                    "application/javascript",
+                    include_str!("../web/claim-problems.js"),
                 )
             }),
         )

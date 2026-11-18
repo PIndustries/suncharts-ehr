@@ -41,9 +41,9 @@ function fixture(claims=false){
  for(const handler of listeners.change||[])handler({target:{closest:selector=>selector==='#billing-filter select[name="status"]'?{value:'posted'}:null}});
  await tools.pending;assert.deepEqual(toolCalls.pop(),['posted',undefined,true]);
  function click(attribute){const button={dataset:{},type:'button',closest:selector=>selector==='#billing-tool'?{}:null,hasAttribute:name=>name===attribute};for(const handler of listeners.click||[])handler({target:{closest:selector=>selector==='button'?button:null},preventDefault(){}});return tools.pending;}
- await click('data-billing-refresh');assert.equal(toolCalls.pop()[2],true);
  await click('data-billing-next');assert.equal(toolCalls.pop()[2],true);
  await click('data-billing-overview');assert.deepEqual(toolCalls.pop(),[]);
+ assert.doesNotMatch(billing,/data-billing-refresh/,'the worklist has no manual Refresh button; the shared auto-refresh keeps it current');
  const setupNodes={tools:{innerHTML:''}},setupCalls=[];let setupPermissions=false;
  const setup={console,Intl,URLSearchParams,me:{role:'front_desk'},document:{addEventListener(){}},window:{addEventListener(){}},$:id=>setupNodes[id],showTool(){},esc:String,human:String,workspaceResourceAllowed:resource=>resource==='billing'||setupPermissions,api:async path=>{setupCalls.push(path);return path.includes('/worklist')?{items:[{id:'account',patient_id:'patient',patient_name:'Synthetic',mrn:'MRN',service_date:'2026-11-11',status:'posted',total_cents:10000,balance_cents:7500}],next_cursor:null}:{items:[]};},loadClaimMdConnection:async()=>{setupCalls.push('claims status');return {};},claimmdPayerDirectoryPanel:()=>'<div>CLAIMMD-PAYER-SEARCH</div>'};
  vm.createContext(setup);vm.runInContext(billing,setup);await setup.showBillingQueue('',undefined,true);

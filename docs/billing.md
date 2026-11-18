@@ -668,6 +668,15 @@ workspace page alone names the origins Stripe documents for it
 for images, and the hash of Stripe's empty style element). Patient portal and
 intake pages keep the stricter policy. Signing out ends the Stripe session.
 
+The page is ready as soon as `StripeConnect.init` is a function, whether that comes
+from the script's own load event or from the documented `StripeConnect.onLoad`
+callback. A request the browser refuses is retried once with a fresh script tag after
+one second, and the whole wait ends after 30 seconds. When ordering still cannot be
+shown, the message names what the browser reported — the address a page policy
+refused, a refused connection, or a timeout — rather than naming an ad blocker for a
+practice that has none; **Try again** asks the browser for Connect.js again without
+reloading the page. The policy itself is never relaxed for this.
+
 Operators: SunCharts Connect needs `SUNCHARTS_STRIPE_PUBLISHABLE_KEY`, and the
 platform's Stripe Dashboard must have "Terminal hardware shop configurations"
 enabled under Connect settings.

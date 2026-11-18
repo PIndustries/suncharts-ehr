@@ -70,7 +70,13 @@ const rich=plan([
  const payerHtml=base.c.claimmdPayerRows([{payer_name:'Payer <script>',payerid:'60054',payer_type:'commercial',eligibility:'yes','1500_claims':'yes',ub_claims:'no',era:'enrollment'}]);
  assert.match(payerHtml,/Payer &lt;script&gt;/);assert.doesNotMatch(payerHtml,/<script>/);assert.match(payerHtml,/60054/);
  assert.match(base.c.claimmdPayerRows([{payer_name:'Synthetic payer',payerid:'SYN001'}],true),/data-claimmd-payer-select="SYN001"/);
- assert.match(base.c.claimmdCoveragePayerSearch(),/coverage-claimmd-payer-search/);
+ // The directory lookup is typed into, not pressed: the box carries its own id, says matches
+ // appear as you type, and there is no form or search button left to press.
+ const lookup=base.c.claimmdCoveragePayerSearch();
+ assert.match(lookup,/id="coverage-claimmd-payer-query"/);
+ assert.match(lookup,/matches appear as you type/);
+ assert.doesNotMatch(lookup,/<form|<button/);
+ assert.match(lookup,/coverage-claimmd-payer-results/);
  vm.runInContext("claimmdProviderDefaults={providers:[{id:'provider-1',display_name:'Synthetic Provider',npi:'1234567893'}],facilities:[{id:'facility-1',name:'Synthetic Clinic',address:'100 Test Way'}],default_provider_id:'provider-1',default_facility_id:'facility-1'}",base.c);
  assert.deepEqual(JSON.parse(JSON.stringify(base.c.claimmdClaimProviderDefaults())),{billing_provider_name:'Synthetic Clinic',billing_npi:'1234567893',rendering_npi:'1234567893',billing_address:'100 Test Way',tax_id:''});
  console.log('PASS payer directory, claim defaults and no credential fields in browser source');

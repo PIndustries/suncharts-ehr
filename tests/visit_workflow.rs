@@ -788,6 +788,7 @@ async fn standalone_browser_sessions_require_origin_and_revoke_on_logout() {
     for (path, content_type) in [
         ("/patient-portal", "text/html"),
         ("/card-readers.js", "application/javascript"),
+        ("/autorefresh.js", "text/javascript"),
         ("/api/v1/patients", "application/json"),
     ] {
         let response = router

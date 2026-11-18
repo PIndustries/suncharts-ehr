@@ -387,6 +387,7 @@ async function api(path, method = 'GET', body, version) {
   return data;
 }
 function signInScreen() {
+  if(typeof clearAutoRefreshSession==='function')clearAutoRefreshSession();
   if(typeof clearClaimDrafts==='function')clearClaimDrafts();
   if(typeof clearBillingChargeDrafts==='function')clearBillingChargeDrafts();
   if(typeof clearWorkspaceAccessSession==='function')clearWorkspaceAccessSession();
@@ -444,8 +445,11 @@ async function run(action) {
   document.documentElement?.classList.add('app-busy');
   const buttons = Array.from(document.querySelectorAll('button'), b=>[b,b.disabled]);
   buttons.forEach(([b])=>{b.disabled=true;});
-  try { await action(); } catch(e) { if (me) notice(e.message,true); else $('login-error').textContent=e.message; }
-  finally { busy=false;$('shell-loading').hidden=true;document.documentElement?.classList.remove('app-busy');buttons.forEach(([b,disabled])=>{if(b.isConnected)b.disabled=disabled;});window.SunChartsDialog?.restoreFocus(); }
+  // A successful save in any screen releases the shared auto-refresh quiet
+  // window, so open revenue screens show the new data within a second.
+  let saved=false;
+  try { await action(); saved=true; } catch(e) { if (me) notice(e.message,true); else $('login-error').textContent=e.message; }
+  finally { if(saved&&typeof autoRefreshTickSoon==='function')autoRefreshTickSoon(); busy=false;$('shell-loading').hidden=true;document.documentElement?.classList.remove('app-busy');buttons.forEach(([b,disabled])=>{if(b.isConnected)b.disabled=disabled;});window.SunChartsDialog?.restoreFocus(); }
 }
 async function enter() {
   me=await api('/auth/me');

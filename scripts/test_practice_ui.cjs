@@ -6,7 +6,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 // Staff display helpers load before every feature script, exactly as index.html loads them.
-{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
+// The shared display helpers and live patient picker load before every feature script,
+// exactly as index.html loads them.
+{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);for(const file of ['web/display-format.js','web/patient-picker.js'])vm.runInContext(require('fs').readFileSync(file,'utf8'),context);return context;};}
 
 const root = path.resolve(__dirname, '..');
 
@@ -31,6 +33,7 @@ function fixture({search = '', practice = false} = {}) {
   }
   const context = vm.createContext({
     console, Date, Intl, URL, URLSearchParams, TextEncoder,
+    setTimeout, clearTimeout,
     FormData: class { constructor(form) {this.form=form;} *[Symbol.iterator]() {yield* Object.entries(this.form.values||{});} },
     location: {search}, window: {scrollTo() {},addEventListener() {}}, crypto: {randomUUID: () => 'fixture-request'},
     document: {
