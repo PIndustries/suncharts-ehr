@@ -15,13 +15,13 @@ function fixture(){
  for(const name of ['code','description','code_system']){
   const attributes={},field={name,value:name==='code_system'?'CPT':name==='code'?'manual':'Manual description',isConnected:true,disabled:false,readOnly:false,
    setAttribute:(k,v)=>attributes[k]=String(v),removeAttribute:k=>delete attributes[k],getAttribute:k=>attributes[k],focus(){},
-   matches(selector){return (name!=='code_system'&&selector.includes('[data-procedure-autocomplete]'))||selector.includes(`[name="${name}"]`);},
+   matches(selector){return (name!=='code_system'&&selector.includes('[data-terminology-combobox]'))||selector.includes(`[name="${name}"]`);},
    closest(selector){if(selector.includes('billing-charge-row'))return row;if(selector==='form')return form;if(selector==='.terminology-combobox')return hosts[name];return null;},
    hasAttribute(){return false;},dispatchEvent(e){send(e.type,field,e);}};
   fields[name]=field;
   if(name!=='code_system'){
-   const status={textContent:''},list={id:'list-'+name,innerHTML:'',replaceChildren(){this.innerHTML='';},querySelector(){return {scrollIntoView(){}};}},popup={hidden:true,querySelector:s=>s==='[data-procedure-status]'?status:list};
-   hosts[name]={querySelector:s=>({'[data-procedure-popup]':popup,'[data-procedure-results]':list,'[data-procedure-status]':status,'[data-procedure-autocomplete]':field})[s],popup,list,status};
+   const status={textContent:''},list={id:'list-'+name,innerHTML:'',replaceChildren(){this.innerHTML='';},querySelector(){return {scrollIntoView(){}};}},popup={hidden:true,querySelector:s=>s==='[data-terminology-status]'?status:list};
+   hosts[name]={querySelector:s=>({'[data-terminology-popup]':popup,'[data-terminology-results]':list,'[data-terminology-status]':status,'[data-terminology-combobox]':field})[s],popup,list,status};
   }
  }
  const context=vm.createContext({Map,Set,WeakMap,WeakSet,Object,Array,Number,String,Date,JSON,URLSearchParams,encodeURIComponent,
@@ -64,7 +64,7 @@ function fixture(){
  f=fixture();f.setResponse(async()=>({items:[{...item,billable:false},{...item,active:false},{...item,effective_end:'2025-01-01'}],release:{id:item.release_id}}));await f.type('900');assert.equal(f.hosts.code.list.innerHTML,'');
  f=fixture();f.fields.code.value='90';f.send('input',f.fields.code,{isComposing:true});assert.equal(f.calls.length,0);assert.equal(f.timers.size,0);f.send('compositionend',f.fields.code);await f.flush();assert.equal(f.calls.length,1);
  f=fixture();f.fields.code.value='900';f.send('input',f.fields.code);f.run('clearTerminologySession()');await f.flush();assert.equal(f.calls.length,0);assert.equal(f.hosts.code.popup.hidden,true);
- f=fixture();await f.type('900');f.context.copy={querySelectorAll:s=>s==='[data-procedure-popup]'?[f.hosts.code.popup]:[f.fields.code]};f.run('clearProcedureAutocompleteMarkup(copy)');assert.equal(f.hosts.code.popup.hidden,true);assert.equal(f.hosts.code.list.innerHTML,'');assert.equal(f.fields.code.getAttribute('aria-expanded'),'false');assert.equal(f.fields.code.value,'900');
+ f=fixture();await f.type('900');f.context.copy={querySelectorAll:s=>s==='[data-terminology-popup]'?[f.hosts.code.popup]:[f.fields.code]};f.run('clearTerminologyComboboxMarkup(copy)');assert.equal(f.hosts.code.popup.hidden,true);assert.equal(f.hosts.code.list.innerHTML,'');assert.equal(f.fields.code.getAttribute('aria-expanded'),'false');assert.equal(f.fields.code.value,'900');
  const markup=f.run("terminologyProcedureFields({code:'90001',description:'Synthetic full description'})");assert.match(markup,/role="combobox"/);assert.match(markup,/aria-controls=/);assert.match(markup,/maxlength="10000"/);
  console.log('PASS inline CPT/HCPCS debounce, code/description search, keyboard selection, provenance, stale identity/encounter/account/date guards, manual and license fallback, IME, draft cleanup and no busy lock');
 })().catch(error=>{console.error(error);process.exitCode=1;});

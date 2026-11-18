@@ -25,7 +25,7 @@ function billingChargeMarkup(form){
  if(!form?.cloneNode)return null;
  const copy=form.cloneNode(true),fields=form.querySelectorAll('input,textarea,select'),targets=copy.querySelectorAll('input,textarea,select');
  fields.forEach((field,index)=>{const target=targets[index];if(field.tagName==='SELECT'){Array.from(target.options).forEach((option,i)=>option.toggleAttribute('selected',field.options[i].selected));}else if(field.tagName==='TEXTAREA')target.textContent=field.value;else{target.setAttribute('value',field.value);if(['checkbox','radio'].includes(field.type))target.toggleAttribute('checked',field.checked);}});
- if(typeof clearProcedureAutocompleteMarkup==='function')clearProcedureAutocompleteMarkup(copy);
+ if(typeof clearTerminologyComboboxMarkup==='function')clearTerminologyComboboxMarkup(copy);
  copy.querySelectorAll('[data-charge-diagnoses]').forEach(node=>node.replaceChildren());
  copy.querySelectorAll('[data-charge-draft-notice]').forEach(node=>node.remove());copy.querySelectorAll('button[disabled]').forEach(button=>button.removeAttribute('disabled'));copy.removeAttribute('data-draft-stale');
  return copy.outerHTML;
@@ -285,7 +285,7 @@ function chargeCodeSystem(l){const code=String(l.code||'').trim().toUpperCase();
 function chargeMiniField(name,label,value='',max=200,required=false){return `<label>${label}<input name="${name}" type="text" value="${esc(value)}" ${max?`maxlength="${max}"`:''} ${required?'required':''}></label>`;}
 function chargeCodeCell(l){
  const extra=chargeIsDrugCode(l.code)?' open':'';
- return `${typeof terminologyProcedureFields==='function'?terminologyProcedureFields(l):chargeMiniField('code','CPT / HCPCS procedure code',l.code||'',100,true)}<button type="button" data-procedure-code-list>Search the code list</button><div class="charge-drug"${extra}><p class="charge-drug-title">Drug given</p><div class="charge-drug-grid"><label>NDC code<input name="ndc_code" type="text" maxlength="13" value="${esc(l.ndc_code||'')}" placeholder="11 digits"></label><label>Quantity<input name="ndc_quantity" type="text" maxlength="7" value="${esc(l.ndc_quantity||'')}" placeholder="Amount given"></label><label>Unit<select name="ndc_unit">${ndcUnits.map(([v,name])=>`<option value="${v}" ${v===(l.ndc_unit||'')?'selected':''}>${v?`${v} — ${name}`:''}</option>`).join('')}</select></label></div><p class="muted">For an injected drug fill all three; leave them blank for any other service.</p></div>`;
+ return `${typeof terminologyProcedureFields==='function'?terminologyProcedureFields(l):chargeMiniField('code','CPT / HCPCS procedure code',l.code||'',100,true)}<div class="charge-drug"${extra}><p class="charge-drug-title">Drug given</p><div class="charge-drug-grid"><label>NDC code<input name="ndc_code" type="text" maxlength="13" value="${esc(l.ndc_code||'')}" placeholder="11 digits"></label><label>Quantity<input name="ndc_quantity" type="text" maxlength="7" value="${esc(l.ndc_quantity||'')}" placeholder="Amount given"></label><label>Unit<select name="ndc_unit">${ndcUnits.map(([v,name])=>`<option value="${v}" ${v===(l.ndc_unit||'')?'selected':''}>${v?`${v} — ${name}`:''}</option>`).join('')}</select></label></div><p class="muted">For an injected drug fill all three; leave them blank for any other service.</p></div>`;
 }
 function chargeDescriptionCell(l){
  const extra=typeof terminologyLookupButton==='function'?terminologyLookupButton('procedure'):'';
