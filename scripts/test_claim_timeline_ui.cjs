@@ -160,6 +160,12 @@ const history={items:[{version:1,created_at:'2026-11-11T15:30:00Z',reason:'Claim
   assert.ok(!/undefined|\[object Object\]|NaN/.test(offline),offline);
  // A provider record naming a different claim never joins this claim's timeline.
  assert.ok(!section.includes('Another patient note'),section);
+ // Matching is by claim identity, and a bare provider claim ID is never guessed at:
+ // the same numeric ID can appear on another tenant's record.
+ assert.strictEqual(f.context.claimMdRecordBelongsToClaim({patient_control_number:'SC-000123',content:{}},claim()),true);
+ assert.strictEqual(f.context.claimMdRecordBelongsToClaim({claimmd_id:'902000001',content:{}},claim()),false,'a claim ID alone does not attach a note');
+ assert.strictEqual(f.context.claimMdRecordBelongsToClaim({content:{pcn:'SC-000124'}},claim()),false,'a note naming another control number does not attach');
+ assert.strictEqual(f.context.claimMdRecordBelongsToClaim({content:{claimid:'ICN-998873'}},claim()),false);
 
 // Records are matched by the same identity rule the Claim.MD activity panel uses.
  assert.strictEqual(f.context.claimMdRecordBelongsToClaim({claimmd_id:'902000001',content:{pcn:'SC-000123'}},claim()),true);

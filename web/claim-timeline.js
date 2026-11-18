@@ -397,12 +397,14 @@ function claimMdRecordMatchesActivityPanel(record,claim){
 // control number as well keeps website notes attached to the claim they describe.
 function claimMdRecordBelongsToClaim(record,claim){
  if(claimMdRecordMatchesActivityPanel(record,claim))return true;
- // Attach only when the provider record names this claim's patient control number.
- // A record naming a different control, or naming none at all, stays unattached: an
- // ambiguous website note must not appear on the wrong patient's claim.
+ // A record naming a different claim's patient control number never joins this claim.
  const controls=[claim.control_number,claim.content?.external_control_number].filter(Boolean).map(String);
  const claimed=[record.patient_control_number,record.content?.pcn].filter(Boolean).map(String);
- return claimed.length>0&&claimed.every(value=>controls.includes(value));
+ if(claimed.some(value=>!controls.includes(value)))return false;
+ // Naming our control number attaches the record. Nothing else is inferred from a
+ // bare Claim.MD claim ID: the same numeric ID can appear on another tenant's record,
+ // and a note that does not name a claim must not be guessed onto someone's chart.
+ return claimed.length>0;
 }
 // 277CA rows for this claim, read through the existing acknowledgment endpoint.
 // A row is used only when its claim control matches this claim exactly.
