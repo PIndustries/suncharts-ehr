@@ -8,7 +8,6 @@ pub mod auth;
 pub mod automation_event_runtime;
 pub mod backend;
 pub mod billing;
-pub mod billing_attention;
 mod branding;
 pub mod browser;
 pub mod builtin_connectors;
@@ -440,7 +439,6 @@ pub fn app(state: State) -> Router {
         .merge(reader_payments::router())
         .merge(claims::router())
         .merge(visit_billing::router())
-        .merge(billing_attention::router())
         .merge(checkout::router())
         .merge(era_batches::router())
         .merge(era_chains::router())

@@ -2180,27 +2180,6 @@ pub(crate) async fn post_recovery(
     Ok(())
 }
 
-/// Posts a remittance whose matches are already saved, exactly as the remittance screen
-/// does. Integration tests use it to make a real posted insurance payment instead of
-/// inserting posting rows by hand.
-#[doc(hidden)]
-pub async fn post_saved_remittance(
-    tx: &mut Transaction<'_, Postgres>,
-    a: &Actor,
-    remittance: Uuid,
-    reason: &str,
-) -> Result<()> {
-    let r = remit_row(tx, a, remittance).await?;
-    let matches: Vec<Match> = serde_json::from_value(r.matches.clone())
-        .map_err(|_| Error::Invalid("invalid stored matches"))?;
-    if !review(tx, a, &r, &matches).await?.is_empty() {
-        return Err(Error::Conflict(
-            "synthetic remittance does not reconcile; check the test data",
-        ));
-    }
-    post_rows(tx, a, &r, &matches, reason).await
-}
-
 pub(crate) async fn post_rows(
     tx: &mut Transaction<'_, Postgres>,
     a: &Actor,
