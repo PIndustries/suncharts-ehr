@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
+// The timeline shows dates in the viewer's zone; pin one so the expectations are the same everywhere.
+process.env.TZ='America/Chicago';
 // The "What happened" timeline. The builder is pure, so these checks run on plain
 // node with small stubs - no browser, no jsdom.
 const assert=require('node:assert');
@@ -116,7 +118,7 @@ const history={items:[{version:1,created_at:'2026-11-11T15:30:00Z',reason:'Claim
  const reversed=f.context.buildClaimTimeline({claim:claim({status:'adjudicated'}),now:NOW,history:[...history.items],tracking:{submissions:[sent],reports:[]},
   era:{remittance:{id:'era-2',status:'posted',trace:'TRACE-89',payment_date:'2026-11-15'},row:{status:'22',paid_cents:8000,patient_responsibility_cents:0,adjustments:[]}}});
  assert.ok(reversed.steps.some(step=>step.label==='Payment reversed'));
- assert.match(reversed.current,/The payer reversed the payment since Nov 15, 2026, 2 days/);
+ assert.match(reversed.current,/The payer reversed the payment since Nov 15, 2026, 3 days/);
 
  // Rendering: one large line, copyable identifiers, no bare JSON in the body.
  const html=f.context.claimTimelineMarkup(paid);

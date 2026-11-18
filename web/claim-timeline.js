@@ -174,8 +174,10 @@ function timelineDate(value){
 }
 function dayGap(from,to){
  if(!from||!to)return null;
- const ms=to.getTime()-from.getTime();
- return Number.isFinite(ms)&&ms>=0?Math.floor(ms/86400000):null;
+ // Calendar days between the two dates as the person sees them, never the hour of day.
+ const a=Date.UTC(from.getFullYear(),from.getMonth(),from.getDate()),b=Date.UTC(to.getFullYear(),to.getMonth(),to.getDate());
+ const days=Math.round((b-a)/86400000);
+ return Number.isFinite(days)&&days>=0?days:null;
 }
 // Claim.MD status letters: a claim is accepted by Claim.MD ("A") and then by the
 // payer; "R" is a rejection. senderid "CLMMD" means the clearinghouse, not the payer.
