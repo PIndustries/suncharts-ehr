@@ -41,31 +41,3 @@
 .payment-card-number{font-size:20px;letter-spacing:.06em;font-variant-numeric:tabular-nums}
 .payment-card small{margin-top:auto;color:var(--muted)}
 .payment-card small.payment-card-use{margin-top:0;line-height:1.35}
-
-/* Billing work queue: what needs doing first, and how long the money has been waiting. */
-.billing-attention{margin:18px 0;padding:14px;border:1px solid var(--line);border-radius:6px;background:var(--surface)}
-.billing-attention>.section-head{margin-bottom:10px}
-.billing-attention .section-head p{margin:4px 0 0}
-.billing-attention .actions{margin-top:0}
-.billing-attention-clear{margin:0;padding:14px;background:var(--success-bg);color:var(--success-text);border-left:3px solid var(--success-line);font-size:var(--fs-sm)}
-.billing-aging{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:5px;overflow:hidden;margin:0 0 12px}
-.billing-aging-bucket{padding:10px 12px;background:var(--surface);display:grid;gap:2px;min-width:0}
-.billing-aging-bucket b{font-size:1.15rem;font-variant-numeric:tabular-nums;color:var(--ink)}
-.billing-aging-bucket span{font-size:var(--fs-xs);color:var(--muted)}
-.billing-aging-bucket small{font-size:var(--fs-xs);color:var(--muted)}
-.billing-aging-bucket.is-total{background:var(--surface-raised)}
-.billing-attention-filters{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
-.billing-attention-filters button{display:inline-flex;align-items:center;gap:6px;min-height:29px;padding:4px 9px;font-size:var(--fs-sm);border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--muted)}
-.billing-attention-filters button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--blue);font-weight:650}
-.billing-attention-filters button span{font-size:var(--fs-xs);color:inherit}
-.billing-attention-table{min-width:620px}
-.billing-attention-table td{vertical-align:middle}
-.billing-attention-row>td:first-child{border-left:3px solid var(--line);padding-left:9px}
-.billing-attention-row.is-rejected>td:first-child,.billing-attention-row.is-denied>td:first-child{border-left-color:var(--error-line)}
-.billing-attention-row.is-era_needs_review>td:first-child,.billing-attention-row.is-ready_to_send>td:first-child{border-left-color:var(--success-line)}
-.billing-attention-row.is-waiting_on_payer>td:first-child{border-left-color:var(--warning-line)}
-.billing-attention-chip{display:inline-block;font-size:var(--fs-xs);font-weight:650;line-height:1.5;padding:2px 8px;border-radius:11px;border:1px solid var(--line);background:var(--surface-raised);color:var(--ink);white-space:nowrap}
-.billing-attention-chip.is-rejected,.billing-attention-chip.is-denied{background:var(--error-bg);border-color:var(--error-line);color:var(--error-text)}
-.billing-attention-chip.is-era_needs_review,.billing-attention-chip.is-ready_to_send{background:var(--success-bg);border-color:var(--success-line);color:var(--success-text)}
-.billing-attention-chip.is-waiting_on_payer,.billing-attention-chip.is-patient_balance{background:var(--warning-bg);border-color:var(--warning-line);color:var(--warning-text)}
-@media(max-width:600px){.billing-attention{padding:10px}.billing-aging{grid-template-columns:repeat(2,minmax(0,1fr))}}

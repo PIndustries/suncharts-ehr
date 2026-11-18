@@ -1256,16 +1256,6 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
-            "/billing-attention.js",
-            get(|| async {
-                web_asset(
-                    "billing-attention.js",
-                    "text/javascript; charset=utf-8",
-                    include_str!("../web/billing-attention.js"),
-                )
-            }),
-        )
-        .route(
             "/billing-overview.js",
             get(|| async {
                 web_asset(
