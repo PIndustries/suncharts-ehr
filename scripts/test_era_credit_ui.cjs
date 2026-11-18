@@ -2,13 +2,18 @@
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 // Staff display helpers load before every feature script, exactly as index.html loads them.
-{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
+// The screens are loaded the way the browser loads them: the picker first, then the screen that
+// registers its records with it, so a type-ahead box on any of them resolves the same way.
+const PICKER_SRC=require('fs').readFileSync('web/typeahead.js','utf8');
+{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);vm.runInContext(PICKER_SRC,context);return context;};}
 
 const handlers={},nodes=new Map(),calls=[];
 let html='',pending;
 const node=id=>{if(!nodes.has(id))nodes.set(id,{innerHTML:'',elements:{document_text:{value:''},original_text:{value:''}},querySelectorAll:()=>[]});return nodes.get(id);};
 const detail={remittance:{id:'era',payer_id:'payer',trace:'SYNTHETIC',status:'posted',version:3,document_hash:'a'.repeat(64),matches:[],document:{payer_code:'SYN',payment_date:'2026-10-01',total_paid_cents:8000,currency:'USD',claims:[],supplemental:[{segment:'AMT',elements:['B6','100'],claim_index:0,service_index:0}]}},postings:[{claim_id:'claim',account_id:'account',patient_responsibility_cents:2000,writeoff_cents:2550,current_account_balance_cents:-1000}]};
-const context={console,Map,JSON,Number,Date,Error,crypto:{randomUUID:()=> 'request'},document:{addEventListener:(type,fn)=>(handlers[type]??=[]).push(fn)},$:node,esc:v=>String(v??'').replaceAll('<','&lt;'),human:v=>v,date:v=>v,money:v=>'$'+(v/100).toFixed(2),billingWrite:()=>true,payerName:()=> 'Synthetic payer',billingPayers:[],selectField:()=>'',billingField:()=>'',sourceNotice:()=>'',showProviderSettlement:async()=>{},run:fn=>pending=fn(),api:async(path,method='GET')=>{calls.push({path,method});return path.endsWith('/history')?{items:[]}:detail;}};
+const context={console,Map,JSON,Number,Date,Error,crypto:{randomUUID:()=> 'request'},document:{addEventListener:(type,fn)=>(handlers[type]??=[]).push(fn)},$:node,esc:v=>String(v??'').replaceAll('<','&lt;'),human:v=>v,date:v=>v,money:v=>'$'+(v/100).toFixed(2),billingWrite:()=>true,payerName:()=> 'Synthetic payer',billingPayers:[],selectField:()=>'',
+  // The insurance company box is typed into; this harness draws the pair the form submits.
+  payerPickerMarkup:(name,label,opts={})=>`<label>${label}<input type="text" name="${name}_name" value="${String(opts.value||'')}"><input type="hidden" name="${name}_id" value=""></label>`,billingField:()=>'',sourceNotice:()=>'',showProviderSettlement:async()=>{},run:fn=>pending=fn(),api:async(path,method='GET')=>{calls.push({path,method});return path.endsWith('/history')?{items:[]}:detail;}};
 vm.createContext(context);vm.runInContext(fs.readFileSync('web/claims.js','utf8'),context);vm.runInContext(fs.readFileSync('web/era-batches.js','utf8'),context);
 context.claimPane=value=>html=value;context.claimHistory=()=>'';
 (async()=>{

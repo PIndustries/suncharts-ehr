@@ -1,0 +1,13 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/* Type-as-you-go pickers for payers and pharmacies. The result list is a child of the field
+   so a narrow grid column never squeezes it. */
+[data-typeahead-host] { position:relative; display:block; }
+[data-typeahead-host] > [data-typeahead-results] { position:absolute; z-index:30; top:100%; left:0; width:max(100%,20rem); max-width:min(34rem,calc(100vw - 3rem)); margin:0; padding:0; list-style:none; max-height:19rem; overflow:auto; overscroll-behavior:contain; border:1px solid var(--border,#b6cbd2); border-radius:.5rem; background:var(--surface,#fff); color:var(--text,#243944); box-shadow:0 .5rem 1.5rem #163b4926; }
+[data-typeahead-host] > [data-typeahead-results][hidden] { display:none; }
+[data-typeahead-host] > [data-typeahead-status] { margin:.3rem 0 0; font-size:var(--fs-sm); line-height:1.4; color:var(--muted,#59717e); }
+[data-typeahead-host] > [data-typeahead-status][hidden] { display:none; }
+[data-typeahead-host] [role="option"] { padding:.55rem .75rem; border-top:1px solid var(--border,#dce6ea); cursor:pointer; line-height:1.35; overflow-wrap:anywhere; }
+[data-typeahead-host] [role="option"]:first-child { border-top:0; }
+[data-typeahead-host] [role="option"] small { display:block; margin-top:.2rem; font-size:var(--fs-sm); color:var(--muted,#59717e); }
+[data-typeahead-host] [role="option"][aria-selected="true"],[data-typeahead-host] [role="option"]:hover { background:var(--accent-soft,#e0f1f3); outline:2px solid var(--accent,#157485); outline-offset:-2px; }
+@media (max-width:600px) { [data-typeahead-host] > [data-typeahead-results] { width:100%; min-width:0; max-width:100%; } }
