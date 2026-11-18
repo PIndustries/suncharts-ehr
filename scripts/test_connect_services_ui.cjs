@@ -5,8 +5,11 @@ const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>'
 function fixture(role='owner'){
  const nodes={tools:{innerHTML:''}},handlers={},listeners={},calls=[];
  const data={setting:null,credential_storage_ready:true};
- const c={Date,JSON,URL,URLSearchParams,console,setInterval:()=>0,crypto:{randomUUID:()=> 'stable-request'},me:{role},$:id=>nodes[id],esc:escape,date:x=>x,scheduleLabel:s=>String(s).replaceAll('_',' '),showTool:()=>{},notice:()=>{},document:{addEventListener:(t,cb,capture)=>{if(capture){handlers[t]=cb;(listeners[t]||=[]).push(cb);}}},FormData:class{constructor(f){return Object.entries(f.values)[Symbol.iterator]();}},run:fn=>{c.pending=fn();},api:async(...args)=>{calls.push(args);return data;}};
- vm.createContext(c);vm.runInContext(fs.readFileSync('web/connect-services.js','utf8'),c);vm.runInContext(fs.readFileSync('web/connect-onboarding.js','utf8'),c);
+ const c={Date,JSON,URL,URLSearchParams,console,setInterval:()=>0,setTimeout:(fn,delay)=>setTimeout(fn,delay),clearTimeout:id=>clearTimeout(id),Event:class{constructor(type){this.type=type;}},displayDate:value=>String(value??'').slice(0,10),displayAge:birthDate=>{const day=/^(\d{4})-(\d{2})-(\d{2})/.exec(String(birthDate??''));if(!day)return null;let age=2026-Number(day[1]);const month=11-(Number(day[2])-1);if(month<0||(month===0&&18<Number(day[3])))age--;return age>=0?age:null;},document:{addEventListener:()=>{}},crypto:{randomUUID:()=> 'stable-request'},me:{role},$:id=>nodes[id],esc:escape,date:x=>x,scheduleLabel:s=>String(s).replaceAll('_',' '),showTool:()=>{},notice:()=>{},realDocument:{addEventListener:(t,cb,capture)=>{if(capture){handlers[t]=cb;(listeners[t]||=[]).push(cb);}}},FormData:class{constructor(f){return Object.entries(f.values)[Symbol.iterator]();}},run:fn=>{c.pending=fn();},api:async(...args)=>{calls.push(args);return data;}};
+ vm.createContext(c);
+ // The shared live patient picker loads before the support screen, as index.html loads it.
+ c.document=c.realDocument;vm.runInContext(fs.readFileSync('web/patient-picker.js','utf8'),c);
+ vm.runInContext(fs.readFileSync('web/connect-services.js','utf8'),c);vm.runInContext(fs.readFileSync('web/connect-onboarding.js','utf8'),c);
  return {c,nodes,handlers,listeners,calls,data,run:s=>vm.runInContext(s,c)};
 }
 (async()=>{
@@ -61,12 +64,40 @@ function fixture(role='owner'){
   const attrs=map=>{const dataset={};for(const [k,v] of Object.entries(map))dataset[k.replace(/^data-/,'').replace(/-([a-z])/g,(_,x)=>x.toUpperCase())]=v;return dataset;};
   const setup=(role='front_desk')=>{
    const f=fixture(role);let n=0;f.c.crypto.randomUUID=()=>`00000000-0000-4000-8000-${String(++n).padStart(12,'0')}`;
+
    f.host={dataset:{supportExtras:'new'},innerHTML:'',querySelector:()=>null};f.nodes['support-create-extras']=f.host;f.nodes['clinical-workspace']={hidden:false};
    f.notices=[];f.c.notice=(text,error)=>f.notices.push([text,!!error]);f.c.location={hash:''};
    f.c.selected=P;f.c.workspace={patient:{family_name:'Synthetic',given_name:'Avery',mrn:'SYN-1'}};f.c.chartSection='visits';f.c.activeVisit={id:V};f.c.encounterDateLabel=()=>'Nov 1, 2026';
    f.c.document.querySelector=()=>null;
-   f.c.run=fn=>{f.c.pending=Promise.resolve().then(fn).catch(error=>{f.notices.push([error.message,true]);});};
-   f.form=values=>({id:'support-create-form',dataset:{request:'10000000-0000-4000-8000-000000000001'},values,querySelector:()=>f.host,closest:()=>null});
+   f.pending=[];
+   f.c.run=fn=>{const work=typeof fn==='function'?fn:()=>eval(fn);
+     // The real shell runs queued work, then repaints the extras panel if the message is still
+     // being written, so the test sees the same sequence the person would.
+     const p=Promise.resolve().then(work).then(()=>{if(f.run('supportExtras.has("new")'))f.run('renderSupportExtras("new")');}).catch(error=>{f.notices.push([error.message,true]);});
+     f.pending.push(p);f.c.pending=p;return p;};
+   // The extras host is searched as it is typed in, so it owns the box and the row list.
+   // The picker searches from the box itself, so the box reports the value as typed.
+   f.search={_value:'',get value(){return this._value;},set value(next){this._value=next;this._changed=true;},focus(){this.focused=true;},setAttribute(k,v){this[k]=v;},getAttribute(k){return this[k];},closest:()=>f.host,hasAttribute:name=>name==='data-support-search'};
+   f.rows={_value:'',get innerHTML(){return this._value;},set innerHTML(next){this._value=next;},querySelector:()=>null};
+   // Only the rows are redrawn while typing, so the caret stays where the person left it; the
+   // host keeps its full markup for the rest.
+   f.host.querySelector=selector=>selector==='[data-support-search]'?f.search:selector==='[data-support-picker-rows]'?f.rows:selector==='[data-support-search-status]'?f.status:null;
+   // Reads of the panel reflect the live in-place update, exactly as a browser would show it.
+   f.panel=()=>f.rows.innerHTML||f.rowsOf(f.host.innerHTML);
+   f.rowsOf=html=>{const start=html.indexOf('<div data-support-picker-rows>');return start<0?'':html.slice(start,html.indexOf('</div></div></div>',start));};
+   f.status={textContent:''};
+   f.c.setTimeout=(fn,delay)=>setTimeout(fn,delay);f.c.clearTimeout=id=>clearTimeout(id);
+   // What was typed is searched 200 ms after the last keystroke; this waits that long, plus
+   // the reads it starts, and fails fast once the panel says what it settled on.
+   f.after=async()=>{await new Promise(resolve=>setTimeout(resolve,320));for(let n=0;n<10;n++)await new Promise(resolve=>process.nextTick(resolve));};
+   // The picker debounces typing on a real timer, so the timers are handed to Node itself:
+   // a delay fires after 200 ms and the reads it starts run on real promises, the way the
+   // app does them. A short wall-clock wait replaces any hand-counted microtask loop.
+   f.settle=async()=>{for(let round=0;round<6;round++){for(let n=0;n<10;n++)await new Promise(resolve=>process.nextTick(resolve));await Promise.allSettled(f.pending.splice(0));}};
+
+   f.type=async(value,delay=0)=>{f.search._value=value;f.handlers.input({target:f.search});if(delay)await new Promise(resolve=>setTimeout(resolve,delay));else await f.settle();};
+   f.key=async(key,extra={})=>{let stopped=false;const event={type:'keydown',key,target:f.search,preventDefault(){event.prevented=true;},stopImmediatePropagation(){stopped=true;},...extra};for(const listener of f.listeners.keydown||[]){listener(event);if(stopped)break;}await f.settle();return event;};
+   f.form=values=>({id:'support-create-form',dataset:{request:'10000000-0000-4000-8000-000000000001'},values,querySelector:selector=>selector==='[data-support-search]'?f.search:f.host,closest:()=>null});
    f.button=(map,host=f.host,form)=>({dataset:attrs(map),hasAttribute:name=>name in map,closest:selector=>selector==='[data-support-extras]'?host:selector==='form'?form:null});
    f.dispatch=button=>{let stopped=false;for(const listener of f.listeners.click){if(stopped)break;listener({target:{closest:()=>button},preventDefault(){},stopImmediatePropagation(){stopped=true;}});}};f.click=async(map,form)=>{f.dispatch(f.button(map,f.host,form));await f.c.pending;};
    f.submit=async form=>{f.handlers.submit({target:form,preventDefault(){},stopImmediatePropagation(){}});await f.c.pending;};
@@ -97,16 +128,42 @@ function fixture(role='owner'){
   assert.deepEqual(JSON.parse(JSON.stringify(f.run("supportExtrasFor('new').links.map(l=>l.kind+':'+l.id)"))),['patient:'+P2,'claim:'+C],'a new context replaces the earlier automatic chips only');
   for(let i=0;i<12;i++)f.run(`supportAddLink(supportExtrasFor('new'),{kind:'visit',id:'66666666-6666-4666-8666-${String(i).padStart(12,'0')}',label:'Visit'})`);
   assert.equal(f.run("supportExtrasFor('new').links.length"),10);assert.equal(f.run("supportExtrasFor('new').problem"),'Up to 10 patients, visits or claims per message.');
-  // Search, then optionally add one of that patient's visits or claims.
+  // The support patient box is searched while it is typed in: no Search button, and the list
+  // shows name, age and record number. Then one of that patient's visits or claims can be added.
   f=setup();f.nodes['clinical-workspace'].hidden=true;
-  f.c.api=async(...a)=>{f.calls.push(a);if(a[0]==='/api/v1/patients')return {items:[{id:P,given_name:'Avery',family_name:'Synthetic',mrn:'SYN-1',birth_date:'1990-01-01'},{id:P2,given_name:'Blake',family_name:'<Example>',mrn:'SYN-2',birth_date:'1985-02-03'}],next_cursor:null};if(a[0].endsWith('/workspace'))return {visits:[{id:V,appointment_id:'a1',status:'signed'}],appointments:[{id:'a1',starts_at:'2026-11-01'}]};if(a[0].startsWith('/api/v1/billing/claims?patient_id='))return {items:[{id:C,control_number:'SC0001',status:'submitted'}]};return {items:[]};};
-  await f.click({'data-support-link-add':''});assert.match(f.host.innerHTML,/Find a patient/);assert.match(f.host.innerHTML,/Type at least 2 letters/);
-  const results={innerHTML:''};f.handlers.input({target:{value:'syn-2',hasAttribute:name=>name==='data-support-search',closest:()=>({dataset:{supportExtras:'new'},querySelector:()=>results})}});
-  assert.match(results.innerHTML,/&lt;Example&gt;, Blake/);assert.doesNotMatch(results.innerHTML,/Avery|<Example>/);
-  f.handlers.input({target:{value:'avery',hasAttribute:name=>name==='data-support-search',closest:()=>({dataset:{supportExtras:'new'},querySelector:()=>results})}});assert.match(results.innerHTML,new RegExp(`data-support-pick-patient="${P}"`));
-  await f.click({'data-support-pick-patient':P});assert.match(f.host.innerHTML,/Patient · Synthetic, Avery · MRN SYN-1/);assert.match(f.host.innerHTML,/Visit 2026-11-01/);assert.match(f.host.innerHTML,/Claim SC0001/);assert.match(f.host.innerHTML,/Attach visit/);
-  await f.click({'data-support-pick':'claim:'+C});assert.deepEqual(JSON.parse(JSON.stringify(f.run("supportExtrasFor('new').links.map(l=>l.kind)"))),['patient','claim']);
-  await f.click({'data-support-picker-close':''});assert.doesNotMatch(f.host.innerHTML,/Find a patient|support-picker/);
+  const patients=[{id:P,given_name:'Avery',family_name:'Synthetic',mrn:'SYN-1',birth_date:'1990-01-01'},{id:P2,given_name:'Blake',family_name:'<Example>',mrn:'SYN-2',birth_date:'1985-02-03'}];
+  f.c.api=async(...a)=>{f.calls.push(a);if(a[0]==='/api/v1/patients')return {items:patients,next_cursor:null};if(a[0].endsWith('/workspace'))return {visits:[{id:V,appointment_id:'a1',status:'signed'}],appointments:[{id:'a1',starts_at:'2026-11-01'}]};if(a[0].startsWith('/api/v1/billing/claims?patient_id='))return {items:[{id:C,control_number:'SC0001',status:'submitted'}]};return {items:[]};};
+  // Opening the box reads the patient list on its own, so the first names are already there.
+  f.dispatch(f.button({'data-support-link-add':''}));
+  assert.match(f.host.innerHTML,/Find a patient/);assert.doesNotMatch(f.host.innerHTML,/<button type="submit">|>Search</);
+  // Nothing has to be typed for the list to be worth reading: it fills in as the read lands.
+  assert.match(f.panel(),/Searching…/);await f.settle();
+  assert.match(f.panel(),/Showing the first 2 patients/);assert.equal(f.calls.filter(a=>a[0]==='/api/v1/patients').length,1,'opening the box reads the patient list once');
+  await f.type('syn-2');
+  assert.match(f.panel(),/&lt;Example&gt;, Blake<\/span><small>41 years old · MRN SYN-2/);assert.doesNotMatch(f.panel(),/Avery/);
+  await f.type('avery');assert.match(f.panel(),new RegExp(`data-support-pick-patient="${P}"`));
+  // A date of birth typed as a date finds the person too.
+  await f.type('1985-02-03');assert.match(f.panel(),/Blake/);assert.doesNotMatch(f.panel(),/Avery/);
+  // One match is chosen by Tab, so nobody has to press anything.
+  await f.type('avery');let tab=f.key('Tab');assert.equal((await tab).prevented,true);
+  await f.click({});assert.deepEqual(JSON.parse(JSON.stringify(f.run("supportExtrasFor('new').links.map(l=>l.kind+':'+l.id)"))),['patient:'+P],'the chosen patient is attached');
+  f=setup();f.nodes['clinical-workspace'].hidden=true;f.c.api=async(...a)=>{f.calls.push(a);if(a[0]==='/api/v1/patients')return {items:patients,next_cursor:null};if(a[0].endsWith('/workspace'))return {visits:[{id:V,appointment_id:'a1',status:'signed'}],appointments:[{id:'a1',starts_at:'2026-11-01'}]};if(a[0].startsWith('/api/v1/billing/claims?patient_id='))return {items:[{id:C,control_number:'SC0001',status:'submitted'}]};return {items:[]};};
+  f.dispatch(f.button({'data-support-link-add':''}));await f.settle();await f.type('avery');assert.match(f.panel(),new RegExp(`data-support-pick-patient="${P}"`));
+  await f.click({'data-support-pick-patient':P});await f.settle();assert.match(f.host.innerHTML,/Patient · Synthetic, Avery · MRN SYN-1/);assert.match(f.host.innerHTML,/Visit Nov 1, 2026/);assert.match(f.host.innerHTML,/Claim SC0001/);assert.match(f.host.innerHTML,/Attach visit/);
+  await f.settle();await f.click({'data-support-pick':'claim:'+C});await f.settle();assert.deepEqual(JSON.parse(JSON.stringify(f.run("supportExtrasFor('new').links.map(l=>l.kind)"))),['patient','claim']);
+  // Escape closes the box without touching the draft; going back reopens the search.
+  await f.click({'data-support-picker-back':''});assert.match(f.host.innerHTML,/data-support-search/);assert.equal(f.search.focused,true);
+  await f.key('Escape');assert.doesNotMatch(f.host.innerHTML,/Find a patient|support-picker/);
+  // Patient pages keep loading until the typed name turns up, so a search is not page one only.
+  f=setup();f.nodes['clinical-workspace'].hidden=true;
+  // The patient on the second page is only reached by reading on, because nothing matched yet.
+  const page1={items:[{id:P,given_name:'Avery',family_name:'Synthetic',mrn:'SYN-1',birth_date:'1990-01-01'}],next_cursor:P};
+  const page2={items:[{id:P2,given_name:'Blake',family_name:'<Example>',mrn:'SYN-2',birth_date:'1985-02-03'}],next_cursor:null};
+  // Only the second page holds the name that was typed, so reading on is what finds it.
+  f.c.api=async(...a)=>{f.calls.push(a);return a[0].includes('after=')?page2:page1;};
+  f.dispatch(f.button({'data-support-link-add':''}));await f.settle();await f.type('blake');await f.after();
+  assert.equal(f.calls.filter(a=>a[0].startsWith('/api/v1/patients')).length,2,'the next patient page is read while the search finds nothing');
+  assert.match(f.panel(),/Blake/);
   // Pasting a screenshot into the message adds it as a file; pasted text stays text.
   f=setup();form=f.form({subject:'Issue',message:'See screenshot'});let prevented=0;
   f.handlers.paste({target:{closest:()=>form},clipboardData:{getData:()=>'',files:[file('image.png','image/png',2048)]},preventDefault(){prevented++;}});

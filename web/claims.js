@@ -128,6 +128,9 @@ function claimHasPreparedSubmission(detail={}){return (detail.tracking?.submissi
 // Claim rows use the same state names as the visit billing card.
 function claimStatusLabel(claim){return typeof visitBillingClaimState==='function'?visitBillingClaimState(claim):claimIsCrossover(claim)&&claim.status==='submitted'?'Crossover response received':displayStatus(claim.status);}
 function claimIsCrossover(claim){return Boolean(claim?.crossover_tracking_only===true||claim?.snapshot?.coordination_of_benefits?.crossover);}
+// A claim that came back is worked on from the plain-words box at the top of the screen, not from
+// the send column, so the send column only has to say what to do.
+function claimCameBack(claim){return typeof claimProblemReport==='function'&&Boolean(claimProblemReport(claim));}
 function claimPrimaryActions(claim,detail={}){
  if(claimIsCrossover(claim)){const source=claim.snapshot.coordination_of_benefits.crossover;return `<section class="claim-workflow" aria-label="Crossover tracking"><article><h3>Secondary payer responded</h3><p>The primary payer forwarded this claim to the secondary payer, and the secondary payment is linked to the charges for the same visit. SunCharts did not send another claim.</p><button type="button" data-era-open="${esc(source.remittance_id)}">Review secondary payment</button></article><article><h3>Review before posting</h3><p>Review the secondary payment before posting it. A denial or a missing patient responsibility amount does not change what the patient owes.</p><button type="button" data-claim-open="${esc(claim.id)}">Refresh status</button></article></section>`;}
 
@@ -139,7 +142,7 @@ function claimPrimaryActions(claim,detail={}){
  else if(claim.status==='draft')submit=canWrite&&Array.isArray(detail.preflight_issues)?detail.preflight_issues.length?'<p>This claim is missing details. Fix what is listed below, then continue.</p><button type="button" class="primary" data-edit-claim>Fix claim details</button>':`<p>Check the diagnoses, procedures, insurance and provider details below. Continuing does not send the claim; you confirm on the next step.</p><button type="button" class="primary" data-claim-release="${esc(claim.id)}">Details are right: continue to send</button>`:canWrite?'<p>Check the diagnoses, procedures, insurance and provider details, then continue to send.</p>':'<p>Billing staff check these details and send the claim.</p>';
  else if(claim.status==='ready'&&canWrite)submit=connected?`<p>Check the claim details, then send it to Claim.MD.</p><button type="button" class="primary" data-claimmd-submit="${esc(claim.id)}">Review and send claim</button>`:`<p>Connect Claim.MD to send claims from SunCharts, or prepare a claim file to upload to your clearinghouse yourself.</p><button type="button" data-edi-claim="${esc(claim.id)}">Prepare claim file (837P)</button>`;
  else if(['submitted','accepted','adjudicated'].includes(claim.status))submit='<p>This claim has been sent. Check the payer response on this page before sending anything again.</p>';
- else if(claim.status==='rejected')submit='<p>Read the rejection on this page, then use Fix and resend.</p>';
+  else if(claim.status==='rejected')submit=claimCameBack(claim)?'<p>Use <b>Fix and resend</b> in the box at the top of this page.</p>':'<p>The reason is shown on this page. Open the claim, put the detail right, then send it again.</p>';
  else submit='<p>Only billing staff can send a claim.</p>';
  if(existing)submit+=`<button type="button" data-claim-existing-submission="${esc(existing.id)}">Open claim file</button>`;
  return `<section class="claim-workflow" aria-label="Claim actions"><article><h3>1. Preview claim</h3>${claim.snapshot?.coordination_of_benefits?'<p>See the primary payer result and the secondary services below. A CMS-1500 preview is not available for secondary claims.</p>':`<p>See the claim on a CMS-1500 form. Previewing or printing does not send it.</p><a class="button" href="${claimsBase}/${esc(claim.id)}/cms1500" target="_blank" rel="noopener">Preview claim (CMS-1500) ↗</a>`}</article><article><h3>2. Send claim</h3>${submit}</article><article><h3>3. See the response</h3><p>Delivery, payer responses and payments show on this page and update automatically while the claim is open.</p><button type="button" data-claim-open="${esc(claim.id)}">Refresh claim status</button></article></section>`;
@@ -157,6 +160,94 @@ async function releaseClaimToSend(id){
  requireClaimContext(context,detail.claim);claimCurrent=detail.claim;
  if(detail.claim.status==='ready'&&typeof claimMdSubmitEditor==='function'&&typeof claimMdConnectionState!=='undefined'&&claimMdConnectionState?.connected&&!claimHasRecordedSubmission(detail)&&!claimHasPreparedSubmission(detail)){claimMdSubmitEditor(detail);return;}
  await refreshClaimInContext(id,context);
+}
+// The claim on screen has moved on or was never loaded: read it again rather than telling staff to
+// start over. Silent when the screen has since been closed or somebody else took it over.
+async function refreshClaimForFix(id,context,identity){
+  if(!id)return null;
+  const detail=await api(`${claimsBase}/${id}`);
+  if(!claimContextCurrent(context)||identity!==(typeof me==='undefined'?undefined:me))return null;
+  if(!detail?.claim||detail.claim.id!==id){notice('The claim that loaded is not the one you opened. Open it again.');return null;}
+  requireClaimContext(context,detail.claim);claimCurrent=detail.claim;context.claim=detail.claim.id;
+  return detail.claim;
+}
+// "Fix and resend": open the claim for editing with the problem field focused, and say in plain
+// words how this corrected claim goes back out. Nothing is refused here — a claim whose answer we
+// cannot read is still opened, with a line about what we could not work out, so staff are never
+// stuck behind our own guess at the payer's meaning.
+async function beginClaimFix(claimId,field){
+  const context=claimContextSnapshot(),identity=typeof me==='undefined'?undefined:me;
+  // A crossover claim was not sent from here and has no corrected claim to prepare; the row still
+  // opens, and the line says why there is nothing to fix on it.
+  if(claimId&&(claimCurrent?.id===claimId?claimCurrent:await refreshClaimForFix(claimId,context,identity))&&claimIsCrossover(claimCurrent)){
+    notice('This claim was forwarded by the primary payer, so nothing was sent from here and there is no corrected claim to prepare. Open the secondary payment below and review it before it posts.');
+    return;
+  }
+  // Nothing here refuses a fix. A claim that has moved on is simply re-read, and a problem we
+  // cannot read is opened anyway with a line saying so, so staff are never stuck behind us.
+  const claim=claimCurrent&&(!claimId||claimCurrent.id===claimId)?claimCurrent:await refreshClaimForFix(claimId,context,identity);
+  if(!claim)return;
+  requireClaimContext(context,claim);captureClaimDraft();
+  const account=claim.snapshot?.account;
+  if(!account){notice('The charges for this claim could not be found. Refresh the claim and try again.');return;}
+  const plan=claimFixPlan(claim,field);
+  if(plan.open==='insurance'){
+    // The number that came back wrong is the one the insurance in the chart carries, so that is
+    // the record opened. The claim keeps its frozen copy and is re-prepared once the plan is right.
+    await claimFixInsurance(claim,plan);
+    return;
+  }
+  if(['draft','ready'].includes(claim.status)){
+    // Still a draft on our side, so nothing ever reached the payer: this same claim is edited and
+    // sent again, with its frequency code already the one for a first claim.
+    claimEditor({...account,patient_id:claim.patient_id},claim);
+    claimFixFocus(plan);
+    return;
+  }
+  // The claim is already on file with somebody, so the corrected claim has to be a new claim
+  // linked to this one. Preparing it can be refused for a reason of the server's own — that
+  // answer is shown as a warning and the current claim is opened as it stands, never a dead end.
+  try{
+    const fresh=await api(`/api/v1/patients/${claim.patient_id}/billing`);
+    if(!claimContextCurrent(context)||claimCurrent?.id!==claim.id||identity!==(typeof me==='undefined'?undefined:me))return;
+    const linked=claim.snapshot?.coordination_of_benefits
+      ?{...account,patient_id:claim.patient_id,coverage_snapshot:claim.snapshot.account.coverage_snapshot,content:{...account.content,coverage_id:claim.snapshot.account.content.coverage_id}}
+      :{...account,patient_id:claim.patient_id};
+    claimEditor({...fresh.accounts.find(a=>a.id===claim.account_id)||linked,patient_id:claim.patient_id},null,null,claim);
+    claimFixFocus(plan);
+  }catch(error){
+    const reason=String(error?.message||'').trim();
+    claimEditor({...account,patient_id:claim.patient_id},claim);
+    claimFixFocus(plan,`We could not start the linked corrected claim (${reason||'the practice’s billing data did not answer'}). This claim is opened as it stands — fix what you can here, or ask the practice owner to look at the message.`);
+  }
+}
+// Where the fix happens, and what gets focused once the claim editor is open.
+function claimFixFocus(plan,warning=''){
+  const host=$('claim-editor')||claimWorkspaceHost();const form=host?.querySelector?.('#claim-editor-form');
+  if(!form)return;
+  const lines=[plan?.resend?.words,plan?.notice,warning].filter(Boolean);
+  if(lines.length)form.insertAdjacentHTML?.('afterbegin',`<section class="mapping-notice" data-claim-fix-notice role="status">${lines.map(line=>`<p>${esc(line)}</p>`).join('')}</section>`);
+  const box=plan?.focus?form.querySelector?.(`[name="${plan.focus}"]`):null;
+  if(box?.focus){box.focus({preventScroll:true});box.scrollIntoView?.({block:'center'});return;}
+  form.querySelector?.('#claim-editor-heading')?.focus?.({preventScroll:true});
+}
+
+// the insurance in the chart is opened there — with the claim's own number kept, so the way back is
+// one click — rather than pretended away on this form.
+async function claimFixInsurance(claim,plan,warning=''){
+  const lines=[plan?.resend?.words,plan?.notice,warning].filter(Boolean);
+  if(lines.length)notice(lines.join(' '));
+  const patient=claim?.patient_id;
+  if(!patient||typeof showChartSection!=='function')return;
+  if(selected!==patient&&typeof selectPatient==='function'){
+    const claimId=claim.id,identity=typeof me==='undefined'?undefined:me;
+    await selectPatient(patient,true,()=>me===identity&&claimCurrent?.id===claimId);
+    if((typeof me==='undefined'?undefined:me)!==identity||claimCurrent?.id!==claimId)return;
+  }
+  showChartSection('insurance');
+  const box=document.querySelector?.('#coverage-form [name="member_id"]')||document.querySelector?.('#coverage-form [name="subscriber_name"]');
+  box?.focus?.({preventScroll:true});
+  if(typeof claim?.id!=='undefined')notice(`When the insurance is saved, open claim ${String(claim.control_number||'').trim()||'this claim'} again and use Fix and resend.`);
 }
 async function reviewExistingClaimSubmission(id){
  const context=claimContextSnapshot(),claim=claimCurrent,identity=me,patient=selected,visit=typeof activeVisit==='undefined'?null:activeVisit?.id;
@@ -197,11 +288,21 @@ async function insertClaimStatusTimeline(context,claim,detail,history){
  if(claim!==claimCurrent||(typeof me!=='undefined'&&me!==identity)||!slot?.isConnected)return;
  slot.innerHTML=html;
 }
+// The insurer's or clearinghouse's own wording for a claim that came back, newest answer first.
+function claimResponseWords(detail={}){
+  const reports=(detail.tracking?.reports||[]).map(report=>String(report?.evidence?.message?.message||'').trim()).filter(Boolean).reverse();
+  // Answers arrive three ways: the clearinghouse feed, the payer's own status report, and what staff
+  // typed when they recorded the answer by hand. All three are the message the practice received.
+  const feed=(detail.responses?.feed||[]).map(entry=>String(entry?.message||'').trim());
+  const revisions=(detail.responses?.revisions||[]).map(item=>String(item?.message||item?.reason||'').trim());
+  const recorded=(detail.history?.items||[]).filter(item=>item?.evidence?.action==='record_rejection'||String(item?.reason||'').toLowerCase().includes('reject')).map(item=>String(item.reason||'').trim());
+  return [...new Set([...reports,...feed,...revisions,...recorded].filter(Boolean))].join(' ');
+}
 async function showClaim(id){
  const context=claimContextSnapshot(),identity=typeof me==='undefined'?undefined:me;
  const [d,h]=await Promise.all([api(`${claimsBase}/${id}`),api(`${claimsBase}/${id}/history`)]);if(!claimContextCurrent(context)||identity!==(typeof me==='undefined'?undefined:me))return;requireClaimContext(context,d.claim);claimCurrent=d.claim;context.claim=d.claim.id;const c=d.claim,b=c.snapshot.account,p=c.snapshot.patient;
  const fs=c.snapshot.financial_summary||{patient_payments_cents:0,open_balance_cents:b.total_cents};
- claimPane(`<section class="billing-account-detail"><div class="section-head"><div><h2>Claim review</h2><p>${esc(p.given_name)} ${esc(p.family_name)} · Service ${esc(displayDate(b.content.service_date))}</p><small class="claim-control" data-claim-current-version>${esc(c.control_number)} · v${c.version}</small></div><div class="support-help-group"><span class="status-badge" data-claim-current-status>${esc(claimStatusLabel(c))}</span>${typeof supportHelpButton==='function'?supportHelpButton('claim',`data-support-claim="${esc(c.id)}" data-support-claim-label="${esc(c.control_number)}" data-support-patient="${esc(c.patient_id)}" data-support-patient-label="${esc(p.family_name)}, ${esc(p.given_name)} · MRN ${esc(p.mrn)}"`):''}</div></div>${claimPrimaryActions(c,d)}${secondaryEvidenceMarkup(c)}<div class="billing-totals"><span>Total charge <b>${money(b.total_cents)}</b></span><span>Patient paid <b>${money(fs.patient_payments_cents||0)}</b></span><span>Balance when claim was created <b>${money(fs.open_balance_cents??b.total_cents)}</b></span><span>Claim frequency <b>${esc(human(c.frequency))}</b></span><span>Payer <b>${esc(b.coverage_snapshot.payer.content.name)}</b></span></div><p class="muted">${claimIsCrossover(c)?'This tracks the secondary payer response. No claim was sent from SunCharts, and the charges and payments stay on the original visit.':'The claim bills the total charge. The balance shown is from when the claim was created, so check the current account before billing the patient.'}</p>${c.parent_id?`<button type="button" data-claim-open="${c.parent_id}">Open original claim</button>`:''}${claimIsCrossover(c)?'':claimIssues(d.preflight_issues)}${chargeTable(b.content.lines.map((line,i)=>({...line,diagnosis_codes:(c.content.line_diagnosis_pointers[i]||[]).map(n=>c.content.diagnosis_codes[n-1]).filter(Boolean)})))}<details class="amendment"><summary>Provider, insurance and diagnosis details</summary><dl class="billing-dl">${Object.entries(c.content).map(([k,v])=>`<dt>${esc(human(k))}</dt><dd>${esc(Array.isArray(v)?JSON.stringify(v):v??'Not recorded')}</dd>`).join('')}</dl><pre class="billing-source">${esc(JSON.stringify(b.coverage_snapshot,null,2))}</pre></details><div class="actions"><button type="button" data-claim-account="${c.account_id}" data-patient="${c.patient_id}">Visit billing</button>${!claimIsCrossover(c)&&c.status!=='draft'&&c.status!=='void'?`<a class="button" href="${claimsBase}/${c.id}/packet" download>Download claim data (JSON)</a>`:''}${billingWrite()&&c.status==='draft'?'<button type="button" data-edit-claim>Edit claim details</button>':''}${billingWrite()&&c.status==='adjudicated'&&b.coverage_snapshot?.coverage?.content?.priority==='primary'?'<button type="button" data-secondary-claim>Bill secondary insurance</button>':''}${billingWrite()&&!claimIsCrossover(c)&&(c.status==='rejected'||c.status==='adjudicated'&&c.payer_control_number)?`<button type="button" data-replacement-claim>${c.status==='rejected'?'Fix and resend':'Correct or void this claim'}</button>`:''}</div><p class="muted">${claimIsCrossover(c)?'Nothing is sent or downloaded for a crossover claim.':claimTransport(d.transport)}</p>
+ claimPane(`<section class="billing-account-detail"><div class="section-head"><div><h2>Claim review</h2><p>${esc(p.given_name)} ${esc(p.family_name)} · Service ${esc(displayDate(b.content.service_date))}</p><small class="claim-control" data-claim-current-version>${esc(c.control_number)} · v${c.version}</small></div><div class="support-help-group"><span class="status-badge" data-claim-current-status>${esc(claimStatusLabel(c))}</span>${typeof supportHelpButton==='function'?supportHelpButton('claim',`data-support-claim="${esc(c.id)}" data-support-claim-label="${esc(c.control_number)}" data-support-patient="${esc(c.patient_id)}" data-support-patient-label="${esc(p.family_name)}, ${esc(p.given_name)} · MRN ${esc(p.mrn)}"`):''}</div></div>${typeof claimProblemReport==='function'?claimProblemBoxMarkup(claimProblemReport(c,d),claimResponseWords(d),c.id):''}${claimPrimaryActions(c,d)}${secondaryEvidenceMarkup(c)}<div class="billing-totals"><span>Total charge <b>${money(b.total_cents)}</b></span><span>Patient paid <b>${money(fs.patient_payments_cents||0)}</b></span><span>Balance when claim was created <b>${money(fs.open_balance_cents??b.total_cents)}</b></span><span>Claim frequency <b>${esc(human(c.frequency))}</b></span><span>Payer <b>${esc(b.coverage_snapshot.payer.content.name)}</b></span></div><p class="muted">${claimIsCrossover(c)?'This tracks the secondary payer response. No claim was sent from SunCharts, and the charges and payments stay on the original visit.':'The claim bills the total charge. The balance shown is from when the claim was created, so check the current account before billing the patient.'}</p>${c.parent_id?`<button type="button" data-claim-open="${c.parent_id}">Open original claim</button>`:''}${claimIsCrossover(c)?'':claimIssues(d.preflight_issues)}${chargeTable(b.content.lines.map((line,i)=>({...line,diagnosis_codes:(c.content.line_diagnosis_pointers[i]||[]).map(n=>c.content.diagnosis_codes[n-1]).filter(Boolean)})))}<details class="amendment"><summary>Provider, insurance and diagnosis details</summary><dl class="billing-dl">${Object.entries(c.content).map(([k,v])=>`<dt>${esc(human(k))}</dt><dd>${esc(Array.isArray(v)?JSON.stringify(v):v??'Not recorded')}</dd>`).join('')}</dl><pre class="billing-source">${esc(JSON.stringify(b.coverage_snapshot,null,2))}</pre></details><div class="actions"><button type="button" data-claim-account="${c.account_id}" data-patient="${c.patient_id}">Visit billing</button>${!claimIsCrossover(c)&&c.status!=='draft'&&c.status!=='void'?`<a class="button" href="${claimsBase}/${c.id}/packet" download>Download claim data (JSON)</a>`:''}${billingWrite()&&c.status==='draft'?'<button type="button" data-edit-claim>Edit claim details</button>':''}${billingWrite()&&c.status==='adjudicated'&&b.coverage_snapshot?.coverage?.content?.priority==='primary'?'<button type="button" data-secondary-claim>Bill secondary insurance</button>':''}${billingWrite()&&!claimIsCrossover(c)&&c.status==='adjudicated'&&c.payer_control_number&&b.coverage_snapshot?.coverage?.content?.priority!=='primary'?'':billingWrite()&&!claimIsCrossover(c)&&c.status==='adjudicated'&&c.payer_control_number?`<button type="button" data-replacement-claim>Correct or void this claim</button>`:''}</div><p class="muted">${claimIsCrossover(c)?'Nothing is sent or downloaded for a crossover claim.':claimTransport(d.transport)}</p>
  ${billingWrite()&&claimIsCrossover(c)&&['submitted','accepted','rejected'].includes(c.status)?`<form id="claim-action"><h3>Remove a wrong crossover link</h3><input type="hidden" name="action" value="withdraw_crossover"><p>You can remove this link only while the secondary payment is not posted. The payment can be linked again later.</p>${billingField('reason','Reason for removing this link','','text',1000,true)}<button type="submit">Remove crossover link</button></form>`:''}${billingWrite()&&!claimIsCrossover(c)&&['draft','ready','submitted','accepted'].includes(c.status)?`<details class="amendment"><summary>${c.status==='draft'?'Other options for this claim':'Record something done outside SunCharts'}</summary><form id="claim-action"><h3>${c.status==='draft'?'Void this claim, or release it without opening the send form':'Record activity outside SunCharts'}</h3><div class="form-grid"><label>Action<select name="action">${(c.status==='draft'?['ready','void_draft']:c.status==='ready'?['record_submission','void_draft']:c.status==='submitted'?['record_acceptance','record_rejection']:['record_rejection']).map(v=>`<option value="${v}">${esc(claimActionLabels[v]||human(v))}</option>`).join('')}</select></label>${c.status==='draft'?'':`${billingField('reference','Reference number','','text',200)}${billingField('event_date','Date it happened','','date')}${billingField('payer_control_number','Payer claim number',c.payer_control_number,'text',100)}`}${billingField('reason','Reason (saved in the claim history)','','text',1000,true)}</div><p class="muted">${c.status==='draft'?'Releasing a claim does not send it. Most of the time, use “Details are right: continue to send” above instead.':c.status==='ready'?'Use this only if the claim was already sent outside SunCharts, or to void it. To send it from here, use Review and send claim.':'Record an acceptance or rejection you received outside SunCharts. This does not send a claim or record an insurance payment.'}</p><button class="primary" type="submit">${c.status==='draft'?'Save':'Record activity'}</button></form></details>`:''}<h3>Claim history</h3>${claimHistory(h)}<div id="claim-editor"></div></section>`);
 
  const lifecycle=typeof claimMdClaimLifecycle==='function'?claimMdClaimLifecycle(c,d,h):'';
@@ -220,6 +321,42 @@ function claimChargeDiagnosisDefaults(account){
  });
  return {diagnosis_codes:diagnosisCodes,line_diagnosis_pointers:pointers};
 }
+// Secondary plans offered for this claim, and the picker that replaces the old dropdown.
+// Staff type the insurer's name and the matching plans narrow as they type. The hidden
+// coverage_id keeps the value the secondary claim is built from; the box shows the name.
+// The step is drawn from records that each carry the plan and the insurer it belongs to, so the
+// rows are named once here and read back by the form's own save path — no reaching into the
+// insurance screen's records, and no guessing at a plan from a name typed by hand.
+let secondaryCoverageRows=[];
+// The insurer a plan belongs to, taken from the record the step was drawn with.
+function secondaryPayerName(choice){
+ const payer=choice?.payer;
+ return (payer&&(payer.content?.name||payer.name))||'Recorded insurer';
+}
+function secondaryCoverageRowsFor(choices){
+ return (choices||[]).map(choice=>({
+  id:choice.coverage.id,
+  name:secondaryPayerName(choice),
+  detail:`${human(choice.coverage.content.priority)} · Member ${choice.coverage.content.member_id}`,
+ }));
+}
+function typeaheadCoverageOptions(){return secondaryCoverageRows;}
+function coveragePickerMarkup(choices){
+ typeaheadProvide('typeaheadCoverageOptions',typeaheadCoverageOptions);
+ const context=claimContextSnapshot();
+ context.secondaryChoices=choices;
+ secondaryCoverageRows=secondaryCoverageRowsFor(choices);
+ return `<label>Secondary insurance<input type="text" id="secondary-coverage-name" name="coverage_name" maxlength="200" required autocomplete="off" spellcheck="false" placeholder="Start typing a name" data-typeahead-coverage>${typeaheadMarkup('coverage','secondary-coverage-name')}</label>`;
+}
+// Reads back the plan the name box stands for: the id the picker filled in, or the one plan
+// whose name matches exactly what staff typed.
+function secondaryChosenCoverageId(form,values){
+ if(values.coverage_id)return values.coverage_id;
+ const typed=String(values.coverage_name||'').trim().toLowerCase();
+ if(!typed)return '';
+ const exact=secondaryCoverageRows.filter(choice=>choice.name.trim().toLowerCase()===typed);
+ return exact.length===1?exact[0].id:'';
+}
 function secondaryEvidenceMarkup(claim){
  const e=claim.snapshot?.coordination_of_benefits;if(!e)return '';
  return `<section class="mapping-notice"><h3>Secondary claim · same visit charges</h3><p>Primary: ${esc(e.primary_coverage?.payer?.content?.name||'Recorded primary payer')} · Paid ${money(e.adjudication.paid_cents)} · Patient responsibility reported ${money(e.adjudication.patient_responsibility_cents)} · Paid on ${esc(e.payment_date)}</p><p>Primary claim ${esc(e.adjudication.payer_control_number)} · Trace number ${esc(e.trace)}</p><p>${e.crossover?'Link confirmed':'Crossover and timing confirmed'}: ${esc(e.crossover_reference)}</p>${e.crossover?`<p>Secondary response ${esc(e.crossover.payment_date)} · Trace ${esc(e.crossover.trace)} · Payee NPI ${esc(e.crossover.payee_npi)} · Paid ${money(e.crossover.claim.paid_cents)}</p>`:''}<details><summary>Primary payment and adjustments</summary><pre class="billing-source">${esc(JSON.stringify(e.adjudication,null,2))}</pre></details><p class="muted">No new charges were created. ${e.crossover?'The secondary payment (835) is linked here to review and post, and no claim was sent.':'The secondary payer gets the original charges and the primary payer result.'}</p></section>`;
@@ -229,8 +366,9 @@ async function reviewSecondaryClaim(){
  const data=await api(`${claimsBase}/${primary.id}/secondary-review`);if(!claimContextCurrent(context)||claimCurrent?.id!==primary.id)return;requireClaimContext(context,data.primary_claim);
  const existing=data.existing_secondary_claims||[],choices=(data.coverages||[]).filter(item=>!existing.some(c=>c.payer_id===item.payer.id)),adjudication=data.primary_adjudication,row=adjudication?.claim;
  const crossover=crossoverReviewMarkup(data,choices);
- const html=`<section><h3>Bill secondary insurance</h3><p>This bills the same ${money(data.account.total_cents)} in visit charges. Check the primary EOB/ERA first to see whether the primary payer already forwarded the claim.</p>${existing.map(c=>`<p>Existing secondary claim ${esc(c.control_number)} · ${esc(c.status)} <button type="button" data-claim-open="${esc(c.id)}">Review existing secondary claim</button></p>`).join('')}${claimIssues(data.blockers||[])}${row?`<p>Primary paid ${money(row.paid_cents)} · Patient responsibility reported ${money(row.patient_responsibility_cents)} · ${esc(adjudication.payment_date)} · Trace ${esc(adjudication.trace)}</p><details><summary>Review primary services and adjustments</summary><pre class="billing-source">${esc(JSON.stringify(row,null,2))}</pre></details>`:''}${crossover}${!(data.blockers||[]).length&&choices.length&&row?`<form id="secondary-claim-review"><label>Secondary insurance<select name="coverage_id" required><option value="">Choose the secondary insurance</option>${choices.map(c=>`<option value="${esc(c.coverage.id)}">${esc(c.payer.content.name)} · ${esc(c.coverage.content.member_id)}</option>`).join('')}</select></label><p class="muted">Enter the units the primary payer paid for each service, from the EOB.</p>${row.services.map((line,i)=>`<label>Primary line ${i+1}: ${esc(line.code)} · Paid ${money(line.paid_cents)} · Paid units<input name="paid_units_${i}" type="number" required min="1" max="1000" step="1"></label>`).join('')}<label class="review-ack"><input name="not_forwarded" type="checkbox" required> I reviewed the EOB/ERA and the primary payer has not forwarded this claim to the secondary payer.</label><label class="review-ack"><input name="timing_reviewed" type="checkbox" required> I confirmed when the secondary payer accepts this claim, including any waiting period (Medicare and Blue plan crossover may have one).</label><label>How you confirmed this (EOB date, call reference or portal)<input name="crossover_reference" required maxlength="1000"></label><button type="submit" class="primary">Continue</button></form>`:!choices.length?'<p>No other active secondary insurance is on file for this visit date. Add it under Insurance, or open the existing secondary claim above.</p>':''}</section>`;
+ const html=`<section><h3>Bill secondary insurance</h3><p>This bills the same ${money(data.account.total_cents)} in visit charges. Check the primary EOB/ERA first to see whether the primary payer already forwarded the claim.</p>${existing.map(c=>`<p>Existing secondary claim ${esc(c.control_number)} · ${esc(c.status)} <button type="button" data-claim-open="${esc(c.id)}">Review existing secondary claim</button></p>`).join('')}${claimIssues(data.blockers||[])}${row?`<p>Primary paid ${money(row.paid_cents)} · Patient responsibility reported ${money(row.patient_responsibility_cents)} · ${esc(adjudication.payment_date)} · Trace ${esc(adjudication.trace)}</p><details><summary>Review primary services and adjustments</summary><pre class="billing-source">${esc(JSON.stringify(row,null,2))}</pre></details>`:''}${crossover}${!(data.blockers||[]).length&&choices.length&&row?`<form id="secondary-claim-review">${coveragePickerMarkup(choices)}<p class="muted">Enter the units the primary payer paid for each service, from the EOB.</p>${row.services.map((line,i)=>`<label>Primary line ${i+1}: ${esc(line.code)} · Paid ${money(line.paid_cents)} · Paid units<input name="paid_units_${i}" type="number" required min="1" max="1000" step="1"></label>`).join('')}<label class="review-ack"><input name="not_forwarded" type="checkbox" required> I reviewed the EOB/ERA and the primary payer has not forwarded this claim to the secondary payer.</label><label class="review-ack"><input name="timing_reviewed" type="checkbox" required> I confirmed when the secondary payer accepts this claim, including any waiting period (Medicare and Blue plan crossover may have one).</label><label>How you confirmed this (EOB date, call reference or portal)<input name="crossover_reference" required maxlength="1000"></label><button type="submit" class="primary">Continue</button></form>`:!choices.length?'<p>No other active secondary insurance is on file for this visit date. Add it under Insurance, or open the existing secondary claim above.</p>':''}</section>`;
  const host=$('claim-editor');if(!host)return;host.innerHTML=html;
+ typeaheadInit(host);
  const form=$('secondary-claim-review');if(form){form.claimViewContext=context;form.secondaryReview=data;form.secondaryChoices=choices;form.primaryClaimId=primary.id;}
  const crossoverForm=$('crossover-claim-review');if(crossoverForm){crossoverForm.claimViewContext=context;crossoverForm.secondaryReview=data;crossoverForm.secondaryChoices=choices;crossoverForm.primaryClaimId=primary.id;}
  host.scrollIntoView({block:'start'});
@@ -251,7 +389,7 @@ function claimEditor(b,c=null,source=null,parent=null,coordination=null){
  const html=`<form id="claim-editor-form" data-request="${crypto.randomUUID()}" data-edit="${c?.id||''}" data-parent="${parent?.id||''}"><h3>${c?'Edit draft claim':source?'Create a claim from an imported record':coordination?'Create secondary claim':parent?'Create corrected claim':'Create claim'}</h3>${sourceNotice(source)}<p>${money(b.total_cents)} in charges · Service ${esc(displayDate(b.content.service_date))}</p><div class="form-grid">${parent&&!coordination?selectField('frequency','Claim frequency',parent.payer_control_number?['replacement','void_request']:['original'],parent.payer_control_number?'replacement':'original'):'<input type="hidden" name="frequency" value="original">'}${billingField('billing_provider_name','Billing provider name',v.billing_provider_name)}${billingField('billing_npi','Billing NPI',v.billing_npi,'text',10)}${billingField('rendering_npi','Rendering NPI',v.rendering_npi,'text',10)}${billingField('tax_id','Tax ID / EIN (9 digits)',v.tax_id,'text',9)}${billingField('billing_address','Billing address',v.billing_address,'text',1000)}${billingField('patient_address','Patient address',v.patient_address,'text',1000)}${billingField('subscriber_address','Subscriber address',v.subscriber_address,'text',1000)}${billingField('subscriber_birth_date','Subscriber date of birth',v.subscriber_birth_date||'','date')}${billingField('place_of_service','Place of service code (2 digits, 11 = office)',v.place_of_service,'text',2)}${billingField('diagnosis_codes','ICD-10 diagnosis codes (comma-separated)',v.diagnosis_codes.join(', '),'text',250)}${billingField('external_control_number','Claim number from a previous system',v.external_control_number,'text',100)}</div><p class="muted">For each line, enter which diagnoses apply by their position in the list above (1 = first diagnosis).</p>${b.content.lines.map((l,i)=>billingField(`pointer_${i}`,`Line ${i+1}: ${esc(l.code)} - diagnosis pointers`,(v.line_diagnosis_pointers[i]||[]).join(', '),'text',30)).join('')}<label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>${billingField('reason','Reason (saved in the claim history)','','text',1000,true)}${source?'<label class="review-ack"><input type="checkbox" required> I checked that the patient, payer, charges and claim number match the imported record.</label>':''}<button type="submit" class="primary">Save draft claim</button></form>`;
  if($('claim-editor'))$('claim-editor').innerHTML=html;else claimPane(html);
  const editorHost=$('claim-editor')||claimWorkspaceHost(context);
- if(editorHost){editorHost.scrollIntoView({block:'start'});const editorHeading=editorHost.querySelector('#claim-editor-form h3');if(editorHeading){editorHeading.tabIndex=-1;editorHeading.focus({preventScroll:true});}}
+ if(editorHost){editorHost.scrollIntoView({block:'start'});const editorHeading=editorHost.querySelector('#claim-editor-form h3');if(editorHeading){editorHeading.tabIndex=-1;editorHeading.focus({preventScroll:true});editorHeading.id='claim-editor-heading';}}
  const form=document.querySelector('#claim-editor-form');
  if(form){form.claimViewContext=context;form.claimAccount=b;form.claimRecord=c;form.claimSource=source;form.claimParent=parent;form.claimCoordination=coordination;}
  form?.querySelector('.form-grid')?.insertAdjacentHTML('beforebegin',`<label class="review-ack"><input name="synthetic_test" type="checkbox" ${v.synthetic_test?'checked':''}><span><b>Test claim</b><small>Tick only for a made-up patient and insurance. The claim gets an SCTEST control number, and a live clearinghouse account may still charge for it.</small></span></label>`);
@@ -264,8 +402,7 @@ async function beginClaim(accountId,source){
  await showClaimsWorkspace();if(selected!==patient||me!==identity)return;claimEditor({...account,patient_id:patient},null,source);
 }
 function eraImportEditor(source=null){
- eraSource=source;const raw=source?.source_data;claimPane(`<form id="era-import" data-request="${crypto.randomUUID()}"><button type="button" class="batch-panel" data-batch-from-era>Open as an 835 file with several payments</button><h2>${source?.remote_report_id?'Review ERA from the clearinghouse':source?'Review imported insurance payment':'Import an insurance payment (ERA/835)'}</h2>${sourceNotice(source?{...source,policy:'Check the payer and that this is the right document. Importing does not post anything.'}:null)}${raw?.settlement_mapping?`<details class="amendment"><summary>Provider adjustments and reversals in the imported record</summary><pre class="billing-source">${esc(JSON.stringify({settlement:raw.settlement_mapping,source_ar_references:raw.source_ar_references||[]},null,2))}</pre></details>`:''}${raw?.provider?`<div class="mapping-notice"><b>${esc(raw.provider)} ERA ${esc(raw.provider_report_id||'')}</b><p>Payer in the imported record: ${esc(raw.source_payer_id||'')}. Importing does not post a payment.</p></div>`:''}<div class="form-grid"><label>Payer<select name="payer_id" required><option value="">Select payer</option>${billingPayers.map(p=>`<option value="${p.id}">${esc(p.content.name)} · ${esc(p.content.payer_code)}</option>`).join('')}</select></label>${selectField('format','File format',['x12_835','normalized'],raw?.format||'x12_835')}<label>Choose file<input id="era-file" type="file" accept=".835,.txt,.json"></label></div><label>835 text (or JSON)<textarea name="document_text" rows="12" maxlength="1048576" required>${esc(raw?.original_text|| (raw?.document?JSON.stringify(raw.document,null,2):''))}</textarea></label><p class="muted">One payment per file, up to 1 MB, 1,000 claim rows and 1,000 provider adjustments (PLB), in US dollars.</p><details class="amendment"><summary>JSON format example</summary><pre class="billing-source">${esc(JSON.stringify({payer_code:'YOUR-PAYER-CODE',trace:'UNIQUE-TRACE',payment_date:'2026-10-23',total_paid_cents:8000,currency:'USD',claims:[{control_number:'SC… or claim number from a previous system',payer_control_number:'PAYER-CLAIM-ID',status:'1',patient_name:'Sample Patient',charged_cents:12550,paid_cents:8000,patient_responsibility_cents:2000,adjustments:[{group:'CO',reason_code:'45',amount_cents:2550,service_index:null},{group:'PR',reason_code:'1',amount_cents:2000,service_index:null}],services:[]}]},null,2))}</pre></details>${billingField('reason','Reason (saved in the history)','','text',1000,true)}<button class="primary" type="submit">Import for review</button></form>`);
-}
+ eraSource=source;const raw=source?.source_data;const html=`<form id="era-import" data-request="${crypto.randomUUID()}"><button type="button" class="batch-panel" data-batch-from-era>Open as an 835 file with several payments</button><h2>${source?.remote_report_id?'Review ERA from the clearinghouse':source?'Review imported insurance payment':'Import an insurance payment (ERA/835)'}</h2>${sourceNotice(source?{...source,policy:'Check the payer and that this is the right document. Importing does not post anything.'}:null)}${raw?.settlement_mapping?`<details class="amendment"><summary>Provider adjustments and reversals in the imported record</summary><pre class="billing-source">${esc(JSON.stringify({settlement:raw.settlement_mapping,source_ar_references:raw.source_ar_references||[]},null,2))}</pre></details>`:''}${raw?.provider?`<div class="mapping-notice"><b>${esc(raw.provider)} ERA ${esc(raw.provider_report_id||'')}</b><p>Payer in the imported record: ${esc(raw.source_payer_id||'')}. Importing does not post a payment.</p></div>`:''}<div class="form-grid">${payerPickerMarkup('payer','Insurance company',{value:raw?.source_payer_id||''})}${selectField('format','File format',['x12_835','normalized'],raw?.format||'x12_835')}<label>Choose file<input id="era-file" type="file" accept=".835,.txt,.json"></label></div><label>835 text (or JSON)<textarea name="document_text" rows="12" maxlength="1048576" required>${esc(raw?.original_text|| (raw?.document?JSON.stringify(raw.document,null,2):''))}</textarea></label><p class="muted">One payment per file, up to 1 MB, 1,000 claim rows and 1,000 provider adjustments (PLB), in US dollars.</p><details class="amendment"><summary>JSON format example</summary><pre class="billing-source">${esc(JSON.stringify({payer_code:'YOUR-PAYER-CODE',trace:'UNIQUE-TRACE',payment_date:'2026-10-23',total_paid_cents:8000,currency:'USD',claims:[{control_number:'SC… or claim number from a previous system',payer_control_number:'PAYER-CLAIM-ID',status:'1',patient_name:'Sample Patient',charged_cents:12550,paid_cents:8000,patient_responsibility_cents:2000,adjustments:[{group:'CO',reason_code:'45',amount_cents:2550,service_index:null},{group:'PR',reason_code:'1',amount_cents:2000,service_index:null}],services:[]}]},null,2))}</pre></details>${billingField('reason','Reason (saved in the history)','','text',1000,true)}<button class="primary" type="submit">Import for review</button></form>`;claimPane(html);typeaheadInit(claimWorkspaceHost()||document);}
 async function showEra(id){
  const context=claimContextSnapshot(),identity=typeof me==='undefined'?undefined:me;
  const [d,h]=await Promise.all([api(`${eraBase}/${id}`),api(`${eraBase}/${id}/history`)]);if(!claimContextCurrent(context)||identity!==(typeof me==='undefined'?undefined:me))return;eraCurrent=d.remittance;const r=eraCurrent,doc=r.document,editable=billingWrite()&&['staged','reconciled'].includes(r.status),suggested=Boolean(d.automation)&&r.version===2;
@@ -284,7 +421,7 @@ async function inspectEraMatch(index){
 }
 document.addEventListener('change',e=>{if(e.target.id==='era-file')run(async()=>{const f=e.target.files[0];if(!f)return;if(f.size>1048576)throw new Error('File is larger than 1 MB.');$('era-import').elements.document_text.value=await f.text();});if(e.target.name==='claim_id'||e.target.name==='claim_lookup'){const row=e.target.closest('.era-row');if(row){row.reviewedMatch=null;row.querySelector('.era-match-evidence').textContent='Use Check claim and balance before saving.';}}});
 document.addEventListener('click',e=>{const chip=e.target.closest?.('#claims-tool [data-claim-status]');if(chip){e.preventDefault();selectClaimStatusFilter(chip.dataset.claimStatus);return;}
- const b=e.target.closest('button');if(!b||b.hasAttribute('data-chain-select')||b.closest('.batch-panel')||b.closest('.settlement-panel')||b.closest('.era-automation-panel')||b.dataset.ediClaim||b.type==='submit'||(!b.closest('#claims-tool')&&!b.closest('#encounter-claims')&&!b.dataset.newClaim&&!b.dataset.mapClaim))return;const owned=['newClaim','mapClaim','sourceClaimAccount','claimAccount','claimOpen','claimRelease','claimExistingSubmission','eraOpen','eraSource','eraInspect'].some(key=>b.dataset[key]!==undefined)||['data-claims-refresh','data-claims-next','data-era-next','data-edit-claim','data-secondary-claim','data-replacement-claim','data-new-era','data-close-encounter-claim','data-rebase-claim-draft','data-discard-claim-draft'].some(name=>b.hasAttribute(name));if(!owned)return;run(async()=>{
+ const b=e.target.closest('button');if(!b||b.hasAttribute('data-chain-select')||b.closest('.batch-panel')||b.closest('.settlement-panel')||b.closest('.era-automation-panel')||b.dataset.ediClaim||b.type==='submit'||(!b.closest('#claims-tool')&&!b.closest('#encounter-claims')&&!b.dataset.newClaim&&!b.dataset.mapClaim))return;const owned=['newClaim','mapClaim','sourceClaimAccount','claimAccount','claimOpen','claimRelease','claimExistingSubmission','eraOpen','eraSource','eraInspect'].some(key=>b.dataset[key]!==undefined)||['data-claims-refresh','data-claims-next','data-era-next','data-edit-claim','data-secondary-claim','data-replacement-claim','data-new-era','data-close-encounter-claim','data-rebase-claim-draft','data-discard-claim-draft','data-claim-fix-resend'].some(name=>b.hasAttribute(name));if(!owned)return;run(async()=>{
  if(b.hasAttribute('data-rebase-claim-draft')){const form=$('claim-editor-form')||$('claimmd-submit-form');requireClaimContext(form.claimViewContext);form.claimDraftStale=false;form.querySelectorAll('button[type="submit"]').forEach(submit=>submit.disabled=false);form.querySelectorAll('[data-claim-draft-notice]').forEach(n=>n.remove());captureClaimDraft(form);return;}
  if(b.hasAttribute('data-discard-claim-draft')){const form=$('claim-editor-form')||$('claimmd-submit-form');requireClaimContext(form.claimViewContext);claimDrafts.delete(form.claimDraftKey);const account=form.claimAccount,record=form.claimRecord,source=form.claimSource,parent=form.claimParent;form.claimDraftKey=null;if(form.id==='claimmd-submit-form')claimMdSubmitEditor(form.claimMdDetail);else claimEditor(account,record,source,parent);return;}
  if(b.hasAttribute('data-close-encounter-claim')){const context=claimContextSnapshot();requireClaimContext(context);captureClaimDraft();$('encounter-claims').replaceChildren();$('encounter-claims').hidden=true;claimViewContext=null;return;}
@@ -296,6 +433,7 @@ document.addEventListener('click',e=>{const chip=e.target.closest?.('#claims-too
  if(b.dataset.claimExistingSubmission){await reviewExistingClaimSubmission(b.dataset.claimExistingSubmission);return;}
  if(b.dataset.claimRelease){await releaseClaimToSend(b.dataset.claimRelease);return;}
  if(b.dataset.claimOpen){await showClaim(b.dataset.claimOpen);return;}if(b.hasAttribute('data-edit-claim')){claimEditor(claimCurrent.snapshot.account,claimCurrent);return;}
+  if(b.hasAttribute('data-claim-fix-resend')){await beginClaimFix(b.dataset.claimFixClaim||'',b.dataset.claimFixField||'');return;}
  if(b.hasAttribute('data-secondary-claim')){await reviewSecondaryClaim();return;}
  if(b.hasAttribute('data-replacement-claim')){const context=claimContextSnapshot(),c=claimCurrent;requireClaimContext(context,c);const b=await api(`/api/v1/patients/${c.patient_id}/billing`);if(!claimContextCurrent(context))return;const account=b.accounts.find(a=>a.id===c.account_id);claimEditor({...account,patient_id:c.patient_id,...(c.snapshot.coordination_of_benefits?{coverage_snapshot:c.snapshot.account.coverage_snapshot,content:{...account.content,coverage_id:c.snapshot.account.content.coverage_id}}:{})},null,null,c);return;}
  if(b.hasAttribute('data-new-era')){eraImportEditor();return;}if(b.dataset.eraOpen){await showEra(b.dataset.eraOpen);return;}if(b.dataset.eraSource){const s=window.eraSources.find(s=>s.source_history_id===b.dataset.eraSource);if(s.batch_id)await showEraBatch(s.batch_id);else if(s.native_id)await showEra(s.native_id);else eraImportEditor(s);return;}if(b.dataset.eraInspect!==undefined)await inspectEraMatch(Number(b.dataset.eraInspect));
@@ -342,7 +480,7 @@ async function decorateClaimsWorkspace(context){
 document.addEventListener('submit',event=>{
  const form=event.target;if(form.id!=='secondary-claim-review')return;event.preventDefault();
  run(async()=>{const context=form.claimViewContext,data=form.secondaryReview;requireClaimContext(context,data.primary_claim);if(claimCurrent?.id!==form.primaryClaimId)throw new Error('The selected primary claim changed.');
-  const values=Object.fromEntries(new FormData(form)),coverage=form.secondaryChoices.find(c=>c.coverage.id===values.coverage_id),e=data.primary_adjudication;if(!coverage||values.not_forwarded!=='on'||values.timing_reviewed!=='on')throw new Error('Choose the secondary insurance and tick both boxes first.');
+  const values=Object.fromEntries(new FormData(form)),coverage=form.secondaryChoices.find(c=>c.coverage.id===secondaryChosenCoverageId(form,values)),e=data.primary_adjudication;if(!coverage||values.not_forwarded!=='on'||values.timing_reviewed!=='on')throw new Error('Choose the secondary insurance and tick both boxes first.');
   const paidUnits=e.claim.services.map((_,i)=>Number(values['paid_units_'+i]));if(paidUnits.some(n=>!Number.isInteger(n)||n<1||n>1000))throw new Error('Enter the paid units for every service.');
   const coordination={coverage_id:coverage.coverage.id,coverage_version:coverage.coverage.version,primary_claim_version:data.primary_claim.version,remittance_id:e.remittance_id,remittance_version:e.remittance_version,row_index:e.row_index,not_forwarded_confirmed:true,payer_timing_reviewed:true,crossover_reference:values.crossover_reference,paid_units:paidUnits};
   claimEditor({...data.account,content:{...data.account.content,coverage_id:coverage.coverage.id},coverage_snapshot:coverage},null,null,data.primary_claim,coordination);

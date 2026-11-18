@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 let practiceLoad=0,practiceData,practiceBoardMode='agenda',practiceFlowFilter='all',practiceQuery='',practiceResultFilter='all';
+// The board shows today's list; the patient box also looks through the whole patient list so
+// staff can open anyone's chart from Home without a separate search screen.
+const practicePatientLimit=8,practicePatientDelay=200,practicePatientPages=8;
+let practicePatients=[],practicePatientCursor=null,practicePatientSequence=0,practicePatientTimer=null,practicePatientError='',practicePatientBusy=false;
 const practiceTime=value=>new Date(value).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
 const practiceStatus=value=>displayStatus(value);
 const practiceProvider=label=>displayPerson(label)||'Provider not set';
@@ -50,7 +54,7 @@ function renderPracticeWorkspace(){
  ${practiceJourneyStep(6,'followup','Follow-up','Tasks, referrals and recall',[followup?.items,referrals?.items].every(Array.isArray)?followup.items.length+referrals.items.length:null)}
  </nav></section>
  <div class="practice-board-layout"><section class="practice-board" aria-label="Patient and visit worklist"><header class="practice-board-header"><nav class="practice-board-tabs" aria-label="Clinical worklists">${practiceTab('agenda','Today’s patients',schedule?appointments.length:null)}${practiceTab('unfinished','Unfinished visits',unfinished?unfinished.total:null)}</nav><span class="practice-board-scope">${practiceBoardMode==='agenda'?'Today · all providers':'All dates · oldest first'}</span></header>
- <div class="practice-board-toolbar"><label class="practice-search"><span class="sr-only">Search loaded patients or MRN</span><input id="practice-search" type="search" value="${esc(practiceQuery)}" placeholder="Search loaded patients or MRN" autocomplete="off"></label><div class="practice-status-strip" aria-label="Filter today’s appointments" ${practiceBoardMode==='agenda'?'':'hidden'}>${[['all','All'],['arrivals','Arrived'],['in_progress','In progress'],['completed','Completed']].map(([key,label])=>`<button type="button" data-practice-flow="${key}" aria-pressed="${practiceFlowFilter===key}">${label}<span>${schedule?appointments.filter(a=>practiceMatchesFlow(a,key)).length:'—'}</span></button>`).join('')}</div></div>
+ <div class="practice-board-toolbar"><label class="practice-search"><span class="sr-only">Find a patient by name, date of birth or record number</span><input id="practice-search" type="search" value="${esc(practiceQuery)}" placeholder="Find a patient by name, date of birth or record number" autocomplete="off" spellcheck="false" aria-controls="practice-patient-results" aria-describedby="practice-patient-status" aria-activedescendant="${practicePatientActive>=0?`practice-patient-option-${practicePatientActive}`:''}"></label><p id="practice-patient-status" class="muted practice-patient-status" role="status" ${practiceQuery.trim().length>=2?'':'hidden'}>${esc(practicePatientStatus())}</p><div class="practice-patient-search" id="practice-patient-results" role="listbox" aria-label="Matching patients" ${practiceQuery.trim().length>=2?'':'hidden'}>${practicePatientRows()}</div><div class="practice-status-strip" aria-label="Filter today’s appointments" ${practiceBoardMode==='agenda'?'':'hidden'}>${[['all','All'],['arrivals','Arrived'],['in_progress','In progress'],['completed','Completed']].map(([key,label])=>`<button type="button" data-practice-flow="${key}" aria-pressed="${practiceFlowFilter===key}">${label}<span>${schedule?appointments.filter(a=>practiceMatchesFlow(a,key)).length:'—'}</span></button>`).join('')}</div></div>
  <div id="practice-worklist" class="practice-worklist"></div><footer class="practice-board-footer"><span id="practice-row-summary" role="status" aria-live="polite"></span>${practiceAction('schedule','Manage schedule →')}</footer></section>
  <aside class="practice-queue-sidebar" aria-label="Work needing attention"><header class="practice-board-header"><div><h3>Results to review</h3></div><span class="pill">${inbox?`${inbox.items.length}${inbox.items.length>=inbox.limit?'+':''}`:'—'}</span></header><div class="practice-result-filters" aria-label="Filter result review queue"><button type="button" data-practice-result-filter="all" aria-pressed="${practiceResultFilter==='all'}">All results</button><button type="button" data-practice-result-filter="critical" aria-pressed="${practiceResultFilter==='critical'}">Critical <span>${inbox?practiceData.reports.filter(r=>r.critical).length:'—'}</span></button></div><div id="practice-results"></div><footer class="practice-board-footer">${practiceAction('results','Review all results →')}</footer></aside></div>
  </section>`;
@@ -58,6 +62,50 @@ function renderPracticeWorkspace(){
 }
 function practiceMatchesFlow(a,filter){return filter==='all'||(filter==='arrivals'?['checked_in','in_progress'].includes(a.status):a.status===filter);}
 function practiceMatchesQuery(item){const query=practiceQuery.trim().toLocaleLowerCase();return !query||`${item.patient_name} ${item.mrn} ${item.title||''}`.toLocaleLowerCase().includes(query);}
+// Results while typing: name, a date of birth typed as a date, or the record number.
+let practicePatientActive=-1;
+function practicePatientMatches(){return practicePatients.filter(p=>patientPickerMatches(p,practiceQuery)).slice(0,practicePatientLimit);}
+function practicePatientStatus(){
+ if(practicePatientError)return practicePatientError;
+ if(practicePatientBusy)return 'Searching…';
+ const query=practiceQuery.trim();
+ if(query.length<2)return '';
+ const count=practicePatientMatches().length;
+ if(!count)return practicePatientCursor?'No patient matches yet. More patients are still being looked through.':'No patient matches this. Check the spelling or try the record number.';
+ return `${count===1?'One patient matches':`${count} patients match`}. Choose one to open their chart.`;
+}
+function practicePatientRows(){
+ const rows=practicePatientMatches();
+ return rows.map((p,index)=>`<button type="button" class="patient-picker-row${index===practicePatientActive?' is-active':''}" role="option" aria-selected="${index===practicePatientActive}" id="practice-patient-option-${index}" data-practice-patient="${esc(p.id)}">${patientPickerRowHtml(p)}</button>`).join('')||'<p class="muted">Type a name, a date of birth or a record number.</p>';
+}
+function practicePatientPaint(){
+ const list=$('practice-patient-results');
+ if(list){list.innerHTML=practicePatientRows();list.hidden=practiceQuery.trim().length<2;}
+ const status=$('practice-patient-status');if(status){status.textContent=practicePatientStatus();status.hidden=practiceQuery.trim().length<2;}
+ const box=$('practice-search');if(box){box.setAttribute('aria-busy',String(practicePatientBusy));box.setAttribute('aria-activedescendant',practicePatientActive>=0?`practice-patient-option-${practicePatientActive}`:'');}
+}
+function practicePatientReadPage(sequence,after){
+ return api(after?`/api/v1/patients?after=${encodeURIComponent(after)}`:'/api/v1/patients').then(page=>{
+  if(sequence!==practicePatientSequence)return;
+  const seen=new Set(practicePatients.map(p=>p.id));
+  practicePatients=[...practicePatients,...(Array.isArray(page?.items)?page.items:[]).filter(p=>!seen.has(p.id))];
+  practicePatientCursor=page?.next_cursor||null;
+ },()=>{if(sequence===practicePatientSequence){practicePatientCursor=null;practicePatientError='Patient names could not be loaded right now. Refresh to try again.';}});
+}
+function practicePatientSearch(){
+ const sequence=++practicePatientSequence,query=practiceQuery.trim(),short=()=>{if(sequence!==practicePatientSequence)return;practicePatientBusy=false;practicePatientPaint();};
+ practicePatientError='';practicePatientActive=-1;practicePatientBusy=true;practicePatientPaint();
+ if(query.length<2){practicePatients=[];practicePatientCursor=null;practicePatientBusy=false;practicePatientPaint();return;}
+ const step=pagesLeft=>{
+  if(sequence!==practicePatientSequence)return Promise.resolve();
+  if(practicePatientMatches().length||!practicePatientCursor||pagesLeft<=0)return Promise.resolve();
+  return practicePatientReadPage(sequence,practicePatientCursor).then(()=>step(pagesLeft-1));
+ };
+ // Read on from the first page until something matches, so the box is not limited to who
+ // happens to be on today's board.
+ const known=practicePatients.length?Promise.resolve():practicePatientReadPage(sequence,null);
+ known.then(()=>step(practicePatientPages)).then(short,short);
+}
 function renderPracticeRows(){
  const {schedule,unfinished,appointments}=practiceData;
  const agenda=practiceBoardMode==='agenda',loaded=agenda?schedule:unfinished;
@@ -82,9 +130,39 @@ function renderPracticeResults(){
  $('practice-results').innerHTML=visible.length?`<div class="practice-result-list">${visible.slice(0,8).map(r=>`<article class="practice-queue-item ${r.critical?'practice-critical':''}"><div class="section-head"><span class="${r.critical?'critical-label':'practice-result-status'}">${r.critical?'Critical result':esc(practiceStatus(r.status))}</span></div><h4>${esc(r.patient_name)}</h4><p>${esc(r.title)}</p><small class="record-id">MRN ${esc(r.mrn)}</small><button type="button" class="text-button" data-practice-result="${esc(r.order_id)}" data-practice-result-patient="${esc(r.patient_id)}">Review result →</button></article>`).join('')}</div>${visible.length>8?`<p class="practice-footnote">Showing 8 of ${visible.length}. Critical results are listed first.</p>`:''}`:`<div class="practice-empty"><b>${practiceResultFilter==='critical'?'No critical results':'No results to review'}</b>${practiceResultFilter==='critical'?'<p>Choose All results to see the rest.</p>':''}</div>`;
  document.querySelectorAll('[data-practice-result-filter]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.practiceResultFilter===practiceResultFilter)));
 }
+// The box filters today's list at once and looks through the whole patient list as it types.
+function practicePatientType(value){
+ practiceQuery=String(value??'');practicePatientActive=-1;
+ clearTimeout(practicePatientTimer);practicePatientTimer=null;
+ renderPracticeRows();
+ if(practiceQuery.trim().length<2){practicePatients=[];practicePatientCursor=null;practicePatientSequence++;practicePatientBusy=false;practicePatientError='';practicePatientPaint();return;}
+ practicePatientPaint();
+ practicePatientTimer=setTimeout(()=>{practicePatientTimer=null;practicePatientSearch();},practicePatientDelay);
+}
+function practicePatientStep(direction){
+ const rows=practicePatientMatches();if(!rows.length)return;
+ practicePatientActive=(practicePatientActive+direction+rows.length)%rows.length;
+ practicePatientPaint();
+}
 document.addEventListener('input',event=>{
  if(event.target.id!=='practice-search'||!practiceData)return;
- practiceQuery=event.target.value;renderPracticeRows();
+ practicePatientType(event.target.value);
+});
+document.addEventListener('keydown',event=>{
+ if(event.target.id!=='practice-search'||!practiceData||event.isComposing)return;
+ if(event.key==='ArrowDown'||event.key==='ArrowUp'){event.preventDefault();event.stopImmediatePropagation();practicePatientStep(event.key==='ArrowDown'?1:-1);return;}
+ if(event.key==='Escape'){
+  // Escape empties the box; the board comes back. The screen behind it stays as it was.
+  if(practiceQuery){event.preventDefault();event.stopImmediatePropagation();const box=$('practice-search');if(box)box.value='';practicePatientType('');}
+  return;
+ }
+ if(event.key!=='Enter'&&event.key!=='Tab')return;
+ // One match opens that chart; several are stepped through with Enter. Tab keeps moving on.
+ if(practicePatientBusy||event.key==='Tab')return;
+ const rows=practicePatientMatches(),chosen=rows.length===1?rows[0]:rows[practicePatientActive];
+ if(!chosen)return;
+ event.preventDefault();event.stopImmediatePropagation();
+ run(async()=>{await showClinical();await selectPatient(chosen.id);});
 });
 // Capture this workbench’s controls before generic application click handlers.
 document.addEventListener('click',event=>{
@@ -93,7 +171,7 @@ document.addEventListener('click',event=>{
  event.preventDefault();event.stopImmediatePropagation();
  if(button.dataset.practiceBoard){practiceBoardMode=button.dataset.practiceBoard;renderPracticeWorkspace();return;}
  if(button.dataset.practiceFlow){practiceFlowFilter=button.dataset.practiceFlow;renderPracticeRows();return;}
- if(button.hasAttribute('data-practice-clear')){practiceFlowFilter='all';practiceQuery='';$('practice-search').value='';renderPracticeRows();return;}
+ if(button.hasAttribute('data-practice-clear')){practiceFlowFilter='all';const box=$('practice-search');if(box)box.value='';practicePatientType('');return;}
  if(button.dataset.practiceResultFilter){practiceResultFilter=button.dataset.practiceResultFilter;renderPracticeResults();return;}
  run(async()=>{
   if(button.id==='nav-practice'||button.dataset.practiceAction==='refresh'){await showPracticeWorkspace();return;}

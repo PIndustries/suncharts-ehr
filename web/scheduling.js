@@ -34,7 +34,7 @@ function shiftSchedulePeriod(direction){
  if(scheduleMode==='month'){d.setDate(1);d.setMonth(d.getMonth()+direction);}else d.setDate(d.getDate()+direction*(['week','week_grid'].includes(scheduleMode)?7:1));
  scheduleDate=scheduleDayKey(d);
 }
-let scheduleLoadGeneration=0,scheduleMarkersReady=Promise.resolve();
+let scheduleLoadGeneration=0,scheduleMarkersReady=Promise.resolve(),scheduleBookingPatientPicker=null;
 async function showSchedule(options={}){
  loadSchedulePreference();
  scheduleDrag=undefined;scheduleMove=undefined;
@@ -102,7 +102,6 @@ async function appointmentDetail(id){
  if(typeof renderAppointmentExtras==='function')await renderAppointmentExtras(a);
 }
 async function loadSchedulePatients(){const page=await api('/api/v1/patients');schedulePatients=page.items;scheduleCursor=page.next_cursor;}
-function patientOptions(id){return schedulePatients.map(p=>`<option value="${p.id}" ${p.id===id?'selected':''}>${esc(p.family_name)}, ${esc(p.given_name)} · ${esc(p.mrn)}</option>`).join('');}
 function patientEncounterHistoryEntries(){
  const appointments=workspace?.appointments||[],visits=workspace?.visits||[],byAppointment=new Map(appointments.map(a=>[a.id,a]));
  const linked=new Set(visits.map(v=>v.appointment_id).filter(Boolean));
@@ -163,9 +162,10 @@ async function appointmentEditor(a,sourceMapping,chartContext,bookingDate=schedu
  const start=a?localTime(a.starts_at):proposedStart||(source?'':chartContext||quickBook?localTime(nextStart.toISOString()):(slotTime||`${bookingDate}T09:00`)),end=a?localTime(a.ends_at):proposedEnd||(source?'':chartContext||quickBook?localTime(nextEnd.toISOString()):slotTime?localTime(new Date(new Date(scheduleInstant(slotTime)).getTime()+1800000).toISOString()):`${bookingDate}T09:30`);
  const pinnedPatient=mappedPatient?schedulePatients.find(p=>p.id===mappedPatient):null;
  const present=chartContext?html=>{const panel=$('chart-booking-editor');if(!panel||selected!==chartContext.patient_id)return;panel.innerHTML=`<section class="chart-booking-panel" aria-label="Book patient appointment">${html}</section>`;panel.scrollIntoView({block:'start'});panel.querySelector('h2')?.setAttribute('tabindex','-1');panel.querySelector('h2')?.focus({preventScroll:true});}:schedulePanel;
+ const patientPickerId=mappedPatient||a?.patient_id||'';
  present(`<h2>${a?'Edit appointment':source?'Reconcile source appointment':'New appointment'}</h2>${source?`<div class="signed-notice"><b>Verify this occurrence before booking</b><p>Source ${esc(source.source_instance)} · ${esc(source.source_id)}</p><p>Source date/time: ${esc(raw.pc_eventDate||data.pc_eventDate)} ${esc(raw.pc_startTime||data.pc_startTime)} · Duration seconds: ${esc(raw.pc_duration||data.pc_duration)}</p><p>Provider ID: ${esc(raw.pc_aid||data.pc_aid)} · Status: ${esc(raw.pc_apptstatus||data.pc_apptstatus)} · Recurrence: ${esc(raw.pc_recurrtype??data.pc_recurrtype??'unknown')}</p><p>The new native status is Booked. Choose the matching provider and verify timezone and occurrence. Past/completed visits remain preserved in source history.</p></div>`:''}
- <form id="schedule-booking" data-id="${a?.id||''}" data-version="${a?.version||''}" data-request="${crypto.randomUUID()}" data-source="${source?.id||''}" data-chart-patient="${esc(chartContext?.patient_id||'')}" data-chart-visit="${esc(chartContext?.visit_id||'')}">
- ${a?`<input type="hidden" name="patient_id" value="${esc(a.patient_id)}">`:mappedPatient?`<div class="booking-patient-context"><span class="muted">Patient</span><p><b>${esc(pinnedPatient.family_name)}, ${esc(pinnedPatient.given_name)}</b> · MRN ${esc(pinnedPatient.mrn)}</p><input type="hidden" name="patient_id" value="${esc(mappedPatient)}"></div>`:`<label>Search patients<input type="search" id="schedule-patient-search" placeholder="Name or record number"></label><label>Patient<select id="schedule-patient" name="patient_id" required><option value="">Choose a patient</option>${patientOptions()}</select></label>${scheduleCursor?'<button type="button" data-schedule-more>Load more patients</button>':''}`}
+ <form id="schedule-booking" data-patient-picker="${esc(patientPickerId)}" data-id="${a?.id||''}" data-version="${a?.version||''}" data-request="${crypto.randomUUID()}" data-source="${source?.id||''}" data-chart-patient="${esc(chartContext?.patient_id||'')}" data-chart-visit="${esc(chartContext?.visit_id||'')}">
+  ${a?`<input type="hidden" name="patient_id" value="${esc(a.patient_id)}">`:mappedPatient?patientPickerPinnedMarkup({patient:pinnedPatient}):`${patientPickerMarkup({label:'Patient',name:'patient_id',required:true})}${scheduleCursor?'<button type="button" class="quiet" data-schedule-more>Load more patients</button>':''}`}
  <label>Provider<select name="clinician_id" required><option value="">Choose a provider</option>${scheduleProviders.map(p=>`<option value="${p.id}" ${p.id===(a?.clinician_id||(source?'':chartContext?me.user_id:slotProvider||scheduleProvider||me.user_id))?'selected':''}>${esc(p.label)}</option>`).join('')}</select></label>
  <label>Visit title<input name="title" value="${esc(a?.title||data.title||raw.pc_title||data.pc_title||'Office visit')}" maxlength="200" required></label><label>Category<input name="category" value="${esc(a?.category||'Office visit')}" maxlength="100" required list="appointment-categories"><datalist id="appointment-categories"><option value="Office visit"><option value="New patient"><option value="Follow-up"><option value="Telehealth"><option value="Procedure"></datalist></label>
  <div class="form-grid"><label>Start (${esc(Intl.DateTimeFormat().resolvedOptions().timeZone)})<input name="starts_at" type="datetime-local" value="${esc(start)}" required></label><label>End<input name="ends_at" type="datetime-local" value="${esc(end)}" required></label><label>Facility<input name="facility" value="${esc(a?.facility||'')}" maxlength="200"></label><label>Room<input name="room" value="${esc(a?.room||'')}" maxlength="100"></label></div>
@@ -173,12 +173,21 @@ async function appointmentEditor(a,sourceMapping,chartContext,bookingDate=schedu
  ${source?'<label class="scope-options"><input name="source_reviewed" type="checkbox" required> I verified the patient, provider, source status, occurrence and timezone.</label>':''}
  ${!a&&!source?`<fieldset class="recurrence-fields"><legend>Repeat appointment</legend><div class="form-grid"><label>Repeat<select name="repeat_frequency"><option value="none">Does not repeat</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></label><label>Every<input name="repeat_interval" type="number" min="1" max="12" value="1"></label><label>Number of visits<input name="repeat_count" type="number" min="2" max="52" value="4"></label></div><p class="muted">Recurring visits keep the local start time in this browser’s timezone. Monthly visits use the original day, or the last day in shorter months. Review every occurrence before booking. No visits are booked if any occurrence conflicts.</p><div id="series-preview"></div></fieldset>`:''}<p class="muted">Provider, patient, room and blocked-time conflicts are checked before saving. Reminders are configured separately after booking.</p><div class="actions"><button class="primary" type="submit">${a?'Save changes':'Book appointment'}</button><button type="button" ${chartContext?'data-chart-book-close':'data-schedule-close'}>Close</button></div></form>`);
 
+ mountScheduleBookingPatientPicker();
  void attachScheduleLocations();
+}
+// The booking form's patient box is live: it searches as staff type and holds the chosen
+// patient. Opening it again with a patient already in mind fills that person straight in.
+function mountScheduleBookingPatientPicker(){
+  const form=$('schedule-booking');scheduleBookingPatientPicker=null;if(!form)return;
+  const picker=mountPatientPicker(form);if(!picker)return;
+  scheduleBookingPatientPicker=picker;
+  const patient=schedulePatients.find(p=>p.id===form.dataset.patientPicker);
+  if(patient)patientPickerChoose(picker,patient);
 }
 function blockEditor(){
  schedulePanel(`<h2>Block provider time</h2><p class="muted">Use for breaks, leave, or administrative time. Existing appointments must be moved before blocking their time.</p><form id="schedule-block-form" data-request="${crypto.randomUUID()}"><label>Provider<select name="clinician_id" required>${scheduleProviders.map(p=>`<option value="${p.id}" ${p.id===(scheduleProvider||me.user_id)?'selected':''}>${esc(p.label)}</option>`).join('')}</select></label><label>Label<input name="label" required maxlength="200" placeholder="Lunch / administrative time"></label><label>Start<input name="starts_at" type="datetime-local" value="${scheduleDate}T12:00" required></label><label>End<input name="ends_at" type="datetime-local" value="${scheduleDate}T13:00" required></label><div class="actions"><button class="primary" type="submit">Block time</button><button type="button" data-schedule-close>Close</button></div></form>`);
 }
-document.addEventListener('input',e=>{if(e.target.id==='schedule-patient-search'){const q=e.target.value.toLowerCase();Array.from($('schedule-patient').options).forEach(o=>{o.hidden=!!o.value&&!o.textContent.toLowerCase().includes(q);});}});
 document.addEventListener('click',e=>{
  const b=e.target.closest('button');if(!b||(!b.hasAttribute('data-chart-book')&&!b.hasAttribute('data-chart-book-close')))return;
  e.preventDefault();e.stopImmediatePropagation();
@@ -200,7 +209,7 @@ document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||
  if(b.dataset.scheduleOpen){await appointmentDetail(b.dataset.scheduleOpen);return;}
  if(b.hasAttribute('data-new-block')){scheduleSelected=undefined;blockEditor();return;}
  if(b.hasAttribute('data-schedule-close')){closeSchedulePane();return;}
- if(b.hasAttribute('data-schedule-more')){const page=await api(`/api/v1/patients?after=${encodeURIComponent(scheduleCursor)}`);schedulePatients.push(...page.items);scheduleCursor=page.next_cursor;$('schedule-patient').insertAdjacentHTML('beforeend',page.items.map(p=>`<option value="${p.id}">${esc(p.family_name)}, ${esc(p.given_name)} · ${esc(p.mrn)}</option>`).join(''));if(!scheduleCursor)b.remove();return;}
+  if(b.hasAttribute('data-schedule-more')){const page=await api(`/api/v1/patients?after=${encodeURIComponent(scheduleCursor)}`);schedulePatients.push(...page.items);scheduleCursor=page.next_cursor;if(!scheduleCursor)b.remove();return;}
  if(b.dataset.scheduleChart){await showClinical();await selectPatient(b.dataset.scheduleChart);return;}
  if(b.dataset.scheduleStart){const v=await api('/api/v1/visits','POST',{appointment_id:b.dataset.scheduleStart});await showClinical();await selectPatient(b.dataset.patient,v.id);return;}
  if(b.dataset.scheduleBlock){scheduleSelected=b.dataset.scheduleBlock;const block=scheduleState.blocks.find(x=>x.id===b.dataset.scheduleBlock);schedulePanel(`<h2>${esc(block.label)}</h2><p>${esc(date(block.starts_at))} – ${esc(date(block.ends_at))}</p>${canSchedule()?`<form id="schedule-block-cancel" data-id="${block.id}" data-version="${block.version}"><label>Reason for removing block<input name="reason" required maxlength="1000"></label><button type="submit">Remove time block</button></form>`:''}`);}

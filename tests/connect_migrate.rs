@@ -2549,6 +2549,14 @@ async fn appointment_migration_preserves_source_and_reconciles_explicitly() {
 }
 
 async fn billing_patient_visit(r: &Router, a: &Actor) -> (Value, Value) {
+    billing_patient_visit_slot(r, a, 0).await
+}
+
+// The slot keeps successive fixtures in one test apart: an appointment slot and a policy member id
+// are unique per tenant, so a second claim built from the same patient would collide on them.
+async fn billing_patient_visit_slot(r: &Router, a: &Actor, slot: u32) -> (Value, Value) {
+    let starts = format!("2026-1{}-01T15:00:00Z", slot);
+    let ends = format!("2026-1{}-01T15:30:00Z", slot);
     let (_, p) = schedule_call(
         r,
         a,
@@ -2558,7 +2566,15 @@ async fn billing_patient_visit(r: &Router, a: &Actor) -> (Value, Value) {
         None,
     )
     .await;
-    let (_,appt)=schedule_call(r,a,"POST","/api/v1/appointments",json!({"patient_id":p["id"],"clinician_id":a.sub,"starts_at":"2026-10-01T15:00:00Z","ends_at":"2026-10-01T15:30:00Z"}),None).await;
+    let (_, appt) = schedule_call(
+        r,
+        a,
+        "POST",
+        "/api/v1/appointments",
+        json!({"patient_id":p["id"],"clinician_id":a.sub,"starts_at":starts,"ends_at":ends}),
+        None,
+    )
+    .await;
     assert_eq!(
         schedule_call(
             r,
@@ -3379,10 +3395,30 @@ async fn claim_fixture_kind(
     a: &Actor,
     professional: bool,
 ) -> (Value, Value, Value, Value) {
-    let (p, v) = billing_patient_visit(r, a).await;
+    claim_fixture_slot(r, a, professional, 0).await
+}
+async fn claim_fixture_slot(
+    r: &Router,
+    a: &Actor,
+    professional: bool,
+    slot: u32,
+) -> (Value, Value, Value, Value) {
+    let (p, v) = billing_patient_visit_slot(r, a, slot).await;
     let payer = billing_payer(r, a).await;
     let base = format!("/api/v1/patients/{}", p["id"].as_str().unwrap());
-    let (s,c)=schedule_call(r,a,"POST",&format!("{base}/coverages"),json!({"request_id":Uuid::new_v4(),"content":coverage_content(&payer),"reason":"Synthetic coverage"}),None).await;
+    let mut coverage = coverage_content(&payer);
+    if slot > 0 {
+        coverage["member_id"] = json!(format!("SYNTHETIC-POLICY-{slot:02}"));
+    }
+    let (s, c) = schedule_call(
+        r,
+        a,
+        "POST",
+        &format!("{base}/coverages"),
+        json!({"request_id":Uuid::new_v4(),"content":coverage,"reason":"Synthetic coverage"}),
+        None,
+    )
+    .await;
     assert_eq!(s, 200, "{c}");
     let mut charges = charge_content(&v, Some(&c));
     if professional {
@@ -3965,6 +4001,245 @@ async fn rejected_claim_can_be_corrected_without_fabricating_a_payer_control() {
         schedule_call(&r, &a, "POST", &bp, request, Some(2)).await.0,
         409
     );
+}
+
+// A claim that came back has to be fixable, and the corrected claim has to go back out with the claim
+// frequency code that fits how it came back: a claim the payer took on and denied goes back as a
+// replacement (7) quoting the payer's own number, one the clearinghouse bounced before the payer saw
+// it goes back as a new claim (1). The screen reads that from the claim detail rather than guessing,
+// so the two cannot disagree, and the frequency named is checked against the create endpoint that has
+// to accept it -- a corrected claim at the wrong frequency is a claim the payer bounces again.
+async fn reject_recorded_claim(r: &Router, a: &Actor, claim: &Value, payer_control: &str) {
+    let actions = format!(
+        "/api/v1/billing/claims/{}/actions",
+        claim["id"].as_str().unwrap()
+    );
+    for (action, control) in [
+        ("ready", ""),
+        ("record_submission", ""),
+        ("record_rejection", payer_control),
+    ] {
+        // Versions are read back from the claim rather than counted by hand: these are the steps staff
+        // click, and how many revisions one leaves behind is the server's business, not the test's.
+        let (s, history) = schedule_call(
+            r,
+            a,
+            "GET",
+            &format!(
+                "/api/v1/billing/claims/{}/history",
+                claim["id"].as_str().unwrap()
+            ),
+            Value::Null,
+            None,
+        )
+        .await;
+        assert_eq!(s, 200, "{history}");
+        let version = history["items"].as_array().unwrap()[0]["version"]
+            .as_i64()
+            .unwrap();
+        let body = json!({"action":action,"reason":"Synthetic rejection evidence","reference":"SYN-REJECT","event_date":"2026-10-01","payer_control_number":control});
+        let (s, d) = schedule_call(r, a, "POST", &actions, body, Some(version)).await;
+        assert_eq!(s, 200, "{d}");
+    }
+}
+
+async fn claim_account_version(r: &Router, a: &Actor, patient: &Value, account: &Value) -> i64 {
+    let (s, accounts) = schedule_call(
+        r,
+        a,
+        "GET",
+        &format!(
+            "/api/v1/patients/{}/billing",
+            patient["id"].as_str().unwrap()
+        ),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{accounts}");
+    accounts["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == account["id"])
+        .expect("the claim's account is still listed for the patient")["version"]
+        .as_i64()
+        .unwrap()
+}
+
+async fn corrected_claim(
+    r: &Router,
+    a: &Actor,
+    frequency: &str,
+    patient: &Value,
+    account: &Value,
+    parent: &Value,
+    version: i64,
+) -> (StatusCode, Value) {
+    schedule_call(
+        r,
+        a,
+        "POST",
+        &format!(
+            "/api/v1/patients/{}/billing/accounts/{}/claims",
+            patient["id"].as_str().unwrap(),
+            account["id"].as_str().unwrap()
+        ),
+        json!({"request_id":Uuid::new_v4(),"parent_id":parent["id"],"frequency":frequency,"content":claim_content(),"reason":"Corrected claim at the frequency the detail names"}),
+        Some(version),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn claim_detail_names_the_frequency_a_corrected_claim_must_carry() {
+    let (r, _, a, _) = setup().await;
+    let (p, _, b, c) = claim_fixture(&r, &a).await;
+    let detail = format!("/api/v1/billing/claims/{}", c["id"].as_str().unwrap());
+
+    // Nothing sent yet, so nothing came back and the screen has no answer to translate.
+    let (s, before) = schedule_call(&r, &a, "GET", &detail, Value::Null, None).await;
+    assert_eq!(s, 200, "{before}");
+    assert_eq!(before["claim"]["status"], "draft");
+    assert_eq!(
+        before["responses"]["revisions"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(before["responses"]["feed"], json!([]));
+
+    // Rejected before the payer took it on: the corrected claim goes back as a new claim.
+    reject_recorded_claim(&r, &a, &c, "").await;
+    let (s, rejected) = schedule_call(&r, &a, "GET", &detail, Value::Null, None).await;
+    assert_eq!(s, 200, "{rejected}");
+    assert_eq!(rejected["claim"]["status"], "rejected");
+    assert_eq!(rejected["resend"]["frequency"], "original");
+    assert_eq!(rejected["resend"]["frequency_code"], "1");
+    assert_eq!(rejected["resend"]["payer_control_number"], "");
+    // The trail travels with the claim, newest first, so the plain-words box has the answer the
+    // practice recorded to read without fetching the history panel separately.
+    let revisions = rejected["responses"]["revisions"].as_array().unwrap();
+    assert_eq!(
+        revisions.len(),
+        4,
+        "the trail is the claim's own, newest first"
+    );
+    assert_eq!(revisions[0]["action"], json!("record_rejection"));
+    assert_eq!(
+        revisions[0]["reason"],
+        json!("Synthetic rejection evidence")
+    );
+    assert!(
+        revisions
+            .iter()
+            .any(|revision| revision["reason"] == json!("Reviewed packet")),
+        "the trail is not trimmed to the rejection alone: {rejected}"
+    );
+    let first = corrected_claim(
+        &r,
+        &a,
+        "original",
+        &p,
+        &b,
+        &c,
+        claim_account_version(&r, &a, &p, &b).await,
+    )
+    .await;
+    assert_eq!(first.0, StatusCode::OK, "{}", first.1);
+    assert_eq!(first.1["frequency"], "original");
+    assert_eq!(first.1["parent_id"], c["id"]);
+
+    // The same claim after the payer took it on and denied it has to go back the other way. Staff
+    // record that from this screen's own options, and it is what puts the payer's number on the row.
+    // Slot 1 keeps this second patient's visit and policy apart from the first fixture's.
+    let (p2, _, b2, c2) = claim_fixture_slot(&r, &a, false, 1).await;
+    let actions2 = format!(
+        "/api/v1/billing/claims/{}/actions",
+        c2["id"].as_str().unwrap()
+    );
+    for (action, control) in [
+        ("ready", ""),
+        ("record_submission", ""),
+        ("record_acceptance", "SYN-PCN-DENIED-1"),
+        ("record_rejection", "SYN-PCN-DENIED-1"),
+    ] {
+        let reason = if action == "record_rejection" {
+            "Payer denied it: coverage was not in effect on the date of service"
+        } else {
+            "Synthetic lifecycle evidence"
+        };
+        let (s, history) = schedule_call(
+            &r,
+            &a,
+            "GET",
+            &format!(
+                "/api/v1/billing/claims/{}/history",
+                c2["id"].as_str().unwrap()
+            ),
+            Value::Null,
+            None,
+        )
+        .await;
+        assert_eq!(s, 200, "{history}");
+        let version = history["items"].as_array().unwrap()[0]["version"]
+            .as_i64()
+            .unwrap();
+        let (s, d) = schedule_call(
+            &r,
+            &a,
+            "POST",
+            &actions2,
+            json!({"action":action,"reason":reason,"reference":"SYN-LIFECYCLE","event_date":"2026-10-03","payer_control_number":control}),
+            Some(version),
+        )
+        .await;
+        assert_eq!(s, 200, "{d}");
+    }
+    let (s, denied) = schedule_call(
+        &r,
+        &a,
+        "GET",
+        &format!("/api/v1/billing/claims/{}", c2["id"].as_str().unwrap()),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{denied}");
+    assert_eq!(denied["claim"]["status"], "rejected");
+    assert_eq!(denied["resend"]["frequency"], "replacement");
+    assert_eq!(denied["resend"]["frequency_code"], "7");
+    assert_eq!(
+        denied["resend"]["payer_control_number"], "SYN-PCN-DENIED-1",
+        "the replacement has to quote the number the payer gave"
+    );
+    assert!(
+        denied["responses"]["revisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|revision| revision["reason"]
+                == json!("Payer denied it: coverage was not in effect on the date of service")),
+        "the denial wording reaches the plain-words box: {denied}"
+    );
+    // The frequency the detail names is the one the create endpoint takes, and the other one is
+    // refused, so the rule follows the payer's number rather than the status word.
+    let version = claim_account_version(&r, &a, &p2, &b2).await;
+    let stated = denied["resend"]["frequency"].as_str().unwrap();
+    let other = if stated == "replacement" {
+        "original"
+    } else {
+        "replacement"
+    };
+    let accepted = corrected_claim(&r, &a, stated, &p2, &b2, &c2, version).await;
+    let refused = corrected_claim(&r, &a, other, &p2, &b2, &c2, version).await;
+    assert_eq!(
+        (accepted.0, refused.0),
+        (StatusCode::OK, StatusCode::CONFLICT),
+        "the detail named {stated} for this claim; at that frequency {}, at {other} {}",
+        accepted.1,
+        refused.1
+    );
+    assert_eq!(accepted.1["frequency"], stated);
+    assert_eq!(accepted.1["parent_id"], c2["id"]);
 }
 
 fn edi_partner_content() -> Value {
