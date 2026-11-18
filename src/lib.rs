@@ -1426,6 +1426,16 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/claim-problems.js",
+            get(|| async {
+                web_asset(
+                    "claim-problems.js",
+                    "application/javascript",
+                    include_str!("../web/claim-problems.js"),
+                )
+            }),
+        )
+        .route(
             "/claims.js",
             get(|| async {
                 web_asset(
