@@ -206,7 +206,7 @@ const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
  'web/era-batches.js':['registerAutoRefresh(\'era-batch\''],
  'web/payments.js':["registerAutoRefresh('payment-review'","registerAutoRefresh('payment-settings'","registerAutoRefresh('payment-operations'"],
  'web/billing.js':["registerAutoRefresh('billing-queue'"],
- 'web/billing-overview.js':["registerAutoRefresh('billing-overview'"],
+  'web/billing-overview.js':["registerAutoRefresh('billing-overview'","autoRefreshBillingAttention(context.host)"],
  'web/patient-billing-workspace.js':["registerAutoRefresh('patient-billing'"],
  };
  for(const [file,needles] of Object.entries(screens)){

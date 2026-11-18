@@ -263,6 +263,24 @@ function camelDataset(data){
  assert.deepEqual(f.calls.slice(count),['/api/v1/billing/attention'],'Check again reads only the queue');
  assert.ok(f.queue().includes('Needs your attention'));
 
+ // The shared auto-refresh takes the queue along with the billing screen's own tick: it
+ // re-reads the queue quietly, paints into the block the screen left in place, and a late
+ // answer after the screen moved on is dropped instead of painted.
+ f=fixture();await f.context.renderBillingOverview();await settle();
+ count=f.calls.length;
+ await f.context.autoRefreshBillingAttention(f.dom.nodes['billing-overview']);
+ assert.deepEqual(f.calls.slice(count),['/api/v1/billing/attention'],'the screen tick re-reads only the queue');
+ assert.ok(f.queue().includes('Needs your attention'),'the quiet refresh paints the queue in place');
+ const staleHost={querySelector:()=>null,isConnected:true};
+ count=f.calls.length;
+ await f.context.autoRefreshBillingAttention(staleHost);
+ assert.equal(f.calls.length,count,'a host with no queue block asks for nothing');
+ f.state.api=async path=>{f.calls.push(path);throw new Error('down');};
+ count=f.calls.length;
+ await f.context.autoRefreshBillingAttention(f.dom.nodes['billing-overview']);
+ assert.equal(f.calls.length,count+1,'a failed quiet refresh stays silent and retries on the next pass');
+ assert.ok(f.queue().includes('Needs your attention'),'and the queue on screen keeps its last good rows');
+
  // The hub screen itself is covered by scripts/test_patient_billing_workspace_ui.cjs; what this
  // test pins is the queue module's own contract, navigation and styles above.
 

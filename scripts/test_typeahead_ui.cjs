@@ -756,6 +756,7 @@ function boxOf(ctx,id){
   assert.ok(scripts.includes('typeahead.js'),'the workspace loads the picker');
   for(const screen of ['billing.js','claims.js','era-batches.js','prescribing.js'])
    assert.ok(scripts.indexOf('typeahead.js')<scripts.indexOf(screen),`${screen} loads after the picker so its boxes can be wired`);
+ assert.ok(scripts.includes('autorefresh.js')&&scripts.indexOf('autorefresh.js')<scripts.indexOf('typeahead.js'),'the auto-refresh core loads before the picker it wraps');
   assert.ok(page.includes('/typeahead.css'),'and the picker ships with its own stylesheet');
   const rust=source('src/lib.rs');
   assert.match(rust,/include_str!\("\.\.\/web\/typeahead\.js"\)/,'the picker is served by the app, not left out to 404');
