@@ -24,14 +24,17 @@ class FakeDate extends RealDate{
 const nodes=new Map(),listeners=new Map();
 const node=id=>{if(!nodes.has(id))nodes.set(id,{innerHTML:'',hidden:false,contains:()=>false,scrollIntoView(){},querySelector:()=>null,closest:()=>({classList:{add(){},remove(){}}})});return nodes.get(id);};
 const c=vm.createContext({Date:FakeDate,Intl,JSON,URLSearchParams,console,crypto:{randomUUID:()=>'request-1'},
- document:{addEventListener(type,cb,capture){if(!listeners.has(type))listeners.set(type,[]);listeners.get(type).push({cb,capture});},activeElement:null,querySelectorAll:()=>[]},
+ document:{addEventListener(type,cb,capture){if(!listeners.has(type))listeners.set(type,[]);listeners.get(type).push({cb,capture});},activeElement:null,querySelectorAll:()=>[],createElement:()=>({dataset:{},setAttribute(){},querySelector:()=>null})},
  me:{role:'owner',user_id:'provider'},canSchedule:()=>true,$:node,
  localTime:value=>localOf(typeof value==='string'?value:value.getTime()),
- esc:value=>String(value??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x])),
+  displayDate:value=>String(value??''),displayAge:()=>null,Event:class{constructor(type){this.type=type;}},setTimeout:(fn,delay)=>setTimeout(fn,delay),clearTimeout:id=>clearTimeout(id),
+  esc:value=>String(value??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x])),
  scheduleToday:()=>localOf(clock().getTime()).slice(0,10),
  run:fn=>{c.pending=fn();},notice:()=>{},api:async route=>{if(route.endsWith('/patients'))return {items:[{id:'p1',given_name:'Synthetic',family_name:'Patient',mrn:'MRN-1'}],next_cursor:undefined};throw new Error('Unexpected '+route);}
 });
 const run=code=>vm.runInContext(code,c);
+// The shared live patient picker loads before the scheduling screen, as index.html does.
+run(fs.readFileSync(path.resolve(__dirname,'../web/patient-picker.js'),'utf8'));
 run(fs.readFileSync(path.resolve(__dirname,'../web/scheduling.js'),'utf8'));
 const DAY=CLOCK_DAY,OTHER_DAY=localOf(new RealDate(`${CLOCK_DAY}T12:00:00`).getTime()+86400000);
 const times=html=>[...html.matchAll(/name="(starts_at|ends_at)"[^>]*value="([^"]*)"/g)].map(m=>m[2]);
@@ -43,8 +46,10 @@ async function open(args){await run(`appointmentEditor(${args})`);return node('s
  // "+ Appointment" while viewing today: the next half hour, not a start time already gone by.
  let html=await open(`null,null,null,'${DAY}'`);
  assert.deepEqual(times(html),[stamp(DAY,9,30),stamp(DAY,10,0)],'the default start is the next half hour, ahead of the clock');
- assert.match(html,/<label>Search patients<input type="search" id="schedule-patient-search" placeholder="Name or record number"><\/label>/);
- assert.doesNotMatch(html,/Find a loaded patient|Name or medical record number/i);
+  // The patient box searches as the person types: no Search button, only a plain Clear.
+  assert.match(html,/data-patient-picker-input[^>]*placeholder="Name, date of birth or record number"/);
+  assert.match(html,/data-patient-picker-clear>Clear</);
+  assert.doesNotMatch(html,/id="schedule-patient-search"|<select id="schedule-patient"|Choose a patient<\/option>/);
  // Another day keeps the morning default it always had.
  html=await open(`null,null,null,'${OTHER_DAY}'`);
  assert.deepEqual(times(html),[stamp(OTHER_DAY,9,0),stamp(OTHER_DAY,9,30)]);
@@ -53,5 +58,5 @@ async function open(args){await run(`appointmentEditor(${args})`);return node('s
  const slot=stamp(DAY,14,0);
  html=await open(`null,null,null,'${DAY}','${slot}'`);
  assert.deepEqual(times(html),[slot,stamp(DAY,14,30)],'the clicked slot keeps its own time');
- console.log('PASS booking defaults: today opens at the next half hour, another day keeps 09:00, a clicked slot keeps its time, plain patient search wording');
+ console.log('PASS booking defaults: today opens at the next half hour, another day keeps 09:00, a clicked slot keeps its time, patient box searches while typing');
 })().catch(e=>{console.error(e);process.exitCode=1;});

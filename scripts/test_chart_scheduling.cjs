@@ -3,7 +3,9 @@
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 // Staff display helpers load before every feature script, exactly as index.html loads them.
-{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
+// The staff display helpers and the shared live patient picker load before every feature
+// script, exactly as index.html loads them.
+{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);for(const source of ['web/display-format.js','web/patient-picker.js'])vm.runInContext(fs.readFileSync(path.resolve(__dirname,'..',source),'utf8'),context);return context;};}
 
 const root=path.resolve(__dirname,'..');
 function fixture(){
@@ -16,6 +18,8 @@ function fixture(){
   $:node,me:{role:'clinician',user_id:'provider-1'},selected:'off-page-patient',
   activeVisit:{id:'visit-1',appointment_id:'appointment-1',status:'in_progress'},
   workspace:{visits:[{id:'visit-1',appointment_id:'appointment-1',status:'in_progress',created_at:'2026-10-25T14:00:00Z'}],patient:{id:'off-page-patient',family_name:'Example',given_name:'Synthetic',mrn:'SYN-PINNED'},appointments:[{id:'appointment-1',title:'Synthetic follow-up',category:'Follow-up',facility:'Synthetic clinic',room:'4',clinician_id:'provider-1',status:'in_progress',starts_at:'2026-10-25T14:00:00Z'}]},
+  Event:class{constructor(type){this.type=type;}},setTimeout:(fn,delay)=>setTimeout(fn,delay),clearTimeout:id=>clearTimeout(id),
+  Event:class{constructor(type){this.type=type;}},setTimeout:(fn,delay)=>setTimeout(fn,delay),clearTimeout:id=>clearTimeout(id),
   FormData:class{constructor(form){this.values=form.values;}[Symbol.iterator](){return this.values[Symbol.iterator]();}},
   showChartSection:section=>calls.push(['section',section]),
   notice:message=>calls.push(['notice',message]),
@@ -37,8 +41,9 @@ async function main(){
  await f.evaluate("openPatientAppointmentEditor('off-page-patient')");
  html=f.node('chart-booking-editor').innerHTML;
  assert.match(html,/data-chart-patient="off-page-patient" data-chart-visit="visit-1"/);
- assert.match(html,/<input type="hidden" name="patient_id" value="off-page-patient">/);
- assert.match(html,/Example, Synthetic/);assert.doesNotMatch(html,/id="schedule-patient-search"|<select id="schedule-patient"/);
+ // A patient already known to the chart is shown in plain words, with nothing to search.
+ assert.match(html,/patient-picker-pinned/);assert.match(html,/<input type="hidden" name="patient_id" value="off-page-patient">/);
+ assert.match(html,/Example, Synthetic/);assert.doesNotMatch(html,/id="schedule-patient-search"|<select id="schedule-patient"|data-patient-picker-input/);
  const startValue=html.match(/name="starts_at"[^>]*value="([^"]+)"/)[1],endValue=html.match(/name="ends_at"[^>]*value="([^"]+)"/)[1];
  const suggestedStart=new Date(startValue),suggestedEnd=new Date(endValue);
  assert(suggestedStart.getTime()>Date.now());assert.equal(suggestedStart.getMinutes()%30,0);assert.equal(suggestedEnd-suggestedStart,30*60000);
