@@ -57,7 +57,8 @@ const timelineRecordKindLabels=Object.freeze({
 });
 // Fields staff read, per Claim.MD record kind. Anything not listed still appears in
 // the technical disclosure, so nothing received from the provider is lost.
-const timelineRecordFields=Object.freeze({
+// Exposed as timelineRecordFields for the Claim.MD activity tables, which use the same order.
+const timelineRecordFields=globalThis.timelineRecordFields=Object.freeze({
  uploaded_file:[['filename','File'],['file_name','File'],['claimid','Claim number on the claim file'],['pcn','Patient control number'],['upload_date','Uploaded on'],['submitter_id','Submitted by'],['batchid','Batch'],['fileid','Claim.MD file ID'],['claim_count','Claims in the file'],['claimmd_id','Claim.MD claim ID'],['status','Status']],
  modification:[['modid','Claim.MD change ID'],['modifydate','Date of the change'],['modtime','Time of the change'],['user','Changed by'],['field','What was changed'],['old_value','Before'],['new_value','After'],['claimmd_id','Claim.MD claim ID'],['claimid','Claim number'],['pcn','Patient control number'],['status','Status']],
  note:[['noteid','Claim.MD note ID'],['notedate','Date of the note'],['notetime','Time of the note'],['user','Written by'],['note','Note'],['claimmd_id','Claim.MD claim ID'],['claimid','Claim number'],['pcn','Patient control number']],
@@ -113,24 +114,29 @@ function timelineFieldRow(field,value,label,technical){
  if(!text)return null;
  return {label:label||timelineFieldLabel(field),value:text,raw:`${field}: ${technical!==undefined?technical:String(value)}`};
 }
-// Every field of a provider record, in a sensible order, as labelled rows.
-// Unlisted fields are still included (sentence-cased) so nothing is hidden.
-function timelineRecordRows(record){
- const kind=String(record?.kind||''),content=record?.content&&typeof record.content==='object'?record.content:{};
- const known=timelineRecordFields[kind]||[],seen=new Set(),rows=[];
- for(const [field,label] of known){
+// Every field of provider data, in a sensible order, as labelled rows. Fields whose
+// meaning we know are labelled and put first; anything else is still shown, sentence-
+// cased, so nothing received from the provider is quietly hidden.
+function timelineProviderRows(content,preferred){
+ const values=content&&typeof content==='object'&&!Array.isArray(content)?content:{},seen=new Set(),rows=[];
+ for(const [field,label] of preferred||[]){
   if(seen.has(field))continue;seen.add(field);
-  const row=timelineFieldRow(field,content[field]??record[field],label);if(row)rows.push(row);
+  const row=timelineFieldRow(field,values[field],label);if(row)rows.push(row);
  }
- for(const [field,value] of Object.entries(record||{})){
-  if(field==='content'||seen.has(field))continue;seen.add(field);
-  const row=timelineFieldRow(field,value);if(row)rows.push(row);
- }
- for(const [field,value] of Object.entries(content)){
+ for(const [field,value] of Object.entries(values)){
   if(seen.has(field))continue;seen.add(field);
   const row=timelineFieldRow(field,value);if(row)rows.push(row);
  }
  return rows;
+}
+function timelineRecordRows(record){
+ const kind=String(record?.kind||'');
+ // The record's own columns (which claim, who recorded it, when) come first, then the
+ // provider payload in the order that reads best for this kind of record.
+ // The record type, its provider ID and the timestamp are already the step heading and
+ // its time, so repeating them inside the detail table would be noise.
+ const head=timelineProviderRows({claimmd_id:record?.claimmd_id,patient_control_number:record?.patient_control_number},[['claimmd_id','Claim.MD claim ID'],['patient_control_number','Patient control number']]);
+ return [...head,...timelineProviderRows(record?.content,timelineRecordFields[kind])];
 }
 // A labelled table of provider data, with the raw record kept behind a disclosure.
 function timelineFieldTable(rows){
@@ -452,4 +458,4 @@ async function claimTimelineSection(claim,detail={},history={},options={}){
  const {timeline,extras}=await prepareClaimTimeline(claim,detail,history,options);
  return `${claimTimelineMarkup(timeline)}${extras.errors.length?`<p class="muted claim-timeline-gaps">${esc(extras.errors.join(' '))}</p>`:''}`;
 }
-if(typeof module!=='undefined'&&module.exports)module.exports={buildClaimTimeline,claimCurrentLine,claimTimelineMarkup,claimTimelineSection,claimMdRecordBelongsToClaim,loadClaimTimelineExtras,loadClaimTimelineCa277Rows,loadClaimTimelinePostedAt,prepareClaimTimeline,timelineFieldRows:timelineRecordRows,timelineFieldTable,timelineTechnical,adjustmentLabel,timelineRecordKindLabels,timelineCa277CategoryLabels,timelineEraReasonLabels};
+if(typeof module!=='undefined'&&module.exports)module.exports={buildClaimTimeline,claimCurrentLine,claimTimelineMarkup,claimTimelineSection,claimMdRecordBelongsToClaim,loadClaimTimelineExtras,loadClaimTimelineCa277Rows,loadClaimTimelinePostedAt,prepareClaimTimeline,timelineFieldRows:timelineRecordRows,timelineProviderRows,timelineFieldTable,timelineTechnical,adjustmentLabel,timelineRecordKindLabels,timelineCa277CategoryLabels,timelineEraReasonLabels};

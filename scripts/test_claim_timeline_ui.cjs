@@ -87,11 +87,15 @@ const history={items:[{version:1,created_at:'2026-11-11T15:30:00Z',reason:'Claim
  const note=edited.steps.find(step=>step.label==='Note added on the Claim.MD website');
  // The provider's own clock is shown as a wall clock, not shifted by a time zone.
  assert.match(timelineClock(f.run,note.at),/2026-11-13 14:05/);
- eq(note.rows.slice(0,3),[
+ eq(note.rows,[
+  {label:'Claim.MD claim ID',value:'902000001',raw:'claimmd_id: 902000001'},
   {label:'Claim.MD note ID',value:'7',raw:'noteid: 7'},
   {label:'Date of the note',value:'2026-11-13',raw:'notedate: 2026-11-13'},
-  {label:'Time of the note',value:'14:05',raw:'notetime: 14:05'}]);
- assert.ok(note.rows.some(row=>row.label==='Note'&&row.value==='Payer call reference 5150'));
+  {label:'Time of the note',value:'14:05',raw:'notetime: 14:05'},
+  {label:'Written by',value:'clinic.user',raw:'user: clinic.user'},
+  {label:'Note',value:'Payer call reference 5150',raw:'note: Payer call reference 5150'}]);
+ // The record type and its provider ID are the step heading, not repeated rows.
+ assert.ok(!note.rows.some(row=>row.label==='Record type'||row.label==='Provider record ID'));
 
  // Paid, posted and billed, in order, with the three amounts the payer reported.
  const paid=f.context.buildClaimTimeline({claim:claim({status:'adjudicated'}),now:NOW,history:[...history.items],
@@ -165,6 +169,95 @@ const history={items:[{version:1,created_at:'2026-11-11T15:30:00Z',reason:'Claim
  const draft=f.context.buildClaimTimeline({claim:claim({status:'draft'}),history:[...history.items],now:NOW,tracking:{submissions:[],reports:[]}});
  eq(draft.steps.map(step=>step.label),['Created']);
  assert.strictEqual(draft.current,'This claim has not been sent yet.');
+
+ // Claim.MD activity 'Details' views now render labelled fields, raw data only on request.
+ // The Claim.MD activity screens load claim-timeline.js first, exactly as index.html does.
+ const activityScope={console,Date,Math,JSON,Object,Array,String,Number,Boolean,Set,Map,Promise,Error,RegExp,Intl,
+  esc,human:value=>String(value??'').replaceAll('_',' '),date:value=>String(value),
+  money:cents=>`$${(Number(cents)/100).toFixed(2)}`,me:{role:'owner'},document:{addEventListener(){}},location:{origin:'https://ehr.synthetic.test'}};
+ const activity=vm.createContext(activityScope);
+ // Inside the page each script is top-level, so a const in one is visible to the next.
+ // globalThis is how that sharing is reached across separate vm.runInContext calls.
+ activityScope.globalThis=activityScope;
+ // The Claim.MD activity screens load claim-timeline.js first, exactly as index.html does.
+ for(const file of ['web/claim-timeline.js','web/claimmd-operations.js','web/claimmd-extended.js'])
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),activity);
+ const ops=activity,ext=activity;
+ const noteCell=ops.claimmdRecords([{kind:'note',remote_id:'9',claimmd_id:'9001',recorded_at:'2026-11-13T10:00:00Z',content:{noteid:'9',notedate:'2026-11-12',user:'clinic.user',note:'Payer call reference <5150>'}}],'note');
+ assert.match(noteCell,/Claim\.MD note ID<\/th><td>9<\/td>/);
+ assert.match(noteCell,/Note<\/th><td>Payer call reference &lt;5150&gt;<\/td>/);
+ assert.match(noteCell,/Show technical details/);
+ assert.ok(!/summary>Details<\/summary><pre/.test(noteCell),'the Details view must not open on raw JSON');
+ const uploadCell=ops.claimmdRecords([{kind:'uploaded_file',remote_id:'55',recorded_at:'2026-11-02T08:00:00Z',content:{filename:'synthetic-claim.x12',pcn:'SC-000123',upload_date:'2026-11-02'}}],'uploaded_file');
+ assert.match(uploadCell,/File<\/th><td>synthetic-claim\.x12<\/td>/);
+ assert.match(uploadCell,/Uploaded on<\/th><td>2026-11-02<\/td>/);
+ const archiveCell=ops.claimmdRecords([{kind:'archive',remote_id:'a1',recorded_at:'2026-11-04T08:00:00Z',reason:'Closed out in Claim.MD',content:{}}],'archive');
+ assert.match(archiveCell,/Details/,'an archive row still offers its record');
+ const events=ext.claimMdEventRows([{event_id:'e1',received_at:'2026-11-13T10:00:00Z',account_number:'ACCT-77123',payload:{type:'enrollment_approved',status:'A'}}]);
+ assert.match(events,/Enrollment approved/);
+ assert.match(events,/Claim\.MD account ending 7123/,'never print a whole Claim.MD account number');
+ assert.ok(!events.includes('ACCT-77123'),events);
+ assert.match(events,/Status<\/th><td>Accepted<\/td>/);
+ assert.match(events,/Show technical details/);
+
+	// Mounting: the claim screen gets its own timeline container, above the lifecycle
+	// panel, and never lets a slow provider write a stale claim's timeline into it.
+	// The claim screen is re-rendered, so the container the timeline writes into is the
+	// node the fixture last handed back - like an element appended to a live document.
+	function mountingScreen(extra){
+	 const panel={created:[],insertAdjacentHTML(position,html){panel.created.push({position,html});}};
+	 panel.slot={isConnected:true,innerHTML:''};
+	 // Mirrors the real claim screen: the lifecycle panel and the timeline container both
+	 // live inside .billing-account-detail, and the workspace host returns that section.
+	 const account={querySelector(selector){
+	  if(selector==='.billing-account-detail')return account;
+	  if(selector.split(',').some(name=>name.trim()==='.claim-lifecycle'))return panel;
+	  if(selector==='[data-claim-timeline]')return panel.slot;
+	  return null;
+	 }};
+	 const host={querySelector:selector=>selector==='[data-claim-timeline]'?panel.slot:account.querySelector(selector)};
+	 const scope={console,Date,Math,JSON,Object,Array,String,Number,Boolean,Set,Map,Promise,Error,RegExp,Intl,
+	  esc,human:value=>String(value??''),date:value=>String(value),money:value=>`$${value}`,document:{addEventListener(){}},
+	  claimWorkspaceHost:()=>host,...extra};
+	 // The browser puts every script's declarations in one shared global scope; the same
+	 // trick here lets the stub timeline be seen by the claims.js top-level const.
+	 const context=vm.createContext(scope);
+	 // scope.globalThis is the sandbox's own global, so globalThis lookups in the code
+	 // under test reach the same objects the test installed.
+	 scope.$=()=>host;scope.host=host;scope.panel=panel;
+	 vm.runInContext(fs.readFileSync(path.join(__dirname,'..','web','display-format.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'..','web','claims.js'),'utf8'),context);
+	 return {panel,context};
+	}
+
+	// The claim on screen is the claim the timeline is built for - the guard below this
+	// point refuses to paint a timeline for any other claim.
+	const shown={id:'claim'};
+	const fresh=mountingScreen({claimTimelineSection:async()=>'<section class="claim-timeline">built</section>'});
+	fresh.context.claimCurrent=shown;
+	await fresh.context.insertClaimStatusTimeline({}, shown, {}, {});
+	assert.equal(fresh.panel.created[0].position,'beforebegin','the timeline container is inserted before the lifecycle panel');
+	assert.match(fresh.panel.created[0].html,/data-claim-timeline/);
+	assert.match(fresh.panel.slot.innerHTML,/built/,'the awaited timeline is written into its own container');
+
+	// A provider that will not answer leaves the container readable, not broken.
+	const stuck=mountingScreen({claimTimelineSection:async()=>{throw new Error('provider down');}});
+	stuck.context.claimCurrent=shown;
+	await stuck.context.insertClaimStatusTimeline({}, shown, {}, {});
+	assert.match(stuck.panel.slot.innerHTML,/not available right now/);
+
+	// If another claim is on screen by the time the provider answers, nothing is written.
+	let release;
+	const late=mountingScreen({claimTimelineSection:()=>new Promise(resolve=>{release=()=>resolve('<section class="claim-timeline">late</section>');})});
+	late.context.me={role:'clinician'};late.context.claimCurrent={id:'a-different-claim'};
+	const pendingStale=late.context.insertClaimStatusTimeline({}, 'claim', {}, {});
+	release();await pendingStale;
+	assert.equal(late.panel.slot.innerHTML,'','a timeline for a claim no longer on screen must not be written');
+
+	// Without the timeline script the claim screen still opens (script order tolerance).
+	const absent=mountingScreen({});
+	await absent.context.insertClaimStatusTimeline({}, shown, {}, {});
+	assert.equal(absent.panel.created.length,0);
+
 
  console.log('PASS claim status timeline builds plain-language steps, waits and provider evidence');
 })().catch(error=>{console.error(error);process.exitCode=1;});

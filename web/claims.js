@@ -172,6 +172,24 @@ function updateClaimStatusSurfaces(claim,context=claimContextSnapshot(),detail={
  const status=host?.querySelector('[data-claim-current-status]');if(status)status.textContent=claimStatusLabel(claim);
  const version=host?.querySelector('[data-claim-current-version]');if(version)version.textContent=`${claim.control_number} · v${claim.version}`;
 }
+// Fills the timeline container once the claim screen is on screen. It never throws:
+// a provider that will not answer leaves the rest of the claim screen working.
+async function insertClaimStatusTimeline(context,claim,detail,history){
+ // Resolved at call time, and through globalThis: the file order in index.html gives
+ // this file a top-level function, while a test may install the builder afterwards.
+ const build=globalThis.claimTimelineSection;if(typeof build!=='function')return;
+ const host=claimWorkspaceHost(context);
+ const anchor=host?.querySelector?.('.claim-rejection-fix,.claim-lifecycle')||host?.querySelector?.('.billing-account-detail .section-head');
+ if(!anchor?.insertAdjacentHTML)return;
+ anchor.insertAdjacentHTML('beforebegin','<div class="claim-status-timeline-host" data-claim-timeline><p class="muted">Reading what happened to this claim…</p></div>');
+ const slot=host.querySelector('[data-claim-timeline]'),identity=typeof me==='undefined'?undefined:me;
+ let html='<p class="muted">What happened to this claim is not available right now. The claim details below are unaffected.</p>';
+ try{const built=await build(claim,detail,history,{});if(built)html=built;}catch{}
+ // Another claim may have opened while the provider was answering; never write a
+ // stale timeline into the container of the claim now on screen.
+ if(claim!==claimCurrent||(typeof me!=='undefined'&&me!==identity)||!slot?.isConnected)return;
+ slot.innerHTML=html;
+}
 async function showClaim(id){
  const context=claimContextSnapshot(),identity=typeof me==='undefined'?undefined:me;
  const [d,h]=await Promise.all([api(`${claimsBase}/${id}`),api(`${claimsBase}/${id}/history`)]);if(!claimContextCurrent(context)||identity!==(typeof me==='undefined'?undefined:me))return;requireClaimContext(context,d.claim);claimCurrent=d.claim;context.claim=d.claim.id;const c=d.claim,b=c.snapshot.account,p=c.snapshot.patient;
@@ -181,6 +199,9 @@ async function showClaim(id){
 
  const lifecycle=typeof claimMdClaimLifecycle==='function'?claimMdClaimLifecycle(c,d,h):'';
  if(lifecycle){const claimDetail=claimWorkspaceHost(context).querySelector('.billing-account-detail'),claimHead=claimDetail.querySelector?.('.section-head');if(claimHead?.insertAdjacentHTML)claimHead.insertAdjacentHTML('afterend',lifecycle);else claimDetail.insertAdjacentHTML('afterbegin',lifecycle);}
+ // "What happened" gets its own container, placed after the rejection box above the
+ // lifecycle panel, so the other panels can be replaced without touching it.
+ insertClaimStatusTimeline(context,c,d,h);
  const action=$('claim-action');if(action){action.claimViewContext=context;action.claimRecord=c;}
  if(typeof startClaimMdTracking==='function')startClaimMdTracking(c.id);
  if(typeof showClaimMdClaimActivity==='function')await showClaimMdClaimActivity(c);
