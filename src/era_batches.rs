@@ -132,10 +132,14 @@ struct Import {
 async fn import(
     a: Actor,
     ExtractState(s): ExtractState<State>,
+    h: HeaderMap,
     Json(v): Json<Import>,
 ) -> Result<Json<Value>> {
     a.scheduling()?;
     crate::model::text(&v.reason, 1000)?;
+    // A raw file handed over by the automation worker keeps its old behaviour:
+    // every transaction is staged for review.
+    let allow_auto_post = matches!(claims::import_origin(&h), claims::ImportOrigin::Manual);
     let parts = era_file::parse(&v.original_text)?;
     if v.payer_ids.len() != parts.len() {
         return Err(Error::Invalid(
@@ -211,11 +215,18 @@ async fn import(
     }
     let id = Uuid::new_v4();
     sqlx::query("INSERT INTO era_batches (tenant_id,id,request_id,creation_hash,original_text,original_hash,source_history_id) VALUES ($1,$2,$3,$4,$5,$6,$7)").bind(a.tenant_id).bind(id).bind(v.request_id).bind(digest).bind(&v.original_text).bind(crate::oauth::hash(&v.original_text)).bind(v.source_history_id).execute(&mut *tx).await?;
+    let mut auto_posted = 0usize;
     for (part, payer) in parts.iter().zip(&v.payer_ids) {
         let child = Uuid::new_v4();
         sqlx::query("INSERT INTO era_remittances (tenant_id,id,payer_id,trace,document,original_text,document_hash,request_id,creation_hash,receipt_part) VALUES ($1,$2,$3,$4,$5,$6,$7,$2,$8,$9)").bind(a.tenant_id).bind(child).bind(payer).bind(&part.document.trace).bind(json!(part.document)).bind(&part.original_text).bind(claims::hash(&part.document)?).bind(crate::oauth::hash(&format!("batch:{id}:{}",part.position))).bind(part.position as i32+1).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO era_batch_items (tenant_id,batch_id,position,remittance_id,controls) VALUES ($1,$2,$3,$4,$5)").bind(a.tenant_id).bind(id).bind(part.position as i32).bind(child).bind(json!({"start":part.start,"end":part.end,"interchange_control":part.interchange_control,"group_control":part.group_control,"transaction_control":part.transaction_control,"usage":part.usage})).execute(&mut *tx).await?;
         claims::remit_revision(&mut tx, &a, child, &v.reason).await?;
+        // A transaction that came in on its own and reconciles completely
+        // posts on the spot; anything else keeps its place in the file and
+        // waits for review exactly as before.
+        if allow_auto_post && claims::auto_post(&mut tx, &a, child).await?.is_empty() {
+            auto_posted += 1;
+        }
     }
     if let Some(remote) = v.remote_report_id {
         crate::retrieval::link(&mut tx, &a, remote, "remittance_batch", id, &v.reason).await?;
@@ -225,11 +236,16 @@ async fn import(
         &a,
         id,
         &v.reason,
-        json!({"action":"import","transaction_count":parts.len(),"ledger_posting":false}),
+        json!({"action":"import","transaction_count":parts.len(),
+               "ledger_posting":auto_posted>0,
+               "auto_posted_count":auto_posted,
+               "auto_posted":auto_posted==parts.len()&&auto_posted>0}),
     )
     .await?;
     tx.commit().await?;
-    Ok(Json(json!({"id":id})))
+    Ok(Json(
+        json!({"id":id,"auto_posted_count":auto_posted,"transaction_count":parts.len()}),
+    ))
 }
 async fn list(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json<Value>> {
     a.staff()?;
@@ -262,10 +278,20 @@ async fn detail(
     let controls:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('position',position,'remittance_id',remittance_id,'controls',controls) FROM era_batch_items WHERE tenant_id=$1 AND batch_id=$2 ORDER BY position").bind(a.tenant_id).bind(id).fetch_all(&mut *tx).await?;
     let rows = items(&mut tx, &a, id).await?;
     let events:Vec<Value>=sqlx::query_scalar("SELECT to_jsonb(e)-'tenant_id' FROM era_batch_events e WHERE tenant_id=$1 AND batch_id=$2 ORDER BY version DESC LIMIT 100").bind(a.tenant_id).bind(id).fetch_all(&mut *tx).await?;
+    // Which transactions in this file posted themselves, so the file page can
+    // say so and offer the same undo for each one.
+    let auto_posted: Vec<Value> = sqlx::query_scalar(
+        "SELECT jsonb_build_object('remittance_id',i.remittance_id,'auto_posted',EXISTS(SELECT 1 FROM era_revisions x WHERE x.tenant_id=i.tenant_id AND x.remittance_id=i.remittance_id AND x.reason=$3)) FROM era_batch_items i WHERE i.tenant_id=$1 AND i.batch_id=$2 ORDER BY i.position",
+    )
+    .bind(a.tenant_id)
+    .bind(id)
+    .bind(claims::AUTO_POST_REASON)
+    .fetch_all(&mut *tx)
+    .await?;
     crate::postgres::audit(&mut tx, &a, "remittance.batch_read", id).await?;
     tx.commit().await?;
     Ok(Json(
-        json!({"batch":batch,"items":rows,"controls":controls,"versions":versions(&rows),"events":events}),
+        json!({"batch":batch,"items":rows,"controls":controls,"versions":versions(&rows),"events":events,"auto_posted":auto_posted}),
     ))
 }
 #[derive(Deserialize)]
@@ -274,6 +300,10 @@ struct Action {
     action: String,
     reason: String,
     versions: Vec<Version>,
+    /// Undo one transaction that posted itself, leaving the rest of the file
+    /// alone. Ignored by every other file action.
+    #[serde(default)]
+    remittance_id: Option<Uuid>,
 }
 async fn execute(
     tx: &mut Transaction<'_, Postgres>,
@@ -330,6 +360,64 @@ async fn action(
     if version != current || v.versions != versions(&rows) {
         return Err(Error::Conflict(
             "Batch or child versions changed; reload all transactions",
+        ));
+    }
+    // Undoing one transaction that posted itself is that transaction's own
+    // action. The file stays where it is, so the transactions still waiting for
+    // review are untouched and a whole file is never undone by accident.
+    if v.action == "reverse_one" {
+        let child = v
+            .remittance_id
+            .ok_or(Error::Invalid("choose the payment to undo"))?;
+        let row = rows
+            .iter()
+            .find(|r| r.id == child)
+            .ok_or(Error::Invalid("payment is not part of this file"))?;
+        if row.status != "posted" {
+            return Err(Error::Conflict("this payment is not posted"));
+        }
+        if !sqlx::query_scalar::<_, bool>(claims::AUTO_POSTED_EXISTS)
+            .bind(a.tenant_id)
+            .bind(child)
+            .bind(claims::AUTO_POST_REASON)
+            .fetch_one(&mut *tx)
+            .await?
+        {
+            return Err(Error::Conflict(
+                "use the file action to undo a payment a person posted",
+            ));
+        }
+        era_chains::reverse(&mut tx, &a, row, &v.reason).await?;
+        sqlx::query("UPDATE era_remittances SET status='reversed',version=version+1 WHERE tenant_id=$1 AND id=$2")
+            .bind(a.tenant_id)
+            .bind(child)
+            .execute(&mut *tx)
+            .await?;
+        claims::remit_revision(&mut tx, &a, child, &v.reason).await?;
+        let waiting = items(&mut tx, &a, id)
+            .await?
+            .iter()
+            .filter(|r| ["staged", "reconciled"].contains(&r.status.as_str()))
+            .count();
+        sqlx::query(
+            "UPDATE era_batches SET status=$3,version=version+1 WHERE tenant_id=$1 AND id=$2",
+        )
+        .bind(a.tenant_id)
+        .bind(id)
+        .bind(if waiting == 0 { "reversed" } else { "staged" })
+        .execute(&mut *tx)
+        .await?;
+        event(
+            &mut tx,
+            &a,
+            id,
+            &v.reason,
+            json!({"action":"reverse_one","remittance_id":child,"waiting":waiting}),
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok(Json(
+            json!({"status":"staged","version":version+1,"issues":[],"reversed":child}),
         ));
     }
     let mut issues = vec![];

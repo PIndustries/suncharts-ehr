@@ -1599,6 +1599,14 @@ async fn workspace(
 }
 
 fn expected(h: &HeaderMap) -> Result<i64> {
+    expected_at_least(h, 1)
+}
+/// The same checked `If-Match`, for a record whose first version is 0 because
+/// the row need not exist until the first write.
+fn expected_from_zero(h: &HeaderMap) -> Result<i64> {
+    expected_at_least(h, 0)
+}
+fn expected_at_least(h: &HeaderMap, floor: i64) -> Result<i64> {
     let raw = h
         .get(header::IF_MATCH)
         .ok_or(Error::VersionRequired)?
@@ -1610,7 +1618,7 @@ fn expected(h: &HeaderMap) -> Result<i64> {
         .ok_or(Error::Invalid("If-Match must be a quoted record version"))?
         .parse::<i64>()
         .map_err(|_| Error::Invalid("invalid record version"))?;
-    if v < 1 {
+    if v < floor {
         return Err(Error::Invalid("invalid record version"));
     }
     Ok(v)
