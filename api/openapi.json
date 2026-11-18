@@ -38340,6 +38340,44 @@
           }
         }
       ]
+    },
+    "/api/v1/billing/attention": {
+      "get": {
+        "operationId": "billingAttention",
+        "summary": "Read the billing work waiting for staff",
+        "description": "Read-only queue of billing work waiting for staff, built from records already here: charges ready to send, claims the clearinghouse or the payer refused, claims the insurer denied, imported insurance payments not posted yet, claims sent more than 21 days ago with no answer, and open patient balances. Claims marked as synthetic lifecycle tests and accounts with test processor activity are left out. Items come first in kind order (refused, denied, needs a posted payment, ready to send, waiting on the insurer, patient balance), then oldest first. Aging buckets are insurance money still outstanding, grouped by days since the service date: 0-30, 31-60, 61-90 and over 90. Staff browser sessions are accepted for either half of the queue, since a front desk policy may hide claims but still owe patient-balance work; a staff member sees whichever half their access policy allows, never an error that blocks the page. A patient session is refused and a delegated token needs the billing.read scope.",
+        "security": [
+          {
+            "oauth2": [
+              "billing.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingAttention"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Role or billing scope denied"
+          },
+          "500": {
+            "description": "Database/audit failure; transaction rolled back"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -38411,6 +38449,190 @@
       }
     },
     "schemas": {
+      "BillingAttentionActionTarget": {
+        "type": "string",
+        "enum": [
+          "visit_review",
+          "claim",
+          "era",
+          "patient_billing"
+        ],
+        "description": "Which screen the action opens: the visit's charges, the claim, the imported insurance payment, or the patient's billing."
+      },
+      "BillingAttentionAction": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "target": {
+            "$ref": "#/components/schemas/BillingAttentionActionTarget"
+          }
+        },
+        "required": [
+          "label",
+          "target"
+        ]
+      },
+      "BillingAttentionKind": {
+        "type": "string",
+        "enum": [
+          "ready_to_send",
+          "rejected",
+          "denied",
+          "waiting_on_payer",
+          "era_needs_review",
+          "patient_balance"
+        ],
+        "description": "ready_to_send: posted charges with no claim yet, either for a signed visit or still waiting on the clinician's signature. rejected: the clearinghouse or the payer refused the claim. denied: the insurer answered with no payment. waiting_on_payer: sent more than 21 days ago with no answer. era_needs_review: an imported insurance payment waiting to be posted, or a posted answer that leaves part of the charge unaccounted for. patient_balance: the patient still owes on the visit."
+      },
+      "BillingAttentionItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/BillingAttentionKind"
+          },
+          "patient_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "patient_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 201
+          },
+          "visit_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "claim_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "amount_cents": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000000
+          },
+          "age_days": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          },
+          "action": {
+            "$ref": "#/components/schemas/BillingAttentionAction"
+          }
+        },
+        "required": [
+          "kind",
+          "patient_id",
+          "patient_name",
+          "visit_id",
+          "claim_id",
+          "amount_cents",
+          "age_days",
+          "message",
+          "action"
+        ]
+      },
+      "BillingAttentionBucket": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "type": "string",
+            "enum": [
+              "0-30",
+              "31-60",
+              "61-90",
+              "over 90"
+            ]
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cents": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "label",
+          "count",
+          "cents"
+        ]
+      },
+      "BillingAttentionAging": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "buckets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BillingAttentionBucket"
+            },
+            "minItems": 4,
+            "maxItems": 4
+          },
+          "total_cents": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "buckets",
+          "total_cents"
+        ]
+      },
+      "BillingAttention": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Staff billing queue with insurance aging. Amounts are cents; nothing here changes the ledger.",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BillingAttentionItem"
+            },
+            "maxItems": 200,
+            "description": "At most the first 200 items in the order above; the queue is a working list, not a report."
+          },
+          "aging": {
+            "$ref": "#/components/schemas/BillingAttentionAging"
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD"
+            ]
+          },
+          "waiting_days": {
+            "type": "integer",
+            "const": 21
+          }
+        },
+        "required": [
+          "items",
+          "aging",
+          "currency",
+          "waiting_days"
+        ]
+      },
       "ConnectorProvenance": {
         "type": "object",
         "additionalProperties": false,
