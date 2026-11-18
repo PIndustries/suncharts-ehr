@@ -464,6 +464,16 @@ pub fn app(state: State) -> Router {
             get(index).post(partner_support::accept),
         )
         .route(
+            "/autorefresh.js",
+            get(|| async {
+                web_asset(
+                    "autorefresh.js",
+                    "text/javascript; charset=utf-8",
+                    include_str!("../web/autorefresh.js"),
+                )
+            }),
+        )
+        .route(
             "/connect-onboarding.js",
             get(|| async {
                 web_asset(

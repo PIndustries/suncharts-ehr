@@ -542,3 +542,5 @@ td.money-cell,th.money-cell{text-align:right;font-variant-numeric:tabular-nums}
  .charge-cell-total{text-align:left}
  .charge-drug-grid{grid-template-columns:1fr}
 }
+/* Quiet "Updated just now / 2 min ago" line kept by the shared auto-refresh in each revenue screen header. */
+.auto-refresh-updated{display:block;margin-top:4px;font-size:var(--fs-xs);color:var(--muted);font-weight:400}
