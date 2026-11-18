@@ -1,0 +1,32 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/* Live patient pickers: the answer box and the list that fills in while staff type. */
+.patient-picker{position:relative;min-width:0}
+.patient-picker-field{display:flex;gap:6px;align-items:flex-start}
+.patient-picker-field>input{min-width:0}
+.patient-picker-clear{flex:none}
+.patient-picker-pinned p{margin:2px 0 0;font-size:var(--fs-sm)}
+.patient-picker-suggestions{position:absolute;z-index:30;top:100%;left:0;width:max(100%,20rem);max-width:min(34rem,calc(100vw - 3rem));margin-top:2px;border:1px solid var(--line,#b6cbd2);border-radius:5px;background:var(--surface,#fff);color:var(--ink,#243944);box-shadow:0 .5rem 1.4rem #163b4926}
+.patient-picker-suggestions[hidden]{display:none}
+.patient-picker-status{margin:0;padding:.5rem .7rem;font-size:var(--fs-sm);color:var(--muted,#59717e);border-bottom:1px solid var(--line,#e6eef2)}
+.patient-picker-status:empty{display:none}
+.patient-picker-list{max-height:17rem;overflow:auto;overscroll-behavior:contain;padding:.15rem 0}
+.patient-picker-list:empty{display:none}
+.patient-picker-row{display:grid;gap:2px;width:100%;text-align:left;border:0;border-radius:0;background:transparent;color:var(--ink,#243944);padding:.5rem .7rem;font-size:var(--fs-sm);font-weight:600;line-height:1.35;overflow-wrap:anywhere}
+.patient-picker-row+ .patient-picker-row{border-top:1px solid var(--line,#edf1f4)}
+.patient-picker-row small{color:var(--muted,#59717e);font-size:var(--fs-xs);font-weight:400}
+.patient-picker-row:hover,.patient-picker-row.is-active{background:var(--accent-soft,#eaf4f6);outline:2px solid var(--accent,#157485);outline-offset:-2px}
+.patient-picker-none{margin:0;padding:.5rem .7rem;font-size:var(--fs-sm)}
+.patient-picker-more{margin:.2rem .7rem .4rem;font-size:var(--fs-xs)}
+.patient-billing-search-row>.patient-picker{flex:1;min-width:0}
+.practice-board-toolbar:has(#practice-search){position:relative}
+.practice-patient-status{position:absolute;z-index:29;top:calc(100% - 2px);left:12px;margin:0;font-size:var(--fs-xs);color:var(--muted,#59717e)}
+.practice-patient-status[hidden]{display:none}
+.practice-patient-search{position:absolute;z-index:30;top:100%;left:12px;width:max(100%,22rem);max-width:min(34rem,calc(100vw - 3rem));border:1px solid var(--line,#b6cbd2);border-radius:5px;background:var(--surface,#fff);box-shadow:0 .5rem 1.4rem #163b4926;max-height:18rem;overflow:auto;overscroll-behavior:contain}
+.practice-patient-search[hidden]{display:none}
+.practice-patient-search .patient-picker-row{display:grid;gap:2px;width:100%;text-align:left;border:0;border-radius:0;background:transparent;padding:.5rem .7rem;font-size:var(--fs-sm);font-weight:600;line-height:1.35}
+.practice-patient-search .patient-picker-row+ .patient-picker-row{border-top:1px solid var(--line,#edf1f4)}
+.practice-patient-search .patient-picker-row small{color:var(--muted,#59717e);font-size:var(--fs-xs);font-weight:400}
+.practice-patient-search .patient-picker-row:hover,.practice-patient-search .patient-picker-row.is-active{background:var(--accent-soft,#eaf4f6);outline:2px solid var(--accent,#157485);outline-offset:-2px}
+.practice-patient-search .muted{margin:0;padding:.5rem .7rem;font-size:var(--fs-sm)}
+.support-picker-row.is-active,.support-picker-row:hover{outline:2px solid var(--accent,#157485);outline-offset:-2px;background:var(--accent-soft,#eaf4f6)}
+@media (max-width:600px){.patient-picker-suggestions{width:100%;min-width:0;max-width:100%}}
