@@ -93,6 +93,7 @@ function clearSupportSession(){supportNavigationGeneration++;supportRequestGener
 function supportHasDrafts(){rememberSupportForm($('support-create-form'));rememberSupportForm($('support-reply-form'));return supportDrafts.size>0||Array.from(supportExtras.values()).some(extras=>extras.files.length>0);}
 // Patients, visits, claims and files attached to a support message. They stay in memory with the unsent draft.
 const supportFileLimit=5,supportFileMaxBytes=10*1024*1024,supportLinkLimit=10;
+const supportRowLimit=8,supportDelay=200,supportPageLimit=8;
 const supportFileTypes={'image/png':'png','image/jpeg':'jpg','image/gif':'gif','image/webp':'webp','application/pdf':'pdf','text/plain':'txt','text/csv':'csv'};
 const supportFileExtensions={png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',pdf:'application/pdf',txt:'text/plain',csv:'text/csv'};
 const supportExtras=new Map();
@@ -134,32 +135,104 @@ async function openSupportFromHere(){
   for(const link of context)supportAddLink(extras,link,true);
  }
  await showSupportTickets();
- const form=$('support-create-form');form?.scrollIntoView?.({block:'center'});form?.elements?.subject?.focus?.();
+ const form=$('support-create-form'),search=form?.querySelector?.('[data-support-search]');
+ form?.scrollIntoView?.({block:'center'});
+ // The patient box searches as it is typed in, so the caret goes there first and the message
+ // keeps the heading focus when there is nothing to attach.
+ if(search){search.focus();return;}
+ form?.elements?.subject?.focus?.();
 }
 // A reply belongs to an existing conversation, so what is open is offered, not attached.
 function supportSuggestContext(ticket){const context=supportCurrentContext();if(context.length)supportExtrasFor(ticket).suggested=context;}
 function supportHelpAvailable(){return typeof me!=='undefined'&&me&&supportRole()&&connectionStatusSnapshot?.services?.support_available!==false;}
 function supportHelpButton(subject,attributes=''){return supportHelpAvailable()?`<button type="button" class="quiet support-help" data-support-help ${attributes}>Get help with this ${subject}</button>`:'';}
-function supportPickerResults(picker){
- const q=picker.query.trim().toLowerCase();
- if(q.length<2)return '<p class="muted">Type at least 2 letters of the name or record number.</p>';
- const found=picker.patients.filter(p=>`${p.given_name} ${p.family_name}, ${p.given_name} ${p.mrn}`.toLowerCase().includes(q)).slice(0,8);
- return found.map(p=>`<button type="button" class="support-picker-row" data-support-pick-patient="${esc(p.id)}">${esc(p.family_name)}, ${esc(p.given_name)}<small>MRN ${esc(p.mrn)} · Born ${esc(p.birth_date)}</small></button>`).join('')||`<p class="muted">No patient matches yet.${picker.cursor?' Load more patients to keep looking.':''}</p>`;
+// The support patient box searches as staff type: name, a date of birth typed as a date,
+// or the record number. There is no Search button, and patient pages keep loading until what
+// was typed turns up. Patients picked here wait on the picker until their records are ready.
+function openSupportPatientPicker(key){
+ const picker={key,links:[],query:'',patients:[],matches:[],cursor:null,fetched:0,patient:null,visits:[],claims:[],busy:false,error:'',sequence:0,active:-1,timer:null};
+ supportOpen(picker);
+ return picker;
 }
-function supportPickerMarkup(extras){
- const picker=extras.picker,attached=(kind,id)=>extras.links.some(link=>link.kind===kind&&link.id===id);
- if(picker.patient){
-  const row=(kind,item)=>`<div class="support-picker-row"><span>${esc(item.label)}${item.detail?`<small>${esc(item.detail)}</small>`:''}</span>${attached(kind,item.id)?'<span class="muted">Attached</span>':`<button type="button" data-support-pick="${kind}:${esc(item.id)}">Attach ${kind}</button>`}</div>`;
-  return `<div class="support-picker"><b>${esc(picker.patient.label)}</b><p class="muted">This patient is attached. Add one of their visits or claims if it helps.</p><div class="support-picker-list">${picker.visits.map(item=>row('visit',item)).join('')}${picker.claims.map(item=>row('claim',item)).join('')||(picker.visits.length?'':'<p class="muted">No visits or claims to add for this patient.</p>')}</div><div class="actions"><button type="button" data-support-picker-back>Find another patient</button><button type="button" data-support-picker-close>Done</button></div></div>`;
- }
- return `<div class="support-picker"><label>Find a patient<input type="search" data-support-search placeholder="Name or record number" autocomplete="off" value="${esc(picker.query)}"></label><div class="support-picker-list" data-support-results>${supportPickerResults(picker)}</div><div class="actions">${picker.cursor?'<button type="button" data-support-picker-more>Load more patients</button>':''}<button type="button" data-support-picker-close>Close</button></div></div>`;
+function supportPickerFor(node){
+ const host=node?.closest?.('[data-support-extras]'),key=host?.dataset?.supportExtras;
+ return key&&supportExtras.get(key)?.picker||null;
+}
+function supportStatusText(picker){
+  if(picker.error)return picker.error;
+  if(picker.busy)return 'Searching…';
+  const query=String(picker.query||'').trim();
+  if(!query)return picker.patients.length?`Showing the first ${picker.patients.length} patients. Start typing to find someone faster.`:'Loading patients…';
+  if(!picker.matches.length)return picker.cursor?'No patient matches yet. More patients are still being looked through.':'No patient matches yet. Keep typing, or check the spelling.';
+  return `${picker.matches.length===1?'One patient matches':`${picker.matches.length} patients match`}. Keep typing to narrow the list.`;
+}
+function supportResultRows(picker){
+  return picker.matches.map((p,index)=>`<button type="button" class="support-picker-row${index===picker.active?' is-active':''}" role="option" aria-selected="${index===picker.active}" id="support-patient-option-${index}" data-support-pick-patient="${esc(p.id)}">${patientPickerRowHtml(p)}</button>`).join('')||`<p class="muted">${esc(supportStatusText(picker))}</p>`;
+}
+// The rows are redrawn in place, so the caret stays where the person left it.
+function supportMatches(picker){
+  return picker.patients.filter(patient=>patientPickerMatches(patient,picker.query)).slice(0,supportRowLimit);
+}
+function supportPaint(picker){
+  picker.matches=supportMatches(picker);
+  const host=supportExtrasHost(picker.key);if(!host)return;
+  const box=host.querySelector('[data-support-search]'),rows=host.querySelector('[data-support-picker-rows]');
+  if(!box||!rows)return;
+  rows.innerHTML=supportPickerRows(picker);
+  box.setAttribute('aria-busy',String(Boolean(picker.busy)));
+  const status=host.querySelector('[data-support-search-status]');if(status)status.textContent=supportStatusText(picker);
+}
+// One page at a time, and the list is redrawn as each lands: the box is never blank while it
+// works, and later pages are only read while the search still has found nothing.
+function supportReadPage(picker,after){
+  const sequence=picker.sequence;
+  return api(after?`/api/v1/patients?after=${encodeURIComponent(after)}`:'/api/v1/patients').then(page=>{
+    if(sequence!==picker.sequence)return;
+    const seen=new Set(picker.patients.map(p=>p.id));
+    picker.patients=[...picker.patients,...(Array.isArray(page?.items)?page.items:[]).filter(p=>!seen.has(p.id))];
+    picker.cursor=page?.next_cursor||null;picker.fetched++;
+    if(sequence!==picker.sequence)return;
+    supportPaint(picker);
+  },()=>{
+    if(sequence!==picker.sequence)return;
+    picker.cursor=null;picker.error='Patient names could not be loaded right now. Try again in a moment; your message is kept.';
+  }).catch(()=>{}).then(()=>{if(sequence===picker.sequence)supportPaint(picker);});
+}
+// Opening the box reads the first page on its own, so there is something to read at once.
+function supportOpen(picker){
+  picker.sequence++;picker.error='';picker.busy=true;
+  supportPaint(picker);
+  return supportReadPage(picker,null).then(()=>{if(picker.sequence===picker.sequence){picker.busy=false;supportPaint(picker);}});
+}
+// Further pages are read only while what was typed has not turned up yet, and stop early as
+// soon as a page brings a match.
+function supportSearchPages(picker){
+  const sequence=picker.sequence,query=String(picker.query||'').trim();
+  const step=pagesLeft=>{
+    if(sequence!==picker.sequence||supportMatches(picker).length||!picker.cursor||pagesLeft<=0)return null;
+    return supportReadPage(picker,picker.cursor).then(()=>step(pagesLeft-1));
+  };
+  picker.busy=true;supportPaint(picker);
+  return Promise.resolve(step(supportPageLimit)).then(()=>{if(sequence===picker.sequence){picker.busy=false;supportPaint(picker);}});
+}
+function supportPickerRows(picker){
+  const attached=(kind,id)=>picker.links.some(link=>link.kind===kind&&link.id===id);
+  if(picker.patient){
+    const row=(kind,item)=>`<div class="support-picker-row"><span>${esc(item.label)}${item.detail?`<small>${esc(item.detail)}</small>`:''}</span>${attached(kind,item.id)?'<span class="muted">Attached</span>':`<button type="button" data-support-pick="${kind}:${esc(item.id)}">Attach ${kind}</button>`}</div>`;
+    return `<b>${esc(picker.patient.label)}</b><p class="muted">This patient is attached. Add one of their visits or claims if it helps.</p><div class="support-picker-list">${picker.visits.map(item=>row('visit',item)).join('')}${picker.claims.map(item=>row('claim',item)).join('')||(picker.visits.length?'':'<p class="muted">No visits or claims to add for this patient.</p>')}</div><div class="actions"><button type="button" data-support-picker-back>Find another patient</button><button type="button" data-support-picker-close>Done</button></div>`;
+  }
+  return `<div data-support-picker-rows><p id="support-patient-search-status" class="muted" data-support-search-status role="status" aria-live="polite">${esc(supportStatusText(picker))}</p><div class="support-picker-list" id="support-patient-search-results" role="listbox" aria-label="Matching patients" data-support-results>${supportResultRows(picker)}</div>${picker.busy?'':`<div class="actions">${picker.cursor&&picker.query?'<button type="button" data-support-picker-more>Load more patients</button>':''}<button type="button" data-support-picker-close>Close</button></div>`}</div>`;
+}
+function supportPickerMarkup(picker){
+  picker.matches=supportMatches(picker);
+  return `<div class="support-picker"><label for="support-patient-search">Find a patient</label><input id="support-patient-search" type="search" data-support-search placeholder="Name, date of birth or record number" autocomplete="off" spellcheck="false" aria-controls="support-patient-search-results" aria-describedby="support-patient-search-status" aria-activedescendant="${picker.active>=0?`support-patient-option-${picker.active}`:''}" value="${esc(picker.query)}">${supportPickerRows(picker)}</div>`;
 }
 function supportExtrasBody(key){
  const extras=supportExtrasFor(key);
  const chips=extras.links.map((link,i)=>`<span class="pill support-chip">${esc(supportLinkText(link))}<button type="button" class="support-chip-remove" data-support-link-remove="${i}" aria-label="Remove ${esc(supportLinkText(link))}">×</button></span>`).join('');
  const suggested=extras.suggested.map((link,i)=>extras.links.some(item=>item.kind===link.kind&&item.id===link.id)?'':`<button type="button" class="pill support-chip support-chip-suggested" data-support-link-suggested="${i}">Attach ${esc(supportLinkText(link))}</button>`).join('');
  const tiles=extras.files.map((file,i)=>`<span class="support-file${file.failed?' support-file-failed':''}">${file.preview?`<img src="${esc(file.preview)}" alt="">`:''}<span class="support-file-name">${esc(file.name)}<small>${esc(supportFileSize(file.size))}${file.failed?' · Not sent yet':''}</small></span><button type="button" class="support-chip-remove" data-support-file-remove="${i}" aria-label="Remove ${esc(file.name)}">×</button></span>`).join('');
- return `<div class="support-about"><b>About</b>${chips||(suggested?'':'<span class="muted">No patient, visit or claim attached</span>')}${suggested}<button type="button" class="text-button" data-support-link-add aria-expanded="${Boolean(extras.picker)}">Add patient, visit or claim</button></div>${extras.links.length?'<small class="muted">Support sees the record number, visit date or claim number, not the patient’s name.</small>':''}${extras.picker?supportPickerMarkup(extras):''}<div class="support-files">${tiles}<button type="button" data-support-file-add>Add files</button><input type="file" data-support-file-input multiple hidden accept="${Object.keys(supportFileTypes).join(',')}"></div><small class="muted">Drop files here or paste a screenshot - up to 5 images or documents, 10 MB each.</small>${extras.unavailable?'<div class="notice error" role="alert" data-support-unavailable><span>Support cannot receive attached patients, visits, claims or files yet. Your message has not been sent.</span><button type="button" data-support-send-plain>Send without attachments</button></div>':''}${extras.problem?`<p class="notice error" role="alert" data-support-problem>${esc(extras.problem)}</p>`:''}`;
+ return `<div class="support-about"><b>About</b>${chips||(suggested?'':'<span class="muted">No patient, visit or claim attached</span>')}${suggested}<button type="button" class="text-button" data-support-link-add aria-expanded="${Boolean(extras.picker)}">Add patient, visit or claim</button></div>${extras.links.length?'<small class="muted">Support sees the record number, visit date or claim number, not the patient’s name.</small>':''}${extras.picker?supportPickerMarkup(extras.picker):''}<div class="support-files">${tiles}<button type="button" data-support-file-add>Add files</button><input type="file" data-support-file-input multiple hidden accept="${Object.keys(supportFileTypes).join(',')}"></div><small class="muted">Drop files here or paste a screenshot - up to 5 images or documents, 10 MB each.</small>${extras.unavailable?'<div class="notice error" role="alert" data-support-unavailable><span>Support cannot receive attached patients, visits, claims or files yet. Your message has not been sent.</span><button type="button" data-support-send-plain>Send without attachments</button></div>':''}${extras.problem?`<p class="notice error" role="alert" data-support-problem>${esc(extras.problem)}</p>`:''}`;
 }
 function supportExtrasMarkup(key){return `<div class="support-extras" id="${key==='new'?'support-create-extras':'support-reply-extras'}" data-support-extras="${esc(key)}">${supportExtrasBody(key)}</div>`;}
 function supportFileName(file,type,pasted,extras){
@@ -267,33 +340,84 @@ function supportExtrasClick(event,b){
  else if(b.hasAttribute('data-support-file-remove'))extras.files.splice(Number(b.dataset.supportFileRemove),1);
  else if(b.hasAttribute('data-support-link-suggested'))supportAddLink(extras,extras.suggested[Number(b.dataset.supportLinkSuggested)]);
  else if(b.hasAttribute('data-support-picker-close'))extras.picker=null;
- else if(b.hasAttribute('data-support-picker-back')&&picker)picker.patient=null;
+ else if(b.hasAttribute('data-support-picker-back')&&picker){picker.patient=null;render();host.querySelector('[data-support-search]')?.focus();return handled();}
  else if(b.hasAttribute('data-support-link-add')){
   if(picker)extras.picker=null;
-  else{const next=extras.picker={query:'',patients:[],cursor:null,patient:null,visits:[],claims:[]};run(async()=>{const page=await api('/api/v1/patients');next.patients=page.items||[];next.cursor=page.next_cursor||null;render();});}
+  else extras.picker=openSupportPatientPicker(key);
  }else if(b.hasAttribute('data-support-picker-more')&&picker?.cursor){
-  run(async()=>{const page=await api('/api/v1/patients?after='+encodeURIComponent(picker.cursor));picker.patients.push(...(page.items||[]));picker.cursor=page.next_cursor||null;render();});
+  supportReadPage(picker,picker.cursor);
  }else if(b.dataset.supportPickPatient&&picker){
-  const p=picker.patients.find(item=>item.id===b.dataset.supportPickPatient);
-  if(p){
-   const label=`${p.family_name}, ${p.given_name} · MRN ${p.mrn}`;supportAddLink(extras,{kind:'patient',id:p.id,label});
-   picker.patient={id:p.id,label};picker.visits=[];picker.claims=[];
-   // Either list may be outside this person's access; the patient is attached regardless.
-   run(async()=>{const [chart,claims]=await Promise.all([api(`/api/v1/patients/${p.id}/workspace`).catch(()=>null),api(`/api/v1/billing/claims?patient_id=${p.id}`).catch(()=>null)]);
-    if(extras.picker!==picker||picker.patient?.id!==p.id)return;
-    picker.visits=(chart?.visits||[]).map(visit=>{const when=(chart.appointments||[]).find(a=>a.id===visit.appointment_id)?.starts_at||visit.signed_at;return {id:visit.id,label:'Visit '+(when?date(when):'date not recorded'),detail:visit.status==='signed'?'Signed':'In progress'};}).slice(0,20);
-    picker.claims=(claims?.items||[]).map(claim=>({id:claim.id,label:'Claim '+claim.control_number,detail:scheduleLabel(claim.status)})).slice(0,20);render();});
-  }
+  // Reads the patient records through the app's own queue, so the shell stays responsive.
+  run(()=>supportChoose(picker,picker.patients.find(item=>item.id===b.dataset.supportPickPatient)));
  }else if(b.dataset.supportPick&&picker?.patient){
   const [kind,id]=b.dataset.supportPick.split(':'),item=(kind==='visit'?picker.visits:kind==='claim'?picker.claims:[]).find(row=>row.id===id);
-  if(item)supportAddLink(extras,{kind,id,label:item.label});
+  // The patient was attached by the same picker, so the visit or claim joins their chips.
+  if(item)supportAddLink(supportExtrasFor(picker.key),{kind,id,label:item.label});
  }
  render();return handled();
 }
+// What is typed is what is searched - no button in between. The list redraws in place so the
+// caret stays where the person left it.
+function supportType(picker,value){
+ clearTimeout(picker.timer);picker.timer=null;picker.active=-1;
+ picker.query=String(value??'');
+ // Short answers and the ones already on screen settle without another read; only a search
+ // that has found nothing yet keeps looking through the patient pages.
+ if(supportMatches(picker).length||String(picker.query).trim().length<2||!picker.cursor){supportPaint(picker);return;}
+ picker.busy=true;supportPaint(picker);
+ picker.timer=setTimeout(()=>{picker.timer=null;supportSearchPages(picker);},supportDelay);
+}
+// When a visit happened, in the same wording the schedule already uses.
+function visitDateLabel(visit,appointments=[]){
+  const booked=appointments.find(a=>a.id===visit?.appointment_id);
+  const when=supportLabel(visit?.visit_date)||supportLabel(booked?.starts_at)||supportLabel(visit?.starts_at)||supportLabel(visit?.scheduled_for);
+  if(!when)return '';
+  if(typeof displayDateShort==='function')return displayDateShort(when);
+  const day=new Date(when);
+  if(Number.isNaN(day.getTime()))return when.slice(0,10);
+  return day.toLocaleDateString('en-US',{timeZone:'UTC',month:'short',day:'numeric',year:'numeric'});
+}
+// Choosing a patient attaches them at once and opens their visits and claims to attach too,
+// so one search box carries the whole job without a second lookup.
+function supportChoose(picker,patient){
+  if(!patient||picker.patient)return;
+  const label=`${patient.family_name}, ${patient.given_name} · MRN ${patient.mrn}`;
+  supportAddLink(supportExtrasFor(picker.key),{kind:'patient',id:patient.id,label});
+  picker.patient={id:patient.id,label};picker.matches=[];picker.visits=[];picker.claims=[];
+  supportPaint(picker);
+  const records=[
+    api(`/api/v1/patients/${encodeURIComponent(patient.id)}/workspace`).then(space=>{
+      const visits=Array.isArray(space?.visits)?space.visits:[];
+      picker.visits=visits.slice(0,5).map(item=>({id:item.id,label:`Visit ${visitDateLabel(item,space?.appointments)||'—'}${supportLabel(item.status)?` · ${supportLabel(item.status)}`:''}`}));
+    },()=>{}),
+    api(`/api/v1/billing/claims?patient_id=${encodeURIComponent(patient.id)}`).then(page=>{
+      picker.claims=(Array.isArray(page?.items)?page.items:[]).slice(0,5).map(item=>({id:item.id,label:`Claim ${supportLabel(item.control_number)||supportLabel(item.id).slice(0,8)}${supportLabel(item.status)?` · ${supportLabel(item.status)}`:''}`}));
+    },()=>{})
+  ];
+  Promise.all(records).then(()=>{if(!picker.patient)return;supportPaint(picker);});
+}
+function supportStep(picker,direction){
+ if(!picker.matches.length)return;
+ picker.active=(picker.active+direction+picker.matches.length)%picker.matches.length;
+ supportPaint(picker);
+}
 document.addEventListener('input',event=>{
  const input=event.target;if(!input?.hasAttribute?.('data-support-search'))return;
- const host=input.closest('[data-support-extras]'),picker=host&&supportExtras.get(host.dataset.supportExtras)?.picker;if(!picker)return;
- picker.query=String(input.value||'');const results=host.querySelector('[data-support-results]');if(results)results.innerHTML=supportPickerResults(picker);
+ const picker=supportPickerFor(event.target);if(!picker||picker.patient)return;
+ supportType(picker,input.value);
+},true);
+document.addEventListener('keydown',event=>{
+ const input=event.target;if(!input?.hasAttribute?.('data-support-search'))return;
+ const picker=supportPickerFor(event.target);if(!picker||picker.patient||event.isComposing)return;
+ const host=input.closest('[data-support-extras]'),extras=host?supportExtras.get(host.dataset.supportExtras):null;
+ if(event.key==='ArrowDown'||event.key==='ArrowUp'){event.preventDefault();event.stopImmediatePropagation();supportStep(picker,event.key==='ArrowDown'?1:-1);return;}
+ if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();if(extras)extras.picker=null;renderSupportExtras(picker.key);return;}
+ if(event.key!=='Enter'&&event.key!=='Tab')return;
+ event.preventDefault();event.stopImmediatePropagation();
+ // One match is taken as soon as the person moves on; several are stepped through with Enter.
+ if(picker.busy)return;
+ const chosen=picker.matches.length===1?picker.matches[0]:picker.matches[picker.active];
+ if(chosen)run(()=>supportChoose(picker,chosen));
 },true);
 document.addEventListener('change',event=>{
  const input=event.target;if(!input?.hasAttribute?.('data-support-file-input'))return;

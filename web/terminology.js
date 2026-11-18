@@ -2,136 +2,159 @@
 'use strict';
 let terminologyGeneration=0,terminologyImport=null,terminologyImportRevision=0;
 const terminologyPickers=new Map();
-const procedureAutocompleteStates=new Map(),procedureAutocompleteApplying=new WeakSet();
-let procedureAutocompleteId=0;
+const terminologyComboboxes=new Map(),terminologyApplying=new WeakSet();
+let terminologyFieldId=0;
 const terminologySystems=['ICD-10-CM','ICD-10-PCS','HCPCS','CPT'];
 const terminologySystem=value=>({'ICD10CM':'ICD-10-CM','ICD10PCS':'ICD-10-PCS','HCPCS':'HCPCS','CPT':'CPT'})[String(value||'').toUpperCase().replace(/[^A-Z0-9]/g,'')]||null;
-const terminologyLookupButton=scope=>`<button type="button" data-terminology-open="${scope}">${scope==='diagnosis'?'Find diagnosis':'Find procedure code'}</button>`;
+const terminologyLookupButton=scope=>scope==='procedure'?`<button type="button" data-terminology-open="procedure">Find procedure code</button>`:'';
 const terminologyCatalogButton=()=>me?.role==='owner'?'<button type="button" data-terminology-manage>Code lists</button>':'';
 function renderTerminologyAdminEntry(){return me?.role==='owner'?'<button type="button" data-terminology-manage>Code lists</button>':'';}
 function terminologyReleaseLabel(value){return `${value.system||''} · ${value.edition||'Edition not recorded'} · effective ${value.effective_start||'date not recorded'}${value.effective_end?` through ${value.effective_end}`:' onward'}`;}
 function terminologySnapshotMarkup(snapshot){return snapshot?`<p class="muted" data-terminology-selection>Recorded from the ${esc(terminologyReleaseLabel(snapshot))} code list. ${esc(snapshot.source_name||'')}</p>`:'';}
 function terminologyContextCurrent(state){return state.generation===terminologyGeneration&&state.account===me&&state.host.isConnected&&state.row.isConnected&&state.form.isConnected&&state.patient===selected&&(state.scope!=='diagnosis'||state.visit===activeVisit?.id);}
-function clearTerminologySession(){terminologyGeneration++;for(const state of terminologyPickers.values())state.host.remove();terminologyPickers.clear();for(const state of procedureAutocompleteStates.values())closeProcedureAutocomplete(state);procedureAutocompleteStates.clear();terminologyImport=null;terminologyImportRevision++;}
+function clearTerminologySession(){terminologyGeneration++;for(const state of terminologyPickers.values())state.host.remove();terminologyPickers.clear();for(const state of terminologyComboboxes.values())closeTerminologyCombobox(state);terminologyComboboxes.clear();terminologyImport=null;terminologyImportRevision++;}
 
+function terminologyComboboxMarkup(scope,prefix,name,label,max,placeholder,value,system){return `<div class="terminology-combobox"><label for="${prefix}-${name}">${label}</label><input id="${prefix}-${name}" name="${name}" type="text" value="${esc(value||'')}" maxlength="${max}" required autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="${prefix}-${name}-list" aria-describedby="${prefix}-${name}-status" data-terminology-combobox data-terminology-scope="${scope}"${system?` data-terminology-system="${esc(system)}"`:''} placeholder="${placeholder}"><div class="terminology-suggestions" data-terminology-popup hidden><p id="${prefix}-${name}-status" data-terminology-status role="status" aria-live="polite"></p><ul id="${prefix}-${name}-list" role="listbox" aria-label="${scope==='diagnosis'?'Matching diagnoses':'Matching procedure codes'}" data-terminology-results></ul></div></div>`;}
 function terminologyProcedureFields(line={}){
- const prefix=`procedure-lookup-${++procedureAutocompleteId}`;
- return [['code','CPT / HCPCS procedure code',100,'Code or procedure name'],['description','Description',10000,'Procedure name or code']].map(([name,label,max,placeholder])=>`<div class="terminology-combobox"><label for="${prefix}-${name}">${label}</label><input id="${prefix}-${name}" name="${name}" type="text" value="${esc(line[name]||'')}" maxlength="${max}" required autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="${prefix}-${name}-list" aria-describedby="${prefix}-${name}-status" data-procedure-autocomplete placeholder="${placeholder}"><div class="terminology-suggestions" data-procedure-popup hidden><p id="${prefix}-${name}-status" data-procedure-status role="status" aria-live="polite"></p><ul id="${prefix}-${name}-list" role="listbox" aria-label="Matching procedure codes" data-procedure-results></ul></div></div>`).join('');
+ const prefix=`terminology-field-${++terminologyFieldId}`;
+ return [['code','CPT / HCPCS procedure code',100,'Code or procedure name'],['description','Description',10000,'Procedure name or code']].map(([name,label,max,placeholder])=>terminologyComboboxMarkup('procedure',prefix,name,label,max,placeholder,line[name])).join('');
 }
-function clearProcedureAutocompleteMarkup(copy){
- copy.querySelectorAll('[data-procedure-popup]').forEach(popup=>{popup.hidden=true;popup.querySelector('[data-procedure-status]').textContent='';popup.querySelector('[data-procedure-results]').replaceChildren();});
- copy.querySelectorAll('[data-procedure-autocomplete]').forEach(input=>{input.setAttribute('aria-expanded','false');input.removeAttribute('aria-activedescendant');input.removeAttribute('aria-busy');});
+function terminologyDiagnosisFields(row={}){
+ const prefix=`terminology-field-${++terminologyFieldId}`;
+ return [['code','Code',8,'ICD-10-CM code or diagnosis name'],['display','Description',2000,'Diagnosis name or code']].map(([name,label,max,placeholder])=>terminologyComboboxMarkup('diagnosis',prefix,name,label,max,placeholder,row[name],'ICD-10-CM')).join('');
 }
-function procedureAutocompleteContext(state){
- return state.generation===terminologyGeneration&&state.account===me&&state.patient===selected&&state.visit===(typeof activeVisit==='undefined'?null:activeVisit?.id||null)&&state.view===procedureAutocompleteView()&&state.input.isConnected&&state.row.isConnected&&state.form.isConnected&&!state.input.closest('[hidden]')&&!state.input.disabled&&!state.input.readOnly&&(!state.form.dataset.patient||state.form.dataset.patient===selected);
+function terminologyAttachCombobox(input,{system,scope}){
+ if(!input||!scope)return;
+ input._terminologyAttach={scope,system:system||''};
+ input.setAttribute?.('data-terminology-combobox','');input.setAttribute?.('data-terminology-scope',scope);
+ if(system)input.setAttribute?.('data-terminology-system',system);
 }
-function procedureAutocompleteView(){return `${typeof chartSection==='undefined'?'':chartSection}:${typeof encounterSection==='undefined'?'':encounterSection}`;}
-function procedureAutocompleteValues(state){
- return {query:state.input.value.trim(),system:terminologySystem(state.row.querySelector('[name="code_system"]')?.value),serviceDate:terminologyServiceDate('procedure',state.form),visit:state.form.elements.visit_id?.value||'',account:state.form.dataset.id||'',version:state.form.dataset.version||'',code:state.row.querySelector('[name="code"]').value,description:state.row.querySelector('[name="description"]').value};
+function clearTerminologyComboboxMarkup(copy){
+ copy.querySelectorAll('[data-terminology-popup]').forEach(popup=>{popup.hidden=true;popup.querySelector('[data-terminology-status]').textContent='';popup.querySelector('[data-terminology-results]').replaceChildren();});
+ copy.querySelectorAll('[data-terminology-combobox]').forEach(input=>{input.setAttribute('aria-expanded','false');input.removeAttribute('aria-activedescendant');input.removeAttribute('aria-busy');});
 }
-function procedureAutocompleteCurrent(state,request,values){
- return procedureAutocompleteContext(state)&&request===state.request&&JSON.stringify(values)===JSON.stringify(procedureAutocompleteValues(state));
+function terminologyRowScope(row){return row?.matches?.('[data-diagnosis-row]')?'diagnosis':'procedure';}
+function terminologyFieldPair(scope){return scope==='diagnosis'?{code:'code',text:'display'}:{code:'code',text:'description'};}
+function terminologyComboboxContext(state){
+ return state.generation===terminologyGeneration&&state.account===me&&state.patient===selected&&state.visit===(typeof activeVisit==='undefined'?null:activeVisit?.id||null)&&state.view===terminologyComboboxView()&&state.input.isConnected&&state.row.isConnected&&state.form.isConnected&&!state.input.closest('[hidden]')&&!state.input.disabled&&!state.input.readOnly&&(!state.form.dataset.patient||state.form.dataset.patient===selected);
 }
-function closeProcedureAutocomplete(state){
+function terminologyComboboxView(){return `${typeof chartSection==='undefined'?'':chartSection}:${typeof encounterSection==='undefined'?'':encounterSection}`;}
+function terminologyComboboxValues(state){
+ const pair=terminologyFieldPair(state.scope);
+ return {query:state.input.value.trim(),system:state.system||(state.scope==='procedure'?terminologySystem(state.row.querySelector('[name="code_system"]')?.value):'')||'',serviceDate:terminologyServiceDate(state.scope,state.form),visit:state.form.elements.visit_id?.value||'',account:state.form.dataset.id||'',version:state.form.dataset.version||'',code:state.row.querySelector(`[name="${pair.code}"]`)?.value||'',description:state.row.querySelector(`[name="${pair.text}"]`)?.value||''};
+}
+function terminologyComboboxCurrent(state,request,values){
+ return terminologyComboboxContext(state)&&request===state.request&&JSON.stringify(values)===JSON.stringify(terminologyComboboxValues(state));
+}
+function closeTerminologyCombobox(state){
  clearTimeout(state.timer);state.timer=null;state.request++;state.items=[];state.active=-1;state.search=null;
  state.popup.hidden=true;state.list.replaceChildren();state.status.textContent='';state.input.setAttribute('aria-expanded','false');state.input.removeAttribute('aria-activedescendant');state.input.removeAttribute('aria-busy');
 }
-function procedureAutocompleteState(input){
- for(const [field,state] of procedureAutocompleteStates){if(!procedureAutocompleteContext(state)){closeProcedureAutocomplete(state);procedureAutocompleteStates.delete(field);}}
- let state=procedureAutocompleteStates.get(input);if(state)return state;
- const row=input.closest('.billing-charge-row'),form=row?.closest('form'),host=input.closest('.terminology-combobox');if(!row||!form||!host||input.disabled||input.readOnly)return null;
- state={input,row,form,host,popup:host.querySelector('[data-procedure-popup]'),list:host.querySelector('[data-procedure-results]'),status:host.querySelector('[data-procedure-status]'),generation:terminologyGeneration,account:me,patient:selected,visit:typeof activeVisit==='undefined'?null:activeVisit?.id||null,view:procedureAutocompleteView(),request:0,timer:null,items:[],active:-1,search:null};
- procedureAutocompleteStates.set(input,state);return state;
+function terminologyComboboxState(input){
+ for(const [field,state] of terminologyComboboxes){if(!terminologyComboboxContext(state)){closeTerminologyCombobox(state);terminologyComboboxes.delete(field);}}
+ let state=terminologyComboboxes.get(input);if(state)return state;
+ const row=input.closest('[data-diagnosis-row],.billing-charge-row'),host=input.closest('.terminology-combobox');if(!row||!host||input.disabled||input.readOnly)return null;const form=typeof row?.closest==='function'?row.closest('form'):null;if(!form||!form.elements||!form.dataset)return null;
+ const scope=terminologyRowScope(row),attach=input._terminologyAttach&&input._terminologyAttach.scope===scope?input._terminologyAttach:{system:input.getAttribute?.('data-terminology-scope')===scope?input.getAttribute?.('data-terminology-system')||'':''};
+ state={input,row,form,host,scope,system:attach.system,popup:host.querySelector('[data-terminology-popup]'),list:host.querySelector('[data-terminology-results]'),status:host.querySelector('[data-terminology-status]'),generation:terminologyGeneration,account:me,patient:selected,visit:typeof activeVisit==='undefined'?null:activeVisit?.id||null,view:terminologyComboboxView(),request:0,timer:null,items:[],active:-1,search:null};
+ terminologyComboboxes.set(input,state);return state;
 }
-function procedureAutocompleteStatus(state,message){
+function terminologyComboboxStatus(state,message){
  state.popup.hidden=false;state.input.setAttribute('aria-expanded','true');state.status.textContent=message;
 }
-function procedureAutocompleteEligible(item,values){
+function terminologyComboboxEligible(item,values){
  return item&&typeof item.code==='string'&&typeof item.display==='string'&&item.release_id&&item.system===values.system&&item.billable===true&&item.active!==false&&(!item.effective_start||item.effective_start<=values.serviceDate)&&(!item.effective_end||item.effective_end>=values.serviceDate);
 }
-function renderProcedureAutocomplete(state){
- state.list.innerHTML=state.items.map((item,index)=>`<li id="${state.list.id}-option-${index}" role="option" aria-selected="${index===state.active}" data-procedure-option="${index}"><span><b>${esc(item.code)}</b> ${esc(item.display)}</span><small>${esc(terminologyReleaseLabel(item))}</small></li>`).join('');
+function renderTerminologyCombobox(state){
+ state.list.innerHTML=state.items.map((item,index)=>`<li id="${state.list.id}-option-${index}" role="option" aria-selected="${index===state.active}" data-terminology-option="${index}"><span><b>${esc(item.code)}</b> ${esc(item.display)}</span><small>${esc(terminologyReleaseLabel(item))}</small></li>`).join('');
  if(state.active<0)state.input.removeAttribute('aria-activedescendant');
- else{const id=`${state.list.id}-option-${state.active}`;state.input.setAttribute('aria-activedescendant',id);state.list.querySelector(`[data-procedure-option="${state.active}"]`)?.scrollIntoView?.({block:'nearest'});}
+ else{const id=`${state.list.id}-option-${state.active}`;state.input.setAttribute('aria-activedescendant',id);state.list.querySelector(`[data-terminology-option="${state.active}"]`)?.scrollIntoView?.({block:'nearest'});}
 }
-function scheduleProcedureAutocomplete(input,immediate=false){
- if(procedureAutocompleteApplying.has(input.closest('.billing-charge-row')))return;
- const state=procedureAutocompleteState(input);if(!state)return;
- for(const other of procedureAutocompleteStates.values())if(other!==state)closeProcedureAutocomplete(other);
- closeProcedureAutocomplete(state);const values=procedureAutocompleteValues(state);
-if(!['CPT','HCPCS'].includes(values.system)){procedureAutocompleteStatus(state,'Choose CPT or HCPCS to search the installed procedure code lists. You can still type the code in by hand.');return;}
-  if(!/^\d{4}-\d{2}-\d{2}$/.test(values.serviceDate)){procedureAutocompleteStatus(state,'Enter the charge service date before searching the code list.');return;}
- if(values.query.length<2){procedureAutocompleteStatus(state,'Type at least two characters from a code or procedure name.');return;}
- if(values.query.length>200){procedureAutocompleteStatus(state,'Use up to 200 characters to search. Your full description remains available for manual entry.');return;}
-  const request=state.request;procedureAutocompleteStatus(state,'Searching the code list…');state.input.setAttribute('aria-busy','true');
- state.timer=setTimeout(()=>{state.timer=null;searchProcedureAutocomplete(state,request,values);},immediate?0:250);
+function scheduleTerminologyCombobox(input,immediate=false){
+ if(terminologyApplying.has(input.closest('[data-diagnosis-row],.billing-charge-row')))return;
+ const state=terminologyComboboxState(input);if(!state)return;
+ for(const other of terminologyComboboxes.values())if(other!==state)closeTerminologyCombobox(other);
+ closeTerminologyCombobox(state);const values=terminologyComboboxValues(state);
+ const allowed=state.scope==='diagnosis'?['ICD-10-CM']:['CPT','HCPCS'];
+ if(!allowed.includes(values.system)){terminologyComboboxStatus(state,state.scope==='diagnosis'?'This diagnosis needs the ICD-10-CM code list. You can still type the code in by hand.':'Choose CPT or HCPCS to search the installed procedure code lists. You can still type the code in by hand.');return;}
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(values.serviceDate)){terminologyComboboxStatus(state,'Enter the service date before searching the code list.');return;}
+ if(values.query.length<2){terminologyComboboxStatus(state,'Type at least two characters from a code or name.');return;}
+ if(values.query.length>200){terminologyComboboxStatus(state,'Use up to 200 characters to search. Your full description remains available for manual entry.');return;}
+ const request=state.request;terminologyComboboxStatus(state,'Searching the code list…');state.input.setAttribute('aria-busy','true');
+ state.timer=setTimeout(()=>{state.timer=null;searchTerminologyCombobox(state,request,values);},immediate?0:(state.scope==='diagnosis'?150:250));
 }
-async function searchProcedureAutocomplete(state,request,values){
- if(!procedureAutocompleteCurrent(state,request,values))return;
+async function searchTerminologyCombobox(state,request,values){
+ if(!terminologyComboboxCurrent(state,request,values))return;
  try{
   const params=new URLSearchParams({system:values.system,q:values.query,service_date:values.serviceDate,billable:'true',active:'true',limit:'8'}),result=await api(`/api/v1/terminology/codes?${params}`);
-  if(!procedureAutocompleteCurrent(state,request,values))return;
-  state.input.removeAttribute('aria-busy');state.items=(result.items||[]).filter(item=>procedureAutocompleteEligible(item,values));state.search=values;state.active=-1;renderProcedureAutocomplete(state);
-  procedureAutocompleteStatus(state,state.items.length?`${state.items.length} matches. Use ↑ and ↓, then Enter, or select a result.${result.next_cursor?' Keep typing to narrow the list.':''}`:result.release===null?`No ${values.system} code list is installed for ${values.serviceDate}. Type a reviewed code and description yourself. A practice owner can install an authorized list under Code lists.`:'No matching procedures for this service date. Try another code or name, or enter reviewed details manually.');
- }catch(error){if(procedureAutocompleteCurrent(state,request,values)){state.input.removeAttribute('aria-busy');procedureAutocompleteStatus(state,`The code list search is not available right now: ${error.message}. Your entries are unchanged; you can still type the code in by hand.`);}}
+  if(!terminologyComboboxCurrent(state,request,values))return;
+  state.input.removeAttribute('aria-busy');state.items=(result.items||[]).filter(item=>terminologyComboboxEligible(item,values));state.search=values;state.active=-1;renderTerminologyCombobox(state);
+  terminologyComboboxStatus(state,state.items.length?`${state.items.length} matches. Use ↑ and ↓, then Enter, or select a result.${result.next_cursor?' Keep typing to narrow the list.':''}`:result.release===null?`No ${values.system} code list is installed for ${values.serviceDate}. Type a reviewed code and description yourself. A practice owner can install an authorized list under Code lists.`:'No match in the code list. Keep typing or enter a reviewed code and description yourself.');
+ }catch(error){if(terminologyComboboxCurrent(state,request,values)){state.input.removeAttribute('aria-busy');terminologyComboboxStatus(state,`The code list search is not available right now: ${error.message}. Your entries are unchanged; you can still type the code in by hand.`);}}
 }
-async function selectProcedureAutocomplete(state,index){
- const values=state.search,item=state.items[index],request=++state.request;
- if(!values||!procedureAutocompleteCurrent(state,request,values)||!procedureAutocompleteEligible(item,values)){closeProcedureAutocomplete(state);return;}
-  state.input.setAttribute('aria-busy','true');procedureAutocompleteStatus(state,'Checking the code you selected…');
+async function selectTerminologyCombobox(state,index){
+ const values=state.search,item=state.items[index],request=++state.request;state.pendingPick=null;
+ if(!values||!terminologyComboboxCurrent(state,request,values)||!terminologyComboboxEligible(item,values)){closeTerminologyCombobox(state);return;}
+ state.input.setAttribute('aria-busy','true');terminologyComboboxStatus(state,'Checking the code you selected…');
  try{
   const detail=await api(`/api/v1/terminology/releases/${encodeURIComponent(item.release_id)}/codes/${encodeURIComponent(item.code)}`);
-  if(!procedureAutocompleteCurrent(state,request,values))return;
-  if(detail.release_id!==item.release_id||detail.code!==item.code||!procedureAutocompleteEligible(detail,values)){state.input.removeAttribute('aria-busy');procedureAutocompleteStatus(state,'This code is no longer available for this service date. Search again; your entries were kept.');return;}
-  const code=state.row.querySelector('[name="code"]'),description=state.row.querySelector('[name="description"]'),system=state.row.querySelector('[name="code_system"]');
-  procedureAutocompleteApplying.add(state.row);
+  if(!terminologyComboboxCurrent(state,request,values))return;
+  if(detail.release_id!==item.release_id||detail.code!==item.code||!terminologyComboboxEligible(detail,values)){state.input.removeAttribute('aria-busy');terminologyComboboxStatus(state,'This code is no longer available for this service date. Search again; your entries were kept.');return;}
+  const pair=terminologyFieldPair(state.scope),code=state.row.querySelector(`[name="${pair.code}"]`),description=state.row.querySelector(`[name="${pair.text}"]`),system=state.row.querySelector('[name="code_system"]');
+  terminologyApplying.add(state.row);
   try{
-   code.value=detail.code;description.value=detail.display;system.value=detail.system;
+   code.value=detail.code;description.value=detail.display;if(system)system.value=detail.system;
    Object.assign(state.row.dataset,{catalogReleaseId:detail.release_id,catalogCode:detail.code,catalogDisplay:detail.display,catalogSystem:detail.system});
    state.row.querySelector('[data-terminology-selection]')?.remove();
-   const note=document.createElement('p');note.dataset.terminologySelection='';note.className='muted';note.textContent=`Selected from ${terminologyReleaseLabel(detail)}. Save the charge account to record which code list this came from.`;state.row.append(note);
-   for(const other of procedureAutocompleteStates.values())if(other.row===state.row)closeProcedureAutocomplete(other);
-   for(const field of [code,description,system])field.dispatchEvent(new Event('input',{bubbles:true}));
-  }finally{procedureAutocompleteApplying.delete(state.row);}
+   const note=document.createElement('p');note.dataset.terminologySelection='';note.className='muted';note.textContent=`Selected from ${terminologyReleaseLabel(detail)}.${state.scope==='diagnosis'?' Saving this list records which code list it came from.':' Save the charge account to record which code list this came from.'}`;state.row.append(note);
+   for(const other of terminologyComboboxes.values())if(other.row===state.row)closeTerminologyCombobox(other);
+   for(const field of [code,description,system])field?.dispatchEvent(new Event('input',{bubbles:true}));
+  }finally{terminologyApplying.delete(state.row);}
   state.input.focus();
- }catch(error){if(procedureAutocompleteCurrent(state,request,values)){state.input.removeAttribute('aria-busy');procedureAutocompleteStatus(state,`The selected code could not be checked: ${error.message}. Your entries were kept.`);}}
+ }catch(error){if(terminologyComboboxCurrent(state,request,values)){state.input.removeAttribute('aria-busy');terminologyComboboxStatus(state,`The selected code could not be checked: ${error.message}. Your entries were kept.`);}}
+}
+function terminologyAutoPickIndex(state){
+ if(state.popup.hidden||!state.items.length||state.search?.query!==state.input.value.trim())return -1;
+ const wanted=state.input.value.trim().toUpperCase(),matches=state.items.filter(item=>item.code.toUpperCase()===wanted);
+ return matches.length===1?state.items.indexOf(matches[0]):-1;
 }
 document.addEventListener('focusin',event=>{
- if(!event.target.matches?.('[data-procedure-autocomplete]'))return;
- const row=event.target.closest('.billing-charge-row');
- if(row?.dataset.catalogReleaseId&&row.querySelector('[name="code"]').value===row.dataset.catalogCode&&row.querySelector('[name="description"]').value===row.dataset.catalogDisplay)return;
- scheduleProcedureAutocomplete(event.target);
+ if(!event.target.matches?.('[data-terminology-combobox]'))return;
+ const row=event.target.closest('[data-diagnosis-row],.billing-charge-row');
+ if(row?.dataset.catalogReleaseId&&row.querySelector('[name="code"]')?.value===row.dataset.catalogCode&&(row.querySelector('[name="display"]')?.value||row.querySelector('[name="description"]')?.value)===row.dataset.catalogDisplay)return;
+ scheduleTerminologyCombobox(event.target);
 });
 document.addEventListener('focusout',event=>{
- const state=procedureAutocompleteStates.get(event.target);if(state)closeProcedureAutocomplete(state);
+ const state=terminologyComboboxes.get(event.target);if(!state)return;
+ if(event.relatedTarget?.closest?.('.terminology-combobox')===state.host)return;
+ const index=terminologyAutoPickIndex(state);if(state.pendingPick!==null&&state.pendingPick!==undefined){state.pendingPick=null;return;}if(index>=0){event.preventDefault();void selectTerminologyCombobox(state,index);return;}closeTerminologyCombobox(state);
 });
-document.addEventListener('pointerdown',event=>{if(event.target.closest?.('[data-procedure-option]'))event.preventDefault();});
+document.addEventListener('pointerdown',event=>{if(event.target.closest?.('[data-terminology-option]'))event.preventDefault();});
 document.addEventListener('click',event=>{
- const option=event.target.closest?.('[data-procedure-option]');if(!option)return;
- const input=option.closest('.terminology-combobox')?.querySelector('[data-procedure-autocomplete]'),state=procedureAutocompleteStates.get(input);if(!state)return;
- event.preventDefault();event.stopImmediatePropagation();selectProcedureAutocomplete(state,Number(option.dataset.procedureOption));
+ const option=event.target?.closest?.('[data-terminology-option]');if(!option)return;
+ const input=option.closest('.terminology-combobox')?.querySelector('[data-terminology-combobox]'),state=terminologyComboboxes.get(input);if(!state)return;
+ event.preventDefault();event.stopImmediatePropagation();selectTerminologyCombobox(state,Number(option.dataset.terminologyOption));
 },true);
 document.addEventListener('keydown',event=>{
- if(!event.target.matches?.('[data-procedure-autocomplete]')||event.isComposing)return;
- const state=procedureAutocompleteStates.get(event.target);
- if(event.key==='Escape'){if(state&&!state.popup.hidden){event.preventDefault();event.stopImmediatePropagation();closeProcedureAutocomplete(state);}return;}
- if(event.key==='Tab'){if(state)closeProcedureAutocomplete(state);return;}
+ if(!event.target.matches?.('[data-terminology-combobox]')||event.isComposing)return;
+ const state=terminologyComboboxes.get(event.target);
+ if(event.key==='Escape'){if(state&&!state.popup.hidden){event.preventDefault();event.stopImmediatePropagation();closeTerminologyCombobox(state);}return;}
+ if(event.key==='Tab'){if(state){const index=terminologyAutoPickIndex(state);if(index>=0){state.pendingPick=index;void selectTerminologyCombobox(state,index);}else closeTerminologyCombobox(state);}return;}
  if(['ArrowDown','ArrowUp'].includes(event.key)){
   event.preventDefault();event.stopImmediatePropagation();
-  if(!state||state.popup.hidden){scheduleProcedureAutocomplete(event.target,true);return;}
-  if(state.items.length){state.active=event.key==='ArrowDown'?(state.active+1)%state.items.length:(state.active<=0?state.items.length-1:state.active-1);renderProcedureAutocomplete(state);}return;
+  if(!state||state.popup.hidden){scheduleTerminologyCombobox(event.target,true);return;}
+  if(state.items.length){state.active=event.key==='ArrowDown'?(state.active+1)%state.items.length:(state.active<=0?state.items.length-1:state.active-1);renderTerminologyCombobox(state);}return;
  }
- if(event.key==='Enter'&&state&&!state.popup.hidden){event.preventDefault();event.stopImmediatePropagation();if(state.active>=0)selectProcedureAutocomplete(state,state.active);}
+ if(event.key==='Enter'&&state&&!state.popup.hidden){event.preventDefault();event.stopImmediatePropagation();if(state.active>=0)selectTerminologyCombobox(state,state.active);}
 },true);
 document.addEventListener('input',event=>{
- if(event.target.matches?.('[data-procedure-autocomplete]')){if(!event.isComposing)scheduleProcedureAutocomplete(event.target);return;}
+ if(event.target.matches?.('[data-terminology-combobox]')){if(!event.isComposing)scheduleTerminologyCombobox(event.target);return;}
  if(!event.target.matches?.('[name="code_system"],[name="service_date"],[name="visit_id"]'))return;
- const form=event.target.closest('form');for(const state of procedureAutocompleteStates.values())if(state.form===form)closeProcedureAutocomplete(state);
+ const form=event.target.closest('form');for(const state of terminologyComboboxes.values())if(state.form===form)closeTerminologyCombobox(state);
 });
-document.addEventListener('compositionend',event=>{if(event.target.matches?.('[data-procedure-autocomplete]'))scheduleProcedureAutocomplete(event.target);});
+document.addEventListener('compositionend',event=>{if(event.target.matches?.('[data-terminology-combobox]'))scheduleTerminologyCombobox(event.target);});
 document.addEventListener('change',event=>{
  if(!event.target.matches?.('[name="code_system"],[name="service_date"],[name="visit_id"]'))return;
- const form=event.target.closest('form');for(const state of procedureAutocompleteStates.values())if(state.form===form)closeProcedureAutocomplete(state);
+ const form=event.target.closest('form');for(const state of terminologyComboboxes.values())if(state.form===form)closeTerminologyCombobox(state);
 });
 function terminologyServiceDate(scope,form){
  if(scope==='procedure')return form.elements.service_date?.value||'';
@@ -147,9 +170,8 @@ function terminologyPickerMarkup(state){
  return `<div class="section-head"><h4>${state.scope==='diagnosis'?'Find a diagnosis':'Find a procedure'}</h4><button type="button" data-terminology-close>Close</button></div><div class="form-grid"><label>Search by code or name<input data-terminology-query maxlength="200" autocomplete="off" value="${esc(state.query)}" placeholder="Enter a code or a name"></label></div><button type="button" data-terminology-search>Search</button><details><summary>More options</summary><div class="form-grid"><label>Code system<select data-terminology-system>${allowed.map(system=>`<option value="${system}" ${system===state.system?'selected':''}>${system}</option>`).join('')}</select></label><label>Service date<input type="date" data-terminology-date value="${esc(state.serviceDate)}" required></label><label>Code list version<select data-terminology-release><option value="">Latest version effective on this date</option></select></div></details><p data-terminology-status role="status" aria-live="polite">Loading code list versions…</p><div data-terminology-results></div>`;
 }
 async function openTerminologyPicker(button){
- const scope=button.dataset.terminologyOpen,row=button.closest(scope==='diagnosis'?'[data-diagnosis-row]':'.billing-charge-row'),form=row?.closest('form');if(!row||!form)return;
- const existing=row.querySelector('[data-terminology-picker]');if(existing){existing.querySelector('[data-terminology-query]')?.focus();return;}
- const host=document.createElement('section');host.className='amendment';host.dataset.terminologyPicker='';host.setAttribute('aria-label','Terminology lookup');
+ const scope=button.dataset.terminologyOpen,row=button.closest(scope==='diagnosis'?'[data-diagnosis-row]':'.billing-charge-row'),form=row?.closest('form');if(!row||!form||scope!=='procedure')return;
+  const host=document.createElement('section');host.className='amendment';host.dataset.terminologyPicker='';host.setAttribute('aria-label','Terminology lookup');
  const system=scope==='diagnosis'?'ICD-10-CM':terminologySystem(row.querySelector('[name="code_system"]')?.value)||'CPT';
  const state={scope,row,form,host,button,system,serviceDate:terminologyServiceDate(scope,form),query:row.querySelector('[name="code"]')?.value||'',patient:selected,visit:typeof activeVisit!=='undefined'?activeVisit?.id:null,account:me,generation:terminologyGeneration,request:0,items:[],releases:[]};
   terminologyPickers.set(host,state);host.innerHTML=terminologyPickerMarkup(state);row.append(host);host.querySelector('[data-terminology-query]').focus();

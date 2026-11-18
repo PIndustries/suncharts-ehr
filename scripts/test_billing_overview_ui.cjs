@@ -4,7 +4,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 // Staff display helpers load before every feature script, exactly as index.html loads them.
 {const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
 
-const source=fs.readFileSync('web/billing-overview.js','utf8'),billing=fs.readFileSync('web/billing.js','utf8');
+const source=fs.readFileSync('web/billing-overview.js','utf8'),billing=fs.readFileSync('web/billing.js','utf8'),attention=fs.readFileSync('web/billing-attention.js','utf8');
 assert.match(billing,/if\(!settings&&typeof renderBillingOverview==='function'\)return renderBillingOverview/);
 assert.match(billing,/workspaceResourceAllowed\('claims'\)\)\?loadClaimMdConnection\(\)\.catch\(\(\)=>null\):null/);
 function fixture(claims=false){
@@ -13,7 +13,7 @@ function fixture(claims=false){
  node('tools');
  const data={mode:'recorded',summary:{accounts:{open_invoice_count:1,reviewed_patient_due_cents:500,invoice_review_count:1},copays:{net_received_cents:2500,receipts:1,usable_unapplied_cents:2500,review_count:0}},accounts:{items:[{id:'account',patient_id:'patient',patient_name:'Synthetic <Patient>',mrn:'MRN',service_date:'2026-11-11',status:'posted',total_cents:10000,account_balance_cents:7500,invoice_id:'invoice',invoice_due_cents:500,reviewed_responsibility_cents:3000,invoice_created_at:'2026-11-11',invoice_needs_review:true}],next_cursor:null},copays:{items:[{id:'receipt',patient_name:'Standalone Synthetic',mrn:'OTHER',occurred_on:'2026-11-11',method:'cash',amount_cents:2500,net_received_cents:2500,usable_unapplied_cents:2500}],next_cursor:null}};
  const context={console,URLSearchParams,Symbol,encodeURIComponent,me:{id:'staff',role:'front_desk'},document:{addEventListener:(kind,fn)=>handlers[kind]=fn,createElement:tag=>({tag,setAttribute(){}})},$:id=>nodes[id],workspaceResourceAllowed:resource=>resource==='billing'||resource==='claims'&&claims,showTool:title=>{context.title=title;nodes.tools.hidden=false;},money:c=>'$'+(c/100).toFixed(2),human:String,date:String,esc:s=>String(s??'').replaceAll('<','&lt;').replaceAll('>','&gt;'),invoicePaymentMethod:String,run:fn=>fn(),api:async path=>{calls.push(path);if(path.startsWith('/api/v1/billing/overview'))return data;if(path.startsWith('/api/v1/billing/claims'))return {items:[]};if(path.includes('/invoices/'))return {id:'invoice',snapshot:{}};return {receipt:{id:'receipt'},context:{patient:{given_name:'Synthetic'}}};},patientInvoiceDocument:value=>{rendered.push(value);return 'invoice HTML';},copayReceiptDocument:(value,copy)=>{rendered.push({value,copy});return 'receipt HTML';}};
- vm.createContext(context);vm.runInContext(source,context);return {context,nodes,calls,data,rendered,node};
+ vm.createContext(context);vm.runInContext(attention,context);vm.runInContext(source,context);return {context,nodes,calls,data,rendered,node};
 }
 (async()=>{
  let f=fixture();await f.context.renderBillingOverview();

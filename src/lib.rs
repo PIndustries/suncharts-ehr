@@ -908,6 +908,26 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/typeahead.js",
+            get(|| async {
+                web_asset(
+                    "typeahead.js",
+                    "application/javascript",
+                    include_str!("../web/typeahead.js"),
+                )
+            }),
+        )
+        .route(
+            "/typeahead.css",
+            get(|| async {
+                web_asset(
+                    "typeahead.css",
+                    "text/css",
+                    include_str!("../web/typeahead.css"),
+                )
+            }),
+        )
+        .route(
             "/sun.css",
             get(|| async { web_asset("sun.css", "text/css", include_str!("../web/sun.css")) }),
         )
@@ -1236,6 +1256,16 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/billing-attention.js",
+            get(|| async {
+                web_asset(
+                    "billing-attention.js",
+                    "text/javascript; charset=utf-8",
+                    include_str!("../web/billing-attention.js"),
+                )
+            }),
+        )
+        .route(
             "/billing-overview.js",
             get(|| async {
                 web_asset(
@@ -1436,6 +1466,16 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/claim-problems.js",
+            get(|| async {
+                web_asset(
+                    "claim-problems.js",
+                    "application/javascript",
+                    include_str!("../web/claim-problems.js"),
+                )
+            }),
+        )
+        .route(
             "/claims.js",
             get(|| async {
                 web_asset(
@@ -1599,6 +1639,14 @@ async fn workspace(
 }
 
 fn expected(h: &HeaderMap) -> Result<i64> {
+    expected_at_least(h, 1)
+}
+/// The same checked `If-Match`, for a record whose first version is 0 because
+/// the row need not exist until the first write.
+fn expected_from_zero(h: &HeaderMap) -> Result<i64> {
+    expected_at_least(h, 0)
+}
+fn expected_at_least(h: &HeaderMap, floor: i64) -> Result<i64> {
     let raw = h
         .get(header::IF_MATCH)
         .ok_or(Error::VersionRequired)?
@@ -1610,7 +1658,7 @@ fn expected(h: &HeaderMap) -> Result<i64> {
         .ok_or(Error::Invalid("If-Match must be a quoted record version"))?
         .parse::<i64>()
         .map_err(|_| Error::Invalid("invalid record version"))?;
-    if v < 1 {
+    if v < floor {
         return Err(Error::Invalid("invalid record version"));
     }
     Ok(v)

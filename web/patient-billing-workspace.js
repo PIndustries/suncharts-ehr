@@ -153,12 +153,14 @@ async function loadPatientBillingTab(s){
   if(s.tab==='payments'&&s.patientId)html=patientBillingTestNotice(s)+await patientBillingPaymentHistory(s);
   else if(s.tab==='overview'||s.tab==='payments'){
    const data=await patientBillingNative(s);if(!data)return;
-   html=patientBillingTestNotice(s)+patientBillingSummary(data)+(s.tab==='overview'?`${s.patientId?'<div class="actions"><button type="button" class="primary" data-hub-tab="invoices">Create invoice</button><button type="button" data-hub-tab="methods">Save a card on file</button><button type="button" data-hub-tab="subscriptions">Start membership or payment plan</button></div><section id="patient-billing-balances" class="billing-section" hidden></section>':''}${patientBillingAccounts(data,s)}`:patientBillingReceipts(data,s));
+   // The practice-wide overview leads with the work queue; a single patient's own money comes first.
+   html=patientBillingTestNotice(s)+(s.patientId||!typeof billingAttentionLoadingMarkup==='function'?'':billingAttentionLoadingMarkup())+patientBillingSummary(data)+(s.tab==='overview'?`${s.patientId?'<div class="actions"><button type="button" class="primary" data-hub-tab="invoices">Create invoice</button><button type="button" data-hub-tab="methods">Save a card on file</button><button type="button" data-hub-tab="subscriptions">Start membership or payment plan</button></div><section id="patient-billing-balances" class="billing-section" hidden></section>':''}${patientBillingAccounts(data,s)}`:patientBillingReceipts(data,s));
   }else if(s.tab==='invoices')html=patientBillingTestNotice(s)+await patientBillingInvoices(s);
   else if(s.tab==='subscriptions'&&s.patientId&&typeof loadPatientPaymentPlans==='function')html='<section id="patient-billing-memberships" class="billing-section"><p role="status">Loading practice memberships…</p></section><section id="patient-billing-installments" class="billing-section"><p role="status">Loading visit payment plans…</p></section><details class="billing-section"><summary>Other Stripe subscription records</summary><section id="patient-billing-profile-section"><p role="status">Loading Stripe subscription records…</p></section></details>';
   else html=s.patientId?`<section id="patient-billing-profile-section"><p role="status">Loading ${s.tab==='methods'?'payment methods':'subscriptions'}…</p></section>`:patientBillingChoosePatient(s.tab==='methods'?'payment methods':'subscriptions');
   if(!patientBillingCurrent(s)||s.panelRequest!==request||s.host.querySelector('#patient-billing-panel')!==panel)return;
   panel.innerHTML=html;
+  if(!s.patientId&&typeof loadBillingAttention==='function')void loadBillingAttention(panel);
   if(s.patientId&&['methods','subscriptions','invoices'].includes(s.tab))void loadPatientBillingProfile(s,request);
   if(s.patientId&&s.tab==='overview')void loadPatientBillingBalances(s,request);
   if(s.tab==='subscriptions'&&s.patientId&&typeof loadPatientPaymentPlans==='function')void loadPatientPaymentPlans(s);
@@ -421,9 +423,12 @@ document.addEventListener('change',event=>{
  const s=patientBillingWorkspace;if(!patientBillingCurrent(s))return;
  s.mode=event.target.value==='test'?'test':'recorded';s.native=null;s.accountsAfter=null;s.copaysAfter=null;s.invoicesAfter=null;s.paymentsAfter=null;run(()=>loadPatientBillingTab(s));
 });
-document.addEventListener('click',event=>{
+ document.addEventListener('click',event=>{
  const button=event.target.closest('button');if(button?.dataset.setupReturnRetry){run(()=>openPatientPaymentSetupReturn(button.dataset.setupReturnRetry));return;}
- if(!button?.closest('.patient-billing-hub'))return;
+ if(!button)return;
+ // The billing work queue sits inside the hub and opens work that lives on other screens.
+ if(button.closest('.billing-attention')&&typeof openBillingAttention==='function')return;
+ const hub=button.closest('.patient-billing-hub');if(!hub)return;
  const s=patientBillingWorkspace;if(!patientBillingCurrent(s)||button.closest('.patient-billing-hub')!==s.host)return;
  const d=button.dataset;
  if(d.hubTab){event.preventDefault();run(()=>changePatientBillingTab(d.hubTab));}
