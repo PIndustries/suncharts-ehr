@@ -641,10 +641,13 @@ pub(crate) async fn resolve(
 struct ProcedureQuery {
     q: String,
 }
-// The procedures this practice bills, for the procedure box to offer as soon as someone types:
-// every code on an approved fee schedule and every code already on a charge, with the words it
-// was last billed under. CPT names come from here because a licensed CPT list may not be
-// installed; nothing is priced or saved by reading it.
+/// The procedures this practice bills, for the procedure box to offer as soon as someone types:
+/// the practice's own enabled codes for CPT/HCPCS first (with the price, default units and
+/// modifiers the owner set), then every code on an approved fee schedule and every code already
+/// on a charge, with the words it was last billed under. A practice code that is turned off never
+/// appears, not even from billed history, and a system the practice turned off never contributes.
+/// CPT names come from the billed history because a licensed CPT list may not be installed;
+/// nothing is priced or saved by reading it.
 async fn procedure_codes(
     a: Actor,
     ExtractState(s): ExtractState<State>,
@@ -669,21 +672,94 @@ async fn procedure_codes(
             .fetch_optional(&mut *tx)
             .await?;
     known.ok_or(Error::NotFound)?;
-    let items: Vec<Value> = sqlx::query_scalar(
-        "WITH used AS (SELECT upper(btrim(l->>'code')) code,l->>'code_system' code_system,btrim(coalesce(l->>'description','')) description,b.created_at at \
-         FROM (SELECT content,created_at FROM billing_accounts WHERE tenant_id=$1 AND status<>'void' ORDER BY created_at DESC LIMIT 5000) b,jsonb_array_elements(b.content->'lines') l), \
-         priced AS (SELECT upper(btrim(e->>'code')) code,e->>'code_system' code_system,''::text description,NULL::timestamptz at \
-         FROM practice_fee_schedules f,jsonb_array_elements(f.content->'entries') e WHERE f.tenant_id=$1 AND f.status='approved'), \
-         best AS (SELECT DISTINCT ON (code) code,code_system,description FROM (SELECT * FROM used UNION ALL SELECT * FROM priced) c \
-         WHERE code_system IN ('CPT','HCPCS') AND code<>'' AND (code LIKE upper($2)||'%' OR description ILIKE '%'||$2||'%') \
-         ORDER BY code,(description<>'') DESC,at DESC NULLS LAST) \
-         SELECT jsonb_build_object('code',code,'system',code_system,'display',description) FROM best \
-         ORDER BY (code LIKE upper($2)||'%') DESC,code LIMIT 8",
-    )
-    .bind(a.tenant_id)
-    .bind(&pattern)
-    .fetch_all(&mut *tx)
-    .await?;
+    let mut practice: Vec<Value> = Vec::new();
+    for system in ["CPT", "HCPCS"] {
+        if crate::practice_codes::system_enabled(&mut tx, a.tenant_id, system).await? {
+            practice
+                .extend(crate::practice_codes::enabled_items(&mut tx, a.tenant_id, system).await?);
+        }
+    }
+    let upper = query.to_ascii_uppercase();
+    let words: Vec<String> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    let matches = |code: &str, display: &str| -> bool {
+        code.starts_with(&upper)
+            || (!words.is_empty() && words.iter().all(|w| display.to_lowercase().contains(w)))
+    };
+    let mut items: Vec<Value> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for item in practice {
+        let code = item["code"].as_str().unwrap_or("");
+        if !matches(code, item["display"].as_str().unwrap_or("")) || seen.iter().any(|c| c == code)
+        {
+            continue;
+        }
+        seen.push(code.to_owned());
+        let mut item = item;
+        item["practice_code"] = json!(true);
+        items.push(item);
+    }
+    items.sort_by(|a, b| {
+        let prefix = |v: &Value| !v["code"].as_str().is_some_and(|c| c.starts_with(&upper));
+        prefix(a)
+            .cmp(&prefix(b))
+            .then_with(|| a["code"].as_str().cmp(&b["code"].as_str()))
+    });
+    items.truncate(8);
+    if items.len() < 8 {
+        let others: Vec<Value> = sqlx::query_scalar(
+            "WITH used AS (SELECT upper(btrim(l->>'code')) code,l->>'code_system' code_system,btrim(coalesce(l->>'description','')) description,b.created_at at \
+             FROM (SELECT content,created_at FROM billing_accounts WHERE tenant_id=$1 AND status<>'void' ORDER BY created_at DESC LIMIT 5000) b,jsonb_array_elements(b.content->'lines') l), \
+             priced AS (SELECT upper(btrim(e->>'code')) code,e->>'code_system' code_system,''::text description,NULL::timestamptz at \
+             FROM practice_fee_schedules f,jsonb_array_elements(f.content->'entries') e WHERE f.tenant_id=$1 AND f.status='approved'), \
+             best AS (SELECT DISTINCT ON (code) code,code_system,description FROM (SELECT * FROM used UNION ALL SELECT * FROM priced) c \
+             WHERE code_system IN ('CPT','HCPCS') AND code<>'' AND (code LIKE upper($2)||'%' OR description ILIKE '%'||$2||'%') \
+             ORDER BY code,(description<>'') DESC,at DESC NULLS LAST) \
+             SELECT jsonb_build_object('code',code,'system',code_system,'display',description) FROM best \
+             ORDER BY (code LIKE upper($2)||'%') DESC,code LIMIT 8",
+        )
+        .bind(a.tenant_id)
+        .bind(&pattern)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut systems: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+        for item in others {
+            if items.len() == 8 {
+                break;
+            }
+            let code = item["code"].as_str().unwrap_or("").to_owned();
+            let system = item["system"].as_str().unwrap_or("").to_owned();
+            if seen.iter().any(|c| c == &code) {
+                continue;
+            }
+            // A system the practice turned off never contributes, even from billed history.
+            let system_on = match systems.get(&system) {
+                Some(enabled) => *enabled,
+                None => {
+                    let enabled =
+                        crate::practice_codes::system_enabled(&mut tx, a.tenant_id, &system)
+                            .await?;
+                    systems.insert(system.to_owned(), enabled);
+                    enabled
+                }
+            };
+            if !system_on {
+                continue;
+            }
+            // A practice row that is turned off hides its code even from fee-schedule or
+            // billed-history matches.
+            if crate::practice_codes::code_on(&mut tx, a.tenant_id, &system, &code).await?
+                == Some(false)
+            {
+                continue;
+            }
+            seen.push(code);
+            items.push(item);
+        }
+    }
     tx.commit().await?;
     Ok(Json(json!({ "items": items })))
 }
