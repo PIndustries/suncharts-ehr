@@ -22,6 +22,38 @@ function revenueCoverage(serviceDate=revenueServiceDate()){
  return active.find(c=>c.content.priority==='primary')||null;
 }
 function encounterChargeAccount(){return typeof activeVisit!=='undefined'&&activeVisit?(workspace.billing?.accounts||[]).find(a=>a.status!=='void'&&a.content.visit_id===activeVisit.id):null;}
+// The diagnoses editor's stable home on the one-page visit: the first child of #encounter-revenue,
+// above the part of the block this file rewrites. Its markup is never thrown away by a charge
+// re-render, so the ICD list always reads above the CPT lines and survives every post and close.
+// The note gives up its own #visit-diagnoses while billing is on screen (visitNoteOwnsDiagnoses),
+// so this host holds the one editor the visit has.
+const ENCOUNTER_DIAGNOSES_ID='encounter-diagnoses';
+function encounterDiagnosesHost(){
+ const block=$('encounter-revenue');if(!block)return null;
+ // The host is the element kept across renders, not whatever answers to the id: it lives outside the
+ // markup the block rewrites, so an id lookup finds it only where it already sits, or a stale copy
+ // of a page that was thrown away. A page whose block cannot take children has nowhere to keep the
+ // editor, so it gets no host: the diagnoses stay where that page already shows them rather than
+ // half-appearing in markup the next re-render replaces.
+ let host=$(ENCOUNTER_DIAGNOSES_ID);
+ if(host&&host.parentElement!==block)host=null;
+ if(!host&&typeof block.insertBefore==='function'){
+  host=document.createElement('section');
+  host.id=ENCOUNTER_DIAGNOSES_ID;
+  host.className='billing-section encounter-diagnoses';
+  const only=(block.children||[]).length===1?String(block.children[0].textContent||''):'';
+  if((block.children||[]).length<=1&&(!only.trim()||/^Select a visit/.test(only)))block.replaceChildren();
+  block.insertBefore(host,block.firstChild||null);
+ }
+ return host;
+}
+// What an empty host is filled with: a placeholder until the visit's diagnoses load.
+function encounterDiagnosesPlaceholderMarkup(){return '<div id="visit-diagnoses"><p class="muted">Loading…</p></div>';}
+function renderEncounterDiagnoses(){
+ const host=encounterDiagnosesHost();if(!host)return;
+ if(!host.firstElementChild)host.innerHTML=encounterDiagnosesPlaceholderMarkup();
+ if(typeof renderVisitDiagnoses==='function')void renderVisitDiagnoses();
+}
 function copayUnapplied(receipt){return Math.max(0,receipt.amount_cents-Number(receipt.allocated_cents||0)-Number(receipt.hosted_checkout?.refunded_unapplied_cents||0));}
 function availableCopayCreditForAccount(account){const visit=(workspace.visits||[]).find(v=>v.id===account.content.visit_id);return (workspace.billing?.copays||[]).filter(r=>r.appointment_id===visit?.appointment_id&&!r.voided&&!r.reversed_cents&&r.hosted_checkout?.status!=='needs_review').reduce((sum,r)=>sum+copayUnapplied(r),0);}
 function appointmentCopays(appointment=revenueAppointment()){return (workspace.billing?.copays||[]).filter(r=>r.appointment_id===appointment?.id);}
@@ -286,24 +318,53 @@ function renderEncounterRevenue(){
  if(!visit){host.innerHTML='<p>Select a visit to record its procedures and charges.</p>';return;}
  const key=JSON.stringify([selected,visit.id,visit.version,appointment?.id,account?.id,account?.version,(workspace.billing?.coverages||[]).map(c=>[c.id,c.version]),workspace.billing?.copays]);if(host.dataset.revenueKey===key){if(account&&chartSection==='visits'&&!$('encounter-billing-detail')?.innerHTML)showBillingAccount(account.id,false);loadEncounterRevenueStatus(account);if(appointment&&billingCan('create'))void loadHostedCopays(appointment.id);if(typeof resumeEncounterChargeDraft==='function')resumeEncounterChargeDraft();return;}if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();host.dataset.revenueKey=key;
  const owner=typeof me!=='undefined'&&me?.role==='owner';
- host.innerHTML=`<div class="section-head"><div><h2>Charges &amp; billing</h2><p class="muted">${esc(visitBillingDate(serviceDate))} · ${account?account.status==='posted'?'Posted':'Charges can still be changed':'No charges yet'}</p></div>${billingCan('create')&&account?.status==='draft'?'<button type="button" data-encounter-charges>Edit charges</button>':billingCan('create')&&account?.status==='posted'&&!account.source_history_id?'<button type="button" data-encounter-charges-correct>Edit charges</button>':''}</div><div id="encounter-revenue-status">${encounterRevenueStatusMarkup(account,encounterRevenueState.visit===visit.id&&encounterRevenueState.patient===selected?encounterRevenueState.data||{}:{})}</div><section id="visit-billing-collect" class="billing-section" hidden><div class="section-head"><h3>Collect payment</h3><button type="button" class="text-button" data-visit-collect-close>Close</button></div><p class="muted" id="visit-billing-collect-note"></p>${hostedCopayPanel(appointment,'encounter-hosted-copay')}${billingCan('create')&&appointment?`<div class="actions"><button type="button" data-record-copay="${esc(appointment.id)}">Cash or check</button></div>`:''}</section><div id="encounter-copay-receipt" hidden></div><section id="visit-billing-review" class="billing-section" hidden></section><div id="encounter-billing-editor"></div>${account?'<details class="encounter-account-record" id="encounter-charge-details"><summary>Charges</summary><div id="encounter-billing-detail"></div></details>':''}<details class="encounter-account-record" id="visit-billing-history"><summary>History</summary><div id="visit-billing-timeline"><p class="muted">Loading history…</p></div>${account?'<details class="encounter-account-record" id="visit-billing-ledger-details"><summary>Payments and adjustments</summary><div id="visit-billing-ledger"></div></details>':''}</details>${owner?`<details class="encounter-account-record" id="visit-billing-details" hidden><summary>Details</summary><div id="visit-billing-technical"></div><p class="muted">${coverage?esc(payerName(coverage.content.payer_id)):'No insurance on file'} · Plan copay ${coverage?.content.copay_cents==null?'not recorded':money(coverage.content.copay_cents)}</p>${typeof billingCoverageOrderMarkup==='function'?billingCoverageOrderMarkup(serviceDate,account?.content.coverage_id||coverage?.id):''}${account?'<div class="actions"><button type="button" data-bill-history>Change log for these charges</button></div><div id="bill-history"></div>':''}</details>`:''}<section id="encounter-claims" hidden></section>`;
-  // A chart opened on another page keeps its panel empty; the billing step re-opens it.
-  if(chartSection!=='visits'&&typeof visitReviewClose==='function')visitReviewClose();
-  if(account&&typeof chartSection!=='undefined'&&chartSection==='visits')showBillingAccount(account.id,false);
-  // Whether this visit's charges are on their way onto the table filled in from the patient's
-  // last visit. A visit opened on its billing step with no charges yet is asked first, because
-  // that is the one case where charges are about to appear without anyone pressing anything.
-  // A visit whose charges already exist is a table staff have dealt with, so it is never offered
-  // charges filled in from an earlier visit. That is decided outside the billing step: on the
-  // step itself, charges the practice is about to fill in are already sitting on the table, and
-  // this same visit would otherwise be written off as finished before its own table is opened.
-  if(account&&!encounterOnBillingStep()&&typeof chargeProposalTouched==='function')chargeProposalTouched(visit);
-  // A visit that is still being worked on and has no charges yet has its table built when the
-  // step is opened, so the filled-in charges are on it before anyone presses anything. A visit
-  // with nothing to fill in from keeps waiting for its Add charges button.
-  if(!account&&typeof chartSection!=='undefined'&&chartSection==='visits'&&encounterOnBillingStep()&&encounterChargesFilledIn())openEncounterCharges();
+  // Whether this role sees codes & charges at all. A person without billing keeps the note's own
+  // diagnoses editor, so the codes block draws none of its own (visitNoteOwnsDiagnoses).
+  const codesVisible=typeof visitBillingAreaVisible!=='function'||visitBillingAreaVisible();
+  // The diagnoses host is the block's first child and this rewrite never parses over it: the editor
+  // keeps the nodes it already has, so a diagnosis being typed into it is not rebuilt from markup by
+  // an unrelated recalculation. The rest of the block is built as markup as before, into a detached
+  // holder, and its nodes are hung under the host the rewrite left alone. With codes hidden for this
+  // role the host is emptied and put away, because an editor nobody may bill with is no reason to
+  // keep one. A page whose block cannot hold children gets no host either (encounterDiagnosesHost).
+  const diagnosesHost=encounterDiagnosesHost();
+  if(diagnosesHost){
+   if(codesVisible)diagnosesHost.hidden=false;
+   else{diagnosesHost.replaceChildren();diagnosesHost.hidden=true;}
+   host.removeChild(diagnosesHost);
+  }
+ // A detached holder for the body markup, so the diagnoses host is never inside what is rewritten.
+ // A page whose document cannot hand out elements gets a plain string holder instead; that page has
+ // no live nodes to protect, and the host is re-written there (below).
+ const holder=typeof document.createElement==='function'?document.createElement('div'):null;
+ const rebuilt=holder||{set innerHTML(html){this._html=html;},get innerHTML(){return this._html||'';}};
+ rebuilt.innerHTML=`<div class="section-head"><div><h2>Charges &amp; billing</h2><p class="muted">${esc(visitBillingDate(serviceDate))} · ${account?account.status==='posted'?'Posted':'Charges can still be changed':'No charges yet'}</p></div>${billingCan('create')&&account?.status==='draft'?'<button type="button" data-encounter-charges>Edit charges</button>':billingCan('create')&&account?.status==='posted'&&!account.source_history_id?'<button type="button" data-encounter-charges-correct>Edit charges</button>':''}</div><div id="encounter-revenue-status">${encounterRevenueStatusMarkup(account,encounterRevenueState.visit===visit.id&&encounterRevenueState.patient===selected?encounterRevenueState.data||{}:{})}</div><section id="visit-billing-collect" class="billing-section" hidden><div class="section-head"><h3>Collect payment</h3><button type="button" class="text-button" data-visit-collect-close>Close</button></div><p class="muted" id="visit-billing-collect-note"></p>${hostedCopayPanel(appointment,'encounter-hosted-copay')}${billingCan('create')&&appointment?`<div class="actions"><button type="button" data-record-copay="${esc(appointment.id)}">Cash or check</button></div>`:''}</section><div id="encounter-copay-receipt" hidden></div><section id="visit-billing-review" class="billing-section" hidden></section><div id="encounter-billing-editor"></div>${account?'<details class="encounter-account-record" id="encounter-charge-details"><summary>Charges</summary><div id="encounter-billing-detail"></div></details>':''}<details class="encounter-account-record" id="visit-billing-history"><summary>History</summary><div id="visit-billing-timeline"><p class="muted">Loading history…</p></div>${account?'<details class="encounter-account-record" id="visit-billing-ledger-details"><summary>Payments and adjustments</summary><div id="visit-billing-ledger"></div></details>':''}</details>${owner?`<details class="encounter-account-record" id="visit-billing-details" hidden><summary>Details</summary><div id="visit-billing-technical"></div><p class="muted">${coverage?esc(payerName(coverage.content.payer_id)):'No insurance on file'} · Plan copay ${coverage?.content.copay_cents==null?'not recorded':money(coverage.content.copay_cents)}</p>${typeof billingCoverageOrderMarkup==='function'?billingCoverageOrderMarkup(serviceDate,account?.content.coverage_id||coverage?.id):''}${account?'<div class="actions"><button type="button" data-bill-history>Change log for these charges</button></div><div id="bill-history"></div>':''}</details>`:''}<section id="encounter-claims" hidden></section>`;
+  // The body is written as before; the host, held outside that markup, is then moved to the top of
+  // the block above the charge lines — moved, never re-created, so what it holds comes with it.
+  const bodyMarkup=rebuilt.innerHTML;
+  host.innerHTML=bodyMarkup;
+  if(diagnosesHost&&typeof host.insertBefore==='function'&&typeof host.removeChild==='function'){
+   host.removeChild(diagnosesHost);
+   host.insertBefore(diagnosesHost,host.firstChild||null);
+  }else host.innerHTML=(diagnosesHost?diagnosesHost.outerHTML:'')+bodyMarkup;
+ // A chart opened on another page keeps its panel empty; the billing step re-opens it.
+ if(chartSection!=='visits'&&typeof visitReviewClose==='function')visitReviewClose();
+ if(account&&typeof chartSection!=='undefined'&&chartSection==='visits')showBillingAccount(account.id,false);
+ // Whether this visit's charges are on their way onto the table filled in from the patient's
+ // last visit. A visit opened on its billing step with no charges yet is asked first, because
+ // that is the one case where charges are about to appear without anyone pressing anything.
+ // A visit whose charges already exist is a table staff have dealt with, so it is never offered
+ // charges filled in from an earlier visit. That is decided outside the billing step: on the
+ // step itself, charges the practice is about to fill in are already sitting on the table, and
+ // this same visit would otherwise be written off as finished before its own table is opened.
+ if(account&&!encounterOnBillingStep()&&typeof chargeProposalTouched==='function')chargeProposalTouched(visit);
+ // A visit that is still being worked on and has no charges yet has its table built when the
+ // step is opened, so the filled-in charges are on it before anyone presses anything. A visit
+ // with nothing to fill in from keeps waiting for its Add charges button.
+ if(!account&&typeof chartSection!=='undefined'&&chartSection==='visits'&&encounterOnBillingStep()&&encounterChargesFilledIn())openEncounterCharges();
 
  loadEncounterRevenueStatus(account);
+ if(codesVisible&&encounterDiagnosesHost())renderEncounterDiagnoses();
  if(appointment&&billingCan('create'))void loadHostedCopays(appointment.id);
  if(typeof resumeEncounterChargeDraft==='function')resumeEncounterChargeDraft();
 }
