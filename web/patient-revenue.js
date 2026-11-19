@@ -131,6 +131,13 @@ function visitBillingContext(extra={}){return visitBillingStateContext(extra);}
 // offers and the table the step builds are always the same answer. With nothing to fill in from
 // the card says what it always said.
 function encounterChargesFilledIn(){return typeof visitBillingChargesFilled==='function'&&visitBillingChargesFilled();}
+// Whether the staff member is looking at this visit's charges. On the one-page visit the charges
+// block sits on the visit itself, so the page helper answers; where app.js is not loaded the
+// page works as before and the encounter's own charges state decides.
+function encounterOnBillingStep(){
+ if(typeof encounterShows==='function')return encounterShows('charges');
+ return typeof encounterSection==='undefined'||encounterSection==='charges';
+}
 function encounterRevenueStatusMarkup(account,data={}){
  // A card with something wrong to answer for keeps its own button: while a claim could not be
  // prepared, or is preparing, the review panel has nothing to offer yet.
@@ -167,7 +174,7 @@ async function loadEncounterRevenueStatus(account,force=false){
  if(state.pending){render();return state.pending;}
  // The claim is prepared only while the billing step itself is showing, never because the
  // visit was opened on its note or another step.
- const onBillingStep=()=>typeof encounterSection==='undefined'||encounterSection==='charges';
+ const onBillingStep=()=>encounterOnBillingStep();
  const mayPrepare=summary=>summary?.state==='prepare_claim'&&summary.account&&billingCan('create')&&!state.prepared&&onBillingStep()&&me?.delegated!==true&&summary.viewer?.delegated!==true;
  if(state.data?.summary&&!force&&!mayPrepare(state.data.summary)&&Date.now()-state.loadedAt<15000){render();return;}
  if(!state.data)state.data={};render();
@@ -290,11 +297,11 @@ function renderEncounterRevenue(){
   // charges filled in from an earlier visit. That is decided outside the billing step: on the
   // step itself, charges the practice is about to fill in are already sitting on the table, and
   // this same visit would otherwise be written off as finished before its own table is opened.
-  if(account&&typeof encounterSection!=='undefined'&&encounterSection!=='charges'&&typeof chargeProposalTouched==='function')chargeProposalTouched(visit);
+  if(account&&!encounterOnBillingStep()&&typeof chargeProposalTouched==='function')chargeProposalTouched(visit);
   // A visit that is still being worked on and has no charges yet has its table built when the
   // step is opened, so the filled-in charges are on it before anyone presses anything. A visit
   // with nothing to fill in from keeps waiting for its Add charges button.
-  if(!account&&typeof chartSection!=='undefined'&&chartSection==='visits'&&typeof encounterSection!=='undefined'&&encounterSection==='charges'&&encounterChargesFilledIn())openEncounterCharges();
+  if(!account&&typeof chartSection!=='undefined'&&chartSection==='visits'&&encounterOnBillingStep()&&encounterChargesFilledIn())openEncounterCharges();
 
  loadEncounterRevenueStatus(account);
  if(appointment&&billingCan('create'))void loadHostedCopays(appointment.id);
