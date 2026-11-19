@@ -2,18 +2,22 @@
 'use strict';
 let terminologyGeneration=0,terminologyImport=null,terminologyImportRevision=0;
 const terminologyPickers=new Map();
+// The owner's Codes & prices screen. Codes here are the practice's own list: the charge line's
+// dropdown offers these first, at the price written next to them, and a code list turned off here
+// stops answering lookups for everybody.
+const practiceCodes={sets:[],items:[],status:'',addStatus:'',searchTimer:null,searchRequest:0,search:[],loaded:false};
 const terminologyComboboxes=new Map(),terminologyApplying=new WeakSet();
 let terminologyFieldId=0;
 const terminologySystems=['ICD-10-CM','ICD-10-PCS','HCPCS','CPT'];
 const terminologySystem=value=>({'ICD10CM':'ICD-10-CM','ICD10PCS':'ICD-10-PCS','HCPCS':'HCPCS','CPT':'CPT'})[String(value||'').toUpperCase().replace(/[^A-Z0-9]/g,'')]||null;
 // Procedures are found by typing in the procedure box itself, so no line carries a separate lookup button.
 const terminologyLookupButton=()=>'';
-const terminologyCatalogButton=()=>me?.role==='owner'?'<button type="button" data-terminology-manage>Code lists</button>':'';
-function renderTerminologyAdminEntry(){return me?.role==='owner'?'<button type="button" data-terminology-manage>Code lists</button>':'';}
+const terminologyCatalogButton=()=>me?.role==='owner'?'<button type="button" data-terminology-manage>Codes &amp; prices</button>':'';
+function renderTerminologyAdminEntry(){return me?.role==='owner'?'<button type="button" data-terminology-manage>Codes &amp; prices</button>':'';}
 function terminologyReleaseLabel(value){return `${value.system||''} · ${value.edition||'Edition not recorded'} · effective ${value.effective_start||'date not recorded'}${value.effective_end?` through ${value.effective_end}`:' onward'}`;}
 function terminologySnapshotMarkup(snapshot){return snapshot?`<p class="muted" data-terminology-selection>Recorded from the ${esc(terminologyReleaseLabel(snapshot))} code list. ${esc(snapshot.source_name||'')}</p>`:'';}
 function terminologyContextCurrent(state){return state.generation===terminologyGeneration&&state.account===me&&state.host.isConnected&&state.row.isConnected&&state.form.isConnected&&state.patient===selected&&(state.scope!=='diagnosis'||state.visit===activeVisit?.id);}
-function clearTerminologySession(){terminologyGeneration++;for(const state of terminologyPickers.values())state.host.remove();terminologyPickers.clear();for(const state of terminologyComboboxes.values())closeTerminologyCombobox(state);terminologyComboboxes.clear();terminologyImport=null;terminologyImportRevision++;}
+function clearTerminologySession(){terminologyGeneration++;for(const state of terminologyPickers.values())state.host.remove();terminologyPickers.clear();for(const state of terminologyComboboxes.values())closeTerminologyCombobox(state);terminologyComboboxes.clear();terminologyImport=null;terminologyImportRevision++;practiceCodesReset();}
 
 function terminologyComboboxMarkup(scope,prefix,name,label,max,placeholder,value,system,options={}){return `<div class="terminology-combobox"><label for="${prefix}-${name}">${label}</label><input id="${prefix}-${name}" name="${name}" type="text" value="${esc(value||'')}" maxlength="${max}" ${options.required===false?'':'required '}autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="${prefix}-${name}-list" aria-describedby="${prefix}-${name}-status" data-terminology-combobox data-terminology-scope="${scope}"${system?` data-terminology-system="${esc(system)}"`:''} placeholder="${placeholder}"><div class="terminology-suggestions" data-terminology-popup hidden><p id="${prefix}-${name}-status" data-terminology-status role="status" aria-live="polite"></p><ul id="${prefix}-${name}-list" role="listbox" aria-label="${scope==='diagnosis'?'Matching diagnoses':'Matching procedure codes'}" data-terminology-results></ul></div></div>`;}
 // One procedure box per charge line. The code and the description the form submits are kept on
@@ -54,6 +58,21 @@ function terminologyFillFields(scope,row,code,description){
  for(const [name,value] of [[hidden.code,code],[hidden.text,description]]){const field=row.querySelector(`[name="${name}"]`);if(field&&field!==visible)field.value=value;}
  return visible;
 }
+// Choosing one of the practice's own codes fills what the practice recorded with it: the default
+// units, the modifiers, and the amount for the whole line (the price per unit times those units),
+// written the way the amount field is read back by the charge table.
+function terminologyPracticeLineFields(row,item){
+ const fields=[];
+ const units=row.querySelector('[name="units"]'),unitsValue=Math.trunc(Number(item.default_units));
+ if(units&&unitsValue>=1&&unitsValue<=9999){units.value=String(unitsValue);fields.push(units);}
+ const modifiers=row.querySelector('[name="modifiers"]');
+ if(modifiers&&typeof item.modifiers==='string'){modifiers.value=item.modifiers;fields.push(modifiers);}
+ const amount=row.querySelector('[name="amount"]'),price=Math.trunc(Number(item.price_cents));
+ // Number(null) is 0, so a code with no price of its own is caught here and the amount is
+ // left as staff left it.
+ if(amount&&item.price_cents!=null&&Number.isSafeInteger(price)&&price>=0){amount.value=terminologyDollars(price*(Math.trunc(Number(units?.value))||1));fields.push(amount);}
+ return fields;
+}
 function terminologyComboboxContext(state){
  return state.generation===terminologyGeneration&&state.account===me&&state.patient===selected&&state.visit===(typeof activeVisit==='undefined'?null:activeVisit?.id||null)&&state.view===terminologyComboboxView()&&state.input.isConnected&&state.row.isConnected&&state.form.isConnected&&!state.input.closest('[hidden]')&&!state.input.disabled&&!state.input.readOnly&&(!state.form.dataset.patient||state.form.dataset.patient===selected);
 }
@@ -85,8 +104,13 @@ function terminologyComboboxEligible(item,values){
  if(values.procedure)return item&&['CPT','HCPCS'].includes(item.system)&&terminologyComboboxEligible(item,{...values,procedure:false,system:item.system});
  return item&&typeof item.code==='string'&&typeof item.display==='string'&&item.release_id&&item.system===values.system&&item.billable===true&&item.active!==false&&(!item.effective_start||item.effective_start<=values.serviceDate)&&(!item.effective_end||item.effective_end>=values.serviceDate);
 }
+// A price is only ever shown as dollars and cents; anything the server does not answer with a
+// usable number of cents simply shows no price.
+function terminologyDollars(value){const cents=Math.trunc(Number(value));return Number.isSafeInteger(cents)&&cents>=0?`${Math.trunc(cents/100)}.${String(cents%100).padStart(2,'0')}`:'';}
 function renderTerminologyCombobox(state){
- state.list.innerHTML=state.items.map((item,index)=>`<li id="${state.list.id}-option-${index}" role="option" aria-selected="${index===state.active}" data-terminology-option="${index}"><span><b>${esc(item.code)}</b> ${esc(item.display)}</span>${item.practice?'':`<small>${esc(terminologyReleaseLabel(item))}</small>`}</li>`).join('');
+ // A code the practice keeps on its own list shows its price on the right; a code list shows
+ // which list it came from.
+ state.list.innerHTML=state.items.map((item,index)=>{const price=item.practice&&item.price_cents!=null?terminologyDollars(item.price_cents):'';return `<li id="${state.list.id}-option-${index}" role="option" aria-selected="${index===state.active}" data-terminology-option="${index}"><span><b>${esc(item.code)}</b> ${esc(item.display)}</span>${price?`<small data-terminology-price>$${price}</small>`:item.practice?'':`<small>${esc(terminologyReleaseLabel(item))}</small>`}</li>`;}).join('');
  if(state.active<0)state.input.removeAttribute('aria-activedescendant');
  else{const id=`${state.list.id}-option-${state.active}`;state.input.setAttribute('aria-activedescendant',id);state.list.querySelector(`[data-terminology-option="${state.active}"]`)?.scrollIntoView?.({block:'nearest'});}
 }
@@ -112,32 +136,45 @@ async function searchProcedureCombobox(state,request,values){
  const own=selected?api(`/api/v1/patients/${encodeURIComponent(selected)}/procedure-codes?${new URLSearchParams({q:values.query})}`).catch(()=>null):Promise.resolve(null);
  const [mine,cpt,hcpcs]=await Promise.all([own,list('CPT'),list('HCPCS')]);
  if(!terminologyComboboxCurrent(state,request,values))return;
- const search={...values,procedure:true},seen=new Map();state.search=values;
- for(const item of (mine?.items||[]).map(item=>({...item,practice:true})))if(terminologyComboboxEligible(item,search))seen.set(item.code.toUpperCase(),item);
- for(const item of [...(cpt?.items||[]),...(hcpcs?.items||[])]){if(!terminologyComboboxEligible(item,search))continue;const key=item.code.toUpperCase(),known=seen.get(key);if(!known||(known.practice&&!known.display))seen.set(key,item);}
- const query=values.query.toUpperCase();
- state.input.removeAttribute('aria-busy');state.items=[...seen.values()].sort((a,b)=>(b.code.toUpperCase().startsWith(query)-a.code.toUpperCase().startsWith(query))).slice(0,8);state.active=-1;renderTerminologyCombobox(state);
- terminologyComboboxStatus(state,state.items.length?'':'No match. Keep typing, or type the code and leave the box to use it as typed.');
+  const search={...values,procedure:true},seen=new Map();state.search=values;
+  // The practice's own codes come first, in the order the practice's list answers them; a code
+  // list only fills a gap the practice list leaves, and never overwrites a code already there.
+  const practice=(items,source)=>{for(const raw of items||[]){const item={...raw,practice:source==='practice',source};if(!terminologyComboboxEligible(item,search))continue;const key=item.code.toUpperCase(),known=seen.get(key);if(!known||(source==='catalog'&&known.source!=='catalog'))seen.set(key,item);}};
+  practice(mine?.items,'practice');
+  practice([...(cpt?.items||[]),...(hcpcs?.items||[])],'catalog');
+  const query=values.query.toUpperCase();
+  // What was typed head-on first, then the practice's own order; nothing else outranks it.
+  state.input.removeAttribute('aria-busy');state.items=[...seen.entries()].map(([key,item],index)=>({item,index,lead:key.startsWith(query)?1:0})).sort((a,b)=>b.lead-a.lead||a.index-b.index).map(entry=>entry.item).slice(0,8);state.active=-1;renderTerminologyCombobox(state);
+  terminologyComboboxStatus(state,state.items.length?'':mine&&mine.disabled===true?'Procedure codes are turned off for this practice. Type the code by hand.':'No match. Keep typing, or type the code and leave the box to use it as typed.');
 }
 async function searchTerminologyCombobox(state,request,values){
  if(!terminologyComboboxCurrent(state,request,values))return;
  try{
   const params=new URLSearchParams({system:values.system,q:values.query,service_date:values.serviceDate,billable:'true',active:'true',limit:'8'}),result=await api(`/api/v1/terminology/codes?${params}`);
   if(!terminologyComboboxCurrent(state,request,values))return;
-  state.input.removeAttribute('aria-busy');state.items=(result.items||[]).filter(item=>terminologyComboboxEligible(item,values));state.search=values;state.active=-1;renderTerminologyCombobox(state);
-  terminologyComboboxStatus(state,state.items.length?`${state.items.length} matches. Use ↑ and ↓, then Enter, or select a result.${result.next_cursor?' Keep typing to narrow the list.':''}`:result.release===null?`No ${values.system} code list is installed for ${values.serviceDate}. Type a reviewed code and description yourself. A practice owner can install an authorized list under Code lists.`:'No match in the code list. Keep typing or enter a reviewed code and description yourself.');
+   state.input.removeAttribute('aria-busy');state.items=(result.items||[]).filter(item=>terminologyComboboxEligible(item,values));state.search=values;state.active=-1;renderTerminologyCombobox(state);
+   terminologyComboboxStatus(state,result.disabled===true?`${values.system} codes are turned off for this practice. Type the code by hand.`:state.items.length?`${state.items.length} matches. Use ↑ and ↓, then Enter, or select a result.${result.next_cursor?' Keep typing to narrow the list.':''}`:result.release===null?`No ${values.system} code list is installed for ${values.serviceDate}. Type a reviewed code and description yourself. A practice owner can install an authorized list under Codes & prices.`:'No match in the code list. Keep typing or enter a reviewed code and description yourself.');
  }catch(error){if(terminologyComboboxCurrent(state,request,values)){state.input.removeAttribute('aria-busy');terminologyComboboxStatus(state,`The code list search is not available right now: ${error.message}. Your entries are unchanged; you can still type the code in by hand.`);}}
 }
 async function selectTerminologyCombobox(state,index){
  const values=state.search,item=state.items[index],request=++state.request;state.pendingPick=null;
  const check=values&&state.scope==='procedure'?{...values,procedure:true}:values;
  if(!values||!terminologyComboboxCurrent(state,request,values)||!terminologyComboboxEligible(item,check)){closeTerminologyCombobox(state);return;}
- if(item.practice){
-  const visible=terminologyFillFields(state.scope,state.row,item.code,item.display),system=state.row.querySelector('[name="code_system"]');
-  terminologyApplying.add(state.row);
-  try{if(system&&item.system)system.value=item.system;state.row.querySelector('[data-terminology-selection]')?.remove();closeTerminologyCombobox(state);for(const field of [visible,system])field?.dispatchEvent(new Event('input',{bubbles:true}));}finally{terminologyApplying.delete(state.row);}
-  state.input.focus();return;
- }
+  if(item.practice){
+   const visible=terminologyFillFields(state.scope,state.row,item.code,item.display),system=state.row.querySelector('[name="code_system"]');
+   terminologyApplying.add(state.row);
+   try{
+    if(system&&item.system)system.value=item.system;
+    state.row.querySelector('[data-terminology-selection]')?.remove();
+    // The practice's own line: its units, its modifiers and its price, put on the row in the shape
+    // the row's own fields expect them. A code with no price leaves the amount alone.
+    const filled=[visible,system];
+    if(state.scope==='procedure'){for(const field of terminologyPracticeLineFields(state.row,item))filled.push(field);}
+    closeTerminologyCombobox(state);
+    for(const field of filled)field?.dispatchEvent(new Event('input',{bubbles:true}));
+   }finally{terminologyApplying.delete(state.row);}
+   state.input.focus();return;
+  }
  state.input.setAttribute('aria-busy','true');terminologyComboboxStatus(state,'Checking the code you selected…');
  try{
   const detail=await api(`/api/v1/terminology/releases/${encodeURIComponent(item.release_id)}/codes/${encodeURIComponent(item.code)}`);
@@ -252,7 +289,7 @@ async function loadTerminologyReleases(state){
   if(!terminologyContextCurrent(state)||request!==state.request)return;
   state.system=system;state.releases=result.items||[];
   state.host.querySelector('[data-terminology-release]').innerHTML='<option value="">Latest release effective on this date</option>'+state.releases.map(release=>`<option value="${esc(release.id||release.release_id)}">${esc(terminologyReleaseLabel(release))}</option>`).join('');
-   terminologyPickerStatus(state,state.releases.length?'Enter at least two characters and search. Results are filtered for billable codes effective on the service date.':`No ${system} code list is installed here. You can still type the code in by hand. An owner can import a suitable list under Practice administration → Code lists.`);
+   terminologyPickerStatus(state,state.releases.length?'Enter at least two characters and search. Results are filtered for billable codes effective on the service date.':`No ${system} code list is installed here. You can still type the code in by hand. An owner can import a suitable list under Practice administration → Codes &amp; prices.`);
   }catch(error){if(terminologyContextCurrent(state)&&request===state.request)terminologyPickerStatus(state,`The code search is not available right now: ${error.message}. Existing entries are unchanged; you can still type the code in by hand.`,true);}
 }
 function renderTerminologyResults(state){
@@ -292,12 +329,126 @@ async function selectTerminologyCode(state,index){
  const note=document.createElement('p');note.dataset.terminologySelection='';note.className='muted';note.textContent=`Selected from ${terminologyReleaseLabel(detail)}. Save this row to record which code list it came from. Choosing a code here does not mean the claim will be accepted.`;state.row.append(note);
  terminologyPickers.delete(state.host);state.host.remove();(filled||display).focus();
 }
+// The owner's Codes & prices screen: which code sets staff may look up, the practice's own codes
+// and their prices, and — folded away underneath — the installed code lists and the file import.
+const CODE_SET_SYSTEMS=['ICD-10-CM','HCPCS','CPT','ICD-10-PCS'];
+// This file is also loaded by UI tests that stub only what the screen under test touches, so the
+// debounce is reached for defensively rather than assumed.
+const scheduleLater=(fn,delay)=>typeof setTimeout==='function'?setTimeout(fn,delay):0;
+const cancelLater=handle=>{if(handle&&typeof clearTimeout==='function')clearTimeout(handle);};
+function practiceCodesReset(){practiceCodes.sets=[];practiceCodes.items=[];practiceCodes.status='';practiceCodes.addStatus='';practiceCodes.search=[];practiceCodes.loaded=false;cancelLater(practiceCodes.searchTimer);practiceCodes.searchTimer=null;practiceCodes.searchRequest++;}
+function practiceCodesCurrent(host){return host?.isConnected&&$('tools')===host;}
+function practiceCodesSetRow(set){
+ return `<div class="integration-access-row" data-code-set-row="${esc(set.system)}"><div><b>${esc(set.system)}</b><small>${set.installed?'Installed':'Not installed'}</small></div><label class="check"><input type="checkbox" data-code-set-toggle="${esc(set.system)}" data-code-set-version="${esc(set.version)}" ${set.enabled?'checked':''}> ${set.enabled?'Staff can look these codes up':'Turned off'}</label><small data-code-set-status="${esc(set.system)}" role="status"></small></div>`;
+}
+function practiceCodesMarkup(sets,releases){
+ return `<section class="integration-section" data-code-sets><h3>Code sets</h3><p>Turn a code set off and staff stop seeing these codes in lookups. Nothing recorded is changed.</p>${CODE_SET_SYSTEMS.map(system=>practiceCodesSetRow(sets.find(set=>set.system===system)||{system,enabled:true,version:0,installed:false})).join('')}</section>`;
+}
+function practiceCodesAddRow(item){
+ const key=`${item.system} ${item.code}`.replace(/[^A-Za-z0-9]/g,'-');
+ return `<article class="integration-access-row" data-code-add-row="${esc(key)}"><div><b>${esc(item.code)}</b> · ${esc(item.display)}<small>${esc(item.system)}</small></div><button type="button" data-code-add="${esc(key)}" data-code-add-system="${esc(item.system)}" data-code-add-code="${esc(item.code)}" data-code-add-display="${esc(item.display)}">Add</button></article>`;
+}
+function practiceCodesMyCodesMarkup(){
+ return `<section class="integration-section" data-practice-codes><h3>My codes</h3><p>The codes this practice charges for, with the price staff see when they pick one on a charge line. Turning a code off takes it out of the dropdowns; nothing recorded is deleted.</p><label>Find a code to add<input type="search" data-code-search placeholder="Code or name" autocomplete="off" maxlength="200"></label><p class="muted" data-code-add-status role="status">Type at least two characters to search the installed code lists.</p><div data-code-add-results></div><div class="practice-table-wrap"><table class="practice-table"><caption class="sr-only">The practice’s codes</caption><thead><tr><th>On</th><th>Code</th><th>Description</th><th>Price</th><th>Units</th><th>Modifiers</th></tr></thead><tbody data-practice-code-rows>${practiceCodes.items.map(practiceCodeRowMarkup).join('')||'<tr><td colspan="6">No codes yet. Find one above and add it.</td></tr>'}</tbody></table></div><label>Filter these codes<input type="search" data-code-filter placeholder="Code, description or modifier" autocomplete="off"></label><p class="muted" data-practice-code-empty hidden>No codes match this filter.</p></section>`;
+}
+function practiceCodeRowMarkup(item){
+ const price=item.price_cents==null?'':terminologyDollars(item.price_cents);
+ return `<tr data-code-row="${esc(item.id)}" data-code-row-id="${esc(item.id)}" data-code-row-version="${esc(item.version??0)}" data-code-row-system="${esc(item.system)}" data-code-row-code="${esc(item.code)}"><td><label class="check"><input type="checkbox" name="enabled" ${item.enabled?'checked':''}> On</label></td><td><b>${esc(item.code)}</b><small>${esc(item.system)}</small></td><td><input name="display" value="${esc(item.display)}" maxlength="1000"></td><td><input name="price" inputmode="decimal" value="${esc(price)}" placeholder="No price"></td><td><input name="units" type="number" min="1" max="9999" step="1" value="${esc(item.default_units)}"></td><td><input name="modifiers" value="${esc(item.modifiers||'')}" maxlength="11" placeholder="26"></td><td><small data-code-status="${esc(item.id)}" role="status"></small></td></tr>`;
+}
+function practiceCodesCatalogsMarkup(releases){
+ return `<details class="integration-section" data-installed-code-lists><summary>Installed code lists</summary><section class="integration-section"><h3>Installed versions</h3>${(releases.items||[]).map(release=>`<article class="integration-access-row"><div><b>${esc(terminologyReleaseLabel(release))}</b><small>${esc(release.source_name)} · ${Number(release.code_count||release.entry_count||0).toLocaleString()} codes</small><small>${esc(release.rights||'')} ${release.license_valid_until?` · licensed through ${esc(release.license_valid_until)}`:''}</small></div></article>`).join('')||'<p>No code lists are installed yet. You can still type codes in by hand.</p>'}${releases.next_cursor?'<p class="muted">More code list versions are available.</p>':''}</section>${terminologyCptSection(releases.items||[])}<section class="integration-section"><h3>Import a code list</h3><p>Choose a SunCharts code list data file with its source, edition, effective dates, rights information and codes. CPT imports require a licensed source.</p><form id="terminology-import-form"><label>Code list data file<input type="file" name="catalog" accept="application/json,.json" required data-terminology-file></label><div id="terminology-import-preview" role="status"></div><label>Reason for this import<input name="reason" required maxlength="1000"></label><label class="review-ack"><input type="checkbox" name="rights_attested" required> I have permission to install and use this code list in this EHR.</label><button type="submit" class="primary">Import reviewed code list</button></form></section></details>`;
+}
 async function showTerminologyCatalogs(){
  if(me?.role!=='owner')return;
-  const account=me,generation=terminologyGeneration;showTool('Code lists');const host=$('tools');host.className='integration-workspace';host.innerHTML='<p class="muted" data-terminology-loading>Loading the installed code lists…</p>';const loading=host.querySelector('[data-terminology-loading]');
- const result=await api('/api/v1/terminology/releases');if(account!==me||generation!==terminologyGeneration||$('tools')!==host||!loading?.isConnected)return;
-  host.innerHTML=`<header class="integration-hero"><div><p class="eyebrow">THIS EHR INSTANCE</p><h2>Code lists</h2><p>Install dated diagnosis and procedure code lists for lookups. Clinical records keep the code and description recorded with them.</p></div><button type="button" data-terminology-manage>Refresh code lists</button></header><section class="integration-section"><h3>Installed versions</h3>${(result.items||[]).map(release=>`<article class="integration-access-row"><div><b>${esc(terminologyReleaseLabel(release))}</b><small>${esc(release.source_name)} · ${Number(release.code_count||release.entry_count||0).toLocaleString()} codes</small><small>${esc(release.rights||'')} ${release.license_valid_until?` · licensed through ${esc(release.license_valid_until)}`:''}</small></div></article>`).join('')||'<p>No code lists are installed yet. You can still type codes in by hand.</p>'}${result.next_cursor?'<p class="muted">More code list versions are available.</p>':''}</section>${terminologyCptSection(result.items||[])}<section class="integration-section"><h3>Import a code list</h3><p>Choose a SunCharts code list data file with its source, edition, effective dates, rights information and codes. CPT imports require a licensed source.</p><form id="terminology-import-form"><label>Code list data file<input type="file" name="catalog" accept="application/json,.json" required data-terminology-file></label><div id="terminology-import-preview" role="status"></div><label>Reason for this import<input name="reason" required maxlength="1000"></label><label class="review-ack"><input type="checkbox" name="rights_attested" required> I have permission to install and use this code list in this EHR.</label><button type="submit" class="primary">Import reviewed code list</button></form></section>`;terminologyImport=null;
+ const account=me,generation=terminologyGeneration;showTool('Codes & prices');const host=$('tools');host.className='integration-workspace';host.innerHTML='<p class="muted" data-terminology-loading>Loading your codes and prices…</p>';const loading=host.querySelector('[data-terminology-loading]');
+ const [sets,result,codes]=await Promise.all([
+  api('/api/v1/practice/code-sets').catch(()=>null),
+  api('/api/v1/terminology/releases').catch(()=>({items:[]})),
+  api('/api/v1/practice/codes').catch(()=>null)]);
+ if(account!==me||generation!==terminologyGeneration||$('tools')!==host||!loading?.isConnected)return;
+ practiceCodes.sets=sets?.items||[];practiceCodes.items=codes?.items||[];practiceCodes.loaded=true;
+ host.innerHTML=`<header class="integration-hero"><div><p class="eyebrow">THIS PRACTICE</p><h2>Codes &amp; prices</h2><p>Choose which code sets staff can look up, keep the codes you charge for, and set the price each one starts a charge line at. Clinical records keep the code and description recorded with them.</p></div><button type="button" data-terminology-manage>Refresh codes and prices</button></header>${practiceCodesMarkup(practiceCodes.sets,result)}${practiceCodesMyCodesMarkup()}${practiceCodesCatalogsMarkup(result)}`;terminologyImport=null;
 }
+async function saveCodeSet(system,enabled,version,status,toggle){
+ status.textContent='Saving…';
+ try{
+  const item=await api(`/api/v1/practice/code-sets/${encodeURIComponent(system)}`,'PUT',{enabled},version);
+  const set=practiceCodes.sets.find(entry=>entry.system===system);
+  if(set&&item&&typeof item.version==='number'){set.version=item.version;set.enabled=!!item.enabled;}
+  // The switch keeps the version the server answered, so the next flip saves against it.
+  if(toggle&&item&&item.version!==undefined)toggle.dataset.codeSetVersion=String(item.version);
+  if(toggle&&item)toggle.checked=!!item.enabled;
+  status.textContent=enabled?'':'Turned off: staff will not see these codes in lookups.';
+ }catch(error){status.textContent=error.message;}
+}
+async function loadPracticeCodeSearch(host,query){
+ const request=++practiceCodes.searchRequest,systems=['CPT','HCPCS','ICD-10-CM'],serviceDate=new Date().toISOString().slice(0,10);
+ const answers=await Promise.all(systems.map(system=>api(`/api/v1/terminology/codes?${new URLSearchParams({system,q:query,service_date:serviceDate,billable:'true',limit:'20'})}`).catch(()=>null)));
+ if(request!==practiceCodes.searchRequest||!practiceCodesCurrent(host))return;
+ const seen=new Set(),items=[];
+ for(const answer of answers)for(const item of answer?.items||[]){const key=`${item.system}:${item.code}`.toUpperCase();if(seen.has(key))continue;seen.add(key);items.push(item);}
+ practiceCodes.search=items;
+ const results=host.querySelector('[data-code-add-results]'),status=host.querySelector('[data-code-add-status]');
+ if(!items.length){results.innerHTML='';status.textContent='No installed code list has a match. You can still add the code by hand below.';return;}
+ results.innerHTML=items.slice(0,60).map(practiceCodesAddRow).join('');
+ status.textContent=`${items.length} match${items.length===1?'':'es'}. Adding puts the code in your list with no price yet.`;
+}
+async function addPracticeCode(button,host){
+ const status=host.querySelector('[data-code-add-status]'),account=me;
+ status.textContent='Adding…';
+ try{
+  const item=await api('/api/v1/practice/codes','POST',{request_id:crypto.randomUUID(),system:button.dataset.codeAddSystem,code:button.dataset.codeAddCode,display:button.dataset.codeAddDisplay,enabled:true,price_cents:null,default_units:1,modifiers:''});
+  if(account!==me||!practiceCodesCurrent(host))return;
+  if(!practiceCodes.items.some(entry=>entry.id===item.id))practiceCodes.items.push(item);
+  renderPracticeCodeRows(host);
+  host.querySelector(`[data-code-add="${button.dataset.codeAdd}"]`)?.setAttribute('disabled','');
+  status.textContent=`${item.code} added. Set its price when you know it.`;
+ }catch(error){if(account===me)status.textContent=error.message;}
+}
+function renderPracticeCodeRows(host){
+ const rows=host.querySelector('[data-practice-code-rows]');if(!rows)return;
+ rows.innerHTML=practiceCodes.items.map(practiceCodeRowMarkup).join('')||'<tr><td colspan="6">No codes yet. Find one above and add it.</td></tr>';
+ filterPracticeCodes(host);
+}
+function filterPracticeCodes(host){
+ const needle=(host.querySelector('[data-code-filter]')?.value||'').trim().toLowerCase();
+ const rows=[...host.querySelectorAll('[data-code-row]')];let shown=0;
+ for(const row of rows){
+  const text=`${row.dataset.codeRowSystem} ${row.dataset.codeRowCode} ${row.querySelector('[name="display"]')?.value||''} ${row.querySelector('[name="modifiers"]')?.value||''}`.toLowerCase();
+  const match=!needle||text.includes(needle);row.hidden=!match;if(match)shown++;
+ }
+ const empty=host.querySelector('[data-practice-code-empty]');if(empty)empty.hidden=shown>0;
+}
+function practiceCodePriceCents(value){
+ const text=String(value??'').trim().replace(/[$\s]/g,'');
+ if(text==='')return null;
+ if(!/^\d+(\.\d{1,2})?$/.test(text))return undefined;
+ const [whole,fraction='']=text.split('.'),cents=Number(whole)*100+Number(fraction.padEnd(2,'0'));
+ return Number.isSafeInteger(cents)&&cents<=10000000?cents:undefined;
+}
+function practiceCodeModifiersValid(value){return value===''||/^[A-Z0-9]{2}( [A-Z0-9]{2}){0,3}$/.test(value);}
+function practiceCodeStatus(row){return row.querySelector(`[data-code-status="${row.dataset.codeRowId}"]`)||row.querySelector('[data-code-status]');}
+async function savePracticeCode(host,row){
+ const status=practiceCodeStatus(row),account=me,version=Number(row.dataset.codeRowVersion||0);
+ const display=row.querySelector('[name="display"]').value.trim(),price=practiceCodePriceCents(row.querySelector('[name="price"]').value),
+  units=Math.trunc(Number(row.querySelector('[name="units"]').value)),modifiers=(row.querySelector('[name="modifiers"]')?.value||'').trim(),
+  enabled=!!row.querySelector('[name="enabled"]').checked;
+ if(!display){status.textContent='Enter the description.';return;}
+ if(price===undefined){status.textContent='Enter the price in dollars, up to two decimal places.';return;}
+ if(!(units>=1&&units<=9999)){status.textContent='Enter units between 1 and 9999.';return;}
+ if(!practiceCodeModifiersValid(modifiers)){status.textContent='Modifiers are up to four two-character codes, separated by single spaces.';return;}
+ status.textContent='Saving…';
+ try{
+  const item=await api(`/api/v1/practice/codes/${encodeURIComponent(row.dataset.codeRowId)}`,'PUT',{display,enabled,price_cents:price,default_units:units,modifiers},version);
+  if(account!==me||!practiceCodesCurrent(host))return;
+  Object.assign(item,{});const index=practiceCodes.items.findIndex(entry=>entry.id===item.id);if(index>=0)practiceCodes.items[index]=item;
+  row.dataset.codeRowVersion=String(item.version??'0');
+  row.querySelector('[name="display"]').value=item.display;row.querySelector('[name="price"]').value=item.price_cents==null?'':terminologyDollars(item.price_cents);
+  row.querySelector('[name="units"]').value=String(item.default_units);row.querySelector('[name="modifiers"]').value=item.modifiers||'';row.querySelector('[name="enabled"]').checked=!!item.enabled;
+  status.textContent='Saved';
+ }catch(error){if(account===me)status.textContent=error.message;}
+}
+
 // CPT is licensed by the AMA, so it is never shipped. A practice that holds a CPT license says
 // so here and the server fetches the official CMS file and installs CPT for this practice only.
 function terminologyCptSection(releases){
@@ -324,9 +475,36 @@ async function installTerminologyCpt(form){
  }
 }
 document.addEventListener('submit',event=>{
- const form=event.target;if(form?.id!=='terminology-cpt-form')return;
- event.preventDefault();event.stopImmediatePropagation();void installTerminologyCpt(form);
+  const form=event.target;if(form?.id!=='terminology-cpt-form')return;
+  event.preventDefault();event.stopImmediatePropagation();void installTerminologyCpt(form);
 });
+// Codes & prices: the switches, the search-as-you-type, the Add buttons and the price table.
+function practiceCodesHost(){if(typeof $!=='function')return null;const host=$('tools');return host?.querySelector('[data-practice-codes]')?host:null;}
+function practiceCodesSilent(){let text='';return {set textContent(value){text=String(value);},get textContent(){return text;}};}
+document.addEventListener('change',event=>{
+  const toggle=event.target.closest?.('[data-code-set-toggle]');
+  if(toggle){const host=practiceCodesHost(),status=host?.querySelector(`[data-code-set-status="${toggle.dataset.codeSetToggle}"]`)||practiceCodesSilent();void saveCodeSet(toggle.dataset.codeSetToggle,toggle.checked,Number(toggle.dataset.codeSetVersion)||0,status,toggle);return;}
+  const row=event.target.closest?.('[data-code-row]'),host=practiceCodesHost();
+  if(!row||!host)return;
+  if(event.target.name==='enabled'){void savePracticeCode(host,row);return;}
+  if(['display','price','units','modifiers'].includes(event.target.name))void savePracticeCode(host,row);
+});
+document.addEventListener('focusout',event=>{
+  const row=event.target.closest?.('[data-code-row]'),host=practiceCodesHost();
+  if(!row||!host)return;
+  if(!['display','price','units','modifiers'].includes(event.target.name))return;
+  void savePracticeCode(host,row);
+});
+document.addEventListener('input',event=>{
+  if(event.target.matches?.('[data-code-filter]')){const host=practiceCodesHost();if(host)filterPracticeCodes(host);return;}
+  if(!event.target.matches?.('[data-code-search]'))return;
+  const host=practiceCodesHost(),query=event.target.value.trim();
+  if(!host)return;
+  cancelLater(practiceCodes.searchTimer);
+  if(query.length<2){practiceCodes.searchRequest++;practiceCodes.search=[];host.querySelector('[data-code-add-results]').innerHTML='';host.querySelector('[data-code-add-status]').textContent='Type at least two characters to search the installed code lists.';return;}
+  practiceCodes.searchTimer=scheduleLater(()=>{practiceCodes.searchTimer=null;void loadPracticeCodeSearch(host,query);},200);
+});
+
 async function previewTerminologyImport(file){
  terminologyImport=null;const revision=++terminologyImportRevision,host=$('terminology-import-preview'),account=me,generation=terminologyGeneration;if(!file||!host)return;
   if(file.size>64*1024*1024)throw new Error('Code list files must be 64 MiB or smaller.');
@@ -335,6 +513,8 @@ async function previewTerminologyImport(file){
  terminologyImport={value,account,generation,file};host.textContent=`${terminologyReleaseLabel(value)} · ${value.codes.length.toLocaleString()} codes · source: ${value.source_name||'not provided'} · rights: ${value.rights||'not provided'}. Nothing has been imported yet.`;
 }
 document.addEventListener('click',event=>{
+ const add=event.target.closest?.('[data-code-add]');
+ if(add){event.preventDefault();const host=practiceCodesHost();if(host)run(()=>addPracticeCode(add,host));return;}
  const button=event.target.closest?.('[data-terminology-open],[data-terminology-close],[data-terminology-search],[data-terminology-more],[data-terminology-select],[data-terminology-manage]');if(!button)return;event.preventDefault();event.stopImmediatePropagation();
  if(button.hasAttribute('data-terminology-manage')){run(showTerminologyCatalogs);return;}
  if(button.dataset.terminologyOpen){run(()=>openTerminologyPicker(button));return;}
