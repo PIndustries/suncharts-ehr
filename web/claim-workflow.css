@@ -1,10 +1,56 @@
-.claim-workflow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem;margin:1rem 0}
-.claim-workflow article{padding:1rem;border:1px solid var(--line,#d4dfe4);border-radius:.5rem;background:var(--panel,#fff)}
-.claim-workflow h3{margin:0 0 .5rem}.claim-workflow p{margin:.5rem 0 1rem;line-height:1.5}
-@media(max-width:1050px){.claim-workflow{grid-template-columns:1fr}}
-/* The plain-words answer for a claim that came back: what the insurer said, the likely fix, and
-   the one button that starts it. Deliberately the loudest thing on the claim screen. */
-.claim-problem-box{margin:1rem 0;padding:1rem 1.1rem;border:1px solid #e0b96a;border-left:4px solid #b8791b;border-radius:.5rem;background:#fff8ec}
-.claim-problem-box h3{margin:0 0 .5rem;font-size:1.05rem}
-.claim-problem-box p{margin:.45rem 0;line-height:1.5}
-.claim-problem-box button{margin-top:.5rem}
+/* The claim screen: one status word, one next step, one short list of what is missing, the service
+   lines, and everything else folded away. Colours come from the theme variables only. */
+
+/* The next step. Its one primary button is the loudest thing here apart from a rejection box. */
+.claim-primary{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,16rem);gap:1rem;margin:1rem 0}
+.claim-primary-action{display:grid;align-content:start;gap:.55rem;padding:1rem 1.1rem;border:1px solid var(--line,#d4dfe4);border-left:4px solid var(--accent,#197b83);border-radius:.5rem;background:var(--panel,#fff)}
+.claim-primary-action p{margin:0;line-height:1.5}
+.claim-primary-buttons{display:flex;flex-wrap:wrap;gap:.5rem}
+.claim-primary-side{display:grid;align-content:start;gap:.3rem;padding:.85rem 1rem;border:1px solid var(--line,#d4dfe4);border-radius:.5rem;background:var(--surface-soft,#f8fafb);font-size:var(--fs-sm)}
+.claim-primary-side p{margin:0}
+.claim-primary-extra,.claim-primary-download,.claim-primary-parent{grid-column:1/-1;margin:0}
+.claim-primary-extra{display:flex;flex-wrap:wrap;gap:.5rem}
+.claim-connection-note{margin:.2rem 0 0;padding:.5rem .7rem;border-left:3px solid var(--line,#c7d3d9);background:var(--surface-soft,#f8fafb);font-size:var(--fs-sm)}
+@media(max-width:1050px){.claim-primary{grid-template-columns:1fr}}
+
+/* What is still missing, grouped by the place it is fixed. */
+.claim-missing{margin:1rem 0;padding:.9rem 1.1rem;border:1px solid #e0cfa4;border-radius:.5rem;background:#fffaf0}
+.claim-missing h3{margin:0 0 .2rem;font-size:1.02rem}
+.claim-missing>p{margin:0 0 .5rem}
+.claim-missing ul{display:grid;gap:.55rem;list-style:none;margin:0;padding:0}
+.claim-missing>ul>li{display:grid;grid-template-columns:minmax(0,9rem) minmax(0,1fr) auto;gap:.4rem 1rem;align-items:baseline;padding:.45rem 0;border-top:1px solid #f0e4c8}
+.claim-missing>ul>li:first-child{border-top:0}
+.claim-missing ul ul{display:flex;flex-wrap:wrap;gap:.1rem .9rem;list-style:none;margin:0;padding:0}
+.claim-missing ul ul li{font-size:var(--fs-sm)}
+.claim-missing ul ul li::after{content:';'}
+.claim-missing ul ul li:last-child::after{content:''}
+@media(max-width:760px){.claim-missing>ul>li{grid-template-columns:1fr;gap:.25rem}}
+
+/* What the claim was billed for, and what has been put against it. */
+.claim-money{display:flex;flex-wrap:wrap;gap:.6rem 1.8rem;margin:1rem 0;padding:.8rem 1.1rem;border:1px solid var(--line,#dce4e8);border-radius:.5rem;background:var(--surface,#fff)}
+.claim-money-cell{display:grid;gap:.1rem;min-width:7rem}
+.claim-money-cell span{font-size:var(--fs-xs);color:var(--muted,#63747e)}
+.claim-money-cell b{font-size:var(--fs-lg)}
+.claim-money-cell small{font-size:var(--fs-xs);color:var(--muted,#63747e)}
+.claim-screen-who{margin:2px 0 0}
+.claim-status-word{text-transform:none;font-weight:650}
+.claim-lines{margin:1rem 0}
+
+/* Everything else, in one place. The panels inside keep their own look. */
+.claim-more{margin:1.2rem 0 0;padding-top:.6rem;border-top:1px solid var(--line,#dce4e8)}
+.claim-more>summary{cursor:pointer;font-weight:650;color:var(--blue,#126d77)}
+.claim-more[open]>summary{margin-bottom:.5rem}
+.claim-more-item{padding:.6rem 0;border-top:1px solid var(--line,#e6ecef)}
+.claim-more-item:first-of-type{border-top:0}
+.claim-more-item h3{margin:0 0 .3rem;font-size:var(--fs-body)}
+.claim-more-item .claim-lifecycle,.claim-more-item .claimmd-claim-activity,.claim-more-item .claim-timeline,.claim-more-item .claim-status-timeline-host{margin:0}
+.claim-detail-dl{font-size:var(--fs-sm)}
+.claim-response-words{font-size:var(--fs-sm);white-space:pre-wrap;overflow-wrap:anywhere}
+
+/* Diagnosis ticks on the draft claim form, one row per charge line. */
+.claim-line-diagnosis{margin:1rem 0;padding:.7rem .9rem;border:1px solid var(--line,#dce4e8);border-radius:.5rem}
+.claim-line-diagnosis legend{font-weight:650;padding:0 .3rem}
+.claim-line-diagnosis>p{margin:.2rem 0 .5rem}
+.claim-line-diagnosis-row{padding:.5rem 0;border-top:1px solid var(--line,#e6ecef)}
+.claim-line-diagnosis-row:first-of-type{border-top:0}
+.claim-line-diagnosis-row .scope-options{margin:.3rem 0 0}

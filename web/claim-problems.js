@@ -19,8 +19,8 @@ const claimProblemFields={
   billing_provider_name:{name:'billing provider name',input:'billing_provider_name'},
   billing_address:{name:'billing address',input:'billing_address'},
   diagnosis_codes:{name:'diagnosis codes',input:'diagnosis_codes'},
-  // The per-line pointers are one box per charge line (`pointer_0`, `pointer_1`, …) below the
-  // diagnosis list, so a pointer problem focuses the list and the notice explains the line boxes.
+  // Each charge line ticks the diagnoses that apply to it. A pointer problem is about those ticks,
+  // so it focuses the diagnosis list above them and the notice points at the line boxes.
   diagnosis_pointer:{name:'diagnosis pointers',input:'diagnosis_codes'},
   place_of_service:{name:'place of service',input:'place_of_service'},
   prior_authorization:{name:'prior authorization number',input:''},
@@ -259,7 +259,7 @@ function claimFixPlan(claim,field){
   const member=claimProblemMemberId(claim);
   if(field==='member_id')return{focus:'',open:'insurance',where:'',notice:member?`The member ID is not typed into the claim: the claim carries the number that was on the insurance when it was prepared, and here it reads “${member}”. Check that against the card and save it, then bring the claim up to date and send it again.`:'There is no member ID on this insurance yet. Add it to the insurance, then bring the claim up to date and send it again.',resend:plan};
   if(field==='subscriber')return{focus:'',open:'insurance',where:'',notice:'The policy holder’s name, date of birth and relationship come from the insurance, not from this form. Put them right there, then bring the claim up to date and send it again.',resend:plan};
-  if(field==='diagnosis_pointer')return{focus:'diagnosis_codes',open:'',where:'',notice:'The diagnosis list is near the top of this form, and just under it is a box for each charge line saying which diagnoses apply to that line.',resend:plan};
+  if(field==='diagnosis_pointer')return{focus:'diagnosis_codes',open:'',where:'',diagnosis:true,notice:'There is a box for each charge line under the diagnosis list. Tick the diagnoses that apply to that line, and tick the main reason for it first.',resend:plan};
   if(field==='prior_authorization')return{focus:'',open:'',where:'the insurer’s approval, which is not stored in SunCharts',notice:'There is nowhere in SunCharts to type the approval number, so it goes on the claim to the insurer with the corrected claim. Add it when the claim goes out.',resend:plan};
   return{focus:known.input||'',open:'',where:'',notice:'',resend:plan};
 }

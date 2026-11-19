@@ -110,10 +110,14 @@ assert.match(report({message:'26 Not eligible',payerControlNumber:'123456700002'
 const editor=fs.readFileSync('web/claims.js','utf8');
 // The claim editor's own field names, read from the form it renders, so a focus target that does
 // not exist fails here rather than silently focusing nothing.
-const editorFields=new Set([...editor.matchAll(/(?:billingField|selectField)\('([a-z_0-9]+)'|\(`pointer_\$\{i\}`/g)].map(m=>m[1]||'pointer'));
-for(const key of ['billing_provider_name','billing_npi','rendering_npi','tax_id','billing_address','patient_address','subscriber_address','subscriber_birth_date','place_of_service','diagnosis_codes','pointer']){
+const editorFields=new Set([...editor.matchAll(/(?:billingField|selectField)\('([a-z_0-9]+)'/g)].map(m=>m[1]));
+for(const key of ['billing_provider_name','billing_npi','rendering_npi','tax_id','billing_address','patient_address','subscriber_address','subscriber_birth_date','place_of_service','diagnosis_codes']){
  assert.ok(editorFields.has(key),`the claim editor renders ${key}`);
 }
+// A diagnosis fix lands on the per-line tick boxes, which are named `diagnosis_line_<n>` and are no
+// longer a hand-typed `pointer_<n>` box.
+assert.match(editor,/name="diagnosis_line_\$\{index\}"/,'the claim editor renders a diagnosis tick box per charge line');
+assert.doesNotMatch(editor,/pointer_\$\{i\}/,'no hand-typed pointer box is left on the claim editor');
 const memberFix=claimFixPlan(cameBack({memberId:'SYN-MEMBER-9'}).claim,'member_id');
 assert.equal(memberFix.open,'insurance','the member ID is fixed on the insurance, not on the claim');
 assert.equal(memberFix.focus,'','there is no member ID box on the claim form to focus');
@@ -129,7 +133,7 @@ assert.equal(claimFixPlan(cameBack().claim,'tax_id').open,'','a tax ID really is
 assert.equal(claimFixPlan(cameBack().claim,'rendering_npi').focus,'rendering_npi');
 assert.equal(claimFixPlan(cameBack().claim,'diagnosis_pointer').focus,'diagnosis_codes','the fix lands on the diagnosis list');
 assert.match(claimFixPlan(cameBack().claim,'diagnosis_pointer').notice,/a box for each charge line/i);
-assert.match(editor,/pointer_\$\{i\}/,'the editor renders one diagnosis pointer box per charge line');
+assert.match(editor,/name="diagnosis_line_\$\{index\}"/,'the editor renders one diagnosis tick box per charge line');
 assert.equal(claimFixPlan(cameBack().claim,'timely_filing').focus,'','an insurer-side problem has no box to focus');
 assert.equal(claimFixPlan(cameBack().claim,'prior_authorization').focus,'');
 assert.match(claimFixPlan(cameBack().claim,'prior_authorization').notice,/nowhere in SunCharts/i,'no invented box for a number we do not store');
@@ -186,7 +190,7 @@ const index=fs.readFileSync('web/index.html','utf8');
 assert.match(index,/<script src="\/claim-problems\.js" defer><\/script><script src="\/claims\.js" defer>/,'claim-problems.js loads immediately before claims.js');
 const lib=fs.readFileSync('src/lib.rs','utf8');
 assert.match(lib,/include_str!\("\.\.\/web\/claim-problems\.js"\)/,'claim-problems.js is served by the engine');
-assert.match(editor,/claimProblemReport\(c,d\)/,'the claim screen asks the module what came back');
+assert.match(editor,/claimProblemReport\(claim,detail\)/,'the claim screen asks the module what came back');
 assert.match(editor,/beginClaimFix/,'"Fix and resend" opens the claim for editing');
 assert.doesNotMatch(editor,/throw new Error\([^)]*(?:cannot be fixed|not allowed to)/,'nothing hard-stops staff from fixing a claim');
 

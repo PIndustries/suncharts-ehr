@@ -73,20 +73,25 @@ function workspace(replacement,extraDetail){
 const open=(over,detail)=>workspace(rejectedClaim(over),detail).open();
 
 (async()=>{
- // 1. The box sits at the top of the claim screen, above the action columns.
+ // 1. The box sits at the very top of the claim screen, above the one next step, so the first thing
+ // read is what the insurer said and the first button is the one that fixes it.
  const f=await open();
  const html=f.nodes['claims-detail'].innerHTML;
  assert.match(html,/Why it came back/);
- assert.ok(html.indexOf('Why it came back')<html.indexOf('1. Preview claim'),'the plain-words box comes before the send steps');
+ assert.ok(html.indexOf('Why it came back')<html.indexOf('data-claim-primary'),'the plain-words box comes before the next step');
+ assert.ok(html.indexOf('Why it came back')<html.indexOf('data-claim-lines'),'and before the charge lines');
  assert.match(html,/does not recognise the member ID/i);
  assert.match(html,/new claim \(code 1\)/,'a pure clearinghouse rejection is explained as a new claim');
  assert.match(html,/>Fix and resend</);
  assert.match(html,/data-claim-fix-field="member_id"/);
  assert.match(html,/The message as it came in/,'the insurer’s own wording is kept alongside the plain words');
  assert.match(html,/2377 Invalid Subscriber ID/);
- // The send column defers to the box rather than repeating itself.
- assert.match(html,/Use <b>Fix and resend<\/b>/);
- assert.doesNotMatch(html,/Read the rejection on this page/,'no second instruction competing with the one button');
+ // "Fix and resend" is the only thing offered as a next step - nothing else competes with it.
+ const openPart=html.slice(0,html.search(/<details class="claim-more"/));
+ assert.equal((openPart.match(/class="primary"/g)||[]).length,1,'exactly one primary button on the open screen');
+ assert.equal((openPart.match(/>Fix and resend</g)||[]).length,1,'and it is the one that opens the claim to fix it');
+ assert.match(html,/data-claim-fix-resend[^>]*>Fix and resend|>Fix and resend</);
+ assert.doesNotMatch(html,/data-claimmd-submit|data-claim-release/,'a rejected claim is not offered for sending again');
 
  // 2. A denial the payer already took says it goes back as a replacement (7) with their number.
  const denied=await open({payer_control_number:'123456700001'});
