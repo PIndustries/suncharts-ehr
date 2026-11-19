@@ -782,3 +782,11 @@ function boxOf(ctx,id){
   console.log('PASS wiring: the picker loads first, is served by the app, survives a screen redraw, and no payer or pharmacy step keeps a search button');
  }
 })().catch(error=>{console.error(error);process.exitCode=1;});
+// The redraw sweep walks a list it can iterate: a WeakMap cannot be walked, and doing so threw on
+// every screen change and stopped newly drawn pickers from being wired.
+{
+ const src=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','web','typeahead.js'),'utf8');
+ require('node:assert/strict').ok(!/of \[\.\.\.typeaheadHosts\]/.test(src),'the sweep never iterates the WeakMap');
+ require('node:assert/strict').ok(/typeaheadLive=new Set\(\)/.test(src),'live pickers are kept in an iterable set');
+ console.log('PASS sweep: walks the live picker set, never the WeakMap');
+}
