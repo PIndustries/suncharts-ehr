@@ -31,6 +31,13 @@ const notPaired=context.partnersBillingSection({partners:{connect_error:'Connect
 assert.doesNotMatch(notPaired,/Enroll/);
 const listed=context.partnersBillingSection({partners:{items:[ht],enrollment:null}});
 assert.match(listed,/data-partner|Enroll/);
+// Enrolling sends the agreement version the server checks, with the request id and who accepted.
+// (source read above)
+assert.match(source,/const PARTNER_AGREEMENT_VERSION='partner-enrollment-v1';/);
+assert.match(source,/\/enroll`,'POST',\{request_id:request,agreement_version:PARTNER_AGREEMENT_VERSION,accepted_by:partnerAcceptedBy\(\)\}\)/);
+assert.match(fs.readFileSync('src/partners.rs','utf8'),/pub const AGREEMENT_VERSION: &str = "partner-enrollment-v1";/,'screen and server name the same agreement');
+// The card header has no icon column, so the name and summary keep the width.
+assert.match(fs.readFileSync('web/style.css','utf8'),/\.partner-card>header\{grid-template-columns:minmax\(0,1fr\) auto\}/);
 // Theme: the screen uses theme tokens, never a fixed colour.
 assert.doesNotMatch(source,/#[0-9a-fA-F]{3,6}\b/,'no hard-coded colours in the Partners screen');
 console.log('PASS Partners screen: payment step states, recommended partner card, consent form, enrolled line with Leave, connect card, theme tokens');

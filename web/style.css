@@ -586,3 +586,5 @@ td.money-cell,th.money-cell{text-align:right;font-variant-numeric:tabular-nums}
 .partner-confirm .review-ack{font-size:var(--fs-sm)}
 .partner-confirm .actions{margin-top:12px}
 .partner-card footer small{text-wrap:pretty}
+/* Partner cards have no icon: name and summary take the width, the badge sits at the end. */
+.partner-card>header{grid-template-columns:minmax(0,1fr) auto}
