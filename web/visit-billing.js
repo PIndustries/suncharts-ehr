@@ -201,7 +201,7 @@ function visitBillingMore(s,ctx={}){
   if(!claim.secondary&&!claim.crossover)items.push(`<a class="button" href="/api/v1/billing/claims/${esc(claim.id)}/cms1500" target="_blank" rel="noopener">Claim form (CMS-1500) ↗</a>`);
  }
  items.push('<button type="button" data-chart-section="insurance">Insurance and eligibility</button>');
- return `<details class="visit-billing-more" data-revenue-disclosure="more"><summary>More</summary><div class="actions">${items.join('')}</div></details>`;
+ return `<details class="visit-billing-more" data-revenue-disclosure="more"><summary>More actions</summary><div class="actions">${items.join('')}</div></details>`;
 }
 function visitBillingCardMarkup(s,ctx={}){
    const status=visitBillingStatus(s,ctx),owing=['patient_owes','self_pay_collect'].includes(s.state),posted=s.account?.status==='posted';
@@ -214,7 +214,7 @@ function visitBillingCardMarkup(s,ctx={}){
    // The one-click send keeps its small review link beside it; a card left opening the review
    // panel says it once, as its single main button.
    const action=direct&&!main.includes(direct)?`${main}${review}`:main;
-      return `<section class="visit-billing-card" data-visit-billing-state="${esc(s.state)}"><div class="section-head"><h3>Visit billing</h3></div><div class="visit-billing-status"><div><span class="eyebrow">${s.waiting_on==='nobody'?'Status':'Next step'}</span><p class="visit-billing-headline">${esc(status.headline)}</p><p class="muted">${esc(status.detail)}</p>${issues}</div><div class="actions">${action||''}${secondary}</div></div>${sent}${visitBillingBreakdown(s,ctx)}${posted||s.account||s.visit?visitBillingMore(s,ctx):''}</section>`;
+      return `<section class="visit-billing-card" data-visit-billing-state="${esc(s.state)}"><div class="visit-billing-status"><div><span class="eyebrow">${s.waiting_on==='nobody'?'Status':'Next step'}</span><p class="visit-billing-headline">${esc(status.headline)}</p><p class="muted">${esc(status.detail)}</p>${issues}</div><div class="actions">${action||''}${secondary}</div></div>${sent}${visitBillingBreakdown(s,ctx)}${posted||s.account||s.visit?visitBillingMore(s,ctx):''}</section>`;
 }
 const visitBillingFilters=[['all','Everything'],['charges','Charges'],['insurance','Insurance'],['payments','Payments'],['statements','Statements sent']];
 function visitBillingEventText(event){

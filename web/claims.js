@@ -685,7 +685,7 @@ function claimScreenMarkup(claim,detail,history){
  <div class="claim-lines" data-claim-lines>${lines}</div>
  ${withdraw}
  ${claimMoreDetailsMarkup(claim,detail,history,sections)}
- <div class="actions"><button type="button" data-claim-account="${esc(claim.account_id)}" data-patient="${esc(claim.patient_id)}">Visit billing</button>${editClaim}<button type="button" data-claim-patient="${esc(claim.patient_id)}">Open patient</button><button type="button" data-claim-insurance="${esc(claim.patient_id)}">Open insurance</button></div>
+ <div class="actions"><button type="button" data-claim-account="${esc(claim.account_id)}" data-patient="${esc(claim.patient_id)}">Open invoice</button>${editClaim}<button type="button" data-claim-patient="${esc(claim.patient_id)}">Open patient</button><button type="button" data-claim-insurance="${esc(claim.patient_id)}">Open insurance</button></div>
  <div id="claim-editor"></div></section>`;
 }
 async function showClaim(id){

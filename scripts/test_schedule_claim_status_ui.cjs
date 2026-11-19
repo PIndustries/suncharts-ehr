@@ -73,7 +73,7 @@ async function main(){
  assert.match(html,new RegExp(`data-board-action="open-claim" data-appointment="a" data-claim="${CLAIM}">Open claim</button>`));
  html=panel({status:'not_sent',claim_id:null});
  assert.match(html,/<dt>Insurance claim<\/dt><dd><span class="appt-fact-state tone-amber">Charges are posted but the claim has not been sent\.<\/span>/);
- assert.match(html,new RegExp(`data-board-action="charges" data-appointment="a">Open visit billing</button>`),'with no claim yet the visit’s own billing step is the way in');
+ assert.match(html,new RegExp(`data-board-action="charges" data-appointment="a">Open invoice</button>`),'with no claim yet the visit’s own billing step is the way in');
  assert.doesNotMatch(html,/data-claim=/);
  assert.doesNotMatch(panel(null),/Insurance claim/,'no claim, no row');
  const row=(claim,denied=[],extra={})=>{const g=fixture({denied});g.load([appointment('a','09:00','09:30',{status:'completed'})],[{...base,...extra,claim}]);const row=g.run('schedulePanelFacts(scheduleState.appointments[0])').match(/<dt>Insurance claim<\/dt>[\s\S]*?<\/dd>/)?.[0]||'';return [...row.matchAll(/data-board-action="([a-z-]+)"/g)].map(m=>m[1]);};

@@ -373,7 +373,7 @@ function schedulePanelFacts(a){
   if(markers.has('claim')){
    const claim=markers.get('claim');
    const open=m.claim?.claim_id?scheduleClaimButton(a,m.claim.claim_id)
-     :m.visit_id&&scheduleAllowed('billing')?schedulePanelButton('charges',a,'Open visit billing'):'';
+     :m.visit_id&&scheduleAllowed('billing')?schedulePanelButton('charges',a,'Open invoice'):'';
    rows.push(schedulePanelRow('Insurance claim',claim.tip,claim.tone,open));
   }
   return rows.join('');
