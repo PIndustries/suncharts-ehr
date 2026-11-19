@@ -14,7 +14,7 @@ const html=ctx.practiceDashboardMarkup({overview,appointments:[{status:'checked_
 for(const [label,value] of [['Today’s patients','2'],['Unfinished visits','2'],['Claims needing attention','1'],['Waiting on insurers','$1661.81'],['Collected today','$25.00'],['Charges this month','$2500.00']])
  assert.ok(html.includes(`<span>${label}</span><b>${value}</b>`),label);
 assert.match(html,/data-practice-action="claims"/);assert.match(html,/data-practice-action="billing"/);
-assert.match(html,/<h3>Claims<\/h3><svg/);assert.match(html,/Ready to send 1/);assert.match(html,/Needs correcting 1/);assert.match(html,/With Claim\.MD 3/);
+assert.match(html,/<h3>Claims<\/h3><div class="practice-bars"/);assert.match(html,/Ready to send 1/);assert.match(html,/Needs correcting 1/);assert.match(html,/With Claim\.MD 3/);
 assert.match(html,/<h3>Last 30 days<\/h3>/);assert.match(html,/Charges \$80\.00/);assert.match(html,/Collected \$25\.00/);
 assert.match(html,/<h3>Patients<\/h3>/);assert.match(html,/Insurance 9/);assert.match(html,/Self-pay 3/);assert.match(html,/12 active patients/);
 assert.match(html,/Needs attention/);assert.match(html,/Patients: missing address<\/span><b>2/);assert.match(html,/insured, no member id<\/span><b>1/);assert.doesNotMatch(html,/missing phone/);
