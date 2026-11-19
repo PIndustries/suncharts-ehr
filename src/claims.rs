@@ -332,16 +332,37 @@ pub(crate) fn claim_resend_plan_for(payer_control_number: &str) -> (&'static str
 const REFILL_REASON: &str = "claim.refilled";
 
 /// Whether a draft's stored content is the shape a refill may complete. Beyond the fields
-/// themselves, this refuses anything whose JSON would not survive a round trip through
-/// [`ClaimContent`] unchanged: a stored `tax_id_type` of `""` (which `edit_claim` drops from the
-/// JSON), an unknown key, or a value of the wrong type. The refill round-trips what it writes, so
-/// without this a single field completed by the system could quietly rewrite the shape of the
-/// fields a person entered.
+/// themselves, this refuses a claim whose JSON would not survive a round trip through
+/// [`ClaimContent`] unchanged: an unknown key, a value of the wrong type, or a `tax_id_type`
+/// stored as the empty string that `edit_claim` and `insert_claim` drop from the JSON. The
+/// refill round-trips what it writes, so without this one field completed by the system could
+/// quietly rewrite the shape of the fields a person entered.
+///
+/// The one thing a refill is allowed to normalise is that same empty `tax_id_type`: dropping it
+/// changes no meaning, since a claim with no type has always been sent as an EIN.
 fn refillable_shape(content: &ClaimContent, raw: &Value) -> bool {
     match serde_json::to_value(content) {
-        Ok(round_trip) => round_trip == *raw,
+        Ok(round_trip) => {
+            round_trip == *raw
+                || (content.tax_id_type.is_empty() && dropped_only_tax_id_type(raw, &round_trip))
+        }
         Err(_) => false,
     }
+}
+
+/// Whether `raw` and `round_trip` differ solely by the empty `tax_id_type` key.
+fn dropped_only_tax_id_type(raw: &Value, round_trip: &Value) -> bool {
+    let (Some(raw), Some(round_trip)) = (raw.as_object(), round_trip.as_object()) else {
+        return false;
+    };
+    raw.len() == round_trip.len() + 1
+        && raw
+            .get("tax_id_type")
+            .is_some_and(|value| value.as_str() == Some(""))
+        && raw
+            .iter()
+            .filter(|(key, _)| key.as_str() != "tax_id_type")
+            .all(|(key, value)| round_trip.get(key) == Some(value))
 }
 
 /// Completes a DRAFT claim's still-empty detail fields from the practice, patient and coverage
@@ -420,7 +441,7 @@ pub(crate) async fn refill_draft(
     // alone: a claim frozen before this field existed stores no key, and the payer file has always
     // sent such a tax ID as an EIN, so completing it here could change how a value a person typed
     // by hand is filed.
-    if content.tax_id.trim().is_empty() {
+    if stored.tax_id.trim().is_empty() {
         fill!(tax_id_type);
     }
     fill!(billing_address);

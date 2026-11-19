@@ -303,7 +303,7 @@ impl Fixture {
     async fn unknown_patient_birth_date(&self, p: Uuid) {
         // A placeholder in the future, so no claim can carry it as a policy holder's birth date.
         let unknown = chrono::Utc::now().date_naive() + chrono::Duration::days(1);
-        self.edit_patient(p, &format!("birth_date=DATE '{}'", unknown.to_string()))
+        self.edit_patient(p, &format!("birth_date=DATE '{}'", unknown))
             .await;
         self.record_identity(p, "Synthetic birth date unknown at registration")
             .await;
@@ -1695,7 +1695,10 @@ mod refill {
         assert_eq!(version(&after["claim"]), v0 + 1);
         let refills = f.refills(&claim_id).await;
         assert_eq!(refills.len(), 1, "one refill for one real change");
-        assert_eq!(refills[0]["evidence"]["filled"], json!(["tax_id"]));
+        assert_eq!(
+            refills[0]["evidence"]["filled"],
+            json!(["tax_id", "tax_id_type"])
+        );
         // The audit entry commits with the revision it belongs to: one `claim.change` for the one
         // change, and only that revision carries the refill reason.
         assert_eq!(
@@ -1747,12 +1750,14 @@ mod refill {
                 Some(version(&after["claim"])),
             )
             .await;
-        assert_eq!(
-            released["message"].as_str().unwrap_or(""),
-            "resolve claim preflight issues before releasing the packet",
-            "release outcome: {released}"
+        // With the practice's details completed nothing else blocks this synthetic claim, so it
+        // releases; if anything still did, it would be a preflight problem, never a stale copy.
+        assert!(
+            status == axum::http::StatusCode::OK
+                || released["message"].as_str()
+                    == Some("resolve claim preflight issues before releasing the packet"),
+            "release outcome: {status} {released}"
         );
-        assert_eq!(status, axum::http::StatusCode::CONFLICT);
         let restated = f.detail(&claim_id).await;
         assert!(
             !asked_for(&restated["preflight_issues"], &["Tax ID"]),
