@@ -472,16 +472,20 @@ function chargeDiagnosisCell(l){return chargeDiagnosisCodesField(l)+'<div class=
 // submitted, and the diagnoses save finds its own form by id.
 // Named for what it holds and nothing else: the letters on the charge lines below are these
 // diagnoses, so one plain word says where each belongs without repeating the visit in both.
+// On the one-page visit the codes & charges block carries its own stable diagnoses host
+// (#encounter-diagnoses, drawn and kept by the revenue block), so the table lays down nothing and
+// there is never a second #visit-diagnoses; elsewhere the table still brings its own.
+function encounterDiagnosesHostExists(){return typeof document!=='undefined'&&typeof document.getElementById==='function'&&Boolean(document.getElementById('encounter-diagnoses'));}
 function chargeDiagnosisSectionMarkup(){
+ if(encounterDiagnosesHostExists())return '';
  return `<section class="charge-visit-diagnoses" data-charge-diagnosis-editor><h3>Diagnoses</h3><div id="visit-diagnoses"><p class="muted">Loading…</p></div></section>`;
 }
 // Placing the section is not drawing it. The diagnoses code fills its own host and saves on its
-// own, exactly as it does on the visit's Diagnoses screen; this only asks it to, and only when the
-// host now on screen is the one laid down with this charge table.
+// own, exactly as it does on the visit's Diagnoses screen; this only asks it to — into the stable
+// block host when the page carries one, otherwise into the host laid down with this charge table.
 function openChargeDiagnosisSection(){
  if(typeof renderVisitDiagnoses!=='function'||typeof activeVisit==='undefined'||!activeVisit)return;
- if(!billingEditorHost()?.querySelector?.('[data-charge-diagnosis-editor]'))return;
- void renderVisitDiagnoses();
+ if(encounterDiagnosesHostExists()||billingEditorHost()?.querySelector?.('[data-charge-diagnosis-editor]'))void renderVisitDiagnoses();
 }
 // The amount an edit leaves behind, in cents, or nothing at all while it is not yet an amount.
 // The amount each line was saved at, remembered on the row, survives while it is edited.
