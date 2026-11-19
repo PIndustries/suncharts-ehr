@@ -110,38 +110,38 @@ fn object() -> Value {
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct CodeInput {
-    code: String,
-    display: String,
-    short_display: Option<String>,
-    billable: bool,
+pub(crate) struct CodeInput {
+    pub(crate) code: String,
+    pub(crate) display: String,
+    pub(crate) short_display: Option<String>,
+    pub(crate) billable: bool,
     #[serde(default = "true_value")]
-    active: bool,
-    effective_start: Option<NaiveDate>,
-    effective_end: Option<NaiveDate>,
+    pub(crate) active: bool,
+    pub(crate) effective_start: Option<NaiveDate>,
+    pub(crate) effective_end: Option<NaiveDate>,
     #[serde(default = "object")]
-    metadata: Value,
+    pub(crate) metadata: Value,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Import {
-    request_id: Uuid,
-    system: String,
-    edition: String,
-    source_name: String,
-    source_url: String,
-    source_sha256: String,
-    effective_start: NaiveDate,
-    effective_end: Option<NaiveDate>,
-    rights: String,
-    rights_attested: bool,
-    license_reference: Option<String>,
-    license_valid_until: Option<NaiveDate>,
-    reason: String,
-    codes: Vec<CodeInput>,
+pub(crate) struct Import {
+    pub(crate) request_id: Uuid,
+    pub(crate) system: String,
+    pub(crate) edition: String,
+    pub(crate) source_name: String,
+    pub(crate) source_url: String,
+    pub(crate) source_sha256: String,
+    pub(crate) effective_start: NaiveDate,
+    pub(crate) effective_end: Option<NaiveDate>,
+    pub(crate) rights: String,
+    pub(crate) rights_attested: bool,
+    pub(crate) license_reference: Option<String>,
+    pub(crate) license_valid_until: Option<NaiveDate>,
+    pub(crate) reason: String,
+    pub(crate) codes: Vec<CodeInput>,
 }
 impl Import {
-    fn validate(&mut self) -> Result<()> {
+    pub(crate) fn validate(&mut self) -> Result<()> {
         self.system = system(&self.system)?.into();
         self.edition = clean(&self.edition, 120)?;
         self.source_name = clean(&self.source_name, 200)?;
@@ -254,6 +254,7 @@ pub fn router() -> Router<State> {
             "/api/v1/terminology/releases",
             post(import).layer(DefaultBodyLimit::max(MAX_IMPORT_BYTES)),
         )
+        .route("/api/v1/terminology/cpt-install", post(cpt_install))
         .route("/api/v1/terminology/codes", get(search))
         .route(
             "/api/v1/terminology/releases/{release}/codes/{code}",
@@ -269,6 +270,21 @@ async fn import(
         return Err(Error::Forbidden);
     }
     input.validate()?;
+    let mut tx = db(&state)?.begin().await?;
+    let (value, created) =
+        store_release(&mut tx, &actor, &input, "terminology.release.imported").await?;
+    tx.commit().await?;
+    Ok(reply(json!({"release":value,"created":created})))
+}
+/// Stores one validated release for the actor's tenant: replay and edition checks under the
+/// tenant's import lock, the release row, its codes and one audit entry. Returns the release
+/// and whether it was created (false when the same request or edition already exists).
+pub(crate) async fn store_release(
+    tx: &mut Transaction<'_, Postgres>,
+    actor: &Actor,
+    input: &Import,
+    audit_action: &str,
+) -> Result<(Value, bool)> {
     let mut content =
         serde_json::to_value(&input).map_err(|_| Error::Invalid("invalid catalog import"))?;
     content
@@ -283,26 +299,24 @@ async fn import(
     let digest = crate::oauth::hash(&encoded);
     drop(encoded);
     drop(content);
-    let mut tx = db(&state)?.begin().await?;
     // Serialize tenant imports: request-ID replay and edition uniqueness are
     // evaluated before any rows are visible or any expensive insertion begins.
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
         .bind(format!("{}:terminology-import", actor.tenant_id))
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     let prior:Option<(Uuid,String)>=sqlx::query_as("SELECT id,request_digest FROM terminology_releases WHERE tenant_id=$1 AND (request_id=$2 OR (system=$3 AND edition=$4)) ORDER BY (request_id=$2) DESC LIMIT 1")
-        .bind(actor.tenant_id).bind(input.request_id).bind(&input.system).bind(&input.edition).fetch_optional(&mut *tx).await?;
+        .bind(actor.tenant_id).bind(input.request_id).bind(&input.system).bind(&input.edition).fetch_optional(&mut **tx).await?;
     if let Some((id, previous)) = prior {
         if previous != digest {
             return Err(Error::Conflict("catalog request or edition already exists with different content; import a new edition"));
         }
-        let value = release(&mut tx, &actor, id).await?;
-        tx.commit().await?;
-        return Ok(reply(json!({"release":value,"created":false})));
+        let value = release(tx, actor, id).await?;
+        return Ok((value, false));
     }
     let id = Uuid::new_v4();
     sqlx::query("INSERT INTO terminology_releases(tenant_id,id,system,edition,source_name,source_url,source_sha256,effective_start,effective_end,rights,rights_attested,license_reference,license_valid_until,request_id,request_digest,code_count,created_by,reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true,$11,$12,$13,$14,$15,$16,$17)")
-        .bind(actor.tenant_id).bind(id).bind(&input.system).bind(&input.edition).bind(&input.source_name).bind(&input.source_url).bind(&input.source_sha256).bind(input.effective_start).bind(input.effective_end).bind(&input.rights).bind(&input.license_reference).bind(input.license_valid_until).bind(input.request_id).bind(&digest).bind(input.codes.len() as i32).bind(actor.sub).bind(&input.reason).execute(&mut *tx).await?;
+        .bind(actor.tenant_id).bind(id).bind(&input.system).bind(&input.edition).bind(&input.source_name).bind(&input.source_url).bind(&input.source_sha256).bind(input.effective_start).bind(input.effective_end).bind(&input.rights).bind(&input.license_reference).bind(input.license_valid_until).bind(input.request_id).bind(&digest).bind(input.codes.len() as i32).bind(actor.sub).bind(&input.reason).execute(&mut **tx).await?;
     for rows in input.codes.chunks(500) {
         let mut query=QueryBuilder::<Postgres>::new("INSERT INTO terminology_codes(tenant_id,release_id,code,code_key,display,short_display,billable,active,effective_start,effective_end,metadata) ");
         query.push_values(rows, |mut b, row| {
@@ -318,14 +332,263 @@ async fn import(
                 .push_bind(row.effective_end)
                 .push_bind(&row.metadata);
         });
-        query.build().execute(&mut *tx).await?;
+        query.build().execute(&mut **tx).await?;
     }
-    audit(&mut tx, &actor, "terminology.release.imported", id).await?;
-    let value = release(&mut tx, &actor, id).await?;
-    tx.commit().await?;
-    Ok(reply(json!({"release":value,"created":true})))
+    audit(tx, actor, audit_action, id).await?;
+    let value = release(tx, actor, id).await?;
+    Ok((value, true))
 }
 
+/// The official file a licensed practice installs CPT from. CMS publishes the physician fee
+/// schedule relative value file with every CPT code it prices and the AMA short descriptor; the
+/// file is fetched only when an owner attests the practice holds a CPT license, and only for
+/// that practice. Nothing licensed is bundled with this program.
+pub(crate) struct CptSource {
+    pub(crate) edition: &'static str,
+    pub(crate) source_name: &'static str,
+    pub(crate) url: &'static str,
+    pub(crate) sha256: &'static str,
+    pub(crate) member: &'static str,
+    pub(crate) effective_start: (i32, u32, u32),
+}
+pub(crate) const CPT_SOURCE: CptSource = CptSource {
+    edition: "2026 (CMS PFS RVU26D, October 2026)",
+    source_name: "CMS Physician Fee Schedule relative value file RVU26D (CPT short descriptors)",
+    url: "https://www.cms.gov/files/zip/rvu26d-updated-08-26-2026.zip",
+    sha256: "521ff0f4ecbf13b5d99dc1dc04d9f82e5361e55c6b4b6b3033043598bf8406e6",
+    member: "PPRRVU2026_Oct_nonQPP.csv",
+    effective_start: (2026, 1, 1),
+};
+const MAX_CPT_ARCHIVE: usize = 32 * 1024 * 1024;
+const MAX_CPT_MEMBER: u64 = 64 * 1024 * 1024;
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CptInstall {
+    request_id: Uuid,
+    license_attested: bool,
+    license_reference: String,
+    #[serde(default)]
+    license_valid_until: Option<NaiveDate>,
+}
+/// One CSV record, quoted fields allowed (a quoted field may hold commas and doubled quotes).
+fn csv_fields(line: &str) -> Vec<String> {
+    let (mut out, mut field, mut quoted, mut chars) =
+        (Vec::new(), String::new(), false, line.chars().peekable());
+    while let Some(c) = chars.next() {
+        match (c, quoted) {
+            ('"', true) if chars.peek() == Some(&'"') => {
+                field.push('"');
+                chars.next();
+            }
+            ('"', _) => quoted = !quoted,
+            (',', false) => out.push(std::mem::take(&mut field)),
+            _ => field.push(c),
+        }
+    }
+    out.push(field);
+    out
+}
+/// Builds the CPT import from the CMS archive bytes: every CPT code (four digits and a digit
+/// or F, T, U, M) with its short descriptor, one row per code, the row without a modifier
+/// preferred. A code CMS lists as deleted is kept but marked inactive.
+pub(crate) fn cpt_import_from_archive(
+    bytes: &[u8],
+    source: &CptSource,
+    license_reference: &str,
+    license_valid_until: Option<NaiveDate>,
+    request_id: Uuid,
+) -> Result<Import> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let bad = || Error::Invalid("The CMS file is not in the expected format.");
+    let digest = format!("{:x}", Sha256::digest(bytes));
+    if digest != source.sha256 {
+        return Err(Error::Invalid(
+            "The CMS file did not match the expected version.",
+        ));
+    }
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|_| bad())?;
+    let mut member = archive.by_name(source.member).map_err(|_| bad())?;
+    if member.size() > MAX_CPT_MEMBER {
+        return Err(bad());
+    }
+    let mut raw = Vec::with_capacity(member.size() as usize);
+    member.read_to_end(&mut raw).map_err(|_| bad())?;
+    // The file is Latin-1: every byte is one character.
+    let text: String = raw.iter().map(|&b| b as char).collect();
+    let mut lines = text.lines();
+    lines
+        .by_ref()
+        .find(|line| {
+            let f = csv_fields(line);
+            f.len() > 3
+                && f[0].trim() == "HCPCS"
+                && f[1].trim() == "MOD"
+                && f[2].trim() == "DESCRIPTION"
+        })
+        .ok_or_else(bad)?;
+    let start = NaiveDate::from_ymd_opt(
+        source.effective_start.0,
+        source.effective_start.1,
+        source.effective_start.2,
+    )
+    .ok_or_else(bad)?;
+    let mut rows: std::collections::BTreeMap<String, (bool, String, String)> = Default::default();
+    for line in lines {
+        let f = csv_fields(line);
+        if f.len() < 4 {
+            continue;
+        }
+        let (code, modifier, description, status) =
+            (f[0].trim(), f[1].trim(), f[2].trim(), f[3].trim());
+        let b = code.as_bytes();
+        let cpt = b.len() == 5
+            && b[..4].iter().all(u8::is_ascii_digit)
+            && (b[4].is_ascii_digit() || b"FTUM".contains(&b[4]));
+        if !cpt || description.is_empty() {
+            continue;
+        }
+        let base = modifier.is_empty();
+        match rows.get(code) {
+            Some((true, _, _)) => {}
+            Some((false, _, _)) if !base => {}
+            _ => {
+                rows.insert(
+                    code.to_owned(),
+                    (base, description.to_owned(), status.to_owned()),
+                );
+            }
+        }
+    }
+    if rows.is_empty() {
+        return Err(bad());
+    }
+    let codes = rows
+        .into_iter()
+        .map(|(code, (_, display, status))| CodeInput {
+            code,
+            display,
+            short_display: None,
+            billable: true,
+            active: status != "D",
+            effective_start: None,
+            effective_end: None,
+            metadata: json!({ "medicare_status": status }),
+        })
+        .collect();
+    let mut input = Import {
+        request_id,
+        system: "CPT".into(),
+        edition: source.edition.into(),
+        source_name: source.source_name.into(),
+        source_url: source.url.into(),
+        source_sha256: digest,
+        effective_start: start,
+        effective_end: None,
+        rights: "licensed".into(),
+        rights_attested: true,
+        license_reference: Some(license_reference.into()),
+        license_valid_until,
+        reason:
+            "CPT list installed from the CMS fee schedule file under the practice's CPT license"
+                .into(),
+        codes,
+    };
+    input.validate()?;
+    Ok(input)
+}
+async fn download_cpt(source: &CptSource) -> Result<Vec<u8>> {
+    let failed =
+        Error::Unavailable("The CPT file could not be downloaded from CMS. Try again later.");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|_| {
+            Error::Unavailable("The CPT file could not be downloaded from CMS. Try again later.")
+        })?;
+    let response = client.get(source.url).send().await.map_err(|_| {
+        Error::Unavailable("The CPT file could not be downloaded from CMS. Try again later.")
+    })?;
+    if !response.status().is_success()
+        || response
+            .content_length()
+            .is_some_and(|n| n as usize > MAX_CPT_ARCHIVE)
+    {
+        return Err(failed);
+    }
+    let bytes = response.bytes().await.map_err(|_| {
+        Error::Unavailable("The CPT file could not be downloaded from CMS. Try again later.")
+    })?;
+    if bytes.len() > MAX_CPT_ARCHIVE {
+        return Err(failed);
+    }
+    Ok(bytes.to_vec())
+}
+/// The CPT edition this tenant already has from the built-in source, if any.
+async fn installed_cpt(tx: &mut Transaction<'_, Postgres>, actor: &Actor) -> Result<Option<Uuid>> {
+    Ok(sqlx::query_scalar(
+        "SELECT id FROM terminology_releases WHERE tenant_id=$1 AND system='CPT' AND edition=$2",
+    )
+    .bind(actor.tenant_id)
+    .bind(CPT_SOURCE.edition)
+    .fetch_optional(&mut **tx)
+    .await?)
+}
+/// Installs CPT for a practice whose owner attests it holds a CPT license, from bytes already
+/// fetched (the handler downloads them; tests pass a synthetic archive).
+pub(crate) async fn install_cpt(
+    pool: &PgPool,
+    actor: &Actor,
+    request: (Uuid, &str, Option<NaiveDate>),
+    source: &CptSource,
+    bytes: &[u8],
+) -> Result<(Value, bool)> {
+    let input = cpt_import_from_archive(bytes, source, request.1, request.2, request.0)?;
+    let mut tx = pool.begin().await?;
+    let stored = store_release(&mut tx, actor, &input, "terminology.release.cpt_installed").await?;
+    tx.commit().await?;
+    Ok(stored)
+}
+async fn cpt_install(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Json(body): Json<CptInstall>,
+) -> Result<Response> {
+    if !matches!(actor.role, Role::Owner) {
+        return Err(Error::Forbidden);
+    }
+    if !body.license_attested {
+        return Err(Error::Invalid(
+            "Confirm that your practice holds a CPT license.",
+        ));
+    }
+    let reference = clean(&body.license_reference, 500)
+        .map_err(|_| Error::Invalid("Enter the CPT license reference."))?;
+    if body
+        .license_valid_until
+        .is_some_and(|date| date < Utc::now().date_naive())
+    {
+        return Err(Error::Invalid("The CPT license date has passed."));
+    }
+    let pool = db(&state)?;
+    let mut tx = pool.begin().await?;
+    if let Some(id) = installed_cpt(&mut tx, &actor).await? {
+        let value = release(&mut tx, &actor, id).await?;
+        tx.commit().await?;
+        return Ok(reply(json!({"release":value,"created":false})));
+    }
+    tx.commit().await?;
+    let bytes = download_cpt(&CPT_SOURCE).await?;
+    let (value, created) = install_cpt(
+        pool,
+        &actor,
+        (body.request_id, &reference, body.license_valid_until),
+        &CPT_SOURCE,
+        &bytes,
+    )
+    .await?;
+    Ok(reply(json!({"release":value,"created":created})))
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReleaseQuery {
