@@ -4,7 +4,7 @@
 // name in plain words; the hidden field carries the id the form submits.
 /* global esc, human, payerName */
 'use strict';
-const typeaheadStates=new WeakMap(),typeaheadHosts=new WeakMap(),typeaheadRendered=new WeakSet(),typeaheadProviders=new Map();
+const typeaheadStates=new WeakMap(),typeaheadHosts=new WeakMap(),typeaheadLive=new Set(),typeaheadRendered=new WeakSet(),typeaheadProviders=new Map();
 let typeaheadSequence=0;
 // typeaheadProvide(name,provider) — how a screen registers the records its picker boxes offer:
 // 'typeaheadPayerChoices', 'typeaheadCoverageOptions', 'typeaheadPharmacyChoices' or
@@ -233,7 +233,7 @@ function attachTypeahead(input,options={}){
   limit:options.limit||12,request:0,timer:null,items:[],active:-1,pending:null,picked:'',
   onInput:()=>typeaheadInput(state),onFocus:()=>typeaheadFocus(state),onBlur:()=>typeaheadBlur(state),
   onKeydown:event=>typeaheadKeydown(state,event),onSubmit:()=>typeaheadTabPick(state)};
- typeaheadStates.set(input,state);typeaheadHosts.set(host,state);typeaheadHosts.set(input,state);
+ typeaheadStates.set(input,state);typeaheadHosts.set(host,state);typeaheadHosts.set(input,state);typeaheadLive.add(state);
  // A box drawn already holding a name — a saved preference, a value carried over from another
  // step — is a decided value, so opening it lists everything to choose from, that name first.
  if(input.value)state.picked=input.value;
@@ -251,6 +251,7 @@ function attachTypeahead(input,options={}){
   typeaheadStates.delete(input);
   if(typeaheadHosts.get(host)===state)typeaheadHosts.delete(host);
   if(typeaheadHosts.get(input)===state)typeaheadHosts.delete(input);
+  typeaheadLive.delete(state);
  };
  // A node the page no longer holds is a stale binding, not an existing one.
  const disconnect=()=>{state.forget();return true;};
@@ -316,7 +317,7 @@ if(typeof document.addEventListener==='function'){
   // A picker remembers the results list it writes into. When a screen throws that markup away
   // the binding must go with it, so the replacement box is wired afresh.
   const stale=node=>node?.isConnected===false;
-  const sweep=()=>{for(const [,state] of [...typeaheadHosts])if(stale(state.list))state.forget();};
+  const sweep=()=>{for(const state of [...typeaheadLive])if(stale(state.list)||stale(state.input))state.forget();};
   const start=()=>{typeaheadInit(document);observer.observe(document.body,{childList:true,subtree:true});};
   if(document.readyState==='complete')start();
   else document.addEventListener('DOMContentLoaded',start,{once:true});

@@ -99,8 +99,9 @@ async function refreshClaimInContext(id,context=claimContextSnapshot()){
 // problem in its own terms; staff see the boxes they have to fill in, and one button per place that
 // opens it. Nothing here is a message we invent: every line comes from a server issue, and an issue
 // we cannot translate is left out of the list rather than shown in developer wording.
-const claimMissingRule=field=>({field,words:field.words,input:field.input,
- match:source=>(source.fields||[]).includes(field.key)||(source.texts||[]).some(test=>test(field.text))});
+// Whether a rule names this problem: the server's own field code, or one of the rule's patterns
+// found in the words the server used.
+const claimMissingRuleMatches=(rule,source)=>(source.fields||[]).includes(rule.key)||(rule.texts||[]).some(pattern=>(source.texts||[]).some(text=>pattern.test(String(text||''))));
 // `key` is the server's own field name when it gives one; `texts` are the words it says instead.
 // `input` is the box on this claim's own Edit form, empty when the fix lives on another record.
 const claimMissingGroups=[
@@ -154,6 +155,7 @@ function claimMissingIssueSources(issue,text){
 }
 // Rules are tried practice → patient → insurance → claim, and within a group in the order written,
 // so a message naming both a tax ID and an NPI is listed once, under Practice.
+function claimMissingPlain(text){return String(text).replace(/\s*\(.*?\)/g,'').replace(/ can only use plain letters.*$/i,' has characters a claim cannot carry').trim();}
 function claimMissingGroupsFor(issues){
  const buckets=Object.fromEntries(claimMissingGroups.map(group=>[group.key,{words:[],inputs:new Set()}]));
  const seen=new Set();
@@ -164,7 +166,7 @@ function claimMissingGroupsFor(issues){
   if(seen.has(key))continue;
   const source=claimMissingIssueSources(issue,text);
   for(const group of claimMissingGroups){
-   const rule=group.rules.find(claimMissingRule);
+   const rule=group.rules.find(candidate=>claimMissingRuleMatches(candidate,source));
    if(!rule)continue;
    seen.add(key);
    const bucket=buckets[group.key];
@@ -172,6 +174,7 @@ function claimMissingGroupsFor(issues){
    if(rule.input)bucket.inputs.add(rule.input);
    break;
   }
+  if(!seen.has(key)){seen.add(key);const bucket=buckets.claim;const words=claimMissingPlain(text);if(!bucket.words.includes(words))bucket.words.push(words);}
  }
  return buckets;
 }
@@ -317,7 +320,7 @@ function claimPrimaryActionMarkup(claim,detail={},options={}){
  else if(claim.status==='ready'&&!blockers.length&&connected)words=`Everything checks out. Send it to ${claim.snapshot?.account?.coverage_snapshot?.payer?.content?.name||'the insurer'} and the answer will show here.`,button=`<button type="button" class="primary" data-claimmd-submit="${esc(claim.id)}">Send claim</button>`;
  else if(claim.status==='ready'&&!connected)words='No claim connection is set up, so it cannot go out from here. Ask the practice owner to check Claim connections, or prepare a claim file to upload to your insurer yourself.',button=`<button type="button" class="primary" data-edi-claim="${esc(claim.id)}">Prepare claim file (837P)</button>`;
  else if(claim.status==='draft'&&!blockers.length)words='Check the service lines, diagnoses and insurance below. The next step asks you to confirm before anything is sent.',button=`<button type="button" class="primary" data-claim-release="${esc(claim.id)}">Send claim</button>`;
- else words=blockers.length?`${blockers.length} thing${blockers.length===1?'':'s'} still has to be put right, listed below.`:'This claim is being prepared.',button='<button type="button" class="primary" data-edit-claim>Edit claim</button>';
+ else words=blockers.length?`${blockers.length===1?'1 thing needs':`${blockers.length} things need`} fixing before this can be sent. They are listed below.`:'This claim is being prepared.',button='<button type="button" class="primary" data-edit-claim>Edit claim</button>';
  const cms=claimCms1500Markup(claim);
  const secondary=canWrite&&claim.status==='adjudicated'&&secondaryPlan==='primary'?'<button type="button" data-secondary-claim>Bill secondary insurance</button>':'';
  const correction=canWrite&&!claimIsCrossover(claim)&&claim.status==='adjudicated'&&claim.payer_control_number?'<button type="button" data-replacement-claim>Correct or void this claim</button>':'';
