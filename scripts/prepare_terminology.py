@@ -13,64 +13,28 @@ import io
 import json
 from pathlib import Path
 import re
-from urllib.request import urlopen
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 import uuid
 import zipfile
 
-DATASETS = {
-    "icd10cm-2026": {
-        "system": "ICD-10-CM", "edition": "FY2026",
-        "source_name": "CDC / NCHS ICD-10-CM FY2026 order file",
-        "source_url": "https://ftp.cdc.gov/pub/health_statistics/nchs/publications/ICD10CM/2026/icd10cm-Code%20Descriptions-2026.zip",
-        "effective_start": "2025-10-01", "effective_end": "2026-09-30",
-    },
-    "icd10cm-2027": {
-        "system": "ICD-10-CM", "edition": "FY2027",
-        "source_name": "CDC / NCHS ICD-10-CM FY2027 order file",
-        "source_url": "https://ftp.cdc.gov/pub/health_statistics/nchs/publications/ICD10CM/2027/icd10cm-code-descriptions-2027.zip",
-        "effective_start": "2026-10-01", "effective_end": "2027-09-30",
-    },
-    "icd10pcs-2027": {
-        "system": "ICD-10-PCS", "edition": "FY2027",
-        "source_name": "CMS ICD-10-PCS FY2027 order file",
-        "source_url": "https://www.cms.gov/files/zip/2027-icd-10-pcs-order-file-long-abbreviated-titles.zip",
-        "effective_start": "2026-10-01", "effective_end": "2027-09-30",
-    },
-    "hcpcs-2026-01": {
-        "system": "HCPCS", "edition": "2026-01",
-        "source_name": "CMS January 2026 HCPCS Level II public-use file",
-        "source_url": "https://www.cms.gov/files/zip/january-2026-alpha-numeric-hcpcs-file.zip",
-        "effective_start": "2026-01-01", "effective_end": "2026-03-31",
-    },
-    "hcpcs-2026-04": {
-        "system": "HCPCS", "edition": "2026-04",
-        "source_name": "CMS April 2026 HCPCS Level II public-use file",
-        "source_url": "https://www.cms.gov/files/zip/april-2026-alpha-numeric-hcpcs-file.zip",
-        "effective_start": "2026-04-01", "effective_end": "2026-06-30",
-    },
-    "hcpcs-2026-07": {
-        "system": "HCPCS", "edition": "2026-07",
-        "source_name": "CMS July 2026 HCPCS Level II public-use file",
-        "source_url": "https://www.cms.gov/files/zip/july-2026-alpha-numeric-hcpcs-file.zip",
-        "effective_start": "2026-07-01", "effective_end": "2026-09-30",
-    },
-    "hcpcs-2026-10": {
-        "system": "HCPCS", "edition": "2026-10",
-        "source_name": "CMS October 2026 HCPCS Level II public-use file",
-        "source_url": "https://www.cms.gov/files/zip/october-2026-alpha-numeric-hcpcs-file.zip",
-        "effective_start": "2026-10-01", "effective_end": "2026-12-31",
-    },
-    "hcpcs-2027-01": {
-        "system": "HCPCS", "edition": "2027-01",
-        "source_name": "CMS January 2027 HCPCS Level II public-use file",
-        "source_url": "https://www.cms.gov/files/zip/january-2027-alpha-numeric-hcpcs-file.zip",
-        "effective_start": "2027-01-01", "effective_end": None,
-    },
-}
+REPO_ROOT = Path(__file__).resolve().parent.parent
+CATALOGS_DIR = REPO_ROOT / "catalogs"
+DATASETS_FILE = CATALOGS_DIR / "datasets.json"
+
+
+def load_datasets(path=DATASETS_FILE):
+    """Dataset specifications live in catalogs/datasets.json, not in code."""
+    return json.loads(Path(path).read_text())["datasets"]
+
+
+DATASETS = load_datasets()
 MAX_ARCHIVE = 32 * 1024 * 1024
 MAX_MEMBER = 64 * 1024 * 1024
 MONTH_ABBREVIATIONS = {"01": "JAN", "04": "APR", "07": "JUL", "10": "OCT"}
 MONTH_NAMES = {"01": "january", "04": "april", "07": "july", "10": "october"}
+NEXT_MONTH_NAMES = {"01": "april", "04": "july", "07": "october", "10": "january"}
+HTTP_TIMEOUT = 45
 # PCS codes are alphanumeric and never use the letters I or O. Built by
 # alternation so the class cannot silently collapse an intended exclusion range.
 PCS_ALPHABET = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ"
@@ -230,6 +194,219 @@ def write_catalog(dataset, raw, directory):
     }
 
 
+def manifest_entries(directory, datasets):
+    """One manifest entry per dataset named in datasets."""
+    entries = []
+    for spec in datasets.values():
+        path = directory / catalog_filename(spec)
+        data = json.loads(gzip.decompress(path.read_bytes()))
+        entries.append({
+            "file": path.name, "system": data["system"], "edition": data["edition"],
+            "effective_start": data["effective_start"], "effective_end": data["effective_end"],
+            "code_count": len(data["codes"]), "source_url": data["source_url"],
+            "source_sha256": data["source_sha256"],
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        })
+    return entries
+
+
+def refresh_manifest(directory, datasets=None):
+    """Rewrite manifest.json deterministically from the shipped catalogs.
+
+    The manifest covers exactly the datasets named (defaults to
+    catalogs/datasets.json), so a bare run cannot pick up an untracked
+    .json.gz file.
+    """
+    manifest = {"datasets": manifest_entries(directory,
+                                             datasets if datasets is not None
+                                             else load_datasets())}
+    (directory / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return manifest["datasets"]
+
+
+def next_hcpcs_candidate(edition):
+    """Quarter code, source URL and spec following one HCPCS edition."""
+    year, month = int(edition[:4]), edition[5:]
+    if month not in NEXT_MONTH_NAMES:
+        raise ValueError("Unknown HCPCS quarter edition")
+    nxt = NEXT_MONTH_NAMES[month]
+    if nxt == "january":
+        year += 1
+    nxt_month = {"january": "01", "april": "04", "july": "07", "october": "10"}[nxt]
+    code = f"hcpcs-{year}-{nxt_month}"
+    url = f"https://www.cms.gov/files/zip/{nxt}-{year}-alpha-numeric-hcpcs-file.zip"
+    spec = {
+        "system": "HCPCS", "edition": f"{year}-{nxt_month}",
+        "source_name": f"CMS {nxt.capitalize()} {year} HCPCS Level II public-use file",
+        "source_url": url, "effective_start": f"{year}-{nxt_month}-01",
+        # Editions already shipped are immutable, so a new HCPCS edition gets
+        # an open end instead of closing the previous one; the server selects
+        # the newest edition whose start is on or before the service date.
+        "effective_end": None,
+    }
+    return code, url, spec
+
+
+def next_icd10cm_candidate(edition):
+    """Fiscal-year code, source URL and spec following one ICD-10-CM edition."""
+    year = int(edition.removeprefix("FY")) + 1
+    code = f"icd10cm-{year}"
+    url = (f"https://ftp.cdc.gov/pub/health_statistics/nchs/publications/"
+           f"ICD10CM/{year}/icd10cm-code-descriptions-{year}.zip")
+    spec = {
+        "system": "ICD-10-CM", "edition": f"FY{year}",
+        "source_name": f"CDC / NCHS ICD-10-CM FY{year} order file",
+        "source_url": url, "effective_start": f"{year - 1}-10-01",
+        "effective_end": f"{year}-09-30",
+    }
+    return code, url, spec
+
+
+def next_icd10pcs_candidate(edition):
+    """Fiscal-year code, source URL and spec following one ICD-10-PCS edition."""
+    year = int(edition.removeprefix("FY")) + 1
+    code = f"icd10pcs-{year}"
+    url = f"https://www.cms.gov/files/zip/{year}-icd-10-pcs-order-file-long-abbreviated-titles.zip"
+    spec = {
+        "system": "ICD-10-PCS", "edition": f"FY{year}",
+        "source_name": f"CMS ICD-10-PCS FY{year} order file",
+        "source_url": url, "effective_start": f"{year - 1}-10-01",
+        "effective_end": f"{year}-09-30",
+    }
+    return code, url, spec
+
+
+def newest(datasets, system):
+    """Newest edition of one system, ordered by edition then dataset code."""
+    editions = [(spec["edition"], code) for code, spec in datasets.items()
+                if spec["system"] == system]
+    if not editions:
+        raise ValueError(f"No {system} dataset configured")
+    return max(editions)[1]
+
+
+def url_exists(url, fetch):
+    """True when the official URL answers HEAD or a successful GET.
+
+    A transport error on HEAD (network down, or a server that rejects the
+    method) falls through to GET; an HTTP error such as 404 is definitive and
+    is not retried.
+    """
+    definitive = False
+    try:
+        fetch("HEAD", url)
+        return True
+    except (HTTPError, URLError):
+        definitive = True
+    except OSError:
+        pass
+    if definitive:
+        return False
+    try:
+        fetch("GET", url)
+        return True
+    except (HTTPError, URLError):
+        return False
+
+
+def download(url, fetch):
+    raw = fetch("GET", url)
+    if len(raw) > MAX_ARCHIVE:
+        raise ValueError("Source archive exceeds the allowed size")
+    return raw
+
+
+def fetch_url(method, url):
+    request = Request(url, method=method)
+    with urlopen(request, timeout=HTTP_TIMEOUT) as response:
+        return response.read(MAX_ARCHIVE + 1)
+
+
+def builtin_block(entries):
+    """The generated BUILTIN const in src/builtin_catalogs.rs.
+
+    Rust cannot read manifest.json at compile time, so this list is kept in
+    sync with it by the refresh job and verified by the crate's own tests.
+    """
+    doc = ("/// Every shipped catalog: the file name it is known by and its gzip "
+           "bytes, compiled in.\n")
+    lines = ["pub const BUILTIN: &[(&str, &[u8])] = &["]
+    for entry in entries:
+        lines.append("    (")
+        lines.append(f'        "{entry["file"]}",')
+        lines.append(f'        include_bytes!("../catalogs/{entry["file"]}"),')
+        lines.append("    ),")
+    lines.append("];")
+    return doc + "\n".join(lines)
+
+
+def refresh_builtin_embeds(directory, datasets):
+    """Rewrite the BUILTIN const so every manifest file is embedded."""
+    path = REPO_ROOT / "src" / "builtin_catalogs.rs"
+    source = path.read_text()
+    marker = "/// Every shipped catalog"
+    doc_start = source.index(marker)
+    start = source.index("pub const BUILTIN: &[(&str, &[u8])] = &[")
+    end = source.index("\n];", start) + len("\n];")
+    assert doc_start < start
+    updated = source[:doc_start] + builtin_block(manifest_entries(directory, datasets)) + source[end:]
+    if updated == source:
+        return False
+    path.write_text(updated)
+    return True
+
+
+def discover(datasets, directory, fetch, datasets_path):
+    """Probe the next edition of each system; install what already exists.
+
+    Returns the codes of newly installed datasets. Nothing is written when no
+    candidate exists yet. A new HCPCS edition gets an open effective_end and
+    previous editions keep theirs: shipped catalogs are immutable and the
+    server selects the newest edition starting on or before the service date.
+    The module-level DATASETS the builders read is updated in step with
+    datasets.json, so a catalog built here uses exactly its published spec.
+    """
+    candidates = [
+        next_hcpcs_candidate(datasets[newest(datasets, "HCPCS")]["edition"]),
+        next_icd10cm_candidate(datasets[newest(datasets, "ICD-10-CM")]["edition"]),
+        next_icd10pcs_candidate(datasets[newest(datasets, "ICD-10-PCS")]["edition"]),
+    ]
+    found, downloads = [], {}
+    for code, url, spec in candidates:
+        if code in datasets or not url_exists(url, fetch):
+            continue
+        DATASETS[code] = spec
+        downloads[code] = download(url, fetch)
+        write_catalog(code, downloads[code], directory)
+        datasets[code] = spec
+        found.append(code)
+    if found:
+        with datasets_path.open("w") as handle:
+            json.dump({"datasets": datasets}, handle, indent=2)
+            handle.write("\n")
+        for code in [c for c in DATASETS if c not in datasets]:
+            del DATASETS[code]
+        refresh_manifest(directory, datasets)
+        if directory == CATALOGS_DIR:
+            refresh_builtin_embeds(directory, datasets)
+    return found
+
+
+def discover_cli(directory):
+    """Entry point for `discover`. Prints one line; 0 when nothing was found."""
+    try:
+        found = discover(load_datasets(), directory, fetch_url, DATASETS_FILE)
+    except Exception as error:
+        print(f"Code list discovery failed: {error}")
+        return 1
+    if not found:
+        print("No new public code list editions found.")
+        return 0
+    print(f"Added new public code list editions: {', '.join(found)}.")
+    return 0
+
+
 def prepare_all(archives, directory):
     entries = []
     for dataset in DATASETS:
@@ -247,14 +424,18 @@ def prepare_all(archives, directory):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("dataset", nargs="?", choices=DATASETS)
+    parser.add_argument("dataset", nargs="?", choices=list(DATASETS) + ["discover"],
+                        help="Dataset to prepare, or 'discover' to look for new editions")
     parser.add_argument("--archive", type=Path, help="Use an already downloaded official ZIP")
     parser.add_argument("--output", type=Path, help="Single-dataset JSON output")
     parser.add_argument("--all", action="store_true",
                         help="Prepare every shipped dataset from a source directory")
     parser.add_argument("--archives", type=Path, help="Directory of official source ZIPs")
-    parser.add_argument("--dir", type=Path, help="Output catalog directory for --all")
+    parser.add_argument("--dir", type=Path, help="Catalog directory (default catalogs/)")
     args = parser.parse_args()
+    if args.dataset == "discover":
+        directory = args.dir if args.dir else REPO_ROOT / "catalogs"
+        raise SystemExit(discover_cli(directory))
     if args.all:
         if not args.archives or not args.dir:
             parser.error("--all requires --archives and --dir")
