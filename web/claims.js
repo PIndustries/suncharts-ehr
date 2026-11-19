@@ -208,7 +208,7 @@ function claimQuickFixMarkup(claim,inputs){
  if(inputs.has('subscriber_birth_date'))parts.push(box('subscriber_birth_date',"Policy holder's date of birth",v.subscriber_birth_date||(own?claim.snapshot?.patient?.birth_date:'')||'',`type="date" required max="${new Date().toISOString().slice(0,10)}"`));
  for(const [name,label,extra] of [['billing_provider_name','Billing provider name','maxlength="60"'],['tax_id','Practice tax ID (9 digits)','inputmode="numeric" pattern="[0-9]{2}-?[0-9]{7}"'],['billing_npi','Billing NPI (10 digits)','inputmode="numeric" pattern="[0-9]{10}"'],['rendering_npi','Rendering NPI (10 digits)','inputmode="numeric" pattern="[0-9]{10}"'],['billing_address','Billing address','maxlength="1000"'],['place_of_service','Place of service (2 digits, 11 = office)','inputmode="numeric" pattern="[0-9]{2}"']])
   if(inputs.has(name))parts.push(box(name,label,v[name],`required ${extra}`));
- return `<form id="claim-quick-fix" class="claim-quick-fix" data-claim="${esc(claim.id)}"><h4>Fix it here</h4>${parts.join('')}<div class="actions"><button type="submit" class="primary">Save and check again</button></div></form>`;
+ return `<form id="claim-quick-fix" class="claim-quick-fix" data-claim="${esc(claim.id)}">${parts.join('')}<div class="actions"><button type="submit" class="primary">Save and check again</button></div></form>`;
 }
 function claimMissingMarkup(buckets,claim){
  const fixable=claimQuickFixable(claim),inline=new Set();
@@ -398,7 +398,14 @@ function claimPrimaryActionMarkup(claim,detail={},options={}){
  else if(claim.status==='ready'&&!blockers.length&&connected)words=`Everything checks out. Send it to ${claim.snapshot?.account?.coverage_snapshot?.payer?.content?.name||'the insurer'} and the answer will show here.`,button=`<button type="button" class="primary" data-claimmd-submit="${esc(claim.id)}">Send claim</button>`;
  else if(claim.status==='ready'&&!connected)words='No claim connection is set up, so it cannot go out from here. Ask the practice owner to check Claim connections, or prepare a claim file to upload to your insurer yourself.',button=`<button type="button" class="primary" data-edi-claim="${esc(claim.id)}">Prepare claim file (837P)</button>`;
  else if(claim.status==='draft'&&!blockers.length)words='Check the service lines, diagnoses and insurance below. The next step asks you to confirm before anything is sent.',button=`<button type="button" class="primary" data-claim-release="${esc(claim.id)}">Send claim</button>`;
- else words=blockers.length?`${blockers.length===1?'1 thing needs':`${blockers.length} things need`} fixing before this can be sent. They are listed below.`:'This claim is being prepared.',button='<button type="button" class="primary" data-edit-claim>Edit claim</button>';
+ else{
+  // Count what the list below shows (two server messages about one box are one line there), and
+  // when the boxes can be filled in right on this page, point there instead of opening the editor.
+  const listed=claimMissingGroupsFor(blockers),count=Object.values(listed).reduce((n,bucket)=>n+bucket.words.length,0)||blockers.length;
+  const inline=claimQuickFixable(claim)&&Object.values(listed).some(bucket=>(bucket.items||[]).some(item=>claimQuickFixInputs.includes(item.input)));
+  words=count?`${count===1?'1 thing needs':`${count} things need`} fixing before this can be sent. ${inline?'Fill them in below; the claim is checked again when you save.':'They are listed below.'}`:'This claim is being prepared.';
+  button=inline?'':'<button type="button" class="primary" data-edit-claim>Edit claim</button>';
+ }
  const cms=claimCms1500Markup(claim);
  const secondary=canWrite&&claim.status==='adjudicated'&&secondaryPlan==='primary'?'<button type="button" data-secondary-claim>Bill secondary insurance</button>':'';
  const correction=canWrite&&!claimIsCrossover(claim)&&claim.status==='adjudicated'&&claim.payer_control_number?'<button type="button" data-replacement-claim>Correct or void this claim</button>':'';
