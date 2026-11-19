@@ -108,6 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     );
     tokio::spawn(suncharts_engine::managed_connect::run(db.clone()));
+    tokio::spawn(suncharts_engine::builtin_catalogs::run(db.clone()));
     tokio::spawn(suncharts_engine::workflow_triggers::run(db.clone()));
     tokio::spawn(suncharts_engine::reminders::run(db.clone()));
     tokio::spawn(suncharts_engine::copay_checkout::run(db.clone()));
