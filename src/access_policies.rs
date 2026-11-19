@@ -500,6 +500,11 @@ fn resources(path: &str) -> Option<Vec<&'static str>> {
     if path == "/api/v1/practice/worklist" {
         return Some(vec!["practice", "clinical", "scheduling"]);
     }
+    // The overview's patient counts need the practice area; its money and claim figures are
+    // checked again inside against billing view.
+    if path == "/api/v1/practice/overview" {
+        return Some(vec!["practice"]);
+    }
     if path == "/api/v1/patients/{}/workspace" || path == "/api/v1/patients/{}/banner" {
         return Some(vec!["clinical", "scheduling"]);
     }

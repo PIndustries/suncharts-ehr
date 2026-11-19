@@ -1,0 +1,29 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/* Practice overview: tiles that open their lists, three small charts and what needs attention. Theme tokens only. */
+.practice-dashboard{display:grid;gap:14px;margin:0 0 16px}
+.practice-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.practice-tile{display:grid;gap:2px;justify-items:start;text-align:left;padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);cursor:pointer}
+.practice-tile span{font-size:var(--fs-sm);color:var(--muted)}
+.practice-tile b{font-size:1.5rem;line-height:1.2}
+.practice-tile small{color:var(--muted)}
+.practice-tile.is-attention{border-color:var(--warning-line);background:var(--warning-bg)}
+.practice-tile.is-attention b{color:var(--warning-text)}
+.practice-tile.is-good b{color:var(--success-text)}
+.practice-charts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.practice-chart-card,.practice-needs{padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:var(--surface);min-width:0}
+.practice-chart-card h3,.practice-needs h3{margin:0 0 8px;font-size:var(--fs-body)}
+.practice-chart{width:100%;height:auto;display:block}
+.practice-chart-label,.practice-chart-value{font-size:var(--fs-xs,12px);fill:var(--ink)}
+.practice-chart-bar{fill:var(--blue)}
+.practice-chart-bar.attention{fill:var(--warning-line)}
+.practice-chart-bar.good{fill:var(--success-line)}
+.practice-chart-bar.neutral{fill:var(--muted)}
+.practice-chart-line{fill:none;stroke-width:2}
+.practice-chart-line.charges{stroke:var(--blue)}
+.practice-chart-line.collected{stroke:var(--success-line)}
+.practice-chart-key{display:flex;gap:14px;margin:6px 0 0;font-size:var(--fs-sm)}
+.practice-chart-key .charges{color:var(--blue)}
+.practice-chart-key .collected{color:var(--success-text)}
+.practice-needs ul{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.practice-needs li{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:10px;align-items:center}
+@media(max-width:900px){.practice-charts{grid-template-columns:1fr}}
