@@ -61,7 +61,9 @@ async function showPartners(){
  partnersState={...data,onboarding};
  renderPartners();
 }
-function partnerConfirmHost(){const host=$('partner-confirm');if(host)host.replaceChildren();return host;}
+// Finds the confirmation area only. Emptying it here would remove a confirmation's own form when its
+// submit button is clicked, before the browser can submit it; each branch below writes it instead.
+function partnerConfirmHost(){return $('partner-confirm');}
 function partnerFromList(slug){
  const enrollment=partnersState?.partners?.enrollment;
  if(enrollment?.status==='active'&&enrollment.partner_slug===slug)return {slug,name:enrollment.partner_name};
