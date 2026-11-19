@@ -19,6 +19,16 @@ function visitBillingDate(value){
 }
 function visitBillingMethod(method){return ({cash:'cash',check:'check',external:'paid elsewhere',card:'card',other:'other',none:''})[method]||'';}
 function visitBillingInsurer(s){return s.claim?.payer_name||s.insurance?.insurer||'the insurer';}
+// The card's own one-click send. It does the work the review panel's final button does today
+// (see visitClaimDirectSend in web/visit-review.js, which loads before the click handlers run);
+// the panel stays one small link away for anyone who wants to look at the claim first.
+// It is offered only on the card of the visit the screen is actually on, where the send can read
+// the live account: a card drawn from a copy elsewhere keeps opening the claim instead.
+function visitBillingDirectSend(s,ctx){
+ if(s.state!=='send_claim'||!s.claim?.id||s.claim.status!=='ready')return '';
+ if(!visitBillingDirectFlow(s,ctx,s.claim))return '';
+ return `<button type="button" class="primary" data-visit-claim-direct-send="${esc(s.claim.id)}">Send claim to ${esc(visitBillingInsurer(s))}</button><button type="button" class="text-button" data-visit-review-open="account">Review claim</button>`;
+}
 // The one main button for a claim that has reached the point of sending. The review panel
 // beside the charge table holds the checks, the form and the send itself; until it is loaded
 // the card's own buttons do the same jobs.
@@ -39,7 +49,7 @@ function visitBillingStatus(s,ctx={}){
   case 'prepare_claim':return ctx.delegated?{headline:'Claim not prepared yet',detail:`A member of the practice prepares the claim to ${insurer} by opening this visit. A support session does not prepare claims.`,action:''}:ctx.prepareError?{headline:`The claim to ${insurer} could not be prepared`,detail:ctx.prepareError,action:create?button('Try again','data-visit-claim-prepare'):''}:create?{headline:`Preparing the claim to ${insurer}`,detail:'The claim is filled in from this visit. Nothing is sent until you send it.',action:ctx.preparing?'':button('Prepare claim','data-visit-claim-prepare')}:{headline:'Posted',detail:`Billing staff prepare the claim to ${insurer}.`,action:''};
    case 'claim_cancelled':return {headline:`The claim to ${insurer} was cancelled`,detail:'Nothing is with the insurer.',action:create?button('Prepare a new claim','data-visit-claim-prepare="again"'):''};
    case 'fix_claim':return {headline:`Claim to ${insurer} needs details`,detail:'Nothing has been sent yet.',issues:s.claim?.issues||[],action:reviewButton(s,ctx)||(write?button('Fix claim details',`data-visit-claim-fix="${esc(claim)}"`):'')};
-    case 'send_claim':return {headline:`Claim ready to send to ${insurer}`,detail:'Nothing has been sent yet.',action:reviewButton(s,ctx)||(write?button('Review and send claim',`data-visit-claim-send="${esc(claim)}"`):'')};
+    case 'send_claim':return {headline:`Claim ready to send to ${insurer}`,detail:'Nothing has been sent yet.',action:visitBillingDirectSend(s,ctx)||reviewButton(s,ctx)||(write?button('Review and send claim',`data-visit-claim-send="${esc(claim)}"`):'')};
     case 'correct_claim':return {headline:'Charges changed after the claim was sent',detail:`Send a corrected claim to ${insurer}.`,action:button('Open claim',`data-revenue-claim="${esc(claim)}"`)};
    case 'waiting_insurer':return {headline:`Waiting on ${insurer}`,detail:`${s.insurance.sent_on?`Claim sent ${visitBillingDate(s.insurance.sent_on)}. `:''}Nothing to do until they answer.`,action:button('Check claim status',`data-revenue-claim="${esc(claim)}"`)};
    case 'post_response':return {headline:`${insurer} answered`,detail:'Review their payment and post it to this visit.',action:button('Review insurer payment',`data-revenue-remittance="${esc(s.claim?.response_to_review||'')}"`)};
@@ -54,6 +64,26 @@ function visitBillingStatus(s,ctx={}){
   default:return {headline:'Billing status unavailable',detail:'Refresh before relying on these amounts.',action:''};
  }
 }
+// The one place a visit says it can go straight from posting to a sent claim. The right to write
+// and to see claims, insurance that can be billed electronically, and the card of the visit the
+// screen is actually on: on the post_charges state a draft in hand, on the send_claim state the
+// claim the server has already filled in and checked.
+function visitBillingDirectFlow(s,ctx,claim){
+ if(!ctx.canWrite||ctx.claimsAllowed===false||ctx.delegated||ctx.noDirectSend)return false;
+ if(!s.insurance?.insured||!s.insurance.electronic||!s.account)return false;
+ if(typeof visitBillingCardCurrent==='function'&&!visitBillingCardCurrent(s))return false;
+ if(claim&&(claim.secondary||claim.crossover||['submitted','accepted','adjudicated','void'].includes(claim.status)))return false;
+ return true;
+}
+// Whether the draft in hand can go straight from posting to a sent claim. Whether the claim lands
+// ready or needs details is the server's answer after the post: a claim that lands in fix_claim
+// stops there and shows its issues. A self-pay visit keeps "Post charges".
+function directFlowPostSend(s,ctx){
+ // Only a visit with no claim yet: one already prepared, released or sent has its own next step,
+ // and the one press has nothing to prepare there.
+ if(s.state!=='post_charges'||s.claim?.id)return false;
+ return visitBillingDirectFlow(s,ctx,s.claim);
+}
 // The one next step a charge table hands to the person working in it, in the card's own words.
 // The card above (visitBillingStatus) and the footer under the charge table are asked the same
 // question, so both are answered from this one line and can never drift apart. A state that is
@@ -63,11 +93,16 @@ function visitBillingChargeStep(s,ctx={}){
  const write=ctx.canWrite===true;
  switch(s.state){
    case 'sign_visit':return {text:'Sign the visit note to send these charges.',label:'Open the visit note',attribute:'data-revenue-documentation'};
-   case 'post_charges':return {text:write?'Check the charges, then post them.':'Check the charges; someone who can change them posts them.',label:write?'Post charges':'Review charges',attribute:`data-visit-post-charges="${esc(s.account?.id||'')}"`};
+   case 'post_charges':{
+    const flow=write&&directFlowPostSend(s,ctx);
+    return {text:write?flow?'Check the charges, then post them — the claim is sent as soon as it is ready.':'Check the charges, then post them.':'Check the charges; someone who can change them posts them.',label:flow?'Post charges and send claim':write?'Post charges':'Review charges',attribute:flow?`data-visit-review-open="account" data-post-and-send="account"`:`data-visit-post-charges="${esc(s.account?.id||'')}"`};
+   }
     case 'send_claim':case 'fix_claim':{
-     // The card's own button is the one that opens the review panel beside the table; where the
-     // card answers with its own send instead, the line under the table sends the same way.
-     const status=visitBillingStatus(s,ctx),card=typeof reviewButton==='function'?reviewButton(s,ctx):'';
+     // The card's own one-click send is the button here too, with the same small review link
+     // beside it; where the card answers with the review panel instead, so does this line.
+     const status=visitBillingStatus(s,ctx),direct=visitBillingDirectSend(s,ctx);
+     if(direct)return {text:status.detail,label:`Send claim to ${visitBillingInsurer(s)}`,attribute:`data-visit-claim-direct-send="${esc(s.claim.id)}"`,reviewMarkup:`<button type="button" class="text-button" data-visit-review-open="account">Review claim</button>`};
+     const card=typeof reviewButton==='function'?reviewButton(s,ctx):'';
      if(card)return {text:status.detail,label:'Review and send claim',attribute:'data-visit-review-open="account"',review:true};
      if(!write||!s.claim?.id)return null;
      return {text:status.detail,label:'Review and send claim',attribute:`data-visit-claim-send="${esc(s.claim.id)}"`};
@@ -83,7 +118,7 @@ function visitBillingChargeStep(s,ctx={}){
 // The one line under the charge table: the same next step the card above gives, or nothing at all.
 function visitBillingChargeStepMarkup(s,ctx={}){
  const step=visitBillingChargeStep(s,ctx);if(!step)return '';
- return `<p class="charge-table-next"><span>${esc(step.text)}</span> <button type="button" class="primary" ${step.attribute}>${esc(step.label)}</button></p>`;
+ return `<p class="charge-table-next"><span>${esc(step.text)}</span> <button type="button" class="primary" ${step.attribute}>${esc(step.label)}</button>${step.reviewMarkup?` ${step.reviewMarkup}`:''}</p>`;
 }
 function visitBillingReceiptNote(receipt){const how=visitBillingMethod(receipt.method),when=visitBillingDate(receipt.occurred_on);return [how,when].filter(Boolean).join(', ');}
 // What the claim is missing, grouped by where it is fixed. Each group is its own short line
@@ -165,11 +200,17 @@ function visitBillingMore(s,ctx={}){
  return `<details class="visit-billing-more" data-revenue-disclosure="more"><summary>More</summary><div class="actions">${items.join('')}</div></details>`;
 }
 function visitBillingCardMarkup(s,ctx={}){
-  const status=visitBillingStatus(s,ctx),owing=['patient_owes','self_pay_collect'].includes(s.state),posted=s.account?.status==='posted';
-  const issues=visitBillingMissingMarkup(status.issues,s.claim?.id||'',ctx);
-  const secondary=owing&&ctx.canCreate?'<button type="button" data-visit-statement>Statement</button>':'';
-  const sent=typeof visitBillingSentLine==='function'?visitBillingSentLine(s,ctx):'';
-     return `<section class="visit-billing-card" data-visit-billing-state="${esc(s.state)}"><div class="section-head"><h3>Visit billing</h3></div><div class="visit-billing-status"><div><span class="eyebrow">${s.waiting_on==='nobody'?'Status':'Next step'}</span><p class="visit-billing-headline">${esc(status.headline)}</p><p class="muted">${esc(status.detail)}</p>${issues}</div><div class="actions">${status.action||''}${secondary}</div></div>${sent}${visitBillingBreakdown(s,ctx)}${posted||s.account||s.visit?visitBillingMore(s,ctx):''}</section>`;
+   const status=visitBillingStatus(s,ctx),owing=['patient_owes','self_pay_collect'].includes(s.state),posted=s.account?.status==='posted';
+   const issues=visitBillingMissingMarkup(status.issues,s.claim?.id||'',ctx);
+   const secondary=owing&&ctx.canCreate?'<button type="button" data-visit-statement>Statement</button>':'';
+   const sent=typeof visitBillingSentLine==='function'?visitBillingSentLine(s,ctx):'';
+   const direct=s.state==='send_claim'?visitBillingDirectSend(s,ctx):'';
+   const main=status.action;
+   const review='<button type="button" class="text-button" data-visit-review-open="account">Review claim</button>';
+   // The one-click send keeps its small review link beside it; a card left opening the review
+   // panel says it once, as its single main button.
+   const action=direct&&!main.includes(direct)?`${main}${review}`:main;
+      return `<section class="visit-billing-card" data-visit-billing-state="${esc(s.state)}"><div class="section-head"><h3>Visit billing</h3></div><div class="visit-billing-status"><div><span class="eyebrow">${s.waiting_on==='nobody'?'Status':'Next step'}</span><p class="visit-billing-headline">${esc(status.headline)}</p><p class="muted">${esc(status.detail)}</p>${issues}</div><div class="actions">${action||''}${secondary}</div></div>${sent}${visitBillingBreakdown(s,ctx)}${posted||s.account||s.visit?visitBillingMore(s,ctx):''}</section>`;
 }
 const visitBillingFilters=[['all','Everything'],['charges','Charges'],['insurance','Insurance'],['payments','Payments'],['statements','Statements sent']];
 function visitBillingEventText(event){

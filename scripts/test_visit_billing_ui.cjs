@@ -4,15 +4,19 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 // Staff display helpers load before every feature script, exactly as index.html loads them.
 {const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
 const {visitSummary,selfPay}=require('./visit_billing_fixture.cjs');
+// The claim detail a one-click send reads back before it releases anything: the claim itself, the
+// server's own preflight answer, and the Claim.MD route the claim file goes over.
+const claimDetail=(over={})=>({claim:{id:'claim',status:'ready',version:2},preflight_issues:[],transport:{routes:[{provider:'claim_md',route_key:'claimmd'}]},...over});
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const handlers={},nodes={};
-const node=id=>nodes[id]??={id,innerHTML:'',dataset:{},hidden:false,open:false,scrollIntoView(){},querySelector(){return null;},querySelectorAll(){return [];},replaceChildren(){this.innerHTML='';},append(child){this.appended=child;}};
+const node=id=>nodes[id]??={id,innerHTML:'',dataset:{},hidden:false,open:false,scrollIntoView(){},querySelectorAll(){return [];},querySelector(sel){if(sel!=='[data-claim-send-error]'&&sel!=='.visit-billing-status .actions')return null;const at=this.innerHTML.indexOf('<div class="actions">');if(at<0)return null;const actionsEnd=this.innerHTML.indexOf('</div>',at);if(sel==='.visit-billing-status .actions')return{insertAdjacentHTML:(_,html)=>{this.alert=(html.match(/role="alert">(.*?)<\/p>/)||[])[1]||'';this.innerHTML=this.innerHTML.slice(0,actionsEnd)+html+this.innerHTML.slice(actionsEnd);}};return this.alert?{textContent:this.alert,remove:()=>{this.alert='';this.innerHTML=this.innerHTML.replace(/<p class="claim-send-error".*?<\/p>/,'');}}:null;},replaceChildren(){this.innerHTML='';},append(child){this.appended=child;}};
 const appointment={id:'appointment',starts_at:'2026-11-12T15:00:00Z',timezone:'America/Chicago',status:'checked_in',title:'Office visit'};
 const account={id:'account',version:2,status:'posted',patient_id:'patient',total_cents:28000,coverage_snapshot:{payer:{content:{name:'Synthetic Medicare PPO',payer_code:'SYN'}},coverage:{content:{member_id:'SYN-MEMBER',verification:'manually_verified'}}},content:{visit_id:'visit',service_date:'2026-11-12',coverage_id:'coverage',lines:[],notes:''}};
 const sent=[];let reply=()=>visitSummary();
-const ctx={console,Date,Intl,URL,Map,Set,Array,Math,Number,String,JSON,encodeURIComponent,crypto:{randomUUID:()=>'request'},setTimeout:()=>0,clearTimeout(){},document:{addEventListener:(name,fn)=>(handlers[name]??=[]).push(fn),createElement:()=>({setAttribute(){}})},$:node,me:{role:'front_desk'},selected:'patient',billingSelected:null,chartSection:'visits',encounterSection:'charges',activeVisit:{id:'visit',appointment_id:'appointment',status:'signed',version:3},workspace:{patient:{id:'patient'},demographics:{patient_id:'patient',content:{}},appointments:[appointment],visits:[{id:'visit',appointment_id:'appointment'}],billing:{accounts:[account],coverages:[],entries:[],copays:[]}},esc,human:v=>String(v).replaceAll('_',' '),date:v=>v,money:v=>`$${(v/100).toFixed(2)}`,dollars:v=>(v/100).toFixed(2),cents:v=>Math.round(Number(v)*100),payerName:()=>'Synthetic Medicare PPO',billingCan:()=>true,showChartSection(){},setEncounterSection(){},notice:message=>ctx.noticed=message,run:fn=>ctx.pending=Promise.resolve().then(fn),openBillingEditor:html=>{ctx.editor=html;},patientInvoiceDocument:()=>'<html>statement</html>',showBillingAccount(){},showEncounterClaim:async(id,accountId)=>{ctx.openedClaim=[id,accountId];},claimEditor:(snapshot,claim)=>{ctx.editedClaim=claim.id;},api:async(url,method='GET',body)=>{sent.push([url,method,body]);return reply(url,method,body);}};
+const ctx={console,Date,Intl,URL,Map,Set,Array,Math,Number,String,JSON,encodeURIComponent,crypto:{randomUUID:()=>'request'},setTimeout:()=>0,clearTimeout(){},document:{addEventListener:(name,fn)=>(handlers[name]??=[]).push(fn),createElement:()=>({setAttribute(){}})},$:node,me:{role:'front_desk'},selected:'patient',billingSelected:null,chartSection:'visits',encounterSection:'charges',activeVisit:{id:'visit',appointment_id:'appointment',status:'signed',version:3},workspace:{patient:{id:'patient'},demographics:{patient_id:'patient',content:{}},appointments:[appointment],visits:[{id:'visit',appointment_id:'appointment'}],billing:{accounts:[account],coverages:[],entries:[],copays:[]}},esc,human:v=>String(v).replaceAll('_',' '),date:v=>v,money:v=>`$${(v/100).toFixed(2)}`,dollars:v=>(v/100).toFixed(2),cents:v=>Math.round(Number(v)*100),payerName:()=>'Synthetic Medicare PPO',billingCan:()=>true,showChartSection(){},setEncounterSection(){},notice:message=>ctx.noticed=message,run:fn=>{ctx.pending=Promise.resolve().then(fn).catch(error=>{ctx.failed=error&&error.stack||String(error);});return ctx.pending;},openBillingEditor:html=>{ctx.editor=html;},patientInvoiceDocument:()=>'<html>statement</html>',showBillingAccount(){},showEncounterClaim:async(id,accountId)=>{ctx.openedClaim=[id,accountId];},claimEditor:(snapshot,claim)=>{ctx.editedClaim=claim.id;},api:async(url,method='GET',body)=>{sent.push([url,method,body]);return reply(url,method,body);}};
 vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/visit-billing.js','utf8'),ctx);vm.runInContext(fs.readFileSync('web/patient-revenue.js','utf8'),ctx);vm.runInContext(fs.readFileSync('web/visit-review.js','utf8'),ctx);
 ctx.loadHostedCopays=()=>{};
+ctx.billingBase=()=>`/api/v1/patients/${ctx.selected}/billing/accounts`;
 const all={canCreate:true,canWrite:true,claimsAllowed:true};let b0;
 ctx.globalThis=ctx;ctx.__DIAG=[];
 const card=(summary,context=all)=>{
@@ -36,13 +40,16 @@ const states=[
   [visitSummary({state:'post_charges',account:{status:'draft'},balance_cents:null,claim:null,insurance:{status:'not_billed',pending_cents:0}}),'Post charges','Post charges','data-visit-post-charges="account"',/claim to Synthetic Medicare PPO is prepared for you next/],
  [selfPay(),'Self-pay: collect payment','Collect payment','data-visit-collect',/Patient owes \$280\.00\. Waiting for the patient/],
  [visitSummary({state:'claim_cancelled',claim:null}),'The claim to Synthetic Medicare PPO was cancelled','Prepare a new claim','data-visit-claim-prepare="again"',/Nothing is with the insurer/],
- [visitSummary({state:'fix_claim',claim:{issues:[{code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'},{code:'npi',missing:'provider NPI',detail:'x'}]}}),'Claim to Synthetic Medicare PPO needs details','Review and send to Claim.MD','data-visit-review-open="account"',/Practice billing setup:<\/b> billing organization tax ID, provider NPI/],
- [visitSummary(),'Claim ready to send to Synthetic Medicare PPO','Review and send to Claim.MD','data-visit-review-open="account"',/Nothing has been sent yet\./],
+  [visitSummary({state:'fix_claim',claim:{issues:[{code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'},{code:'npi',missing:'provider NPI',detail:'x'}]}}),'Claim to Synthetic Medicare PPO needs details','Review and send to Claim.MD','data-visit-review-open="account"',/Practice billing setup:<\/b> billing organization tax ID, provider NPI/],
+  // A claim the server has filled in and checked needs no review to press; it is ready to go out.
+  [visitSummary({claim:{status:'ready'}}),'Claim ready to send to Synthetic Medicare PPO','Send claim to Synthetic Medicare PPO','data-visit-claim-direct-send="claim"',/Nothing has been sent yet\./],
+  // A draft claim has not been checked yet, so the card still opens the review, which releases it.
+  [visitSummary({claim:{status:'draft'}}),'Claim ready to send to Synthetic Medicare PPO','Review and send to Claim.MD','data-visit-review-open="account"',/Nothing has been sent yet\./],
  [visitSummary({state:'waiting_insurer',waiting_on:'insurer',insurance:{status:'waiting',sent_on:'2026-11-12'},claim:{status:'submitted',sent_on:'2026-11-12'}}),'Waiting on Synthetic Medicare PPO','Check claim status','data-revenue-claim="claim"',/Claim sent Nov 12, 2026\. Nothing to do until they answer/],
  [visitSummary({state:'post_response',insurance:{status:'waiting'},claim:{status:'submitted',response_to_review:'era-1'}}),'Synthetic Medicare PPO answered','Review insurer payment','data-revenue-remittance="era-1"',/post it to this visit/],
  [visitSummary({state:'denied',insurance:{status:'denied'},claim:{status:'adjudicated'}}),'Denied by Synthetic Medicare PPO','Fix and resend claim','data-revenue-claim="claim"',/Fix the claim and send it again/],
- [visitSummary({state:'review_response',insurance:{status:'answered',paid_cents:20000,pending_cents:0,unassigned_cents:7000},claim:{status:'adjudicated'}}),'Insurance paid $200.00','Review insurer answer','data-revenue-claim="claim"',/\$70\.00 is not paid, written off or assigned to the patient yet/],
- [visitSummary({state:'patient_owes',waiting_on:'patient',insurance:{status:'answered',paid_cents:20000,adjusted_cents:4000,pending_cents:0},patient:{responsibility_cents:4000,responsibility_source:'insurer_response',owes_now_cents:3000},balance_cents:3000,claim:{status:'adjudicated',answer:{payment_date:'2026-11-20'}}}),'Patient owes $30.00','Collect payment','data-visit-collect',/Insurance paid \$200\.00\. Waiting for the patient/],
+  [visitSummary({state:'review_response',insurance:{status:'answered',paid_cents:20000,adjusted_cents:4000,pending_cents:0,unassigned_cents:7000},claim:{status:'adjudicated',answer:{payment_date:'2026-11-20'}}}),'Insurance paid $200.00','Review insurer answer','data-revenue-claim="claim"',/\$70\.00 is not paid, written off or assigned to the patient yet/],
+  [visitSummary({state:'patient_owes',waiting_on:'patient',insurance:{status:'answered',paid_cents:20000,adjusted_cents:4000,pending_cents:0},patient:{copay_cents:null,copay_paid_cents:null,copay_due_cents:null,paid_above_copay_cents:null,received_cents:0,receipts_applied_cents:0,other_patient_payments_cents:0,adjustment_cents:0,unapplied_cents:0,overpaid_cents:0,credit_cents:0,receipt_needs_review:false,responsibility_cents:4000,responsibility_source:'insurer_response',owes_now_cents:3000},balance_cents:3000,claim:{status:'adjudicated',answer:{payment_date:'2026-11-20'}}}),'Patient owes $30.00','Collect payment','data-visit-collect',/Insurance paid \$200\.00\. Waiting for the patient/],
  [visitSummary({state:'insurance_outside',claim:null,insurance:{electronic:false,status:'outside'}}),'Synthetic Medicare PPO is billed outside SunCharts','Record insurer payment','data-new-ledger',/no claim is sent from SunCharts/],
  [selfPay({state:'review_balance',waiting_on:'staff',insurance:{unassigned_cents:7000},patient:{owes_now_cents:0,responsibility_source:'reviewed_statement'},balance_cents:7000}),'$70.00 is not on the patient’s statement','Write off or adjust','data-new-ledger',/Write the rest off or adjust it/],
  [selfPay({state:'patient_credit',waiting_on:'staff',patient:{owes_now_cents:0,unapplied_cents:2000,credit_cents:2000},balance_cents:0}),'Patient has a $20.00 credit','Review payments','data-visit-history="payments"',/Refund the credit or keep it/],
@@ -83,7 +90,8 @@ assert.match(cell(b,'Copay \\$25\\.00')[0],/^Due <button type="button" class="te
 assert.doesNotMatch(ctx.visitBillingBreakdown(visitSummary({patient:{copay_cents:2500,copay_paid_cents:0,copay_due_cents:2500,received_cents:0,owes_now_cents:2500},receipts:[]}),{canCreate:false}),/data-visit-collect/);
 b=ctx.visitBillingBreakdown(visitSummary({state:'waiting_insurer',insurance:{status:'waiting',sent_on:'2026-11-12'}}),all);
 assert.deepEqual(cell(b,'Insurance paid'),['Waiting since Nov 12, 2026','$0.00']);assert.deepEqual(cell(b,'Insurance pending'),['Waiting on the insurer’s answer','$270.00']);
-b=ctx.visitBillingBreakdown(states[11][0],all);
+const answered=visitSummary({state:'patient_owes',waiting_on:'patient',insurance:{status:'answered',paid_cents:20000,adjusted_cents:4000,pending_cents:0,unassigned_cents:0},patient:{copay_cents:1000,copay_paid_cents:1000,copay_due_cents:0,received_cents:1000,receipts_applied_cents:1000,other_patient_payments_cents:0,adjustment_cents:0,unapplied_cents:0,overpaid_cents:0,credit_cents:0,responsibility_cents:4000,responsibility_source:'insurer_response',owes_now_cents:3000},balance_cents:3000,claim:{status:'adjudicated',answer:{payment_date:'2026-11-20'}}});
+b=ctx.visitBillingBreakdown(answered,all);
 assert.deepEqual(cell(b,'Insurance paid'),['Answered Nov 20, 2026','$200.00']);assert.deepEqual(cell(b,'Insurance adjustments'),['Written off, not owed by anyone','$40.00']);assert.doesNotMatch(b,/Insurance pending/);
 assert.deepEqual(cell(b,'Patient owes now'),['What the insurer says the patient owes, less what they paid','$30.00']);
 b=ctx.visitBillingBreakdown(visitSummary({state:'denied',insurance:{status:'denied'}}),all);
@@ -109,7 +117,7 @@ assert.deepEqual(cell(b,'Copay \\$10\\.00'),['Paid','$10.00']);assert.deepEqual(
 b=ctx.visitBillingBreakdown(visitSummary({patient:{copay_cents:null,copay_paid_cents:null,copay_due_cents:null,paid_above_copay_cents:null,received_cents:0,receipts_applied_cents:0,other_patient_payments_cents:0,responsibility_cents:0,responsibility_source:'copay_not_recorded',owes_now_cents:0,copay_from_insurer_check:false,copay_source_date:null},receipts:[]}),all);
 assert.match(b,/<th scope="row">Copay<\/th><td>No copay recorded for this plan<\/td><td class="money-cell"><\/td>/);assert.deepEqual(cell(b,'Patient owes now'),['Nothing until the insurer answers','$0.00']);
 // Amounts are only formatted: every money cell is exactly a value the server sent.
-const answered=states[11][0],shown=[...ctx.visitBillingBreakdown(answered,all).matchAll(/\$(\d+\.\d\d)/g)].map(m=>Math.round(Number(m[1])*100)),served=new Set([answered.charges_cents,...Object.values(answered.insurance),...Object.values(answered.patient)].filter(Number.isInteger));
+const answeredMoney=answered,shown=[...ctx.visitBillingBreakdown(answered,all).matchAll(/\$(\d+\.\d\d)/g)].map(m=>Math.round(Number(m[1])*100)),served=new Set([answered.charges_cents,...Object.values(answered.insurance),...Object.values(answered.patient)].filter(Number.isInteger));
 for(const value of shown)assert.ok(served.has(value),`${value} was not sent by the server`);
 
 // Collect payment is one action; the ways to pay sit inside it and "More" keeps rare actions reachable.
@@ -119,7 +127,7 @@ for(const [attribute,label] of [['data-reader-copay','Card on reader'],['data-sa
 assert.doesNotMatch(options,/Check payment status|Card payment details|additional collection|class="primary"/);
 assert.match(ctx.hostedCopayMarkup({...hostedState,items:[{id:'op',appointment_id:'appointment',amount_cents:1000,livemode:true,status:'open',created_at:'2026-11-12T15:00:00Z'}]},true),/Awaiting card payment[\s\S]*Check card payment status/);
 assert.match(ctx.hostedCopayMarkup({...hostedState,availability:{available:false,reason:'Card payments are not set up.'}},true),/Card payments are not set up\./);
-const more=ctx.visitBillingMore(states[11][0],all);
+const more=ctx.visitBillingMore(answered,all);
 for(const expected of ['data-visit-statement>Patient statement','data-new-ledger>Record a payment, write-off or adjustment','data-visit-history="payments">Refunds and card payments','data-revenue-claim="claim">Open claim: correct, void or bill secondary insurance','/api/v1/billing/claims/claim/cms1500','data-chart-section="insurance">Insurance and eligibility'])assert.ok(more.includes(expected),expected);
 assert.match(more,/^<details class="visit-billing-more" data-revenue-disclosure="more"><summary>More<\/summary>/);
 assert.doesNotMatch(ctx.visitBillingMore(visitSummary({claim:{secondary:true}}),all),/cms1500/,'no CMS-1500 for a secondary claim');
@@ -243,7 +251,161 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
  ctx.claimCurrent={id:'claim',status:'draft',snapshot:{account}};click({visitClaimFix:'claim'});await ctx.pending;assert.equal(ctx.editedClaim,'claim');assert.equal(sent.length,0);
   // The card's one main button opens the review panel beside the charge table; it sends nothing.
   click({visitReviewOpen:'account'});assert.equal(node('visit-billing-review').hidden,false);assert.match(node('visit-billing-review').innerHTML,/Check before it goes out/);assert.equal(sent.length,0,'opening the review sends nothing');
-  click({visitReviewClose:''});assert.equal(node('visit-billing-review').hidden,true,'the review closes again');
+   click({visitReviewClose:''});assert.equal(node('visit-billing-review').hidden,true,'the review closes again');
+
+  // ---- One press sends a claim that is ready ----------------------------------------------
+  // The card of the visit on screen, holding a claim the server filled in and checked.
+  const readySummary=visitSummary({claim:{status:'ready'}});
+  // The step holds the visit's draft account, as it does before anything is posted: the send
+  // checks this screen is on a visit with charges, then reads the claim back from the server.
+  const draftAccount={...account,status:'draft',version:2};
+  const readyButton=(button,shown)=>{ctx.workspace.billing.accounts=[draftAccount];ctx.billingStep.data={summary:shown};ctx.billingStep.account='account';ctx.billingStep.visit='visit';ctx.billingStep.reviewCard=shown;return card(shown)&&button;};
+  const readyCard=()=>card(readySummary);
+  ctx.claimMdConnectionState={configured:true,connected:true};ctx.loadClaimMdConnection=async()=>ctx.claimMdConnectionState;
+  // Its one main button is the send itself, and a small text link beside it still opens the review.
+  let out=readyCard();
+  assert.match(out,/class="primary" data-visit-claim-direct-send="claim">Send claim to Synthetic Medicare PPO</);
+  assert.match(out,/class="text-button" data-visit-review-open="account">Review claim</);
+  assert.deepEqual(primaries(out),['Send claim to Synthetic Medicare PPO'],'one primary action, and it is the send');
+  assert.equal((out.match(/data-visit-review-open/g)||[]).length,1,'the card offers the review once, as the small link');
+  // A claim already with the insurer, a secondary claim, a support session and a sign-in that
+  // cannot write or cannot see claims are given no send at all.
+  for(const [why,shown,context] of [
+   ['already sent',visitSummary({state:'waiting_insurer',insurance:{status:'waiting'},claim:{status:'submitted'}}),all],
+   ['secondary',visitSummary({claim:{status:'ready',secondary:true}}),all],
+   ['crossover',visitSummary({claim:{status:'ready',crossover:true}}),all],
+   ['no payer id',visitSummary({claim:{status:'ready'},insurance:{electronic:false}}),all],
+   ['support session',readySummary,{...all,delegated:true}],
+   ['read-only',readySummary,{...all,canWrite:false}],
+   ['claims hidden',readySummary,{...all,claimsAllowed:false}],
+  ]){const html=card(shown,context);assert.doesNotMatch(html,/data-visit-claim-direct-send/,`${why}: nothing to press`);}
+  // A card drawn away from the live visit keeps the review button instead of a send: the send
+  // reads the account the screen is actually on, and this card does not know it.
+  ctx.billingStep.reviewCard={...readySummary};
+  assert.doesNotMatch(ctx.visitBillingCardMarkup({...readySummary,account:{...readySummary.account,id:'other'}},all),/data-visit-claim-direct-send/,'a card for another visit keeps its own button');
+  ctx.billingStep.reviewCard=readySummary;
+   // Pressing it runs exactly the request the review panel's final send uses today: the claim read
+   // back, released if it is a draft, submitted as an 837, then delivered over the Claim.MD route.
+   // A reply that answers for itself, the way the review panel's own test drives the chain.
+   let apiReply=()=>({});
+   // Whether this press's own chain reached the insurer: it is the 837 being submitted that moves
+   // the visit on, so the reload answers accordingly and nothing else.
+   let claimSendLanded=detail=>false;
+   ctx.api=async(url,method='GET',body,version)=>{sent.push([url,method,body,version]);return apiReply(url,method,body,version);};
+   // The card is drawn from the summary given, as it is before the press, so the screen answers
+   // for that visit and nothing the last press left behind.
+   const pressSend=async(detail,button,shown=readySummary)=>{
+    sent.length=0;ctx.noticed=null;ctx.failed=null;
+    claimSendLanded=()=>sent.some(c=>c[1]==='POST'&&c[0].endsWith('/837p'));
+    // The chain stops before it runs for a claim that already reached the insurer.
+    if(detail.claim.status==='submitted'){apiReply=()=>detail;}else
+    apiReply=(url,method)=>{
+     if(url==='/api/v1/billing/claimmd/status')return {configured:true,connected:true};
+     if(url==='/api/v1/billing/claims/claim')return detail;
+     if(url==='/api/v1/billing/claims/claim/actions')return {claim:{...detail.claim,status:'ready',version:detail.claim.version+1}};
+     if(url.endsWith('/837p'))return {id:'submission',version:1};
+     if(url.endsWith('/delivery'))return {submission:{id:'submission',version:2}};
+     // The card's reload after the press: a send that went through leaves the visit waiting on
+     // the insurer; a send that stopped leaves it exactly as it was.
+     if(url.includes('/visit-summary'))return claimSendLanded&&claimSendLanded(detail)?visitSummary({state:'waiting_insurer',waiting_on:'insurer',insurance:{status:'waiting',sent_on:'2026-11-12'},claim:{status:'submitted',sent_on:'2026-11-12'}}):shown;
+     throw new Error('Unexpected API '+url);};
+    // The step is opened on this visit as the page opens it, so the pressed button answers for it.
+   ctx.billingStep.version=draftAccount.version;
+   const pressed=readyButton({dataset:{visitClaimDirectSend:'claim'},disabled:false,textContent:'Send claim to Synthetic Medicare PPO',isConnected:true,hasAttribute:()=>false,closest:()=>null},shown);
+   for(const handler of handlers.click)handler({target:{closest:()=>pressed},preventDefault(){}});
+   await settle();await ctx.pending;await settle();
+   return pressed;
+  };
+  let pressed=await pressSend(claimDetail());
+  assert.equal(ctx.failed||null,null,ctx.failed);
+  assert.deepEqual(sent.filter(c=>c[1]==='POST').map(c=>[c[0],c[1],JSON.stringify(c[2])]),[
+   ['/api/v1/billing/claims/claim/837p','POST',JSON.stringify({request_id:'request',details:{},acknowledged:false})],
+   ['/api/v1/billing/submissions/submission/delivery','POST',JSON.stringify({request_id:'request',route_key:'claimmd',reason:'Sent from the visit'})]],'submitted then delivered, exactly as the panel sends');
+  assert.equal(sent.filter(c=>c[0].endsWith('/claims/claim/actions')).length,0,'a claim already released is not released again');
+  assert.equal(ctx.noticed,'Claim sent to Synthetic Medicare PPO.','the notice names the insurer');
+  assert.match(node('encounter-revenue-status').innerHTML,/Waiting on Synthetic Medicare PPO/,'the card re-renders to what the server now says');
+  // While it runs the button is disabled and says so; a claim already at Claim.MD is not pushed
+  // again and the button comes back with its own words.
+  ctx.claimHasPreparedSubmission=()=>true;
+  sent.length=0;
+  const busyButton=await pressSend(claimDetail());
+  assert.equal(busyButton.disabled,false,'a stopped send gives its button back');
+  assert.equal(busyButton.textContent,'Send claim to Synthetic Medicare PPO','and the same words it started with');
+  assert.equal(sent.filter(c=>c[1]==='POST').length,0,'no second claim file');
+  assert.match(node('encounter-revenue-status').innerHTML,/already has a claim file/,'the card says why it stopped');
+  ctx.claimHasPreparedSubmission=undefined;
+  // A claim already with the insurer is not sent a second time either.
+  sent.length=0;await pressSend(claimDetail({claim:{id:'claim',status:'submitted',version:4}}),null,readySummary);
+  assert.equal(sent.filter(c=>c[1]==='POST').length,0,'a claim already with the insurer is left alone');
+  assert.match(node('encounter-revenue-status').innerHTML,/already with the insurer/);
+  // The server's own words show beside the button and nothing else changes.
+  const stopped=await pressSend(claimDetail({preflight_issues:['Rendering provider NPI is missing']}));
+  assert.equal(stopped.disabled,false);assert.equal(stopped.textContent,'Send claim to Synthetic Medicare PPO');
+  assert.match(node('encounter-revenue-status').innerHTML,/Rendering provider NPI is missing/,'the server\'s own words stay on the card');
+  assert.match(node('encounter-revenue-status').innerHTML,/role="alert"/,'said as an alert');
+  assert.equal(sent.filter(c=>c[1]==='POST').length,0,'a refused preflight writes nothing');
+  // A draft claim is released first, with the version it was read at.
+  sent.length=0;pressed=await pressSend(claimDetail({claim:{id:'claim',status:'draft',version:3}}));
+  assert.deepEqual(sent.filter(c=>c[0].endsWith('/claims/claim/actions')).map(c=>[c[1],JSON.stringify(c[2]),c[3]]),[['POST',JSON.stringify({action:'ready',reason:'Claim details reviewed before sending',reference:'',event_date:null,payer_control_number:''}),3]],'released with the version it read');
+  assert.ok(sent.filter(c=>c[0].endsWith('/837p')).length===1,'and then sent');
+  // The small review link still opens today's panel and sends nothing.
+  sent.length=0;click({visitReviewOpen:'account'});assert.equal(node('visit-billing-review').hidden,false);assert.equal(sent.length,0,'the review link sends nothing');
+  click({visitReviewClose:''});
+
+  // The presses above swapped the live account for the draft they sent from; the workspace goes
+  // back to the visit's real account before the cases below read it.
+  ctx.workspace.billing.accounts=[account];
+  // ---- Self-pay keeps "Post charges", never a send ----------------------------------------
+  const selfDraft=selfPay({state:'post_charges',waiting_on:'staff',account:{id:'account',status:'draft',version:2},balance_cents:null,claim:null});
+  card(selfDraft);
+  const selfCard=ctx.visitBillingCardMarkup(ctx.billingStep.reviewCard,all),selfStep=ctx.visitBillingChargeStep(ctx.billingStep.reviewCard,all);
+  assert.deepEqual(primaries(selfCard),['Post charges'],'self-pay posts charges, nothing about a claim');
+  assert.doesNotMatch(selfCard,/send claim|Post charges and send claim/i);
+  assert.equal(selfStep.label,'Post charges');assert.equal(selfStep.attribute,'data-visit-post-charges="account"','and the line under the table says the same');
+  // Insurance with no electronic ID is billed outside SunCharts, so it is never offered a send.
+  const noPayer=visitSummary({state:'post_charges',account:{id:'account',status:'draft',version:2},claim:null,insurance:{insured:true,insurer:'Synthetic Medicare PPO',electronic:false,status:'not_billed'}});
+  card(noPayer);
+  assert.equal(ctx.visitBillingChargeStep(ctx.billingStep.reviewCard,all).label,'Post charges','a payer with no insurer ID keeps the plain post');
+
+  // ---- Post charges and send claim stops on fix_claim --------------------------------------
+  // A draft the practice is working, with a payer whose claims go electronically: the line under
+  // the charge table offers one button that posts, lets the claim be prepared, and sends it.
+  const draftPost=visitSummary({state:'post_charges',account:{id:'account',status:'draft',version:2},balance_cents:null,claim:null});
+  const draftWorkspace={...account,status:'draft',content:{...account.content,coverage_id:'coverage'}};
+  ctx.workspace.billing.accounts=[draftWorkspace];ctx.__afterPostSend=true;
+  ctx.workspace.billing.coverages=[{id:'coverage',version:1,content:{payer_id:'payer',priority:'primary',status:'active',effective_date:'2026-01-01',end_date:null,member_id:'SYN-MEMBER'}}];
+  ctx.billingPayers=[{id:'payer',content:{name:'Synthetic Medicare PPO',payer_code:'SYN'}}];
+  // Opening the visit's charges draws its card, and the line under the table answers from that
+  // same on-screen step, so the card is put on screen first.
+  card(draftPost);
+  assert.equal(ctx.visitBillingChargeStep(ctx.billingStep.reviewCard,all).label,'Post charges and send claim');
+  // The claim the server prepares after the post comes back needing details: the press stops there
+  // and the card is left showing the fix_claim card with its issues. Nothing is submitted.
+  const fixAfter=visitSummary({state:'fix_claim',account:{id:'account',status:'posted',version:3},claim:{id:'claim',status:'draft',issues:[{code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'}]}});
+  ctx.confirmAction=async()=>true;ctx.selectPatient=async()=>{sent.push(['rerender']);};
+  apiReply=(url,method)=>{
+   if(url.endsWith('/actions')&&method==='POST')return account;
+   if(url.includes('/visit-summary'))return fixAfter;
+   throw new Error('Unexpected API '+url);};
+  sent.length=0;ctx.noticed=null;
+  node('encounter-revenue-status').innerHTML=ctx.visitBillingCardMarkup(draftPost,all);
+  click({visitPostAndSend:'account'});await ctx.pending;await settle();
+  assert.equal(ctx.failed||null,null,ctx.failed);
+  assert.ok(sent.some(c=>c[0].endsWith('/accounts/account/actions')&&c[1]==='POST'&&c[2].action==='post'),'the charges were posted');
+  assert.equal(sent.filter(c=>c[1]==='POST'&&c[0]!=='rerender').length,1,'nothing beyond the post was written');
+  assert.equal(sent.filter(c=>c[0].endsWith('/837p')).length,0,'a claim that needs details is never submitted');
+  assert.match(ctx.noticed||'',/needs details/,'the screen says the claim is not ready');
+  assert.match(node('encounter-revenue-status').innerHTML,/Claim to Synthetic Medicare PPO needs details/,'the card shows the fix_claim state');
+  assert.match(node('encounter-revenue-status').innerHTML,/billing organization tax ID/,'with its issues listed');
+  // A cancelled ask writes nothing at all.
+  ctx.confirmAction=async()=>false;sent.length=0;
+  click({visitPostAndSend:'account'});await ctx.pending;await settle();
+  assert.equal(sent.filter(c=>c[1]==='POST').length,0,'a cancelled ask writes nothing');
+  ctx.confirmAction=async()=>true;
+  apiReply=(url,method,body)=>{if(url.includes('/visit-summary'))return visitSummary({account:{id:'account',status:'draft',version:2}});return {};};
+  // The workspace and the api go back to what the remaining cases read.
+  if(ctx.__afterPostSend){ctx.workspace.billing.accounts=[account];ctx.api=async(url,method='GET',body)=>{sent.push([url,method,body]);return reply(url,method,body);};delete ctx.__afterPostSend;}
+
  // Each "missing details" button opens its own place. The card emits the hook; the app's global
  // handlers do the opening. Prove the handler exists, then that a card click reaches it.
  const appSource=fs.readFileSync('web/app.js','utf8'),practiceBillingSource=fs.readFileSync('web/practice-billing.js','utf8');
