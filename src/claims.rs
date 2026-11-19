@@ -327,6 +327,101 @@ pub(crate) fn claim_resend_plan_for(payer_control_number: &str) -> (&'static str
     }
 }
 
+/// The reason a correction row is written when Claim.MD reports a problem, and the settlement
+/// row that closes it. Both are recorded and never edited; whether a correction is still open
+/// is read from their order, exactly as every other claim change is a row, not a flag.
+pub(crate) const CLAIMMD_WARNING_REASON: &str = "Claim.MD found a problem with this claim";
+pub(crate) const CLAIMMD_SETTLED_REASON: &str =
+    "Claim.MD no longer holds this claim for correction";
+
+/// True when this very report's warning is already on the claim. The response feed is replayed
+/// after a cursor reset or a source import, so a provider report must never be applied twice.
+pub(crate) async fn claimmd_warning_applied(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    claim: Uuid,
+    report: Uuid,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM claim_revisions WHERE tenant_id=$1 AND claim_id=$2 AND reason=$3 AND evidence->>'retrieved_report_id'=$4)")
+        .bind(tenant)
+        .bind(claim)
+        .bind(CLAIMMD_WARNING_REASON)
+        .bind(report.to_string())
+        .fetch_one(&mut **tx)
+        .await?)
+}
+
+/// True when this very report's "received" record is already on the claim.
+pub(crate) async fn claimmd_received_applied(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    claim: Uuid,
+    report: Uuid,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM claim_revisions WHERE tenant_id=$1 AND claim_id=$2 AND evidence->>'event'='claimmd_received' AND evidence->>'retrieved_report_id'=$3)")
+        .bind(tenant)
+        .bind(claim)
+        .bind(report.to_string())
+        .fetch_one(&mut **tx)
+        .await?)
+}
+
+/// Records that a later Claim.MD message answers the practice's open correction, and returns
+/// whether that closed anything. Revision rows are immutable, so an open correction is closed
+/// by writing the settlement row — and a correction that is not open (nothing written yet, or
+/// a settlement already newer) writes nothing and stays quiet.
+pub(crate) async fn claimmd_settle_correction(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    claim: Uuid,
+    report: Uuid,
+) -> Result<bool> {
+    let open: bool = sqlx::query_scalar("SELECT coalesce((SELECT reason FROM claim_revisions WHERE tenant_id=$1 AND claim_id=$2 AND evidence->>'evidence_origin'='claimmd_status_feed' AND reason IN ($3,$4))=$3,false)")
+        .bind(a.tenant_id)
+        .bind(claim)
+        .bind(CLAIMMD_WARNING_REASON)
+        .bind(CLAIMMD_SETTLED_REASON)
+        .fetch_one(&mut **tx)
+        .await?;
+    if !open {
+        return Ok(false);
+    }
+    // A provider message changes nothing the practice records, but a revision row has to freeze
+    // a version no other row has, so the claim's counter moves first and the row freezes that.
+    sqlx::query("UPDATE ehr_claims SET version=version+1 WHERE tenant_id=$1 AND id=$2")
+        .bind(a.tenant_id)
+        .bind(claim)
+        .execute(&mut **tx)
+        .await?;
+    revision(tx,a,claim,CLAIMMD_SETTLED_REASON,json!({"event":"claimmd_correction_settled","retrieved_report_id":report,"evidence_origin":"claimmd_status_feed"})).await?;
+    Ok(true)
+}
+
+/// The claim's position with Claim.MD, as one query per page of claims: whether Claim.MD holds
+/// the claim for correction (with the clearinghouse's own words and the day it said them), and
+/// whether Claim.MD has only ever acknowledged it. Both are derived from rows that already
+/// exist, so nothing here needs new schema: the corrections are the revision rows above, and a
+/// claim Claim.MD merely received is one whose newest provider message was an acknowledgement
+/// and which the payer has not answered since. A claim that later moved on — accepted,
+/// rejected, adjudicated or voided — is named by its own status again, not by Claim.MD.
+pub(crate) async fn claim_md_positions(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    claims: &[Uuid],
+) -> Result<std::collections::HashMap<Uuid, Value>> {
+    if claims.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let rows: Vec<(Uuid, Value)> = sqlx::query_as("SELECT q.claim_id,jsonb_build_object('needs_correction',coalesce(w.reason=$3,false),'correction',CASE WHEN coalesce(w.reason=$3,false) THEN jsonb_build_object('message',w.message,'at',w.at) ELSE NULL END,'received_at',ack.at,'acknowledged',q.status='submitted' AND coalesce(r.event,'')='claimmd_received' AND m.messages IS NULL AND NOT coalesce(w.reason=$3,false)) FROM (SELECT c.tenant_id,c.id AS claim_id,c.status FROM ehr_claims c WHERE c.tenant_id=$1 AND c.id=ANY($2)) q LEFT JOIN LATERAL (SELECT cr.reason,cr.evidence->>'message' AS message,cr.created_at AS at FROM claim_revisions cr WHERE cr.tenant_id=q.tenant_id AND cr.claim_id=q.claim_id AND cr.evidence->>'evidence_origin'='claimmd_status_feed' AND cr.reason IN ($3,$4) ORDER BY cr.version DESC LIMIT 1) w ON true LEFT JOIN LATERAL (SELECT re.evidence->>'event' AS event FROM claim_revisions re WHERE re.tenant_id=q.tenant_id AND re.claim_id=q.claim_id AND re.evidence->>'event' IN ('claimmd_received','claimmd_payer_acceptance','claimmd_rejection') ORDER BY re.version DESC LIMIT 1) r ON true LEFT JOIN LATERAL (SELECT re.created_at AS at FROM claim_revisions re WHERE re.tenant_id=q.tenant_id AND re.claim_id=q.claim_id AND re.evidence->>'event'='claimmd_received' ORDER BY re.version DESC LIMIT 1) ack ON true LEFT JOIN LATERAL (SELECT 1 AS messages FROM claim_revisions mu WHERE mu.tenant_id=q.tenant_id AND mu.claim_id=q.claim_id AND (mu.evidence->>'event' IN ('claimmd_payer_acceptance','claimmd_rejection','claimmd_correction_settled') OR mu.evidence->>'action' IN ('record_acceptance','record_rejection','record_void','void_draft'))) m ON true")
+        .bind(tenant)
+        .bind(claims)
+        .bind(CLAIMMD_WARNING_REASON)
+        .bind(CLAIMMD_SETTLED_REASON)
+        .fetch_all(&mut **tx)
+        .await?;
+    Ok(rows.into_iter().collect())
+}
+
 /// Reason recorded on a refill revision and on the `claim.change` audit entry it writes. Kept
 /// here so the row history, the revision snapshot and the audit action name one cause.
 const REFILL_REASON: &str = "claim.refilled";
@@ -722,6 +817,22 @@ async fn claims(
     } else {
         None
     };
+    // A claim Claim.MD is holding for correction is named as such in the list, whatever the
+    // claim row's own status still says, so staff sort and filter their work by what they
+    // actually have to do. One extra query reads the provider position for the page.
+    let ids: Vec<Uuid> = rows
+        .iter()
+        .filter_map(|row| Uuid::parse_str(row["id"].as_str()?).ok())
+        .collect();
+    let positions = claim_md_positions(&mut tx, a.tenant_id, &ids).await?;
+    for row in rows.iter_mut() {
+        if let Some(position) = Uuid::parse_str(row["id"].as_str().unwrap_or_default())
+            .ok()
+            .and_then(|id| positions.get(&id))
+        {
+            row["claimmd_position"] = position.clone();
+        }
+    }
     crate::postgres::audit(&mut tx, &a, "claim.worklist", a.tenant_id).await?;
     tx.commit().await?;
     Ok(Json(json!({"items":rows,"next_cursor":next})))
@@ -1043,6 +1154,15 @@ async fn claim_detail(
     } else {
         c.payer_control_number.clone()
     };
+    // Where Claim.MD itself stands on this claim: a correction it holds for the practice, or a
+    // claim it has only received. The claim page words its one status word from this, so the
+    // answer the clearinghouse gave is the answer staff are shown.
+    let claimmd_position = claim_md_positions(&mut tx, a.tenant_id, &[id])
+        .await?
+        .remove(&id)
+        .unwrap_or_else(|| {
+            json!({"needs_correction":false,"correction":null,"received_at":null,"acknowledged":false})
+        });
     crate::postgres::audit(&mut tx, &a, "claim.read", id).await?;
     tx.commit().await?;
     let transport = clearinghouse_transport(db(&s)?, a.tenant_id, artifact_generated).await?;
@@ -1050,6 +1170,7 @@ async fn claim_detail(
     Ok(Json(
         json!({"claim":c,"preflight_issues":issues,"transport":transport,"submission_defaults":submission_defaults,"tracking":tracking,
             "resend":{"frequency":frequency,"frequency_code":frequency_code,"payer_control_number":payer_control},
+            "claimmd_position":claimmd_position,
             "responses":{"revisions":responses,"feed":feed}}),
     ))
 }

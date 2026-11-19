@@ -382,6 +382,13 @@ async fn apply_claimmd_status(
     let sender_icn = evidence["sender_icn"].as_str().unwrap_or("");
     let message = evidence["message"]["message"].as_str().unwrap_or("");
     let rejected = evidence["status"] == "R" || evidence["message"]["status"] == "R";
+    // Claim.MD answering the claim with anything that is not a rejection or a correction — the
+    // claim acknowledged, forwarded, or the payer's answer carried through — closes an open
+    // correction. It is checked on this transaction, so one poll carrying a warning and the
+    // answer that settles it can never close the answer.
+    let clears_correction = !rejected
+        && evidence["message"]["status"].as_str() != Some("W")
+        && evidence["message"].is_object();
     if out.status != "delivered"
         || crate::claim_cob::tracking_only(&claim)
         || crate::delivery::ensure_claim_unreserved(tx, a, claim.id)
@@ -399,6 +406,64 @@ async fn apply_claimmd_status(
         sqlx::query("UPDATE edi_submissions SET technical_status=CASE WHEN $3='CLMMD' THEN 'rejected' ELSE technical_status END,payer_outcome=CASE WHEN $3='CLMMD' THEN payer_outcome ELSE 'rejected' END,version=version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(submission).bind(sender_id).execute(&mut **tx).await?;
         return Ok("rejected");
     }
+    // Claim.MD's own status letters, never a payer's: "W" names a problem on the claim that
+    // keeps it with the clearinghouse ("Rejected Claims need correcting" on the Claim.MD
+    // screen), and an acknowledged upload only proves Claim.MD received the claim. Neither
+    // touches the claim's status or the ledger; both are recorded so the claim page can say
+    // what the clearinghouse said. Every branch here is idempotent on the report's own ID,
+    // because the response feed is replayed after a cursor reset or a source import.
+    let from_claim_md = sender_id.is_empty() || sender_id == "CLMMD";
+    if from_claim_md && evidence["message"]["status"].as_str() == Some("W") {
+        if crate::claims::claimmd_warning_applied(tx, a.tenant_id, claim.id, report).await? {
+            return Ok("none");
+        }
+        // 'needs_review' is the submission outcome that means staff must act; the claim row
+        // itself has no such status and stays exactly as the transport left it. The bump
+        // happens first so the revision below freezes the claim's real next version.
+        sqlx::query("UPDATE ehr_claims SET version=version+1 WHERE tenant_id=$1 AND id=$2")
+            .bind(a.tenant_id)
+            .bind(claim.id)
+            .execute(&mut **tx)
+            .await?;
+        crate::claims::revision(tx,a,claim.id,crate::claims::CLAIMMD_WARNING_REASON,json!({"event":"claimmd_warning","submission_id":submission,"retrieved_report_id":report,"sender_id":sender_id,"sender_name":sender_name,"message":message,"evidence_origin":"claimmd_status_feed"})).await?;
+        sqlx::query("UPDATE edi_submissions SET technical_status='needs_review',version=version+1 WHERE tenant_id=$1 AND id=$2 AND technical_status='pending'")
+            .bind(a.tenant_id)
+            .bind(submission)
+            .execute(&mut **tx)
+            .await?;
+        return Ok("needs_correction");
+    }
+    if from_claim_md
+        && evidence["message"]["status"].as_str() == Some("A")
+        && message.trim().eq_ignore_ascii_case("acknowledged")
+    {
+        if crate::claims::claimmd_received_applied(tx, a.tenant_id, claim.id, report).await? {
+            return Ok("none");
+        }
+        sqlx::query("UPDATE ehr_claims SET version=version+1 WHERE tenant_id=$1 AND id=$2")
+            .bind(a.tenant_id)
+            .bind(claim.id)
+            .execute(&mut **tx)
+            .await?;
+        crate::claims::revision(tx,a,claim.id,"Claim.MD received the claim",json!({"event":"claimmd_received","submission_id":submission,"retrieved_report_id":report,"sender_id":sender_id,"sender_name":sender_name,"message":message,"evidence_origin":"claimmd_status_feed"})).await?;
+        return Ok("received");
+    }
+    // A later answer closes an open correction first; when that answer is the payer's
+    // acceptance it is then applied below as usual.
+    let mut technical_status = out.technical_status.clone();
+    if clears_correction
+        && crate::claims::claimmd_settle_correction(tx, a, claim.id, report).await?
+    {
+        sqlx::query("UPDATE edi_submissions SET technical_status='pending',version=version+1 WHERE tenant_id=$1 AND id=$2 AND technical_status='needs_review'")
+            .bind(a.tenant_id)
+            .bind(submission)
+            .execute(&mut **tx)
+            .await?;
+        technical_status = "pending".into();
+        if evidence["status"] != "A" || from_claim_md || sender_icn.is_empty() {
+            return Ok("settled");
+        }
+    }
     if evidence["status"] != "A"
         || sender_id.is_empty()
         || sender_id == "CLMMD"
@@ -406,7 +471,7 @@ async fn apply_claimmd_status(
         || sender_icn.len() > 150
         || claim.status != "submitted"
         || out.payer_outcome != "pending"
-        || ["rejected", "needs_review"].contains(&out.technical_status.as_str())
+        || ["rejected", "needs_review"].contains(&technical_status.as_str())
     {
         return Ok("none");
     }
@@ -423,23 +488,41 @@ async fn attach_claimmd_status(
 ) -> Result<()> {
     // Receipt binding narrows the candidates before inspecting patient identifiers.
     // Imported records are not eligible, and no match/ambiguous matches stay in the review inbox.
-    let reports: Vec<(Uuid, Value)> = sqlx::query_as("SELECT r.id,r.parse_summary FROM edi_remote_reports r WHERE r.tenant_id=$1 AND r.route_key=$2 AND r.format='claimmd_status' AND r.status='retrieved' AND r.native_id IS NULL AND r.metadata->>'source'='claimmd_response_api' AND r.last_result IS DISTINCT FROM 'identity_match_needs_review' AND EXISTS (SELECT 1 FROM edi_delivery_jobs j WHERE j.tenant_id=r.tenant_id AND j.route_key=r.route_key AND j.status='delivered' AND (j.receipt_reference='claimmd-file:'||(r.parse_summary->>'fileid') OR j.receipt_reference='claimmd-claim:'||(r.parse_summary->>'claimmd_id'))) ORDER BY r.received_at,CASE WHEN r.metadata->>'response_id' ~ '^[0-9]{1,20}$' THEN (r.metadata->>'response_id')::numeric END,r.id LIMIT 200")
+    // A report already matched by the claim's own control number is retried here too: the
+    // delivery it belongs to can be confirmed after the response arrived, and the provider
+    // feed is replayed after a cursor reset. `status='retrieved'` and `native_id IS NULL` keep
+    // an attached or quarantined report out of the loop, so an applied report stays applied.
+    let reports: Vec<(Uuid, Value)> = sqlx::query_as("SELECT r.id,r.parse_summary FROM edi_remote_reports r WHERE r.tenant_id=$1 AND r.route_key=$2 AND r.format='claimmd_status' AND r.status='retrieved' AND r.native_id IS NULL AND r.metadata->>'source'='claimmd_response_api' AND r.last_result IS DISTINCT FROM 'control_number_needs_review' AND NOT (r.last_result='identity_match_needs_review' AND (coalesce(r.parse_summary->>'fileid','')<>'' OR coalesce(r.parse_summary->>'claimmd_id','')<>'')) AND (EXISTS (SELECT 1 FROM edi_delivery_jobs j WHERE j.tenant_id=r.tenant_id AND j.route_key=r.route_key AND j.status='delivered' AND (j.receipt_reference='claimmd-file:'||(r.parse_summary->>'fileid') OR j.receipt_reference='claimmd-claim:'||(r.parse_summary->>'claimmd_id'))) OR (coalesce(r.parse_summary->>'fileid','')='' AND coalesce(r.parse_summary->>'claimmd_id','')='')) ORDER BY r.received_at,CASE WHEN r.metadata->>'response_id' ~ '^[0-9]{1,20}$' THEN (r.metadata->>'response_id')::numeric END,r.id LIMIT 200")
         .bind(a.tenant_id).bind(key).fetch_all(&mut **tx).await?;
     for (report, evidence) in reports {
         let references = crate::claimmd::receipt_references(&evidence);
-        let candidates: Vec<(Uuid, Value)> = sqlx::query_as("SELECT DISTINCT s.id,s.claim_snapshot FROM edi_submissions s JOIN edi_delivery_jobs j ON j.tenant_id=s.tenant_id AND j.submission_id=s.id JOIN edi_connections c ON c.tenant_id=j.tenant_id AND c.route_key=j.route_key AND c.partner_id=s.partner_id WHERE j.tenant_id=$1 AND j.route_key=$2 AND j.status='delivered' AND s.status='delivered' AND j.receipt_reference=ANY($3)")
-            .bind(a.tenant_id).bind(key).bind(references).fetch_all(&mut **tx).await?;
+        let candidates: Vec<(Uuid, Value)> = if references.is_empty() {
+            // Claim.MD answered without ever reporting a file or claim ID, so nothing ties the
+            // response to a delivery by receipt. The claim's own patient control number does:
+            // it is what SunCharts sent in `pcn`, and Claim.MD echoes it back. Only a delivered
+            // submission on this route and tenant is a candidate, the frozen snapshot is the
+            // only identity read, and an exact duplicate claim of the same control number is
+            // still resolved by the identity rule below rather than guessed at.
+            control_number_candidates(tx, a, key, &evidence).await?
+        } else {
+            sqlx::query_as("SELECT DISTINCT s.id,s.claim_snapshot FROM edi_submissions s JOIN edi_delivery_jobs j ON j.tenant_id=s.tenant_id AND j.submission_id=s.id JOIN edi_connections c ON c.tenant_id=j.tenant_id AND c.route_key=j.route_key AND c.partner_id=s.partner_id WHERE j.tenant_id=$1 AND j.route_key=$2 AND j.status='delivered' AND s.status='delivered' AND j.receipt_reference=ANY($3)")
+                .bind(a.tenant_id).bind(key).bind(&references).fetch_all(&mut **tx).await?
+        };
         let matches: Vec<_> = candidates
             .iter()
             .filter(|(_, frozen)| claimmd_identity_matches(&evidence, frozen))
             .collect();
         if matches.len() != 1 {
-            sqlx::query("UPDATE edi_remote_reports SET last_result='identity_match_needs_review',version=version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(report).execute(&mut **tx).await?;
+            sqlx::query("UPDATE edi_remote_reports SET last_result=$3,version=version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(report).bind(if references.is_empty() {"control_number_needs_review"} else {"identity_match_needs_review"}).execute(&mut **tx).await?;
             report_event(
                 tx,
                 a,
                 report,
-                "No unique exact claim match; operator review required",
+                if references.is_empty() {
+                    "No delivered submission carries this provider control number uniquely; operator review required"
+                } else {
+                    "No unique exact claim match; operator review required"
+                },
                 json!({"clinical_status_changed":false,"match_count":matches.len()}),
             )
             .await?;
@@ -452,7 +535,11 @@ async fn attach_claimmd_status(
             report,
             "submission",
             submission,
-            "Exact Claim.MD receipt and frozen claim identities matched",
+            if references.is_empty() {
+                "Exact Claim.MD patient control number and frozen claim identities matched"
+            } else {
+                "Exact Claim.MD receipt and frozen claim identities matched"
+            },
             false,
         )
         .await?;
@@ -462,9 +549,48 @@ async fn attach_claimmd_status(
             .bind(submission)
             .execute(&mut **tx)
             .await?;
-        crate::clearinghouse::event(tx,a,submission,"Claim.MD status evidence attached automatically",json!({"retrieved_report_id":report,"provider":"claim_md","clinical_status_changed":applied!="none","claim_status":applied,"status_evidence":evidence,"origin":"exact_receipt_and_identity_match"})).await?;
+        crate::clearinghouse::event(tx,a,submission,"Claim.MD status evidence attached automatically",json!({"retrieved_report_id":report,"provider":"claim_md","clinical_status_changed":applied!="none","claim_status":applied,"status_evidence":evidence,"origin":if references.is_empty() {"exact_control_number_and_identity_match"} else {"exact_receipt_and_identity_match"}})).await?;
+        // A report whose message changes nothing for the claim (a Claim.MD acknowledgement of
+        // a claim already accepted, an unrelated status letter) is attached and stays out of
+        // the next pass; one whose message still has to be applied is retried on the next
+        // retrieval pass instead of waiting for a provider resend that will never come.
+        if applied == "none" {
+            sqlx::query("UPDATE edi_remote_reports SET last_result='status_applied',version=version+1 WHERE tenant_id=$1 AND id=$2")
+                .bind(a.tenant_id)
+                .bind(report)
+                .execute(&mut **tx)
+                .await?;
+        }
     }
     Ok(())
+}
+
+/// Delivered submissions on this route whose frozen claim carries the control number the
+/// provider echoed back. Claim.MD answers some responses with no file ID at all, and both
+/// `pcn` and `claimid` hold the submitter's own claim number; either one is accepted only
+/// when it names one claim, and the frozen identity check still decides.
+async fn control_number_candidates(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    key: &str,
+    evidence: &Value,
+) -> Result<Vec<(Uuid, Value)>> {
+    let controls: Vec<&str> = ["pcn", "claimid"]
+        .iter()
+        .filter_map(|field| evidence[*field].as_str())
+        .map(str::trim)
+        .filter(|control| !control.is_empty() && control.len() <= 100)
+        .fold(Vec::new(), |mut seen: Vec<&str>, control| {
+            if !seen.contains(&control) {
+                seen.push(control);
+            }
+            seen
+        });
+    if controls.is_empty() {
+        return Ok(vec![]);
+    }
+    Ok(sqlx::query_as("SELECT DISTINCT s.id,s.claim_snapshot FROM edi_submissions s JOIN edi_delivery_jobs j ON j.tenant_id=s.tenant_id AND j.submission_id=s.id WHERE j.tenant_id=$1 AND j.route_key=$2 AND j.status='delivered' AND s.status='delivered' AND s.claim_snapshot->>'control_number'=ANY($3)")
+        .bind(a.tenant_id).bind(key).bind(controls).fetch_all(&mut **tx).await?)
 }
 
 pub(crate) async fn claim_tracking(
@@ -474,7 +600,7 @@ pub(crate) async fn claim_tracking(
 ) -> Result<Value> {
     let submissions: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('id',s.id,'status',s.status,'technical_status',s.technical_status,'payer_outcome',s.payer_outcome,'created_at',s.created_at) FROM edi_submissions s WHERE s.tenant_id=$1 AND s.claim_id=$2 ORDER BY s.created_at,s.id")
         .bind(a.tenant_id).bind(claim.id).fetch_all(&mut **tx).await?;
-    let mut reports: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('id',r.id,'submission_id',r.native_id,'received_at',r.received_at,'evidence',r.parse_summary) FROM edi_remote_reports r JOIN edi_submissions s ON s.tenant_id=r.tenant_id AND s.id=r.native_id WHERE r.tenant_id=$1 AND s.claim_id=$2 AND r.native_kind='submission' AND r.format='claimmd_status' ORDER BY r.received_at DESC,CASE WHEN r.metadata->>'response_id' ~ '^[0-9]{1,20}$' THEN (r.metadata->>'response_id')::numeric END DESC,r.id DESC LIMIT 200")
+    let mut reports: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('id',r.id,'submission_id',r.native_id,'received_at',r.received_at,'sent',coalesce(r.original_text,r.parse_summary::text),'evidence',r.parse_summary) FROM edi_remote_reports r JOIN edi_submissions s ON s.tenant_id=r.tenant_id AND s.id=r.native_id WHERE r.tenant_id=$1 AND s.claim_id=$2 AND r.native_kind='submission' AND r.format='claimmd_status' ORDER BY r.received_at DESC,CASE WHEN r.metadata->>'response_id' ~ '^[0-9]{1,20}$' THEN (r.metadata->>'response_id')::numeric END DESC,r.id DESC LIMIT 200")
         .bind(a.tenant_id).bind(claim.id).fetch_all(&mut **tx).await?;
     reports.reverse();
     let connections: Vec<Value> = sqlx::query_scalar("SELECT DISTINCT jsonb_build_object('route_key',c.route_key,'paused',c.paused,'last_poll_at',c.last_poll_at,'last_success_at',c.last_success_at,'next_poll_at',c.next_poll_at,'last_result',c.last_result) FROM edi_connections c JOIN edi_delivery_jobs j ON j.tenant_id=c.tenant_id AND j.route_key=c.route_key JOIN edi_submissions s ON s.tenant_id=j.tenant_id AND s.id=j.submission_id WHERE s.tenant_id=$1 AND s.claim_id=$2 AND c.adapter='claim_md'")
