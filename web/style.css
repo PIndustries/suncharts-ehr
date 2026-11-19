@@ -473,20 +473,22 @@ td.money-cell,th.money-cell{text-align:right;font-variant-numeric:tabular-nums}
 .app-dialog footer{flex-wrap:wrap}
 .notice-with-action{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 14px}
 .notice-with-action button{min-height:0;border:0;background:transparent;color:inherit;text-decoration:underline;padding:0}
-/* Live charge table: every line is a row, each edit saves itself, and a line's problem is
-   written on the row. Narrow screens keep the same order as a stack of one-line cards. */
+/* The encounter form: the visit's diagnoses sit above its charge lines lettered A, B, C..., every
+   line picks those letters with a chip, each edit saves itself, and what a line still needs is
+   written on the line. Narrow screens keep the same order as a stack of one-line cards. */
 .charge-table{min-width:0;font-size:var(--fs-sm)}
 .charge-table th{white-space:nowrap}
+/* Five columns on a desktop: the procedure, its modifiers, how many, the diagnoses it was for and
+   the amount. The rest of the row is what those boxes need beside them. */
 .charge-table .billing-charge-row>td{padding:8px 6px;vertical-align:top}
 .charge-table label{display:block;gap:3px;font-size:var(--fs-eyebrow);text-transform:uppercase;letter-spacing:.3px;color:var(--muted)}
 .charge-table input,.charge-table select{width:100%;min-width:0;font-size:var(--fs-sm);padding:5px 7px}
 .charge-table .terminology-combobox label{display:block}
-.charge-cell-code,.charge-cell-description,.charge-cell-diagnoses,.charge-cell-amount{min-width:0}
+.charge-cell-code,.charge-cell-diagnoses,.charge-cell-amount{min-width:0}
 .charge-cell-units{width:5.5rem}
 .charge-cell-modifiers{width:6.5rem}
 .charge-cell-remove{width:1%;white-space:nowrap}
 .charge-cell-remove button{font-size:var(--fs-xs);min-height:28px;padding:3px 7px}
-.charge-cell-total{font-size:var(--fs-sm)}
 .charge-table .charge-description-extra{margin-top:4px}
 .charge-table .charge-description-extra button{font-size:var(--fs-xs);min-height:26px;padding:3px 7px}
 .charge-table .charge-description-extra p{font-size:var(--fs-xs);margin:4px 0 0}
@@ -498,28 +500,28 @@ td.money-cell,th.money-cell{text-align:right;font-variant-numeric:tabular-nums}
 .charge-more{margin-top:4px}
 .charge-more summary{font-size:var(--fs-xs);color:var(--muted)}
 .charge-more button,.charge-more p{font-size:var(--fs-xs)}
-.charge-table [data-charge-diagnoses] fieldset{border:0;padding:0;margin:6px 0 0;min-width:0}
-.charge-table [data-charge-diagnoses] legend{font-size:var(--fs-eyebrow);text-transform:uppercase;letter-spacing:.3px;color:var(--muted);padding:0}
-.charge-table [data-charge-diagnoses] .scope-options{display:flex;flex-direction:column;gap:4px;margin:4px 0}
-.charge-table [data-charge-diagnoses] .scope-options label{display:flex;flex-direction:row;align-items:center;gap:6px;text-transform:none;letter-spacing:0;font-size:var(--fs-xs);color:var(--ink)}
-.charge-table [data-charge-diagnoses] .scope-options input{width:auto;min-height:0}
+.charge-table [data-charge-diagnoses]{margin-top:0}
+.charge-table [data-charge-diagnoses] fieldset{border:0;padding:0;margin:0;min-width:0}
+.charge-table [data-charge-diagnoses] legend{font-size:var(--fs-eyebrow);text-transform:uppercase;letter-spacing:.3px;color:var(--muted);padding:0 0 4px}
 .charge-table [data-charge-diagnoses] button{font-size:var(--fs-xs);min-height:26px;padding:3px 7px}
 .charge-table [data-fee-line]{margin-top:5px}
 .charge-table [data-fee-line] p{font-size:var(--fs-xs);margin:0 0 3px}
 .charge-table [data-fee-line] button{font-size:var(--fs-xs);min-height:26px;padding:3px 7px}
 .charge-table [data-fee-line] label{font-size:var(--fs-xs);text-transform:none;letter-spacing:0}
 .charge-table .mapping-notice{font-size:var(--fs-xs);margin:6px 0 0;padding:6px 8px}
-.billing-charge-row[data-charge-problem]>td{background:var(--warning-bg)}
+/* What a line carries beyond the row, and the one sentence saying what it still needs, both sit
+   inside the line rather than in columns of their own: the row stays one line high. */
+.billing-charge-row>input[type="hidden"]{display:none}
+.billing-charge-row .charge-cell-problem{margin:5px 0 0;font-size:var(--fs-xs);color:var(--warning-text);background:var(--warning-bg);border-radius:4px;padding:3px 6px}
+.billing-charge-row .charge-cell-problem:empty{display:none}
 /* One quiet line above the table for the charges filled in from the patient's last visit. */
 .charge-table-proposal{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0 0 8px}
 .charge-table-proposal p{margin:0;font-size:var(--fs-sm);color:var(--muted)}
 .charge-table-proposal button{font-size:var(--fs-xs);min-height:26px;padding:3px 7px}
 /* One plain sentence on the row itself: an amount still to enter, a drug amount to check. */
-.charge-cell-note{display:none;padding:0!important}
-.billing-charge-row[data-charge-noted] .charge-cell-note{display:table-cell;padding:6px 8px!important}
+.charge-cell-note{display:none}
+.billing-charge-row[data-charge-noted] .charge-cell-note{display:block;margin:5px 0 0;padding:5px 7px;background:var(--surface-soft);border-radius:4px}
 .charge-cell-note p{margin:0;font-size:var(--fs-xs)}
-.charge-cell-problem{display:none;padding:0!important;border-bottom:1px solid var(--warning-line)}
-.billing-charge-row[data-charge-problem] .charge-cell-problem{display:table-cell;padding:6px 8px!important;color:var(--warning-text);font-size:var(--fs-xs);background:var(--warning-bg)}
 .charge-table-foot{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;margin-top:10px}
 .charge-table-foot .actions,.charge-table-foot button{margin:0}
 .charge-table-status{margin:0;font-size:var(--fs-xs);color:var(--muted);min-height:20px}
@@ -527,26 +529,36 @@ td.money-cell,th.money-cell{text-align:right;font-variant-numeric:tabular-nums}
 .charge-table-status:empty{display:none}
 .charge-table-status button{font-size:var(--fs-xs);min-height:24px;padding:2px 7px;margin-left:6px}
 .charge-undo{display:inline-flex;flex-wrap:wrap;align-items:center}
+/* The letters, on the diagnoses above the table and on every line below it. */
+.charge-dx-letter{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-right:7px;border:1px solid var(--line);border-radius:50%;background:var(--surface-soft);color:var(--ink);font-size:var(--fs-eyebrow);font-weight:700;vertical-align:middle}
+.charge-cell-diagnoses{width:15rem}
+.charge-dx-chips{display:flex;flex-wrap:wrap;gap:4px}
+.charge-dx-chip{display:inline-flex;align-items:center;justify-content:center;min-width:30px;min-height:28px;margin:0;padding:2px 7px;border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--ink);font-size:var(--fs-xs);font-weight:700}
+.charge-dx-chip:hover{background:var(--surface-soft)}
+.charge-dx-chip[data-chip-on]{background:var(--blue);border-color:var(--blue);color:var(--surface)}
+.charge-dx-chip:disabled{opacity:.55;cursor:default}
+.charge-dx-chip-codes{margin:5px 0 0;font-size:var(--fs-xs);color:var(--muted)}
+.charge-dx-chip-codes:empty{display:none}
+.charge-lines-totals{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px;margin:8px 0 2px;padding:9px 12px;background:var(--surface-soft);border:1px solid var(--line);border-radius:5px;font-size:var(--fs-sm)}
+.charge-lines-totals b{font-size:var(--fs-md);font-weight:650;font-variant-numeric:tabular-nums;margin-left:4px}
+.charge-lines-totals .charge-table-hint{font-size:var(--fs-xs);color:var(--muted)}
 .charge-visit-diagnoses{margin:0 0 14px;padding:12px 14px;background:var(--surface-soft);border:1px solid var(--line);border-radius:5px}
 .charge-visit-diagnoses h3{margin:0 0 6px;font-size:var(--fs-md)}
 .charge-table-next{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin:10px 0 0;padding:10px 12px;background:var(--surface-soft);border:1px solid var(--line);border-radius:5px;font-size:var(--fs-sm)}
 .charge-table-next button{margin:0}
 .charge-table-next:empty{display:none}
 .charge-table-next-slot:empty{display:none}
-.charge-table-totals{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px;margin:12px 0 4px;padding:10px 12px;background:var(--surface-soft);border:1px solid var(--line);border-radius:5px;font-size:var(--fs-sm)}
-.charge-table-totals b{font-size:var(--fs-md);font-weight:650;font-variant-numeric:tabular-nums;margin-left:4px}
-.charge-table-totals .charge-table-hint{font-size:var(--fs-xs);color:var(--muted)}
-.charge-table-totals:empty{display:none}
 .charge-table-finished{margin-top:18px;padding-top:14px;border-top:2px solid var(--line)}
 @media(max-width:760px){
  .charge-table thead{display:none}
  .charge-table,.charge-table tbody,.charge-table .billing-charge-row,.charge-table .billing-charge-row>td{display:block;width:100%}
  .charge-table .billing-charge-row{border:1px solid var(--line);border-radius:5px;margin:10px 0;padding:4px 8px}
  .charge-table .billing-charge-row>td{padding:6px 0;border-bottom:0}
- .charge-table .charge-cell-problem{display:none!important}
- .billing-charge-row[data-charge-problem] .charge-cell-problem{display:block!important;padding:6px 8px!important}
+ .billing-charge-row .charge-cell-problem:empty{display:none}
  .charge-cell-units,.charge-cell-modifiers,.charge-cell-remove{width:100%}
- .charge-cell-total{text-align:left}
+ .charge-cell-code,.charge-cell-diagnoses{width:100%;min-width:0}
+ .charge-dx-chip{min-height:34px;min-width:38px}
+ .charge-lines-totals{margin:10px 0 2px}
  .charge-drug-grid{grid-template-columns:1fr}
 }
 /* Quiet "Updated just now / 2 min ago" line kept by the shared auto-refresh in each revenue screen header. */

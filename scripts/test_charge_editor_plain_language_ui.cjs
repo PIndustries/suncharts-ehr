@@ -28,7 +28,9 @@ vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/billing.js','utf8'),c
  assert.doesNotMatch(html,/Enter the total for each line\.|Tick the diagnoses that support each procedure\.|Record each service once/,'the charge editor shows no duplicate or long claims wording');
  assert.doesNotMatch(html,/Line totals are the complete charge|Search installed procedure catalogs|Catalog selection does not determine fees/);
  assert.doesNotMatch(html,/Choose the saved encounter diagnoses/);
- assert.match(html,/>Amount</);assert.match(html,/>Diagnoses for this service</);assert.match(html,/>Use practice price</);assert.match(html,/<summary>Code list this came from<\/summary>/);
+ assert.match(html,/>Amount</);assert.match(html,/>Use practice price</);assert.match(html,/<summary>Code list this came from<\/summary>/);
+ assert.doesNotMatch(html,/>Diagnoses for this service</,'the line is answered by the letters, not a box to type codes into');
+ assert.doesNotMatch(html,/<h3>[^<]*Encounter|Saved visit diagnoses|Diagnosis pointers/,'no developer wording anywhere on the charge editor');
  assert.match(details,/Insurance on Nov 13, 2026/,'coverage heading uses the friendly date');assert.doesNotMatch(html,/Insurance for 2026-11-13|Insurance for 2026<\/h4>/);
  assert.match(feeHtml,/Choose where the visit took place\./,'the visit-place note is shown above the facility and setting choices');assert.doesNotMatch(feeHtml,/Provider comes from the selected encounter|owner-approved schedule can supply fees/);
  assert.doesNotMatch(html,/Fees require an approved schedule|Manual amounts remain available/,'no jargon fee wording is shown in the charge editor');
@@ -39,10 +41,12 @@ vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/billing.js','utf8'),c
  ctx.api=async()=>({facilities:[{id:'facility-a',name:'Synthetic Clinic'}],facility_id:'facility-a',setting:'nonfacility',reason:'Prices fill in from your fee schedule when one applies. You can always type the amount.'});
  await ctx.loadFeeContext(feeForm);
  assert.equal(status.textContent,'Prices fill in from your fee schedule when one applies. You can always type the amount.','the fee note shown under the visit-place choices is the plain server reason');
- // The unsaved line the editor opened arrives pre-ticked with the plain note.
- assert.match(diagnosisHost.innerHTML,/<p class="muted">The diagnoses from this visit are ticked for you\. Untick any that do not apply\.<\/p>/);
- assert.doesNotMatch(diagnosisHost.innerHTML,/A new line starts with this visit's diagnoses|copied from the visit as saved now/);
- assert.match(diagnosisHost.innerHTML,/data-charge-diagnosis="G24.3"  checked/,'behaviour of the default tick is unchanged');
- assert.equal(diagnosisField.value,'G24.3','the visit diagnosis is still offered on the new line');
+ // The unsaved line the editor opened arrives with the visit's one diagnosis lettered and taken.
+ assert.match(diagnosisHost.innerHTML,/<legend>Diagnoses<\/legend>/,'one plain word over the letters');
+ assert.match(diagnosisHost.innerHTML,/aria-pressed="true"/,'the visit\u2019s diagnosis is taken for the new line');
+ assert.match(diagnosisHost.innerHTML,/<span class="charge-dx-chip-letter">A<\/span>/,'lettered A, the same letter the list above the table shows');
+ assert.match(diagnosisHost.innerHTML,/A \(G24\.3\)/,'and the line says in plain words what it points at');
+ assert.doesNotMatch(diagnosisHost.innerHTML,/type="checkbox"|Ticked for you|ticked for you/,'nothing is ticked, and the old tick wording is gone');
+ assert.equal(diagnosisField.value,'G24.3','the visit diagnosis is still the answer the new line starts from');
  console.log('PASS plain-language charge table: friendly heading, no save button, no code-system or reason box, plain fee and diagnosis wording, dated insurance heading');
 })().catch(error=>{console.error(error);process.exitCode=1;});

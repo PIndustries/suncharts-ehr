@@ -296,7 +296,9 @@ const openTable=async lines=>{
 const chargeRows=()=>vm.runInContext('chargeLiveRows',context)(openForm());
 const rowNodes=()=>openForm().querySelectorAll('.billing-charge-row');
 const codesOnRow=row=>row.querySelector('[name="diagnoses"]').value;
-const ticksOnRow=row=>row.querySelectorAll('[data-charge-diagnosis]').filter(node=>tickState(node)).map(node=>node.dataset.chargeDiagnosis);
+// The chips on a line, and which of them read as taken: a chip is a button, so whether it is taken
+// comes off the markup the page wrote for it, not off a checkbox that is no longer there.
+const ticksOnRow=row=>row.querySelectorAll('[data-charge-diagnosis]').filter(node=>String(node.getAttribute('aria-pressed'))==='true'||node.attrs['data-chip-on']!==undefined).map(node=>node.dataset.chargeDiagnosis);
 // What the page's own rule sees, read through the page's own function: a line that still holds
 // exactly what the visit last gave it is allowed to keep following the visit.
 const autoFilled=row=>vm.runInContext('chargeDiagnosisAutoFilled',context)(row);
@@ -360,8 +362,24 @@ const addDiagnosis=async(code,display)=>{
  assert.match(diagnosesHtml,/data-diagnosis-refresh/,'it keeps the Reload its own screen already offers');
  assert.match(diagnosesHtml,/data-terminology-combobox/,'its code boxes are the type-ahead boxes, not bare inputs');
  assert.equal($('visit-diagnoses-form').querySelectorAll('[data-diagnosis-row]').length,1,'the one saved diagnosis is on one row');
- assert.match(editorHtml.slice(sectionAt,tableAt),/Diagnoses for this visit/,'named in plain clinic words');
- assert.doesNotMatch(editorHtml.slice(sectionAt,tableAt),/>Refresh<|>Find /,'and it brings no new Refresh or Find button of its own');
+ assert.match(editorHtml.slice(sectionAt,tableAt),/<h3>Diagnoses<\/h3>/,'named in one plain word, no developer wording');
+ // Headings and buttons in plain words: the section is 'Diagnoses', the lines below are
+// 'Procedures', and nothing here is called an encounter, a pointer or a link.
+ assert.match(editorHtml.slice(tableAt,editorHtml.indexOf('</thead>',tableAt)),/<th>Procedure<\/th><th>Modifiers<\/th><th>Units<\/th><th>Diagnoses<\/th><th>Amount<\/th>/,'the lines are headed Procedure, not Code / Description');
+ assert.doesNotMatch(editorHtml.slice(sectionAt,tableAt),/>Refresh<|>Find |<h3>[^<]*(Encounter|Diagnosis Pointer|Diagnosis Link)/,'no new Refresh or Find button, and no developer wording in any heading');
+ assert.doesNotMatch(editorHtml,/<h3>[^<]*(Encounter|Procedure Codes|Charge Lines)/,'the charge table is not headlined with a developer term either');
+ // The visit's diagnoses are lettered, in the visit's order, so a charge line can name one with a
+ // letter instead of making anyone read a code back.
+ const lettersAt=diagnosesHtml.indexOf('charge-dx-letter');
+ assert.ok(lettersAt>=0,'the first diagnosis carries its letter');
+ assert.match(diagnosesHtml.slice(lettersAt,lettersAt+60),/>A<\/span>/,'and it is A, the first the visit lists');
+ assert.ok(diagnosesHtml.indexOf('charge-dx-letter')<diagnosesHtml.indexOf('data-diagnosis-remove'),'the letter is on the row it belongs to, beside its buttons');
+ // A second diagnosis drawn above is lettered B in front of its own words: the editor writes the
+ // letter into each row as it writes the row, so the letters cannot fall behind the list.
+ const secondRow=$('visit-diagnoses').innerHTML.slice($('visit-diagnoses').innerHTML.indexOf('data-diagnosis-row'));
+ assert.ok(!/data-diagnosis-remove="1"/.test(secondRow),'the visit holds one diagnosis so far');
+ assert.match(vm.runInContext('diagnosisLetterBadge(1)',ctx),/>B</,'the editor asks for B at the second row');
+ assert.match(vm.runInContext('diagnosisLetterBadge(0)',ctx),/>A</,'and A at the first');
  assert.doesNotMatch(diagnosesHtml,/data-link-account-diagnoses/,'no Link visit diagnoses button anywhere near it');
  console.log('PASS one place: the visit\u2019s own diagnoses editor, drawn by its own code, directly above the charge lines');
 
@@ -381,13 +399,17 @@ const addDiagnosis=async(code,display)=>{
  // The blank line is filled by the save — both codes, in the visit's order. The line that arrived
  // with codes already on it is left exactly where the saved draft put it.
  assert.equal(codesOnRow(chargeRows()[1]),'R51.9, M79.3','the blank line took the visit\u2019s diagnoses the moment they saved');
- assert.deepEqual(ticksOnRow(chargeRows()[1]),['R51.9','M79.3'],'its ticks say what it carries');
+ assert.deepEqual(ticksOnRow(chargeRows()[1]),['R51.9','M79.3'],'and its chips say what it carries');
+ assert.match(chargeRows()[1].innerHTML,/A \(R51\.9\), B \(M79\.3\)/,'the line says it in the letters the section above shows');
  // The saved line arrived with no codes on it, so the visit filled it in and it keeps following.
  // What the table had before the save is unchanged, and the save itself stays in step.
  assert.equal(sent.filter(call=>call.url.includes('/billing/accounts')&&call.method==='PUT').length,0,'no charge was saved behind anyone\u2019s back');
  assert.equal(codesOnRow(chargeRows()[0]),'R51.9, M79.3','a saved line with nothing on it is answered by the visit too');
- assert.match(chargeRows()[0].innerHTML,/data-charge-diagnosis="M79\.3"/,'and the new diagnosis is offered to it as a choice');
+ assert.match(chargeRows()[0].innerHTML,/data-charge-diagnosis="M79\.3"/,'and the new diagnosis is offered to it as a chip');
  assert.deepEqual(ticksOnRow(chargeRows()[0]),['R51.9','M79.3'],'offered and taken, in step with the line');
+ // A second letter appears on every line the moment the second diagnosis saves above: the two
+ // screens are one form, so nobody has to reopen or refresh anything to find it.
+ assert.match(chargeRows()[0].querySelector('[data-charge-diagnoses]').innerHTML,/>A<\/span>[\s\S]*>B<\/span>/,'and the chips are lettered the same way as the list above');
  console.log('PASS a diagnosis saved above reaches every charge row at once, with no page reload and the table left open');
 
  // ---- 3. a line the visit filled in follows the visit; a line staff answered does not ----
@@ -397,11 +419,49 @@ const addDiagnosis=async(code,display)=>{
  assert.equal(codesOnRow(chargeRows()[1]),'R51.9, M79.3, G89.2','a line holding only what the visit gave it takes the new diagnosis too');
  // A code typed by hand is an answer already given, and a visit edit does not go over it.
  const blank=chargeRows()[1].querySelector('[name="diagnoses"]');
+ assert.equal(blank.getAttribute('type'),'hidden','the line keeps the same field it always submitted, now filled by the chips');
+ assert.ok(!/<label>Diagnoses for this service/.test(chargeRows()[1].innerHTML),'and no free-text box is offered for it');
  type(blank,'Z00.00');change(blank);await settle();
  await addDiagnosis('R07.9','Synthetic chest pain');
  assert.equal(codesOnRow(chargeRows()[1]),'Z00.00','a code entered by hand is left exactly as it was entered');
- // A tick taken off is a decision too.
- console.log('PASS the visit fills in a line it filled in before, and never overwrites a code staff chose');
+ console.log('PASS the visit fills in a line it filled in before, and never overwrites an answer staff gave');
+
+ // ---- 3b. a fifth diagnosis saved above is on offer to every line -----------------------
+ // The visit now lists five diagnoses while a claim line carries four: the fifth is offered as a
+ // chip on every line, so the person deciding can take it on the line that needs it.
+ await addDiagnosis('Z00.00','Synthetic annual exam');
+ assert.ok(diagnoses.length>4,'the visit lists more diagnoses than one line can carry');
+ assert.ok(chargeRows().every(row=>row.querySelectorAll('[data-charge-diagnosis]').length===diagnoses.length),'every line offers all five as chips the moment they save');
+ console.log('PASS a diagnosis saved above is offered on every line at once, as one chip per letter');
+
+ // ---- 3c. pressing a chip is the line's own answer --------------------------------------
+ // Pressed through the same click the page answers on, with the state read off the chip's own
+ // markup the way a browser reads it off the button.
+ const pressed=(row,code)=>{
+  const chip=row.querySelectorAll('[data-charge-diagnosis]').find(node=>node.dataset.chargeDiagnosis===code);
+  if(!chip)throw new Error('the line offers no chip for '+code);
+  return dispatch('click',chip);
+ };
+ const chosen=(row,code)=>row.querySelectorAll('[data-charge-diagnosis]').some(node=>node.dataset.chargeDiagnosis===code&&String(node.getAttribute('aria-pressed'))==='true');
+// Letters the visit lists that this line has not taken, read off the chips the page drew.
+const chargeDiagnosisFree=row=>row.querySelectorAll('[data-charge-diagnosis]').map(node=>node.dataset.chargeDiagnosis).filter(code=>!ticksOnRow(row).includes(code));
+ const line=chargeRows().at(-1);
+ const held=chargeDiagnosisFree(line);
+ assert.ok(held.length,'one of them is offered to this line and not yet taken: '+held.join(', '));
+ const spare=held[0];
+ const had=codesOnRow(line);
+ pressed(line,spare);
+ assert.equal(codesOnRow(line),[...had.split(', ').filter(Boolean),spare].join(', '),'pressing a letter adds that diagnosis to the line');
+ assert.ok(chosen(line,spare),'and the chip shows as taken');
+ assert.ok(line.querySelector('[name="diagnoses"]').value.includes(spare),'the code itself is on the field the line submits');
+ pressed(line,spare);
+ assert.equal(codesOnRow(line),had,'pressing it again takes it back off');
+ // From here the line has answered for itself: a further diagnosis saved above does not move it.
+ const beforePress=codesOnRow(line);
+ await addDiagnosis('G80.01','Synthetic congenital asthma with exacerbation');
+ assert.equal(codesOnRow(line),beforePress,'a line someone pressed a chip on is left exactly as they left it');
+ assert.ok(chargeDiagnosisFree(line).includes('G80.01'),'while its letter is still offered, unpressed, for anyone who wants it');
+ console.log('PASS a chip press writes the codes the line submits, comes back off, and makes the line the person\u2019s own answer');
 
  // ---- 4. a new charge row points at the visit's diagnoses, in order, up to four ---------
  click(openForm().querySelector('[data-add-charge]'));await settle();
@@ -415,7 +475,18 @@ const addDiagnosis=async(code,display)=>{
  await settle();
  assert.equal(codesOnRow(chargeRows()[2]),diagnoses.slice(0,4).map(d=>d.code).join(', '),'and a diagnosis removed from the visit is taken off a line still following it');
  assert.equal(codesOnRow(chargeRows()[1]),'Z00.00','the hand-entered line is still untouched');
- console.log('PASS a new charge row points at the visit\u2019s diagnoses in order up to four, and follows a removal');
+ // The four letters a new line took are shown as taken, in the visit's order.
+ assert.deepEqual(ticksOnRow(chargeRows()[2]),diagnoses.slice(0,4).map(d=>d.code),'and the chips show exactly those four as taken');
+ // A fifth letter is refused: a claim line carries four. The words are the claim rule, not a code.
+ const following=chargeRows()[2],offered=following.querySelectorAll('[data-charge-diagnosis]').length;
+ assert.ok(offered>4,'the visit now lists more diagnoses than one line can carry: '+offered);
+ const fifth=following.querySelectorAll('[data-charge-diagnosis]').find(node=>!ticksOnRow(following).includes(node.dataset.chargeDiagnosis));
+ ctx.noticed=undefined;
+ pressed(following,fifth.dataset.chargeDiagnosis);
+ assert.equal(codesOnRow(following),diagnoses.slice(0,4).map(d=>d.code).join(', '),'the fifth is not written onto the line');
+ assert.equal(ctx.noticed,'A line can point to 4 diagnoses.','and the reason is said in clinic words: '+ctx.noticed);
+ assert.ok(ticksOnRow(following).length<=4,'the line never ends up holding more than four');
+ console.log('PASS a new charge row points at the visit\u2019s diagnoses in order up to four, follows a removal, and refuses a fifth in words');
 
  // ---- 5. no Link visit diagnoses button on this screen ----------------------------------
  assert.doesNotMatch(encounterEditor.innerHTML,/data-link-account-diagnoses/,'the charges step never offers Link visit diagnoses');
@@ -442,5 +513,5 @@ const addDiagnosis=async(code,display)=>{
  assert.ok(put.every(call=>call.version!==undefined),'each save carried the version it read, so a concurrent edit is refused');
  assert.equal(put.filter(call=>call.url.includes('/billing/')).length,0,'no diagnosis save went through the billing account');
  console.log('PASS the section saves straight to the visit with its version, exactly as the Diagnoses screen does');
- console.log('PASS one place for ICD and CPT: the visit\u2019s own diagnoses editor above the charge lines, charge rows following it live, four diagnoses in order on a new line, hand-entered codes preserved, no Link visit diagnoses button on this screen');
+ console.log('PASS one encounter form: the visit\u2019s diagnoses lettered A, B, C above the lines, one chip per letter on every line writing the codes the line submits, four to a line with the limit said in words, one row per procedure with the totals under the lines, and no Link visit diagnoses button on this screen');
 })().catch(error=>{console.error(error);process.exitCode=1;});

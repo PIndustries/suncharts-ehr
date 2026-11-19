@@ -43,7 +43,7 @@ eq(ctx.chargeDrugMarkup({ndc_code:' 00023114501 ',ndc_quantity:' 100 ',ndc_unit:
 // The autosave path reads each row's drug inputs through the same explicit key list.
 const source=fs.readFileSync('web/billing.js','utf8');
 assert.match(source,/chargeDrugMarkup\(\{ndc_code:row\.querySelector\('\[name="ndc_code"\]'\)\?\.value,ndc_quantity:row\.querySelector\('\[name="ndc_quantity"\]'\)\?\.value,ndc_unit:row\.querySelector\('\[name="ndc_unit"\]'\)\?\.value\}\)/);
-assert.match(source,/return \{code_system:system,code,description,\.\.\.chargeRowData\(row\)\}/);
+assert.match(source,/return \{code_system:system,code,description:chargeLineDescription\(row\),\.\.\.chargeRowData\(row\)\}/);
 assert.match(source,/lines:chargeLiveRows\(form\)\.map\(chargeRowValue\)/,'a save reads its lines from the table rows');
 // A code typed as a drug opens the fields inside that row.
 const drugWatch=source.slice(source.indexOf("// A code that names an injected drug"),source.indexOf("document.addEventListener('change',e=>{const select=e.target.closest('#billing-filter"));

@@ -24,9 +24,14 @@ const chargeLine=html=>{const start=html.indexOf('<tr class="billing-charge-row"
  assert.ok(!/<details[^>]*\bopen/.test(visit),'the box starts closed');
  const row=chargeLine(visit);
  assert.match(visit,/<table class="billing-table charge-table" id="billing-charge-lines"><caption class="sr-only">/,  'the lines are one table');
- assert.match(visit,/<thead><tr><th>Code<\/th><th>Description<\/th><th>Modifiers<\/th><th>Units<\/th><th>Diagnoses<\/th><th>Amount<\/th>/,'the columns staff asked for, in that order');
+ // One row per procedure, in the order the form is filled in: the procedure, its modifiers, how
+ // many, the diagnoses it was for, the amount, then remove. Nothing else holds a column of its own.
+ assert.match(visit,/<thead><tr><th>Procedure<\/th><th>Modifiers<\/th><th>Units<\/th><th>Diagnoses<\/th><th>Amount<\/th><th><\/th><\/tr><\/thead>/,'one row per line, with the columns in the order they are filled in');
+ assert.equal((row.match(/<td/g)||[]).length,6,'and the row itself has exactly those five cells plus the remove button');
+ assert.ok(!row.includes('charge-cell-description')&&!row.includes('data-charge-line-total'),'no description column and no per-line total column to make the row wide');
  assert.ok(!row.includes('<details')||row.indexOf('<details')>row.indexOf('name="code"'),'the procedure code is outside any closed box');
- assert.match(row,/data-charge-diagnoses/,'the diagnosis ticks stay on the line');
+ assert.match(row,/data-charge-diagnoses/,'the diagnosis chips stay on the line');
+ assert.match(row,/name="diagnoses"/,'and the line still submits the same diagnoses field');
  assert.match(row,/class="charge-drug"/,'the drug fields sit inside the row, not behind a closed box');
  assert.ok(visit.indexOf(box)>visit.indexOf('data-add-charge'),'the options box comes after the charge lines');
  const tucked=visit.slice(visit.indexOf(box));
@@ -36,7 +41,9 @@ const chargeLine=html=>{const start=html.indexOf('<tr class="billing-charge-row"
  assert.doesNotMatch(visit,/name="code_system"/,'no code system field anywhere on a charge line');
  assert.match(visit,/<button type="button" data-remove-charge>Remove<\/button>/,'each line has one plain Remove');
  assert.doesNotMatch(visit,/Remove line/);
- assert.match(visit,/>Amount</);assert.match(visit,/>Diagnoses for this service</);assert.match(visit,/>Use practice price</);assert.match(visit,/<summary>Code list this came from<\/summary>/);
+ assert.match(visit,/>Amount</);assert.match(visit,/>Use practice price</);assert.match(visit,/<summary>Code list this came from<\/summary>/);
+ assert.doesNotMatch(visit,/>Diagnoses for this service</,'the letters answer for the line; there is no free-text box to label');
+ assert.ok(visit.indexOf('data-charge-line-totals')>visit.indexOf('</table>'),'the totals sit under the lines, not in a column beside them');
  assert.match(visit,/data-charge-total/,'the totals sit under the table and move as lines change');
  assert.doesNotMatch(visit,/Account notes|Line total \(USD\)|Reviewed ICD-10|Check approved fee|Catalog release options|Record each service once|Code system/,'no long or developer wording is shown in the visit charge table');
  // Saving with a required field left empty inside the box opens it so the browser can show the problem.
