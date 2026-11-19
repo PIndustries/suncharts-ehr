@@ -150,7 +150,10 @@ function ensureVisitPageHost(){
    block.id=id;if(id==='encounter-revenue')block.className='panel';
    host.appendChild(block);
   }
-  if(chart.children)chart.insertBefore(host,chart.children[0]??null);else chart.appendChild(host);
+  // The row sits where the visit heading always sat: below the patient banner and chart tabs, above
+  // the start-visit editor and the chart panels.
+  const anchor=$('encounter-start-editor');
+  if(anchor&&anchor.parentElement===chart)chart.insertBefore(host,anchor);else if(chart.children)chart.insertBefore(host,chart.children[0]??null);else chart.appendChild(host);
  }
  return host;
 }

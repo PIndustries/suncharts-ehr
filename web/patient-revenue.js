@@ -338,7 +338,7 @@ function renderEncounterRevenue(){
   if(diagnosesHost){
    if(codesVisible)diagnosesHost.hidden=false;
    else{diagnosesHost.replaceChildren();diagnosesHost.hidden=true;}
-   host.removeChild(diagnosesHost);
+   if(diagnosesHost.parentNode===host)host.removeChild(diagnosesHost);
   }
  // A detached holder for the body markup, so the diagnoses host is never inside what is rewritten.
  // A page whose document cannot hand out elements gets a plain string holder instead; that page has
@@ -350,8 +350,8 @@ function renderEncounterRevenue(){
   // the block above the charge lines — moved, never re-created, so what it holds comes with it.
   const bodyMarkup=rebuilt.innerHTML;
   host.innerHTML=bodyMarkup;
-  if(diagnosesHost&&typeof host.insertBefore==='function'&&typeof host.removeChild==='function'){
-   host.removeChild(diagnosesHost);
+  if(diagnosesHost&&typeof host.insertBefore==='function'){
+   // insertBefore moves the node: the host was already taken out above, so it is only put back.
    host.insertBefore(diagnosesHost,host.firstChild||null);
   }else host.innerHTML=(diagnosesHost?diagnosesHost.outerHTML:'')+bodyMarkup;
  // A chart opened on another page keeps its panel empty; the billing step re-opens it.
