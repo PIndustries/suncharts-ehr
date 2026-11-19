@@ -195,13 +195,23 @@ function buildPanels(){
 
 // ---- the synthetic visit ---------------------------------------------------------------
 const {visitSummary,selfPay}=require('./visit_billing_fixture.cjs');
+// The one-page visit lays the charge table out compactly, with the visit and its options behind a
+// disclosure; a draft charge table for a visit is only ever entered that way, so the stub's form
+// The stub's form element answers for the hidden selects behind the compact table's disclosure
+// the way a browser's does: the visit the table is on, and the coverage its insurance runs through.
+const hiddenSelectAnswer=html=>html
+ .replace('<select name="visit_id" required>','<input type="hidden" name="visit_id" value="visit" required>')
+ .replace('<select name="coverage_id"><option value="">Self-pay / no selected coverage</option>','<select name="coverage_id" required><option value="coverage" selected>Synthetic Medicare PPO</option>');
+const realParseMarkup=parseMarkup;
+parseMarkup=function(html){return realParseMarkup(hiddenSelectAnswer(String(html)));};
 // Named rather than `line`: web/visit-review.js has a real page bug where its charge-line mapper
 // shadows itself inside a map callback, and a test global called line used to paper over it.
 const chargeLine={code_system:'CPT',code:'99213',description:'Synthetic office visit',modifiers:'',units:1,amount_cents:15000,diagnosis_codes:['Z00.00']};
-const accountOf=(status='posted',version=2)=>({id:'account',version,status,patient_id:'patient',total_cents:28000,content:{visit_id:'visit',service_date:'2026-11-12',coverage_id:null,lines:[{...chargeLine}],notes:''}});
+const accountOf=(status='posted',version=2)=>({id:'account',version,status,patient_id:'patient',total_cents:28000,content:{visit_id:'visit',service_date:'2026-11-12',coverage_id:'coverage',lines:[{...chargeLine}],notes:''}});
 // The charge account the claim's copy of the visit is taken from: a frozen payer on file, and the
 // charge lines the claim carries.
 const reviewAccount={id:'account',patient_id:'patient',version:5,status:'posted',total_cents:28000,content:{visit_id:'visit',service_date:'2026-11-12',lines:[{code_system:'CPT',code:'99213',description:'Synthetic office visit',units:1,amount_cents:28000,diagnosis_codes:['Z00.00']}]},coverage_snapshot:{coverage:{content:{relationship:'self',member_id:'SYN-MEMBER'}},payer:{content:{name:'Synthetic Medicare PPO',payer_code:'SYN'}}}};
+const coverage={id:'coverage',version:2,content:{payer_id:'payer',priority:'primary',status:'active',effective_date:'2026-01-01',end_date:null,member_id:'SYN-MEMBER',copay_cents:null}};
 const appointment={id:'appointment',starts_at:'2026-11-12T15:00:00Z',timezone:'America/Chicago',status:'checked_in',title:'Office visit'};
 
 const ctx={console,Date,Intl,URL,URLSearchParams,Map,Set,WeakMap,WeakSet,Array,Math,Number,String,JSON,Object,Boolean,RegExp,Error,Promise,Symbol,encodeURIComponent,
@@ -209,10 +219,12 @@ const ctx={console,Date,Intl,URL,URLSearchParams,Map,Set,WeakMap,WeakSet,Array,M
  crypto:{randomUUID:()=>'synthetic-request'},setTimeout:()=>0,clearTimeout(){},
  selected:'patient',me:{role:'owner'},chartSection:'visits',encounterSection:'charges',billingSelected:null,
  activeVisit:{id:'visit',appointment_id:'appointment',status:'signed',version:3},
- workspace:{patient:{id:'patient'},demographics:{patient_id:'patient',content:{}},appointments:[appointment],visits:[{id:'visit',appointment_id:'appointment',status:'signed'}],billing:{accounts:[],coverages:[],entries:[],copays:[]}},
+ workspace:{patient:{id:'patient'},demographics:{patient_id:'patient',content:{}},appointments:[appointment],visits:[{id:'visit',appointment_id:'appointment',status:'signed'}],billing:{accounts:[],coverages:[coverage],entries:[],copays:[]}},
  esc:v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'),
  human:v=>String(v??'').replaceAll('_',' '),date:v=>String(v),money:n=>'$'+(n/100).toFixed(2),dollars:c=>c==null?'':(c/100).toFixed(2),cents:v=>Math.round(Number(v)*100),
  payerName:()=>'Synthetic Medicare PPO',billingCan:()=>true,workspaceResourceAllowed:()=>true,
+ // The payer directory the billing screens read: this visit's insurer, with its Claim.MD payer ID.
+ billingPayers:[{id:'payer',content:{name:'Synthetic Medicare PPO',payer_code:'SYN'}}],
  claimmdClaimProviderDefaults:()=>({}),claimPatientAddressDefault:()=>('1 Synthetic Way, Synthetic City, SY 00000, US'),
  claimMdConnectionState:{connected:true},loadClaimMdConnection:async()=>{},claimsApiBase:'/api/v1/billing/claims',$:id=>documentStub.getElementById(id),
  visitBillingDate:v=>new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}).format(new Date(`${v}T00:00:00`)),
@@ -234,12 +246,16 @@ const ctx={console,Date,Intl,URL,URLSearchParams,Map,Set,WeakMap,WeakSet,Array,M
 ctx.reviewAccount=reviewAccount;
 const context=vm.createContext(ctx);
 ctx.sent=[];
+ctx.globalThis=ctx;
 vm.runInContext(fs.readFileSync('web/display-format.js','utf8'),context);
 vm.runInContext(fs.readFileSync('web/billing.js','utf8'),context);
 vm.runInContext(fs.readFileSync('web/visit-billing.js','utf8'),context);
 vm.runInContext(fs.readFileSync('web/visit-review.js','utf8'),context);
 vm.runInContext(fs.readFileSync('web/patient-revenue.js','utf8'),context);
 vm.runInContext('encounterRevenueState={patient:null,identity:null,account:null,pending:null,data:null,loadedAt:0};',ctx);
+// The payer directory belongs to web/billing.js, which owns it as a script-level binding; the
+// visit's insurer and its Claim.MD payer ID are put there the way the billing screen fills it.
+vm.runInContext('billingPayers=[{id:\'payer\',content:{name:\'Synthetic Medicare PPO\',payer_code:\'SYN\'}}];',ctx);
 
 const $=id=>documentStub.getElementById(id);
 const openForm=()=>$('billing-account-form');
@@ -335,52 +351,60 @@ const settle=async()=>{for(let step=0;step<40;step++)await new Promise(resolve=>
  assert.equal(ctx.sectionOpened,'documentation','the footer button opens the visit note');
  assert.equal(ctx.sent.length,0,'nothing is sent by opening the note');
 
- // ---- 2. the charges can be posted ------------------------------------------------------
- const post=visitSummary({state:'post_charges',waiting_on:'staff',account:{id:'account',status:'draft',version:2},balance_cents:null,claim:null,insurance:{insured:true,insurer:'Synthetic Medicare PPO',electronic:true,status:'not_billed',pending_cents:27000,unassigned_cents:0},patient:{copay_cents:null,copay_paid_cents:null,copay_due_cents:null,received_cents:0,receipts_applied_cents:0,owes_now_cents:0,responsibility_source:'not_final'}});
- ctx.activeVisit={id:'visit',appointment_id:'appointment',status:'signed',version:3};
- await openCharges(post);
- line1=nextLine();
- assert.equal(line1.label,'Post charges');assert.equal(line1.attribute,'data-visit-post-charges="account"');
- assert.equal(stepAttributes(cardButton().attribute),'data-visit-post-charges="account"','the footer and the card ask for the same step');
- // Pressing it is the card's own post: one plain confirm, then exactly the post the lower form
- // would send, and the card left to read what the server now says.
- const posted=visitSummary({...post,state:'prepare_claim',waiting_on:null,account:{id:'account',status:'posted',version:3},insurance:{insured:true,insurer:'Synthetic Medicare PPO',electronic:true,status:'not_billed',pending_cents:27000,unassigned_cents:0},patient:{copay_cents:null,copay_paid_cents:null,copay_due_cents:null,received_cents:0,receipts_applied_cents:0,owes_now_cents:0,responsibility_source:'not_final'}});
- ctx.nextSummary=posted;
- ctx.answer=true;ctx.sent.length=0;ctx.noticed=null;ctx.pending=Promise.resolve();
- const asked=[];const confirm=ctx.confirmAction;ctx.confirmAction=async(message,options)=>{asked.push([message,options.title,options.confirmLabel]);return ctx.answer;};
- click(openForm().querySelector('.charge-table-next button'));await settle();await ctx.pending;await settle();
- ctx.confirmAction=confirm;
- assert.deepEqual(asked.map(ask=>ask[1]),['Post these charges?'],'one plain ask, and only before anything is sent');
- const posts=()=>ctx.sent.filter(call=>String(call[0]).endsWith('/actions'));
- assert.deepEqual(posts().map(call=>[call[0],call[1],JSON.stringify(call[2]),call[3]]),[['/api/v1/patients/patient/billing/accounts/account/actions','POST','{"action":"post","reason":"Charges posted","local_only":false}',2]],'the lower form\'s endpoint, action, a default reason and the account version');
- assert.ok(ctx.sent.some(call=>call[0]==='rerender'),'the visit is reopened the way the lower form reopens it');
- assert.equal(ctx.sent.at(-1)[0],'/api/v1/patients/patient/billing/visit-summary?visit_id=visit','then the card reads what the server now says');
- assert.equal(ctx.noticed,'Charges posted.','the screen says the charges were posted, not something else');
- // The line under the table moves with the card: a posted visit has its charges on their way, not
- // a post to press.
- // A draft the practice chose to keep, and a claim that is not about charges at all, leave the
- // table with nothing to press: the card above carries the step, not the line under the lines.
- const kept=nextLine();
- assert.ok(kept===null||kept.label==='Review and send claim','the footer either steps aside or asks for the claim, never the post');
+  // ---- 2. the charges can be posted ------------------------------------------------------
+  // Insurance that can be billed electronically gets the one button that does the whole job.
+  const post=visitSummary({state:'post_charges',waiting_on:'staff',account:{id:'account',status:'draft',version:2},balance_cents:null,claim:null,insurance:{insured:true,insurer:'Synthetic Medicare PPO',electronic:true,status:'not_billed',pending_cents:27000,unassigned_cents:0},patient:{copay_cents:null,copay_paid_cents:null,copay_due_cents:null,received_cents:0,receipts_applied_cents:0,owes_now_cents:0,responsibility_source:'not_final'}});
+  ctx.activeVisit={id:'visit',appointment_id:'appointment',status:'signed',version:3};
+  await openCharges(post);
+  line1=nextLine();
+  assert.equal(line1.label,'Post charges and send claim');assert.equal(line1.attribute,'data-visit-review-open="account" data-post-and-send="account"');
+  assert.equal(stepAttributes(cardButton().attribute),'data-visit-post-charges="account"','the card still asks for its own post; the line under the table does the whole chain');
+  // Pressing it is one press that does the whole job: the same confirm the card's own post asks,
+  // with the send named in it, then exactly the post the lower form would send. The claim the
+  // server prepares next lands in prepare_claim, so nothing further is sent here.
+  const posted=visitSummary({...post,state:'prepare_claim',waiting_on:null,account:{id:'account',status:'posted',version:3},insurance:{insured:true,insurer:'Synthetic Medicare PPO',electronic:true,status:'not_billed',pending_cents:27000,unassigned_cents:0},patient:{copay_cents:null,copay_paid_cents:null,copay_due_cents:null,received_cents:0,receipts_applied_cents:0,owes_now_cents:0,responsibility_source:'not_final'}});
+  ctx.nextSummary=posted;
+  ctx.answer=true;ctx.sent.length=0;ctx.noticed=null;ctx.pending=Promise.resolve();
+  const asked=[],asker=async(message,options)=>{asked.push([message,options.title,options.confirmLabel]);return ctx.answer;};
+  ctx.asker=asker;vm.runInContext('confirmAction=(message,options)=>asker(message,options)',ctx);
+  click(openForm().querySelector('.charge-table-next button'));await settle();await ctx.pending;await settle();
+  vm.runInContext('confirmAction=async()=>true',ctx);
+  assert.deepEqual(asked,[['Charges of $280.00 become final and the claim is sent once it is ready.','Post these charges?','Post charges and send claim']],'one plain ask, naming the send that follows, and only before anything is sent');
+  const posts=()=>ctx.sent.filter(call=>String(call[0]).endsWith('/actions'));
+  assert.deepEqual(posts().map(call=>[call[0],call[1],JSON.stringify(call[2]),call[3]]),[['/api/v1/patients/patient/billing/accounts/account/actions','POST','{"action":"post","reason":"Charges posted","local_only":false}',2]],'the lower form\'s endpoint, action, a default reason and the account version');
+  assert.ok(ctx.sent.some(call=>call[0]==='rerender'),'the visit is reopened the way the lower form reopens it');
+  assert.equal(ctx.sent.at(-1)[0],'/api/v1/patients/patient/billing/visit-summary?visit_id=visit','then the card reads what the server now says');
+  assert.equal(ctx.noticed,'Charges posted.','the screen says the charges were posted, not something else');
+  // The line under the table moves with the card: a posted visit has its charges on their way, not
+  // a post to press.
+  // A draft the practice chose to keep, and a claim that is not about charges at all, leave the
+  // table with nothing to press: the card above carries the step, not the line under the lines.
+  const kept=nextLine();
+  assert.ok(kept===null||kept.label==='Post charges','the footer either steps aside or asks for the post, never a send');
 
- // ---- 3. the claim is ready, and the review panel is the one send ------------------------
- // A visit whose charges are already posted has no live table to work in — the card's Charges
- // disclosure holds them read-only — so its send is taken from the card's own button, and the
- // footer's one send is checked on a draft the practice is still working.
- const ready=visitSummary({state:'send_claim',account:{id:'account',status:'posted',version:5},claim:claimReady()});
- ctx.activeVisit={id:'visit',appointment_id:'appointment',status:'signed',version:3};
- await openCharges(ready);
- assert.equal(nextLine(),null,'a visit whose charges are final has no live table, so no line under it');
- assert.equal(stepAttributes(cardButton().attribute),'data-visit-review-open="account"','the card itself offers the one send');
- // The same visit with its charges still a draft does have a live table, and its line hands the
- // send to the review panel exactly as the card does — one send, not two buttons.
- const draftReady=visitSummary({...ready,account:{id:'account',status:'draft',version:5}});
- await openCharges(draftReady);
- line1=nextLine();
- assert.equal(line1.label,'Review and send claim');assert.equal(line1.attribute,'data-visit-review-open="account"','the footer hands the send to the review panel, as the card does');
- // While the panel is open the footer is not asked to press the same thing twice.
- click(openForm().querySelector('.charge-table-next button'));
- assert.equal($('visit-billing-review').hidden,false,'the review panel opens');
+  // ---- 3. the claim is ready, and one press sends it --------------------------------------
+  // A visit whose charges are already posted has no live table to work in — the card's Charges
+  // disclosure holds them read-only — so its send is taken from the card's own button, and the
+  // footer's one send is checked on a draft the practice is still working.
+  const ready=visitSummary({state:'send_claim',account:{id:'account',status:'posted',version:5},claim:claimReady()});
+  ctx.activeVisit={id:'visit',appointment_id:'appointment',status:'signed',version:3};
+  await openCharges(ready);
+  assert.equal(nextLine(),null,'a visit whose charges are final has no live table, so no line under it');
+  assert.equal(stepAttributes(cardButton().attribute),'data-visit-claim-direct-send="claim"','the card itself offers the one send');
+  // The same visit with its charges still a draft does have a live table, and its line sends the
+  // claim the same one press the card does, with the small review link beside it — one send, not
+  // two buttons.
+  const draftReady=visitSummary({...ready,account:{id:'account',status:'draft',version:5}});
+  await openCharges(draftReady);
+  line1=nextLine();
+  assert.equal(line1.label,'Send claim to Synthetic Medicare PPO');assert.equal(line1.attribute,'data-visit-claim-direct-send="claim"','the footer sends the claim itself, as the card does');
+  assert.match(nodes['encounter-billing-editor'].innerHTML,/class="text-button" data-visit-review-open="account">Review claim</,'and the line keeps a small review link beside it');
+  // Pressing the small link opens the review panel; the line under the table is not asked to press
+  // the same thing twice while the panel is open.
+  const reviewLink=openForm().querySelector('.charge-table-next [data-visit-review-open]');
+  assert.ok(reviewLink,'the footer offers its one small review link');
+  click(reviewLink);
+  assert.equal($('visit-billing-review').hidden,false,'the review panel opens');
  ctx.sent.length=0;
  const panel=vm.runInContext('visitReviewPanelMarkup(encounterRevenueState.data.summary,visitReviewContext())',ctx);
  assert.match(panel,/data-visit-review-send/,'the panel holds the send itself');
@@ -429,9 +453,12 @@ const settle=async()=>{for(let step=0;step<40;step++)await new Promise(resolve=>
  const words=nodes['encounter-billing-editor'].innerHTML.slice(nodes['encounter-billing-editor'].innerHTML.indexOf('data-charge-next')).replace(/<[^>]*>/g,' ');
  assert.doesNotMatch(words,/encounter|catalog|snapshot|payload|endpoint|schema|account id|draft|version/i,'the line says nothing developer-flavoured');
  // The state moves: the same table is told the note is signed, and the line changes with it.
+ // A payer with no insurer ID is billed outside SunCharts, so the visit's own post is the step:
+ // the same table, the same card, with nothing to send electronically.
  ctx.activeVisit={id:'visit',appointment_id:'appointment',status:'signed',version:3};
  ctx.workspace.visits=[{id:'visit',appointment_id:'appointment',status:'signed'}];
- stepFor(post,ctx.workspace.billing.accounts[0].version);
+ const postPlain={...post,insurance:{...post.insurance,electronic:false}};
+ stepFor(postPlain,ctx.workspace.billing.accounts[0].version);
  vm.runInContext('paintEncounterRevenue(encounterRevenueState,()=>true)',ctx);
  await enterTable();
  await settle();

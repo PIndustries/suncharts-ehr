@@ -580,7 +580,11 @@ function chargeTableNextRefresh(){
 // in that one line, so the person working there is not asked to press something twice.
 function chargeTableNextPaint(button,label='Nothing has been sent yet.'){
  const form=$('billing-account-form');if(!button||!form)return;
- const painted=`<p class="charge-table-next"><span>${esc(label)}</span> ${button}</p>`;
+ // The step is the card's own answer painted into the line, not a hand-written button: closing
+ // the screen that borrowed the line writes the same markup back and the card's refresh finds it
+ // unchanged, instead of mistaking its own step for another screen's and never giving it back.
+ const visitId=form.elements.visit_id?.value;
+ const painted=chargeTableNextMarkup(visitId)||`<p class="charge-table-next"><span>${esc(label)}</span> ${button}</p>`;
  const slot=form.querySelector('[data-charge-next]');if(!slot)return;
  slot.innerHTML=painted;
  // Whatever the card had to say is put aside while this screen's step holds the line, and the

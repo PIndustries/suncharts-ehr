@@ -123,7 +123,7 @@ async function loadInsuranceEligibility(coverageId,force=false){
 }
 // The visit's billing card. Every amount and the next step come from the server's summary
 // for this visit; nothing here adds or subtracts money.
-function visitBillingStateContext(extra={}){return {delegated:typeof me!=='undefined'&&me?.delegated===true||encounterRevenueState.data?.summary?.viewer?.delegated===true,canCreate:billingCan('create'),canWrite:billingCan(),claimsAllowed:typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('claims','view'),...extra};}
+function visitBillingStateContext(extra={}){return {delegated:typeof me!=='undefined'&&me?.delegated===true||encounterRevenueState.data?.summary?.viewer?.delegated===true,canCreate:billingCan('create'),canWrite:billingCan(),claimsAllowed:typeof workspaceResourceAllowed!=='function'?true:workspaceResourceAllowed('claims','view'),...extra};}
 function visitBillingContext(extra={}){return visitBillingStateContext(extra);}
 // Whether this visit's charges are on their way onto the table filled in from the patient's last
 // visit, or already sit there untouched. The billing card asks the charge table's own code (see
@@ -147,7 +147,11 @@ function encounterRevenueStatusMarkup(account,data={}){
 function paintEncounterRevenue(state,current){
  if(!current())return;const node=$('encounter-revenue-status');if(!node)return;
   const open=Array.from(node.querySelectorAll?.('details[data-revenue-disclosure][open]')||[]).map(d=>d.dataset.revenueDisclosure);
-  state.reviewCard=state.data?.summary||null;node.innerHTML=encounterRevenueStatusMarkup(encounterChargeAccount(),state.data||{});
+  // A failure line beside the send survives the refresh that follows it: the card is the same
+  // card, and the person needs to still see why the send stopped once the card settles.
+  const held=node.querySelector?.('[data-claim-send-error]')?.textContent||'';
+state.reviewCard=state.data?.summary||null;node.innerHTML=encounterRevenueStatusMarkup(encounterChargeAccount(),state.data||{});
+  if(held&&!node.querySelector?.('[data-claim-send-error]'))node.querySelector?.('.visit-billing-status .actions')?.insertAdjacentHTML?.('beforeend',`<p class="claim-send-error" data-claim-send-error role="alert">${esc(held)}</p>`);
   for(const d of node.querySelectorAll?.('details[data-revenue-disclosure]')||[])d.open=open.includes(d.dataset.revenueDisclosure);
   // The review panel beside the table is the person's own working space. A background refresh
   // redraws the card underneath it; the panel is redrawn only if it was taken out of the DOM.
@@ -190,6 +194,9 @@ async function loadEncounterRevenueStatus(account,force=false){
     try{await api(`/api/v1/patients/${encodeURIComponent(state.patient)}/billing/accounts/${encodeURIComponent(summary.account.id)}/claims/prepare`,'POST',{});prepareError=null;}catch(error){prepareError=visitBillingPrepareMessage(error);}
     if(!current())return;summary=await read();if(!current())return;
    }
+   // The read finished: the card answers for the visit as the server now describes it, so the
+   // version it was opened at is replaced with the one that produced this summary.
+   if(encounterRevenueState===state&&summary?.account)state.version=summary.account.version??state.version;
    state.data={summary,prepareError:summary.state==='prepare_claim'?prepareError:null};state.loadedAt=Date.now();
   }catch{state.data=state.data?.summary?{...state.data,stale:true,preparing:false}:{error:true};}
   finally{state.pending=null;render();if(current()&&typeof setTimeout==='function'&&state.data?.summary?.account?.status==='posted'){clearTimeout(state.timer);state.timer=setTimeout(()=>{const node=$('encounter-revenue-status');if(current()&&node&&(!node.getClientRects||node.getClientRects().length))void loadEncounterRevenueStatus(encounterChargeAccount(),true);},20000);}}
@@ -310,21 +317,28 @@ function renderEncounterRevenue(){
 // The card's "Post charges" asks first, then sends exactly what the lower form would send
 // with its reason box left as rendered. A payer with no electronic ID still needs the
 // acknowledgement in that form, so the button only scrolls down to it.
-async function postVisitChargesFromCard(){
- const account=encounterChargeAccount(),state=encounterRevenueState;if(!account||account.status!=='draft')return;
- if(typeof encounterRevenueVisitUnsigned==='function'&&encounterRevenueVisitUnsigned(account))return;
+// With the one-press flow asked for (the line under the charge table, or the card on a visit
+// whose claim is already prepared), the ask names the send that follows the post.
+// What the last press found: whether anything was posted, and whether the ask was cancelled
+// before anything was sent. The one-press flow answers for both.
+let visitChargePostResult=null;
+async function postVisitChargesFromCard(options={}){
+ visitChargePostResult={posted:false,cancelled:false};
+ const account=encounterChargeAccount(),state=encounterRevenueState;if(!account||account.status!=='draft')return false;
+ if(typeof encounterRevenueVisitUnsigned==='function'&&encounterRevenueVisitUnsigned(account))return false;
  if(account.content.coverage_id){
   const coverage=(workspace.billing?.coverages||[]).find(c=>c.id===account.content.coverage_id);
   const payer=(typeof billingPayers!=='undefined'?billingPayers:[]).find(p=>p.id===coverage?.content.payer_id);
   if(!String(payer?.content.payer_code||'').trim()){
    billingSelected=account.id;showBillingAccount(account.id,false);
    $('encounter-charge-details')?.scrollIntoView({behavior:'smooth',block:'start'});
-   return;
+   return false;
   }
  }
- const insured=state.data?.summary?.insurance?.insured===true&&account.content.coverage_id!=null;
- const message=insured?`Charges of ${money(account.total_cents)} become final and the insurance claim is prepared.`:`Charges of ${money(account.total_cents)} become final.`;
- if(!await confirmAction(message,{title:'Post these charges?',confirmLabel:'Post charges'}))return;
+const insured=state.data?.summary?.insurance?.insured===true&&account.content.coverage_id!=null;
+ const message=options.send&&insured?`Charges of ${money(account.total_cents)} become final and the claim is sent once it is ready.`:insured?`Charges of ${money(account.total_cents)} become final and the insurance claim is prepared.`:`Charges of ${money(account.total_cents)} become final.`;
+ if(!await confirmAction(message,{title:'Post these charges?',confirmLabel:options.send&&insured?'Post charges and send claim':'Post charges'})){visitChargePostResult.cancelled=true;return false;}
+ visitChargePostResult.posted=true;
  const patient=selected,identity=me;
  await api(`${billingBase()}/${account.id}/actions`,'POST',{action:'post',reason:'Charges posted',local_only:false},account.version);
  if(selected!==patient||me!==identity)return;
@@ -337,8 +351,78 @@ async function postVisitChargesFromCard(){
  showChartSection(returnSection==='visits'?'visits':'billing');
  if(returnSection==='visits'&&typeof showEncounterSection==='function')showEncounterSection('charges');
  if(encounterRevenueState===state)encounterRevenueState={patient:null,identity:null,account:null,pending:null,data:null,loadedAt:0};
- await loadEncounterRevenueStatus(encounterChargeAccount(),true);
- notice('Charges posted.');
+  await loadEncounterRevenueStatus(encounterChargeAccount(),true);
+  notice('Charges posted.');
+}
+function visitBillingRefreshButton(){
+ // The pressed button is remembered, exactly as the shared runner remembers the buttons it
+ // releases: the line under the charge table and the card are both inside the billing step, and
+ // only the press itself knows which one was pressed.
+ const form=$('billing-account-form'),slot=form?.querySelector?.('[data-charge-next]'),footer=slot?.querySelector?.('[data-visit-review-open][data-post-and-send]');
+ return footer||$('encounter-revenue-status')?.querySelector?.('[data-visit-post-and-send],[data-visit-claim-direct-send]')||null;
+}
+// The server's own words stay beside the button that failed; nothing else on the visit changes.
+// A button the refresh already redrew (a claim that moved on anyway) is left as the card now says.
+function visitClaimSendFailure(error,button){
+ // The press may have been on the card or on the line under the charge table; the message goes
+ // under whichever button was pressed, where the person looking at is already looking.
+ const form=$('billing-account-form'),slot=form?.querySelector?.('[data-charge-next]'),inFooter=!!(slot&&button&&typeof slot.contains==='function'&&slot.contains(button));
+ if(inFooter){
+  slot.querySelector('[data-claim-send-error]')?.remove?.();
+  slot.insertAdjacentHTML?.('beforeend',`<p class="claim-send-error" data-claim-send-error role="alert">${esc(error?.message||'The claim could not be sent. Try again.')}</p>`);
+  return;
+ }
+ const card=$('encounter-revenue-status');if(!card)return;
+ // A card redrawn by the refresh has no room left for a line about a send it no longer offers.
+ if(card.querySelector('.visit-billing-status .actions')===null)return;
+ card.querySelector('[data-claim-send-error]')?.remove?.();
+ card.querySelector('.visit-billing-status .actions')?.insertAdjacentHTML?.('beforeend',`<p class="claim-send-error" data-claim-send-error role="alert">${esc(error?.message||'The claim could not be sent. Try again.')}</p>`);
+}
+// One press: post the charges, let the claim draft be prepared as it is after any post, then send
+// what is ready. A claim that lands in fix_claim stops here, shown as its own card with its issues.
+async function postVisitChargesAndSend(){
+ const account=encounterChargeAccount();if(!account||account.status!=='draft')return;
+ const state=encounterRevenueState,patient=selected,identity=me;
+const insured=state.data?.summary?.insurance?.insured===true&&account.content.coverage_id!=null;
+ if(insured&&typeof encounterRevenueVisitUnsigned==='function'&&encounterRevenueVisitUnsigned(account)){
+  notice('The visit note is not signed yet. Post the charges from the review, which asks about the signature first.',true);
+  if(typeof visitReviewOpen==='function')visitReviewOpen();
+  return;
+ }
+ const button=visitBillingRefreshButton();
+ if(button){button.disabled=true;button.textContent='Sending…';}
+ await postVisitChargesFromCard({send:true});
+ if(visitChargePostResult.cancelled||!visitChargePostResult.posted){
+  // Nothing happened, so the button is pressed again exactly as it was before the press.
+  if(button&&button.isConnected!==false){button.disabled=false;button.textContent='Post charges and send claim';}
+  return;
+ }
+ if(selected!==patient||me!==identity)return;
+ const summary=encounterRevenueState.data?.summary;
+ if(summary?.state==='fix_claim'){notice('The claim needs details before it can be sent. They are listed on the visit.',true);return;}
+ if(summary?.state!=='send_claim')return;
+ // The claim the server just prepared, answering for the visit this screen is on.
+ let claim=summary.claim?.id?summary.claim:null;
+ if(!claim){
+  const fresh=await api(`/api/v1/patients/${encodeURIComponent(patient)}/billing/visit-summary?visit_id=${encodeURIComponent(summary?.visit?.id||'')}`);
+  if(selected!==patient||me!==identity)return;
+  claim=fresh?.claim?.id?fresh.claim:null;
+  if(fresh?.state==='fix_claim'){encounterRevenueState.data={summary:fresh};paintEncounterRevenue(encounterRevenueState,()=>true);notice('The claim needs details before it can be sent. They are listed on the visit.',true);return;}
+ }
+ if(!claim){notice('The claim for this visit could not be found. Open the visit again.',true);return;}
+ try{await visitClaimDirectSend(claim.id,button);}
+ catch(error){visitClaimSendFailure(error,button);}
+}
+// A card's button answers for the live visit's summary, read back from the server first: a screen
+// left open while the claim moved on sends nothing on the copy it remembers.
+async function sendVisitClaimNow(claimId,button){
+ // The visit's own card decides what a press means: charges still a draft go through the combined
+ // post-and-send, anything else is the send itself. The card is the server's word on this visit,
+ // and the send re-reads the claim from the server before it releases or sends anything.
+ const summary=encounterRevenueState.data?.summary;
+ if(summary?.state==='post_charges'&&summary.insurance?.insured&&summary.account?.status==='draft')return postVisitChargesAndSend();
+ try{await visitClaimDirectSend(claimId,button);}
+ catch(error){visitClaimSendFailure(error,button);}
 }
 function openEncounterCharges(){
  if(typeof activeVisit==='undefined'||!activeVisit){showChartSection('visits');notice('Select or start the visit before entering its procedures.',true);return;}
@@ -371,6 +455,8 @@ document.addEventListener('click',event=>{
  if(button.hasAttribute('data-visit-collect')){event.preventDefault();openVisitCollect();return;}
  if(button.hasAttribute('data-visit-collect-close')){event.preventDefault();const panel=$('visit-billing-collect');if(panel)panel.hidden=true;return;}
  if(button.dataset.visitClaimPrepare!==undefined){event.preventDefault();button.disabled=true;run(()=>prepareVisitClaim(button.dataset.visitClaimPrepare==='again'));return;}
+ if(button.dataset.visitClaimDirectSend){event.preventDefault();run(()=>sendVisitClaimNow(button.dataset.visitClaimDirectSend,button));return;}
+ if(button.dataset.visitPostAndSend){event.preventDefault();run(()=>postVisitChargesAndSend());return;}
  if(button.dataset.visitClaimSend||button.dataset.visitClaimFix){event.preventDefault();run(async()=>{const account=encounterChargeAccount();if(!account)throw new Error('Open the visit for these charges first.');const id=button.dataset.visitClaimSend||button.dataset.visitClaimFix;await showEncounterClaim(id,account.id);if(button.dataset.visitClaimFix&&typeof claimCurrent!=='undefined'&&claimCurrent?.id===id&&claimCurrent.status==='draft')claimEditor(claimCurrent.snapshot.account,claimCurrent);});return;}
  if(button.hasAttribute('data-visit-statement')){event.preventDefault();run(()=>openVisitStatement());return;}
  if(button.dataset.visitStatementOpen){event.preventDefault();run(async()=>{const view=hostedCopayView(),invoice=await api(`/api/v1/billing/invoices/${encodeURIComponent(button.dataset.visitStatementOpen)}`);if(!currentHostedCopayView(view,false))return;if(invoice.patient_id!==view.patient||invoice.account_id!==encounterChargeAccount()?.id)throw new Error('This statement does not belong to the open visit.');showVisitStatement(invoice);});return;}
