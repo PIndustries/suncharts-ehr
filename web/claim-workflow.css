@@ -14,11 +14,11 @@
 @media(max-width:1050px){.claim-primary{grid-template-columns:1fr}}
 
 /* What is still missing, grouped by the place it is fixed. */
-.claim-missing{margin:1rem 0;padding:.9rem 1.1rem;border:1px solid #e0cfa4;border-radius:.5rem;background:#fffaf0}
+.claim-missing{margin:1rem 0;padding:.9rem 1.1rem;border:1px solid var(--warning-line,#e0cfa4);border-radius:.5rem;background:var(--warning-bg,#fffaf0);color:var(--ink)}
 .claim-missing h3{margin:0 0 .2rem;font-size:1.02rem}
 .claim-missing>p{margin:0 0 .5rem}
 .claim-missing ul{display:grid;gap:.55rem;list-style:none;margin:0;padding:0}
-.claim-missing>ul>li{display:grid;grid-template-columns:minmax(0,9rem) minmax(0,1fr) auto;gap:.4rem 1rem;align-items:baseline;padding:.45rem 0;border-top:1px solid #f0e4c8}
+.claim-missing>ul>li{display:grid;grid-template-columns:minmax(0,9rem) minmax(0,1fr) auto;gap:.4rem 1rem;align-items:baseline;padding:.45rem 0;border-top:1px solid var(--warning-line,#f0e4c8)}
 .claim-missing>ul>li:first-child{border-top:0}
 .claim-missing ul ul{display:flex;flex-wrap:wrap;gap:.1rem .9rem;list-style:none;margin:0;padding:0}
 .claim-missing ul ul li{font-size:var(--fs-sm)}

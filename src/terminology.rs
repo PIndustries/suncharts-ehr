@@ -387,7 +387,10 @@ const MAX_CPT_MEMBER: u64 = 64 * 1024 * 1024;
 struct CptInstall {
     request_id: Uuid,
     license_attested: bool,
-    license_reference: String,
+    /// Optional: the box is all an owner needs to tick. Without a reference the release records
+    /// who confirmed the license and when.
+    #[serde(default)]
+    license_reference: Option<String>,
     #[serde(default)]
     license_valid_until: Option<NaiveDate>,
 }
@@ -583,8 +586,15 @@ async fn cpt_install(
             "Confirm that your practice holds a CPT license.",
         ));
     }
-    let reference = clean(&body.license_reference, 500)
-        .map_err(|_| Error::Invalid("Enter the CPT license reference."))?;
+    let reference = match body.license_reference.as_deref().map(str::trim) {
+        Some(value) if !value.is_empty() => clean(value, 500)
+            .map_err(|_| Error::Invalid("The CPT license reference is too long."))?,
+        _ => format!(
+            "CPT license confirmed by the practice owner ({}) on {}",
+            actor.sub,
+            Utc::now().date_naive()
+        ),
+    };
     if body
         .license_valid_until
         .is_some_and(|date| date < Utc::now().date_naive())

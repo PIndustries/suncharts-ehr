@@ -254,17 +254,6 @@ async fn licensed_owner_installs_cpt_once_and_others_cannot() {
         .0,
         400
     );
-    assert_eq!(
-        call(
-            &f,
-            &f.owner,
-            "/api/v1/terminology/cpt-install",
-            json!({"request_id":Uuid::new_v4(),"license_attested":true,"license_reference":"  "})
-        )
-        .await
-        .0,
-        400
-    );
     assert_eq!(call(&f, &f.owner, "/api/v1/terminology/cpt-install", json!({"request_id":Uuid::new_v4(),"license_attested":true,"license_reference":"x","license_valid_until":"2000-01-01"})).await.0, 400);
     // A practice that already has the built-in edition gets it back without a download.
     let other = Fixture {
@@ -299,6 +288,19 @@ async fn licensed_owner_installs_cpt_once_and_others_cannot() {
         &other.owner,
         "/api/v1/terminology/cpt-install",
         good,
+    )
+    .await;
+    assert_eq!(
+        (status, body["created"].as_bool()),
+        (200, Some(false)),
+        "{body}"
+    );
+    // The box alone is enough: no reference, no date.
+    let (status, body) = call(
+        &other,
+        &other.owner,
+        "/api/v1/terminology/cpt-install",
+        json!({"request_id":Uuid::new_v4(),"license_attested":true}),
     )
     .await;
     assert_eq!(

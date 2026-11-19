@@ -931,6 +931,26 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/patient-picker.js",
+            get(|| async {
+                web_asset(
+                    "patient-picker.js",
+                    "application/javascript",
+                    include_str!("../web/patient-picker.js"),
+                )
+            }),
+        )
+        .route(
+            "/patient-picker.css",
+            get(|| async {
+                web_asset(
+                    "patient-picker.css",
+                    "text/css",
+                    include_str!("../web/patient-picker.css"),
+                )
+            }),
+        )
+        .route(
             "/sun.css",
             get(|| async { web_asset("sun.css", "text/css", include_str!("../web/sun.css")) }),
         )
