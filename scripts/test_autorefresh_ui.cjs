@@ -226,7 +226,7 @@ const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
  for(const [file,pattern] of removed)assert.doesNotMatch(fs.readFileSync(file,'utf8'),pattern,`${file} still shows a manual Refresh for staff`);
  // A sent claim polls every 30 s and a final status stops it.
  const claims=fs.readFileSync('web/claims.js','utf8');
- assert.match(claims,/\['submitted','accepted','adjudicated'\]\.includes\(c\.status\)/);
+ assert.match(claims,/\['submitted','accepted','adjudicated'\]\.includes\((?:c|claim)\.status\)/);
  assert.match(claims,/registerAutoRefresh\('claim-status',\{host,load:claimDetailAutoRefreshLoad,everyMs:30000\}\)/);
  assert.match(claims,/function claimFinalStatus\(claim,detail=\{\}\)\{return \['void','rejected'\]\.includes\(claim\?\.status\)\|\|detail\?\.tracking\?\.remittance_posted===true;\}/);
  assert.match(claims,/return claimFinalStatus\(d\.claim,d\)\?autoRefreshStop\(\):undefined;/);
