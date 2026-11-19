@@ -3,7 +3,7 @@
 // One billing card per visit. Every amount comes from the server's visit billing summary;
 // this file only words and lays it out. One vocabulary names a visit's billing state here,
 // in the insurance claims list and on the patient billing page.
-const visitBillingStateNames={add_charges:'Add charges',sign_visit:'Sign the visit',post_charges:'Post charges',self_pay_collect:'Self-pay: collect payment',prepare_claim:'Preparing claim',claim_cancelled:'Claim cancelled',fix_claim:'Claim needs details',send_claim:'Send claim',correct_claim:'Charges changed after the claim was sent',waiting_insurer:'Waiting on insurer',post_response:'Insurer answered: review payment',denied:'Denied: fix and resend',review_response:'Review insurer answer',patient_owes:'Patient owes',review_balance:'Balance not on the statement',patient_credit:'Patient credit',paid_in_full:'Paid in full',insurance_outside:'Insurance billed outside SunCharts',claim_restricted:'Charges are final'};
+const visitBillingStateNames={add_charges:'Add charges',sign_visit:'Sign the visit',post_charges:'Post charges',self_pay_collect:'Self-pay: collect payment',prepare_claim:'Preparing claim',claim_cancelled:'Claim cancelled',fix_claim:'Claim needs details',send_claim:'Send claim',correct_claim:'Charges changed after the claim was sent',waiting_insurer:'Waiting on insurer',post_response:'Insurer answered: review payment',denied:'Denied: fix and resend',review_response:'Review insurer answer',patient_owes:'Patient owes',review_balance:'Balance not on the statement',patient_credit:'Patient credit',paid_in_full:'Paid in full',insurance_outside:'Insurance billed outside SunCharts',claim_restricted:'Posted'};
 function visitBillingStateName(state){return visitBillingStateNames[state]||'Billing status unavailable';}
 // A claim row carries only its own status; name it with the same words the visit card uses.
 function visitBillingClaimState(claim){
@@ -36,7 +36,7 @@ function visitBillingStatus(s,ctx={}){
    case 'sign_visit':return {headline:'Charges can still be changed',detail:'The visit note must be signed before the charges are posted.',action:reviewButton(s,ctx)||button('Continue the visit note','data-revenue-documentation')};
    case 'post_charges':return {headline:'Post charges',detail:`Check the charges, then post them. ${s.insurance.insured?`The claim to ${insurer} is prepared for you next.`:'The patient is billed next.'}`,action:button(write?'Post charges':'Review charges',`data-visit-post-charges="${esc(account)}"`)};
    case 'self_pay_collect':return {headline:'Self-pay: collect payment',detail:`Patient owes ${owes}. Waiting for the patient.`,action:create?button('Collect payment','data-visit-collect'):''};
-  case 'prepare_claim':return ctx.delegated?{headline:'Claim not prepared yet',detail:`A member of the practice prepares the claim to ${insurer} by opening this visit. A support session does not prepare claims.`,action:''}:ctx.prepareError?{headline:`The claim to ${insurer} could not be prepared`,detail:ctx.prepareError,action:create?button('Try again','data-visit-claim-prepare'):''}:create?{headline:`Preparing the claim to ${insurer}`,detail:'The claim is filled in from this visit. Nothing is sent until you send it.',action:ctx.preparing?'':button('Prepare claim','data-visit-claim-prepare')}:{headline:'Charges are final',detail:`Billing staff prepare the claim to ${insurer}.`,action:''};
+  case 'prepare_claim':return ctx.delegated?{headline:'Claim not prepared yet',detail:`A member of the practice prepares the claim to ${insurer} by opening this visit. A support session does not prepare claims.`,action:''}:ctx.prepareError?{headline:`The claim to ${insurer} could not be prepared`,detail:ctx.prepareError,action:create?button('Try again','data-visit-claim-prepare'):''}:create?{headline:`Preparing the claim to ${insurer}`,detail:'The claim is filled in from this visit. Nothing is sent until you send it.',action:ctx.preparing?'':button('Prepare claim','data-visit-claim-prepare')}:{headline:'Posted',detail:`Billing staff prepare the claim to ${insurer}.`,action:''};
    case 'claim_cancelled':return {headline:`The claim to ${insurer} was cancelled`,detail:'Nothing is with the insurer.',action:create?button('Prepare a new claim','data-visit-claim-prepare="again"'):''};
    case 'fix_claim':return {headline:`Claim to ${insurer} needs details`,detail:'Nothing has been sent yet.',issues:s.claim?.issues||[],action:reviewButton(s,ctx)||(write?button('Fix claim details',`data-visit-claim-fix="${esc(claim)}"`):'')};
     case 'send_claim':return {headline:`Claim ready to send to ${insurer}`,detail:'Nothing has been sent yet.',action:reviewButton(s,ctx)||(write?button('Review and send claim',`data-visit-claim-send="${esc(claim)}"`):'')};
@@ -50,7 +50,7 @@ function visitBillingStatus(s,ctx={}){
   case 'patient_credit':return {headline:`Patient has a ${money(s.patient.credit_cents)} credit`,detail:'Nothing more is owed for this visit. Refund the credit or keep it for another visit.',action:button('Review payments','data-visit-history="payments"')};
   case 'paid_in_full':return {headline:'Paid in full',detail:'Nothing is owed for this visit.',action:''};
   case 'insurance_outside':return {headline:`${insurer} is billed outside SunCharts`,detail:'This insurer has no payer ID here, so no claim is sent from SunCharts. Record their payment when it arrives.',action:create?button('Record insurer payment','data-new-ledger'):''};
-  case 'claim_restricted':return {headline:'Charges are final',detail:`Billing staff handle the claim to ${insurer}.`,action:''};
+   case 'claim_restricted':return {headline:'Posted',detail:`Billing staff handle the claim to ${insurer}.`,action:''};
   default:return {headline:'Billing status unavailable',detail:'Refresh before relying on these amounts.',action:''};
  }
 }
@@ -124,7 +124,7 @@ function visitBillingMissingMarkup(issues,claimId,ctx){
 function visitBillingBreakdown(s,ctx={}){
  const i=s.insurance,p=s.patient,posted=s.account?.status==='posted',row=(label,note,amount,cls='')=>`<tr class="${cls}"><th scope="row">${label}</th><td>${note||''}</td><td class="money-cell">${amount}</td></tr>`,group=label=>`<tr class="visit-billing-group"><th scope="rowgroup" colspan="3">${label}</th></tr>`;
  const receipts=(s.receipts||[]).filter(r=>!r.voided),collect=ctx.canCreate&&s.visit?'<button type="button" class="text-button" data-visit-collect>Collect</button>':'';
- let rows=row('Charges',s.charges_cents==null?'':posted?'Charges are final':'Charges can still be changed',s.charges_cents==null?'Not added yet':money(s.charges_cents));
+ let rows=row('Charges',s.charges_cents==null?'':posted?'Posted':'Charges can still be changed',s.charges_cents==null?'Not added yet':money(s.charges_cents));
  if(i.insured){
   rows+=group(`Insurance: ${esc(i.insurer||'insurer on file')}`);
   const status={not_billed:'Billed after the charges are posted',not_sent:'Not sent yet',waiting:`Waiting${i.sent_on?` since ${esc(visitBillingDate(i.sent_on))}`:''}`,denied:'Denied',answered:s.claim?.answer?.payment_date?`Answered ${esc(visitBillingDate(s.claim.answer.payment_date))}`:'Answered',outside:'Billed outside SunCharts',restricted:'Handled by billing staff'}[i.status]||'';
@@ -169,7 +169,7 @@ function visitBillingCardMarkup(s,ctx={}){
   const issues=visitBillingMissingMarkup(status.issues,s.claim?.id||'',ctx);
   const secondary=owing&&ctx.canCreate?'<button type="button" data-visit-statement>Statement</button>':'';
   const sent=typeof visitBillingSentLine==='function'?visitBillingSentLine(s,ctx):'';
-  return `<section class="visit-billing-card" data-visit-billing-state="${esc(s.state)}"><div class="section-head"><h3>Visit billing</h3>${s.account?'<button type="button" class="text-button" data-refresh-revenue>Refresh</button>':''}</div><div class="visit-billing-status"><div><span class="eyebrow">${s.waiting_on==='nobody'?'Status':'Next step'}</span><p class="visit-billing-headline">${esc(status.headline)}</p><p class="muted">${esc(status.detail)}</p>${issues}</div><div class="actions">${status.action||''}${secondary}</div></div>${sent}${visitBillingBreakdown(s,ctx)}${posted||s.account||s.visit?visitBillingMore(s,ctx):''}</section>`;
+     return `<section class="visit-billing-card" data-visit-billing-state="${esc(s.state)}"><div class="section-head"><h3>Visit billing</h3></div><div class="visit-billing-status"><div><span class="eyebrow">${s.waiting_on==='nobody'?'Status':'Next step'}</span><p class="visit-billing-headline">${esc(status.headline)}</p><p class="muted">${esc(status.detail)}</p>${issues}</div><div class="actions">${status.action||''}${secondary}</div></div>${sent}${visitBillingBreakdown(s,ctx)}${posted||s.account||s.visit?visitBillingMore(s,ctx):''}</section>`;
 }
 const visitBillingFilters=[['all','Everything'],['charges','Charges'],['insurance','Insurance'],['payments','Payments'],['statements','Statements sent']];
 function visitBillingEventText(event){
@@ -177,7 +177,7 @@ function visitBillingEventText(event){
  switch(event.code){
   case 'charges_added':return `Charges added: ${amount}`;
   case 'charges_changed':return 'Charges changed';
-  case 'charges_posted':return `Charges posted: ${amount}. Charges are final`;
+   case 'charges_posted':return `Charges posted: ${amount}. Charges are posted`;
   case 'charges_removed':return 'Charges removed';
   case 'payment_received':return `Payment taken: ${amount}${by}`;
   case 'receipt_voided':return `Receipt cancelled: ${amount}${by}`;

@@ -73,7 +73,7 @@ for(const [summary] of states){const html=card(summary);assert.doesNotMatch(html
 // The breakdown: self-pay, copay paid, insurance pending, answered with a patient remainder, denied, overpaid.
 const cell=(html,label)=>{const match=html.match(new RegExp(`<th scope="row">${label}</th><td>(.*?)</td><td class="money-cell">(.*?)</td>`));assert.ok(match,`${label} row in ${html}`);return [match[1],match[2]];};
 let b=ctx.visitBillingBreakdown(selfPay(),all);
-assert.deepEqual(cell(b,'Charges'),['Charges are final','$280.00']);assert.doesNotMatch(b,/Insurance:/);assert.match(b,/Patient \(self-pay\)/);assert.deepEqual(cell(b,'Patient owes now'),['No insurance on this visit','$280.00']);
+assert.deepEqual(cell(b,'Charges'),['Posted','$280.00']);assert.doesNotMatch(b,/Insurance:/);assert.match(b,/Patient \(self-pay\)/);assert.deepEqual(cell(b,'Patient owes now'),['No insurance on this visit','$280.00']);
 b=ctx.visitBillingBreakdown(visitSummary(),all);
 assert.match(b,/Insurance: Synthetic Medicare PPO/);assert.deepEqual(cell(b,'Insurance paid'),['Not sent yet','$0.00']);assert.equal(cell(b,'Insurance pending')[1],'$270.00');
 assert.deepEqual(cell(b,'Copay \\$10\\.00'),['Paid','$10.00']);assert.match(b,/<tr class="visit-billing-receipts"><th scope="row">Receipts<\/th><td colspan="2"><button type="button" class="text-button" data-copay-receipt="receipt" data-appointment="appointment">Receipt: \$10\.00 cash, Nov 12, 2026<\/button><\/td><\/tr>/);
@@ -128,7 +128,7 @@ assert.doesNotMatch(ctx.visitBillingMore(visitSummary(),{canCreate:false,canWrit
 // One history, with the old destinations as filters; technical details only for the owner.
 const timeline=[{at:'2026-11-12T15:00:00Z',group:'charges',code:'charges_added',amount_cents:28000},{at:'2026-11-12T15:05:00Z',group:'payments',code:'payment_received',amount_cents:1000,method:'cash',receipt_id:'receipt',appointment_id:'appointment'},{at:'2026-11-12T16:00:00Z',group:'charges',code:'charges_posted',amount_cents:28000},{at:'2026-11-12T16:00:01Z',group:'insurance',code:'claim_prepared_auto',claim_id:'claim',insurer:'Synthetic <b>Plan</b>'},{at:'2026-11-12T17:00:00Z',group:'insurance',code:'claim_sent',claim_id:'claim',insurer:'Synthetic <b>Plan</b>'},{at:'2026-11-20T10:00:00Z',group:'insurance',code:'insurer_payment',amount_cents:20000},{at:'2026-11-20T10:00:00Z',group:'insurance',code:'insurer_adjustment',amount_cents:4000},{at:'2026-11-20T10:00:01Z',group:'insurance',code:'claim_answered',claim_id:'claim',insurer:'Synthetic <b>Plan</b>',patient_responsibility_cents:4000},{at:'2026-11-21T10:00:00Z',group:'statements',code:'statement',amount_cents:3000,invoice_id:'invoice-old'},{at:'2026-11-22T10:00:00Z',group:'payments',code:'patient_payment',amount_cents:3000,method:'check'}];
 const history=ctx.visitBillingTimeline({timeline},all,'all');
-for(const text of ['Charges added: $280.00','Payment taken: $10.00 (cash)','Charges posted: $280.00. Charges are final','Claim to Synthetic &lt;b&gt;Plan&lt;/b&gt; prepared from this visit','Claim sent to Synthetic &lt;b&gt;Plan&lt;/b&gt;','Insurance paid $200.00','Insurance adjustment: $40.00 written off','answered: patient owes $40.00','Statement prepared: $30.00 due','Patient payment: $30.00 (check)'])assert.ok(history.includes(text),text);
+for(const text of ['Charges added: $280.00','Payment taken: $10.00 (cash)','Charges posted: $280.00. Charges are posted','Claim to Synthetic &lt;b&gt;Plan&lt;/b&gt; prepared from this visit','Claim sent to Synthetic &lt;b&gt;Plan&lt;/b&gt;','Insurance paid $200.00','Insurance adjustment: $40.00 written off','answered: patient owes $40.00','Statement prepared: $30.00 due','Patient payment: $30.00 (check)'])assert.ok(history.includes(text),text);
 assert.equal((history.match(/<li /g)||[]).length,timeline.length);assert.ok(history.indexOf('Charges added')<history.indexOf('Patient payment'),'oldest first');
 assert.match(history,/<time>Nov 12, 2026<\/time>/);assert.match(history,/data-visit-statement-open="invoice-old">View statement/);assert.match(history,/data-copay-receipt="receipt" data-appointment="appointment">Receipt/);
 assert.deepEqual([...history.matchAll(/data-visit-history-filter="(\w+)" aria-pressed="(\w+)">([^<]+)</g)].map(m=>[m[1],m[2],m[3]]),[['all','true','Everything'],['charges','false','Charges'],['insurance','false','Insurance'],['payments','false','Payments'],['statements','false','Statements sent']]);
@@ -186,6 +186,27 @@ assert.equal((nonClaimOnly.match(/data-visit-claim-fix/g)||[]).length,0,'the car
 assert.equal(ctx.visitBillingDate('2026-11-12'),'Nov 12, 2026');assert.equal(ctx.visitBillingDate(''),'');assert.equal(ctx.visitBillingDate('not a date'),'');
 assert.equal(ctx.visitBillingClaimState({status:'ready'}),'Send claim');assert.equal(ctx.visitBillingClaimState({status:'accepted'}),'Waiting on insurer');assert.equal(ctx.visitBillingClaimState({status:'rejected'}),'Denied: fix and resend');assert.equal(ctx.visitBillingClaimState({status:'submitted',crossover_tracking_only:true}),'Secondary insurer answered');
 assert.equal(ctx.visitBillingStateName('waiting_insurer'),'Waiting on insurer');assert.equal(ctx.visitBillingStateName('send_claim'),ctx.visitBillingClaimState({status:'draft'}),'one vocabulary for the card and the claims list');
+// A posted visit's charge status says "Posted", never "Charges are final", in the card, its
+// breakdown, the state name list and the history line.
+assert.equal(ctx.visitBillingStateName('claim_restricted'),'Posted','a restricted account is named the same way');
+assert.doesNotMatch(card(selfPay()),/Charges are final/,'the card never says charges are final');
+assert.doesNotMatch(ctx.visitBillingBreakdown(selfPay(),all),/Charges are final/);
+assert.doesNotMatch(card(visitSummary({state:'claim_restricted',claim:null,insurance:{status:'restricted'}})),/Charges are final/);
+assert.match(ctx.visitBillingTimeline({timeline:[{at:'2026-11-12T16:00:00Z',group:'charges',code:'charges_posted',amount_cents:28000}]},all,'all'),/Charges posted: \$280\.00\. Charges are posted/);
+// The card refreshes itself after a save; it offers no Refresh button of its own.
+for(const [summary] of states.concat([[selfPay()],[visitSummary({state:'claim_restricted',claim:null})]])){
+ const html=card(summary);
+ assert.doesNotMatch(html,/data-refresh-revenue|>Refresh</,`${summary.state}: the card has no Refresh button`);
+ assert.match(html,/<div class="section-head"><h3>Visit billing<\/h3><\/div>/,'the card head holds only its title');
+}
+// Every save path still redraws the card: the shared status loader paints the card node, and
+// each action that changes billing goes through it.
+const revenueSource=fs.readFileSync('web/patient-revenue.js','utf8');
+assert.match(revenueSource,/function paintEncounterRevenue\(state,current\)\{[\s\S]*?node\.innerHTML=encounterRevenueStatusMarkup\(encounterChargeAccount\(\),state\.data\|\|\{\}\)/,'a status refresh repaints the card');
+for(const action of ['postVisitChargesFromCard','prepareVisitClaim','openVisitStatement']){
+ assert.match(revenueSource,new RegExp(`async function ${action}\\([^)]*\\)\\{[\\s\\S]*?loadEncounterRevenueStatus\\(encounterChargeAccount\\(\\),true\\)`),`${action} reloads the card from the server when it saves`);
+}
+assert.match(revenueSource,/finally\{state\.pending=null;render\(\);/,'and the reload is drawn whether the read succeeds or not');
 const claimsSource=fs.readFileSync('web/claims.js','utf8'),overviewSource=fs.readFileSync('web/billing-overview.js','utf8');
 assert.match(claimsSource,/function claimStatusLabel\(claim\)\{return typeof visitBillingClaimState==='function'\?visitBillingClaimState\(claim\)/);assert.match(overviewSource,/visitBillingStateName\(row\.billing_state\)/);
 // No hard-coded colours anywhere in the card's styles or markup.
