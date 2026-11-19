@@ -227,7 +227,7 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
  assert.match(status,/Claim ready to send to Synthetic Medicare PPO/);assert.deepEqual(primaries(status),['Review and send to Claim.MD']);
  await ctx.loadEncounterRevenueStatus(account,true);assert.equal(prepared,1,'a refresh never prepares again');
  // Layout: one card, collect hidden until asked, charges and history collapsed, details not offered to staff.
- assert.match(host,/<h2>Charges &amp; billing<\/h2><p class="muted">Nov 12, 2026 · Charges are final<\/p>/);
+ assert.match(host,/<h2>Charges &amp; billing<\/h2><p class="muted">Nov 12, 2026 · Posted<\/p>/);
  assert.match(host,/<section id="visit-billing-collect" class="billing-section" hidden>/);assert.match(host,/data-record-copay="appointment">Cash or check<\/button>/);
  assert.match(host,/<details class="encounter-account-record" id="encounter-charge-details"><summary>Charges<\/summary>/);assert.match(host,/<details class="encounter-account-record" id="visit-billing-history"><summary>History<\/summary>/);assert.match(host,/id="visit-billing-ledger-details"><summary>Payments and adjustments<\/summary>/);
  assert.doesNotMatch(host,/visit-billing-details|<h3>Copay<\/h3>|Insurance &amp; coverage details|Charges &amp; ledger details|Record a cash or check payment/);

@@ -161,7 +161,7 @@ function chargeTable(lines){return `<div class="billing-table-wrap"><table class
 // Charges, the ledger table under History. Wording is for clinic staff; identifiers are left out.
 function showEncounterBillingAccount(a,entries,frozen,missingElectronicPayer,frozenElectronicPayer){
  const host=$('encounter-billing-detail');for(const id of ['billing-detail'])if($(id))$(id).replaceChildren();
- const state=a.status==='posted'?'Charges are final':a.status==='void'?'Charges were removed':'Charges can still be changed';
+ const state=a.status==='posted'?'Posted · can still be corrected':a.status==='void'?'Charges were removed':'Charges can still be changed';
  host.innerHTML=`<section class="billing-account-detail"><div class="section-head"><div><h3>Charges</h3><p class="muted">${esc(visitBillingDate(a.content.service_date))} · ${state}</p></div></div>
  <p>${frozen?`Insurance: <b>${esc(frozen.payer.content.name)}</b>`:a.content.coverage_id?'Insurance is chosen. It is fixed when the charges are posted.':'Self-pay. No insurance on this visit.'}</p>${chargeTable(a.content.lines)}${billingChargeDraftRecovery(a)}${accountDiagnosisSummary(a.diagnosis_snapshot)}${accountDiagnosisDraftRecovery(a)}<p class="note-text">${esc(a.content.notes)}</p>
  <div class="actions">${billingCan()&&a.status==='draft'?'<button type="button" data-edit-bill>Edit draft</button>'+(a.content.visit_id?'<button type="button" data-link-account-diagnoses>Link visit diagnoses</button>':''):''}</div>${a.status==='posted'&&frozen&&!frozenElectronicPayer?'<div class="mapping-notice"><b>This insurer is billed outside SunCharts</b><p>The insurer had no payer ID when the charges were posted, so no electronic claim can be made for this visit.</p></div>':''}
