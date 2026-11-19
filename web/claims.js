@@ -158,7 +158,7 @@ function claimMissingIssueSources(issue,text){
 // so a message naming both a tax ID and an NPI is listed once, under Practice.
 function claimMissingPlain(text){return String(text).replace(/\s*\(.*?\)/g,'').replace(/ can only use plain letters.*$/i,' has characters a claim cannot carry').trim();}
 function claimMissingGroupsFor(issues){
- const buckets=Object.fromEntries(claimMissingGroups.map(group=>[group.key,{words:[],inputs:new Set()}]));
+ const buckets=Object.fromEntries(claimMissingGroups.map(group=>[group.key,{words:[],inputs:new Set(),items:[]}]));
  const seen=new Set();
  for(const issue of issues||[]){
   const text=claimMissingIssueText(issue);
@@ -171,11 +171,11 @@ function claimMissingGroupsFor(issues){
    if(!rule)continue;
    seen.add(key);
    const bucket=buckets[group.key];
-   if(!bucket.words.includes(rule.words))bucket.words.push(rule.words);
+   if(!bucket.words.includes(rule.words)){bucket.words.push(rule.words);bucket.items.push({words:rule.words,input:rule.input||''});}
    if(rule.input)bucket.inputs.add(rule.input);
    break;
   }
-  if(!seen.has(key)){seen.add(key);const bucket=buckets.claim;const words=claimMissingPlain(text);if(!bucket.words.includes(words))bucket.words.push(words);}
+  if(!seen.has(key)){seen.add(key);const bucket=buckets.claim;const words=claimMissingPlain(text);if(!bucket.words.includes(words)){bucket.words.push(words);bucket.items.push({words,input:''});}}
  }
  return buckets;
 }
@@ -185,14 +185,64 @@ function claimMissingFocusFields(buckets){
  for(const bucket of Object.values(buckets||{}))(bucket.inputs||new Set()).forEach(field=>fields.add(field));
  return fields;
 }
-function claimMissingGroupMarkup(group,bucket){
- if(!bucket.words.length)return '';
- return `<li data-missing-group="${group.key}"><b>${esc(group.label)}</b><ul>${bucket.words.map(words=>`<li>${esc(words)}</li>`).join('')}</ul><button type="button" ${group.attribute}>${esc(group.action)}</button></li>`;
+// Boxes that can be filled in right here, on the claim page, without opening another screen.
+// The patient's address is saved to the chart (the clearinghouse reads it from there); every other
+// box is saved on this claim. A diagnosis needs the charge lines, so it stays on Edit claim.
+const claimQuickFixInputs=['patient_address','subscriber_address','subscriber_birth_date','billing_provider_name','tax_id','billing_npi','rendering_npi','billing_address','place_of_service'];
+function claimQuickFixable(claim){return Boolean(claim)&&claim.status==='draft'&&billingWrite()&&!claimIsCrossover(claim);}
+function claimMissingGroupMarkup(group,bucket,inline=new Set()){
+ const items=(bucket.items||bucket.words.map(words=>({words,input:''}))).filter(item=>!inline.has(item.input));
+ if(!items.length)return '';
+ return `<li data-missing-group="${group.key}"><b>${esc(group.label)}</b><ul>${items.map(item=>`<li>${esc(item.words)}</li>`).join('')}</ul><button type="button" ${group.attribute}>${esc(group.action)}</button></li>`;
 }
-function claimMissingMarkup(buckets){
- const lines=claimMissingGroups.map(group=>claimMissingGroupMarkup(group,buckets[group.key])).join('');
- if(!lines)return '';
- return `<section class="claim-missing" data-claim-missing aria-label="Before this can be sent"><h3>Before this can be sent</h3><p class="muted">Each item says where it is fixed. Fix these and the claim can go out.</p><ul>${lines}</ul></section>`;
+function claimOwnPolicy(claim){return claim?.snapshot?.account?.coverage_snapshot?.coverage?.content?.relationship==='self';}
+function claimQuickFixMarkup(claim,inputs){
+ if(!inputs.size)return '';
+ const v=claim.content||{},own=claimOwnPolicy(claim),box=(name,label,value='',extra='')=>`<label>${esc(label)}<input name="${name}" value="${esc(value)}" ${extra}></label>`;
+ const parts=[];
+ if(inputs.has('patient_address'))parts.push(`<fieldset><legend>Patient address <small>saved to the patient's chart</small></legend><div class="claim-quick-grid">${box('address_line1','Street','','required maxlength="200" autocomplete="off"')}${box('address_line2','Apt, suite (optional)','','maxlength="200" autocomplete="off"')}${box('address_city','City','','required maxlength="100" autocomplete="off"')}${box('address_region','State','','required maxlength="2" pattern="[A-Za-z]{2}" title="Two letters, for example TX" autocomplete="off"')}${box('address_postal_code','ZIP','','required inputmode="numeric" pattern="[0-9]{5}(-?[0-9]{4})?" title="5 or 9 digits" autocomplete="off"')}</div></fieldset>`);
+ if(inputs.has('subscriber_address')){
+  if(own&&inputs.has('patient_address'))parts.push('<p class="muted">The patient is the policy holder, so the address above is used for the policy holder too.</p>');
+  else parts.push(box('subscriber_address',"Policy holder's address (street, city, state, ZIP)",own?v.patient_address:v.subscriber_address,'required maxlength="1000"'));
+ }
+ if(inputs.has('subscriber_birth_date'))parts.push(box('subscriber_birth_date',"Policy holder's date of birth",v.subscriber_birth_date||(own?claim.snapshot?.patient?.birth_date:'')||'',`type="date" required max="${new Date().toISOString().slice(0,10)}"`));
+ for(const [name,label,extra] of [['billing_provider_name','Billing provider name','maxlength="60"'],['tax_id','Practice tax ID (9 digits)','inputmode="numeric" pattern="[0-9]{2}-?[0-9]{7}"'],['billing_npi','Billing NPI (10 digits)','inputmode="numeric" pattern="[0-9]{10}"'],['rendering_npi','Rendering NPI (10 digits)','inputmode="numeric" pattern="[0-9]{10}"'],['billing_address','Billing address','maxlength="1000"'],['place_of_service','Place of service (2 digits, 11 = office)','inputmode="numeric" pattern="[0-9]{2}"']])
+  if(inputs.has(name))parts.push(box(name,label,v[name],`required ${extra}`));
+ return `<form id="claim-quick-fix" class="claim-quick-fix" data-claim="${esc(claim.id)}"><h4>Fix it here</h4>${parts.join('')}<div class="actions"><button type="submit" class="primary">Save and check again</button></div></form>`;
+}
+function claimMissingMarkup(buckets,claim){
+ const fixable=claimQuickFixable(claim),inline=new Set();
+ if(fixable)for(const bucket of Object.values(buckets||{}))for(const item of bucket.items||[])if(claimQuickFixInputs.includes(item.input))inline.add(item.input);
+ const lines=claimMissingGroups.map(group=>claimMissingGroupMarkup(group,buckets[group.key],inline)).join('');
+ const form=fixable?claimQuickFixMarkup(claim,inline):'';
+ if(!lines&&!form)return '';
+ return `<section class="claim-missing" data-claim-missing aria-label="Before this can be sent"><h3>Before this can be sent</h3><p class="muted">${form?'Fill in what is missing and save. The claim is checked again right here.':'Each item says where it is fixed. Fix these and the claim can go out.'}</p>${form}${lines?`<ul>${lines}</ul>`:''}</section>`;
+}
+// Saves the boxes of the "Fix it here" form: the patient's address to the chart, the rest on the
+// claim, then reads the claim again (opening a draft fills empty boxes from the chart) and redraws it.
+async function saveClaimQuickFix(form){
+ const context=claimContextSnapshot(),claim=claimCurrent;
+ if(!claim||claim.id!==form.dataset.claim)throw new Error('This claim is no longer open. Open it again.');
+ requireClaimContext(context,claim);
+ const data=Object.fromEntries(new FormData(form)),controls=[...form.querySelectorAll('button,input')];
+ controls.forEach(control=>{control.disabled=true;});
+ try{
+  if('address_line1' in data){
+   const profile=await api(`/api/v1/patients/${claim.patient_id}/demographics`),content={...(profile.content||{})};
+   content.address={...(content.address||{}),line1:data.address_line1.trim(),line2:data.address_line2.trim()||null,city:data.address_city.trim(),region:data.address_region.trim().toUpperCase(),postal_code:data.address_postal_code.trim(),country:content.address?.country||'US'};
+   await api(`/api/v1/patients/${claim.patient_id}/demographics`,'PUT',{content,reason:'Address added from the claim page'},profile.version);
+  }
+  const fresh=(await api(`${claimsBase}/${claim.id}`)).claim,content={...fresh.content},changed={};
+  if('address_line1' in data){
+   const joined=[data.address_line1,data.address_line2,data.address_city,`${data.address_region.trim().toUpperCase()} ${data.address_postal_code.trim()}`].map(part=>String(part||'').trim()).filter(Boolean).join(', ');
+   if(!String(content.patient_address||'').trim())changed.patient_address=joined;
+   if(claimOwnPolicy(fresh)&&!String(content.subscriber_address||'').trim())changed.subscriber_address=joined;
+  }
+  for(const name of claimQuickFixInputs)if(name in data&&String(data[name]).trim()!==String(content[name]??'').trim())changed[name]=name==='subscriber_birth_date'?(data[name]||null):String(data[name]).trim();
+  if(Object.keys(changed).length)await api(`${claimsBase}/${claim.id}`,'PUT',{content:{...content,...changed},reason:'Filled in on the claim page'},fresh.version);
+  await refreshClaimInContext(claim.id,context);
+  notice('Saved. The claim was checked again.');
+ }finally{if(form.isConnected)controls.forEach(control=>{control.disabled=false;});}
 }
 // Staff wording for a list of problems on a screen this brief does not cover (remittances,
 // acknowledgments). The claim page has its own grouped list above.
@@ -680,7 +730,7 @@ function claimScreenMarkup(claim,detail,history){
  return `<section class="billing-account-detail">${claimScreenHeadMarkup(claim,account,patient,detail)}
  ${typeof claimProblemReport==='function'?claimProblemBoxMarkup(claimProblemReport(claim,detail),claimResponseWords(detail),claim.id):''}
  ${claimPrimaryActionMarkup(claim,detail,{connectionNotice:claimConnectionNotice(claim,detail),secondaryEvidence:sections.secondaryEvidence,recordOutside})}
- ${claimIsCrossover(claim)?'<p class="muted">Nothing is sent or downloaded for a crossover claim. The secondary payment stays with the original visit.</p>':claimMissingMarkup(missing)}
+ ${claimIsCrossover(claim)?'<p class="muted">Nothing is sent or downloaded for a crossover claim. The secondary payment stays with the original visit.</p>':claimMissingMarkup(missing,claim)}
  ${claimMoneySummaryMarkup(claim,detail)}
  <div class="claim-lines" data-claim-lines>${lines}</div>
  ${withdraw}
@@ -940,3 +990,5 @@ async function createCrossoverTracking(form,values){
  }finally{form.crossoverSaving=false;unlock();}
 }
 document.addEventListener('submit',event=>{const form=event.target;if(form.id!=='crossover-claim-review')return;event.preventDefault();run(()=>createCrossoverTracking(form,Object.fromEntries(new FormData(form))));});
+// The claim page's "Fix it here" form (registered last so the claim editor's own submit handler stays first).
+document.addEventListener('submit',event=>{if(event.target.id!=='claim-quick-fix')return;event.preventDefault();run(()=>saveClaimQuickFix(event.target));});
