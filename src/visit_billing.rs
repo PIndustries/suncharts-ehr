@@ -1083,7 +1083,15 @@ fn luhn_npi(s: &str) -> bool {
 /// The claim details a person would otherwise type: provider and place from the practice
 /// directory, tax ID from the practice's billing organization, addresses and policy holder
 /// from the chart and coverage, diagnoses from the charge lines.
-async fn claim_defaults(
+///
+/// `pub(crate)` rather than private because the refill pass in `claims::refill_draft` runs this
+/// same gatherer against current records before a draft is shown, checked or released. Keeping one
+/// function means the field a person is asked to type and the field a refill supplies can never
+/// disagree. A refill copies only the detail fields it names — `billing_provider_name`,
+/// `billing_npi`, `tax_id` with its `tax_id_type`, `billing_address`, `rendering_npi`,
+/// `patient_address`, `subscriber_address` and `subscriber_birth_date` — and never takes
+/// `place_of_service`, diagnoses or notes from a fresh run.
+pub(crate) async fn claim_defaults(
     pool: &PgPool,
     a: &Actor,
     p: Uuid,
