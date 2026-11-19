@@ -21,6 +21,13 @@ pub enum Error {
     Invalid(&'static str),
     #[error("{0}")]
     Conflict(&'static str),
+    /// A conflict that the screen can act on: the JSON error body carries `code` as its
+    /// machine-readable `error` field instead of the generic "conflict".
+    #[error("{message}")]
+    CodedConflict {
+        code: &'static str,
+        message: &'static str,
+    },
     #[error("If-Match with the current record version is required")]
     VersionRequired,
     /// A dependency is briefly out of reach; nothing was changed and a retry is safe.
@@ -55,6 +62,7 @@ impl IntoResponse for Error {
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found", "not found"),
             Self::Invalid(m) => (StatusCode::BAD_REQUEST, "invalid", m),
             Self::Conflict(m) => (StatusCode::CONFLICT, "conflict", m),
+            Self::CodedConflict { code, message } => (StatusCode::CONFLICT, code, message),
             Self::VersionRequired => (
                 StatusCode::PRECONDITION_REQUIRED,
                 "version_required",

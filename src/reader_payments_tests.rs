@@ -151,7 +151,8 @@ impl Broker for FakeReaders {
             }
             if rest.is_empty() {
                 let body = body.unwrap();
-                assert_eq!(body.as_object().unwrap().len(), 6);
+                let extra = usize::from(body.get("location_address").is_some());
+                assert_eq!(body.as_object().unwrap().len(), 6 + extra);
                 let code = body["registration_code"].as_str().unwrap();
                 if code == "wrong-code" {
                     return Ok(refusal(400, "registration_code_not_accepted"));
@@ -345,6 +346,7 @@ async fn staff_see_the_practice_readers_and_only_the_owner_changes_them() {
         request_id: Uuid::new_v4(),
         code: " Simulated-WPE ".into(),
         name: " Back office ".into(),
+        location_address: None,
     };
     for staff in [&desk, &nurse] {
         assert!(matches!(
@@ -396,13 +398,17 @@ async fn staff_see_the_practice_readers_and_only_the_owner_changes_them() {
                 request_id: Uuid::new_v4(),
                 code: code.into(),
                 name: name.into(),
+                location_address: None,
             },
             &broker,
             development(),
         )
         .await;
         assert!(
-            matches!(result, Err(Error::Invalid(_) | Error::Conflict(_))),
+            matches!(
+                result,
+                Err(Error::Invalid(_) | Error::Conflict(_) | Error::CodedConflict { .. })
+            ),
             "{code:?} {name:?}"
         );
     }
@@ -459,6 +465,7 @@ async fn the_practice_reader_code_never_appears_or_works_in_production_or_on_a_l
         request_id: Uuid::new_v4(),
         code: "simulated-wpe".into(),
         name: "Front desk".into(),
+        location_address: None,
     };
     // A production practice is never offered, and can never use, a test account's readers.
     let test_account = FakeReaders::with_reader(false);
@@ -507,6 +514,7 @@ async fn the_practice_reader_code_never_appears_or_works_in_production_or_on_a_l
             request_id: Uuid::new_v4(),
             code: "sepia-cerulean-aqua".into(),
             name: "Front desk".into(),
+            location_address: None,
         },
         &live_account,
         production(false),
@@ -531,4 +539,287 @@ async fn the_practice_reader_code_never_appears_or_works_in_production_or_on_a_l
         add_with(&state, &owner, simulated(), &test_account, development()).await,
         Err(Error::Conflict(_))
     ));
+}
+
+async fn facility(
+    pool: &PgPool,
+    tenant: Uuid,
+    name: &str,
+    address: (&str, &str, &str, &str, &str),
+    active: bool,
+) {
+    let (line1, line2, city, state, postal) = address;
+    sqlx::query(
+        "INSERT INTO practice_facilities(tenant_id,id,name,address,address_line1,address_line2,city,state,postal_code,active) VALUES($1,$2,$3,'',$4,$5,$6,$7,$8,$9)",
+    )
+    .bind(tenant)
+    .bind(Uuid::new_v4())
+    .bind(name)
+    .bind(line1)
+    .bind(line2)
+    .bind(city)
+    .bind(state)
+    .bind(postal)
+    .bind(active)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_facility_address_travels_with_a_new_reader() {
+    let (pool, owner, state) = setup().await;
+    // The first active facility in name order whose address is complete is sent,
+    // trimmed, with line2 omitted when blank. A disabled facility never counts.
+    facility(
+        &pool,
+        owner.tenant_id,
+        "Zante annexe",
+        (" 9 Zante Way ", " ", " Austin ", "TX", "78701"),
+        true,
+    )
+    .await;
+    facility(
+        &pool,
+        owner.tenant_id,
+        "Closed office",
+        ("1 Closed Rd", "", "Austin", "TX", "78701"),
+        false,
+    )
+    .await;
+    facility(
+        &pool,
+        owner.tenant_id,
+        "Beta clinic",
+        (" 12 Beta St ", " Suite 4 ", "Austin", "TX", "78701"),
+        true,
+    )
+    .await;
+    facility(
+        &pool,
+        owner.tenant_id,
+        "Alpha blank city",
+        ("1 Alpha Rd", "", "   ", "TX", "78701"),
+        true,
+    )
+    .await;
+    let broker = FakeReaders::new(false);
+    let added = add_with(
+        &state,
+        &owner,
+        Add {
+            request_id: Uuid::new_v4(),
+            code: "sepia-cerulean-aqua".into(),
+            name: "Front desk".into(),
+            location_address: None,
+        },
+        &broker,
+        development(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(added["reader"]["name"], "Front desk");
+    let world = broker.state.lock().unwrap();
+    assert_eq!(
+        world.posted[0]["location_address"],
+        json!({"line1":"12 Beta St","city":"Austin","state":"TX","postal_code":"78701","country":"US","line2":"Suite 4"})
+    );
+}
+
+#[tokio::test]
+async fn the_request_carries_no_address_when_no_facility_has_one() {
+    let (pool, owner, state) = setup().await;
+    facility(
+        &pool,
+        owner.tenant_id,
+        "Front desk office",
+        ("100 Example St", "", "Austin", "", "78701"),
+        true,
+    )
+    .await;
+    let broker = FakeReaders::new(false);
+    let added = add_with(
+        &state,
+        &owner,
+        Add {
+            request_id: Uuid::new_v4(),
+            code: "sepia-cerulean-aqua".into(),
+            name: "Front desk".into(),
+            location_address: None,
+        },
+        &broker,
+        development(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(added["reader"]["name"], "Front desk");
+    let world = broker.state.lock().unwrap();
+    assert!(world.posted[0].get("location_address").is_none());
+}
+
+#[tokio::test]
+async fn a_missing_business_address_points_staff_at_the_right_screen() {
+    let (_pool, owner, state) = setup().await;
+    let broker = FakeReaders::new(false);
+    let result = add_with(
+        &state,
+        &owner,
+        Add {
+            request_id: Uuid::new_v4(),
+            code: "no-address".into(),
+            name: "Front desk".into(),
+            location_address: None,
+        },
+        &broker,
+        development(),
+    )
+    .await;
+    // The screen acts on this code by opening the practice address prompt.
+    match result {
+        Err(Error::CodedConflict { code, message }) => {
+            assert_eq!(code, "practice_address_missing");
+            assert_eq!(
+                message,
+                "Enter the practice address to finish adding the reader."
+            );
+        }
+        other => panic!("expected a coded conflict, got {other:?}"),
+    }
+}
+
+fn typed(line1: &str, line2: &str, city: &str, state: &str, postal: &str) -> AddAddress {
+    AddAddress {
+        line1: line1.into(),
+        line2: line2.into(),
+        city: city.into(),
+        state: state.into(),
+        postal_code: postal.into(),
+    }
+}
+
+#[tokio::test]
+async fn the_address_typed_in_the_prompt_outranks_the_facility_on_record() {
+    let (pool, owner, state) = setup().await;
+    facility(
+        &pool,
+        owner.tenant_id,
+        "Beta clinic",
+        (" 12 Beta St ", "", "Austin", "TX", "78701"),
+        true,
+    )
+    .await;
+    let broker = FakeReaders::new(false);
+    let added = add_with(
+        &state,
+        &owner,
+        Add {
+            request_id: Uuid::new_v4(),
+            code: "sepia-cerulean-aqua".into(),
+            name: "Front desk".into(),
+            location_address: Some(typed(
+                " 44 Sunchart Ave ",
+                " Floor 2 ",
+                " Austin ",
+                " tx ",
+                " 78701-1234 ",
+            )),
+        },
+        &broker,
+        development(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(added["reader"]["name"], "Front desk");
+    let world = broker.state.lock().unwrap();
+    assert_eq!(
+        world.posted[0]["location_address"],
+        json!({"line1":"44 Sunchart Ave","city":"Austin","state":"TX","postal_code":"787011234","country":"US","line2":"Floor 2"})
+    );
+}
+
+#[tokio::test]
+async fn an_incomplete_prompt_address_is_refused_before_anything_is_sent() {
+    let (_pool, owner, state) = setup().await;
+    let broker = FakeReaders::new(false);
+    for (address, message) in [
+        (
+            typed("", "", "Austin", "TX", "78701"),
+            "Enter the street address.",
+        ),
+        (
+            typed("   ", "", "Austin", "TX", "78701"),
+            "Enter the street address.",
+        ),
+        (
+            typed("100 Example St", "", "", "TX", "78701"),
+            "Enter the city.",
+        ),
+        (
+            typed("100 Example St", "", "Austin", "TXX", "78701"),
+            "Enter the two-letter state.",
+        ),
+        (
+            typed("100 Example St", "", "Austin", "78", "78701"),
+            "Enter the two-letter state.",
+        ),
+        (
+            typed("100 Example St", "", "Austin", "TX", "7870"),
+            "Enter the 5-digit ZIP code.",
+        ),
+        (
+            typed("100 Example St", "", "Austin", "TX", "7870A1"),
+            "Enter the 5-digit ZIP code.",
+        ),
+        (
+            typed(&"x".repeat(56), "", "Austin", "TX", "78701"),
+            "Check the address. It can only hold ordinary writing.",
+        ),
+        (
+            typed("100 Example\tSt", "", "Austin", "TX", "78701"),
+            "Check the address. It can only hold ordinary writing.",
+        ),
+    ] {
+        let result = add_with(
+            &state,
+            &owner,
+            Add {
+                request_id: Uuid::new_v4(),
+                code: "sepia-cerulean-aqua".into(),
+                name: "Front desk".into(),
+                location_address: Some(address),
+            },
+            &broker,
+            development(),
+        )
+        .await;
+        assert!(
+            matches!(&result, Err(Error::Invalid(notice)) if *notice == message),
+            "{message}: {result:?}"
+        );
+    }
+    // A five plus four ZIP with a hyphen is accepted, and its hyphen is removed.
+    let added = add_with(
+        &state,
+        &owner,
+        Add {
+            request_id: Uuid::new_v4(),
+            code: "sepia-cerulean-aqua".into(),
+            name: "Front desk".into(),
+            location_address: Some(typed("100 Example St", "", "Austin", "tx", "78701-1234")),
+        },
+        &broker,
+        development(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(added["reader"]["name"], "Front desk");
+    let world = broker.state.lock().unwrap();
+    assert_eq!(
+        world.posted[0]["location_address"],
+        json!({"line1":"100 Example St","city":"Austin","state":"TX","postal_code":"787011234","country":"US"})
+    );
+    assert!(!world.posted[0]["location_address"]
+        .as_object()
+        .unwrap()
+        .contains_key("line2"));
 }
