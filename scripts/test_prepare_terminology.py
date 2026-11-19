@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 from unittest.mock import patch
 import zipfile
 
@@ -369,6 +370,210 @@ class ArchiveAndCliTests(unittest.TestCase):
             self.assertEqual(prepared["rights"], "public_use")
             self.assertTrue(prepared["rights_attested"])
             self.assertEqual(prepared["source_sha256"], hashlib.sha256(source.read_bytes()).hexdigest())
+
+
+class DiscoverTests(unittest.TestCase):
+    """Discovery with a fake fetch only: no network is contacted.
+
+    Discovery publishes into the module-level DATASETS, so every case runs
+    against a dataset map restored afterwards.
+    """
+
+    def setUp(self):
+        patcher = mock.patch.dict(importer.DATASETS, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        importer.DATASETS.update(self.base_datasets())
+
+    def base_datasets(self):
+        return {
+            "icd10cm-2027": {
+                "system": "ICD-10-CM", "edition": "FY2027",
+                "source_name": "CDC / NCHS ICD-10-CM FY2027 order file",
+                "source_url": "https://example.invalid/icd10cm-2027.zip",
+                "effective_start": "2026-10-01", "effective_end": "2027-09-30",
+            },
+            "icd10pcs-2027": {
+                "system": "ICD-10-PCS", "edition": "FY2027",
+                "source_name": "CMS ICD-10-PCS FY2027 order file",
+                "source_url": "https://example.invalid/icd10pcs-2027.zip",
+                "effective_start": "2026-10-01", "effective_end": "2027-09-30",
+            },
+            "hcpcs-2026-10": {
+                "system": "HCPCS", "edition": "2026-10",
+                "source_name": "CMS October 2026 HCPCS Level II public-use file",
+                "source_url": "https://example.invalid/hcpcs-october-2026.zip",
+                "effective_start": "2026-10-01", "effective_end": "2026-12-31",
+            },
+            "hcpcs-2027-01": {
+                "system": "HCPCS", "edition": "2027-01",
+                "source_name": "CMS January 2027 HCPCS Level II public-use file",
+                "source_url": "https://example.invalid/hcpcs-january-2027.zip",
+                "effective_start": "2027-01-01", "effective_end": None,
+            },
+        }
+
+    def fixture_archive(self, dataset):
+        if dataset.startswith("icd10cm"):
+            text = icd_row("QA00101")
+        elif dataset.startswith("icd10pcs"):
+            text = icd_row("0016070")
+        else:
+            text = hcpcs_row()
+        member = (importer.member_pattern(dataset).replace("\\", "")
+                  .replace("$", "").replace("^", "").replace("(_[0-9]+)?", "_001"))
+        return archive(member, text)
+
+    def test_next_hcpcs_quarter_urls_include_year_rollover(self):
+        cases = {
+            "2026-01": ("hcpcs-2026-04", "april-2026", "2026-04-01"),
+            "2026-04": ("hcpcs-2026-07", "july-2026", "2026-07-01"),
+            "2026-07": ("hcpcs-2026-10", "october-2026", "2026-10-01"),
+            "2026-10": ("hcpcs-2027-01", "january-2027", "2027-01-01"),
+        }
+        for edition, (code, slug, start) in cases.items():
+            with self.subTest(edition=edition):
+                found_code, url, spec = importer.next_hcpcs_candidate(edition)
+                self.assertEqual(found_code, code)
+                self.assertEqual(
+                    url, f"https://www.cms.gov/files/zip/{slug}-alpha-numeric-hcpcs-file.zip")
+                self.assertEqual(spec["effective_start"], start)
+                self.assertIsNone(spec["effective_end"])
+
+    def test_next_fiscal_year_urls_include_year_rollover(self):
+        code, url, spec = importer.next_icd10cm_candidate("FY2027")
+        self.assertEqual(code, "icd10cm-2028")
+        self.assertEqual(
+            url, "https://ftp.cdc.gov/pub/health_statistics/nchs/publications/"
+                 "ICD10CM/2028/icd10cm-code-descriptions-2028.zip")
+        self.assertEqual(spec["effective_start"], "2027-10-01")
+        self.assertEqual(spec["effective_end"], "2028-09-30")
+        code, url, spec = importer.next_icd10pcs_candidate("FY2026")
+        self.assertEqual(code, "icd10pcs-2027")
+        self.assertEqual(
+            url, "https://www.cms.gov/files/zip/2027-"
+                 "icd-10-pcs-order-file-long-abbreviated-titles.zip")
+        self.assertEqual(spec["edition"], "FY2027")
+
+    def write_fixture(self, root):
+        datasets_path, directory = root / "datasets.json", root / "catalogs"
+        directory.mkdir()
+        datasets = self.base_datasets()
+        datasets_path.write_text(json.dumps({"datasets": datasets}, indent=2) + "\n")
+        live = dict(importer.DATASETS)
+        for dataset, spec in datasets.items():
+            live[dataset] = spec
+            importer.write_catalog(dataset, self.fixture_archive(dataset), directory)
+        return datasets_path, directory
+
+    def test_nothing_found_writes_nothing_and_reports_no_codes(self):
+        def fetch(method, url):
+            raise importer.HTTPError(url, 404, "Not Found", {}, None)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            datasets_path, directory = self.write_fixture(root)
+            before = {path.name: path.read_bytes() for path in directory.iterdir()}
+            datasets = json.loads(datasets_path.read_text())["datasets"]
+            self.assertEqual(importer.discover(datasets, directory, fetch, datasets_path), [])
+            self.assertEqual({path.name: path.read_bytes() for path in directory.iterdir()},
+                             before)
+            self.assertEqual(datasets_path.read_text(),
+                             json.dumps({"datasets": self.base_datasets()}, indent=2) + "\n")
+
+    def test_one_found_installs_catalog_datasets_entry_and_manifest(self):
+        available = ("https://www.cms.gov/files/zip/april-2027-"
+                     "alpha-numeric-hcpcs-file.zip")
+
+        def fetch(method, url):
+            if url == available:
+                return self.fixture_archive("hcpcs-2027-04")
+            raise importer.HTTPError(url, 404, "Not Found", {}, None)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            datasets_path, directory = self.write_fixture(root)
+            datasets = json.loads(datasets_path.read_text())["datasets"]
+            shipped_before = (directory / "hcpcs-2027-01.json.gz").read_bytes()
+            found = importer.discover(datasets, directory, fetch, datasets_path)
+            self.assertEqual(found, ["hcpcs-2027-04"])
+            self.assertEqual(importer.DATASETS["hcpcs-2027-04"], datasets["hcpcs-2027-04"])
+            catalog = json.loads(gzip.decompress(
+                (directory / "hcpcs-2027-04.json.gz").read_bytes()))
+            self.assertEqual(catalog["edition"], "2027-04")
+            self.assertEqual(catalog["effective_start"], "2027-04-01")
+            self.assertIsNone(catalog["effective_end"])
+            # The previous edition keeps its bytes, its open end and its
+            # datasets.json entry exactly as they were.
+            self.assertEqual((directory / "hcpcs-2027-01.json.gz").read_bytes(),
+                             shipped_before)
+            stored = json.loads(datasets_path.read_text())["datasets"]
+            self.assertEqual(list(stored), [*self.base_datasets(), "hcpcs-2027-04"])
+            self.assertIsNone(stored["hcpcs-2027-01"]["effective_end"])
+            self.assertEqual(stored["hcpcs-2026-10"]["effective_end"], "2026-12-31")
+            manifest = json.loads((directory / "manifest.json").read_text())
+            self.assertEqual({entry["file"] for entry in manifest["datasets"]},
+                             {path.name for path in directory.glob("*.json.gz")})
+            self.assertIn("hcpcs-2027-04.json.gz",
+                          {entry["file"] for entry in manifest["datasets"]})
+
+    def test_datasets_json_round_trips_through_the_loader(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "datasets.json"
+            datasets = self.base_datasets()
+            path.write_text(json.dumps({"datasets": datasets}, indent=2) + "\n")
+            self.assertEqual(importer.load_datasets(path), datasets)
+            with mock.patch.object(importer, "DATASETS",
+                                   importer.load_datasets()) as live:
+                shipped = importer.load_datasets()
+                self.assertEqual(shipped, live)
+            for code, spec in shipped.items():
+                self.assertEqual(set(spec), {"system", "edition", "source_name",
+                                             "source_url", "effective_start",
+                                             "effective_end"})
+                self.assertRegex(spec["source_url"], r"^https://")
+
+    def test_readme_documents_the_open_ended_hcpcs_rule(self):
+        readme = (Path(__file__).resolve().parent.parent
+                  / "catalogs" / "README.md").read_text()
+        self.assertIn("datasets.json", readme)
+        self.assertIn("open `effective_end`", readme)
+        self.assertIn("immutable", readme)
+
+    def test_head_only_servers_and_transport_errors_fall_back_to_get(self):
+        seen = []
+
+        def head_unsupported(method, url):
+            seen.append((method, url))
+            if method == "HEAD":
+                raise OSError("HEAD not supported")
+            return b"payload"
+        self.assertTrue(importer.url_exists("https://example.invalid/x.zip",
+                                            head_unsupported))
+        self.assertEqual([call[0] for call in seen], ["HEAD", "GET"])
+
+        def always_down(method, url):
+            raise importer.URLError("network down")
+        self.assertFalse(importer.url_exists("https://example.invalid/x.zip",
+                                             always_down))
+
+        def not_found(method, url):
+            raise importer.HTTPError(url, 404, "Not Found", {}, None)
+        self.assertFalse(importer.url_exists("https://example.invalid/x.zip", not_found))
+
+    def test_discover_cli_reports_one_line_and_exit_zero_when_nothing_exists(self):
+        def fetch(method, url):
+            raise importer.HTTPError(url, 404, "Not Found", {}, None)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            datasets_path, _directory = self.write_fixture(root)
+            patcher = mock.patch.dict(importer.DATASETS, self.base_datasets(), clear=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+            with patch.object(importer, "DATASETS_FILE", datasets_path), \
+                    patch.object(importer, "fetch_url", fetch), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(importer.discover_cli(root / "catalogs"), 0)
+            self.assertEqual(out.getvalue().strip(),
+                             "No new public code list editions found.")
 
 
 if __name__ == "__main__":
