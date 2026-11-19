@@ -617,10 +617,23 @@ async fn list_with(state: &State, a: &Actor, broker: &dyn Broker, policy: Policy
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct AddAddress {
+    line1: String,
+    #[serde(default)]
+    line2: String,
+    city: String,
+    state: String,
+    postal_code: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Add {
     request_id: Uuid,
     code: String,
     name: String,
+    /// The practice address typed into the address prompt. It outranks any facility address.
+    #[serde(default)]
+    location_address: Option<AddAddress>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -635,6 +648,38 @@ fn name(value: &str) -> Result<String> {
         ));
     }
     Ok(name.to_owned())
+}
+fn part(value: &str, max: usize, prompt: &'static str) -> Result<String> {
+    let part = value.trim();
+    if part.is_empty() {
+        return Err(Error::Invalid(prompt));
+    }
+    if part.chars().count() > max || part.chars().any(char::is_control) {
+        return Err(Error::Invalid(
+            "Check the address. It can only hold ordinary writing.",
+        ));
+    }
+    Ok(part.to_owned())
+}
+/// The address typed into the prompt, checked the way the facility form checks a street
+/// address: parts trimmed, the state uppercased, a ZIP hyphen removed.
+fn typed_address(input: &AddAddress) -> Result<(String, String, String, String, String)> {
+    let line1 = part(&input.line1, 55, "Enter the street address.")?;
+    let line2 = if input.line2.trim().is_empty() {
+        String::new()
+    } else {
+        part(&input.line2, 55, "Enter the street address.")?
+    };
+    let city = part(&input.city, 55, "Enter the city.")?;
+    let state = input.state.trim().to_ascii_uppercase();
+    if state.len() != 2 || !state.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return Err(Error::Invalid("Enter the two-letter state."));
+    }
+    let postal = input.postal_code.trim().replace('-', "");
+    if (postal.len() != 5 && postal.len() != 9) || !postal.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(Error::Invalid("Enter the 5-digit ZIP code."));
+    }
+    Ok((line1, line2, city, state, postal))
 }
 async fn ready(
     state: &State,
@@ -694,13 +739,14 @@ async fn add_with(
     body["request_id"] = json!(input.request_id);
     body["registration_code"] = json!(code);
     body["label"] = json!(name(&input.name)?);
-    // The payments service needs a business address to register a reader. When the
-    // practice has recorded one on an active facility, send it with the request. When
-    // none is recorded the request goes out as before: the payments service may already
-    // hold an address from onboarding.
-    if let Some((line1, line2, city, state_name, postal_code)) =
-        facility_address(pool, a.tenant_id).await?
-    {
+    // The payments service needs a business address to register a reader. The address
+    // typed into the prompt outranks the facility on record. With neither, the request
+    // goes out as before: the payments service may already hold an address from onboarding.
+    let address = match &input.location_address {
+        Some(typed) => Some(typed_address(typed)?),
+        None => facility_address(pool, a.tenant_id).await?,
+    };
+    if let Some((line1, line2, city, state_name, postal_code)) = address {
         let mut address = json!({
             "line1": line1,
             "city": city,
@@ -731,9 +777,10 @@ async fn add_with(
             ))
         }
         (409, "business_address_missing") => {
-            return Err(Error::Conflict(
-                "Add the practice address under Practice administration, Facilities, then add the reader again.",
-            ))
+            return Err(Error::CodedConflict {
+                code: "practice_address_missing",
+                message: "Enter the practice address to finish adding the reader.",
+            })
         }
         _ => return Err(unconfirmed()),
     };
