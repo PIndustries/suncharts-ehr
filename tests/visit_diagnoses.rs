@@ -261,9 +261,12 @@ async fn invalid_or_duplicate_diagnoses_never_change_visit() {
     assert_eq!(data["diagnoses"], json!([]));
     assert_eq!(data["history"], json!([]));
 }
+/// A signed visit keeps the note locked, and its diagnosis list changes only through
+/// the billing-correction path: the API's correction route, or a transaction that marks
+/// itself as one. Anything else is refused by the database whatever the role.
 #[tokio::test]
-async fn signing_locks_diagnoses_in_api_and_database() {
-    let (db, doc, _, appointment) = setup().await;
+async fn signing_locks_diagnoses_except_through_the_correction_path() {
+    let (db, doc, nurse, appointment) = setup().await;
     let v = started(&db, &doc, appointment).await;
     let r = app(db.clone());
     let path = format!("/api/v1/visits/{}/diagnoses", v.id);
@@ -275,12 +278,58 @@ async fn signing_locks_diagnoses_in_api_and_database() {
         .await
         .unwrap();
     let signed = backend.sign(&doc, v.id, noted.version).await.unwrap();
-    let (status, _) = call(&r, &doc, "PUT", &path, diagnoses(), Some(signed.version)).await;
-    assert_eq!(status, 409);
-    let (status, data) = call(&r, &doc, "GET", &path, Value::Null, None).await;
-    assert_eq!(status, 200);
-    assert_eq!(data["can_edit"], false);
-    assert_eq!(data["diagnoses"][0]["code"], "R51.9");
+    let corrected = json!({"diagnoses":[{"code":"M54.5","display":"Synthetic lower back pain"}],"reason":"Coding corrected for the claim"});
+    // The clinician who signed corrects the coding; the note itself stays locked.
+    let (status, data) = call(
+        &r,
+        &doc,
+        "PUT",
+        &path,
+        corrected.clone(),
+        Some(signed.version),
+    )
+    .await;
+    assert_eq!(status, 200, "{data}");
+    assert_eq!(data["visit"]["status"], "signed");
+    assert_eq!(data["diagnoses"][0]["code"], "M54.5");
+    let stored_note: Value = sqlx::query_scalar(
+        "SELECT note FROM visits WHERE tenant_id=$1 AND id=$2 AND status='signed' AND signed_by=$3",
+    )
+    .bind(doc.tenant_id)
+    .bind(v.id)
+    .bind(doc.sub)
+    .fetch_one(&db)
+    .await
+    .unwrap_or_else(|e| panic!("the visit is still the signed note it was: {e}"));
+    assert_eq!(stored_note["assessment"], "Synthetic assessment");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM amendments WHERE tenant_id=$1 AND visit_id=$2"
+        )
+        .bind(doc.tenant_id)
+        .bind(v.id)
+        .fetch_one(&db)
+        .await
+        .unwrap(),
+        0,
+        "a diagnosis correction is not a note amendment"
+    );
+    // A nurse and a read-only account may not correct a signed visit's coding.
+    let current: i64 =
+        sqlx::query_scalar("SELECT version FROM visits WHERE tenant_id=$1 AND id=$2")
+            .bind(doc.tenant_id)
+            .bind(v.id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    for refused in [&nurse, &actor(doc.tenant_id, Role::ReadOnly)] {
+        assert_eq!(
+            call(&r, refused, "GET", &path, Value::Null, None).await.1["can_edit"],
+            json!(false)
+        );
+        let (status, _) = call(&r, refused, "PUT", &path, corrected.clone(), Some(current)).await;
+        assert_eq!(status, 403, "{:?}", refused.role);
+    }
     assert!(sqlx::query(
         "UPDATE visit_diagnoses SET diagnoses='[]' WHERE tenant_id=$1 AND visit_id=$2"
     )

@@ -635,6 +635,10 @@ pub fn router() -> Router<State> {
             post(account_action),
         )
         .route(
+            "/api/v1/patients/{p}/billing/accounts/{id}/corrections",
+            post(correct_account),
+        )
+        .route(
             "/api/v1/patients/{p}/billing/accounts/{id}/history",
             get(account_history),
         )
@@ -882,6 +886,130 @@ async fn account_action(
     tx.commit().await?;
     Ok(Json(row))
 }
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Correction {
+    request_id: Uuid,
+    content: AccountContent,
+    #[serde(default)]
+    reason: Option<String>,
+}
+async fn correct_account(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((p, id)): Path<(Uuid, Uuid)>,
+    h: HeaderMap,
+    Json(mut v): Json<Correction>,
+) -> Result<Json<Account>> {
+    write(&a)?;
+    let reason = v
+        .reason
+        .take()
+        .unwrap_or_else(|| "Charge correction".to_owned());
+    text(&reason, 1000)?;
+    let version = crate::expected(&h)?;
+    let hash = digest(&(p, id, &v))?;
+    let mut tx = db(&s)?.begin().await?;
+    tenant_lock(&mut tx, &a).await?;
+    let prior: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT account_id,creation_hash FROM billing_account_corrections WHERE tenant_id=$1 AND request_id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(v.request_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some((prior_id, prior_hash)) = prior {
+        if prior_hash != hash {
+            return Err(Error::Conflict(
+                "request ID reused for different charge correction",
+            ));
+        }
+        if prior_id != id {
+            return Err(Error::Conflict(
+                "request ID reused for different charge correction",
+            ));
+        }
+        return Ok(Json(account_row(&mut tx, &a, p, prior_id).await?));
+    }
+    let old = account_row(&mut tx, &a, p, id).await?;
+    if old.version != version {
+        return Err(Error::Conflict(
+            "charge correction requires the current posted account version",
+        ));
+    }
+    if old.status == "void" {
+        return Err(Error::Conflict("void accounts cannot be corrected"));
+    }
+    if old.status != "posted" {
+        return Err(Error::Conflict("only a posted account can be corrected"));
+    }
+    let content: AccountContent = serde_json::from_value(old.content.clone())
+        .map_err(|_| Error::Invalid("invalid stored billing account"))?;
+    // Only the charge lines and notes come from the request. The visit, insurance, service date,
+    // currency and fee basis stay as they were posted.
+    let mut next = std::mem::replace(
+        &mut v.content,
+        AccountContent {
+            visit_id: None,
+            coverage_id: None,
+            service_date: Default::default(),
+            currency: String::new(),
+            lines: Vec::new(),
+            fee_context: None,
+            notes: String::new(),
+        },
+    );
+    next.visit_id = content.visit_id;
+    next.coverage_id = content.coverage_id;
+    next.service_date = content.service_date;
+    next.currency = content.currency.clone();
+    next.fee_context = content.fee_context.clone();
+    resolve_charge_catalogs(&mut tx, &a, &mut next).await?;
+    crate::fees::resolve(&mut tx, &a, p, &mut next, Some(&old.content)).await?;
+    next.total()?;
+    sqlx::query("SET LOCAL suncharts.billing_correction = 'on'")
+        .execute(&mut *tx)
+        .await?;
+    let correction_total = next.total()?;
+    let after = json!(next);
+    // A correction changes the charge lines and their total only. The insurance snapshot the
+    // account was posted with stays as it is: the database refuses any change to it.
+    sqlx::query("UPDATE billing_accounts SET content=$3,total_cents=$4,version=version+1 WHERE tenant_id=$1 AND id=$2 AND status='posted'")
+        .bind(a.tenant_id)
+        .bind(id)
+        .bind(&after)
+        .bind(correction_total)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO billing_account_corrections (tenant_id,id,account_id,request_id,creation_hash,before_total_cents,after_total_cents,before_content,after_content,actor_id,reason) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+    )
+    .bind(a.tenant_id)
+    .bind(Uuid::new_v4())
+    .bind(id)
+    .bind(v.request_id)
+    .bind(&hash)
+    .bind(old.total_cents)
+    .bind(correction_total)
+    .bind(&old.content)
+    .bind(&after)
+    .bind(a.sub)
+    .bind(&reason)
+    .execute(&mut *tx)
+    .await?;
+    let row = account_revision(&mut tx, &a, p, id, &reason).await?;
+    crate::postgres::audit(&mut tx, &a, "billing.charges_corrected", id).await?;
+    let voided =
+        crate::visit_billing::void_draft_claims_after_correction(&mut tx, &a, id, &reason).await?;
+    tx.commit().await?;
+    // A draft claim built from the old charges was voided: prepare its replacement draft from the
+    // corrected charges now, so the visit never shows a cancelled claim nobody cancelled.
+    if voided > 0 {
+        crate::visit_billing::prepare_claim(db(&s)?, &a, p, id, true).await?;
+    }
+    Ok(Json(row))
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Entry {

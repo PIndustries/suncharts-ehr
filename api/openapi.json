@@ -6475,6 +6475,95 @@
         }
       }
     },
+    "/api/v1/patients/{p}/billing/accounts/{id}/corrections": {
+      "post": {
+        "operationId": "correctBillingAccountCharges",
+        "description": "Correct charge lines and notes of a posted account. Requires billing rights and a current If-Match version. Status, patient, visit, coverage and history links never move.",
+        "parameters": [
+          {
+            "name": "p",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^\"[1-9][0-9]*\"$"
+            },
+            "description": "Quoted current resource version"
+          }
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "billing.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingAccount"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid charge content"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Role or billing scope denied"
+          },
+          "404": {
+            "description": "Tenant/patient scoped record not found"
+          },
+          "409": {
+            "description": "Stale version, non-posted account, or identity field changed"
+          },
+          "428": {
+            "description": "Current quoted If-Match required"
+          },
+          "500": {
+            "description": "Database/audit failure; no partial mutation committed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectBillingAccount"
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/patients/{p}/billing/accounts/{id}/history": {
       "get": {
         "operationId": "billingAccountHistory",
@@ -17621,7 +17710,7 @@
       },
       "put": {
         "operationId": "saveVisitDiagnoses",
-        "summary": "Replace ordered encounter diagnoses before signing",
+        "summary": "Replace ordered encounter diagnoses, or correct them after signing as a billing correction",
         "tags": [
           "Encounter diagnoses"
         ],
@@ -17690,7 +17779,7 @@
             }
           }
         ],
-        "description": "Anyone who may save the visit's note may save its diagnoses while the visit is in progress: any clinician, the owner, an enabled nurse or medical assistant. Replaces the whole ordered list with at most20 unique ICD-10-CM codes; rank1 is primary. Codes are trimmed and uppercased, descriptions trimmed. Without catalog_release_id, format validation does not establish validity in an ICD-10-CM edition. With a tenant ICD-10-CM release, the server requires an active billable code for service_date, replaces code/display with catalog values, and preserves read-only edition and service-date provenance. Reason is required; an empty array explicitly removes all diagnoses. Shares Visit.version with intake, SOAP and vitals. Mutation, immutable snapshot revision and audit event commit atomically. Signed diagnoses are immutable. Does not update the longitudinal problem list, orders or billing automatically."
+        "description": "Anyone who may save the visit's note may save its diagnoses while the visit is in progress: any clinician, the owner, an enabled nurse or medical assistant. Replaces the whole ordered list with at most20 unique ICD-10-CM codes; rank1 is primary. Codes are trimmed and uppercased, descriptions trimmed. Without catalog_release_id, format validation does not establish validity in an ICD-10-CM edition. With a tenant ICD-10-CM release, the server requires an active billable code for service_date, replaces code/display with catalog values, and preserves read-only edition and service-date provenance. Reason is required; an empty array explicitly removes all diagnoses. Shares Visit.version with intake, SOAP and vitals. Mutation, immutable snapshot revision and audit event commit atomically. After signing the list stays correctable as billing data for the roles that may write billing (owner, clinician or enabled front desk account, narrowed by a custom access policy without the billing edit), inside a transaction marked as a billing correction, audited as visit.diagnoses_corrected and keeping the shared version check; the signed note is never part of this write. A nurse, medical assistant, delegated support session or read-only account is refused. Does not update the longitudinal problem list, orders or billing automatically."
       }
     },
     "/api/v1/patients/{patient}/health-history": {
@@ -42041,6 +42130,28 @@
         "required": [
           "content",
           "reason"
+        ]
+      },
+      "CorrectBillingAccount": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "content": {
+            "$ref": "#/components/schemas/BillingAccountContent"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "request_id",
+          "content"
         ]
       },
       "BillingAccount": {
