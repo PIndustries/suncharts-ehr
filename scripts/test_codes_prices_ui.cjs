@@ -326,7 +326,7 @@ async function pick(f,index){
  assert.match(f.tools.innerHTML,/<summary>Installed code lists<\/summary>/,'the installed lists, CPT install and import are folded into one closed section');
  assert.ok(f.tools.innerHTML.indexOf('data-installed-code-lists')>f.tools.innerHTML.indexOf('data-practice-codes'),'the folded section sits below My codes');
  assert.match(f.tools.innerHTML,/data-cpt-section[\s\S]*?CPT codes installed/,'the CPT install section is still there, reporting the installed edition');
- assert.match(f.tools.innerHTML,/id="terminology-import-form"/,'the file import is still there');
+ assert.doesNotMatch(f.tools.innerHTML,/id="terminology-import-form"|type="file"/,'no file to choose: lists install themselves and CPT installs with the license box');
  assert.match(f.tools.innerHTML,/Installed versions/,'the installed-versions list is still there');
  // Flipping a switch saves straight away with If-Match on the version it read.
  const cpt=f.toggleFor('CPT');cpt.checked=false;change(cpt);await f.settle();
