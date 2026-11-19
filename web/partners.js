@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
+// The agreement the owner reads and accepts on this screen; the server refuses any other version.
+const PARTNER_AGREEMENT_VERSION='partner-enrollment-v1';
 // One page where an owner sets up payments and starts working with a billing partner.
 // The partner list and every enrollment come from SunCharts Connect through this EHR;
 // this EHR keeps no copy of an agreement.
@@ -80,7 +82,7 @@ document.addEventListener('submit',event=>{
  run(async()=>{
   if(form.dataset.kind==='enroll'){
    if(values.agree!=='on')throw new Error('Tick the box to agree to share this practice with this partner first.');
-   await api(`${partnersApi}/${encodeURIComponent(slug)}/enroll`,'POST',{request_id:request,accepted_by:partnerAcceptedBy()});
+   await api(`${partnersApi}/${encodeURIComponent(slug)}/enroll`,'POST',{request_id:request,agreement_version:PARTNER_AGREEMENT_VERSION,accepted_by:partnerAcceptedBy()});
    await showPartners();notice(`Enrolled with ${name}. They have been notified.`);return;
   }
   await api(`${partnersApi}/${encodeURIComponent(slug)}/leave`,'POST',{request_id:request});
