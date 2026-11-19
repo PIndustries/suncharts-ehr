@@ -553,6 +553,66 @@ impl Fixture {
             .await
             .unwrap()
     }
+    /// The signed note's SOAP text, read straight from storage.
+    async fn note(&self, visit: Uuid) -> Value {
+        sqlx::query_scalar("SELECT note FROM visits WHERE tenant_id=$1 AND id=$2")
+            .bind(self.owner.tenant_id)
+            .bind(visit)
+            .fetch_one(&self.db)
+            .await
+            .unwrap()
+    }
+    /// Diagnoses and history as the encounter screen receives them.
+    async fn diagnoses_of(&self, a: &Actor, visit: Uuid) -> Value {
+        let (status, body) = self
+            .call(
+                a,
+                "GET",
+                &format!("/api/v1/visits/{visit}/diagnoses"),
+                json!({}),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body
+    }
+    /// A diagnosis list written through the encounter screen.
+    async fn save_diagnoses(
+        &self,
+        a: &Actor,
+        visit: Uuid,
+        version: i64,
+        codes: &[&str],
+        reason: &str,
+    ) -> (StatusCode, Value) {
+        let body = json!({
+            "diagnoses": codes.iter().enumerate().map(|(i, code)| json!({
+                "code": code,
+                "display": format!("Synthetic diagnosis {}", i + 1),
+                "catalog_release_id": Value::Null,
+            })).collect::<Vec<_>>(),
+            "reason": reason,
+        });
+        self.call(
+            a,
+            "PUT",
+            &format!("/api/v1/visits/{visit}/diagnoses"),
+            body,
+            Some(version),
+        )
+        .await
+    }
+    async fn action_count(&self, action: &str, resource: Uuid) -> i64 {
+        sqlx::query_scalar(
+            "SELECT count(*) FROM audit_events WHERE tenant_id=$1 AND action=$2 AND resource_id=$3",
+        )
+        .bind(self.owner.tenant_id)
+        .bind(action)
+        .bind(resource)
+        .fetch_one(&self.db)
+        .await
+        .unwrap()
+    }
 }
 fn filled(content: &Value) -> Value {
     let mut content = content.clone();
@@ -2007,6 +2067,283 @@ mod refill {
     }
 }
 
+/// A signed visit whose note carries its own synthetic SOAP text.
+/// Adds one resource to an account's own policy, leaving the rest of it as written.
+async fn grant_policy_module(f: &Fixture, who: &Actor, resource: &str) {
+    sqlx::query("UPDATE practice_access_policies SET permissions = permissions || jsonb_build_object($3, $4::jsonb) WHERE tenant_id=$1 AND id=(SELECT policy_id FROM practice_access_assignments WHERE tenant_id=$1 AND user_id=$2)")
+        .bind(f.owner.tenant_id).bind(who.sub).bind(resource)
+        .bind(json!({"view":true,"create":true,"edit":true,"delete":true}).to_string())
+        .execute(&f.db).await.unwrap();
+}
+
+async fn signed_visit(f: &Fixture, signer: &Actor) -> (Uuid, Uuid, Uuid, Value) {
+    let (p, appointment, visit) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    let note = json!({"subjective":"Synthetic","objective":"Synthetic","assessment":"Synthetic","plan":"Synthetic"});
+    sqlx::query("INSERT INTO patients(tenant_id,id,mrn,given_name,family_name,birth_date) VALUES($1,$2,$3,'Avery','Synthetic','1990-01-01')")
+        .bind(f.owner.tenant_id).bind(p).bind(format!("SYN-{}", &p.simple().to_string()[..8]))
+        .execute(&f.db).await.unwrap();
+    sqlx::query("INSERT INTO appointments(tenant_id,id,patient_id,clinician_id,starts_at,ends_at,status) VALUES($1,$2,$3,$4,'2026-10-25T14:00:00Z','2026-10-25T14:30:00Z','checked_in')")
+        .bind(f.owner.tenant_id).bind(appointment).bind(p).bind(signer.sub)
+        .execute(&f.db).await.unwrap();
+    sqlx::query("INSERT INTO visits(tenant_id,id,patient_id,appointment_id,clinician_id,status,note,vitals,signed_by,signed_at) VALUES($1,$2,$3,$4,$5,'signed',$6,'{}'::jsonb,$5,now())")
+        .bind(f.owner.tenant_id).bind(visit).bind(p).bind(appointment).bind(signer.sub).bind(&note)
+        .execute(&f.db).await.unwrap();
+    (p, appointment, visit, note)
+}
+
+/// A custom access policy that leaves a base role only the billing screens.
+async fn billing_only_policy(f: &Fixture, who: &Actor, base_role: &str, billing_edit: bool) {
+    let (policy, other) = (Uuid::new_v4(), Uuid::new_v4());
+    sqlx::query("INSERT INTO practice_access_policies(tenant_id,id,name,base_role,permissions,version,updated_by) VALUES($1,$2,$6,$3,$4,1,$5)")
+        .bind(f.owner.tenant_id).bind(policy).bind(base_role)
+        .bind(json!({"billing":{"view":true,"create":true,"edit":billing_edit,"delete":billing_edit}}))
+        .bind(f.owner.sub)
+        .bind(format!("Synthetic billing only {}", policy.simple()))
+        .execute(&f.db).await.unwrap();
+    // A second base role proves the policy is read as belonging to its own role.
+    sqlx::query("INSERT INTO practice_access_policies(tenant_id,id,name,base_role,permissions,version,updated_by) VALUES($1,$2,$6,$3,$4,1,$5)")
+        .bind(f.owner.tenant_id).bind(other).bind("nurse")
+        .bind(json!({"billing":{"view":true,"create":true,"edit":true,"delete":true}}))
+        .bind(f.owner.sub)
+        .bind(format!("Synthetic other base {}", other.simple()))
+        .execute(&f.db).await.unwrap();
+    sqlx::query("INSERT INTO practice_access_assignments(tenant_id,user_id,policy_id,version,updated_by) VALUES($1,$2,$3,1,$4)")
+        .bind(f.owner.tenant_id).bind(who.sub).bind(policy).bind(f.owner.sub)
+        .execute(&f.db).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_signed_visit_diagnosis_list_stays_correctable_as_billing_data() {
+    let f = setup().await;
+    let signer = f.staff(Role::Clinician, "clinician").await;
+    let (_, _, visit, note) = signed_visit(&f, &signer).await;
+    let read = f.diagnoses_of(&f.owner, visit).await;
+    assert_eq!(read["visit"]["status"], "signed");
+    assert_eq!(read["can_edit"], true, "the list is open to the owner");
+    assert!(
+        read["history"].as_array().unwrap().is_empty(),
+        "a signed visit with no coding yet has nothing in its history"
+    );
+
+    // The owner corrects the coding of a visit that is already signed. The signed
+    // note is untouched, and the change is attributed in the revision history and
+    // named in the audit trail as a correction rather than a routine save.
+    let (status, out) = f
+        .save_diagnoses(
+            &f.owner,
+            visit,
+            read["version"].as_i64().unwrap(),
+            &["R51.9", "M54.5"],
+            "Coding corrected for the claim",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    assert_eq!(out["visit"]["status"], "signed");
+    assert_eq!(out["can_edit"], true);
+    assert_eq!(out["diagnoses"].as_array().unwrap().len(), 2);
+    assert_eq!(f.note(visit).await, note, "the signed note is unchanged");
+    let revision: Option<(String, String, Value)> = sqlx::query_as(
+        "SELECT reason, (SELECT coalesce(nullif(u.display_name,''),u.email) FROM browser_users u WHERE u.tenant_id=visit_diagnosis_revisions.tenant_id AND u.id=visit_diagnosis_revisions.actor_id), snapshot FROM visit_diagnosis_revisions WHERE tenant_id=$1 AND visit_id=$2 AND visit_version=$3",
+    )
+    .bind(f.owner.tenant_id)
+    .bind(visit)
+    .bind(out["version"].as_i64().unwrap())
+    .fetch_optional(&f.db)
+    .await
+    .unwrap();
+    let (reason, actor, snapshot) = revision.expect("the correction writes an attributed revision");
+    assert_eq!(reason, "Coding corrected for the claim");
+    assert!(
+        actor.ends_with("@example.test"),
+        "the revision names who corrected it: {actor}"
+    );
+    assert_eq!(snapshot.as_array().unwrap().len(), 2);
+    assert_eq!(f.action_count("visit.diagnoses_corrected", visit).await, 1);
+    assert_eq!(
+        f.action_count("visit.diagnoses_save", visit).await,
+        0,
+        "a change to a signed visit is never audited as a routine save"
+    );
+    let open_note: Value =
+        sqlx::query_scalar("SELECT note FROM visits WHERE tenant_id=$1 AND id=$2")
+            .bind(f.owner.tenant_id)
+            .bind(visit)
+            .fetch_one(&f.db)
+            .await
+            .unwrap();
+    assert_eq!(open_note, note, "the correction cannot reach the note");
+
+    // A second correction, by the clinician who signed the note, replaces the list
+    // and leaves its own attributed revision behind.
+    let as_signer = f.diagnoses_of(&signer, visit).await;
+    assert_eq!(as_signer["can_edit"], true, "the signer may correct");
+    let (status, out) = f
+        .save_diagnoses(
+            &signer,
+            visit,
+            as_signer["version"].as_i64().unwrap(),
+            &["R51.9"],
+            "Signer's billing correction",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    assert_eq!(out["diagnoses"].as_array().unwrap().len(), 1);
+    assert_eq!(f.note(visit).await, note);
+    assert_eq!(f.action_count("visit.diagnoses_corrected", visit).await, 2);
+
+    // A front desk account — the role the billing endpoints accept for a write —
+    // corrects the same list, and a stale version is still refused.
+    let desk = f.staff(Role::FrontDesk, "front_desk").await;
+    let as_desk = f.diagnoses_of(&desk, visit).await;
+    assert_eq!(as_desk["can_edit"], true, "a biller may correct");
+    let stale = as_signer["version"].as_i64().unwrap();
+    assert!(
+        stale < as_desk["version"].as_i64().unwrap(),
+        "the correction moved the visit's shared version"
+    );
+    let (status, body) = f
+        .save_diagnoses(
+            &desk,
+            visit,
+            stale,
+            &["Z00.00"],
+            "Front desk on a stale version",
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "the shared version check still applies to a correction: {body}"
+    );
+    let (status, out) = f
+        .save_diagnoses(
+            &desk,
+            visit,
+            as_desk["version"].as_i64().unwrap(),
+            &["R51.9", "Z00.00"],
+            "Front desk billing correction",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    assert_eq!(out["diagnoses"].as_array().unwrap().len(), 2);
+    assert_eq!(f.note(visit).await, note);
+
+    // A custom access policy is honoured both ways. A front desk account whose policy
+    // keeps the billing write still corrects; the same account with the billing edit
+    // taken away is refused, and its own read is told so.
+    let limited = f.staff(Role::FrontDesk, "front_desk").await;
+    // The policy allows what it is given: the read stays open, and the billing write stays
+    // with the practice's billing screens rather than the encounter record.
+    billing_only_policy(&f, &limited, "front_desk", true).await;
+    grant_policy_module(&f, &limited, "clinical").await;
+    let held = f.diagnoses_of(&limited, visit).await;
+    assert_eq!(
+        held["can_edit"], true,
+        "a billing edit grant still corrects"
+    );
+    let (status, out) = f
+        .save_diagnoses(
+            &limited,
+            visit,
+            held["version"].as_i64().unwrap(),
+            &["R51.9"],
+            "Policy-limited billing correction",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    let saved = out;
+    let disabled = f.staff(Role::FrontDesk, "front_desk").await;
+    billing_only_policy(&f, &disabled, "front_desk", false).await;
+    grant_policy_module(&f, &disabled, "clinical").await;
+    let refused = f.diagnoses_of(&disabled, visit).await;
+    assert_eq!(
+        refused["can_edit"], false,
+        "a policy without the billing edit is told not to offer it"
+    );
+    let (status, _) = f
+        .save_diagnoses(
+            &disabled,
+            visit,
+            refused["version"].as_i64().unwrap(),
+            &["Z00.00"],
+            "Policy-refused correction",
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // A role without billing rights cannot, whatever else it may record.
+    let nurse = f.staff(Role::Nurse, "nurse").await;
+    let as_nurse = f.diagnoses_of(&nurse, visit).await;
+    assert_eq!(
+        as_nurse["can_edit"], false,
+        "the screen is told not to offer the edit"
+    );
+    let (status, _) = f
+        .save_diagnoses(
+            &nurse,
+            visit,
+            as_nurse["version"].as_i64().unwrap(),
+            &["Z00.00"],
+            "Nurse attempts a correction",
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let reader = f.staff(Role::ReadOnly, "read_only").await;
+    let (status, _) = f
+        .save_diagnoses(
+            &reader,
+            visit,
+            as_nurse["version"].as_i64().unwrap(),
+            &["Z00.00"],
+            "Reader attempts a correction",
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // Nothing about a refused write reached the record: same list, same version, same
+    // note, and one audit entry for each correction that actually happened.
+    let after = f.diagnoses_of(&f.owner, visit).await;
+    assert_eq!(
+        after["diagnoses"], saved["diagnoses"],
+        "a refused correction leaves the list as it was"
+    );
+    assert_eq!(after["version"], saved["version"]);
+    assert_eq!(f.note(visit).await, note);
+    // one each by the owner, the signing clinician, the front desk account and the
+    // policy-limited one; the refusals leave none.
+    assert_eq!(f.action_count("visit.diagnoses_corrected", visit).await, 4);
+
+    // An in-progress visit behaves exactly as it always has: the clinical roles that
+    // draft a note write its diagnoses, a biller who does not draft does not, and the
+    // write is audited as a plain save.
+    let (_, _, open) = f.visit(false).await;
+    let open_read = f.diagnoses_of(&desk, open).await;
+    assert_eq!(
+        open_read["can_edit"], false,
+        "front desk does not draft a visit"
+    );
+    let (status, _) = f
+        .save_diagnoses(
+            &desk,
+            open,
+            open_read["version"].as_i64().unwrap(),
+            &["R51.9"],
+            "Front desk attempts a draft",
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, out) = f
+        .save_diagnoses(&signer, open, 1, &["R51.9"], "Initial synthetic coding")
+        .await;
+    assert_eq!(status, StatusCode::OK, "{out}");
+    assert_eq!(out["can_edit"], true);
+    assert_eq!(f.action_count("visit.diagnoses_save", open).await, 1);
+    assert_eq!(
+        f.action_count("visit.diagnoses_corrected", open).await,
+        0,
+        "an in-progress visit is never audited as a correction"
+    );
+}
+
 /// What a claim row holds, read straight from storage. Used where a test must look at a draft
 /// without going through the detail screen, which is itself what completes the draft.
 async fn stored_content(f: &Fixture, claim_id: &Value) -> Value {
@@ -2040,4 +2377,131 @@ fn asked_for(issues: &Value, wanted: &[&str]) -> bool {
             .iter()
             .any(|want| issue.contains(&want.to_ascii_lowercase()))
     })
+}
+
+// ---- Charge corrections on posted accounts ---------------------------------------------------
+
+async fn correct(
+    f: &Fixture,
+    a: &Actor,
+    p: Uuid,
+    account: &Value,
+    lines: Value,
+) -> (StatusCode, Value) {
+    let mut content = account["content"].clone();
+    content["lines"] = lines;
+    f.call(
+        a,
+        "POST",
+        &format!("/api/v1/patients/{p}/billing/accounts/{}/corrections", id(account)),
+        json!({"request_id":Uuid::new_v4(),"content":content,"reason":"Synthetic charge correction"}),
+        Some(version(account)),
+    )
+    .await
+}
+
+fn synthetic_lines(code: &str, cents: i64) -> Value {
+    json!([{"code_system":"CPT","code":code,"description":"Synthetic service","modifiers":"","units":1,"amount_cents":cents,"diagnosis_codes":["Z00.00 - Synthetic exam"]}])
+}
+
+#[tokio::test]
+async fn posted_charges_can_be_corrected_and_the_trail_is_kept() {
+    let f = setup().await;
+    let (p, _, visit) = f.visit(true).await;
+    let posted = f.post(p, &f.charges(p, visit, None, 5000).await).await;
+    assert_eq!(posted["status"], "posted");
+
+    let (status, corrected) =
+        correct(&f, &f.owner, p, &posted, synthetic_lines("99214", 7500)).await;
+    assert_eq!(status, StatusCode::OK, "{corrected}");
+    assert_eq!(
+        corrected["status"], "posted",
+        "a correction never changes the status"
+    );
+    assert_eq!(corrected["total_cents"], 7500);
+    assert_eq!(corrected["content"]["lines"][0]["code"], "99214");
+    assert_eq!(version(&corrected), version(&posted) + 1);
+
+    let (before, after): (i64, i64) = sqlx::query_as(
+        "SELECT before_total_cents,after_total_cents FROM billing_account_corrections WHERE tenant_id=$1 AND account_id=$2",
+    )
+    .bind(f.owner.tenant_id)
+    .bind(id(&posted))
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        (before, after),
+        (5000, 7500),
+        "the correction keeps the before and after"
+    );
+
+    // A stale copy is refused rather than overwriting the newer charges.
+    let (stale, _) = correct(&f, &f.owner, p, &posted, synthetic_lines("99212", 4000)).await;
+    assert_eq!(stale, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn posted_charges_stay_locked_outside_a_correction() {
+    let f = setup().await;
+    let (p, _, visit) = f.visit(true).await;
+    let posted = f.post(p, &f.charges(p, visit, None, 5000).await).await;
+    let refused =
+        sqlx::query("UPDATE billing_accounts SET total_cents=1 WHERE tenant_id=$1 AND id=$2")
+            .bind(f.owner.tenant_id)
+            .bind(id(&posted))
+            .execute(&f.db)
+            .await;
+    assert!(
+        refused.is_err(),
+        "the database still refuses any other write to posted charges"
+    );
+}
+
+#[tokio::test]
+async fn a_draft_account_is_not_corrected_it_is_simply_edited() {
+    let f = setup().await;
+    let (p, _, visit) = f.visit(true).await;
+    let draft = f.charges(p, visit, None, 5000).await;
+    let (status, _) = correct(&f, &f.owner, p, &draft, synthetic_lines("99214", 7500)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn a_draft_claim_is_voided_so_a_fresh_one_follows_the_corrected_charges() {
+    let f = setup().await;
+    f.directory(true).await;
+    let (p, _, visit) = f.visit(true).await;
+    let (_, policy) = f.coverage(p, "primary", "SYN-CORR1", None).await;
+    let posted = f
+        .post(p, &f.charges(p, visit, Some(id(&policy)), 5000).await)
+        .await;
+    let (_, prepared) = f.prepare(&f.owner, p, id(&posted), json!({})).await;
+    assert_eq!(prepared["outcome"], "prepared", "{prepared}");
+
+    let (status, corrected) =
+        correct(&f, &f.owner, p, &posted, synthetic_lines("99214", 7500)).await;
+    assert_eq!(status, StatusCode::OK, "{corrected}");
+    let claim_status: String =
+        sqlx::query_scalar("SELECT status FROM ehr_claims WHERE tenant_id=$1 AND id=$2")
+            .bind(f.owner.tenant_id)
+            .bind(id(&prepared["claim_id"]))
+            .fetch_one(&f.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        claim_status, "void",
+        "the draft built from the old charges is voided"
+    );
+
+    // The correction prepared the replacement draft itself; asking again returns it.
+    let (_, fresh) = f.prepare(&f.owner, p, id(&corrected), json!({})).await;
+    assert_eq!(fresh["outcome"], "exists", "{fresh}");
+    let total: i64 = sqlx::query_scalar("SELECT (snapshot->'account'->>'total_cents')::bigint FROM ehr_claims WHERE tenant_id=$1 AND id=$2")
+        .bind(f.owner.tenant_id)
+        .bind(id(&fresh["claim_id"]))
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(total, 7500, "the fresh claim bills the corrected charges");
 }

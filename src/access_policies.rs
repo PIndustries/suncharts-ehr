@@ -413,6 +413,7 @@ fn action(method: &Method, path: &str) -> Option<Action> {
                 "clients",
                 "clinical",
                 "coverages",
+                "corrections",
                 "definitions",
                 "delivery",
                 "destinations",

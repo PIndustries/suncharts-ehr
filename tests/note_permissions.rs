@@ -676,7 +676,14 @@ async fn any_clinician_or_the_owner_amends_and_a_signed_note_never_changes() {
             f.sign(who, &signed).await.0,
             if who.sub == f.assistant.sub { 403 } else { 409 }
         );
-        assert_eq!(f.diagnoses(who, &signed).await.0, 409);
+        // A signed visit's diagnoses are billing data: a clinician or the owner may correct
+        // them (a repeated call with an older version is told to reload), an assistant may not.
+        let diagnoses = f.diagnoses(who, &signed).await.0.as_u16();
+        if who.sub == f.assistant.sub {
+            assert_eq!(diagnoses, 403);
+        } else {
+            assert!(matches!(diagnoses, 200 | 409), "{diagnoses}");
+        }
     }
     assert_eq!(f.authorship(&f.peer, &signed).await["can_draft"], false);
     assert_eq!(f.authorship(&f.peer, &signed).await["can_sign"], false);

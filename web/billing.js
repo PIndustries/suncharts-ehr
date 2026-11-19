@@ -512,7 +512,8 @@ function chargeRowData(row){return {
 function chargeServiceDate(value){return typeof visitBillingDate==='function'?visitBillingDate(value):typeof displayDate==='function'?displayDate(value):String(value||'');}
 function chargeTableFinishedMarkup(a){
  const state=a.status==='posted'?'These charges are final':'These charges were removed';
- return `<section class="charge-table-finished"><div class="section-head"><div><h3>Charges for this visit</h3><p class="muted">${esc(chargeServiceDate(a.content.service_date))} · ${state}</p></div></div>${chargeTable(a.content.lines)}<div class="actions"><button type="button" data-visit-charges-overview>Go to visit billing</button></div></section>`;
+ const correction=billingCan()&&a.status==='posted'&&!a.source_history_id&&a.content.visit_id?'<button type="button" data-edit-charges>Edit charges</button>':'';
+ return `<section class="charge-table-finished"><div class="section-head"><div><h3>Charges for this visit</h3><p class="muted">${esc(chargeServiceDate(a.content.service_date))} · ${state}</p></div></div>${chargeTable(a.content.lines)}<div class="actions"><button type="button" data-visit-charges-overview>Go to visit billing</button>${correction}</div></section>`;
 }
 function chargeTableAllowed(a){
  // The table is the place charges are worked on: a visit's draft account, entered by hand.
@@ -793,9 +794,49 @@ function scheduleChargeAutosave(form,delay=700){
  clearTimeout(form.chargeSaveTimer);
  form.chargeSaveTimer=setTimeout(()=>{form.chargeSaveTimer=null;void saveChargeTable(form);},delay);
 }
+ async function correctChargeTable(form){
+ if(!form?.isConnected||form.dataset.patient!==selected||!chargeLineCount(form))return;
+ if(form.dataset.chargeSaving||form.dataset.chargeConflict||form.dataset.draftReadOnly||form.dataset.draftStale)return;
+ const identity=me,patient=selected,editing=!!form.dataset.id;
+ const version=Number(form.dataset.version),body=chargeDraftBody(form);
+ form.dataset.chargeSaving='true';delete form.dataset.chargeSavedAt;
+ renderChargeRowProblems(form);setChargeStatus(form,'saving');
+ let saved;
+ try{
+  saved=await api(`${billingBase()}/${form.dataset.id}/corrections`,'POST',{request_id:form.dataset.request,...body},version);
+ }catch(error){
+  if(!form.isConnected||me!==identity||selected!==patient)return;
+  delete form.dataset.chargeSaving;
+  if(error?.status===409){await reloadChargeTable(form,patient,identity);return;}
+  if(chargeLineCount(form))scheduleChargeAutosave(form,3000);
+  setChargeStatus(form,'error',`${error?.message||'This change could not be saved.'} Nothing you typed has been lost.`);
+  renderChargeRowProblems(form);
+  return;
+ }
+ if(!form.isConnected||me!==identity||selected!==patient)return;
+ delete form.dataset.chargeSaving;form.dataset.request=crypto.randomUUID();
+ form.dataset.id=saved.id;form.dataset.version=String(saved.version);
+ form.dataset.draftKey=billingChargeKey(saved.id,null,null);
+ billingSelected=saved.id;
+ const html=billingChargeMarkup(form);
+ if(html!==null)billingChargeDrafts.delete(form.dataset.draftKey);
+ const signature=chargeTableSignature(saved.content);
+ if(html!==null)billingChargeBaselines.set(form,signature);
+ const lines=Array.isArray(saved.content?.lines)?saved.content.lines:[];
+ const rows=chargeLiveRows(form);
+ if(lines.length===rows.length)lines.forEach((line,index)=>{if(chargeRowSignature(rows[index])!==chargeLineSignature(line))renderChargeRowReplacement(form,rows[index],line);});
+ else renderChargeTableRows(form,lines.length?lines:body.content.lines);
+ chargeTableTotals(form);
+ renderChargeRowProblems(form);
+ setChargeStatus(form,'saved');
+ clearTimeout(form.chargeSavedTimer);form.chargeSavedTimer=setTimeout(()=>setChargeStatus(form,'quiet'),4000);
+ closeChargeRemovals();
+ if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();
+}
 async function saveChargeTable(form){
  if(!form?.isConnected||form.dataset.patient!==selected||!chargeLineCount(form))return;
  if(form.dataset.chargeSaving||form.dataset.chargeConflict||form.dataset.draftReadOnly||form.dataset.draftStale)return;
+ if(form.dataset.mode==='correction')return correctChargeTable(form);
  const identity=me,patient=selected,editing=!!form.dataset.id;
  const version=Number(form.dataset.version),body=chargeDraftBody(form);
  form.dataset.chargeSaving='true';delete form.dataset.chargeSavedAt;
@@ -860,6 +901,7 @@ function renderChargeRowReplacement(form,row,line){
  chargeTableTotals(form);
 }
 function chargeDraftBody(form){
+ const correction=form.dataset.mode==='correction';
  return {content:{
   visit_id:form.elements.visit_id?.value||null,
   coverage_id:form.elements.coverage_id?.value||null,
@@ -867,7 +909,7 @@ function chargeDraftBody(form){
   currency:'USD',
   lines:chargeLiveRows(form).map(chargeRowValue),
   notes:form.elements.notes?.value||'',
-  ...(typeof feeContextValue==='function'&&feeContextValue(form)?{fee_context:feeContextValue(form)}:{})},reason:'Edited charges'};
+  ...(typeof feeContextValue==='function'&&feeContextValue(form)?{fee_context:feeContextValue(form)}:{})},reason:correction?'Charge correction':'Edited charges'};
 }
 // A save was rejected because the saved charges moved elsewhere. Read them again, keep every
 // keystroke the room is holding, and let the next edit save against the version just read.
@@ -1145,9 +1187,10 @@ function chargeProposalStartBlank(form){
  captureBillingChargeDraft();
  form.querySelector('[name="code"]')?.focus?.({preventScroll:true});
 }
-function accountEditor(a,m,encounterContext=false){
+function accountEditor(a,m,encounterContext=false,options={}){
  captureBillingChargeDraft();
- if(a&&a.status!=='draft'&&a.content.visit_id&&!a.source_history_id){openBillingEditor(chargeTableFinishedMarkup(a));return;}
+ const correcting=!!options.correction;
+ if(a&&a.status!=='draft'&&a.content.visit_id&&!a.source_history_id&&!correcting){openBillingEditor(chargeTableFinishedMarkup(a));return;}
  if(a?.diagnosis_snapshot){billingSelected=a.id;openBillingEditor(`<section><h3>Review the linked visit diagnoses before changing charges</h3>${accountDiagnosisSummary(a.diagnosis_snapshot)}<p>This draft contains versioned diagnosis links. Use the link editor to update them, or explicitly clear its selections before changing the service lines. Clearing links retains the codes for manual review.</p><button type="button" data-link-account-diagnoses>Review / clear diagnosis links</button></section>`);return;}
  // The visit's own charges count as staff having worked on the table; a record from the previous
  // system is not a visit's charges and decides nothing about a proposal.
@@ -1166,8 +1209,8 @@ function accountEditor(a,m,encounterContext=false){
  const proposalVisit=v.visit_id?(workspace.visits||[]).find(vis=>vis.id===v.visit_id&&vis.patient_id===selected)||null:null;
  const proposal=chargeProposeBeforeRender(!a&&!m?proposalVisit:null);
  if(restoreBillingChargeDraft(a,m?.source_history_id,v.visit_id)){const restored=$('billing-account-form');seedChargeRowAmounts(restored);chargeTableTotals(restored);renderChargeRowProblems(restored);openChargeDiagnosisSection();void loadChargeEncounterDiagnoses(restored);return;}
- openBillingEditor(`${compact&&typeof renderVisitDiagnoses==='function'?chargeDiagnosisSectionMarkup():''}<form id="billing-account-form"${sourceLines} data-compact="${compact}" data-id="${a?.id||''}" data-version="${a?.version||''}" data-request="${crypto.randomUUID()}" data-source="${m?.source_history_id||''}"><h3>${a?'Edit draft charges':m?'Reconcile source billing to draft':'Charges for this visit'}</h3>${sourceNotice(m)}${chargeFormBody}${m?`<label class="review-ack"><input type="checkbox" name="verified" required> I verified the source visit, charges, fee basis, diagnoses and prior payment history. This creates a draft only.</label>${billingField('reason','Reason for this reconciliation','','text',1000,true)}<div class="actions"><button class="primary" type="submit">Create draft charges</button><button type="button" data-cancel-billing>Cancel</button></div>`:''}</form>`);
- const form=$('billing-account-form');if(form){form.dataset.patient=selected;form.dataset.draftKey=billingChargeKey(a?.id,m?.source_history_id,v.visit_id);form.dataset.autosave=m?'off':'on';
+  openBillingEditor(`${compact&&typeof renderVisitDiagnoses==='function'?chargeDiagnosisSectionMarkup():''}<form id="billing-account-form"${sourceLines} data-compact="${compact}" data-id="${a?.id||''}" data-version="${a?.version||''}" data-request="${crypto.randomUUID()}" data-source="${m?.source_history_id||''}" data-mode="${correcting?'correction':'draft'}"><h3>${a?(correcting?'Correct posted charges':'Edit draft charges'):m?'Reconcile source billing to draft':'Charges for this visit'}</h3>${sourceNotice(m)}${chargeFormBody}${m?`<label class="review-ack"><input type="checkbox" name="verified" required> I verified the source visit, charges, fee basis, diagnoses and prior payment history. This creates a draft only.</label>${billingField('reason','Reason for this reconciliation','','text',1000,true)}<div class="actions"><button class="primary" type="submit">Create draft charges</button><button type="button" data-cancel-billing>Cancel</button></div>`:correcting?`<div class="actions"><button type="button" class="primary" data-save-charge-correction>Save changes</button><button type="button" data-cancel-billing>Cancel</button></div>`:''}</form>`);
+  const form=$('billing-account-form');if(form){form.dataset.patient=selected;form.dataset.draftKey=billingChargeKey(a?.id,m?.source_history_id,v.visit_id);form.dataset.autosave=m||correcting?'off':'on';
   // Filled in from the earlier visit, or the blank line the table always starts with: the rows
   // are decided here, once, after this screen was opened and after any retained edits came back.
   chargeProposeAfterRender(form,proposal);
@@ -1196,7 +1239,10 @@ document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||
  if(b.hasAttribute('data-remove-charge')){const form=b.closest('#billing-account-form'),row=b.closest('.billing-charge-row');if(form&&row)removeChargeRowTable(form,row);return;}
  if(b.dataset.undoCharge!==undefined){const form=b.closest('#billing-account-form');undoChargeRemoval(form);return;}
  if(b.dataset.retryChargeSave!==undefined){const form=b.closest('#billing-account-form');if(form){delete form.dataset.chargeConflict;setChargeStatus(form,'saving');scheduleChargeAutosave(form,0);}return;}
- if(b.hasAttribute('data-visit-charges-overview')){billingEditorHost()?.replaceChildren();return;}if(b.hasAttribute('data-cancel-billing')){captureBillingChargeDraft();billingEditorHost()?.replaceChildren();return;}if(b.hasAttribute('data-cancel-payer')){$('payer-editor').replaceChildren();return;}
+  if(b.hasAttribute('data-visit-charges-overview')){billingEditorHost()?.replaceChildren();return;}
+  if(b.hasAttribute('data-edit-charges')){const a=workspace.billing.accounts.find(a=>a.id===billingSelected);if(a)accountEditor(a,null,typeof chartSection!=='undefined'&&chartSection==='visits',{correction:true});return;}
+  if(b.hasAttribute('data-save-charge-correction')){e.preventDefault();run(()=>correctChargeTable(b.closest('#billing-account-form')));return;}
+  if(b.hasAttribute('data-cancel-billing')){captureBillingChargeDraft();billingEditorHost()?.replaceChildren();return;}if(b.hasAttribute('data-cancel-payer')){$('payer-editor').replaceChildren();return;}
  const ownsAction=['data-patient-create-claim','data-patient-collect-copay','data-patient-claims','data-billing-overview','data-billing-next','data-new-payer','data-payer-source','data-payer-edit','data-payer-open','data-billing-patient','data-new-coverage','data-coverage-open','data-edit-coverage','data-new-billing','data-bill-open','data-edit-bill','data-build-patient-invoice','data-patient-invoices','data-print-patient-invoice','data-patient-invoice','data-new-ledger','data-reverse-entry','data-bill-history','data-map-billing'].some(name=>b.hasAttribute(name));
  if(!ownsAction)return;
  run(async()=>{

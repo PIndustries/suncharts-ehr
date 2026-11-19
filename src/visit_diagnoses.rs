@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Encounter-specific coding; separate from the longitudinal problem list.
 use crate::{
-    auth::Actor,
+    auth::{Actor, Role},
     error::{Error, Result},
     model::Visit,
     postgres::audit,
@@ -103,8 +103,14 @@ async fn diagnoses(tx: &mut Transaction<'_, Postgres>, a: &Actor, id: Uuid) -> R
 }
 async fn payload(tx: &mut Transaction<'_, Postgres>, a: &Actor, v: &Visit) -> Result<Value> {
     let items = diagnoses(tx, a, v.id).await?;
-    // Diagnoses follow the note: anyone who may draft the note may record them.
-    let can_edit = v.status == "in_progress" && crate::note_access::note_access(tx, a).await?.draft;
+    // Diagnoses follow the note while the visit is open: anyone who may draft the note
+    // may record them. A signed visit's list is billing data, so the billing roles keep
+    // correcting it while the note itself stays locked.
+    let can_edit = match v.status.as_str() {
+        "in_progress" => crate::note_access::note_access(tx, a).await?.draft,
+        "signed" => may_correct(tx, a).await?,
+        _ => false,
+    };
     let service_date = diagnosis_service_date(tx, a, v).await?;
     let mut history = sqlx::query_scalar::<_, Value>("SELECT jsonb_build_object('id',id,'visit_version',visit_version,'actor_id',actor_id,'actor_label',(SELECT coalesce(nullif(u.display_name,''),u.email) FROM browser_users u WHERE u.tenant_id=visit_diagnosis_revisions.tenant_id AND u.id=visit_diagnosis_revisions.actor_id),'reason',reason,'snapshot',snapshot,'created_at',created_at) FROM visit_diagnosis_revisions WHERE tenant_id=$1 AND visit_id=$2 ORDER BY visit_version DESC LIMIT 101").bind(a.tenant_id).bind(v.id).fetch_all(&mut **tx).await?;
     let truncated = history.len() > 100;
@@ -129,6 +135,66 @@ async fn diagnosis_service_date(
     Ok(sqlx::query_scalar("SELECT (ap.starts_at AT TIME ZONE coalesce(bp.booking_timezone,'UTC'))::date FROM appointments ap LEFT JOIN previsit_booking_profiles bp ON bp.tenant_id=ap.tenant_id WHERE ap.tenant_id=$1 AND ap.id=$2")
         .bind(a.tenant_id).bind(v.appointment_id).fetch_one(&mut **tx).await?)
 }
+/// Whether a support session — a grant rather than a staff account — presented this
+/// request. Checked live, exactly as note drafting checks it.
+async fn support_session(tx: &mut Transaction<'_, Postgres>, a: &Actor) -> Result<bool> {
+    if matches!(a.role, Role::PartnerSupport) {
+        return Ok(true);
+    }
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM partner_support_sessions WHERE tenant_id=$1 AND grant_id=$2)",
+    )
+    .bind(a.tenant_id)
+    .bind(a.sub)
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
+/// Who may correct the diagnosis list of a visit that is already signed. A signed
+/// visit's coding is billing data, so it is open to the people accountable for the
+/// claim: a clinician or the owner — the role that signs the note and files the claim —
+/// and an enabled front desk account, which holds the billing grant without any clinical
+/// one. That is the role the billing endpoints accept for a write (`Actor::scheduling`),
+/// rechecked against the live account so a stale credential never keeps the grant, and
+/// narrowed by any custom access policy that leaves the person the billing edit. The
+/// route middleware applies that policy to the request too; this asks so the read can
+/// answer truthfully as well. A nurse, a medical assistant, a read-only account and a
+/// delegated support session are refused. The note itself is not part of this path and
+/// stays locked.
+async fn may_correct(tx: &mut Transaction<'_, Postgres>, a: &Actor) -> Result<bool> {
+    if a.scheduling().is_err() || support_session(tx, a).await? {
+        return Ok(false);
+    }
+    if !matches!(a.role, Role::Owner) {
+        let live: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM browser_users WHERE tenant_id=$1 AND id=$2 AND role=$3 AND NOT disabled)",
+        )
+        .bind(a.tenant_id)
+        .bind(a.sub)
+        .bind(match a.role {
+            Role::Clinician => "clinician",
+            Role::FrontDesk => "front_desk",
+            _ => return Ok(false),
+        })
+        .fetch_one(&mut **tx)
+        .await?;
+        if !live {
+            return Ok(false);
+        }
+    }
+    crate::access_policies::allows(tx, a, "billing", "edit").await
+}
+
+/// Opens a billing correction for the rest of this transaction. The database only
+/// lets a signed visit's diagnosis list change while it is set, and it is scoped to
+/// this transaction, so no other write in the same session inherits it.
+async fn open_billing_correction(tx: &mut Transaction<'_, Postgres>) -> Result<()> {
+    sqlx::query("SET LOCAL suncharts.billing_correction = 'on'")
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 async fn read(
     ExtractState(s): ExtractState<State>,
     a: Actor,
@@ -152,19 +218,24 @@ async fn save(
     h: HeaderMap,
     Json(mut input): Json<Input>,
 ) -> Result<Json<Value>> {
-    a.rooming()?;
     input.validate()?;
     let expected = crate::expected(&h)?;
     let mut tx = db(&s)?.begin().await?;
     let v = visit(&mut tx, &a, id, true).await?;
-    crate::note_access::require_draft(&mut tx, &a).await?;
+    // The signed note stays locked; a signed visit's diagnosis list is billing data, so a
+    // biller or the signing clinician corrects it here instead of drafting. Every other
+    // check, including the shared version, applies to both paths.
+    let correcting = v.status != "in_progress";
+    if correcting {
+        if !may_correct(&mut tx, &a).await? {
+            return Err(Error::Forbidden);
+        }
+    } else {
+        a.rooming()?;
+        crate::note_access::require_draft(&mut tx, &a).await?;
+    }
     if expected != v.version {
         return Err(Error::Conflict("visit changed; reload before saving"));
-    }
-    if v.status != "in_progress" {
-        return Err(Error::Conflict(
-            "signed encounter diagnoses are immutable; use an attributed amendment",
-        ));
     }
     let old = diagnoses(&mut tx, &a, id).await?;
     let service_date = diagnosis_service_date(&mut tx, &a, &v).await?;
@@ -200,6 +271,9 @@ async fn save(
         items.push(item);
     }
     let items = json!(items);
+    if correcting {
+        open_billing_correction(&mut tx).await?;
+    }
     sqlx::query("INSERT INTO visit_diagnoses(tenant_id,visit_id,diagnoses,updated_by) VALUES($1,$2,$3,$4) ON CONFLICT(tenant_id,visit_id) DO UPDATE SET diagnoses=excluded.diagnoses,updated_by=excluded.updated_by,updated_at=now()")
         .bind(a.tenant_id).bind(id).bind(&items).bind(a.sub).execute(&mut *tx).await?;
     sqlx::query("UPDATE visits SET version=version+1 WHERE tenant_id=$1 AND id=$2")
@@ -210,7 +284,17 @@ async fn save(
     let v = visit(&mut tx, &a, id, false).await?;
     sqlx::query("INSERT INTO visit_diagnosis_revisions(tenant_id,id,visit_id,visit_version,actor_id,reason,snapshot) VALUES($1,$2,$3,$4,$5,$6,$7)")
         .bind(a.tenant_id).bind(Uuid::new_v4()).bind(id).bind(v.version).bind(a.sub).bind(input.reason.trim()).bind(items).execute(&mut *tx).await?;
-    audit(&mut tx, &a, "visit.diagnoses_save", id).await?;
+    audit(
+        &mut tx,
+        &a,
+        if correcting {
+            "visit.diagnoses_corrected"
+        } else {
+            "visit.diagnoses_save"
+        },
+        id,
+    )
+    .await?;
     let data = payload(&mut tx, &a, &v).await?;
     tx.commit().await?;
     Ok(Json(data))

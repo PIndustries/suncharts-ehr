@@ -144,6 +144,7 @@ async fn claim_views(
          'automatic',EXISTS(SELECT 1 FROM claim_revisions v WHERE v.tenant_id=c.tenant_id AND v.claim_id=c.id AND v.version=1 AND v.evidence->>'prepared'='automatic'),\
          'sent_on',(SELECT coalesce(v.evidence->>'event_date',to_char(v.created_at,'YYYY-MM-DD')) FROM claim_revisions v WHERE v.tenant_id=c.tenant_id AND v.claim_id=c.id AND v.snapshot->>'status'='submitted' ORDER BY v.version LIMIT 1),\
          'file_prepared',EXISTS(SELECT 1 FROM edi_submissions s WHERE s.tenant_id=c.tenant_id AND s.claim_id=c.id AND s.status<>'cancelled'),\
+         'snapshot_total_cents',c.snapshot->'account'->'total_cents','snapshot_lines',c.snapshot->'account'->'content'->'lines',\
          'response_to_review',(SELECT r.id FROM era_remittances r WHERE r.tenant_id=c.tenant_id AND r.status IN ('staged','reconciled') AND (r.matches @> jsonb_build_array(jsonb_build_object('claim_id',c.id)) OR EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(r.document->'claims')='array' THEN r.document->'claims' ELSE '[]'::jsonb END) x WHERE x->>'control_number'=c.control_number)) ORDER BY r.created_at LIMIT 1),\
          'head',(SELECT jsonb_build_object('remittance_id',h.remittance_id,'row_index',h.row_index,'patient_responsibility_cents',p.patient_responsibility_cents,'writeoff_cents',p.writeoff_cents,'payment_date',r.document->>'payment_date','trace',r.trace,'row',r.document->'claims'->h.row_index) FROM era_claim_heads h JOIN era_remittances r ON r.tenant_id=h.tenant_id AND r.id=h.remittance_id LEFT JOIN era_postings p ON p.tenant_id=h.tenant_id AND p.remittance_id=h.remittance_id AND p.row_index=h.row_index WHERE h.tenant_id=c.tenant_id AND h.claim_id=c.id)) \
          FROM ehr_claims c WHERE c.tenant_id=$1 AND c.account_id=$2 ORDER BY c.created_at,c.id LIMIT 200",
@@ -756,9 +757,45 @@ pub(crate) async fn summarize(
     }
 
     let restricted = posted && insured && !opt.claims;
+
+    // Whether the account has been corrected after a claim was sent. The claim row itself is
+    // frozen when it is prepared, so a sent claim's snapshot total is the charge total the
+    // insurer saw; if the account now differs, the sent claim no longer says what the visit cost.
+    let latest_sent_total: Option<i64> = live
+        .iter()
+        .filter(|c| {
+            matches!(
+                c.status(),
+                "submitted" | "accepted" | "adjudicated" | "rejected"
+            )
+        })
+        .filter_map(|c| c.row["snapshot_total_cents"].as_i64())
+        .next_back();
+    let latest_sent_lines: Option<Value> = live
+        .iter()
+        .filter(|c| {
+            matches!(
+                c.status(),
+                "submitted" | "accepted" | "adjudicated" | "rejected"
+            )
+        })
+        .map(|c| c.row["snapshot_lines"].clone())
+        .next_back();
+    // A sent claim no longer matches the visit when the total or any charge line changed since.
+    let charges_corrected_after_send = account
+        .as_ref()
+        .map(|b| {
+            latest_sent_total.is_some_and(|sent| b.total_cents != sent)
+                || latest_sent_lines
+                    .as_ref()
+                    .is_some_and(|lines| !lines.is_null() && *lines != b.content["lines"])
+        })
+        .unwrap_or(false);
+
     let (state, waiting_on) = match &account {
         None => ("add_charges", "staff"),
         Some(_) if void => ("add_charges", "staff"),
+        Some(_) if charges_corrected_after_send => ("correct_claim", "staff"),
         Some(_) => state_of(&money, !issues.is_empty(), opt.claims),
     };
 
@@ -785,6 +822,8 @@ pub(crate) async fn summarize(
         let mut row = c.row.clone();
         if let Some(object) = row.as_object_mut() {
             object.remove("head");
+            object.remove("snapshot_total_cents");
+            object.remove("snapshot_lines");
             if !opt.technical {
                 object.remove("control_number");
                 object.remove("version");
@@ -1287,8 +1326,12 @@ pub(crate) async fn prepare_claim(
         }
         // Keep what a person had corrected on the cancelled claim.
         if let Ok(previous) = serde_json::from_value::<ClaimContent>(cancelled.clone()) {
+            // The diagnoses and the line pointers always follow the charges as they are now:
+            // after a charge correction the lines, and so the pointers, may have changed.
             content = ClaimContent {
                 external_control_number: String::new(),
+                diagnosis_codes: content.diagnosis_codes.clone(),
+                line_diagnosis_pointers: content.line_diagnosis_pointers.clone(),
                 ..previous
             };
         }
@@ -1324,6 +1367,42 @@ pub(crate) async fn prepare_claim(
         .collect();
     tx.commit().await?;
     Ok(json!({"outcome":"prepared","claim_id":claim.id,"issues":issues}))
+}
+
+/// After a posted account's charges are corrected, a DRAFT claim built from the old charges no
+/// longer says what the visit cost. Nothing about a draft has been sent, so it is voided with a
+/// revision; the visit then prepares a fresh claim from the corrected charges the usual way. A
+/// claim already released or sent is left untouched: the visit summary asks for a corrected claim.
+pub(crate) async fn void_draft_claims_after_correction(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    account_id: Uuid,
+    reason: &str,
+) -> Result<usize> {
+    let drafts: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM ehr_claims WHERE tenant_id=$1 AND account_id=$2 AND status='draft' ORDER BY created_at,id",
+    )
+    .bind(a.tenant_id)
+    .bind(account_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let voided = drafts.len();
+    for claim in drafts {
+        sqlx::query("UPDATE ehr_claims SET status='void',version=version+1 WHERE tenant_id=$1 AND id=$2 AND status='draft'")
+            .bind(a.tenant_id)
+            .bind(claim)
+            .execute(&mut **tx)
+            .await?;
+        claims::revision(
+            tx,
+            a,
+            claim,
+            reason,
+            json!({"voided_after_charge_correction":true}),
+        )
+        .await?;
+    }
+    Ok(voided)
 }
 
 /// The stored statement for what the patient owes on this visit now. A matching statement

@@ -195,8 +195,10 @@ are not exported as FHIR Procedure or Condition resources yet.
    attestations. These attestations do not edit the longitudinal clinical lists.
 4. Clinical staff record encounter diagnoses and write the note. A clinician or
    the owner signs the encounter. Signing completes the appointment and locks the
-   original note, diagnoses, intake and vitals.
-5. Corrections to signed documentation use attributed amendments.
+   original note, intake and vitals.
+5. Corrections to signed documentation use attributed amendments. Encounter
+   diagnoses are the exception: they are billing data and stay correctable after
+   signing by the roles that may write billing, each correction attributed.
 
 ### Who writes, signs and corrects a note
 
@@ -206,6 +208,7 @@ are not exported as FHIR Procedure or Condition resources yet.
 | Another clinician, or the owner | Yes | Yes | Yes | Yes |
 | Enabled nurse or medical assistant | Yes | Yes | No | No |
 | Enabled front desk staff | Vitals only | No | No | No |
+| Billing roles after signing (owner, clinician, enabled front desk) | — | Encounter diagnoses of a signed visit | No | No |
 | Read-only staff | No | No | No | No |
 | Delegated support session | No | Yes | No | No |
 
@@ -332,10 +335,21 @@ are separate from longitudinal problems and do not automatically change orders
 or billing.
 
 Diagnoses share the encounter version with notes, intake and vitals. Concurrent
-changes require comparison and a fresh version. Signed diagnoses are read-only;
-clinical corrections use attributed note amendments. Structured diagnosis
-corrections after signing remain future work. Staff can review the most recent
-100 revisions; the API reports when earlier history is omitted.
+changes require comparison and a fresh version.
+
+Once the note is signed the diagnoses stay correctable, because they are billing
+data, while the note itself stays locked. The Diagnoses section of a signed visit
+stays editable and autosaves exactly as it does before signing, with one line
+reminding staff that changes after signing are saved as billing corrections. The
+write is allowed for the roles that may write billing — the owner, a clinician and
+an enabled front desk account, narrowed by any custom access policy that leaves the
+person the billing edit — and is refused for a nurse, a medical assistant, read-only
+staff and a delegated support session. Each change writes its own attributed
+revision with the reason given, is audited as `visit.diagnoses_corrected`, and needs
+the current encounter version like any other write. Note corrections still use
+attributed note amendments; a diagnosis correction never touches the note. Staff can
+review the most recent 100 revisions; the API reports when earlier history is
+omitted.
 
 Reusable note templates, richer histories/exams and expanded nursing workflows
 remain on the [roadmap](roadmap.md).

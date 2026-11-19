@@ -3,7 +3,7 @@
 // One billing card per visit. Every amount comes from the server's visit billing summary;
 // this file only words and lays it out. One vocabulary names a visit's billing state here,
 // in the insurance claims list and on the patient billing page.
-const visitBillingStateNames={add_charges:'Add charges',sign_visit:'Sign the visit',post_charges:'Post charges',self_pay_collect:'Self-pay: collect payment',prepare_claim:'Preparing claim',claim_cancelled:'Claim cancelled',fix_claim:'Claim needs details',send_claim:'Send claim',waiting_insurer:'Waiting on insurer',post_response:'Insurer answered: review payment',denied:'Denied: fix and resend',review_response:'Review insurer answer',patient_owes:'Patient owes',review_balance:'Balance not on the statement',patient_credit:'Patient credit',paid_in_full:'Paid in full',insurance_outside:'Insurance billed outside SunCharts',claim_restricted:'Charges are final'};
+const visitBillingStateNames={add_charges:'Add charges',sign_visit:'Sign the visit',post_charges:'Post charges',self_pay_collect:'Self-pay: collect payment',prepare_claim:'Preparing claim',claim_cancelled:'Claim cancelled',fix_claim:'Claim needs details',send_claim:'Send claim',correct_claim:'Charges changed after the claim was sent',waiting_insurer:'Waiting on insurer',post_response:'Insurer answered: review payment',denied:'Denied: fix and resend',review_response:'Review insurer answer',patient_owes:'Patient owes',review_balance:'Balance not on the statement',patient_credit:'Patient credit',paid_in_full:'Paid in full',insurance_outside:'Insurance billed outside SunCharts',claim_restricted:'Charges are final'};
 function visitBillingStateName(state){return visitBillingStateNames[state]||'Billing status unavailable';}
 // A claim row carries only its own status; name it with the same words the visit card uses.
 function visitBillingClaimState(claim){
@@ -39,8 +39,9 @@ function visitBillingStatus(s,ctx={}){
   case 'prepare_claim':return ctx.delegated?{headline:'Claim not prepared yet',detail:`A member of the practice prepares the claim to ${insurer} by opening this visit. A support session does not prepare claims.`,action:''}:ctx.prepareError?{headline:`The claim to ${insurer} could not be prepared`,detail:ctx.prepareError,action:create?button('Try again','data-visit-claim-prepare'):''}:create?{headline:`Preparing the claim to ${insurer}`,detail:'The claim is filled in from this visit. Nothing is sent until you send it.',action:ctx.preparing?'':button('Prepare claim','data-visit-claim-prepare')}:{headline:'Charges are final',detail:`Billing staff prepare the claim to ${insurer}.`,action:''};
    case 'claim_cancelled':return {headline:`The claim to ${insurer} was cancelled`,detail:'Nothing is with the insurer.',action:create?button('Prepare a new claim','data-visit-claim-prepare="again"'):''};
    case 'fix_claim':return {headline:`Claim to ${insurer} needs details`,detail:'Nothing has been sent yet.',issues:s.claim?.issues||[],action:reviewButton(s,ctx)||(write?button('Fix claim details',`data-visit-claim-fix="${esc(claim)}"`):'')};
-   case 'send_claim':return {headline:`Claim ready to send to ${insurer}`,detail:'Nothing has been sent yet.',action:reviewButton(s,ctx)||(write?button('Review and send claim',`data-visit-claim-send="${esc(claim)}"`):'')};
-  case 'waiting_insurer':return {headline:`Waiting on ${insurer}`,detail:`${s.insurance.sent_on?`Claim sent ${visitBillingDate(s.insurance.sent_on)}. `:''}Nothing to do until they answer.`,action:button('Check claim status',`data-revenue-claim="${esc(claim)}"`)};
+    case 'send_claim':return {headline:`Claim ready to send to ${insurer}`,detail:'Nothing has been sent yet.',action:reviewButton(s,ctx)||(write?button('Review and send claim',`data-visit-claim-send="${esc(claim)}"`):'')};
+    case 'correct_claim':return {headline:'Charges changed after the claim was sent',detail:`Send a corrected claim to ${insurer}.`,action:button('Open claim',`data-revenue-claim="${esc(claim)}"`)};
+   case 'waiting_insurer':return {headline:`Waiting on ${insurer}`,detail:`${s.insurance.sent_on?`Claim sent ${visitBillingDate(s.insurance.sent_on)}. `:''}Nothing to do until they answer.`,action:button('Check claim status',`data-revenue-claim="${esc(claim)}"`)};
    case 'post_response':return {headline:`${insurer} answered`,detail:'Review their payment and post it to this visit.',action:button('Review insurer payment',`data-revenue-remittance="${esc(s.claim?.response_to_review||'')}"`)};
    case 'denied':return {headline:`Denied by ${insurer}`,detail:'Fix the claim and send it again.',action:button('Fix and resend claim',`data-revenue-claim="${esc(claim)}"`)};
    case 'review_response':return {headline:`Insurance paid ${paid}`,detail:`${money(s.insurance.unassigned_cents)} is not paid, written off or assigned to the patient yet. Review the insurer’s answer.`,action:button('Review insurer answer',`data-revenue-claim="${esc(claim)}"`)};
@@ -63,15 +64,20 @@ function visitBillingChargeStep(s,ctx={}){
  switch(s.state){
    case 'sign_visit':return {text:'Sign the visit note to send these charges.',label:'Open the visit note',attribute:'data-revenue-documentation'};
    case 'post_charges':return {text:write?'Check the charges, then post them.':'Check the charges; someone who can change them posts them.',label:write?'Post charges':'Review charges',attribute:`data-visit-post-charges="${esc(s.account?.id||'')}"`};
-   case 'send_claim':case 'fix_claim':{
-    // The card's own button is the one that opens the review panel beside the table; where the
-    // card answers with its own send instead, the line under the table sends the same way.
-    const status=visitBillingStatus(s,ctx),card=typeof reviewButton==='function'?reviewButton(s,ctx):'';
-    if(card)return {text:status.detail,label:'Review and send claim',attribute:'data-visit-review-open="account"',review:true};
-    if(!write||!s.claim?.id)return null;
-    return {text:status.detail,label:'Review and send claim',attribute:`data-visit-claim-send="${esc(s.claim.id)}"`};
-   }
-   default:return null;
+    case 'send_claim':case 'fix_claim':{
+     // The card's own button is the one that opens the review panel beside the table; where the
+     // card answers with its own send instead, the line under the table sends the same way.
+     const status=visitBillingStatus(s,ctx),card=typeof reviewButton==='function'?reviewButton(s,ctx):'';
+     if(card)return {text:status.detail,label:'Review and send claim',attribute:'data-visit-review-open="account"',review:true};
+     if(!write||!s.claim?.id)return null;
+     return {text:status.detail,label:'Review and send claim',attribute:`data-visit-claim-send="${esc(s.claim.id)}"`};
+    }
+    case 'correct_claim':{
+     const status=visitBillingStatus(s,ctx);
+     if(!s.claim?.id)return null;
+     return {text:status.detail,label:'Open claim',attribute:`data-revenue-claim="${esc(s.claim.id)}"`};
+    }
+    default:return null;
  }
 }
 // The one line under the charge table: the same next step the card above gives, or nothing at all.
