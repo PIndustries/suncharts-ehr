@@ -413,7 +413,7 @@ const pressCardCharges=async()=>{
  assert.equal(second.querySelector('[name="ndc_code"]').value,'00023114501','the drug\u2019s NDC code carries over');
  assert.equal(second.querySelector('[name="ndc_quantity"]').value,'50','the amount given carries over for checking');
  assert.equal(second.querySelector('[name="ndc_unit"]').value,'UN','the drug unit carries over');
- assert.match(second.outerHTML,/<div class="charge-drug" open>/,'a drug line is open so its detail is not hidden');
+ assert.match(second.outerHTML,/<div class="charge-drug">/,'a drug line is open so its detail is not hidden');
  // No price list entry: the amount stays empty and the row says what it needs, in plain words.
  assert.equal(amountOf(second),'','a code the price list does not cover is left with no amount');
  assert.match(noteOf(second),/Enter the amount/,'and the row says what it still needs');

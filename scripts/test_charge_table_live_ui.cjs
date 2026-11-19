@@ -317,7 +317,7 @@ const advance=async()=>{
  // listener acts on, and what a save's redraw compares, are both built from the row's own
  // fields — so rendering this row through that same function is the check.
  const drugRowMarkup=vm.runInContext('chargeRow(chargeRowValue(document.getElementById("billing-account-form").querySelectorAll(".billing-charge-row")[1]),true,"line-2")',ctx);
- assert.match(drugRowMarkup,/<div class="charge-drug" open>/,'a row whose code names an injected drug renders with its detail open');
+ assert.match(drugRowMarkup,/<div class="charge-drug">/,'a row whose code names an injected drug renders with its detail open');
  await advance();
  const put=sent.find(call=>call.method==='PUT');
  assert.ok(put,'an edit after the account exists updates it');

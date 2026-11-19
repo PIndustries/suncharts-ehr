@@ -213,6 +213,49 @@ async fn approval_exact_scope_override_and_retirement_preserve_charge_evidence()
     assert_eq!(snapshot["expected_line_amount_cents"], 25002);
     assert_eq!(snapshot["actual_line_amount_cents"], 24000);
     assert!(snapshot.get("forged").is_none());
+    let codes = |q: &str| format!("/api/v1/patients/{p}/procedure-codes?q={q}");
+    let (status, found) = call(&f.app, &f.cookie, "GET", &codes("992"), Value::Null, None).await;
+    assert_eq!(status, StatusCode::OK, "{found}");
+    assert_eq!(
+        found["items"][0],
+        json!({"code":"99214","system":"CPT","display":"Synthetic service"})
+    );
+    let (_, by_words) = call(
+        &f.app,
+        &f.cookie,
+        "GET",
+        &codes("synthetic%20serv"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(by_words["items"][0]["code"], "99214");
+    let (_, wild) = call(
+        &f.app,
+        &f.cookie,
+        "GET",
+        &codes("%25%25"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(
+        wild["items"],
+        json!([]),
+        "LIKE wildcards are matched literally"
+    );
+    let (_, short) = call(&f.app, &f.cookie, "GET", &codes("9"), Value::Null, None).await;
+    assert_eq!(short["items"], json!([]));
+    let (status, _) = call(
+        &f.app,
+        &f.cookie,
+        "GET",
+        &format!("/api/v1/patients/{}/procedure-codes?q=992", Uuid::new_v4()),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
     let mut second = body.clone();
     second["request_id"] = json!(Uuid::new_v4());
     let (_, other) = call(

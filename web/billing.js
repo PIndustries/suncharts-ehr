@@ -429,7 +429,7 @@ function chargeMiniField(name,label,value='',max=200,required=false){return `<la
 // field travels on the line unseen, exactly as a chosen code's does.
 function chargeProcedureFallback(l){return chargeMiniField('code','Procedure',l.code||'',100,true);}
 function chargeCodeCell(l){
- const extra=chargeIsDrugCode(l.code)?' open':'';
+ const extra=chargeIsDrugCode(l.code)||l.ndc_code||l.ndc_quantity||l.ndc_unit?'':' hidden';
  return `${typeof terminologyProcedureFields==='function'?terminologyProcedureFields(l):chargeProcedureFallback(l)}<div class="charge-drug"${extra}><p class="charge-drug-title">Drug given</p><div class="charge-drug-grid"><label>NDC code<input name="ndc_code" type="text" maxlength="13" value="${esc(l.ndc_code||'')}" placeholder="11 digits"></label><label>Quantity<input name="ndc_quantity" type="text" maxlength="7" value="${esc(l.ndc_quantity||'')}" placeholder="Amount given"></label><label>Unit<select name="ndc_unit">${ndcUnits.map(([v,name])=>`<option value="${v}" ${v===(l.ndc_unit||'')?'selected':''}>${v?`${v} — ${name}`:''}</option>`).join('')}</select></label></div><p class="muted">For an injected drug fill all three; leave them blank for any other service.</p></div>`;
 }
 // What the code list the line came from, kept with the procedure box that chose it. The box the
@@ -1283,11 +1283,12 @@ document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||
  if(f.id==='billing-account-action'){const a=workspace.billing.accounts.find(a=>a.id===(f.dataset.account||billingSelected));if(!data.action)throw new Error('Choose the action to record.');data.local_only=data.local_only==='true';await api(`${billingBase()}/${a.id}/actions`,'POST',data,a.version);}
  if(f.id==='billing-ledger-form'){const a=workspace.billing.accounts.find(a=>a.id===billingSelected);const body=f.dataset.reverses?{request_id:f.dataset.request,kind:'reversal',amount_cents:null,reverses_id:f.dataset.reverses,party:'other',method:'none',reference:'',occurred_on:data.occurred_on,reason:data.reason}:{request_id:f.dataset.request,kind:data.kind,amount_cents:cents(data.amount),reverses_id:null,party:data.party,method:data.method,reference:data.reference,occurred_on:data.occurred_on,reason:data.reason};await api(`${billingBase()}/${a.id}/entries`,'POST',body,a.version);}
  await selectPatient(selected,activeVisit?.id);showChartSection(returnSection==='insurance'?'insurance':returnSection==='visits'?'visits':'billing');if(returnSection==='visits'&&typeof showEncounterSection==='function')showEncounterSection('charges');notice(f.id==='billing-account-form'?'Charges saved.':f.id==='billing-account-action'?(data.action==='void'?'Charges removed.':'Charges posted.'):f.id==='billing-ledger-form'?'Payment or adjustment saved.':f.id==='coverage-payer-form'?'Insurer saved.':'Insurance saved.');});});
-// A code that names an injected drug opens its NDC fields inside the row as it is typed.
+// A code that names an injected drug shows its NDC fields inside the row as it is typed; any other code hides them unless they already hold something.
 document.addEventListener('input',event=>{
- if(event.target?.name!=='code'||!event.target.closest?.('#billing-charge-lines'))return;
+ if(!['code','procedure'].includes(event.target?.name)||!event.target.closest?.('#billing-charge-lines'))return;
  const row=event.target.closest('.billing-charge-row');if(!row)return;
- const drug=row.querySelector('.charge-drug');if(drug&&chargeIsDrugCode(event.target.value))drug.open=true;
+ const typed=String(row.querySelector('[name="procedure"]')?.value||'').split(':')[0],code=event.target.name==='procedure'?typed:row.querySelector('[name="code"]')?.value||typed;
+ const drug=row.querySelector('.charge-drug');if(drug){const kept=[...drug.querySelectorAll('input,select')].some(field=>field.value);drug.hidden=!chargeIsDrugCode(code)&&!kept;}
 });
 document.addEventListener('change',e=>{const select=e.target.closest('#billing-filter select[name="status"]');if(!select)return;run(()=>showBillingQueue(select.value,undefined,true));});
 
