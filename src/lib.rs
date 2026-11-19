@@ -64,6 +64,7 @@ pub mod oauth;
 pub mod office;
 pub mod partner_scheduling;
 pub mod partner_support;
+pub mod partners;
 pub mod patient_banner;
 pub mod patient_identity;
 pub mod patient_lifecycle;
@@ -430,6 +431,7 @@ pub fn app(state: State) -> Router {
         .merge(practice_codes::router())
         .merge(previsit::router())
         .merge(partner_scheduling::router())
+        .merge(partners::router())
         .merge(specialty_workspace::router())
         .merge(rooming::routes())
         .merge(visit_diagnoses::routes())
@@ -795,6 +797,16 @@ pub fn app(state: State) -> Router {
                     "integrations.js",
                     "application/javascript",
                     include_str!("../web/integrations.js"),
+                )
+            }),
+        )
+        .route(
+            "/partners.js",
+            get(|| async {
+                web_asset(
+                    "partners.js",
+                    "application/javascript",
+                    include_str!("../web/partners.js"),
                 )
             }),
         )

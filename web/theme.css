@@ -239,3 +239,5 @@
  .theme-control{display:none!important}
  :root[data-theme=dark]{color-scheme:light;--ink:#233541;--muted:#566b79;--line:#d8e1e6;--blue:#126d77;--paper:#fff;--surface:#fff;--surface-soft:#f5f8fa;--surface-raised:#edf3f6;--accent:#e6f2f2}
 }
+
+:root[data-theme=dark] :is(.partners-step,.partners-current,.partner-confirm){background:var(--surface-soft);color:var(--ink);border-color:var(--line)}
