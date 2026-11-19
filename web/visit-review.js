@@ -195,8 +195,8 @@ function visitReviewFormMarkup(s){
   if(!claim)return '<h4>The claim form</h4><p class="muted">The claim form appears here as soon as the claim is filled in from this visit. Nothing is sent before you choose Send to Claim.MD.</p>';
   const content=claim.content||{},account=claim.snapshot?.account||{},patient=claim.snapshot?.patient||{},coverage=account.coverage_snapshot?.coverage?.content||{},payer=account.coverage_snapshot?.payer?.content||{};
   const field=(number,label,value)=>`<div class="visit-billing-review-field"><span>${number} · ${esc(label)}</span><b>${esc(visitReviewFormValue(value))||'—'}</b></div>`;
-  const line=(line,pointers)=>`<tr><td>${esc(visitReviewFormValue(`${line.code_system||''} ${line.code||''}`.trim(),13))}</td><td>${esc(visitReviewFormValue(line.description,28))}</td><td class="money-cell">${Number(line.units||0)||0}</td><td class="money-cell">${money(line.amount_cents||0)}</td><td>${(pointers||[]).map(n=>esc(visitReviewFormValue((content.diagnosis_codes||[])[n-1]||'',8))).filter(Boolean).join(' ')||'—'}</td></tr>`;
-  const lines=(account.content?.lines||[]).map((line,index)=>line(line,(content.line_diagnosis_pointers||[])[index]||[])).join('');
+  const reviewLine=(charge,pointers)=>`<tr><td>${esc(visitReviewFormValue(`${charge.code_system||''} ${charge.code||''}`.trim(),13))}</td><td>${esc(visitReviewFormValue(charge.description,28))}</td><td class="money-cell">${Number(charge.units||0)||0}</td><td class="money-cell">${money(charge.amount_cents||0)}</td><td>${(pointers||[]).map(n=>esc(visitReviewFormValue((content.diagnosis_codes||[])[n-1]||'',8))).filter(Boolean).join(' ')||'—'}</td></tr>`;
+  const lines=(account.content?.lines||[]).map((charge,index)=>reviewLine(charge,(content.line_diagnosis_pointers||[])[index]||[])).join('');
   const linesTable=lines?`<div class="billing-table-wrap"><table class="billing-table visit-billing-review-lines"><thead><tr><th>Code</th><th>Description</th><th class="money-cell">Units</th><th class="money-cell">Charge</th><th>Diagnoses</th></tr></thead><tbody>${lines}</tbody></table></div>`:'<p class="muted">No charge lines on this claim yet.</p>';
   return `<h4>The claim form</h4><p class="muted">A CMS-1500 view of exactly what this claim carries. Looking at it sends nothing.</p>${visitReviewLink('Open the claim form (CMS-1500)',`${claimsApiBase}/${claim.id}/cms1500`)}<div class="visit-billing-review-fields">${field('1','Insurer',payer.name)}${field('1a','Member ID',coverage.member_id)}${field('2','Patient',`${patient.family_name||''}, ${patient.given_name||''}`.replace(/^,\s*|\s*,$/g,''))}${field('4','Policy holder',`${(coverage.relationship||'').toLowerCase()==='self'?'Same as the patient':(patient.family_name||'')+' '+(patient.given_name||'')}`)}${field('5','Patient address',content.patient_address)}${field('7','Policy holder address',content.subscriber_address)}${field('8','Billing provider',content.billing_provider_name)}${field('9','Billing NPI',content.billing_npi)}${field('10','Rendering NPI',content.rendering_npi)}${field('16','Tax ID',content.tax_id)}${field('20','Service date',account.content?.service_date)}${field('22','Place of service',content.place_of_service)}${field('21','Diagnoses',(content.diagnosis_codes||[]).join(', '))}${field('24J','Provider specialty',content.billing_taxonomy)}</div>${linesTable}`}
 function visitReviewProgressMarkup(progress){
@@ -246,6 +246,9 @@ function visitReviewOpen(ctx={}){
   encounterRevenueState.review=null;
   const summary=encounterRevenueState.data?.summary;
   host.hidden=false;host.innerHTML=summary?visitReviewPanelMarkup(summary,visitReviewContext(ctx)):'<p class="muted">Loading the review…</p>';
+  // The line under the charge table does the same job as the card's button, so while the panel is
+  // open it says so too; closing the panel hands it back to the visit's own next step.
+  if(typeof chargeTableNextPaint==='function')chargeTableNextPaint(visitReviewButton('Review and send claim','data-visit-review-open="account"'));
   const heading=host.querySelector('h2');if(heading){heading.tabIndex=-1;heading.focus({preventScroll:true});}
   host.scrollIntoView?.({block:'start'});
 }
@@ -258,6 +261,7 @@ function visitReviewContext(extra={}){
 function visitReviewClose(){
   const host=visitReviewHost();if(!host)return;
   host.hidden=true;host.replaceChildren();
+  if(typeof chargeTableNextRefresh==='function')chargeTableNextRefresh();
   if(typeof captureClaimDraft==='function')captureClaimDraft();
   const claimHost=$('encounter-claims');
   if(claimHost&&claimHost.hidden===false&&typeof claimViewContext!=='undefined'&&claimViewContext?.kind==='encounter'){claimHost.replaceChildren();claimHost.hidden=true;claimViewContext=null;}
@@ -426,6 +430,9 @@ async function visitReviewRun(claimId,options={}){
 function visitReviewOpenChargeTable(){
   if(typeof openEncounterCharges==='function')openEncounterCharges();
   const details=$('encounter-charge-details');if(details)details.open=true;
+  // Charges are worked on in the live table, and that is where the footer under it says what the
+  // next step is. The read-only copy under the Charges heading has nothing to answer for.
+  if($('billing-charge-lines'))return;
   $('encounter-billing-detail')?.scrollIntoView?.({behavior:'smooth',block:'start'});
 }
 function visitReviewFixLine(index){
