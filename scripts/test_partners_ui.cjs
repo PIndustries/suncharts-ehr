@@ -36,6 +36,8 @@ assert.match(listed,/data-partner|Enroll/);
 assert.match(source,/const PARTNER_AGREEMENT_VERSION='partner-enrollment-v1';/);
 assert.match(source,/\/enroll`,'POST',\{request_id:request,agreement_version:PARTNER_AGREEMENT_VERSION,accepted_by:partnerAcceptedBy\(\)\}\)/);
 assert.match(fs.readFileSync('src/partners.rs','utf8'),/pub const AGREEMENT_VERSION: &str = "partner-enrollment-v1";/,'screen and server name the same agreement');
+// Clicking a confirmation's own submit button must leave its form in place for the browser to submit.
+assert.match(source,/function partnerConfirmHost\(\)\{return \$\('partner-confirm'\);\}/,'finding the confirmation area never empties it');
 // The card header has no icon column, so the name and summary keep the width.
 assert.match(fs.readFileSync('web/style.css','utf8'),/\.partner-card>header\{grid-template-columns:minmax\(0,1fr\) auto\}/);
 // Theme: the screen uses theme tokens, never a fixed colour.
