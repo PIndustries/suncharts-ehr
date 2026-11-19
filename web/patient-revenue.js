@@ -151,6 +151,9 @@ function paintEncounterRevenue(state,current){
   }
 
  const summary=state.data?.summary,context=visitBillingContext();if(!summary)return;
+ // The line under the charge table is the same next step as the card's, so a refresh of the
+ // card moves it too; the table itself and anything typed in it are left exactly as they are.
+ if(typeof chargeTableNextRefresh==='function')chargeTableNextRefresh();
  const timeline=$('visit-billing-timeline');if(timeline)timeline.innerHTML=visitBillingTimeline(summary,context,state.filter||'all');
  const technical=$('visit-billing-technical');if(technical)technical.innerHTML=visitBillingTechnical(summary);
  const details=$('visit-billing-details');if(details)details.hidden=!summary.technical;

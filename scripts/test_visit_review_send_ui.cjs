@@ -126,6 +126,14 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
  assert.match(panel,/Synthetic Medicare PPO/,'who is billed is said');assert.match(panel,/\$10\.00/,'the expected copay is said');
  assert.match(panel,/The claim form/);assert.match(panel,/cms1500/,'the CMS-1500 view is offered, and opening it sends nothing');
  assert.match(panel,/data-visit-review-send/,'the one send button is there');
+ // A claim carrying its own copy of the visit's charge lines has each of them drawn on the form.
+ // The line mapper shadows its own name inside the map callback on the main branch, so a claim with
+ // lines crashes instead of rendering; this is the case that catches it.
+ openPanel(reviewSummary({claim:{id:claim.id,status:'ready',version:claim.version,content:claim.content,snapshot:claim.snapshot}}));
+ panel=panelHost().innerHTML;
+ assert.match(panel,/visit-billing-review-lines/,'the claim\'s charge lines are drawn on the form');
+ assert.match(panel,/99213/,'and the line\'s code is on it');
+ assert.match(panel,/M62\.81/,'with the diagnosis pointer resolved to its code');
  // A must-fix closes the send button until it is put right.
  openPanel(reviewSummary({claim:{id:'claim',status:'draft',version:2,issues:[{code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'}]}}));
  panel=panelHost().innerHTML;

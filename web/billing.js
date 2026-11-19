@@ -306,14 +306,20 @@ function chargeDrugMarkup(l){const code=String(l.ndc_code||'').trim();return cod
 function chargeIsDrugCode(code){return /^J\d/i.test(String(code||'').trim().toUpperCase());}
 function chargeCodeSystem(l){const code=String(l.code||'').trim().toUpperCase();return l.code_system||(code.startsWith('J')?'HCPCS':'CPT');}
 function chargeMiniField(name,label,value='',max=200,required=false){return `<label>${label}<input name="${name}" type="text" value="${esc(value)}" ${max?`maxlength="${max}"`:''} ${required?'required':''}></label>`;}
+// One box per line carries the procedure: the code and the description the line submits ride on
+// the row beside it, so the code cell holds the box and the description column only has what the
+// code list was chosen from. With no procedure screen loaded, one plain box goes in the code cell
+// and its matching description field stays in the description column.
+function chargeProcedureFallback(l){return `${chargeMiniField('code','Procedure',l.code||'',100,true)}${chargeMiniField('description','Description',l.description||'',10000,true)}`;}
 function chargeCodeCell(l){
  const extra=chargeIsDrugCode(l.code)?' open':'';
- return `${typeof terminologyProcedureFields==='function'?terminologyProcedureFields(l):chargeMiniField('code','CPT / HCPCS procedure code',l.code||'',100,true)}<div class="charge-drug"${extra}><p class="charge-drug-title">Drug given</p><div class="charge-drug-grid"><label>NDC code<input name="ndc_code" type="text" maxlength="13" value="${esc(l.ndc_code||'')}" placeholder="11 digits"></label><label>Quantity<input name="ndc_quantity" type="text" maxlength="7" value="${esc(l.ndc_quantity||'')}" placeholder="Amount given"></label><label>Unit<select name="ndc_unit">${ndcUnits.map(([v,name])=>`<option value="${v}" ${v===(l.ndc_unit||'')?'selected':''}>${v?`${v} — ${name}`:''}</option>`).join('')}</select></label></div><p class="muted">For an injected drug fill all three; leave them blank for any other service.</p></div>`;
+ return `${typeof terminologyProcedureFields==='function'?terminologyProcedureFields(l):chargeProcedureFallback(l)}<div class="charge-drug"${extra}><p class="charge-drug-title">Drug given</p><div class="charge-drug-grid"><label>NDC code<input name="ndc_code" type="text" maxlength="13" value="${esc(l.ndc_code||'')}" placeholder="11 digits"></label><label>Quantity<input name="ndc_quantity" type="text" maxlength="7" value="${esc(l.ndc_quantity||'')}" placeholder="Amount given"></label><label>Unit<select name="ndc_unit">${ndcUnits.map(([v,name])=>`<option value="${v}" ${v===(l.ndc_unit||'')?'selected':''}>${v?`${v} — ${name}`:''}</option>`).join('')}</select></label></div><p class="muted">For an injected drug fill all three; leave them blank for any other service.</p></div>`;
 }
 function chargeDescriptionCell(l){
  const extra=typeof terminologyLookupButton==='function'?terminologyLookupButton('procedure'):'';
  const snapshot=typeof terminologySnapshotMarkup==='function'?terminologySnapshotMarkup(l.catalog_snapshot):'';
- return `${typeof terminologyProcedureFields==='function'?terminologyProcedureFields(l):chargeMiniField('description','Description',l.description||'',10000)}<div class="charge-description-extra">${extra}${snapshot}</div>`;
+ const shown=typeof terminologyProcedureFields==='function'?'':chargeMiniField('description','Description',l.description||'',10000,true);
+ return `${shown}<div class="charge-description-extra">${extra}${snapshot}</div>`;
 }
 function chargeDiagnosisCell(l){return chargeMiniField('diagnoses','Diagnoses for this service',(l.diagnosis_codes||[]).join(', '),1200);}
 // The amount an edit leaves behind, in cents, or nothing at all while it is not yet an amount.
@@ -352,6 +358,74 @@ function chargeTableAllowed(a){
  if(!a&&(typeof activeVisit==='undefined'||!activeVisit))return false;
  if(a){if(a.status!=='draft'||a.source_history_id||a.diagnosis_snapshot||!a.content.visit_id)return false;}
  return billingCan();
+}
+// The visit's billing state, read from the one place that holds it: the visit billing step's own
+// summary. A chart with no billing step loaded, or a table opened for anything but the visit in
+// hand, has no state to speak of and is given no next step.
+function chargeTableVisitSummary(visitId){
+ if(!visitId||typeof encounterRevenueState==='undefined'||typeof selected==='undefined')return null;
+ if(encounterRevenueState.patient!==selected||encounterRevenueState.visit!==visitId)return null;
+ return encounterRevenueState.data?.summary||null;
+}
+// The one line under the charge table, asking the visit billing card's own code what the next
+// step is (see visitBillingChargeStepMarkup in web/visit-billing.js, which loads first).
+function chargeTableNextMarkup(visitId,remember){
+ if(typeof visitBillingChargeStepMarkup!=='function')return '';
+ const summary=chargeTableVisitSummary(visitId);if(!summary)return '';
+ const markup=visitBillingChargeStepMarkup(summary,typeof visitBillingStateContext==='function'?visitBillingStateContext():{});
+ // Where the line is being written into the table's own markup, the place it goes is not on screen
+ // yet, so the answer is remembered by name and matched when the slot is found.
+ if(remember&&markup)remember.set(`${visitId}`,markup);
+ return markup;
+}
+// What the line under the table holds right now, kept beside the table itself rather than in the
+// billing step's data: the markup last written there, and whose step it is — the card's, or a step
+// another screen painted. A refresh needs this because a browser's innerHTML never hands back the
+// markup it was given, so the two can never be compared; and a table whose line nobody has drawn
+// yet is answered with nothing, which is what puts the line in the first time. A slot written
+// straight into the table's markup is remembered here too, by the same name, so it is not put in a
+// second time on the next refresh.
+const chargeTableNextLines=new WeakMap();
+const chargeTableNextWritten=new Map();
+function chargeTableNextLine(slot,markup){
+ if(markup===undefined)return chargeTableNextLines.get(slot)??chargeTableNextWritten.get(slot);
+ chargeTableNextLines.set(slot,markup);
+}
+// The next step under the table follows the card: put the line in, change it, or take it away
+// when the visit has no charge step left to offer. The table and anything typed into it are not
+// touched, so the line never disturbs the person working in the charges. The card's answer is
+// worked out from the visit the table is on, not from a summary handed over, so the footer and the
+// card can never be given two different versions of the visit.
+function chargeTableNextRefresh(){
+ // The card's answer is asked for first: it works out the next step and remembers it, and only
+ // then does it look for the place the line goes, so a table that has nowhere to show it cannot be
+ // left believing its line says something it does not.
+ const form=$('billing-account-form');if(!form)return;
+ const visitId=form.elements.visit_id?.value;
+ const markup=chargeTableNextMarkup(visitId);
+ const slot=form.querySelector('[data-charge-next]');if(!slot)return;
+ // The line carries one step at a time, and what was last written into the slot says who wrote it.
+ // A step another screen painted — the claim review panel's send button — is the step being asked
+ // there and then, so a card refresh underneath it neither overwrites it nor mistakes it for the
+ // card's own answer; that screen clears it when it closes, and the card's step returns.
+ const shown=chargeTableNextLine(slot)??chargeTableNextWritten.get(visitId);
+ if(shown?.painted)return;
+ if(shown&&shown.markup===markup)return;
+ chargeTableNextLine(slot,{markup});
+ if(markup)slot.innerHTML=markup;else slot.replaceChildren();
+}
+// One step taken by another screen — the claim review panel opening, say — leaves its own button
+// in that one line, so the person working there is not asked to press something twice.
+function chargeTableNextPaint(button,label='Nothing has been sent yet.'){
+ const form=$('billing-account-form');if(!button||!form)return;
+ const painted=`<p class="charge-table-next"><span>${esc(label)}</span> ${button}</p>`;
+ const slot=form.querySelector('[data-charge-next]');if(!slot)return;
+ slot.innerHTML=painted;
+ // Whatever the card had to say is put aside while this screen's step holds the line, and the
+ // remembered answer is cleared so the very next refresh is written again rather than skipped as
+ // unchanged — otherwise closing this screen finds the slot empty and its step never returns.
+ chargeTableNextLine(slot,{markup:painted,painted:true});
+ chargeTableNextWritten.delete(slot);
 }
 function chargeLinesMarkup(lines,compact){return `<div class="billing-table-wrap charge-table-wrap"><table class="billing-table charge-table" id="billing-charge-lines"><caption class="sr-only">Charges on this visit</caption><thead><tr><th>Code</th><th>Description</th><th>Modifiers</th><th>Units</th><th>Diagnoses</th><th>Amount</th><th class="money-cell">Line total</th><th></th></tr></thead><tbody>${lines.map((l,index)=>chargeRow(l,compact,chargeLineKey(l,index))).join('')}</tbody></table></div>`;}
 // Each line keeps one identity for as long as it is on screen, so what it remembers — the amount
@@ -905,7 +979,7 @@ function accountEditor(a,m,encounterContext=false){
  // A charge editor opened for a visit is a live table: the lines, then one box with the visit,
  // insurance and fee details. Nothing a line needs sits behind a closed box, and every edit
  // saves itself. Reconciling a record from the previous system keeps its one review step.
- const compact=!!v.visit_id,sourceLines=m?' data-charge-lines-source=""':'',chargeVisitBlock=`<div class="form-grid"><label>Visit<select name="visit_id" ${sourceBacked?'':'required'}><option value="">${sourceBacked?'Source kept — no visit found for it':'Choose a patient visit'}</option>${workspace.visits.map(vis=>`<option value="${vis.id}" ${v.visit_id===vis.id?'selected':''}>${esc((workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.title||'Visit')+' · '+date(workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.starts_at||vis.created_at))} · ${esc(human(vis.status))}</option>`).join('')}</select></label>${billingField('service_date','Service date',v.service_date,'date',0,true)}<label>Billing coverage<select name="coverage_id"><option value="">Self-pay / no selected coverage</option>${workspace.billing.coverages.map(c=>`<option value="${c.id}" ${v.coverage_id===c.id?'selected':''}>${esc(human(c.content.priority))} · ${esc(payerName(c.content.payer_id))} · ${esc(c.content.member_id)}</option>`).join('')}</select></label><label>Currency<input value="USD" readonly></label></div>`,chargeNotesBlock=`<label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>`,chargeLinesBlock=`${chargeLinesMarkup(v.lines,compact)}<div class="charge-table-foot"><button type="button" data-add-charge>${compact?'+ Add another charge':'+ Charge line'}</button><p class="charge-table-status" data-charge-status role="status" aria-live="polite"></p></div>`,chargeOptionsBlock=`${chargeVisitBlock}<div data-charge-coverage-order>${billingCoverageOrderMarkup(v.service_date,v.coverage_id,compact)}</div>${typeof feeContextMarkup==='function'?feeContextMarkup(v.fee_context):''}${chargeNotesBlock}`,chargeTotalsBlock=`<div class="charge-table-totals"><span>Total charges <b data-charge-total>${money(0)}</b></span><span data-charge-copay>Copay</span><span class="charge-table-hint" data-charge-pays></span></div>`,
+ const compact=!!v.visit_id,sourceLines=m?' data-charge-lines-source=""':'',chargeVisitBlock=`<div class="form-grid"><label>Visit<select name="visit_id" ${sourceBacked?'':'required'}><option value="">${sourceBacked?'Source kept — no visit found for it':'Choose a patient visit'}</option>${workspace.visits.map(vis=>`<option value="${vis.id}" ${v.visit_id===vis.id?'selected':''}>${esc((workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.title||'Visit')+' · '+date(workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.starts_at||vis.created_at))} · ${esc(human(vis.status))}</option>`).join('')}</select></label>${billingField('service_date','Service date',v.service_date,'date',0,true)}<label>Billing coverage<select name="coverage_id"><option value="">Self-pay / no selected coverage</option>${workspace.billing.coverages.map(c=>`<option value="${c.id}" ${v.coverage_id===c.id?'selected':''}>${esc(human(c.content.priority))} · ${esc(payerName(c.content.payer_id))} · ${esc(c.content.member_id)}</option>`).join('')}</select></label><label>Currency<input value="USD" readonly></label></div>`,chargeNotesBlock=`<label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>`,chargeLinesBlock=`${chargeLinesMarkup(v.lines,compact)}<div class="charge-table-foot"><button type="button" data-add-charge>${compact?'+ Add another charge':'+ Charge line'}</button><p class="charge-table-status" data-charge-status role="status" aria-live="polite"></p></div><div class="charge-table-next-slot" data-charge-next>${chargeTableNextMarkup(v.visit_id,chargeTableNextWritten)}</div>`,chargeOptionsBlock=`${chargeVisitBlock}<div data-charge-coverage-order>${billingCoverageOrderMarkup(v.service_date,v.coverage_id,compact)}</div>${typeof feeContextMarkup==='function'?feeContextMarkup(v.fee_context):''}${chargeNotesBlock}`,chargeTotalsBlock=`<div class="charge-table-totals"><span>Total charges <b data-charge-total>${money(0)}</b></span><span data-charge-copay>Copay</span><span class="charge-table-hint" data-charge-pays></span></div>`,
   chargeFormBody=compact?`${chargeLinesBlock}${chargeTotalsBlock}<details data-visit-charge-options><summary>Visit, insurance and fee options</summary>${chargeOptionsBlock}</details>`:`${chargeOptionsBlock}<p class="muted">Enter the amount for the whole line, not for one unit.</p>${chargeLinesBlock}${chargeTotalsBlock}`;
  // Charges for the visit in hand come from that visit alone; a reconciliation of a record from
  // the previous system, or a chart opened elsewhere, is never filled in from another visit.

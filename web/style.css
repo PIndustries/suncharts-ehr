@@ -527,6 +527,10 @@ td.money-cell,th.money-cell{text-align:right;font-variant-numeric:tabular-nums}
 .charge-table-status:empty{display:none}
 .charge-table-status button{font-size:var(--fs-xs);min-height:24px;padding:2px 7px;margin-left:6px}
 .charge-undo{display:inline-flex;flex-wrap:wrap;align-items:center}
+.charge-table-next{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin:10px 0 0;padding:10px 12px;background:var(--surface-soft);border:1px solid var(--line);border-radius:5px;font-size:var(--fs-sm)}
+.charge-table-next button{margin:0}
+.charge-table-next:empty{display:none}
+.charge-table-next-slot:empty{display:none}
 .charge-table-totals{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px;margin:12px 0 4px;padding:10px 12px;background:var(--surface-soft);border:1px solid var(--line);border-radius:5px;font-size:var(--fs-sm)}
 .charge-table-totals b{font-size:var(--fs-md);font-weight:650;font-variant-numeric:tabular-nums;margin-left:4px}
 .charge-table-totals .charge-table-hint{font-size:var(--fs-xs);color:var(--muted)}
