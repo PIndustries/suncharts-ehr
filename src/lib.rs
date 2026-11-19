@@ -74,6 +74,7 @@ pub mod practice;
 pub mod practice_admin;
 pub mod practice_billing;
 pub mod practice_codes;
+pub mod practice_overview;
 pub mod prescribing;
 pub mod previsit;
 mod previsit_standard;
@@ -422,6 +423,7 @@ pub fn app(state: State) -> Router {
         .merge(connect_onboarding::router())
         .merge(connector_catalog::router())
         .merge(practice::router())
+        .merge(practice_overview::router())
         .merge(staff_invitations::router())
         .merge(practice_admin::router())
         .merge(practice_billing::router())
@@ -1041,6 +1043,26 @@ pub fn app(state: State) -> Router {
                     "encounter-navigation.css",
                     "text/css",
                     include_str!("../web/encounter-navigation.css"),
+                )
+            }),
+        )
+        .route(
+            "/practice-overview.css",
+            get(|| async {
+                web_asset(
+                    "practice-overview.css",
+                    "text/css",
+                    include_str!("../web/practice-overview.css"),
+                )
+            }),
+        )
+        .route(
+            "/visit-layout.css",
+            get(|| async {
+                web_asset(
+                    "visit-layout.css",
+                    "text/css",
+                    include_str!("../web/visit-layout.css"),
                 )
             }),
         )

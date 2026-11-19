@@ -71,3 +71,6 @@
 .visit-billing-review-field b{font-size:var(--fs-sm);font-weight:600;overflow-wrap:anywhere}
 .visit-billing-review-lines{min-width:0}
 @media(max-width:640px){.visit-billing-review{padding:14px}.visit-billing-review-check{align-items:flex-start}.visit-billing-review-step{flex:1 1 100%}}
+
+/* The invoice shows its charge lines once: while Edit charges is open the editable table replaces the read-only lines. */
+#encounter-billing-editor:not(:empty)~#encounter-billing-detail{display:none}

@@ -20,12 +20,13 @@ async function showPracticeWorkspace(){
   api(`/api/v1/schedule?${new URLSearchParams({start:start.toISOString(),end:end.toISOString()})}`),
   api('/api/v1/labs/inbox'),api('/api/v1/practice/worklist'),
   api('/api/v1/previsit/readiness'),api('/api/v1/follow-up/tasks?status=open'),
-  api('/api/v1/referrals/worklist?_count=100'),api('/api/v1/billing/claims')
+  api('/api/v1/referrals/worklist?_count=100'),api('/api/v1/billing/claims'),
+  api(`/api/v1/practice/overview?${new URLSearchParams({tz:Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC'})}`)
  ]);
  if(generation!==practiceLoad||!$('practice-home')||!me)return;
  const value=i=>results[i].status==='fulfilled'?results[i].value:null;
- const schedule=value(0),inbox=value(1),unfinished=value(2),previsit=value(3),followup=value(4),referrals=value(5),claims=value(6);
- practiceData={start,loadedAt:new Date(),results,schedule,inbox,unfinished,previsit,followup,referrals,claims,
+ const schedule=value(0),inbox=value(1),unfinished=value(2),previsit=value(3),followup=value(4),referrals=value(5),claims=value(6),overview=value(7);
+ practiceData={start,loadedAt:new Date(),results,schedule,inbox,unfinished,previsit,followup,referrals,claims,overview,
   appointments:(schedule?.appointments||[]).filter(a=>!['cancelled','no_show'].includes(a.status)).sort((a,b)=>a.starts_at.localeCompare(b.starts_at)),
   reports:inbox?[...inbox.items].sort((a,b)=>Number(b.critical)-Number(a.critical)):[]};
  renderPracticeWorkspace();
@@ -39,12 +40,61 @@ function practiceJourneyStep(index,action,label,description,count,tone=''){
  const state=amount===null?'unavailable':amount>0?(tone||'attention'):'clear';
  return `<button type="button" class="${state}" data-practice-action="${action}"><span>${index}</span><b>${label}</b><small>${esc(description)}</small>${amount===null?'':`<em>${amount}</em>`}</button>`;
 }
+
+// The overview's numbers: a row of tiles that each open their list, three small charts and what
+// needs attention. Money and claims appear only when the server returned them (billing view).
+function practiceMoney(cents){return Number.isFinite(cents)?money(cents):'—';}
+function practiceTile(action,label,value,hint,tone=''){return `<button type="button" class="practice-tile${tone?` is-${tone}`:''}" data-practice-action="${action}"><span>${esc(label)}</span><b>${esc(value)}</b>${hint?`<small>${esc(hint)}</small>`:''}</button>`;}
+function practiceClaimCount(o,status){return Number(o?.claims?.by_status?.[status]?.count||0);}
+function practiceClaimBilled(o,status){return Number(o?.claims?.by_status?.[status]?.billed_cents||0);}
+function practiceBars(rows){
+ const max=Math.max(1,...rows.map(r=>r.value)),h=18,gap=8,w=260;
+ return `<svg class="practice-chart" viewBox="0 0 ${w+120} ${rows.length*(h+gap)}" role="img" aria-label="${esc(rows.map(r=>`${r.label} ${r.value}`).join(', '))}">${rows.map((r,i)=>`<text x="0" y="${i*(h+gap)+13}" class="practice-chart-label">${esc(r.label)}</text><rect x="110" y="${i*(h+gap)}" width="${Math.max(2,Math.round(r.value/max*w))}" height="${h}" rx="3" class="practice-chart-bar ${r.tone||''}"></rect><text x="${116+Math.max(2,Math.round(r.value/max*w))}" y="${i*(h+gap)+13}" class="practice-chart-value">${esc(r.value)}</text>`).join('')}</svg>`;
+}
+function practiceTrend(trend){
+ if(!Array.isArray(trend)||!trend.length)return '<p class="muted">No charges or payments in the last 30 days.</p>';
+ const w=360,h=120,max=Math.max(1,...trend.flatMap(d=>[d.charges_cents,d.collected_cents]));
+ const line=key=>trend.map((d,i)=>`${Math.round(i/(trend.length-1||1)*w)},${Math.round(h-(d[key]/max)*h)}`).join(' ');
+ const total=key=>trend.reduce((sum,d)=>sum+Number(d[key]||0),0);
+ return `<svg class="practice-chart" viewBox="0 0 ${w} ${h+4}" role="img" aria-label="Last 30 days: charges ${esc(money(total('charges_cents')))}, collected ${esc(money(total('collected_cents')))}"><polyline points="${line('charges_cents')}" class="practice-chart-line charges"></polyline><polyline points="${line('collected_cents')}" class="practice-chart-line collected"></polyline></svg><p class="practice-chart-key"><span class="charges">Charges ${esc(money(total('charges_cents')))}</span><span class="collected">Collected ${esc(money(total('collected_cents')))}</span></p>`;
+}
+function practiceDashboardMarkup(d){
+ const o=d.overview,appointments=d.appointments||[],unfinished=d.unfinished;
+ const arrived=appointments.filter(a=>['checked_in','in_progress','completed'].includes(a.status)).length;
+ const attention=o?.claims?Number(o.claims.needs_correction||0)+practiceClaimCount(o,'rejected'):null;
+ const tiles=[
+  practiceTile('schedule','Today’s patients',String(appointments.length),`${arrived} arrived`),
+  practiceTile('patients','Unfinished visits',unfinished?String(unfinished.total):'—','Notes or charges to finish',unfinished?.total?'attention':''),
+  o?.claims?practiceTile('claims','Claims needing attention',String(attention),`${practiceClaimCount(o,'draft')+practiceClaimCount(o,'ready')} ready to send`,attention?'attention':''):'',
+  o?.money?practiceTile('claims','Waiting on insurers',practiceMoney(o.money.waiting_on_insurers_cents),`${practiceClaimCount(o,'submitted')+practiceClaimCount(o,'accepted')} claims sent`):'',
+  o?.money?practiceTile('billing','Collected today',practiceMoney(o.money.collected_today_cents),`${practiceMoney(o.money.collected_month_cents)} this month`,'good'):'',
+  o?.money?practiceTile('billing','Charges this month',practiceMoney(o.money.charges_month_cents),o.money.payment_account_balance?`Payout account ${practiceMoney(o.money.payment_account_balance.available_cents)}`:'Posted visit charges'):''
+ ].join('');
+ const claimRows=o?.claims?[
+  {label:'Ready to send',value:practiceClaimCount(o,'draft')+practiceClaimCount(o,'ready')},
+  {label:'With Claim.MD',value:Number(o.claims.received_by_clearinghouse||0)},
+  {label:'Waiting on payer',value:Math.max(0,practiceClaimCount(o,'submitted')+practiceClaimCount(o,'accepted')-Number(o.claims.received_by_clearinghouse||0)-Number(o.claims.needs_correction||0))},
+  {label:'Needs correcting',value:Number(o.claims.needs_correction||0)+practiceClaimCount(o,'rejected'),tone:'attention'},
+  {label:'Paid / answered',value:practiceClaimCount(o,'adjudicated'),tone:'good'}]:null;
+ const p=o?.patients;
+ const mix=p?practiceBars([{label:'Insurance',value:Number(p.insured||0)},{label:'Self-pay',value:Number(p.self_pay||0),tone:'neutral'}]):'';
+ const gaps=p?[['Missing address',p.missing_address],['Missing phone',p.missing_phone],['Insured, no member ID',p.missing_member_id]].filter(([,n])=>Number(n)>0):[];
+ const needs=[
+  attention?`<li><span>Claims needing correction</span><b>${esc(attention)}</b><button type="button" data-practice-action="claims">Open claims</button></li>`:'',
+  unfinished?.total?`<li><span>Unfinished visits</span><b>${esc(unfinished.total)}</b><button type="button" data-practice-action="patients">Open visits</button></li>`:'',
+  ...gaps.map(([label,n])=>`<li><span>Patients: ${esc(label.toLowerCase())}</span><b>${esc(n)}</b><button type="button" data-practice-action="patients">Find patients</button></li>`)
+ ].filter(Boolean).join('');
+ return `<section class="practice-dashboard" aria-label="Practice at a glance"><div class="practice-tiles">${tiles}</div>
+ <div class="practice-charts">${claimRows?`<article class="practice-chart-card"><h3>Claims</h3>${practiceBars(claimRows)}</article>`:''}${o?.trend?`<article class="practice-chart-card"><h3>Last 30 days</h3>${practiceTrend(o.trend)}</article>`:''}${p?`<article class="practice-chart-card"><h3>Patients</h3>${mix}<p class="muted">${esc(p.active)} active patients</p></article>`:''}</div>
+ ${needs?`<article class="practice-needs"><h3>Needs attention</h3><ul>${needs}</ul></article>`:''}</section>`;
+}
 function renderPracticeWorkspace(){
  const {start,loadedAt,schedule,inbox,unfinished,previsit,followup,referrals,claims,appointments}=practiceData;
  const dateLabel=start.toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric',year:'numeric'});
  const tz=Intl.DateTimeFormat().resolvedOptions().timeZone;
  $('practice-home').outerHTML=`<section id="practice-home" class="practice-home">
  <div class="practice-commandbar"><div><h2>${esc(dateLabel)}</h2><p class="muted" title="Times shown in ${esc(tz)}">All providers · Updated ${esc(practiceTime(loadedAt))}</p></div><div class="actions">${practiceAction('refresh','Refresh')}${practiceAction('patients','Find patient')}${practiceAction('schedule','Open schedule',true)}</div></div>
+ ${practiceDashboardMarkup(practiceData)}
  <section class="practice-journey-shell" aria-labelledby="practice-journey-heading"><div class="practice-journey-heading"><h3 id="practice-journey-heading">Where patients are today</h3></div><nav class="practice-journey" aria-label="Patient journey">
  ${practiceJourneyStep(1,'intake','Intake','New requests and forms',Array.isArray(previsit?.items)?previsit.items.filter(item=>['not_issued','submitted'].includes(item.status)).length:null)}
  ${practiceJourneyStep(2,'schedule','Ready','Scheduled and preparing',schedule?appointments.length:null,'active')}

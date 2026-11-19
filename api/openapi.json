@@ -10360,6 +10360,134 @@
         ]
       }
     },
+  "/api/v1/practice/overview": {
+      "get": {
+        "operationId": "readPracticeOverview",
+        "summary": "Practice overview numbers",
+        "description": "Staff with the practice area. Patients: active, insured, self-pay and record gaps (address, phone, member ID). With billing view also: claims by status with billed amounts, claims Claim.MD holds for correction or only received, money recorded today and this month, charges this month, amount waiting on insurers, and a 30-day trend of charges and collections. Optional tz (IANA zone) sets the day boundaries.",
+        "responses": {
+          "200": {
+            "description": "Unfinished encounters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items",
+                    "total",
+                    "has_more"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "maxItems": 100,
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "visit_id",
+                          "patient_id",
+                          "mrn",
+                          "patient_name",
+                          "clinician_id",
+                          "starts_at",
+                          "created_at",
+                          "version",
+                          "note_saved",
+                          "vitals_saved",
+                          "title",
+                          "appointment_id",
+                          "provider_label",
+                          "facility",
+                          "room"
+                        ],
+                        "properties": {
+                          "visit_id": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "patient_id": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "clinician_id": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "mrn": {
+                            "type": "string"
+                          },
+                          "patient_name": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": "string"
+                          },
+                          "starts_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "version": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "note_saved": {
+                            "type": "boolean"
+                          },
+                          "vitals_saved": {
+                            "type": "boolean"
+                          },
+                          "appointment_id": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "provider_label": {
+                            "type": "string"
+                          },
+                          "facility": {
+                            "type": "string"
+                          },
+                          "room": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "total": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Staff access required"
+          }
+        },
+        "parameters": [
+          {
+            "name": "tz",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 64
+            }
+          }
+        ]
+      }
+    },
     "/api/v1/practice/worklist": {
       "get": {
         "operationId": "practiceUnfinishedEncounters",

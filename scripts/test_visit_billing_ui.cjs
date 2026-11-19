@@ -129,7 +129,7 @@ assert.match(ctx.hostedCopayMarkup({...hostedState,items:[{id:'op',appointment_i
 assert.match(ctx.hostedCopayMarkup({...hostedState,availability:{available:false,reason:'Card payments are not set up.'}},true),/Card payments are not set up\./);
 const more=ctx.visitBillingMore(answered,all);
 for(const expected of ['data-visit-statement>Patient statement','data-new-ledger>Record a payment, write-off or adjustment','data-visit-history="payments">Refunds and card payments','data-revenue-claim="claim">Open claim: correct, void or bill secondary insurance','/api/v1/billing/claims/claim/cms1500','data-chart-section="insurance">Insurance and eligibility'])assert.ok(more.includes(expected),expected);
-assert.match(more,/^<details class="visit-billing-more" data-revenue-disclosure="more"><summary>More<\/summary>/);
+assert.match(more,/^<details class="visit-billing-more" data-revenue-disclosure="more"><summary>More actions<\/summary>/);
 assert.doesNotMatch(ctx.visitBillingMore(visitSummary({claim:{secondary:true}}),all),/cms1500/,'no CMS-1500 for a secondary claim');
 assert.doesNotMatch(ctx.visitBillingMore(visitSummary(),{canCreate:false,canWrite:false,claimsAllowed:false}),/data-new-ledger|data-visit-statement|data-revenue-claim/);
 
@@ -205,7 +205,7 @@ assert.match(ctx.visitBillingTimeline({timeline:[{at:'2026-11-12T16:00:00Z',grou
 for(const [summary] of states.concat([[selfPay()],[visitSummary({state:'claim_restricted',claim:null})]])){
  const html=card(summary);
  assert.doesNotMatch(html,/data-refresh-revenue|>Refresh</,`${summary.state}: the card has no Refresh button`);
- assert.match(html,/<div class="section-head"><h3>Visit billing<\/h3><\/div>/,'the card head holds only its title');
+ assert.doesNotMatch(html,/<h3>Visit billing<\/h3>/,"the card sits inside the Invoice block with no title of its own");
 }
 // Every save path still redraws the card: the shared status loader paints the card node, and
 // each action that changes billing goes through it.
@@ -235,14 +235,14 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
  assert.match(status,/Claim ready to send to Synthetic Medicare PPO/);assert.deepEqual(primaries(status),['Review and send to Claim.MD']);
  await ctx.loadEncounterRevenueStatus(account,true);assert.equal(prepared,1,'a refresh never prepares again');
  // Layout: one card, collect hidden until asked, charges and history collapsed, details not offered to staff.
- assert.match(host,/<h2>Charges &amp; billing<\/h2><p class="muted">Nov 12, 2026 · Posted<\/p>/);
+ assert.match(host,/<h2>Invoice<\/h2><p class="muted">Nov 12, 2026 · Posted<\/p>/);
  assert.match(host,/<section id="visit-billing-collect" class="billing-section" hidden>/);assert.match(host,/data-record-copay="appointment">Cash or check<\/button>/);
- assert.match(host,/<details class="encounter-account-record" id="encounter-charge-details"><summary>Charges<\/summary>/);assert.match(host,/<details class="encounter-account-record" id="visit-billing-history"><summary>History<\/summary>/);assert.match(host,/id="visit-billing-ledger-details"><summary>Payments and adjustments<\/summary>/);
+ assert.match(host,/<div class="invoice-lines" id="encounter-billing-detail"><\/div>/);assert.match(host,/<details class="encounter-account-record" id="visit-billing-history"><summary>History<\/summary>/);assert.match(host,/id="visit-billing-ledger-details"><summary>Payments and adjustments<\/summary>/);
  assert.doesNotMatch(host,/visit-billing-details|<h3>Copay<\/h3>|Insurance &amp; coverage details|Charges &amp; ledger details|Record a cash or check payment/);
  assert.equal((host.match(/id="encounter-claims"/g)||[]).length,1,'the claim view keeps its place');
  // The owner gets Details; the server decides what is in it.
  ctx.me={role:'owner'};node('encounter-revenue').dataset.revenueKey='';reply=()=>visitSummary({technical:{account_id:'e40f1da7',account_version:2,claims:[]}});ctx.renderEncounterRevenue();await settle();
- assert.match(node('encounter-revenue').innerHTML,/<details class="encounter-account-record" id="visit-billing-details" hidden><summary>Details<\/summary>/);assert.equal(node('visit-billing-details').hidden,false);assert.match(node('visit-billing-technical').innerHTML,/e40f1da7/);
+ assert.match(node('encounter-revenue').innerHTML,/<details class="encounter-account-record" id="visit-billing-details" hidden><summary>Technical details<\/summary>/);assert.equal(node('visit-billing-details').hidden,false);assert.match(node('visit-billing-technical').innerHTML,/e40f1da7/);
  assert.doesNotMatch(node('encounter-revenue-status').innerHTML,/e40f1da7/,'identifiers stay out of the normal view');
  ctx.me={role:'front_desk'};node('visit-billing-details').hidden=true;
 

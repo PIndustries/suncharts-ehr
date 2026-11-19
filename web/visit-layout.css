@@ -1,0 +1,27 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/* The one-page visit on a wide screen: the block row becomes two columns so the note and the
+   codes & charges sit side by side instead of one long scroll. Placement only — the DOM keeps the
+   order web/app.js builds (VISIT_PAGE_BLOCK_IDS), so the stable diagnoses host keeps working.
+   Theme variables only; nothing here sets a colour. */
+#visit-page-host>*{min-width:0}
+
+/* Below 1280 px: one column in row order (unchanged). */
+@media(min-width:1280px){
+ #visit-page-host{
+  display:grid;
+  grid-template-columns:minmax(0,58fr) minmax(0,42fr);
+  grid-template-rows:auto auto auto 1fr;
+  column-gap:16px;
+  align-items:start;
+ }
+ /* The visit heading and its buttons span both columns. */
+ #visit-page-host>#encounter-progress{grid-column:1/-1;grid-row:1}
+ /* Left: vitals and the note, then orders when shown. */
+ #visit-page-host>#visit-editor{grid-column:1;grid-row:2/5}
+ #visit-page-host>#encounter-orders-actions{grid-column:1;grid-row:5}
+ /* Right: codes & charges, then finishing the visit. */
+ #visit-page-host>#encounter-revenue{grid-column:2;grid-row:2}
+ #visit-page-host>#visit-checkout{grid-column:2;grid-row:3}
+ /* A wide charge table scrolls inside its column rather than widening the page. */
+ #visit-page-host>#encounter-revenue .billing-table-wrap{overflow:auto}
+}

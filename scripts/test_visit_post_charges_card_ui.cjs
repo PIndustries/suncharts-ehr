@@ -67,7 +67,7 @@ const useAccount=coverageId=>{ctx.workspace.billing={...ctx.workspace.billing,ac
  ctx.billingPayers=[];reset();press();await settle();if(ctx.failed)throw new Error(ctx.failed);
  assert.equal(ctx.asked,null,'the acknowledgement in the lower form cannot be skipped by a dialog');
  assert.equal(sent.filter(call=>call[1]==='POST').length,0,'nothing is posted without that acknowledgement');
- assert.deepEqual(opened,[['account',false]]);assert.deepEqual(scrolled,['encounter-charge-details']);
+ assert.deepEqual(opened,[['account',false]]);assert.deepEqual(scrolled,['encounter-billing-detail']);
  // Self-pay: the same post, and the ask says nothing about a claim.
  ctx.billingPayers=[{id:'payer',content:{name:'Synthetic Medicare PPO',payer_code:'SYN'}}];
  useAccount(null);reset();press();await settle();if(ctx.failed)throw new Error(ctx.failed);
