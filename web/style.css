@@ -294,6 +294,8 @@ body{font-size:var(--fs-body);line-height:1.45;letter-spacing:0}button,input,sel
 
 /* The one-page visit: fixed-order block row, compact vitals, the codes block's stable diagnoses host. */
 #visit-page-host{display:flex;flex-direction:column;gap:0}
+/* The page order is the DOM order of the row: an older rule gives #visit-editor order:2 for the chart grid, which must not reorder the row. */
+#visit-page-host>*{order:0}
 .visit-vitals-summary{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 12px;margin:14px 0;padding:10px 12px;background:var(--surface-soft);border:1px solid var(--line);border-radius:6px}
 .visit-vitals-summary>span{font-variant-numeric:tabular-nums}
 .visit-vitals-summary .text-button{margin-left:auto}
