@@ -27,3 +27,7 @@
 .practice-needs ul{list-style:none;margin:0;padding:0;display:grid;gap:6px}
 .practice-needs li{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:10px;align-items:center}
 @media(max-width:900px){.practice-charts{grid-template-columns:1fr}}
+.practice-bars{display:grid;gap:6px}
+.practice-bar-row{display:grid;grid-template-columns:minmax(90px,auto) minmax(0,1fr) 3ch;gap:8px;align-items:center;font-size:var(--fs-sm)}
+.practice-bar-row svg{width:100%;height:12px;display:block}
+.practice-bar-row b{text-align:right}

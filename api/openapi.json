@@ -39200,9 +39200,409 @@
           }
         }
       ]
+    },
+    "/api/v1/practice/partners": {
+      "get": {
+        "summary": "Owner: billing partners listed for this practice, with the current enrollment",
+        "description": "Owner-only read forwarded to SunCharts Connect with the installation credential already used for Connect services. Returns only partners Connect lists for this practice, preferred first then by name, plus the practice\u2019s current enrollment or null. The payment account state used for step 1 comes from the same read, so the screen needs no second request. Nothing is stored here: this EHR keeps no copy of a partner agreement. When Connect is not paired, or could not be reached, the answer still carries step 1 and names the reason in partners.connect_error so the owner sees what to do next.",
+        "operationId": "practicePartnersList",
+        "tags": [
+          "Practice administration"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Partner catalog, current enrollment and payment account state; no credential, patient or agreement content",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "partners"
+                  ],
+                  "properties": {
+                    "partners": {
+                      "type": "object",
+                      "required": [
+                        "items",
+                        "enrollment",
+                        "incomplete"
+                      ],
+                      "properties": {
+                        "items": {
+                          "type": "array",
+                          "maxItems": 100,
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "slug",
+                              "name",
+                              "summary",
+                              "services",
+                              "preferred",
+                              "enrolled"
+                            ],
+                            "properties": {
+                              "slug": {
+                                "type": "string",
+                                "maxLength": 64
+                              },
+                              "name": {
+                                "type": "string",
+                                "maxLength": 200
+                              },
+                              "summary": {
+                                "type": "string",
+                                "maxLength": 600
+                              },
+                              "services": {
+                                "type": "array",
+                                "maxItems": 20,
+                                "items": {
+                                  "type": "string",
+                                  "maxLength": 80
+                                }
+                              },
+                              "preferred": {
+                                "type": "boolean"
+                              },
+                              "enrolled": {
+                                "type": "boolean"
+                              }
+                            }
+                          }
+                        },
+                        "enrollment": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "required": [
+                                "partner_slug",
+                                "partner_name",
+                                "status",
+                                "enrolled_at",
+                                "agreement_version"
+                              ],
+                              "properties": {
+                                "partner_slug": {
+                                  "type": "string",
+                                  "maxLength": 64
+                                },
+                                "partner_name": {
+                                  "type": "string",
+                                  "maxLength": 200
+                                },
+                                "status": {
+                                  "enum": [
+                                    "active",
+                                    "ended"
+                                  ]
+                                },
+                                "enrolled_at": {
+                                  "type": "string",
+                                  "maxLength": 40
+                                },
+                                "agreement_version": {
+                                  "type": "string",
+                                  "maxLength": 60
+                                }
+                              }
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "incomplete": {
+                          "type": "boolean",
+                          "description": "True when Connect listed a partner this service could not show"
+                        },
+                        "connect_error": {
+                          "type": "string",
+                          "description": "Present instead of a catalog when Connect is not paired or could not be reached; the screen shows connection setup"
+                        },
+                        "payments": {
+                          "type": "object",
+                          "required": [
+                            "state"
+                          ],
+                          "properties": {
+                            "state": {
+                              "enum": [
+                                "ready",
+                                "started",
+                                "none",
+                                "unknown",
+                                "unavailable"
+                              ]
+                            },
+                            "reason": {
+                              "type": "string"
+                            },
+                            "native_setup_url": {
+                              "type": "string",
+                              "format": "uri"
+                            },
+                            "connect_portal_url": {
+                              "type": "string",
+                              "format": "uri"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Practice owner only"
+          },
+          "503": {
+            "$ref": "#/components/responses/PartnerGatewayUnavailable"
+          }
+        }
+      }
+    },
+    "/api/v1/practice/partners/{slug}/enroll": {
+      "post": {
+        "summary": "Owner: enroll this practice with a listed billing partner under the current agreement",
+        "description": "Owner-only. Forwarded to SunCharts Connect with the installation credential; idempotent on request_id so a retry after a lost answer enrolls once. The accepted party is the signed-in owner as this EHR records them; the name and email in the body are only a fallback and are never stored here. agreement_version is fixed by this release. Audit event: practice.partner.enrolled.",
+        "operationId": "practicePartnerEnroll",
+        "tags": [
+          "Practice administration"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[a-z0-9_-]+$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PartnerEnrollment"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The enrollment Connect now holds; unconfirmed is true only when Connect answered without an active enrollment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "enrollment",
+                    "unconfirmed"
+                  ],
+                  "properties": {
+                    "enrollment": {
+                      "type": "object",
+                      "required": [
+                        "partner_slug",
+                        "partner_name",
+                        "status",
+                        "enrolled_at",
+                        "agreement_version"
+                      ],
+                      "properties": {
+                        "partner_slug": {
+                          "type": "string",
+                          "maxLength": 64
+                        },
+                        "partner_name": {
+                          "type": "string",
+                          "maxLength": 200
+                        },
+                        "status": {
+                          "enum": [
+                            "active",
+                            "ended"
+                          ]
+                        },
+                        "enrolled_at": {
+                          "type": "string",
+                          "maxLength": 40
+                        },
+                        "agreement_version": {
+                          "type": "string",
+                          "maxLength": 60
+                        }
+                      }
+                    },
+                    "unconfirmed": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The slug, the request identity or the accepting owner is not usable"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Practice owner only"
+          },
+          "404": {
+            "description": "No such billing partner is listed"
+          },
+          "409": {
+            "$ref": "#/components/responses/PartnerGatewayConflict"
+          },
+          "503": {
+            "$ref": "#/components/responses/PartnerGatewayUnavailable"
+          }
+        }
+      }
+    },
+    "/api/v1/practice/partners/{slug}/leave": {
+      "post": {
+        "summary": "Owner: end this practice\u2019s enrollment with its current billing partner",
+        "description": "Owner-only. Forwarded to SunCharts Connect with the installation credential; idempotent on request_id. The returned enrollment has status ended. Nothing in the patient record changes here. Audit event: practice.partner.left.",
+        "operationId": "practicePartnerLeave",
+        "tags": [
+          "Practice administration"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[a-z0-9_-]+$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PartnerDeparture"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The ended enrollment; unconfirmed is true only when Connect answered without an ended enrollment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "enrollment",
+                    "unconfirmed"
+                  ],
+                  "properties": {
+                    "enrollment": {
+                      "type": "object",
+                      "required": [
+                        "partner_slug",
+                        "partner_name",
+                        "status",
+                        "enrolled_at",
+                        "agreement_version"
+                      ],
+                      "properties": {
+                        "partner_slug": {
+                          "type": "string",
+                          "maxLength": 64
+                        },
+                        "partner_name": {
+                          "type": "string",
+                          "maxLength": 200
+                        },
+                        "status": {
+                          "enum": [
+                            "active",
+                            "ended"
+                          ]
+                        },
+                        "enrolled_at": {
+                          "type": "string",
+                          "maxLength": 40
+                        },
+                        "agreement_version": {
+                          "type": "string",
+                          "maxLength": 60
+                        }
+                      }
+                    },
+                    "unconfirmed": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The slug or the request identity is not usable"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Practice owner only"
+          },
+          "404": {
+            "description": "No such billing partner is listed"
+          },
+          "409": {
+            "$ref": "#/components/responses/PartnerGatewayConflict"
+          },
+          "503": {
+            "$ref": "#/components/responses/PartnerGatewayUnavailable"
+          }
+        }
+      }
     }
   },
   "components": {
+    "responses": {
+      "PartnerGatewayConflict": {
+        "description": "Connect this EHR to SunCharts first, or Connect\u2019s own reason for the owner: the practice already works with another partner, or was provisioned by a different partner"
+      },
+      "PartnerGatewayUnavailable": {
+        "description": "SunCharts Connect could not be reached. Nothing was changed and the same request may be sent again"
+      }
+    },
     "securitySchemes": {
       "delegatedJwt": {
         "type": "http",
@@ -60020,6 +60420,63 @@
           "can_sign",
           "can_amend"
         ]
+      },
+      "PartnerEnrollment": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "accepted_by"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Stable per attempted enrollment; a retry of the same request enrolls once"
+          },
+          "agreement_version": {
+            "type": "string",
+            "enum": [
+              "partner-enrollment-v1"
+            ],
+            "description": "Optional; this release always presents its own fixed version"
+          },
+          "accepted_by": {
+            "type": "object",
+            "required": [
+              "name",
+              "email"
+            ],
+            "additionalProperties": false,
+            "description": "Confirmed against the signed-in owner account before Connect is called",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "email": {
+                "type": "string",
+                "format": "email",
+                "maxLength": 254
+              }
+            }
+          }
+        }
+      },
+      "PartnerDeparture": {
+        "type": "object",
+        "required": [
+          "request_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Stable per attempted departure; a retry of the same request ends the enrollment once"
+          }
+        }
       }
     }
   }

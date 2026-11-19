@@ -48,8 +48,9 @@ function practiceTile(action,label,value,hint,tone=''){return `<button type="but
 function practiceClaimCount(o,status){return Number(o?.claims?.by_status?.[status]?.count||0);}
 function practiceClaimBilled(o,status){return Number(o?.claims?.by_status?.[status]?.billed_cents||0);}
 function practiceBars(rows){
- const max=Math.max(1,...rows.map(r=>r.value)),h=18,gap=8,w=260;
- return `<svg class="practice-chart" viewBox="0 0 ${w+120} ${rows.length*(h+gap)}" role="img" aria-label="${esc(rows.map(r=>`${r.label} ${r.value}`).join(', '))}">${rows.map((r,i)=>`<text x="0" y="${i*(h+gap)+13}" class="practice-chart-label">${esc(r.label)}</text><rect x="110" y="${i*(h+gap)}" width="${Math.max(2,Math.round(r.value/max*w))}" height="${h}" rx="3" class="practice-chart-bar ${r.tone||''}"></rect><text x="${116+Math.max(2,Math.round(r.value/max*w))}" y="${i*(h+gap)+13}" class="practice-chart-value">${esc(r.value)}</text>`).join('')}</svg>`;
+ // Labels and numbers are page text; only each bar is drawn, stretched to its share of the widest.
+ const max=Math.max(1,...rows.map(r=>r.value));
+ return `<div class="practice-bars" role="img" aria-label="${esc(rows.map(r=>`${r.label} ${r.value}`).join(', '))}">${rows.map(r=>`<div class="practice-bar-row"><span>${esc(r.label)}</span><svg viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden="true"><rect x="0" y="0" width="${Math.max(1,Math.round(r.value/max*100))}" height="10" rx="1" class="practice-chart-bar ${r.tone||''}"></rect></svg><b>${esc(r.value)}</b></div>`).join('')}</div>`;
 }
 function practiceTrend(trend){
  if(!Array.isArray(trend)||!trend.length)return '<p class="muted">No charges or payments in the last 30 days.</p>';

@@ -572,3 +572,17 @@ td.money-cell,th.money-cell{text-align:right;font-variant-numeric:tabular-nums}
 }
 /* Quiet "Updated just now / 2 min ago" line kept by the shared auto-refresh in each revenue screen header. */
 .auto-refresh-updated{display:block;margin-top:4px;font-size:var(--fs-xs);color:var(--muted);font-weight:400}
+/* Partners: one owner screen for payment setup and the practice's billing partner. */
+.partners-step{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;padding:14px;border:1px solid var(--line);border-radius:9px;background:var(--surface)}
+.partners-step h3{margin:0 0 4px;font-size:var(--fs-body)}
+.partners-step p{margin:0;font-size:var(--fs-sm);color:var(--muted)}
+.partners-step .actions{margin-top:10px}
+.partners-current{margin:0 0 14px;padding:12px 14px;border:1px solid var(--line);border-radius:9px;background:var(--surface-soft);font-size:var(--fs-sm)}
+.partners-current p{margin:0}
+.partners-current .actions{margin-top:8px}
+.partner-confirm{margin-top:14px;padding:14px;border:1px solid var(--line);border-radius:9px;background:var(--surface-soft)}
+.partner-confirm h4{margin:0 0 6px;font-size:var(--fs-body)}
+.partner-confirm p{margin:0 0 10px;font-size:var(--fs-sm)}
+.partner-confirm .review-ack{font-size:var(--fs-sm)}
+.partner-confirm .actions{margin-top:12px}
+.partner-card footer small{text-wrap:pretty}

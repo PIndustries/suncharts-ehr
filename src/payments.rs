@@ -364,7 +364,14 @@ pub fn router() -> Router<State> {
 }
 async fn read_settings(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json<Value>> {
     owner(&a)?;
-    let mut tx = db(&s)?.begin().await?;
+    Ok(Json(account_state(&s, &a).await?))
+}
+/// The payment account state one owner endpoint answers: redacted settings plus
+/// what this environment and the SunCharts connection make available. The Partners
+/// screen shows step 1 from the same answer, so both screens agree on what
+/// "set up" means. The caller checks the signed-in role; no credential is returned.
+pub(crate) async fn account_state(s: &State, a: &Actor) -> Result<Value> {
+    let mut tx = db(s)?.begin().await?;
     let row: Option<Settings> = sqlx::query_as("SELECT * FROM payment_settings WHERE tenant_id=$1")
         .bind(a.tenant_id)
         .fetch_optional(&mut *tx)
@@ -373,10 +380,10 @@ async fn read_settings(a: Actor, ExtractState(s): ExtractState<State>) -> Result
         .bind(a.tenant_id)
         .fetch_optional(&mut *tx)
         .await?;
-    crate::postgres::audit(&mut tx, &a, "payment.settings_read", a.tenant_id).await?;
+    crate::postgres::audit(&mut tx, a, "payment.settings_read", a.tenant_id).await?;
     tx.commit().await?;
     let storage_ready = if let Some(r) = &row {
-        credentials(db(&s)?, a.tenant_id, r.id, r.credential_revision)
+        credentials(db(s)?, a.tenant_id, r.id, r.credential_revision)
             .await
             .is_ok()
     } else {
@@ -384,7 +391,7 @@ async fn read_settings(a: Actor, ExtractState(s): ExtractState<State>) -> Result
     };
     let broker = broker_base().ok();
     let native_setup_url = connection_id.and_then(|id| connect_payments_url(id).ok());
-    Ok(Json(json!({
+    Ok(json!({
         "setting":row.map(|r|r.public()),
         "test_mode_only":true,
         "live_payments_available":false,
@@ -396,8 +403,8 @@ async fn read_settings(a: Actor, ExtractState(s): ExtractState<State>) -> Result
         "connect_portal_url":native_setup_url,
         "broker_available":broker.is_some(),
         "credential_storage_ready":storage_ready,
-        "webhook_base":format!("{}/api/v1/payments/webhooks/",origin(&s)?)
-    })))
+        "webhook_base":format!("{}/api/v1/payments/webhooks/",origin(s)?)
+    }))
 }
 async fn save_settings(
     a: Actor,

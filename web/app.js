@@ -513,6 +513,7 @@ async function enter() {
   if(typeof startConnectUpdates==='function')void startConnectUpdates(me);
   $('nav-migration').hidden=me.role!=='owner'||$('nav-migration').dataset.workspaceHidden==='true';
   if($('nav-admin'))$('nav-admin').hidden=me.role!=='owner';
+  if($('nav-partners'))$('nav-partners').hidden=me.role!=='owner';
   if(typeof applyWorkspaceAccessVisibility==='function')applyWorkspaceAccessVisibility();
   if(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('clinical')){
     const page=await api(typeof patientDirectoryQuery==='function'?patientDirectoryQuery():'/api/v1/patients'); patients=page.items; cursor=page.next_cursor;
@@ -932,6 +933,7 @@ function setPage(title) {
   'Practice overview':'Today’s schedule, visits still open, and clinical work needing attention',
   'Practice administration':'Manage staff access, providers, facilities and rooms',
   'Codes & prices':'Choose the code sets staff look up and the prices your codes start a charge at',
+  'Partners':'Set up payments and choose the billing partner that works this practice',
   'Patients & visits':'Find a patient, review their chart and continue visit work',
   'Schedule':'Book appointments, manage provider availability and follow reminders',
   'Pre-visit readiness':'Review public bookings, patient forms and visit preparation',
@@ -964,7 +966,7 @@ function setPage(title) {
  const today=['Practice home','Practice overview','Schedule','Pre-visit readiness','Appointment reminders','Reminder settings','Follow-up tasks','Inbox','Patient portal inbox','Communications','Send & review'];
  const care=['Patients & visits','Labs & results','Specialty care','Referrals','Referral delivery settings'];
  const revenue=['Billing & insurance','Payment settings','Payment review','Claims & remittances','Clearinghouse','Claim connections'];
- const manage=['Sun','Workflow Studio','Automation Center','AI review','Sun review','Practice administration','Codes & prices','Integrations','Connect services','Support tickets','Data import'];
+ const manage=['Sun','Workflow Studio','Automation Center','AI review','Sun review','Practice administration','Codes & prices','Partners','Integrations','Connect services','Support tickets','Data import'];
  $('page-title').textContent=title;
  $('page-description').textContent=descriptions[title]||'Practice workspace';
  $('workspace-section').textContent=(today.includes(title)||title.startsWith('Patient portal'))?'TODAY':care.includes(title)?'CARE':revenue.includes(title)?'REVENUE':manage.includes(title)?'MANAGE':'PRACTICE';
@@ -1121,6 +1123,7 @@ document.addEventListener('click',e=>{
     if(button.id==='nav-billing'){await showBillingQueue();return;}
     if(button.id==='nav-customize'){await showPracticeAdmin('workspace');return;}
     if(button.id==='nav-admin'){await showPracticeAdmin();return;}
+    if(button.id==='nav-partners'){await showPartners();return;}
     if(button.id==='nav-apps'){await showApps();return;}
     if(button.id==='nav-migration'){await showMigrations();return;}
     if(button.id==='nav-clinical'){await showClinical();return;}
