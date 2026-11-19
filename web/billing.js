@@ -178,7 +178,7 @@ function showBillingAccount(id,activate=true,reveal=false){
  const host=billingDetailHost();if(!host)return;for(const id of ['billing-detail','encounter-billing-detail'])if($(id)&&$(id)!==host)$(id).replaceChildren();host.innerHTML=`<section class="billing-account-detail"><div class="section-head"><div><h3>Account ${a.id.slice(0,8)}</h3><p class="muted">Service ${esc(a.content.service_date)} · v${a.version} · ${a.source_history_id?'Reconciled source':'Visit'}</p></div><span class="status-badge ${a.status==='posted'?'checked_in':'completed'}">${esc(a.status)}</span></div>
  ${!encounter?`<div class="billing-totals"><span>Charges <b>${money(a.total_cents)}</b></span><span>Net recorded entries <b>${money(entrySum(a.id))}</b></span><span>Open balance <b>${a.status==='posted'?money(billBalance(a)):'Not posted'}</b></span></div>`:''}
  <p>${frozen?`Payer on file: <b>${esc(frozen.payer.content.name)}</b> · Member ${esc(frozen.coverage.content.member_id)} · ${esc(frozen.coverage.content.verification)}`:a.content.coverage_id?'Insurance selected; coverage is captured when posted.':'Self-pay. No insurance selected.'}</p>${chargeTable(a.content.lines)}${billingChargeDraftRecovery(a)}${accountDiagnosisSummary(a.diagnosis_snapshot)}${accountDiagnosisDraftRecovery(a)}<p class="note-text">${esc(a.content.notes)}</p>
- <div class="actions">${billingCan()&&a.status==='draft'?'<button type="button" data-edit-bill>Edit draft</button>' + (a.content.visit_id?'<button type="button" data-link-account-diagnoses>Link visit diagnoses</button>':'') + '':''}${!encounter&&billingCan()&&a.status==='posted'&&frozenElectronicPayer?`<button type="button" class="primary" data-new-claim="${a.id}">Create insurance claim</button>`:''}<button type="button" data-bill-history>Account history</button></div>${!encounter&&a.status==='posted'&&frozenElectronicPayer?'<p class="muted">Creating a claim opens the reviewed native claim lifecycle. Nothing is sent until the claim is ready and a person explicitly submits it through Claim.MD.</p>':''}${a.status==='posted'&&frozen&&!frozenElectronicPayer?'<div class="mapping-notice"><b>Local-only insurance account</b><p>This frozen payer mapping has no Claim.MD payer ID, so it cannot create an electronic claim.</p></div>':''}<div id="bill-history"></div>
+ <div class="actions">${billingCan()&&a.status==='draft'?'<button type="button" data-edit-bill>Edit draft</button>':''}${!encounter&&billingCan()&&a.status==='posted'&&frozenElectronicPayer?`<button type="button" class="primary" data-new-claim="${a.id}">Create insurance claim</button>`:''}<button type="button" data-bill-history>Account history</button></div>${!encounter&&a.status==='posted'&&frozenElectronicPayer?'<p class="muted">Creating a claim opens the reviewed native claim lifecycle. Nothing is sent until the claim is ready and a person explicitly submits it through Claim.MD.</p>':''}${a.status==='posted'&&frozen&&!frozenElectronicPayer?'<div class="mapping-notice"><b>Local-only insurance account</b><p>This frozen payer mapping has no Claim.MD payer ID, so it cannot create an electronic claim.</p></div>':''}<div id="bill-history"></div>
  ${billingAccountActionForm(a,missingElectronicPayer,'Review / action reason','Posting locks the charges. The visit note must be signed first.','Post charges','Void draft','Post as local-only insurance activity. I understand this account cannot create an electronic claim.')}
  ${a.status==='posted'?`<section class="billing-section"><div class="actions">${!encounter&&billingCan('create')?'<button type="button" data-build-patient-invoice>Build patient invoice</button>':''}${!encounter?'<button type="button" data-patient-invoices>Saved patient invoices</button>':''}${billingCan()&&typeof availableCopayCreditForAccount==='function'&&availableCopayCreditForAccount(a)>0?'<button type="button" data-apply-copays>Apply recorded copay credit</button>':''}</div><p class="muted">Review patient responsibility separately from insurance. Recorded copays and patient credits reduce the invoice; building an invoice does not charge a card or submit a claim.</p></section>`:''}${encounter?'<details class="encounter-account-record"><summary>Payments, adjustments &amp; processor history</summary>':''}<h3>Recorded ledger entries</h3><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Recorded activity</th><th>Evidence / reason</th><th class="money-cell">Balance effect</th><th></th></tr></thead><tbody>${entries.map(e=>`<tr><td>${esc(ledgerKind(e.kind))}<small>${esc(e.content.occurred_on)} · ${esc(e.content.party)}</small></td><td>${esc(e.content.reference||'No reference')}<small>${esc(e.content.reason)}</small>${e.content.remittance_id?'<small>ERA posting · review in Claims & remittances</small>':''}${e.content.managed_payment_id?'<small>Verified test processor payment · reconcile or refund in Payments</small>':''}${e.content.hosted_copay_operation_id?'<small>Verified '+(e.content.test_mode?'test ':'')+'card copay · review hosted payment status in Insurance</small>':''}${e.reverses_id?`<small>Reverses ${esc(e.reverses_id.slice(0,8))}</small>`:''}</td><td class="money-cell">${money(e.effect_cents)}</td><td>${billingCan()&&!e.content.remittance_id&&!e.content.managed_payment_id&&!e.content.hosted_copay_operation_id&&e.kind!=='reversal'&&!entries.some(r=>r.reverses_id===e.id)?`<button type="button" data-reverse-entry="${e.id}">Reverse</button>`:''}</td></tr>`).join('')||'<tr><td colspan="4">No recorded payments or adjustments.</td></tr>'}</tbody></table></div>
  ${billingCan('create')&&a.status==='posted'?'<div class="actions"><button type="button" data-new-ledger>Record payment / adjustment</button></div>':''}${a.status==='posted'?'<div id="account-payment-panel"></div>':''}${encounter?'</details>':''}</section>`;
@@ -243,12 +243,66 @@ function renderChargeEncounterDiagnoses(form){
   // line whose codes were cleared by hand is never quietly refilled on a later refresh.
   if(row.dataset?.diagnosesDefault==='pending'){
    row.dataset.diagnosesDefault='done';
-   if(!disabled&&field&&!field.value.trim()&&state.diagnoses.length){field.value=state.diagnoses.slice(0,12).map(d=>d.code).join(', ');if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();}
+   if(!disabled&&field&&!field.value.trim()&&state.diagnoses.length){
+    const given=chargeDiagnosisDefaultCodes(state.diagnoses);
+    field.value=given;markChargeDiagnosisAuto(row,given);
+    if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();
+   }
   }
   if(!field)continue;
   const codes=field.value.split(',').map(v=>v.trim().toUpperCase());
-  host.innerHTML=`<fieldset><legend>Saved visit diagnoses</legend>${state.diagnoses.length?`<p class="muted">The diagnoses from this visit are ticked for you. Untick any that do not apply.</p><div class="scope-options">${state.diagnoses.map(d=>`<label><input type="checkbox" data-charge-diagnosis="${esc(d.code)}" ${disabled?'disabled':''} ${codes.includes(d.code.toUpperCase())?'checked':''}>${esc(d.code)} · ${esc(d.display)}</label>`).join('')}</div>`:'<p class="muted">No saved visit diagnoses. Save them in Notes & diagnoses first, then reload here.</p>'}<button type="button" data-reload-charge-diagnoses>Reload saved diagnoses</button></fieldset>`;
+  host.innerHTML=`<fieldset><legend>Saved visit diagnoses</legend>${state.diagnoses.length?`<p class="muted">The diagnoses from this visit are ticked for you. Untick any that do not apply.</p><div class="scope-options">${state.diagnoses.map(d=>`<label><input type="checkbox" data-charge-diagnosis="${esc(d.code)}" ${disabled?'disabled':''} ${codes.includes(d.code.toUpperCase())?'checked':''}>${esc(d.code)} · ${esc(d.display)}</label>`).join('')}</div>`:'<p class="muted">No diagnoses yet. Add them above and they appear here as soon as they save.</p>'}</fieldset>`;
  }
+}
+// How many diagnoses a charge line can carry on the claim it goes out on. A new line is pointed at
+// the visit's diagnoses in order, up to this many.
+const chargeDiagnosisLineLimit=4;
+// A line whose codes were filled in from the visit by the last refresh, and nothing since. Only
+// such a line is moved when the visit's diagnoses change: a code typed by hand, a tick unticked,
+// or anything saved is the person's own answer and is left alone.
+function chargeDiagnosisAutoFilled(row){return (row.dataset.diagnosesAuto||row.getAttribute?.('data-diagnoses-auto')||'')===(row.querySelector('[name="diagnoses"]')?.value||'').trim();}
+// The marker has to be read back after a re-render, and a re-render builds rows from markup: like
+// the code and the amount, what a line was filled with is written into the row's own markup, so it
+// is still there when the table is drawn again.
+function markChargeDiagnosisAuto(row,values){row.dataset.diagnosesAuto=values;if(row.setAttribute)row.setAttribute('data-diagnoses-auto',values);}
+// An empty line — no code, no codes yet — was answered by nobody, so the visit may still fill it
+// in: at the first refresh, after a save on either screen, or the moment it is added. A line that
+// came in carrying codes is a different thing; those are an answer already given.
+function chargeDiagnosisLineUnanswered(row){return !String(row.querySelector?.('[name="code"]')?.value||'').trim()&&String(row.querySelector?.('[name="diagnoses"]')?.value||'').trim()==='';}
+function chargeDiagnosisDefaultCodes(diagnoses){return diagnoses.slice(0,chargeDiagnosisLineLimit).map(d=>d.code).join(', ');}
+// The visit's diagnoses were just saved — from the section above the table, or from the visit's
+// Diagnoses screen. Every line's choices follow at once, with nothing reloaded and nothing the
+// person typed disturbed: a line still holding what the visit last gave it is re-pointed at the
+// visit as it now stands, and any other line keeps exactly what it holds.
+function chargeDiagnosesVisitUpdated(visitId){
+ const form=$('billing-account-form');if(!form||form.elements.visit_id?.value!==visitId)return;
+ if(!form.chargeDiagnosisState||!chargeDiagnosisCurrent(form,form.chargeDiagnosisState))return;
+ // The visit's own record is what a line must be pointed at — not the copy this screen last
+ // loaded. The diagnoses save happens somewhere else on the page, so the list here is re-read
+ // from the server before any line moves; a line whose codes were filled in by the visit is
+ // re-pointed at the visit as it now stands, and any other line keeps exactly what it holds.
+ void refreshChargeEncounterDiagnoses(form);
+}
+async function refreshChargeEncounterDiagnoses(form){
+ const state=form.chargeDiagnosisState;
+ try{
+  const data=await api(`/api/v1/visits/${encodeURIComponent(state.visit)}/diagnoses`);
+  if(!chargeDiagnosisCurrent(form,state))return;
+  state.diagnoses=Array.isArray(data.diagnoses)?data.diagnoses:[];state.version=data.version;state.error=false;
+ }catch{state.error=true;renderChargeEncounterDiagnoses(form);return;}
+ for(const row of chargeLiveRows(form)){
+  const field=row.querySelector('[name="diagnoses"]');if(!field)continue;
+  if(!chargeDiagnosisAutoFilled(row)&&!chargeDiagnosisLineUnanswered(row))continue;
+  const next=chargeDiagnosisDefaultCodes(state.diagnoses);
+  if(field.value===next)continue;
+  field.value=next;markChargeDiagnosisAuto(row,next);
+ }
+ renderChargeEncounterDiagnoses(form);captureBillingChargeDraft();
+}
+function followVisitDiagnoses(){
+ if(typeof visitDiagnosisListeners==='undefined'||typeof activeVisit==='undefined')return;
+ if(visitDiagnosisListeners.has(chargeDiagnosesVisitUpdated))return;
+ visitDiagnosisListeners.add(chargeDiagnosesVisitUpdated);
 }
 async function loadChargeEncounterDiagnoses(form){
  if(!form||form.dataset.patient!==selected)return;
@@ -256,7 +310,25 @@ async function loadChargeEncounterDiagnoses(form){
  if(!state.visit){state.loading=false;renderChargeEncounterDiagnoses(form);return;}
  try{const data=await api(`/api/v1/visits/${encodeURIComponent(state.visit)}/diagnoses`);if(!chargeDiagnosisCurrent(form,state))return;state.diagnoses=Array.isArray(data.diagnoses)?data.diagnoses:[];state.version=data.version;}
  catch{if(chargeDiagnosisCurrent(form,state))state.error=true;}
- finally{state.loading=false;if(chargeDiagnosisCurrent(form,state))renderChargeEncounterDiagnoses(form);}
+ finally{
+  if(chargeDiagnosisCurrent(form,state)){
+   state.loading=false;
+   // A line that arrived with the visit's codes on it, or with nothing at all, keeps following the
+   // visit from here on. One that came from the previous system, or that staff have changed, does
+   // not — its codes are an answer already given.
+   if(!form.dataset.draftReadOnly&&!form.dataset.draftStale)for(const row of chargeLiveRows(form)){const field=row.querySelector('[name="diagnoses"]');if(field&&chargeDiagnosisAutoFilled(row))markChargeDiagnosisAuto(row,(field.value||'').trim());}
+   followVisitDiagnoses();
+   // An empty line still gets its first answer from the visit here, not from a render pass that
+   // may have already run while the list was loading.
+   if(!form.dataset.draftReadOnly&&!form.dataset.draftStale)for(const row of chargeLiveRows(form)){
+    const field=row.querySelector('[name="diagnoses"]');if(!field||!chargeDiagnosisLineUnanswered(row))continue;
+    const next=chargeDiagnosisDefaultCodes(state.diagnoses);
+    if(field.value===next)continue;
+    field.value=next;markChargeDiagnosisAuto(row,next);
+   }
+   renderChargeEncounterDiagnoses(form);
+  }
+ }
 }
 document.addEventListener('change',event=>{
  const form=event.target.closest?.('#billing-account-form');if(!form||form.dataset.patient!==selected)return;
@@ -322,6 +394,23 @@ function chargeDescriptionCell(l){
  return `${shown}<div class="charge-description-extra">${extra}${snapshot}</div>`;
 }
 function chargeDiagnosisCell(l){return chargeMiniField('diagnoses','Diagnoses for this service',(l.diagnosis_codes||[]).join(', '),1200);}
+// The visit's diagnoses, entered and saved in the same words and the same boxes as the visit's
+// Diagnoses screen: this holds that screen's own host and lets its own code draw it, so there is
+// one diagnosis editor in this application rather than two that could drift. It sits directly
+// above the charge lines, because every charge line answers to one of these.
+// It is the charge form's neighbour, not part of the form: an editor inside an editor cannot be
+// submitted, and the diagnoses save finds its own form by id.
+function chargeDiagnosisSectionMarkup(){
+ return `<section class="charge-visit-diagnoses" data-charge-diagnosis-editor><h3>Diagnoses for this visit</h3><div id="visit-diagnoses"><p class="muted">Loading…</p></div></section>`;
+}
+// Placing the section is not drawing it. The diagnoses code fills its own host and saves on its
+// own, exactly as it does on the visit's Diagnoses screen; this only asks it to, and only when the
+// host now on screen is the one laid down with this charge table.
+function openChargeDiagnosisSection(){
+ if(typeof renderVisitDiagnoses!=='function'||typeof activeVisit==='undefined'||!activeVisit)return;
+ if(!billingEditorHost()?.querySelector?.('[data-charge-diagnosis-editor]'))return;
+ void renderVisitDiagnoses();
+}
 // The amount an edit leaves behind, in cents, or nothing at all while it is not yet an amount.
 // The amount each line was saved at, remembered on the row, survives while it is edited.
 function seedChargeRowAmounts(form){for(const row of chargeLiveRows(form))chargeRowMemory(row).amountCents=chargeRowAmountCents(row);}
@@ -988,15 +1077,15 @@ function accountEditor(a,m,encounterContext=false){
  // opened elsewhere, is never filled in from another visit.
  const proposalVisit=v.visit_id?(workspace.visits||[]).find(vis=>vis.id===v.visit_id&&vis.patient_id===selected)||null:null;
  const proposal=chargeProposeBeforeRender(!a&&!m?proposalVisit:null);
- if(restoreBillingChargeDraft(a,m?.source_history_id,v.visit_id)){const restored=$('billing-account-form');seedChargeRowAmounts(restored);chargeTableTotals(restored);renderChargeRowProblems(restored);void loadChargeEncounterDiagnoses(restored);return;}
- openBillingEditor(`<form id="billing-account-form"${sourceLines} data-compact="${compact}" data-id="${a?.id||''}" data-version="${a?.version||''}" data-request="${crypto.randomUUID()}" data-source="${m?.source_history_id||''}"><h3>${a?'Edit draft charges':m?'Reconcile source billing to draft':'Charges for this visit'}</h3>${sourceNotice(m)}${chargeFormBody}${m?`<label class="review-ack"><input type="checkbox" name="verified" required> I verified the source visit, charges, fee basis, diagnoses and prior payment history. This creates a draft only.</label>${billingField('reason','Reason for this reconciliation','','text',1000,true)}<div class="actions"><button class="primary" type="submit">Create draft charges</button><button type="button" data-cancel-billing>Cancel</button></div>`:''}</form>`);
+ if(restoreBillingChargeDraft(a,m?.source_history_id,v.visit_id)){const restored=$('billing-account-form');seedChargeRowAmounts(restored);chargeTableTotals(restored);renderChargeRowProblems(restored);openChargeDiagnosisSection();void loadChargeEncounterDiagnoses(restored);return;}
+ openBillingEditor(`${compact&&typeof renderVisitDiagnoses==='function'?chargeDiagnosisSectionMarkup():''}<form id="billing-account-form"${sourceLines} data-compact="${compact}" data-id="${a?.id||''}" data-version="${a?.version||''}" data-request="${crypto.randomUUID()}" data-source="${m?.source_history_id||''}"><h3>${a?'Edit draft charges':m?'Reconcile source billing to draft':'Charges for this visit'}</h3>${sourceNotice(m)}${chargeFormBody}${m?`<label class="review-ack"><input type="checkbox" name="verified" required> I verified the source visit, charges, fee basis, diagnoses and prior payment history. This creates a draft only.</label>${billingField('reason','Reason for this reconciliation','','text',1000,true)}<div class="actions"><button class="primary" type="submit">Create draft charges</button><button type="button" data-cancel-billing>Cancel</button></div>`:''}</form>`);
  const form=$('billing-account-form');if(form){form.dataset.patient=selected;form.dataset.draftKey=billingChargeKey(a?.id,m?.source_history_id,v.visit_id);form.dataset.autosave=m?'off':'on';
   // Filled in from the earlier visit, or the blank line the table always starts with: the rows
   // are decided here, once, after this screen was opened and after any retained edits came back.
   chargeProposeAfterRender(form,proposal);
   if(m){const baseline=billingChargeMarkup(form);if(baseline)billingChargeBaselines.set(form,baseline);}
   else{billingChargeBaselines.set(form,chargeTableSignature(a?.content||{lines:chargeLiveRows(form).map(chargeRowValue)}));seedChargeRowAmounts(form);chargeTableTotals(form);renderChargeRowProblems(form);}
-  void loadChargeEncounterDiagnoses(form);if(typeof loadFeeContext==='function')void loadFeeContext(form);}
+  openChargeDiagnosisSection();void loadChargeEncounterDiagnoses(form);if(typeof loadFeeContext==='function')void loadFeeContext(form);}
 }
 function ledgerEditor(original){
  openBillingEditor(`<form id="billing-ledger-form" data-request="${crypto.randomUUID()}" data-reverses="${original?.id||''}"><h3>${original?'Reverse recorded entry':'Record payment / adjustment'}</h3><p class="muted">This records accounting evidence only. No card, bank or payer transaction is executed.</p>${original?`<p>Reverse ${esc(ledgerKind(original.kind))}: ${money(original.effect_cents)}. The original entry is retained.</p>`:`<div class="form-grid">${selectField('kind','Entry kind',['payment','adjustment_credit','adjustment_debit'],'payment')}${billingField('amount','Amount (USD)','','text',30,true)}${selectField('party','Recorded party',['patient','insurer','other'],'patient')}${selectField('method','Evidence method',['cash','check','external','other','none'],'external')}${billingField('reference','Receipt / EOB reference','','text',200)}</div>`}${billingField('occurred_on','Activity date','','date',0,true)}${billingField('reason','Reason / evidence','','text',1000,true)}<p class="muted">Do not enter payment-card numbers, bank details or credentials. Reversals and credits cannot create an overpayment.</p><div class="actions"><button type="submit" class="primary">${original?'Record reversal':'Record ledger entry'}</button><button type="button" data-cancel-billing>Cancel</button></div></form>`);

@@ -33,7 +33,12 @@ const change=(code,checked)=>{const target={dataset:{chargeDiagnosis:code},check
   assert.equal(fresh.f.value,'G24.3, G25.9');assert.match(fresh.h.innerHTML,/data-charge-diagnosis="G24.3"  checked/);assert.match(fresh.h.innerHTML,/The diagnoses from this visit are ticked for you\. Untick any that do not apply\./);
   assert.equal(typed.f.value,'M62.838','codes already entered are kept');assert.equal(saved.f.value,'','a saved line with no codes is not filled in');assert.ok(captured>before);
   fresh.f.value='';ctx.renderChargeEncounterDiagnoses(form2);assert.equal(fresh.f.value,'','unticking everything is respected');
-  const capped=mk('');form2.querySelectorAll=()=>[capped.row];ctx.api=async()=>({version:6,diagnoses:many});await ctx.loadChargeEncounterDiagnoses(form2);assert.equal(capped.f.value.split(', ').length,12);
+  // A new line is pointed at the visit's diagnoses in order, and stops where a claim line stops:
+  // four, oldest-first as the visit lists them.
+  const capped=mk('');form2.querySelectorAll=()=>[capped.row];ctx.api=async()=>({version:6,diagnoses:many});await ctx.loadChargeEncounterDiagnoses(form2);
+  assert.equal(capped.f.value.split(', ').length,4,'a new line takes at most the four diagnoses a claim line can carry');
+  assert.equal(capped.f.value,'G80.00, G80.01, G80.02, G80.03','and it takes them in the order the visit lists them');
+  assert.equal(capped.row.dataset.diagnosesAuto,'G80.00, G80.01, G80.02, G80.03','and the line remembers the visit put those there');
   const locked=mk('');form2.querySelectorAll=()=>[locked.row];form2.dataset.draftReadOnly='true';await ctx.loadChargeEncounterDiagnoses(form2);assert.equal(locked.f.value,'','a read-only draft is not changed');
   assert.match(ctx.chargeRow(),/data-diagnoses-default="pending"/);assert.doesNotMatch(ctx.chargeRow({code:'99214',amount_cents:16981,diagnosis_codes:[]}),/data-diagnoses-default/);assert.doesNotMatch(ctx.chargeRow({diagnosis_codes:['G81.14']}),/data-diagnoses-default/);
  }
