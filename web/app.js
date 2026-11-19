@@ -126,6 +126,34 @@ async function acceptConnectLaunch(){
 }
 const connectLaunchAcceptance=acceptConnectLaunch();
 let chartSection='overview',encounterSection='visit',patientDirectoryPreference=storedPatientDirectoryPreference();
+// The order the one-page visit shows: heading + actions, vitals, note, codes & charges, finish.
+// The block hosts live in this fixed row inside #visit-page-host; re-rendering a block only ever
+// replaces its own host, and an inserted panel (Insurance, Orders, Billing…) is placed after the
+// row, so the DOM keeps this order through every re-render and after switching visits.
+const VISIT_PAGE_HOST_ID='visit-page-host';
+// The blocks the one scrolling page owns, top to bottom: heading + action buttons, vitals and the
+// note (#visit-editor), codes & charges, finish. Every re-render re-places this row in this order
+// and inserted panels (Insurance, Orders, Billing…) go after it, so DOM order survives every
+// re-render and a visit switch.
+const VISIT_PAGE_BLOCK_IDS=['encounter-progress','visit-editor','encounter-revenue','visit-checkout','encounter-orders-actions'];
+// Places the row of visit hosts at its fixed order, creating whatever is missing. Safe to call
+// before every block render: an already-correct page only passes the host back.
+function ensureVisitPageHost(){
+ if(typeof document==='undefined'||typeof document.createElement!=='function'||typeof document.getElementById!=='function')return null;
+ const chart=$('chart');if(!chart||typeof chart.appendChild!=='function')return null;
+ let host=$(VISIT_PAGE_HOST_ID),owned=Boolean(host?.parentElement);
+ if(!host){host=document.createElement('div');host.id=VISIT_PAGE_HOST_ID;}
+ if(!owned){
+  host.replaceChildren();
+  for(const id of VISIT_PAGE_BLOCK_IDS){
+   const block=$(id)||document.createElement(id==='encounter-revenue'?'section':'div');
+   block.id=id;if(id==='encounter-revenue')block.className='panel';
+   host.appendChild(block);
+  }
+  if(chart.children)chart.insertBefore(host,chart.children[0]??null);else chart.appendChild(host);
+ }
+ return host;
+}
 // The patient list stays out of the way of an open chart unless this device asked to keep it.
 function storedPatientDirectoryPreference(){try{return localStorage.getItem('suncharts.patientDirectory.besideChart')==='shown';}catch{return false;}}
 function rememberPatientDirectoryPreference(visible){patientDirectoryPreference=Boolean(visible);try{localStorage.setItem('suncharts.patientDirectory.besideChart',visible?'shown':'hidden');}catch{}}
@@ -600,28 +628,80 @@ function renderChart() {
   <section id="specialty-care-panel" class="panel" hidden></section>
   <section id="care-pathways-panel" class="panel care-pathways-panel" hidden></section>
   <div id="record-context"></div>
-  <div id="visit-editor"></div>
-  <section id="encounter-revenue" class="panel" hidden></section>
-  <div id="visit-checkout"><div class="panel"><h2>Checkout & after-visit summary</h2><p>Pick a visit in Visits to review its handoff and follow-up.</p></div></div>
-  <section id="encounter-orders-actions" class="panel" hidden></section>
   ${patientAppointmentWorkspace()}`;
+  // The visit's own blocks live in one fixed-order row placed after every panel an inserted
+  // module may bring, then re-placed before the renderers run; #encounter-progress and
+  // #encounter-orders-actions keep the markup above, and #visit-editor, #encounter-revenue and
+  // #visit-checkout find their existing hosts inside the row untouched.
+  ensureVisitPageHost();
   if(typeof renderPrescribing==='function')void renderPrescribing(); renderClinical(); renderLabs(); renderBilling(); renderHistory(); if(typeof renderHealthHistory==='function')void renderHealthHistory(); if(typeof renderImmunizations==='function')void renderImmunizations(); if(typeof renderDocuments==='function')void renderDocuments(); if(typeof renderPatientIdentity==='function')void renderPatientIdentity(); if(typeof renderPatientLifecycle==='function')void renderPatientLifecycle(); if(typeof renderReferrals==='function')void renderReferrals(); if(typeof renderDemographics==='function')renderDemographics(selected,workspace.demographics); if(typeof renderPatientIntakePackets==='function')void renderPatientIntakePackets(); if(typeof renderSpecialtyPatientWorkspace==='function')void renderSpecialtyPatientWorkspace(); if(typeof renderCarePathways==='function'&&(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('workflows')))void renderCarePathways(); if(typeof renderPatientInsurance==='function')void renderPatientInsurance(); if(activeVisit) renderVisit(false); applyChartSection(); if(typeof patientBannerChartRendered==='function')void patientBannerChartRendered();
 }
 function canRegisterPatient(){return ['owner','clinician','front_desk'].includes(me?.role)&&(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('clinical','create'));}
 function isRoomingStaff(){return ['nurse','medical_assistant'].includes(me?.role);}
 // Vitals follow their own rule: rooming staff, the assigned or a covering clinician or
 // owner, and an enabled front desk account. Front desk records vitals and nothing else.
+// One compact summary line for the one-page visit: a measurement that was not taken is left out.
+// The vitals the form holds, in display order; the labels also name the form's inputs.
+const VISIT_VITAL_LABELS={systolic_mm_hg:'Systolic BP (mmHg)',diastolic_mm_hg:'Diastolic BP (mmHg)',heart_rate_bpm:'Heart rate (bpm)',temperature_c:'Temperature (°C)',weight_kg:'Weight (kg)',height_cm:'Height (cm)',oxygen_saturation_pct:'Oxygen saturation (%)'};
+function visitVitalsSummary(vitals){
+ const shown=value=>value!==undefined&&value!==null&&value!==''&&!(typeof value==='number'&&!Number.isFinite(value)),parts=[];
+ if(shown(vitals.systolic_mm_hg)||shown(vitals.diastolic_mm_hg))parts.push(`BP ${esc(vitals.systolic_mm_hg??'—')}/${esc(vitals.diastolic_mm_hg??'—')}`);
+ if(shown(vitals.heart_rate_bpm))parts.push(`Pulse ${esc(vitals.heart_rate_bpm)}`);
+ if(shown(vitals.temperature_c))parts.push(`Temp ${esc(vitals.temperature_c)} °C`);
+ if(shown(vitals.oxygen_saturation_pct))parts.push(`SpO₂ ${esc(vitals.oxygen_saturation_pct)}%`);
+ if(shown(vitals.weight_kg))parts.push(`Weight ${esc(vitals.weight_kg)} kg`);
+ if(shown(vitals.height_cm))parts.push(`Height ${esc(vitals.height_cm)} cm`);
+ return parts.join(' · ');
+}
+function visitVitalsBlockMarkup(v,retained,vitalsLocked){
+ // Compact on the one-page visit: recorded vitals show one summary line and an Edit vitals button
+ // that opens today's form; with nothing recorded the form is shown as it has always been.
+ // While the summary stands the form sits in a closed template, kept out of the page's ids so a
+ // stale copy can never be captured or submitted; opening it moves the real form back into the page.
+ // A retained tab edit keeps the open form, as it did before the page went compact.
+ const version=retained?.vitals?.version??v.version;
+ const form=`<form id="vitals-form" data-visit-id="${v.id}" data-version="${version}"><div class="form-grid vitals-grid">${Object.entries(VISIT_VITAL_LABELS).map(([key,label])=>`<label>${label}<input name="${key}" type="number" step="${['systolic_mm_hg','diastolic_mm_hg','heart_rate_bpm'].includes(key)?'1':'any'}" value="${esc(vitalsFormValues(v,retained)[key]??'')}" ${vitalsLocked?'disabled':''}></label>`).join('')}</div>${vitalsLocked?'':'<button type="submit">Save vitals</button>'}</form>`;
+ const summary=visitVitalsSummary(v.vitals||{});
+ if(!summary||retained?.vitals)return form;
+ return `<p id="visit-vitals-summary" class="visit-vitals-summary" role="status"><span>${summary}</span>${vitalsLocked?'':`<button type="button" class="text-button" data-action="edit-vitals">Edit vitals</button>`}</p><template id="vitals-form-holder">${form}</template>`;
+}
+// The values today's vitals form opens with: retained tab edits first, then the saved record.
+function vitalsFormValues(v,retained){return retained?.vitals?.values||v.vitals||{};}
+// The summary line, or today's form carrying a retained tab edit's values as it always has.
+function visitVitalsMarkup(v,retained,vitalsLocked){
+ return visitVitalsBlockMarkup(v,retained,vitalsLocked);
+}
+// The template holding today's vitals form while the summary line stands. In the real page a
+// browser keeps template contents out of the document; here the markup is read out and swapped.
+function vitalsFormHolder(){
+ const holder=$('vitals-form-holder');
+ return holder&&(holder.content?.querySelector?.('form')||typeof holder.innerHTML==='string')?holder:null;
+}
+function vitalsFormMarkupOf(holder){
+ if(!holder)return '';
+ return holder.content?.querySelector('form')?.outerHTML||String(holder.innerHTML||'');
+}
+// Opens the compact vitals editor: the form leaves its template, is put back where it was, and
+// takes focus. A copy left over from an earlier render is replaced by this visit's own form.
+function openVitalsForm(){
+ const holder=vitalsFormHolder(),markup=vitalsFormMarkupOf(holder);
+ if(!markup.includes('id="vitals-form"'))return;
+ const stale=$('vitals-form'),form=markup.slice(markup.indexOf('<form'),markup.lastIndexOf('</form>')+7);
+ const host=document.createElement('div');host.innerHTML=form;const opened=host.querySelector('form');
+ if(!opened)return;
+ if(stale)stale.replaceWith(opened);else holder.replaceWith(opened);
+ opened.querySelector('input')?.focus?.({preventScroll:true});
+}
 function canRecordVisitVitals(v){return v?.status==='in_progress'&&(isRoomingStaff()||me?.role==='front_desk'||(['owner','clinician'].includes(me?.role)&&(v.clinician_id===me.user_id||!me?.delegated)));}
 function renderVisit(activate=true) {
   captureVisitAmendmentDraft();
   if(activate){chartSection='visits';}
   followUnchangedNote();
-  const v=activeVisit, draft=visitDrafts.get(v.id), retained=draft?.patientId===selected&&v.status!=='signed'?draft:null, note=retained?.note?.values||v.note||{}, noteSource=noteSourceText(retained?.note?.values?retained.note.values.started_from:v.note?.started_from), vitals=retained?.vitals?.values||v.vitals||{}, signed=v.status==='signed', canDraft=canDraftNote(v), canSign=canSignNote(), canAmend=canAmendNote(v), locked=signed||!canDraft, vitalsLocked=!canRecordVisitVitals(v);
+  const v=activeVisit, draft=visitDrafts.get(v.id), retained=draft?.patientId===selected&&v.status!=='signed'?draft:null, note=retained?.note?.values||v.note||{}, noteSource=noteSourceText(retained?.note?.values?retained.note.values.started_from:v.note?.started_from), signed=v.status==='signed', canDraft=canDraftNote(v), canSign=canSignNote(), canAmend=canAmendNote(v), locked=signed||!canDraft, vitalsLocked=!canRecordVisitVitals(v);
   const correction=canAmend?currentAmendmentDraft(v):null, authorship=typeof visitNoteAuthorshipLine==='function'?visitNoteAuthorshipLine(v):'', supportSession=Boolean(me.delegated);
-  const vitalLabels={systolic_mm_hg:'Systolic BP (mmHg)',diastolic_mm_hg:'Diastolic BP (mmHg)',heart_rate_bpm:'Heart rate (bpm)',temperature_c:'Temperature (°C)',weight_kg:'Weight (kg)',height_cm:'Height (cm)',oxygen_saturation_pct:'Oxygen saturation (%)'};
   const amendments=workspace.amendments.filter(a=>a.visit_id===v.id);
   $('visit-editor').innerHTML=`<section class="panel"><div class="section-head"><h2>${signed?'Signed clinical record':'Visit documentation'}</h2><span class="pill ${signed?'signed':''}">${signed?'Signed':'In progress'}</span></div>${signed?`<div class="signed-notice" id="signed-note-help"><strong>Signed note — read-only.</strong> <span id="note-signed-by">${esc(typeof visitNoteSignedLine==='function'?visitNoteSignedLine(v):`Signed ${date(v.signed_at)}.`)}</span> The original SOAP note and vitals cannot be overwritten.${canAmend?' Add a signed correction to this visit, or start a new visit.<div class="actions"><button type="button" data-action="focus-amendment" aria-controls="amendment-form">Add a signed correction</button></div>':supportSession?' A clinician at the practice must sign any correction.':' A clinician can add a correction.'}</div>`:''}
-  <p id="visit-draft-status" class="muted" role="status"></p><div id="encounter-intake"><div class="encounter-context-links"><button type="button" data-chart-section="insurance">Review insurance & copay</button><button type="button" data-chart-section="clinical">Review allergies & medications</button><button type="button" data-chart-section="documents">Review patient documents</button></div><div id="encounter-benefits" class="billing-section"></div><div id="visit-rooming"></div><h3>Vitals</h3><form id="vitals-form" data-visit-id="${v.id}" data-version="${retained?.vitals?.version??v.version}"><div class="form-grid vitals-grid">${Object.entries(vitalLabels).map(([key,label])=>`<label>${label}<input name="${key}" type="number" step="${['systolic_mm_hg','diastolic_mm_hg','heart_rate_bpm'].includes(key)?'1':'any'}" value="${esc(vitals[key]??'')}" ${vitalsLocked?'disabled':''}></label>`).join('')}</div>${vitalsLocked?'':'<button type="submit">Save vitals</button>'}</form>
+  <p id="visit-draft-status" class="muted" role="status"></p><div id="encounter-intake"><div class="encounter-context-links"><button type="button" data-chart-section="insurance">Review insurance & copay</button><button type="button" data-chart-section="clinical">Review allergies & medications</button><button type="button" data-chart-section="documents">Review patient documents</button></div><div id="encounter-benefits" class="billing-section"></div><div id="visit-rooming"></div><h3>Vitals</h3>${visitVitalsMarkup(v,retained,vitalsLocked)}
   </div><div id="encounter-documentation">${visitNoteOwnsDiagnoses()?'<section id="visit-diagnoses"></section>':''}<form id="note-form" data-visit-id="${v.id}" data-version="${retained?.note?.version??v.version}"${signed?' aria-describedby="signed-note-help"':''}><h3>${signed?'SOAP note — signed original':'SOAP note'}</h3><p id="note-authorship" class="note-authorship muted"${authorship?'':' hidden'}>${esc(authorship)}</p>${locked?'':'<div id="note-conflict" class="notice error note-conflict" role="alert" hidden></div><div id="note-saved-copy" class="note-saved-copy" hidden></div>'}${locked?'':`<div id="note-previous" class="note-previous" hidden></div><input type="hidden" name="started_from" value="${esc(noteSource)}">`}<div class="form-grid note-grid">${noteSectionKeys.filter(key=>key!=='procedure'||!locked||String(note.procedure??'').trim()).map(key=>{const label=key[0].toUpperCase()+key.slice(1);return `<div class="note-section${key==='procedure'?' note-procedure':''}"><label>${label}<textarea name="${key}" maxlength="10000" ${locked?'readonly':key==='procedure'?`placeholder="${esc(noteProcedureHint)}"`:''}>${esc(note[key])}</textarea></label>${locked?'':`<button type="button" class="text-button note-same" id="note-same-${key}" data-note-same="${key}" aria-label="Same as last visit: ${label}" hidden>Same as last visit</button>`}</div>`;}).join('')}</div>${noteSource||!locked?`<p id="note-source-line" class="note-source muted"${noteSource?'':' hidden'}>${esc(noteSourceLine(noteSource,signed,v.note?.started_from))}</p>`:''}<div id="note-message" class="note-message muted" role="status" hidden></div>${locked?'':`<div class="actions"><button type="submit">Save note</button>${canSign?'<button class="primary" type="button" data-action="sign">Sign note</button><span class="muted">Save your note before signing. Then review procedures and charges, complete checkout, and submit the reviewed claim.</span>':`<span id="note-sign-help" class="muted">${supportSession?'You can draft this note. A clinician at the practice must sign it.':'You can draft this note. A clinician signs it.'}</span>`}</div>`}</form>
   ${signed?`<h3>Amendment history</h3>${amendments.map(a=>`<div class="amendment"><p><b>${esc(a.reason)}</b></p><p class="note-text">${esc(a.text)}</p><small class="muted">Recorded ${esc(date(a.created_at))}<span id="amendment-author-${esc(a.id)}">${esc(typeof visitNoteAmendmentAuthor==='function'?visitNoteAmendmentAuthor(v,a):'')}</span></small></div>`).join('')||'<p class="muted">No amendments.</p>'}${canAmend?`<form id="amendment-form" data-visit-id="${esc(v.id)}" data-patient-id="${esc(selected)}" data-version="${correction?.version??v.version}" aria-describedby="amendment-draft-status"><h3>Add a signed correction</h3><p id="amendment-draft-status" class="muted" role="status"></p><button id="amendment-review-current" type="button" data-action="review-amendment-version" hidden>I reviewed the current record — keep my correction</button><label>Reason<input name="reason" required maxlength="1000" value="${esc(correction?.values.reason||'')}"></label><label>Correction<textarea name="text" required maxlength="10000">${esc(correction?.values.text||'')}</textarea></label><div class="actions"><button id="amendment-submit" type="submit">Sign & append amendment</button><button id="amendment-discard" type="button" data-action="discard-amendment-draft" class="quiet" hidden>Discard unsaved correction</button></div></form>`:''}`:''}${!signed&&!canDraft?'<p id="note-read-only" class="muted">You can read this note. Clinical staff write it and a clinician signs it.</p>':''}</div></section>`;
   if(canAmend){const form=$('amendment-form');if(form)visitAmendmentContexts.set(form,{identity:me,tenantId:me.tenant_id,patientId:selected,visitId:v.id,version:correction?.version??v.version});updateVisitAmendmentStatus();}
@@ -762,11 +842,12 @@ function patientSectionVisible(key){
  // separate areas opened from the visit's buttons.
  return chartSection==='visits'&&Boolean(activeVisit)&&((key==='checkout'&&!inRecordArea())||(key==='documents'&&encounterSection==='files'));
 }
-// Whether the note block keeps its own diagnoses editor. The codes & charges block owns the
-// diagnoses (ICD above the CPT lines), so whenever that block is on screen the note must not
-// draw a second editor under the same id. The note editor exists only when the visit page itself
-// is on screen; on a record area opened from a button, nothing else is drawing the visit. Where
-// billing is hidden there is no charge table, so the note keeps it.
+// Whether the note block carries its own diagnoses editor. The codes & charges block owns the
+// diagnoses on the one-page visit (its stable #encounter-diagnoses host keeps one editor, ICD
+// above the CPT lines, open or closed charge table, draft or posted), so while that block is on
+// screen the note must not draw a second editor under the same id. On a record area opened from a
+// button, nothing else draws the visit, and where billing is hidden there is no codes block at
+// all — both leave the note the editor's only home.
 function visitNoteOwnsDiagnoses(){
  if(inRecordArea())return false;
  return !encounterShows('charges')||!visitBillingAreaVisible();
@@ -847,7 +928,7 @@ function setPage(title) {
   'Practice home':'Today’s schedule, visits still open, and clinical work needing attention',
   'Practice overview':'Today’s schedule, visits still open, and clinical work needing attention',
   'Practice administration':'Manage staff access, providers, facilities and rooms',
-  'Code lists':'Manage dated diagnosis and procedure code lists for this practice',
+  'Codes & prices':'Choose the code sets staff look up and the prices your codes start a charge at',
   'Patients & visits':'Find a patient, review their chart and continue visit work',
   'Schedule':'Book appointments, manage provider availability and follow reminders',
   'Pre-visit readiness':'Review public bookings, patient forms and visit preparation',
@@ -880,11 +961,11 @@ function setPage(title) {
  const today=['Practice home','Practice overview','Schedule','Pre-visit readiness','Appointment reminders','Reminder settings','Follow-up tasks','Inbox','Patient portal inbox','Communications','Send & review'];
  const care=['Patients & visits','Labs & results','Specialty care','Referrals','Referral delivery settings'];
  const revenue=['Billing & insurance','Payment settings','Payment review','Claims & remittances','Clearinghouse','Claim connections'];
- const manage=['Sun','Workflow Studio','Automation Center','AI review','Sun review','Practice administration','Code lists','Integrations','Connect services','Support tickets','Data import'];
+ const manage=['Sun','Workflow Studio','Automation Center','AI review','Sun review','Practice administration','Codes & prices','Integrations','Connect services','Support tickets','Data import'];
  $('page-title').textContent=title;
  $('page-description').textContent=descriptions[title]||'Practice workspace';
  $('workspace-section').textContent=(today.includes(title)||title.startsWith('Patient portal'))?'TODAY':care.includes(title)?'CARE':revenue.includes(title)?'REVENUE':manage.includes(title)?'MANAGE':'PRACTICE';
- const active=['Practice home','Practice overview'].includes(title)?'nav-practice':title==='Workflow Studio'?'nav-workflows':title==='Automation Center'?'nav-automation':['AI review','Sun review'].includes(title)?'nav-ai-review':['Inbox','Communications','Send & review'].includes(title)||title.startsWith('Patient portal')?'nav-portal':title==='Patients & visits'?'nav-clinical':title==='Pre-visit readiness'?'nav-previsit':['Schedule','Appointment reminders','Reminder settings'].includes(title)?'nav-schedule':title==='Labs & results'?'nav-labs':title==='Specialty care'?'nav-specialty':['Billing & insurance','Payment settings','Payment review'].includes(title)?'nav-billing':['Clearinghouse','Claim connections','Claim lifecycle'].includes(title)?'nav-edi':title==='Claims & remittances'?'nav-claims':['Referrals','Referral delivery settings'].includes(title)?'nav-referrals':title==='Follow-up tasks'?'nav-followup':['Integrations','Connect services','Support tickets'].includes(title)?'nav-apps':title==='Data import'?'nav-migration':['Practice administration','Code lists'].includes(title)?'nav-admin':null;
+ const active=['Practice home','Practice overview'].includes(title)?'nav-practice':title==='Workflow Studio'?'nav-workflows':title==='Automation Center'?'nav-automation':['AI review','Sun review'].includes(title)?'nav-ai-review':['Inbox','Communications','Send & review'].includes(title)||title.startsWith('Patient portal')?'nav-portal':title==='Patients & visits'?'nav-clinical':title==='Pre-visit readiness'?'nav-previsit':['Schedule','Appointment reminders','Reminder settings'].includes(title)?'nav-schedule':title==='Labs & results'?'nav-labs':title==='Specialty care'?'nav-specialty':['Billing & insurance','Payment settings','Payment review'].includes(title)?'nav-billing':['Clearinghouse','Claim connections','Claim lifecycle'].includes(title)?'nav-edi':title==='Claims & remittances'?'nav-claims':['Referrals','Referral delivery settings'].includes(title)?'nav-referrals':title==='Follow-up tasks'?'nav-followup':['Integrations','Connect services','Support tickets'].includes(title)?'nav-apps':title==='Data import'?'nav-migration':['Practice administration','Codes & prices'].includes(title)?'nav-admin':null;
  for(const id of ['nav-practice','nav-workflows','nav-automation','nav-ai-review','nav-communications','nav-clinical','nav-schedule','nav-previsit','nav-labs','nav-specialty','nav-referrals','nav-followup','nav-portal','nav-billing','nav-claims','nav-edi','nav-apps','nav-migration','nav-admin']){if(!$(id))continue;if(id===active)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}
  const activeItem=active?$(active):null,activeMore=activeItem?.closest?.('.nav-more');
  document.querySelectorAll?.('#workspace-navigation .nav-more').forEach(more=>{
@@ -994,6 +1075,9 @@ document.addEventListener('click',e=>{
   if(button.dataset.action==='show-saved-note'){if(!busy)showSavedNoteCopy();return;}
   if(button.dataset.action==='keep-note-draft'){if(!busy)keepNoteDraft();return;}
   if(button.dataset.action==='review-amendment-version'){if(!busy)reviewVisitAmendmentVersion(button);return;}
+  // The compact vitals line: Edit vitals brings today's form out of the closed template and back
+  // into the page, where it is the live #vitals-form and keeps the draft and autosave rules.
+  if(button.dataset.action==='edit-vitals'){openVitalsForm();return;}
   if(button.id==='toggle-directory'){const show=$('clinical-workspace').classList.contains('directory-collapsed');setPatientDirectoryVisible(show);if(selected&&workspace)rememberPatientDirectoryPreference(show);return;}
   if(button.hasAttribute('data-encounter-history')){showChartSection('visits');const history=$('patient-encounter-history');if(history){history.open=true;history.scrollIntoView({block:'start'});}return;}
   if(button.dataset.clinicalFocus){showChartSection('clinical');if(chartSection!=='clinical')return;const label=({allergy:'Allergies',problem:'Problems',medication:'Medications'})[button.dataset.clinicalFocus];const section=Array.from($('clinical-lists')?.querySelectorAll('.clinical-domain')||[]).find(node=>node.querySelector('h3')?.textContent===label);section?.scrollIntoView({block:'start'});return;}

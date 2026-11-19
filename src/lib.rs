@@ -73,6 +73,7 @@ pub mod postgres;
 pub mod practice;
 pub mod practice_admin;
 pub mod practice_billing;
+pub mod practice_codes;
 pub mod prescribing;
 pub mod previsit;
 mod previsit_standard;
@@ -424,6 +425,7 @@ pub fn app(state: State) -> Router {
         .merge(staff_invitations::router())
         .merge(practice_admin::router())
         .merge(practice_billing::router())
+        .merge(practice_codes::router())
         .merge(previsit::router())
         .merge(partner_scheduling::router())
         .merge(specialty_workspace::router())
@@ -925,6 +927,26 @@ pub fn app(state: State) -> Router {
                     "typeahead.css",
                     "text/css",
                     include_str!("../web/typeahead.css"),
+                )
+            }),
+        )
+        .route(
+            "/patient-picker.js",
+            get(|| async {
+                web_asset(
+                    "patient-picker.js",
+                    "application/javascript",
+                    include_str!("../web/patient-picker.js"),
+                )
+            }),
+        )
+        .route(
+            "/patient-picker.css",
+            get(|| async {
+                web_asset(
+                    "patient-picker.css",
+                    "text/css",
+                    include_str!("../web/patient-picker.css"),
                 )
             }),
         )

@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Looks for newly published CMS/CDC code list editions and opens a pull
+# request with them. Discovery lives in scripts/prepare_terminology.py:
+# `discover` probes the next HCPCS quarter and the next ICD-10-CM/PCS fiscal
+# year, and installs whatever official source already exists. Nothing here
+# pushes to main or merges anything; a human reviews and merges the PR. When a
+# new edition appears the refresh also updates the BUILTIN embed list in
+# src/builtin_catalogs.rs, so the pull request runs the full CI gate.
+name: Public code list refresh
+
+on:
+  schedule:
+    # Monday 06:00 UTC.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  discover:
+    name: Look for new code list editions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Look for new official editions
+        run: python3 scripts/prepare_terminology.py discover | tee discover-summary.txt
+      - name: Commit any new catalogs
+        id: commit
+        run: |
+          if git diff --quiet -- catalogs src && \
+             ! git ls-files --others --exclude-standard -- catalogs | grep -q .; then
+            echo "no new catalogs found"
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add catalogs src/builtin_catalogs.rs
+          git commit -m "Refresh public code list catalogs"
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+      - name: Push the refresh branch
+        if: steps.commit.outputs.committed == 'true'
+        run: git push --force-with-lease origin "HEAD:refs/heads/auto/code-lists-refresh"
+      - name: Open or update the pull request
+        if: steps.commit.outputs.committed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          summary="$(cat discover-summary.txt)"
+          body="Automated weekly check of the official CMS and CDC sources.
+
+          ${summary}
+
+          Regenerate or verify with \`python3 scripts/prepare_terminology.py --all\`
+          (see catalogs/README.md). Review before merging; the Rust build verifies
+          every catalog digest against the manifest."
+          existing="$(gh pr list --repo "$GITHUB_REPOSITORY" \
+            --head auto/code-lists-refresh --state open --json number \
+            --jq '.[0].number // empty')"
+          base="$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef \
+            --jq .defaultBranchRef.name)"
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --repo "$GITHUB_REPOSITORY" \
+              --title "New public code list editions" --body "$body"
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" \
+              --base "$base" --head auto/code-lists-refresh \
+              --title "New public code list editions" --body "$body"
+          fi

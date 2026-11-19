@@ -6007,6 +6007,22 @@ async fn delivered_claimmd_claim(r: &Router, a: &Actor) -> (Value, Value, Value,
     (c, p, out, receipt)
 }
 
+// The claim page's two answers, read through the endpoint the claim screen uses: where
+// Claim.MD stands on the claim, and the provider messages the timeline shows.
+async fn claimmd_page_state(r: &Router, a: &Actor, claim: &Value) -> Value {
+    let cp = format!("/api/v1/billing/claims/{}", claim["id"].as_str().unwrap());
+    let (_, detail) = schedule_call(r, a, "GET", &cp, Value::Null, None).await;
+    json!({
+        "claim_status":detail["claim"]["status"],
+        "position":detail["claimmd_position"],
+        "messages":detail["tracking"]["reports"].as_array().unwrap().iter().map(|report| json!({
+            "status":report["evidence"]["message"]["status"],
+            "message":report["evidence"]["message"]["message"],
+            "sender":report["evidence"]["senderid"],
+        })).collect::<Vec<_>>(),
+    })
+}
+
 async fn claimmd_outcome(r: &Router, a: &Actor, claim: &Value) -> Value {
     let cp = format!("/api/v1/billing/claims/{}", claim["id"].as_str().unwrap());
     let (_, detail) = schedule_call(r, a, "GET", &cp, Value::Null, None).await;
@@ -6213,6 +6229,274 @@ async fn claimmd_clearinghouse_rejection_sets_the_claim_rejected() {
         revisions[0]["message"], "synthetic CLMMD R response",
         "the rejection revision keeps the provider message text"
     );
+    server.abort();
+}
+
+#[tokio::test]
+async fn claimmd_warning_needs_correcting_is_applied_once_and_settled_by_a_later_answer() {
+    let (r, db, a, _) = setup().await;
+    let (c, p, out, receipt) = delivered_claimmd_claim(&r, &a).await;
+    let control = c["control_number"].clone();
+    let mut warning = claimmd_status_claim(&control, 1, "A", "CLMMD", "");
+    warning["messages"] = json!([{"responseid":1,"status":"W","mesgid":"WARN","message":"Missing rendering provider NPI on line 1"}]);
+    let mut settled = claimmd_status_claim(&control, 2, "A", "SYNPAYER", "PAYER123");
+    settled["messages"] =
+        json!([{"responseid":2,"status":"A","mesgid":"ACK","message":"Claim forwarded to payer"}]);
+    let (config, server, _base) = claimmd_feed(
+        &a,
+        &p,
+        ClaimMdFeed {
+            receipt,
+            pages: [(
+                "0".into(),
+                claimmd_page(vec![warning.clone(), settled.clone()]),
+            )]
+            .into_iter()
+            .collect(),
+            empty: json!({}),
+        },
+    )
+    .await;
+    let ledger = claimmd_ledger(&db, &a, &c).await;
+    queue_provider(&r, &a, &out).await;
+    assert!(suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap());
+    assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap());
+    // One poll applies the page in order: the warning opens a correction and the payer's later
+    // answer settles it and accepts the claim. Replaying the feed from the beginning — what a
+    // cursor reset does — must change nothing and never record the warning twice.
+    let state = claimmd_page_state(&r, &a, &c).await;
+    assert_eq!(state["claim_status"], "accepted");
+    assert_eq!(state["position"]["needs_correction"], false);
+    let replayed: i64 = sqlx::query(
+        "UPDATE edi_connections SET page_token=NULL,next_poll_at=now(),version=version+1 WHERE tenant_id=$1",
+    )
+    .bind(a.tenant_id)
+    .execute(&db)
+    .await
+    .unwrap()
+    .rows_affected()
+    .try_into()
+    .unwrap();
+    assert_eq!(replayed, 1);
+    suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap();
+    // The newer payer answer is the claim's position; the warning is history the page can show.
+    let state = claimmd_page_state(&r, &a, &c).await;
+    assert_eq!(state["claim_status"], "accepted");
+    assert_eq!(state["position"]["needs_correction"], false);
+    assert_eq!(
+        state["messages"],
+        json!([
+            {"status":"W","message":"Missing rendering provider NPI on line 1","sender":"CLMMD"},
+            {"status":"A","message":"Claim forwarded to payer","sender":"SYNPAYER"}
+        ])
+    );
+    let open: bool = sqlx::query_scalar("SELECT coalesce((SELECT reason FROM claim_revisions WHERE tenant_id=$1 AND claim_id=$2 AND evidence->>'evidence_origin'='claimmd_status_feed' AND reason IN ($3,$4) ORDER BY version DESC LIMIT 1)=$3,false)")
+        .bind(a.tenant_id)
+        .bind(c["id"].as_str().unwrap().parse::<Uuid>().unwrap())
+        .bind("Claim.MD found a problem with this claim")
+        .bind("Claim.MD no longer holds this claim for correction")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert!(!open, "the later answer settles the warning");
+    let warnings: i64 = sqlx::query_scalar("SELECT count(*) FROM claim_revisions WHERE tenant_id=$1 AND evidence->>'event'='claimmd_warning'")
+        .bind(a.tenant_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(warnings, 1);
+    let technical: String = sqlx::query_scalar(
+        "SELECT technical_status FROM edi_submissions WHERE tenant_id=$1 AND claim_id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(c["id"].as_str().unwrap().parse::<Uuid>().unwrap())
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        technical, "pending",
+        "the settled file waits on the payer again"
+    );
+    assert_eq!(
+        claimmd_ledger(&db, &a, &c).await,
+        ledger,
+        "status responses cannot change the ledger"
+    );
+    server.abort();
+
+    // The same feed replayed into a second practice must apply the identical rows once.
+    let (r2, db2, a2, _) = setup().await;
+    let (c2, p2, out2, receipt2) = delivered_claimmd_claim(&r2, &a2).await;
+    let control2 = c2["control_number"].clone();
+    let mut warning2 = warning.clone();
+    warning2["pcn"] = control2.clone();
+    warning2["claimid"] = control2.clone();
+    let settled2 = claimmd_status_claim(&control2, 2, "A", "SYNPAYER", "PAYER123");
+    let (config2, server2, _base2) = claimmd_feed(
+        &a2,
+        &p2,
+        ClaimMdFeed {
+            receipt: receipt2,
+            pages: [("0".into(), claimmd_page(vec![warning2, settled2]))]
+                .into_iter()
+                .collect(),
+            empty: json!({}),
+        },
+    )
+    .await;
+    queue_provider(&r2, &a2, &out2).await;
+    suncharts_engine::delivery::process_one(&db2, &config2)
+        .await
+        .unwrap();
+    assert!(suncharts_engine::retrieval::poll_one(&db2, &config2)
+        .await
+        .unwrap());
+    suncharts_engine::retrieval::poll_one(&db2, &config2)
+        .await
+        .unwrap();
+    let (applied, settled_rows): (i64, i64) = sqlx::query_as("SELECT count(*) FILTER (WHERE evidence->>'event'='claimmd_warning'),count(*) FILTER (WHERE evidence->>'event'='claimmd_correction_settled') FROM claim_revisions WHERE tenant_id=$1")
+        .bind(a2.tenant_id)
+        .fetch_one(&db2)
+        .await
+        .unwrap();
+    assert_eq!(
+        (applied, settled_rows),
+        (1, 1),
+        "a replayed feed cannot double-apply"
+    );
+    server2.abort();
+}
+
+#[tokio::test]
+async fn claimmd_acknowledged_only_is_received_and_a_later_warning_needs_correcting() {
+    let (r, db, a, _) = setup().await;
+    let (c, p, out, receipt) = delivered_claimmd_claim(&r, &a).await;
+    let control = c["control_number"].clone();
+    let mut ack = claimmd_status_claim(&control, 1, "A", "CLMMD", "");
+    ack["messages"] =
+        json!([{"responseid":1,"status":"A","mesgid":"ACK","message":"Acknowledged"}]);
+    let mut warning = claimmd_status_claim(&control, 2, "A", "CLMMD", "");
+    warning["messages"] = json!([{"responseid":2,"status":"W","mesgid":"WARN","message":"Claim needs approving in Claim.MD"}]);
+    let (config, server, _base) = claimmd_feed(
+        &a,
+        &p,
+        ClaimMdFeed {
+            receipt,
+            pages: [("0".into(), claimmd_page(vec![ack.clone(), warning.clone()]))]
+                .into_iter()
+                .collect(),
+            empty: json!({}),
+        },
+    )
+    .await;
+    let ledger = claimmd_ledger(&db, &a, &c).await;
+    queue_provider(&r, &a, &out).await;
+    assert!(suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap());
+    assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap());
+    // A second pass finds nothing to do and must not re-apply anything either.
+    suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap();
+    let state = claimmd_page_state(&r, &a, &c).await;
+    assert_eq!(state["claim_status"], "submitted");
+    assert_eq!(state["position"]["needs_correction"], true);
+    assert_eq!(state["position"]["acknowledged"], false);
+    assert_eq!(
+        state["position"]["correction"]["message"],
+        "Claim needs approving in Claim.MD"
+    );
+    assert_eq!(
+        state["messages"],
+        json!([
+            {"status":"A","message":"Acknowledged","sender":"CLMMD"},
+            {"status":"W","message":"Claim needs approving in Claim.MD","sender":"CLMMD"}
+        ])
+    );
+    let received: i64 = sqlx::query_scalar("SELECT count(*) FROM claim_revisions WHERE tenant_id=$1 AND evidence->>'event'='claimmd_received'")
+        .bind(a.tenant_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(
+        received, 1,
+        "the acknowledgement is recorded once across polls"
+    );
+    let technical: String = sqlx::query_scalar(
+        "SELECT technical_status FROM edi_submissions WHERE tenant_id=$1 AND claim_id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(c["id"].as_str().unwrap().parse::<Uuid>().unwrap())
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(technical, "needs_review");
+    assert_eq!(
+        claimmd_ledger(&db, &a, &c).await,
+        ledger,
+        "status responses cannot change the ledger"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn claimmd_response_without_a_file_id_is_matched_by_control_number() {
+    let (r, db, a, _) = setup().await;
+    let (c, p, out, receipt) = delivered_claimmd_claim(&r, &a).await;
+    let control = c["control_number"].clone();
+    // Claim.MD answers without ever reporting a file or claim ID back to us; only the
+    // patient control number we sent comes back in the response.
+    let mut response = claimmd_status_claim(&control, 1, "A", "CLMMD", "");
+    response["claimid"] = json!("");
+    response["fileid"] = json!("");
+    response["messages"] =
+        json!([{"responseid":1,"status":"W","mesgid":"WARN","message":"Held for approval"}]);
+    let (config, server, _base) = claimmd_feed(
+        &a,
+        &p,
+        ClaimMdFeed {
+            receipt,
+            pages: [("0".into(), claimmd_page(vec![response.clone()]))]
+                .into_iter()
+                .collect(),
+            empty: json!({}),
+        },
+    )
+    .await;
+    queue_provider(&r, &a, &out).await;
+    assert!(suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap());
+    assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap());
+    let state = claimmd_page_state(&r, &a, &c).await;
+    assert_eq!(
+        state["messages"],
+        json!([{"status":"W","message":"Held for approval","sender":"CLMMD"}]),
+        "the control number alone ties the response to the claim"
+    );
+    assert_eq!(state["position"]["needs_correction"], true);
+    assert_eq!(
+        state["position"]["correction"]["message"],
+        "Held for approval"
+    );
+    assert!(state["position"]["correction"]["at"].is_string());
+    let review: i64 = sqlx::query_scalar("SELECT count(*) FROM edi_remote_reports WHERE tenant_id=$1 AND last_result='identity_match_needs_review'")
+        .bind(a.tenant_id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(review, 0, "the control-number match resolved the report");
     server.abort();
 }
 

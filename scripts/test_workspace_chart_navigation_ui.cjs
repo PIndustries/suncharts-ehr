@@ -21,6 +21,7 @@ vm.runInContext(extract('function encounterWorkflow(){','function openEncounterS
 vm.runInContext(extract('function chartAreaEnabled(key){','\nconst formData='),context,{filename:'chart-navigation.js'});
 vm.runInContext(extract('function encounterShows(part){','function patientSectionVisible(key)'),context,{filename:'encounter-shows.js'});
 vm.runInContext(extract('const noteSectionKeys=','const visitAmendmentDrafts='),context,{filename:'note-sections.js'});
+vm.runInContext(extract('const VISIT_VITAL_LABELS=','function canRecordVisitVitals('),context,{filename:'encounter-vitals.js'});
 vm.runInContext(extract('function renderVisit(activate=true) {','function renderHistory()'),context,{filename:'encounter-render.js'});
 const evaluate=source=>vm.runInContext(source,context),plain=value=>JSON.parse(JSON.stringify(value));
 const configured=['overview','visits','billing','documents','profile','clinical','history','orders','checkout','functional_status','specialty_care'];

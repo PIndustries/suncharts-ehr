@@ -1,0 +1,68 @@
+{
+  "datasets": {
+    "icd10cm-2026": {
+      "system": "ICD-10-CM",
+      "edition": "FY2026",
+      "source_name": "CDC / NCHS ICD-10-CM FY2026 order file",
+      "source_url": "https://ftp.cdc.gov/pub/health_statistics/nchs/publications/ICD10CM/2026/icd10cm-Code%20Descriptions-2026.zip",
+      "effective_start": "2025-10-01",
+      "effective_end": "2026-09-30"
+    },
+    "icd10cm-2027": {
+      "system": "ICD-10-CM",
+      "edition": "FY2027",
+      "source_name": "CDC / NCHS ICD-10-CM FY2027 order file",
+      "source_url": "https://ftp.cdc.gov/pub/health_statistics/nchs/publications/ICD10CM/2027/icd10cm-code-descriptions-2027.zip",
+      "effective_start": "2026-10-01",
+      "effective_end": "2027-09-30"
+    },
+    "icd10pcs-2027": {
+      "system": "ICD-10-PCS",
+      "edition": "FY2027",
+      "source_name": "CMS ICD-10-PCS FY2027 order file",
+      "source_url": "https://www.cms.gov/files/zip/2027-icd-10-pcs-order-file-long-abbreviated-titles.zip",
+      "effective_start": "2026-10-01",
+      "effective_end": "2027-09-30"
+    },
+    "hcpcs-2026-01": {
+      "system": "HCPCS",
+      "edition": "2026-01",
+      "source_name": "CMS January 2026 HCPCS Level II public-use file",
+      "source_url": "https://www.cms.gov/files/zip/january-2026-alpha-numeric-hcpcs-file.zip",
+      "effective_start": "2026-01-01",
+      "effective_end": "2026-03-31"
+    },
+    "hcpcs-2026-04": {
+      "system": "HCPCS",
+      "edition": "2026-04",
+      "source_name": "CMS April 2026 HCPCS Level II public-use file",
+      "source_url": "https://www.cms.gov/files/zip/april-2026-alpha-numeric-hcpcs-file.zip",
+      "effective_start": "2026-04-01",
+      "effective_end": "2026-06-30"
+    },
+    "hcpcs-2026-07": {
+      "system": "HCPCS",
+      "edition": "2026-07",
+      "source_name": "CMS July 2026 HCPCS Level II public-use file",
+      "source_url": "https://www.cms.gov/files/zip/july-2026-alpha-numeric-hcpcs-file.zip",
+      "effective_start": "2026-07-01",
+      "effective_end": "2026-09-30"
+    },
+    "hcpcs-2026-10": {
+      "system": "HCPCS",
+      "edition": "2026-10",
+      "source_name": "CMS October 2026 HCPCS Level II public-use file",
+      "source_url": "https://www.cms.gov/files/zip/october-2026-alpha-numeric-hcpcs-file.zip",
+      "effective_start": "2026-10-01",
+      "effective_end": "2026-12-31"
+    },
+    "hcpcs-2027-01": {
+      "system": "HCPCS",
+      "edition": "2027-01",
+      "source_name": "CMS January 2027 HCPCS Level II public-use file",
+      "source_url": "https://www.cms.gov/files/zip/january-2027-alpha-numeric-hcpcs-file.zip",
+      "effective_start": "2027-01-01",
+      "effective_end": null
+    }
+  }
+}

@@ -71,7 +71,9 @@ pub(crate) fn test_import(catalog: &[u8]) -> Result<Import> {
     Ok(input)
 }
 
-fn canonical_code(system: &str, value: &str) -> Result<String> {
+/// Canonical form of a code for its system, or an invalid-input error. Practice code settings
+/// store codes the same way the installed catalogs do, so a practice row matches its catalog code.
+pub(crate) fn canonical_code(system: &str, value: &str) -> Result<String> {
     let code = value.trim().to_ascii_uppercase();
     let compact = code.replace('.', "");
     let bytes = compact.as_bytes();
@@ -385,7 +387,10 @@ const MAX_CPT_MEMBER: u64 = 64 * 1024 * 1024;
 struct CptInstall {
     request_id: Uuid,
     license_attested: bool,
-    license_reference: String,
+    /// Optional: the box is all an owner needs to tick. Without a reference the release records
+    /// who confirmed the license and when.
+    #[serde(default)]
+    license_reference: Option<String>,
     #[serde(default)]
     license_valid_until: Option<NaiveDate>,
 }
@@ -581,8 +586,15 @@ async fn cpt_install(
             "Confirm that your practice holds a CPT license.",
         ));
     }
-    let reference = clean(&body.license_reference, 500)
-        .map_err(|_| Error::Invalid("Enter the CPT license reference."))?;
+    let reference = match body.license_reference.as_deref().map(str::trim) {
+        Some(value) if !value.is_empty() => clean(value, 500)
+            .map_err(|_| Error::Invalid("The CPT license reference is too long."))?,
+        _ => format!(
+            "CPT license confirmed by the practice owner ({}) on {}",
+            actor.sub,
+            Utc::now().date_naive()
+        ),
+    };
     if body
         .license_valid_until
         .is_some_and(|date| date < Utc::now().date_naive())
@@ -722,6 +734,19 @@ async fn search(
         .service_date
         .unwrap_or_else(|| Utc::now().date_naive());
     let mut tx = db(&state)?.begin().await?;
+    // A system the practice turned off answers empty with a disabled flag, whatever its
+    // installed releases. The search stays audited like any other.
+    if !crate::practice_codes::system_enabled(&mut tx, actor.tenant_id, selected).await? {
+        audit(&mut tx, &actor, "terminology.codes.search", actor.tenant_id).await?;
+        tx.commit().await?;
+        return Ok(reply(json!({
+            "items": [],
+            "release": null,
+            "next_cursor": null,
+            "disabled": true,
+            "service_date": date
+        })));
+    }
     let id:Option<Uuid>=sqlx::query_scalar(&format!("SELECT r.id FROM terminology_releases r WHERE r.tenant_id=$1 AND r.system=$2 AND {LICENSE_VISIBLE} AND (($3::uuid IS NOT NULL AND r.id=$3) OR ($3::uuid IS NULL AND r.effective_start<=$4 AND (r.effective_end IS NULL OR r.effective_end>=$4))) ORDER BY r.effective_start DESC,r.created_at DESC,r.id DESC LIMIT 1"))
         .bind(actor.tenant_id).bind(selected).bind(requested).bind(date).fetch_optional(&mut *tx).await?;
     let Some(id) = id else {

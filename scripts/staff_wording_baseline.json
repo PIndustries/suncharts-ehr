@@ -1,6 +1,6 @@
 {
   "app.js": {
-    "encounter": 11
+    "encounter": 14
   },
   "claims.js": {
     "JSON": 2
@@ -42,5 +42,8 @@
     "JSON": 1,
     "payload": 15,
     "snapshot": 2
+  },
+  "patient-revenue.js": {
+    "encounter": 1
   }
 }

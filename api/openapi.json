@@ -31277,7 +31277,7 @@
         "tags": [
           "Terminology"
         ],
-        "description": "Staff-only, audited and tenant-scoped. Searches code prefixes or publisher description word prefixes. Selects the latest effective release unless release_id is supplied. Applies release/code dates and active status; active=false selects inactive entries. Empty results with release=null mean no effective authorized release. Cursor fixes the release and binds the canonical system, normalized query, service date, billable filter and active filter; reuse those filters on the next page. Unknown query fields are rejected.",
+        "description": "Staff-only, audited and tenant-scoped. Searches code prefixes or publisher description word prefixes. Selects the latest effective release unless release_id is supplied. Applies release/code dates and active status; active=false selects inactive entries. Empty results with release=null mean no effective authorized release. Cursor fixes the release and binds the canonical system, normalized query, service date, billable filter and active filter; reuse those filters on the next page. Unknown query fields are rejected. When the practice turned this system off in its code settings, the answer is {items:[],release:null,next_cursor:null,disabled:true,service_date}.",
         "parameters": [
           {
             "name": "system",
@@ -34958,6 +34958,497 @@
         }
       ]
     },
+    "/api/v1/practice/code-sets": {
+      "get": {
+        "operationId": "listPracticeCodeSets",
+        "summary": "Read the four practice code-set switches",
+        "tags": [
+          "Practice code settings"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; tenant-scoped data with Cache-Control: no-store"
+          },
+          "400": {
+            "description": "Invalid input, bounds or version"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Staff role, owner privilege or billing scope denied"
+          },
+          "404": {
+            "description": "Resource not found in this tenant"
+          },
+          "409": {
+            "description": "Version conflict, request-ID reuse or duplicate code"
+          },
+          "428": {
+            "description": "Current quoted If-Match version required"
+          }
+        },
+        "description": "Owner browser sessions only. Always all four systems in catalog order. A system with no settings row is enabled with version 0. installed is true when the tenant has any terminology release for that system. Response {items:[{system,enabled,version,installed}]}."
+      }
+    },
+    "/api/v1/practice/code-sets/{system}": {
+      "put": {
+        "operationId": "updatePracticeCodeSet",
+        "summary": "Turn one terminology system on or off for the practice",
+        "tags": [
+          "Practice code settings"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "system",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ICD-10-CM",
+                "ICD-10-PCS",
+                "HCPCS",
+                "CPT"
+              ]
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "\"0\""
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "enabled"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success; tenant-scoped data with Cache-Control: no-store"
+          },
+          "400": {
+            "description": "Invalid input, bounds or version"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Staff role, owner privilege or billing scope denied"
+          },
+          "404": {
+            "description": "Resource not found in this tenant"
+          },
+          "409": {
+            "description": "Version conflict, request-ID reuse or duplicate code"
+          },
+          "428": {
+            "description": "Current quoted If-Match version required"
+          }
+        },
+        "description": "Owner browser sessions only. If-Match quotes the current version; 0 is correct while no settings row exists. The change and its audit event commit atomically. Turning a system off hides it from terminology code search and dropdowns; nothing installed or billed is rewritten. Stale versions return 409."
+      },
+      "parameters": [
+        {
+          "name": "system",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "enum": [
+              "ICD-10-CM",
+              "ICD-10-PCS",
+              "HCPCS",
+              "CPT"
+            ]
+          }
+        }
+      ]
+    },
+    "/api/v1/practice/codes": {
+      "get": {
+        "operationId": "listPracticeCodes",
+        "summary": "Search the practice code list",
+        "tags": [
+          "Practice code settings"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          },
+          {
+            "oauth2": [
+              "billing.read"
+            ]
+          },
+          {
+            "delegatedJwt": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "system",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "description": "Matches a code prefix (dots and case ignored) or every search word as a display-word prefix."
+          },
+          {
+            "name": "enabled",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; tenant-scoped data with Cache-Control: no-store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "system": {
+                            "type": "string",
+                            "enum": [
+                              "ICD-10-CM",
+                              "ICD-10-PCS",
+                              "HCPCS",
+                              "CPT"
+                            ]
+                          },
+                          "code": {
+                            "type": "string",
+                            "description": "Canonical for its system, as installed catalogs store it."
+                          },
+                          "display": {
+                            "type": "string",
+                            "maxLength": 1000
+                          },
+                          "enabled": {
+                            "type": "boolean"
+                          },
+                          "price_cents": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "minimum": 0,
+                            "maximum": 10000000
+                          },
+                          "default_units": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9999
+                          },
+                          "modifiers": {
+                            "type": "string",
+                            "description": "Empty, or up to four two-character uppercase alphanumeric codes separated by single spaces."
+                          },
+                          "version": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "system",
+                          "code",
+                          "display",
+                          "enabled",
+                          "price_cents",
+                          "default_units",
+                          "modifiers",
+                          "version"
+                        ]
+                      },
+                      "maxItems": 500
+                    },
+                    "limit": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "items"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input, bounds or version"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Staff role, owner privilege or billing scope denied"
+          },
+          "404": {
+            "description": "Resource not found in this tenant"
+          },
+          "409": {
+            "description": "Version conflict, request-ID reuse or duplicate code"
+          },
+          "428": {
+            "description": "Current quoted If-Match version required"
+          }
+        },
+        "description": "Staff with native billing view permission and billing.read OAuth scope when applicable. Ordered by system then code; at most 500 items. Response {items:[{id,system,code,display,enabled,price_cents,default_units,modifiers,version}],limit:500}."
+      },
+      "post": {
+        "operationId": "createPracticeCode",
+        "summary": "Add a code to the practice list",
+        "tags": [
+          "Practice code settings"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "system": {
+                    "type": "string"
+                  },
+                  "code": {
+                    "type": "string"
+                  },
+                  "display": {
+                    "type": "string",
+                    "maxLength": 1000
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "price_cents": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0,
+                    "maximum": 10000000
+                  },
+                  "default_units": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9999
+                  },
+                  "modifiers": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "request_id",
+                  "system",
+                  "code",
+                  "display",
+                  "enabled",
+                  "price_cents",
+                  "default_units"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success; tenant-scoped data with Cache-Control: no-store"
+          },
+          "400": {
+            "description": "Invalid input, bounds or version"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Staff role, owner privilege or billing scope denied"
+          },
+          "404": {
+            "description": "Resource not found in this tenant"
+          },
+          "409": {
+            "description": "Version conflict, request-ID reuse or duplicate code"
+          },
+          "428": {
+            "description": "Current quoted If-Match version required"
+          }
+        },
+        "description": "Owner browser sessions only. The code is canonicalized for its system. A replay of the same request_id returns the stored item; another row for the same system and code returns 409 with message \"This code is already in your list.\" The row and its audit event commit atomically."
+      }
+    },
+    "/api/v1/practice/codes/{id}": {
+      "put": {
+        "operationId": "updatePracticeCode",
+        "summary": "Change a practice list row",
+        "tags": [
+          "Practice code settings"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "\"1\""
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "display": {
+                    "type": "string",
+                    "maxLength": 1000
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "price_cents": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0,
+                    "maximum": 10000000
+                  },
+                  "default_units": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9999
+                  },
+                  "modifiers": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "display",
+                  "enabled",
+                  "price_cents",
+                  "default_units"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success; tenant-scoped data with Cache-Control: no-store"
+          },
+          "400": {
+            "description": "Invalid input, bounds or version"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Staff role, owner privilege or billing scope denied"
+          },
+          "404": {
+            "description": "Resource not found in this tenant"
+          },
+          "409": {
+            "description": "Version conflict, request-ID reuse or duplicate code"
+          },
+          "428": {
+            "description": "Current quoted If-Match version required"
+          }
+        },
+        "description": "Owner browser sessions only. If-Match quotes the current version; stale versions return 409. There is no delete: turning a code off is how it leaves dropdowns, and saved charges never change. The row and its audit event commit atomically."
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ]
+    },
     "/api/v1/patients/{patient_id}/fee-context": {
       "get": {
         "operationId": "getPatientFeeContext",
@@ -35096,7 +35587,7 @@
             }
           }
         ],
-        "description": "Staff with billing view. Codes on approved fee schedules and on existing charges matching q (at least 2 characters), with the words they were last billed under. Response {items:[{code,system,display}]}, at most 8."
+        "description": "Staff with billing view. The practice's own enabled codes for CPT/HCPCS come first (matching q by code prefix or display words, each with price_cents, default_units, modifiers and \"practice_code\":true), then codes on approved fee schedules and existing charges matching q (at least 2 characters), with the words they were last billed under. A practice code that is turned off never appears and a system that is turned off never contributes. Response {items}, at most 8."
       }
     },
     "/api/v1/patients/{patient_id}/fee-quote": {

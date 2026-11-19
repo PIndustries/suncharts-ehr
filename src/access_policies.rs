@@ -412,6 +412,8 @@ fn action(method: &Method, path: &str) -> Option<Action> {
                 "clearinghouses",
                 "clients",
                 "clinical",
+                "code-sets",
+                "codes",
                 "coverages",
                 "corrections",
                 "definitions",
