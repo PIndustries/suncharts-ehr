@@ -151,7 +151,8 @@ impl Broker for FakeReaders {
             }
             if rest.is_empty() {
                 let body = body.unwrap();
-                assert_eq!(body.as_object().unwrap().len(), 6);
+                let extra = usize::from(body.get("location_address").is_some());
+                assert_eq!(body.as_object().unwrap().len(), 6 + extra);
                 let code = body["registration_code"].as_str().unwrap();
                 if code == "wrong-code" {
                     return Ok(refusal(400, "registration_code_not_accepted"));
@@ -531,4 +532,140 @@ async fn the_practice_reader_code_never_appears_or_works_in_production_or_on_a_l
         add_with(&state, &owner, simulated(), &test_account, development()).await,
         Err(Error::Conflict(_))
     ));
+}
+
+async fn facility(
+    pool: &PgPool,
+    tenant: Uuid,
+    name: &str,
+    address: (&str, &str, &str, &str, &str),
+    active: bool,
+) {
+    let (line1, line2, city, state, postal) = address;
+    sqlx::query(
+        "INSERT INTO practice_facilities(tenant_id,id,name,address,address_line1,address_line2,city,state,postal_code,active) VALUES($1,$2,$3,'',$4,$5,$6,$7,$8,$9)",
+    )
+    .bind(tenant)
+    .bind(Uuid::new_v4())
+    .bind(name)
+    .bind(line1)
+    .bind(line2)
+    .bind(city)
+    .bind(state)
+    .bind(postal)
+    .bind(active)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_facility_address_travels_with_a_new_reader() {
+    let (pool, owner, state) = setup().await;
+    // The first active facility in name order whose address is complete is sent,
+    // trimmed, with line2 omitted when blank. A disabled facility never counts.
+    facility(
+        &pool,
+        owner.tenant_id,
+        "Zante annexe",
+        (" 9 Zante Way ", " ", " Austin ", "TX", "78701"),
+        true,
+    )
+    .await;
+    facility(
+        &pool,
+        owner.tenant_id,
+        "Closed office",
+        ("1 Closed Rd", "", "Austin", "TX", "78701"),
+        false,
+    )
+    .await;
+    facility(
+        &pool,
+        owner.tenant_id,
+        "Beta clinic",
+        (" 12 Beta St ", " Suite 4 ", "Austin", "TX", "78701"),
+        true,
+    )
+    .await;
+    facility(
+        &pool,
+        owner.tenant_id,
+        "Alpha blank city",
+        ("1 Alpha Rd", "", "   ", "TX", "78701"),
+        true,
+    )
+    .await;
+    let broker = FakeReaders::new(false);
+    let added = add_with(
+        &state,
+        &owner,
+        Add {
+            request_id: Uuid::new_v4(),
+            code: "sepia-cerulean-aqua".into(),
+            name: "Front desk".into(),
+        },
+        &broker,
+        development(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(added["reader"]["name"], "Front desk");
+    let world = broker.state.lock().unwrap();
+    assert_eq!(
+        world.posted[0]["location_address"],
+        json!({"line1":"12 Beta St","city":"Austin","state":"TX","postal_code":"78701","country":"US","line2":"Suite 4"})
+    );
+}
+
+#[tokio::test]
+async fn the_request_carries_no_address_when_no_facility_has_one() {
+    let (pool, owner, state) = setup().await;
+    facility(
+        &pool,
+        owner.tenant_id,
+        "Front desk office",
+        ("100 Example St", "", "Austin", "", "78701"),
+        true,
+    )
+    .await;
+    let broker = FakeReaders::new(false);
+    let added = add_with(
+        &state,
+        &owner,
+        Add {
+            request_id: Uuid::new_v4(),
+            code: "sepia-cerulean-aqua".into(),
+            name: "Front desk".into(),
+        },
+        &broker,
+        development(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(added["reader"]["name"], "Front desk");
+    let world = broker.state.lock().unwrap();
+    assert!(world.posted[0].get("location_address").is_none());
+}
+
+#[tokio::test]
+async fn a_missing_business_address_points_staff_at_the_right_screen() {
+    let (_pool, owner, state) = setup().await;
+    let broker = FakeReaders::new(false);
+    let result = add_with(
+        &state,
+        &owner,
+        Add {
+            request_id: Uuid::new_v4(),
+            code: "no-address".into(),
+            name: "Front desk".into(),
+        },
+        &broker,
+        development(),
+    )
+    .await;
+    assert!(
+        matches!(result, Err(Error::Conflict(message)) if message == "Add the practice address under Practice administration, Facilities, then add the reader again."),
+        "{result:?}"
+    );
 }

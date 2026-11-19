@@ -650,6 +650,26 @@ async fn ready(
         )),
     }
 }
+async fn facility_address(
+    pool: &PgPool,
+    tenant: Uuid,
+) -> Result<Option<(String, String, String, String, String)>> {
+    let row: Option<(String, String, String, String, String)> = sqlx::query_as(
+        "SELECT address_line1,address_line2,city,state,postal_code FROM practice_facilities WHERE tenant_id=$1 AND active AND btrim(address_line1)<>'' AND btrim(city)<>'' AND btrim(state)<>'' AND btrim(postal_code)<>'' ORDER BY name,id LIMIT 1",
+    )
+    .bind(tenant)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(line1, line2, city, state, postal_code)| {
+        (
+            line1.trim().to_owned(),
+            line2.trim().to_owned(),
+            city.trim().to_owned(),
+            state.trim().to_owned(),
+            postal_code.trim().to_owned(),
+        )
+    }))
+}
 async fn add_with(
     state: &State,
     a: &Actor,
@@ -674,6 +694,25 @@ async fn add_with(
     body["request_id"] = json!(input.request_id);
     body["registration_code"] = json!(code);
     body["label"] = json!(name(&input.name)?);
+    // The payments service needs a business address to register a reader. When the
+    // practice has recorded one on an active facility, send it with the request. When
+    // none is recorded the request goes out as before: the payments service may already
+    // hold an address from onboarding.
+    if let Some((line1, line2, city, state_name, postal_code)) =
+        facility_address(pool, a.tenant_id).await?
+    {
+        let mut address = json!({
+            "line1": line1,
+            "city": city,
+            "state": state_name,
+            "postal_code": postal_code,
+            "country": "US",
+        });
+        if !line2.is_empty() {
+            address["line2"] = json!(line2);
+        }
+        body["location_address"] = address;
+    }
     let reply = broker
         .reply(
             pool,
@@ -693,7 +732,7 @@ async fn add_with(
         }
         (409, "business_address_missing") => {
             return Err(Error::Conflict(
-                "Add the practice address to the payment account, then add the reader.",
+                "Add the practice address under Practice administration, Facilities, then add the reader again.",
             ))
         }
         _ => return Err(unconfirmed()),
