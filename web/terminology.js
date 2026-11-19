@@ -296,8 +296,37 @@ async function showTerminologyCatalogs(){
  if(me?.role!=='owner')return;
   const account=me,generation=terminologyGeneration;showTool('Code lists');const host=$('tools');host.className='integration-workspace';host.innerHTML='<p class="muted" data-terminology-loading>Loading the installed code lists…</p>';const loading=host.querySelector('[data-terminology-loading]');
  const result=await api('/api/v1/terminology/releases');if(account!==me||generation!==terminologyGeneration||$('tools')!==host||!loading?.isConnected)return;
-  host.innerHTML=`<header class="integration-hero"><div><p class="eyebrow">THIS EHR INSTANCE</p><h2>Code lists</h2><p>Install dated diagnosis and procedure code lists for lookups. Clinical records keep the code and description recorded with them.</p></div><button type="button" data-terminology-manage>Refresh code lists</button></header><section class="integration-section"><h3>Installed versions</h3>${(result.items||[]).map(release=>`<article class="integration-access-row"><div><b>${esc(terminologyReleaseLabel(release))}</b><small>${esc(release.source_name)} · ${Number(release.code_count||release.entry_count||0).toLocaleString()} codes</small><small>${esc(release.rights||'')} ${release.license_valid_until?` · licensed through ${esc(release.license_valid_until)}`:''}</small></div></article>`).join('')||'<p>No code lists are installed yet. You can still type codes in by hand.</p>'}${result.next_cursor?'<p class="muted">More code list versions are available.</p>':''}</section><section class="integration-section"><h3>Import a code list</h3><p>Choose a SunCharts code list data file with its source, edition, effective dates, rights information and codes. CPT imports require a licensed source.</p><form id="terminology-import-form"><label>Code list data file<input type="file" name="catalog" accept="application/json,.json" required data-terminology-file></label><div id="terminology-import-preview" role="status"></div><label>Reason for this import<input name="reason" required maxlength="1000"></label><label class="review-ack"><input type="checkbox" name="rights_attested" required> I have permission to install and use this code list in this EHR.</label><button type="submit" class="primary">Import reviewed code list</button></form></section>`;terminologyImport=null;
+  host.innerHTML=`<header class="integration-hero"><div><p class="eyebrow">THIS EHR INSTANCE</p><h2>Code lists</h2><p>Install dated diagnosis and procedure code lists for lookups. Clinical records keep the code and description recorded with them.</p></div><button type="button" data-terminology-manage>Refresh code lists</button></header><section class="integration-section"><h3>Installed versions</h3>${(result.items||[]).map(release=>`<article class="integration-access-row"><div><b>${esc(terminologyReleaseLabel(release))}</b><small>${esc(release.source_name)} · ${Number(release.code_count||release.entry_count||0).toLocaleString()} codes</small><small>${esc(release.rights||'')} ${release.license_valid_until?` · licensed through ${esc(release.license_valid_until)}`:''}</small></div></article>`).join('')||'<p>No code lists are installed yet. You can still type codes in by hand.</p>'}${result.next_cursor?'<p class="muted">More code list versions are available.</p>':''}</section>${terminologyCptSection(result.items||[])}<section class="integration-section"><h3>Import a code list</h3><p>Choose a SunCharts code list data file with its source, edition, effective dates, rights information and codes. CPT imports require a licensed source.</p><form id="terminology-import-form"><label>Code list data file<input type="file" name="catalog" accept="application/json,.json" required data-terminology-file></label><div id="terminology-import-preview" role="status"></div><label>Reason for this import<input name="reason" required maxlength="1000"></label><label class="review-ack"><input type="checkbox" name="rights_attested" required> I have permission to install and use this code list in this EHR.</label><button type="submit" class="primary">Import reviewed code list</button></form></section>`;terminologyImport=null;
 }
+// CPT is licensed by the AMA, so it is never shipped. A practice that holds a CPT license says
+// so here and the server fetches the official CMS file and installs CPT for this practice only.
+function terminologyCptSection(releases){
+ const installed=releases.find(release=>release.system==='CPT');
+ if(installed)return `<section class="integration-section" data-cpt-section><h3>CPT codes</h3><p>CPT codes installed: ${esc(installed.edition)}, ${Number(installed.code_count||0).toLocaleString()} codes.</p></section>`;
+ return `<section class="integration-section" data-cpt-section><h3>CPT codes</h3><p>CPT codes and descriptions are licensed by the American Medical Association. If your practice holds a CPT license, install them here and the procedure box will find every CPT code as staff type.</p><form id="terminology-cpt-form"><label class="review-ack"><input type="checkbox" name="license_attested" required> Our practice holds a current CPT license from the American Medical Association</label><label>License reference<input name="license_reference" required maxlength="500" placeholder="Agreement or account number"></label><label>License valid until (optional)<input type="date" name="license_valid_until"></label><p role="status" data-cpt-status></p><button type="submit" class="primary">Install CPT codes</button></form></section>`;
+}
+async function installTerminologyCpt(form){
+ const fields=form.elements,status=form.querySelector('[data-cpt-status]'),button=form.querySelector('button[type="submit"]'),account=me;
+ const reference=String(fields.license_reference.value||'').trim();
+ if(!fields.license_attested.checked){status.textContent='Confirm that your practice holds a CPT license.';return;}
+ if(!reference){status.textContent='Enter the license reference.';return;}
+ const body={request_id:crypto.randomUUID(),license_attested:true,license_reference:reference};
+ if(fields.license_valid_until.value)body.license_valid_until=fields.license_valid_until.value;
+ button.disabled=true;button.textContent='Installing… this takes up to a minute';status.textContent='';
+ try{
+  const result=await api('/api/v1/terminology/cpt-install','POST',body);
+  if(account!==me)return;
+  status.textContent=`Installed ${Number(result.release?.code_count||0).toLocaleString()} CPT codes.`;
+  await showTerminologyCatalogs();
+ }catch(error){
+  if(account!==me)return;
+  status.textContent=error.message;button.disabled=false;button.textContent='Install CPT codes';
+ }
+}
+document.addEventListener('submit',event=>{
+ const form=event.target;if(form?.id!=='terminology-cpt-form')return;
+ event.preventDefault();event.stopImmediatePropagation();void installTerminologyCpt(form);
+});
 async function previewTerminologyImport(file){
  terminologyImport=null;const revision=++terminologyImportRevision,host=$('terminology-import-preview'),account=me,generation=terminologyGeneration;if(!file||!host)return;
   if(file.size>64*1024*1024)throw new Error('Code list files must be 64 MiB or smaller.');

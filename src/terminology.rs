@@ -286,7 +286,7 @@ pub(crate) async fn store_release(
     audit_action: &str,
 ) -> Result<(Value, bool)> {
     let mut content =
-        serde_json::to_value(&input).map_err(|_| Error::Invalid("invalid catalog import"))?;
+        serde_json::to_value(input).map_err(|_| Error::Invalid("invalid catalog import"))?;
     content
         .as_object_mut()
         .ok_or(Error::Invalid("invalid catalog import"))?
@@ -822,6 +822,9 @@ pub(crate) async fn resolve_code(
     Ok(value)
 }
 
+#[cfg(test)]
+#[path = "terminology_cpt_tests.rs"]
+mod cpt_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
