@@ -1,0 +1,92 @@
+{
+  "datasets": [
+    {
+      "code_count": 98186,
+      "edition": "FY2026",
+      "effective_end": "2026-09-30",
+      "effective_start": "2025-10-01",
+      "file": "icd-10-cm-FY2026.json.gz",
+      "sha256": "39811afed38d0a95edd222daa5c7efb97711a6394a8cae91c6638ac92e20ba1d",
+      "source_sha256": "a852eb91b3344ae38476e63816976ee1eeb94dcced7151118324f060e8499f88",
+      "source_url": "https://ftp.cdc.gov/pub/health_statistics/nchs/publications/ICD10CM/2026/icd10cm-Code%20Descriptions-2026.zip",
+      "system": "ICD-10-CM"
+    },
+    {
+      "code_count": 98403,
+      "edition": "FY2027",
+      "effective_end": "2027-09-30",
+      "effective_start": "2026-10-01",
+      "file": "icd-10-cm-FY2027.json.gz",
+      "sha256": "862d447daf1ec18c381ff7e00dd0ad7c9f8a57965be47bf5e8bfc8f2f768dd79",
+      "source_sha256": "93e3ad6004badf470c55bfe679b748ae88fd9b2b421851e409eec382c7713b9a",
+      "source_url": "https://ftp.cdc.gov/pub/health_statistics/nchs/publications/ICD10CM/2027/icd10cm-code-descriptions-2027.zip",
+      "system": "ICD-10-CM"
+    },
+    {
+      "code_count": 80174,
+      "edition": "FY2027",
+      "effective_end": "2027-09-30",
+      "effective_start": "2026-10-01",
+      "file": "icd-10-pcs-FY2027.json.gz",
+      "sha256": "1803ea04b1cc7bb78d37f71c0db50304fe1e5f725d239b7a25768d0fd0e3a70b",
+      "source_sha256": "c9064c5c66873ecc4cc9aab1b100be605f2db457fd458113076b5eb6ce246439",
+      "source_url": "https://www.cms.gov/files/zip/2027-icd-10-pcs-order-file-long-abbreviated-titles.zip",
+      "system": "ICD-10-PCS"
+    },
+    {
+      "code_count": 7323,
+      "edition": "2026-01",
+      "effective_end": "2026-03-31",
+      "effective_start": "2026-01-01",
+      "file": "hcpcs-2026-01.json.gz",
+      "sha256": "f8723cc82abf459a1fe2822d3f264b4ab560ae15d70449b7907c006937fad0bb",
+      "source_sha256": "8f4a26de1eca89205be02fbe48cc899c6c5930cf5d4f6b8c5a227f64450157b0",
+      "source_url": "https://www.cms.gov/files/zip/january-2026-alpha-numeric-hcpcs-file.zip",
+      "system": "HCPCS"
+    },
+    {
+      "code_count": 7379,
+      "edition": "2026-04",
+      "effective_end": "2026-06-30",
+      "effective_start": "2026-04-01",
+      "file": "hcpcs-2026-04.json.gz",
+      "sha256": "51629679f523feee4c24f217050cfe1b1cb863c62ad63ea03487ccb32a0c9c09",
+      "source_sha256": "c4c2d3d22507a498520e80ce292449fb80e4521f8735d40091729d127ac18421",
+      "source_url": "https://www.cms.gov/files/zip/april-2026-alpha-numeric-hcpcs-file.zip",
+      "system": "HCPCS"
+    },
+    {
+      "code_count": 7418,
+      "edition": "2026-07",
+      "effective_end": "2026-09-30",
+      "effective_start": "2026-07-01",
+      "file": "hcpcs-2026-07.json.gz",
+      "sha256": "76b35b8647e08eb7128dfcd898b77fb49d2b8fe972c53998f58a7d9e8b4d3a5b",
+      "source_sha256": "5591fed257e4d2307c1d2dc9c66abc8e346b1f4c076e9e48559799e2de14b70a",
+      "source_url": "https://www.cms.gov/files/zip/july-2026-alpha-numeric-hcpcs-file.zip",
+      "system": "HCPCS"
+    },
+    {
+      "code_count": 7448,
+      "edition": "2026-10",
+      "effective_end": "2026-12-31",
+      "effective_start": "2026-10-01",
+      "file": "hcpcs-2026-10.json.gz",
+      "sha256": "8a669e6f66dd457fc31f30ff5e07743c671ad2ed37f6541f933db0e31bb9dc90",
+      "source_sha256": "08c2202fa92c1d1fb6f31b808b61c767bc487954f6930b6a0f8d09c89af5992f",
+      "source_url": "https://www.cms.gov/files/zip/october-2026-alpha-numeric-hcpcs-file.zip",
+      "system": "HCPCS"
+    },
+    {
+      "code_count": 7572,
+      "edition": "2027-01",
+      "effective_end": null,
+      "effective_start": "2027-01-01",
+      "file": "hcpcs-2027-01.json.gz",
+      "sha256": "737c44855cfbf244ccee16bf226431734cf254cc9d1b941283f5182334c8f856",
+      "source_sha256": "07a4664d4b3fc64f8bcd49cc97a3f13f23e3a4e514f9be703ec13bd6e38b690f",
+      "source_url": "https://www.cms.gov/files/zip/january-2027-alpha-numeric-hcpcs-file.zip",
+      "system": "HCPCS"
+    }
+  ]
+}
