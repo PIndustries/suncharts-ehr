@@ -17,7 +17,7 @@ function fixture(){
  const context={console,Map,Set,JSON,Date,Error,crypto:{randomUUID:()=>'stable-request'},
   document:{addEventListener(){},querySelector:()=>({querySelector:()=>({insertAdjacentHTML(){}})})},
   $:id=>nodes[id]??(nodes[id]=id==='claim-editor'?editor:host),
-  me:{role:'billing_staff'},selected:'patient',chartSection:'visits',encounterSection:'charges',activeVisit:{id:'visit',appointment_id:'appointment'},
+  me:{role:'billing_staff'},selected:'patient',chartSection:'visits',encounterSection:'charges',encounterShows:part=>['visit','intake','documentation','charges','checkout'].includes(context.encounterSection)?['charges','note','intake','checkout'].includes(part):false,activeVisit:{id:'visit',appointment_id:'appointment'},
   workspace:{patient:{id:'patient'},billing:{accounts:[account]}},
   esc:v=>String(v??''),human:v=>v,date:v=>v,displayDate:v=>v,money:v=>String(v),sourceNotice:()=>'',chargeTable:()=>'',
   billingWrite:()=>true,billingField:(name,label,value)=>`<input name="${name}" value="${value||''}">`,selectField:()=>'',

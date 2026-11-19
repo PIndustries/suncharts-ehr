@@ -86,7 +86,7 @@
   return {view:'patient',patient:typeof selected==='undefined'?null:selected||null,
    visit:typeof activeVisit==='undefined'?null:activeVisit?.id||null,
    section:typeof chartSection==='undefined'?'overview':chartSection,
-   step:typeof encounterSection==='undefined'?'documentation':encounterSection,
+   step:typeof encounterSection==='undefined'?'visit':encounterSection,
    appointment:typeof insuranceAppointmentSelection==='undefined'||chartSection!=='insurance'?null:insuranceAppointmentSelection.get(selected)||null,
    claim:typeof encounterClaimRoute==='function'?encounterClaimRoute():null,
    billing:typeof patientBillingRoute==='function'&&chartSection==='billing'?patientBillingRoute():null,
@@ -178,7 +178,7 @@
    if(valid()&&route.billing&&chartSection==='billing')await invoke('restorePatientBillingRoute',route.billing);
    if(!route.billing&&route.account&&workspace.billing?.accounts.some(a=>a.id===route.account))showBillingAccount(route.account,false);
    if(route.order&&workspace.labs?.orders.some(o=>o.id===route.order))showOrder(route.order,false);
-   if(route.claim&&chartSection==='visits'&&encounterSection==='charges'&&workspace.billing?.accounts.some(a=>a.id===route.claim.account&&a.content.visit_id===activeVisit?.id)){
+   if(route.claim&&chartSection==='visits'&&typeof encounterShows==='function'&&encounterShows('charges')&&workspace.billing?.accounts.some(a=>a.id===route.claim.account&&a.content.visit_id===activeVisit?.id)){
     if(route.claim.claim)await invoke('showEncounterClaim',route.claim.claim,route.claim.account);
     else await invoke('beginClaim',route.claim.account);
    }

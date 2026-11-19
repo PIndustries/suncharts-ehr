@@ -82,7 +82,7 @@ const collapsed=f=>f.node('clinical-workspace').classList.contains('directory-co
  // An archived chart always shows its restore control, and is not offered Archive again.
  chart.state={...state,archived:true,version:2};vm.runInContext("workspace.patient.archived=true;patientLifecycleStates.set('patient-a',state);showPatientLifecycle(state)",chart);assert.equal(panel.hidden,false);assert.match(panel.innerHTML,/Restore patient…/);assert.doesNotMatch(more(),/Archive this patient/);
  // The step row and the note stay on screen: the encounter band is one row and its tabs do not scroll sideways.
- assert.match(style,/#encounter-progress \.encounter-step-tabs\{overflow-x:visible\}/);
+ assert.doesNotMatch(style,/encounter-step-tabs/,'the numbered step bar has no styles left behind');assert.match(style,/\.encounter-visit-actions \{?/,'the single action row is styled');
  assert.match(style,/\.encounter-workspace-heading \.eyebrow\{display:none\}/);
  console.log('PASS patient list default, remembered toggle and reachable Archive');
 })().catch(error=>{console.error(error);process.exit(1);});

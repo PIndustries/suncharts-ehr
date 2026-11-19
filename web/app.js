@@ -125,7 +125,7 @@ async function acceptConnectLaunch(){
  }finally{code=undefined;issuer=undefined;}
 }
 const connectLaunchAcceptance=acceptConnectLaunch();
-let chartSection='overview',encounterSection='documentation',patientDirectoryPreference=storedPatientDirectoryPreference();
+let chartSection='overview',encounterSection='visit',patientDirectoryPreference=storedPatientDirectoryPreference();
 // The patient list stays out of the way of an open chart unless this device asked to keep it.
 function storedPatientDirectoryPreference(){try{return localStorage.getItem('suncharts.patientDirectory.besideChart')==='shown';}catch{return false;}}
 function rememberPatientDirectoryPreference(visible){patientDirectoryPreference=Boolean(visible);try{localStorage.setItem('suncharts.patientDirectory.besideChart',visible?'shown':'hidden');}catch{}}
@@ -135,8 +135,9 @@ let patientWorkspaceGeneration=0;
 let postSignReminder=null;
 function postSignReminderMarkup(){
  if(!postSignReminder||typeof activeVisit==='undefined'||activeVisit?.id!==postSignReminder.visitId)return '';
- // The charges step itself says what to do; the reminder is only for the other steps.
- if(encounterSection==='charges')return '';
+ // The one-page visit shows its charges block on the same screen as the note, so the reminder
+ // is not needed there; it only speaks while a record area is open on its own.
+ if(!inRecordArea())return '';
  // Once the visit's charges are posted the reminder has done its job; nothing is kept in the browser.
  if(typeof encounterChargeAccount==='function'&&encounterChargeAccount()?.status==='posted'){postSignReminder=null;return '';}
  return `<div id="sign-charge-reminder" class="notice notice-with-action" role="status"><span>${esc(postSignReminder.message)}</span><button type="button" class="text-button" data-encounter-section="charges">Open Charges &amp; billing</button></div>`;
@@ -151,8 +152,9 @@ const SIGN_NEXT_TEXT={
  none:{ask:'',done:'Note signed.',step:''},
 };
 function signNextPlan(){
- const steps=encounterSections().map(([step])=>step);
- const next=['charges','checkout'].filter(key=>steps.includes(key)).join(',');
+ // The visit is one page, so signing leaves staff where the charges and checkout already sit.
+ // What comes after only names areas this practice actually shows.
+ const next=[visitBillingAreaVisible()?'charges':null,visitCheckoutAreaVisible()?'checkout':null].filter(Boolean).join(',');
  return SIGN_NEXT_TEXT[next]||SIGN_NEXT_TEXT.none;
 }
 function signAskText(continueText){
@@ -234,7 +236,7 @@ function currentAmendmentContext(form){
 }
 function updateVisitAmendmentStatus(){
  const form=$('amendment-form'),context=currentAmendmentContext(form),status=$('amendment-draft-status');if(!context||!status)return;
- const draft=visitAmendmentDrafts.get(amendmentContextKey(context)),stale=context.version!==activeVisit.version;
+ const draft=visitAmendmentDrafts.get(amendmentContextKey(context)),stale=draft&&context.version!==activeVisit.version;
  status.textContent=stale?'The saved visit changed. Review the signed note and amendment history, then confirm the current version before signing this correction.':draft?'Unsaved correction retained in this tab. Sign the amendment before closing or reloading.':'The original note stays unchanged. This correction will be signed and appended to its history.';
  const review=$('amendment-review-current');if(review){review.hidden=!stale;review.dataset.version=String(activeVisit.version);}
  const discard=$('amendment-discard');if(discard)discard.hidden=!draft;
@@ -246,7 +248,9 @@ function focusVisitAmendment(){
 }
 function reviewVisitAmendmentVersion(button){
  const form=$('amendment-form'),context=currentAmendmentContext(form);
- if(!context||Number(button.dataset.version)!==activeVisit.version)return;
+ if(!context)return;
+ // The visit page stays on the current record; a stale review only re-confirms a draft against it.
+ if(Number(button.dataset.version)!==activeVisit.version)return;
  captureVisitAmendmentDraft();context.version=activeVisit.version;form.dataset.version=String(context.version);
  const draft=visitAmendmentDrafts.get(amendmentContextKey(context));if(draft)draft.version=context.version;
  updateVisitAmendmentStatus();form.elements.text.focus();
@@ -544,8 +548,8 @@ async function selectPatient(id, keepVisit, stillCurrent=()=>true) {
   if(me!==openingIdentity||openingGeneration!==patientWorkspaceGeneration||!stillCurrent())return;
   captureVisitDrafts(); // Include edits made while the chart reads were in flight.
   next.history=history?.items??null;next.clinical=clinical;next.labs=labs;next.billing=billing;next.demographics=demographics;
-  if(id!==selected){chartSection='overview';encounterSection=['nurse','medical_assistant'].includes(me?.role)?'intake':'documentation';}
-  if(keepVisit&&activeVisit?.id!==keepVisit){chartSection='visits';encounterSection=['nurse','medical_assistant'].includes(me?.role)?'intake':'documentation';}
+  if(id!==selected){chartSection='overview';encounterSection='visit';}
+  if(keepVisit&&activeVisit?.id!==keepVisit){chartSection='visits';encounterSection='visit';}
   workspace=next;billingPayers=payers.items;selected=id;
   activeVisit=keepVisit===null ? undefined : keepVisit ? workspace.visits.find(v=>v.id===keepVisit) : workspace.visits.find(v=>v.status==='in_progress'&&v.clinician_id===me.user_id)||workspace.visits.find(v=>v.status==='in_progress');
   // Opening a different encounter retires the sign reminder; signing then re-opening the
@@ -564,7 +568,7 @@ async function openPatientEncounter(id){
  const visit=await api(`/api/v1/visits/${id}`);
  if(me!==openingIdentity||selected!==openingPatient||workspace!==openingWorkspace||openingGeneration!==patientWorkspaceGeneration)return;
  if(visit.id!==id||visit.patient_id!==openingPatient)throw new Error('This visit does not belong to the selected patient.');
- captureVisitDrafts();rememberVisit(visit);chartSection='visits';encounterSection=isRoomingStaff()?'intake':'documentation';
+ captureVisitDrafts();rememberVisit(visit);chartSection='visits';encounterSection='visit';
  // Opening a different encounter retires the sign reminder; re-opening the same visit keeps it.
  if(typeof postSignReminder!=='undefined'&&postSignReminder&&postSignReminder.visitId!==id)postSignReminder=null;
  renderChart();
@@ -598,8 +602,8 @@ function renderChart() {
   <div id="record-context"></div>
   <div id="visit-editor"></div>
   <section id="encounter-revenue" class="panel" hidden></section>
-  <section id="encounter-orders-actions" class="panel" hidden></section>
   <div id="visit-checkout"><div class="panel"><h2>Checkout & after-visit summary</h2><p>Pick a visit in Visits to review its handoff and follow-up.</p></div></div>
+  <section id="encounter-orders-actions" class="panel" hidden></section>
   ${patientAppointmentWorkspace()}`;
   if(typeof renderPrescribing==='function')void renderPrescribing(); renderClinical(); renderLabs(); renderBilling(); renderHistory(); if(typeof renderHealthHistory==='function')void renderHealthHistory(); if(typeof renderImmunizations==='function')void renderImmunizations(); if(typeof renderDocuments==='function')void renderDocuments(); if(typeof renderPatientIdentity==='function')void renderPatientIdentity(); if(typeof renderPatientLifecycle==='function')void renderPatientLifecycle(); if(typeof renderReferrals==='function')void renderReferrals(); if(typeof renderDemographics==='function')renderDemographics(selected,workspace.demographics); if(typeof renderPatientIntakePackets==='function')void renderPatientIntakePackets(); if(typeof renderSpecialtyPatientWorkspace==='function')void renderSpecialtyPatientWorkspace(); if(typeof renderCarePathways==='function'&&(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('workflows')))void renderCarePathways(); if(typeof renderPatientInsurance==='function')void renderPatientInsurance(); if(activeVisit) renderVisit(false); applyChartSection(); if(typeof patientBannerChartRendered==='function')void patientBannerChartRendered();
 }
@@ -618,7 +622,7 @@ function renderVisit(activate=true) {
   const amendments=workspace.amendments.filter(a=>a.visit_id===v.id);
   $('visit-editor').innerHTML=`<section class="panel"><div class="section-head"><h2>${signed?'Signed clinical record':'Visit documentation'}</h2><span class="pill ${signed?'signed':''}">${signed?'Signed':'In progress'}</span></div>${signed?`<div class="signed-notice" id="signed-note-help"><strong>Signed note — read-only.</strong> <span id="note-signed-by">${esc(typeof visitNoteSignedLine==='function'?visitNoteSignedLine(v):`Signed ${date(v.signed_at)}.`)}</span> The original SOAP note and vitals cannot be overwritten.${canAmend?' Add a signed correction to this visit, or start a new visit.<div class="actions"><button type="button" data-action="focus-amendment" aria-controls="amendment-form">Add a signed correction</button></div>':supportSession?' A clinician at the practice must sign any correction.':' A clinician can add a correction.'}</div>`:''}
   <p id="visit-draft-status" class="muted" role="status"></p><div id="encounter-intake"><div class="encounter-context-links"><button type="button" data-chart-section="insurance">Review insurance & copay</button><button type="button" data-chart-section="clinical">Review allergies & medications</button><button type="button" data-chart-section="documents">Review patient documents</button></div><div id="encounter-benefits" class="billing-section"></div><div id="visit-rooming"></div><h3>Vitals</h3><form id="vitals-form" data-visit-id="${v.id}" data-version="${retained?.vitals?.version??v.version}"><div class="form-grid vitals-grid">${Object.entries(vitalLabels).map(([key,label])=>`<label>${label}<input name="${key}" type="number" step="${['systolic_mm_hg','diastolic_mm_hg','heart_rate_bpm'].includes(key)?'1':'any'}" value="${esc(vitals[key]??'')}" ${vitalsLocked?'disabled':''}></label>`).join('')}</div>${vitalsLocked?'':'<button type="submit">Save vitals</button>'}</form>
-  </div><div id="encounter-documentation"><section id="visit-diagnoses"></section><form id="note-form" data-visit-id="${v.id}" data-version="${retained?.note?.version??v.version}"${signed?' aria-describedby="signed-note-help"':''}><h3>${signed?'SOAP note — signed original':'SOAP note'}</h3><p id="note-authorship" class="note-authorship muted"${authorship?'':' hidden'}>${esc(authorship)}</p>${locked?'':'<div id="note-conflict" class="notice error note-conflict" role="alert" hidden></div><div id="note-saved-copy" class="note-saved-copy" hidden></div>'}${locked?'':`<div id="note-previous" class="note-previous" hidden></div><input type="hidden" name="started_from" value="${esc(noteSource)}">`}<div class="form-grid note-grid">${noteSectionKeys.filter(key=>key!=='procedure'||!locked||String(note.procedure??'').trim()).map(key=>{const label=key[0].toUpperCase()+key.slice(1);return `<div class="note-section${key==='procedure'?' note-procedure':''}"><label>${label}<textarea name="${key}" maxlength="10000" ${locked?'readonly':key==='procedure'?`placeholder="${esc(noteProcedureHint)}"`:''}>${esc(note[key])}</textarea></label>${locked?'':`<button type="button" class="text-button note-same" id="note-same-${key}" data-note-same="${key}" aria-label="Same as last visit: ${label}" hidden>Same as last visit</button>`}</div>`;}).join('')}</div>${noteSource||!locked?`<p id="note-source-line" class="note-source muted"${noteSource?'':' hidden'}>${esc(noteSourceLine(noteSource,signed,v.note?.started_from))}</p>`:''}<div id="note-message" class="note-message muted" role="status" hidden></div>${locked?'':`<div class="actions"><button type="submit">Save note</button>${canSign?'<button class="primary" type="button" data-action="sign">Sign note</button><span class="muted">Save your note before signing. Then review procedures and charges, complete checkout, and submit the reviewed claim.</span>':`<span id="note-sign-help" class="muted">${supportSession?'You can draft this note. A clinician at the practice must sign it.':'You can draft this note. A clinician signs it.'}</span>`}</div>`}</form>
+  </div><div id="encounter-documentation">${visitNoteOwnsDiagnoses()?'<section id="visit-diagnoses"></section>':''}<form id="note-form" data-visit-id="${v.id}" data-version="${retained?.note?.version??v.version}"${signed?' aria-describedby="signed-note-help"':''}><h3>${signed?'SOAP note — signed original':'SOAP note'}</h3><p id="note-authorship" class="note-authorship muted"${authorship?'':' hidden'}>${esc(authorship)}</p>${locked?'':'<div id="note-conflict" class="notice error note-conflict" role="alert" hidden></div><div id="note-saved-copy" class="note-saved-copy" hidden></div>'}${locked?'':`<div id="note-previous" class="note-previous" hidden></div><input type="hidden" name="started_from" value="${esc(noteSource)}">`}<div class="form-grid note-grid">${noteSectionKeys.filter(key=>key!=='procedure'||!locked||String(note.procedure??'').trim()).map(key=>{const label=key[0].toUpperCase()+key.slice(1);return `<div class="note-section${key==='procedure'?' note-procedure':''}"><label>${label}<textarea name="${key}" maxlength="10000" ${locked?'readonly':key==='procedure'?`placeholder="${esc(noteProcedureHint)}"`:''}>${esc(note[key])}</textarea></label>${locked?'':`<button type="button" class="text-button note-same" id="note-same-${key}" data-note-same="${key}" aria-label="Same as last visit: ${label}" hidden>Same as last visit</button>`}</div>`;}).join('')}</div>${noteSource||!locked?`<p id="note-source-line" class="note-source muted"${noteSource?'':' hidden'}>${esc(noteSourceLine(noteSource,signed,v.note?.started_from))}</p>`:''}<div id="note-message" class="note-message muted" role="status" hidden></div>${locked?'':`<div class="actions"><button type="submit">Save note</button>${canSign?'<button class="primary" type="button" data-action="sign">Sign note</button><span class="muted">Save your note before signing. Then review procedures and charges, complete checkout, and submit the reviewed claim.</span>':`<span id="note-sign-help" class="muted">${supportSession?'You can draft this note. A clinician at the practice must sign it.':'You can draft this note. A clinician signs it.'}</span>`}</div>`}</form>
   ${signed?`<h3>Amendment history</h3>${amendments.map(a=>`<div class="amendment"><p><b>${esc(a.reason)}</b></p><p class="note-text">${esc(a.text)}</p><small class="muted">Recorded ${esc(date(a.created_at))}<span id="amendment-author-${esc(a.id)}">${esc(typeof visitNoteAmendmentAuthor==='function'?visitNoteAmendmentAuthor(v,a):'')}</span></small></div>`).join('')||'<p class="muted">No amendments.</p>'}${canAmend?`<form id="amendment-form" data-visit-id="${esc(v.id)}" data-patient-id="${esc(selected)}" data-version="${correction?.version??v.version}" aria-describedby="amendment-draft-status"><h3>Add a signed correction</h3><p id="amendment-draft-status" class="muted" role="status"></p><button id="amendment-review-current" type="button" data-action="review-amendment-version" hidden>I reviewed the current record — keep my correction</button><label>Reason<input name="reason" required maxlength="1000" value="${esc(correction?.values.reason||'')}"></label><label>Correction<textarea name="text" required maxlength="10000">${esc(correction?.values.text||'')}</textarea></label><div class="actions"><button id="amendment-submit" type="submit">Sign & append amendment</button><button id="amendment-discard" type="button" data-action="discard-amendment-draft" class="quiet" hidden>Discard unsaved correction</button></div></form>`:''}`:''}${!signed&&!canDraft?'<p id="note-read-only" class="muted">You can read this note. Clinical staff write it and a clinician signs it.</p>':''}</div></section>`;
   if(canAmend){const form=$('amendment-form');if(form)visitAmendmentContexts.set(form,{identity:me,tenantId:me.tenant_id,patientId:selected,visitId:v.id,version:correction?.version??v.version});updateVisitAmendmentStatus();}
   updateDraftStatus();if(!locked&&typeof renderVisitNoteSource==='function')void renderVisitNoteSource();if(typeof renderVisitNoteAuthorship==='function')void renderVisitNoteAuthorship();refreshEncounterProgress();if(typeof renderRooming==='function')void renderRooming();if(typeof renderVisitDiagnoses==='function')void renderVisitDiagnoses();if(typeof renderVisitCheckout==='function')renderVisitCheckout();if(typeof renderEncounterRevenue==='function')void renderEncounterRevenue();renderEncounterOrderActions();if(typeof renderEncounterStartBenefits==='function')void renderEncounterStartBenefits('encounter-benefits',revenueServiceDate(workspace.appointments.find(a=>a.id===v.appointment_id)));if(encounterSection==='files'&&typeof renderEncounterFiles==='function')void renderEncounterFiles();applyChartSection();
@@ -630,16 +634,28 @@ function renderHistory() {
   $('chart').append(panel);
 }
 function encounterWorkflow(){
+ const canView=resource=>typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed(resource);
  const v=activeVisit,appointment=v?workspace.appointments.find(a=>a.id===v.appointment_id):workspace.appointments.find(a=>['checked_in','booked'].includes(a.status));
  if(!v&&workspace.patient?.archived)return '<section class="panel encounter-empty"><h2>Archived patient chart</h2><p>Review the past visits here, or restore the patient before starting a new visit.</p></section>';
  if(!v)return `<section class="panel encounter-empty"><h2>Start the visit</h2><p>Start from an appointment, or enter a date and time for a walk-in.</p>${typeof canStartEncounterFlow==='function'&&canStartEncounterFlow()?'<button type="button" class="primary" data-start-encounter-flow>Start visit</button>':''}<button type="button" data-chart-section="insurance">Review insurance & copay</button>${appointment?.status==='checked_in'&&(isRoomingStaff()||(['owner','clinician'].includes(me.role)&&appointment.clinician_id===me.user_id))?` <button type="button" class="primary" data-start="${esc(appointment.id)}">Start visit</button>`:''}</section>`;
- const steps=encounterSections();
  const runs=typeof patientPathways==='undefined'?[]:patientPathways.filter(item=>item.patient_id===selected&&item.status==='active'&&(!item.appointment_id||item.appointment_id===v.appointment_id));
- return `<section class="encounter-workspace-heading"><div class="section-head"><div><p class="eyebrow">SELECTED VISIT</p><h2>${esc(appointment?.title||'Office visit')}</h2><p class="muted">${esc(encounterDateLabel(v))} · ${v.status==='signed'?'Signed clinical record':'In progress'}</p></div><div class="encounter-selection"><button type="button" data-encounter-history>Visit history</button>${typeof canStartEncounterFlow==='function'&&canStartEncounterFlow()?'<button type="button" data-start-encounter-flow>+ New visit</button>':''}<label>Switch visit<select id="encounter-picker">${workspace.visits.map(row=>`<option value="${esc(row.id)}" ${row.id===v.id?'selected':''}>${esc(encounterDateLabel(row))} · ${row.status==='signed'?'Signed':'In progress'}</option>`).join('')}</select></label>${runs.length&&chartAreaEnabled('care_pathways')?'<button type="button" data-chart-section="care_pathways">Practice workflow</button>':''}${typeof supportHelpButton==='function'?supportHelpButton('visit'):''}</div></div><nav class="encounter-step-tabs" aria-label="Visit steps">${steps.map(([key,label],index)=>`<button type="button" data-encounter-section="${key}" aria-pressed="${encounterSection===key}"><span>${index+1}</span>${label}</button>`).join('')}</nav></section>`;
+ const visitPage=!inRecordArea();
+ return `<section class="encounter-workspace-heading"><div class="section-head"><div><p class="eyebrow">SELECTED VISIT</p><h2>${esc(appointment?.title||'Office visit')}</h2><p class="muted">${esc(encounterDateLabel(v))} · ${v.status==='signed'?'Signed clinical record':'In progress'}</p></div><div class="encounter-selection"><button type="button" data-encounter-history>Visit history</button>${typeof canStartEncounterFlow==='function'&&canStartEncounterFlow()?'<button type="button" data-start-encounter-flow>+ New visit</button>':''}<label>Switch visit<select id="encounter-picker">${workspace.visits.map(row=>`<option value="${esc(row.id)}" ${row.id===v.id?'selected':''}>${esc(encounterDateLabel(row))} · ${row.status==='signed'?'Signed':'In progress'}</option>`).join('')}</select></label>${runs.length&&chartAreaEnabled('care_pathways')?'<button type="button" data-chart-section="care_pathways">Practice workflow</button>':''}${typeof supportHelpButton==='function'?supportHelpButton('visit'):''}</div></div><div class="encounter-visit-actions">${visitPage?`<div class="actions">${encounterVisitActions().join('')}</div>`:'<button type="button" data-encounter-back>← Back to visit</button>'}</div></section>`;
+}
+// The visit is one scrolling page: vitals, note, codes & charges, payment, finish. Everything
+// else hangs off it as a button, shown only where the practice shows that area and this person
+// may use it — the same rules the old step list applied.
+function encounterVisitActions(){
+ const canView=resource=>typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed(resource);
+ const actions=[];
+ if(chartAreaEnabled('prescribing')&&canView('clinical'))actions.push('<button type="button" data-encounter-step="prescription">+ Prescription</button>');
+ if(chartAreaEnabled('orders')&&canView('clinical'))actions.push('<button type="button" data-encounter-step="new-order">+ Order</button>');
+ if(chartAreaEnabled('referrals')&&canView('clinical'))actions.push('<button type="button" data-chart-section="referrals">+ Referral</button>');
+ if(chartAreaEnabled('documents')&&canView('clinical'))actions.push('<button type="button" data-encounter-section="files">+ Attach file</button>');
+ return actions;
 }
 function encounterSections(){
- const canView=resource=>typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed(resource);
- return [['intake','Rooming'],['documentation','Notes & diagnoses'],...(chartAreaEnabled('billing')&&canView('billing')?[['charges','Charges & billing']]:[]),...(chartAreaEnabled('orders')&&canView('clinical')?[['orders','Orders & prescriptions']]:[]),...(chartAreaEnabled('documents')&&canView('clinical')?[['files','Files & recordings']]:[]),...(chartAreaEnabled('checkout')?[['checkout','Checkout & visit summary']]:[])];
+ return [['visit','Visit'],['intake','Rooming'],['documentation','Notes & diagnoses'],['charges','Charges & billing'],['orders','Orders & prescriptions'],['files','Files & recordings'],['checkout','Checkout & visit summary']];
 }
 function renderEncounterOrderActions(){
  const host=$('encounter-orders-actions');if(!host||!activeVisit)return;
@@ -649,13 +665,31 @@ function setEncounterSection(key){
  if(!activeVisit){showChartSection('visits');return;}
  if(!encounterSections().some(([step])=>step===key))return;
  captureVisitDrafts();encounterSection=key;showChartSection('visits');
- if(key==='charges'&&typeof renderEncounterRevenue==='function')void renderEncounterRevenue();
+ // The one-page visit shows every block at once: the old step keys stay accepted, and each
+ // simply scrolls to the block it names. Saved routes keep working.
+ // The page is already open on the screen and every block sits on it, so a saved route naming
+ // one of these keys lands on the page itself; the browser simply restores its scroll position.
+ if(key==='visit')return;
+ if(key==='intake'){const host=$('encounter-intake');host?.scrollIntoView?.({block:'start'});return;}
+ if(key==='documentation'){const host=$('note-form')||$('visit-diagnoses');host?.scrollIntoView?.({block:'start'});return;}
+ if(key==='checkout'){const host=$('visit-checkout');host?.scrollIntoView?.({block:'start'});return;}
+ if(key==='charges'){
+  if(typeof renderEncounterRevenue==='function')void renderEncounterRevenue();
+  const host=$('encounter-revenue');host?.scrollIntoView?.({block:'start'});return;
+ }
  if(key==='files'&&typeof renderEncounterFiles==='function')void renderEncounterFiles();
 }
 function refreshEncounterProgress(){if(workspace&&$('encounter-progress'))$('encounter-progress').innerHTML=(typeof postSignReminderMarkup==='function'?postSignReminderMarkup():'')+encounterWorkflow();}
 function openEncounterStep(step){
  if(step==='checkout'){setEncounterSection('checkout');return;}
  if(step==='clinical'){showChartSection('clinical');return;}
+ // The visit page's "+ Prescription" button: the prescribing area, with a fresh draft started
+ // for this visit where the practice may prepare one.
+ if(step==='prescription'){
+  showChartSection('prescribing');
+  if(typeof renderPrescribing==='function')void renderPrescribing();
+  return;
+ }
  if(['orders','new-order'].includes(step)){
   setEncounterSection('orders');
   if(step==='new-order'&&activeVisit&&canDocument()){editLabOrder();$('lab-order-form').elements.visit_id.value=activeVisit.id;}
@@ -701,23 +735,58 @@ function chartOverview(){
 function chartAreaEnabled(key){
  return typeof workspaceChartTabEnabled!=='function'||workspaceChartTabEnabled(key==='insurance'?'billing':key);
 }
+function visitBillingAreaVisible(){
+ return chartAreaEnabled('billing')&&(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('billing'));
+}
+function visitCheckoutAreaVisible(){return chartAreaEnabled('checkout');}
+// Where each part of the visit lives. On the one-page visit the vitals, the note, the charges and
+// checkout are all on screen at once, so anything asking "is the staff member looking at the
+// charges?" must get yes for the whole page. 'orders' and 'files' stay areas of their own, reached
+// from the visit's buttons, so they are deliberately not answered here.
+function encounterShows(part){
+ if(typeof encounterSection==='undefined')return typeof chartSection==='undefined'||chartSection==='visits';
+ if(!['intake','documentation','charges','checkout','visit'].includes(encounterSection))return false;
+ return ['charges','note','intake','checkout'].includes(part);
+}
+// Whether the screen is a record area opened on its own (Orders, Files, or another chart tab)
+// rather than the visit page itself.
+function inRecordArea(){
+ if(typeof encounterSection!=='undefined'&&['orders','files'].includes(encounterSection))return true;
+ if(typeof encounterSection==='undefined')return typeof chartSection!=='undefined'&&chartSection!=='visits';
+ return typeof chartSection!=='undefined'&&chartSection!=='visits'&&chartSection!=='overview';
+}
 function patientSectionVisible(key){
  if(!chartAreaEnabled(key))return false;
  if(key===chartSection)return true;
- return chartSection==='visits'&&Boolean(activeVisit)&&((key==='orders'&&encounterSection==='orders')||(key==='checkout'&&encounterSection==='checkout')||(key==='documents'&&encounterSection==='files'));
+ // On the one-page visit the checkout block sits on the page itself; orders and files stay
+ // separate areas opened from the visit's buttons.
+ return chartSection==='visits'&&Boolean(activeVisit)&&((key==='checkout'&&!inRecordArea())||(key==='documents'&&encounterSection==='files'));
+}
+// Whether the note block keeps its own diagnoses editor. The codes & charges block owns the
+// diagnoses (ICD above the CPT lines), so whenever that block is on screen the note must not
+// draw a second editor under the same id. The note editor exists only when the visit page itself
+// is on screen; on a record area opened from a button, nothing else is drawing the visit. Where
+// billing is hidden there is no charge table, so the note keeps it.
+function visitNoteOwnsDiagnoses(){
+ if(inRecordArea())return false;
+ return !encounterShows('charges')||!visitBillingAreaVisible();
 }
 function applyChartSection(){
  if(!chartAreaEnabled(chartSection))chartSection='overview';
- if(typeof encounterSection!=='undefined'&&typeof encounterSections==='function'&&!encounterSections().some(([key])=>key===encounterSection))encounterSection='documentation';
+ if(typeof encounterSection!=='undefined'&&typeof encounterSections==='function'&&!encounterSections().some(([key])=>key===encounterSection))encounterSection='visit';
  const groups={overview:['chart-overview','patient-next-action'],profile:['patient-identity-panel','patient-demographics'],clinical:['clinical-lists'],care_pathways:['care-pathways-panel'],prescribing:['prescribing-panel'],immunizations:['immunizations-panel'],functional_status:['functional-status-panel'],specialty_care:['specialty-care-panel'],history:['health-history-panel'],documents:['documents-panel','patient-intake-panel'],referrals:['referrals-panel'],orders:['lab-workspace'],insurance:['insurance-workspace'],billing:['billing-workspace'],checkout:['visit-checkout'],source:['source-history']};
  for(const [key,ids] of Object.entries(groups))for(const id of ids)if($(id))$(id).hidden=!patientSectionVisible(key);
- const inEncounter=chartSection==='visits',hasVisit=typeof activeVisit!=='undefined'&&Boolean(activeVisit),step=typeof encounterSection==='undefined'?'documentation':encounterSection;
+ const inEncounter=chartSection==='visits',hasVisit=typeof activeVisit!=='undefined'&&Boolean(activeVisit),step=typeof encounterSection==='undefined'?'visit':encounterSection,onVisitPage=!inRecordArea();
  if($('appointments-panel'))$('appointments-panel').hidden=!inEncounter;
- if($('visit-editor'))$('visit-editor').hidden=!(inEncounter&&hasVisit&&['intake','documentation'].includes(step));
- if($('encounter-intake'))$('encounter-intake').hidden=step!=='intake';
- if($('encounter-documentation'))$('encounter-documentation').hidden=step!=='documentation';
- if($('encounter-revenue'))$('encounter-revenue').hidden=!(inEncounter&&hasVisit&&step==='charges'&&chartAreaEnabled('billing'));
- if($('encounter-orders-actions'))$('encounter-orders-actions').hidden=!(inEncounter&&hasVisit&&step==='orders'&&chartAreaEnabled('orders'));
+ // One scrolling visit page: vitals, note, codes & charges, payment, finish, top to bottom.
+ if($('visit-editor'))$('visit-editor').hidden=!(inEncounter&&hasVisit&&onVisitPage);
+ if($('encounter-intake'))$('encounter-intake').hidden=!(inEncounter&&hasVisit&&onVisitPage);
+ if($('encounter-documentation'))$('encounter-documentation').hidden=!(inEncounter&&hasVisit&&onVisitPage);
+ const canViewBilling=typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('billing');
+ const revenueVisible=inEncounter&&hasVisit&&onVisitPage&&encounterShows('charges')&&chartAreaEnabled('billing')&&canViewBilling;
+ if($('encounter-revenue'))$('encounter-revenue').hidden=!revenueVisible;
+ if($('encounter-orders-actions'))$('encounter-orders-actions').hidden=!(inEncounter&&hasVisit&&!onVisitPage&&step==='orders'&&chartAreaEnabled('orders'));
+ if($('visit-checkout'))$('visit-checkout').hidden=!(inEncounter&&hasVisit&&onVisitPage&&chartAreaEnabled('checkout'));
  if($('encounter-progress')){$('encounter-progress').hidden=!inEncounter;if(inEncounter&&typeof refreshEncounterProgress==='function')refreshEncounterProgress();}
  const primary=['overview','visits','insurance','billing','documents'];
  if(typeof applyLabEncounterScope==='function')applyLabEncounterScope();
@@ -758,8 +827,10 @@ function showChartSection(key){
  if(typeof captureDocumentDraft==='function')captureDocumentDraft();
  if(typeof captureReferralDraft==='function')captureReferralDraft();
  if(typeof captureHealthHistoryDraft==='function')captureHealthHistoryDraft(); if(typeof captureImmunizationDraft==='function')captureImmunizationDraft();
- if(key==='checkout'){if(activeVisit)encounterSection='checkout';key='visits';}
- if(key==='orders'&&activeVisit&&chartSection==='visits'){encounterSection='orders';key='visits';}
+ if(key==='checkout'){if(activeVisit)encounterSection='visit';key='visits';}
+ // The visit's own Orders area is opened from the page. The Orders & results tab opens it while
+ // a visit is already on screen, and Back to visit leaves it again.
+ if(key==='orders'&&activeVisit&&['visits','orders'].includes(chartSection)){encounterSection='orders';key='visits';}
  const recordMenu=$('patient-record-navigation');if(recordMenu)recordMenu.open=false;
  chartSection=key;applyChartSection();
  if(key==='insurance'&&typeof renderPatientInsurance==='function')void renderPatientInsurance();
@@ -928,6 +999,7 @@ document.addEventListener('click',e=>{
   if(button.dataset.clinicalFocus){showChartSection('clinical');if(chartSection!=='clinical')return;const label=({allergy:'Allergies',problem:'Problems',medication:'Medications'})[button.dataset.clinicalFocus];const section=Array.from($('clinical-lists')?.querySelectorAll('.clinical-domain')||[]).find(node=>node.querySelector('h3')?.textContent===label);section?.scrollIntoView({block:'start'});return;}
   if(button.dataset.chartSection){showChartSection(button.dataset.chartSection);return;}
   if(button.dataset.encounterSection){setEncounterSection(button.dataset.encounterSection);return;}
+  if(button.hasAttribute('data-encounter-back')){setEncounterSection('visit');return;}
   if(button.dataset.encounterStep){openEncounterStep(button.dataset.encounterStep);return;}
   if(button.id==='nav-toggle'){const open=$('sidebar').classList.toggle('menu-open');button.setAttribute('aria-expanded',String(open));button.setAttribute('aria-label',open?'Close navigation':'Open navigation');return;}
   if(button.closest('#edi-tool')||button.dataset.ediClaim)return;
@@ -1003,12 +1075,14 @@ document.addEventListener('click',e=>{
       }
       if(me!==signer||activeVisit!==signing)return;
       const v=await api(`/api/v1/visits/${activeVisit.id}/sign`,'POST',undefined,activeVisit.version);
-      // Nothing is posted yet and the charges step is visible, so leave a short reminder with
-      // a link to the visit's Charges & billing step. It never blocks signing or checkout.
-      const billingVisible=encounterSections().some(([step])=>step==='charges');
+      // Nothing is posted yet and the practice shows billing, so leave a short reminder. On the
+      // one-page visit it stays quiet while the visit itself is open, because its charges block
+      // is right there. It never blocks signing or checkout.
+      const billingVisible=visitBillingAreaVisible();
       const posted=(workspace.billing?.accounts||[]).some(a=>a.status==='posted'&&a.status!=='void'&&String(a.content?.visit_id||'')===v.id);
       postSignReminder=billingVisible&&!posted&&v.status==='signed'?{visitId:v.id,message:'No charges are posted for this visit yet.'}:null;
-      if(typeof clearVisitNoteSession==='function')clearVisitNoteSession();await selectPatient(selected,v.id);const after=signNextPlan();if(after.step)setEncounterSection(after.step);notice(after.done);
+      // Signing leaves staff on the visit page itself, where the charges and checkout follow in order.
+      if(typeof clearVisitNoteSession==='function')clearVisitNoteSession();await selectPatient(selected,v.id);notice(signNextPlan().done);
     }
   });
 });

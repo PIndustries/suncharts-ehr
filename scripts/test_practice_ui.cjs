@@ -74,7 +74,7 @@ async function testEncounterStates() {
   assert.doesNotMatch(f.evaluate('encounterDateLabel(activeVisit)'), /Invalid Date/);
   assert.equal(f.evaluate("encounterDateLabel({appointment_id:'missing'})"),'Visit date not recorded');
   f.evaluate('renderVisit(false)');
-  assert.match(f.node('encounter-progress').innerHTML, /Notes &amp; diagnoses|Notes & diagnoses/);
+  assert.match(f.node('encounter-progress').innerHTML, /encounter-visit-actions/, 'the visit heading offers its actions on one page');assert.doesNotMatch(f.node('encounter-progress').innerHTML, /encounter-step-tabs|Notes &amp; diagnoses|Charges &amp; billing/, 'no numbered step bar remains');
   assert.match(f.node('visit-editor').innerHTML, /data-action="sign"/);
   assert.doesNotMatch(f.node('visit-editor').innerHTML, /id="amendment-form"/);
   f.evaluate(`activeVisit.note={subjective:'S',objective:'O',assessment:'A',plan:'P'}; activeVisit.vitals={heart_rate_bpm:70}; renderVisit(false)`);
@@ -128,7 +128,7 @@ async function testDelegatedRoomingControls(){
   // Rooming staff may draft the note for the clinician but are never offered the signature.
   assert.match(f.node('visit-editor').innerHTML,/>Save note<\/button><span id="note-sign-help" class="muted">You can draft this note\. A clinician signs it\.<\/span>/,role);
   assert.doesNotMatch(f.node('visit-editor').innerHTML,/data-action="sign"|id="amendment-form"/,role);
-  assert.match(f.node('encounter-progress').innerHTML,/Notes &amp; diagnoses|Notes & diagnoses/,role);
+  assert.match(f.node('encounter-progress').innerHTML,/encounter-visit-actions/,role+' action row');
   f.evaluate(`activeVisit.status='signed';renderVisit(false)`);
   assert.doesNotMatch(f.node('visit-editor').innerHTML,/>Save vitals<|>Save note<|data-action="sign"|id="amendment-form"/,role);
  }

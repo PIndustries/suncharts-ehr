@@ -66,7 +66,7 @@ function encounterClaimRoute(){const context=claimViewContext;return context?.ki
 function claimContextCurrent(context){
  if(!context||context!==claimViewContext||context.identity!==(typeof me==='undefined'?undefined:me))return false;
  if(context.kind!=='encounter')return !context.host||context.host===$('claims-detail');
- return selected===context.patient&&activeVisit?.id===context.visit&&chartSection==='visits'&&encounterSection==='charges'&&context.host===$('encounter-claims-detail')&&(workspace.billing?.accounts||[]).some(a=>a.id===context.account&&a.content.visit_id===context.visit);
+ return selected===context.patient&&activeVisit?.id===context.visit&&chartSection==='visits'&&encounterShows('charges')&&context.host===$('encounter-claims-detail')&&(workspace.billing?.accounts||[]).some(a=>a.id===context.account&&a.content.visit_id===context.visit);
 }
 function requireClaimContext(context,claim){
  if(!claimContextCurrent(context))throw new Error('This page changed. Open the claim again from its visit.');
