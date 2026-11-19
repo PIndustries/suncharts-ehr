@@ -55,6 +55,22 @@ fn system(value: &str) -> Result<&'static str> {
         _ => Err(Error::Invalid("unsupported terminology system")),
     }
 }
+/// The canonical system name for a value, for callers that must compare a catalog's declared
+/// system before `Import::validate` normalises it.
+pub(crate) fn canonical_system(value: &str) -> Result<&'static str> {
+    system(value)
+}
+
+/// Builds a validated import from catalog JSON for an in-tree test of a module that stores
+/// releases (currently the built-in catalogs), so those tests need no access to the import fields.
+#[cfg(test)]
+pub(crate) fn test_import(catalog: &[u8]) -> Result<Import> {
+    let mut input: Import =
+        serde_json::from_slice(catalog).map_err(|_| Error::Invalid("invalid catalog import"))?;
+    input.validate()?;
+    Ok(input)
+}
+
 fn canonical_code(system: &str, value: &str) -> Result<String> {
     let code = value.trim().to_ascii_uppercase();
     let compact = code.replace('.', "");
@@ -70,8 +86,11 @@ fn canonical_code(system: &str, value: &str) -> Result<String> {
                         && code.len() == compact.len() + 1
                         && code.as_bytes().get(3) == Some(&b'.')))
         }
+        // Seven characters is a PCS procedure; three is a root-type heading the official order
+        // file lists above its procedures and CMS marks non-billable. The billable rule keeps a
+        // heading out of a clinical selection.
         "ICD-10-PCS" => {
-            bytes.len() == 7
+            (bytes.len() == 7 || bytes.len() == 3)
                 && code == compact
                 && bytes
                     .iter()
@@ -843,6 +862,12 @@ mod tests {
         assert!(canonical_code("CPT", "J0000").is_err());
         assert!(canonical_code("HCPCS", "J0000").is_ok());
         assert!(canonical_code("ICD-10-PCS", "0I00000").is_err());
+        // The shipped PCS order file lists each procedure under its three-character root-type
+        // heading, so both lengths must import; anything else is still rejected.
+        assert_eq!(canonical_code("ICD-10-PCS", "001").unwrap(), "001");
+        assert!(canonical_code("ICD-10-PCS", "00").is_err());
+        assert!(canonical_code("ICD-10-PCS", "0016").is_err());
+        assert!(canonical_code("ICD-10-PCS", "00160707").is_err());
     }
     #[test]
     fn import_requires_explicit_rights_and_licensed_cpt() {

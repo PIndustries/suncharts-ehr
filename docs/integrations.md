@@ -176,13 +176,22 @@ alongside the record; manual entry remains available without a catalog claim.
 Diagnosis-to-charge links are chosen explicitly. A code match does not establish
 medical necessity, payer coverage or reimbursement.
 
+ICD-10-CM, ICD-10-PCS and HCPCS Level II ship with the engine and are installed
+for every practice automatically: no one uploads them. The first pass runs shortly
+after a server starts and repeats every six hours, so a practice added later is
+covered too. Each practice receives only the editions it does not already hold, so
+an edition a practice imported itself is left alone, and these installs are audited
+as `terminology.release.installed_builtin`. Only the editions bundled with the build
+are installed this way; a newer official edition still arrives with a new build.
+
 In procedure rows, type at least two characters in the code or description to
 see matching CPT or HCPCS entries from the selected installed catalog. Use the
 arrow keys and Enter, or select a suggestion, to fill both fields. Editing either
 field manually clears its catalog provenance. The lookup reports when no applicable
 catalog is installed; HCPCS Level II does not replace a licensed CPT catalog.
 
-Prepare the official public US datasets with:
+To add a system or edition that does not ship with the engine, prepare the official
+dataset:
 
 ```sh
 python3 scripts/prepare_terminology.py icd10cm-2027 --output /private/path/icd10cm.json
@@ -192,7 +201,8 @@ python3 scripts/prepare_terminology.py hcpcs-2026-10 --output /private/path/hcpc
 Import the resulting JSON through Code catalogs. The preparation tool checks the
 official fixed-width files and retains the downloaded archive checksum. Reimporting
 the same request is idempotent; editions are immutable. Add a new edition for an
-update. Review future releases before importing them; imports do not run on a timer.
+update. Review future releases before importing them; a manual import is not
+scheduled.
 
 CPT content is not bundled. Import it only under a license permitting its use in
 the practice's EHR, using the normalized catalog format and a license reference.
