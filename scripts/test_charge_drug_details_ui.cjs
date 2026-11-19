@@ -15,20 +15,20 @@ assert.match(withDrug,new RegExp('<input name="ndc_quantity"[^>]*value="100"'));
 assert.match(withDrug,new RegExp('<select name="ndc_unit">'));
 assert.match(withDrug,new RegExp('<option value="UN" selected>UN — units'));
 assert.match(withDrug,new RegExp('<option value="F2" >F2 — international units'));
-// A drug code is what opens them: no closed box, no extra click.
-assert.match(withDrug,new RegExp('<div class="charge-drug" open>'));
+// A drug code is what shows them: no closed box, no extra click.
+assert.match(withDrug,new RegExp('<div class="charge-drug">'));
 assert.equal(ctx.chargeIsDrugCode('J0585'),true);assert.equal(ctx.chargeIsDrugCode('j0585'),true);
 assert.equal(ctx.chargeIsDrugCode('99213'),false);assert.equal(ctx.chargeIsDrugCode(''),false);
-// A plain line: the fields are there but stay shut until the code says it is a drug.
+// A plain line: the fields are there but hidden until the code says it is a drug.
 const plain=ctx.chargeRow({code:'99213',code_system:'CPT',amount_cents:15000});
 assert.match(plain,/>Drug given</);
 assert.match(plain,new RegExp('<input name="ndc_code"[^>]*value=""'));
 assert.match(plain,new RegExp('<option value="" selected>'));
-assert.doesNotMatch(plain,new RegExp('<div class="charge-drug" open>'));
+assert.match(plain,new RegExp('<div class="charge-drug" hidden>'),'an office visit line shows no NDC fields');
 assert.doesNotMatch(plain,/name="code_system"/,'a charge line never shows a code system box');
 // A visit row keeps the same drug fields in the row, and tucks only the code list note away.
 const compact=ctx.chargeRow({code:'J0585',amount_cents:12500,ndc_code:'00023114501',ndc_quantity:'2.5',ndc_unit:'ML'},true);
-assert.match(compact,new RegExp('<div class="charge-drug" open>'));
+assert.match(compact,new RegExp('<div class="charge-drug">'));
 assert.match(compact,new RegExp('<details class="charge-more"><summary>Code list this came from</summary>'));
 assert.match(compact,new RegExp('<input name="ndc_quantity"[^>]*value="2.5"'));
 assert.match(compact,new RegExp('<option value="ML" selected>ML — milliliters'));
@@ -45,9 +45,10 @@ const source=fs.readFileSync('web/billing.js','utf8');
 assert.match(source,/chargeDrugMarkup\(\{ndc_code:row\.querySelector\('\[name="ndc_code"\]'\)\?\.value,ndc_quantity:row\.querySelector\('\[name="ndc_quantity"\]'\)\?\.value,ndc_unit:row\.querySelector\('\[name="ndc_unit"\]'\)\?\.value\}\)/);
 assert.match(source,/return \{code_system:system,code,description:chargeLineDescription\(row\),\.\.\.chargeRowData\(row\)\}/);
 assert.match(source,/lines:chargeLiveRows\(form\)\.map\(chargeRowValue\)/,'a save reads its lines from the table rows');
-// A code typed as a drug opens the fields inside that row.
+// A drug code typed or picked in the procedure box shows the fields inside that row; any other code
+// hides them again unless the row already holds drug details.
 const drugWatch=source.slice(source.indexOf("// A code that names an injected drug"),source.indexOf("document.addEventListener('change',e=>{const select=e.target.closest('#billing-filter"));
-assert.match(drugWatch,/name!=='code'/);assert.match(drugWatch,/chargeIsDrugCode\(event\.target\.value\)\)drug\.open=true/);
+assert.match(drugWatch,/\['code','procedure'\]\.includes\(event\.target\?\.name\)/);assert.match(drugWatch,/drug\.hidden=!chargeIsDrugCode\(code\)&&!kept/);
 
 // The clearinghouse screen no longer calls the drug (NDC) claim kind unsupported.
 const edi=fs.readFileSync('web/clearinghouse.js','utf8');

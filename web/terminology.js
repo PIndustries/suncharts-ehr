@@ -6,7 +6,8 @@ const terminologyComboboxes=new Map(),terminologyApplying=new WeakSet();
 let terminologyFieldId=0;
 const terminologySystems=['ICD-10-CM','ICD-10-PCS','HCPCS','CPT'];
 const terminologySystem=value=>({'ICD10CM':'ICD-10-CM','ICD10PCS':'ICD-10-PCS','HCPCS':'HCPCS','CPT':'CPT'})[String(value||'').toUpperCase().replace(/[^A-Z0-9]/g,'')]||null;
-const terminologyLookupButton=scope=>scope==='procedure'?`<button type="button" data-terminology-open="procedure">Find procedure code</button>`:'';
+// Procedures are found by typing in the procedure box itself, so no line carries a separate lookup button.
+const terminologyLookupButton=()=>'';
 const terminologyCatalogButton=()=>me?.role==='owner'?'<button type="button" data-terminology-manage>Code lists</button>':'';
 function renderTerminologyAdminEntry(){return me?.role==='owner'?'<button type="button" data-terminology-manage>Code lists</button>':'';}
 function terminologyReleaseLabel(value){return `${value.system||''} · ${value.edition||'Edition not recorded'} · effective ${value.effective_start||'date not recorded'}${value.effective_end?` through ${value.effective_end}`:' onward'}`;}
@@ -80,10 +81,12 @@ function terminologyComboboxStatus(state,message){
  state.popup.hidden=false;state.input.setAttribute('aria-expanded','true');state.status.textContent=message;
 }
 function terminologyComboboxEligible(item,values){
+ if(item&&item.practice===true)return typeof item.code==='string'&&item.code!==''&&typeof item.display==='string';
+ if(values.procedure)return item&&['CPT','HCPCS'].includes(item.system)&&terminologyComboboxEligible(item,{...values,procedure:false,system:item.system});
  return item&&typeof item.code==='string'&&typeof item.display==='string'&&item.release_id&&item.system===values.system&&item.billable===true&&item.active!==false&&(!item.effective_start||item.effective_start<=values.serviceDate)&&(!item.effective_end||item.effective_end>=values.serviceDate);
 }
 function renderTerminologyCombobox(state){
- state.list.innerHTML=state.items.map((item,index)=>`<li id="${state.list.id}-option-${index}" role="option" aria-selected="${index===state.active}" data-terminology-option="${index}"><span><b>${esc(item.code)}</b> ${esc(item.display)}</span><small>${esc(terminologyReleaseLabel(item))}</small></li>`).join('');
+ state.list.innerHTML=state.items.map((item,index)=>`<li id="${state.list.id}-option-${index}" role="option" aria-selected="${index===state.active}" data-terminology-option="${index}"><span><b>${esc(item.code)}</b> ${esc(item.display)}</span>${item.practice?'':`<small>${esc(terminologyReleaseLabel(item))}</small>`}</li>`).join('');
  if(state.active<0)state.input.removeAttribute('aria-activedescendant');
  else{const id=`${state.list.id}-option-${state.active}`;state.input.setAttribute('aria-activedescendant',id);state.list.querySelector(`[data-terminology-option="${state.active}"]`)?.scrollIntoView?.({block:'nearest'});}
 }
@@ -93,12 +96,28 @@ function scheduleTerminologyCombobox(input,immediate=false){
  for(const other of terminologyComboboxes.values())if(other!==state)closeTerminologyCombobox(other);
  closeTerminologyCombobox(state);const values=terminologyComboboxValues(state);
  const allowed=state.scope==='diagnosis'?['ICD-10-CM']:['CPT','HCPCS'];
- if(!allowed.includes(values.system)){terminologyComboboxStatus(state,state.scope==='diagnosis'?'This diagnosis needs the ICD-10-CM code list. You can still type the code in by hand.':'Choose CPT or HCPCS to search the installed procedure code lists. You can still type the code in by hand.');return;}
- if(!/^\d{4}-\d{2}-\d{2}$/.test(values.serviceDate)){terminologyComboboxStatus(state,'Enter the service date before searching the code list.');return;}
+ if(state.scope!=='procedure'&&!allowed.includes(values.system)){terminologyComboboxStatus(state,state.scope==='diagnosis'?'This diagnosis needs the ICD-10-CM code list. You can still type the code in by hand.':'Choose CPT or HCPCS to search the installed procedure code lists. You can still type the code in by hand.');return;}
+ if(state.scope!=='procedure'&&!/^\d{4}-\d{2}-\d{2}$/.test(values.serviceDate)){terminologyComboboxStatus(state,'Enter the service date before searching the code list.');return;}
  if(values.query.length<2){terminologyComboboxStatus(state,'Type at least two characters from a code or name.');return;}
  if(values.query.length>200){terminologyComboboxStatus(state,'Use up to 200 characters to search. Your full description remains available for manual entry.');return;}
  const request=state.request;terminologyComboboxStatus(state,'Searching the code list…');state.input.setAttribute('aria-busy','true');
- state.timer=setTimeout(()=>{state.timer=null;searchTerminologyCombobox(state,request,values);},immediate?0:(state.scope==='diagnosis'?150:250));
+ state.timer=setTimeout(()=>{state.timer=null;(state.scope==='procedure'?searchProcedureCombobox:searchTerminologyCombobox)(state,request,values);},immediate?0:(state.scope==='diagnosis'?150:250));
+}
+// A procedure is found by typing: the codes this practice already bills (its fee schedules and
+// earlier charges, with the words they were billed under) come first, then any installed CPT or
+// HCPCS code list. Nothing has to be chosen before searching.
+async function searchProcedureCombobox(state,request,values){
+ if(!terminologyComboboxCurrent(state,request,values))return;
+ const dated=/^\d{4}-\d{2}-\d{2}$/.test(values.serviceDate),list=system=>dated?api(`/api/v1/terminology/codes?${new URLSearchParams({system,q:values.query,service_date:values.serviceDate,billable:'true',active:'true',limit:'8'})}`).catch(()=>null):Promise.resolve(null);
+ const own=selected?api(`/api/v1/patients/${encodeURIComponent(selected)}/procedure-codes?${new URLSearchParams({q:values.query})}`).catch(()=>null):Promise.resolve(null);
+ const [mine,cpt,hcpcs]=await Promise.all([own,list('CPT'),list('HCPCS')]);
+ if(!terminologyComboboxCurrent(state,request,values))return;
+ const search={...values,procedure:true},seen=new Map();state.search=values;
+ for(const item of (mine?.items||[]).map(item=>({...item,practice:true})))if(terminologyComboboxEligible(item,search))seen.set(item.code.toUpperCase(),item);
+ for(const item of [...(cpt?.items||[]),...(hcpcs?.items||[])]){if(!terminologyComboboxEligible(item,search))continue;const key=item.code.toUpperCase(),known=seen.get(key);if(!known||(known.practice&&!known.display))seen.set(key,item);}
+ const query=values.query.toUpperCase();
+ state.input.removeAttribute('aria-busy');state.items=[...seen.values()].sort((a,b)=>(b.code.toUpperCase().startsWith(query)-a.code.toUpperCase().startsWith(query))).slice(0,8);state.active=-1;renderTerminologyCombobox(state);
+ terminologyComboboxStatus(state,state.items.length?'':'No match. Keep typing, or type the code and leave the box to use it as typed.');
 }
 async function searchTerminologyCombobox(state,request,values){
  if(!terminologyComboboxCurrent(state,request,values))return;
@@ -111,12 +130,19 @@ async function searchTerminologyCombobox(state,request,values){
 }
 async function selectTerminologyCombobox(state,index){
  const values=state.search,item=state.items[index],request=++state.request;state.pendingPick=null;
- if(!values||!terminologyComboboxCurrent(state,request,values)||!terminologyComboboxEligible(item,values)){closeTerminologyCombobox(state);return;}
+ const check=values&&state.scope==='procedure'?{...values,procedure:true}:values;
+ if(!values||!terminologyComboboxCurrent(state,request,values)||!terminologyComboboxEligible(item,check)){closeTerminologyCombobox(state);return;}
+ if(item.practice){
+  const visible=terminologyFillFields(state.scope,state.row,item.code,item.display),system=state.row.querySelector('[name="code_system"]');
+  terminologyApplying.add(state.row);
+  try{if(system&&item.system)system.value=item.system;state.row.querySelector('[data-terminology-selection]')?.remove();closeTerminologyCombobox(state);for(const field of [visible,system])field?.dispatchEvent(new Event('input',{bubbles:true}));}finally{terminologyApplying.delete(state.row);}
+  state.input.focus();return;
+ }
  state.input.setAttribute('aria-busy','true');terminologyComboboxStatus(state,'Checking the code you selected…');
  try{
   const detail=await api(`/api/v1/terminology/releases/${encodeURIComponent(item.release_id)}/codes/${encodeURIComponent(item.code)}`);
   if(!terminologyComboboxCurrent(state,request,values))return;
-  if(detail.release_id!==item.release_id||detail.code!==item.code||!terminologyComboboxEligible(detail,values)){state.input.removeAttribute('aria-busy');terminologyComboboxStatus(state,'This code is no longer available for this service date. Search again; your entries were kept.');return;}
+  if(detail.release_id!==item.release_id||detail.code!==item.code||!terminologyComboboxEligible(detail,check)){state.input.removeAttribute('aria-busy');terminologyComboboxStatus(state,'This code is no longer available for this service date. Search again; your entries were kept.');return;}
   const visible=terminologyFillFields(state.scope,state.row,detail.code,detail.display),system=state.row.querySelector('[name="code_system"]');
   terminologyApplying.add(state.row);
   try{

@@ -28,6 +28,7 @@ pub fn routes() -> Router<State> {
         .route("/api/v1/practice/fee-schedules/{id}/history", get(history))
         .route("/api/v1/patients/{p}/fee-context", get(context))
         .route("/api/v1/patients/{p}/fee-quote", get(quote))
+        .route("/api/v1/patients/{p}/procedure-codes", get(procedure_codes))
         .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
 }
 #[derive(Clone, Deserialize, Serialize)]
@@ -633,4 +634,56 @@ pub(crate) async fn resolve(
         line.fee_snapshot = Some(value);
     }
     Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProcedureQuery {
+    q: String,
+}
+// The procedures this practice bills, for the procedure box to offer as soon as someone types:
+// every code on an approved fee schedule and every code already on a charge, with the words it
+// was last billed under. CPT names come from here because a licensed CPT list may not be
+// installed; nothing is priced or saved by reading it.
+async fn procedure_codes(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(p): Path<Uuid>,
+    Query(q): Query<ProcedureQuery>,
+) -> Result<Json<Value>> {
+    a.staff()?;
+    crate::access_policies::require_native(&s, &a, "billing", "view").await?;
+    let query = q.q.trim();
+    if query.chars().count() < 2 || query.len() > 100 || query.chars().any(char::is_control) {
+        return Ok(Json(json!({ "items": [] })));
+    }
+    let pattern = query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let mut tx = tx(&s, &a).await?;
+    let known: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM patients WHERE tenant_id=$1 AND id=$2")
+            .bind(a.tenant_id)
+            .bind(p)
+            .fetch_optional(&mut *tx)
+            .await?;
+    known.ok_or(Error::NotFound)?;
+    let items: Vec<Value> = sqlx::query_scalar(
+        "WITH used AS (SELECT upper(btrim(l->>'code')) code,l->>'code_system' code_system,btrim(coalesce(l->>'description','')) description,b.created_at at \
+         FROM (SELECT content,created_at FROM billing_accounts WHERE tenant_id=$1 AND status<>'void' ORDER BY created_at DESC LIMIT 5000) b,jsonb_array_elements(b.content->'lines') l), \
+         priced AS (SELECT upper(btrim(e->>'code')) code,e->>'code_system' code_system,''::text description,NULL::timestamptz at \
+         FROM practice_fee_schedules f,jsonb_array_elements(f.content->'entries') e WHERE f.tenant_id=$1 AND f.status='approved'), \
+         best AS (SELECT DISTINCT ON (code) code,code_system,description FROM (SELECT * FROM used UNION ALL SELECT * FROM priced) c \
+         WHERE code_system IN ('CPT','HCPCS') AND code<>'' AND (code LIKE upper($2)||'%' OR description ILIKE '%'||$2||'%') \
+         ORDER BY code,(description<>'') DESC,at DESC NULLS LAST) \
+         SELECT jsonb_build_object('code',code,'system',code_system,'display',description) FROM best \
+         ORDER BY (code LIKE upper($2)||'%') DESC,code LIMIT 8",
+    )
+    .bind(a.tenant_id)
+    .bind(&pattern)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Json(json!({ "items": items })))
 }

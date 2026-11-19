@@ -34947,6 +34947,72 @@
         "description": "Staff only with native billing view permission and billing.read OAuth scope when applicable. Tenant and patient-bound encounter lookup. Returns provider_id, active facilities, exact unique appointment-facility match and explicitly approved setting default, otherwise null choices."
       }
     },
+    "/api/v1/patients/{patient_id}/procedure-codes": {
+      "get": {
+        "operationId": "searchPracticeProcedureCodes",
+        "summary": "Search the procedure codes this practice bills",
+        "tags": [
+          "Practice fees"
+        ],
+        "security": [
+          {
+            "browserSession": []
+          },
+          {
+            "oauth2": [
+              "billing.read"
+            ]
+          },
+          {
+            "delegatedJwt": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "400": {
+            "description": "Invalid scope, source, amount or missing approval acknowledgement"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Staff role, owner privilege or billing scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant/patient scope"
+          },
+          "409": {
+            "description": "Version, immutable scope or approved-schedule conflict"
+          },
+          "428": {
+            "description": "Current quoted If-Match version required"
+          }
+        },
+        "parameters": [
+          {
+            "name": "patient_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            }
+          }
+        ],
+        "description": "Staff with billing view. Codes on approved fee schedules and on existing charges matching q (at least 2 characters), with the words they were last billed under. Response {items:[{code,system,display}]}, at most 8."
+      }
+    },
     "/api/v1/patients/{patient_id}/fee-quote": {
       "get": {
         "operationId": "quotePatientPracticeFee",

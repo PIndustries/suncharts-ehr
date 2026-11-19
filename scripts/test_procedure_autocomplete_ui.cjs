@@ -13,7 +13,7 @@ const item={code:'90001',display:'Synthetic procedure <one>',system:'CPT',editio
 const tick=async()=>{for(let n=0;n<8;n++)await Promise.resolve();};
 function fixture(){
  const handlers={},calls=[],timers=new Map(),hosts={};let timerId=0,note=null;
- let response=async path=>path.includes('/codes?')?{items:[item,{...item,code:'90002',display:'Synthetic procedure two'}],release:{id:item.release_id},next_cursor:null}:item;
+ let response=async path=>path.includes('/procedure-codes?')?{items:[]}:path.includes('/codes?')?{items:[item,{...item,code:'90002',display:'Synthetic procedure two'}],release:{id:item.release_id},next_cursor:null}:item;
  const form={isConnected:true,dataset:{patient:'patient-1',id:'account-1',version:'3'},elements:{service_date:{value:'2026-11-07'},visit_id:{value:'visit-1'}}};
  const fields={};
  // The row is the stub the page reads: the one visible box plus the two hidden fields the form
@@ -50,8 +50,10 @@ function fixture(){
  // Typing a code or a name searches once, debounced, from the one box.
  let f=fixture();f.box().value='9';f.send('input',f.box());assert.equal(f.timers.size,0);assert.equal(f.calls.length,0);
  for(const q of ['90','900','9000']){f.box().value=q;f.send('input',f.box());}
- assert.equal(f.timers.size,1);assert.equal([...f.timers.values()][0].delay,250);assert.equal(f.calls.length,0);await f.flush();assert.equal(f.calls.length,1);
- let params=new URL(f.calls[0].path,'http://fixture').searchParams;assert.equal(params.get('q'),'9000');assert.equal(params.get('system'),'CPT');assert.equal(params.get('service_date'),'2026-11-07');assert.equal(params.get('limit'),'8');assert.equal(params.get('billable'),'true');
+ assert.equal(f.timers.size,1);assert.equal([...f.timers.values()][0].delay,250);assert.equal(f.calls.length,0);await f.flush();assert.equal(f.calls.length,3,'one search asks the practice codes and both code lists at once');
+ const cptCall=()=>new URL(f.calls.find(c=>c.path.includes('system=CPT')).path,'http://fixture').searchParams;
+ assert.ok(f.calls.some(c=>c.path==='/api/v1/patients/patient-1/procedure-codes?q=9000'));assert.ok(f.calls.some(c=>c.path.includes('system=HCPCS')));
+ let params=cptCall();assert.equal(params.get('q'),'9000');assert.equal(params.get('system'),'CPT');assert.equal(params.get('service_date'),'2026-11-07');assert.equal(params.get('limit'),'8');assert.equal(params.get('billable'),'true');
  assert.match(f.hosts.procedure.list.innerHTML,/role="option"/);assert.match(f.hosts.procedure.list.innerHTML,/Synthetic procedure &lt;one&gt;/);assert.equal(f.box().getAttribute('aria-expanded'),'true');
  // Picking a result fills both submitted fields and shows the line as CODE: description.
  assert.equal(f.send('keydown',f.box(),{key:'ArrowDown'}).prevented,true);assert.equal(f.box().getAttribute('aria-activedescendant'),'list-procedure-option-0');
@@ -59,7 +61,7 @@ function fixture(){
  assert.deepEqual(f.line(),{shown:`${item.code}: ${item.display}`,code:item.code,description:item.display});
  assert.equal(f.row.dataset.catalogReleaseId,item.release_id);assert.match(f.note.textContent,/Save the charge account/);assert.equal(f.box().getAttribute('aria-expanded'),'false');assert.ok(f.calls.every(c=>c.method==='GET'));
  // A name typed into the same box searches the list too, and Escape leaves the typing alone.
- f=fixture();await f.type('Synthetic procedure');params=new URL(f.calls[0].path,'http://fixture').searchParams;assert.equal(params.get('q'),'Synthetic procedure');
+ f=fixture();await f.type('Synthetic procedure');params=cptCall();assert.equal(params.get('q'),'Synthetic procedure');
  f.send('keydown',f.box(),{key:'ArrowUp'});assert.equal(f.box().getAttribute('aria-activedescendant'),'list-procedure-option-1');
  f.send('keydown',f.box(),{key:'Escape'});assert.equal(f.hosts.procedure.popup.hidden,true);assert.equal(f.box().value,'Synthetic procedure');
  // Tabbing away from an ambiguous listing keeps the typing and closes the list.
@@ -83,12 +85,20 @@ function fixture(){
  for(const mutate of [f=>{f.fields.description.value='Manual revision during lookup';},f=>{f.context.activeVisit={id:'visit-2'};},f=>{f.send('keydown',f.box(),{key:'Escape'});}]){
   f=fixture();await f.type('900');let finish;f.setResponse(()=>new Promise(resolve=>finish=resolve));f.send('keydown',f.box(),{key:'ArrowDown'});f.send('keydown',f.box(),{key:'Enter'});mutate(f);finish(item);await tick();assert.equal(f.line().code,'manual');assert.equal(f.row.dataset.catalogReleaseId,undefined);
  }
- f=fixture();f.setResponse(async()=>({items:[],release:null}));await f.type('900');assert.match(f.hosts.procedure.status.textContent,/No CPT code list is installed/);assert.match(f.hosts.procedure.status.textContent,/authorized list/);assert.equal(f.box().value,'900');assert.equal(f.fields.description.value,'Manual description');
+ f=fixture();f.setResponse(async()=>({items:[],release:null}));await f.type('900');assert.match(f.hosts.procedure.status.textContent,/No match\. Keep typing, or type the code/);assert.equal(f.box().value,'900');assert.equal(f.fields.description.value,'Manual description');
  f=fixture();await f.type('900');f.setResponse(async()=>{throw new Error('Catalog permission expired');});f.send('keydown',f.box(),{key:'ArrowDown'});f.send('keydown',f.box(),{key:'Enter'});await tick();assert.match(f.hosts.procedure.status.textContent,/entries were kept/);assert.equal(f.row.dataset.catalogReleaseId,undefined);
- f=fixture();f.setResponse(async()=>({items:[{...item,billable:false},{...item,active:false},{...item,effective_end:'2025-01-01'}],release:{id:item.release_id}}));await f.type('900');assert.equal(f.hosts.procedure.list.innerHTML,'');
- f=fixture();f.box().value='90';f.send('input',f.box(),{isComposing:true});assert.equal(f.calls.length,0);assert.equal(f.timers.size,0);f.send('compositionend',f.box());await f.flush();assert.equal(f.calls.length,1);
+ f=fixture();f.setResponse(async path=>path.includes('/procedure-codes?')?{items:[]}:({items:[{...item,billable:false},{...item,active:false},{...item,effective_end:'2025-01-01'}],release:{id:item.release_id}}));await f.type('900');assert.equal(f.hosts.procedure.list.innerHTML,'');
+ f=fixture();f.box().value='90';f.send('input',f.box(),{isComposing:true});assert.equal(f.calls.length,0);assert.equal(f.timers.size,0);f.send('compositionend',f.box());await f.flush();assert.equal(f.calls.length,3);
  f=fixture();f.box().value='900';f.send('input',f.box());f.run('clearTerminologySession()');await f.flush();assert.equal(f.calls.length,0);assert.equal(f.hosts.procedure.popup.hidden,true);
  f=fixture();await f.type('900');f.context.copy={querySelectorAll:s=>s==='[data-terminology-popup]'?[f.hosts.procedure.popup]:[f.box()]};f.run('clearTerminologyComboboxMarkup(copy)');assert.equal(f.hosts.procedure.popup.hidden,true);assert.equal(f.hosts.procedure.list.innerHTML,'');assert.equal(f.box().getAttribute('aria-expanded'),'false');assert.equal(f.box().value,'900');
+ // With no CPT list installed, the practice's own billed codes answer, first, with their billed words;
+ // a pick fills the line straight away and needs no code list check. No code system is chosen first.
+ f=fixture();f.fields.code_system.value='';f.setResponse(async path=>path.includes('/procedure-codes?')?{items:[{code:'99213',system:'CPT',display:'Synthetic office visit'},{code:'99214',system:'CPT',display:''}]}:path.includes('system=HCPCS')?{items:[{...item,code:'G0001',system:'HCPCS',display:'Synthetic HCPCS'}],release:{id:'r2'}}:{items:[],release:null});
+ await f.type('99');assert.equal(f.calls.length,3);assert.match(f.hosts.procedure.list.innerHTML,/<b>99213<\/b> Synthetic office visit<\/span><\/li>/);assert.ok(f.hosts.procedure.list.innerHTML.indexOf('99213')<f.hosts.procedure.list.innerHTML.indexOf('G0001'),'codes starting with what was typed come first');
+ f.send('keydown',f.box(),{key:'ArrowDown'});f.send('keydown',f.box(),{key:'Enter'});await tick();
+ assert.deepEqual(f.line(),{shown:'99213: Synthetic office visit',code:'99213',description:'Synthetic office visit'});assert.equal(f.fields.code_system.value,'CPT');assert.equal(f.calls.length,3,'no code list check for a practice code');assert.equal(f.hosts.procedure.popup.hidden,true);
+ // The practice search failing still leaves the code lists working.
+ f=fixture();f.setResponse(async path=>{if(path.includes('/procedure-codes?'))throw new Error('offline');return {items:[item],release:{id:item.release_id}};});await f.type('900');assert.match(f.hosts.procedure.list.innerHTML,/90001/);
  // The markup on screen: one labelled box, and the two names the charge line still submits.
  const markup=f.run("terminologyProcedureFields({code:'90001',description:'Synthetic full description'})");
  assert.match(markup,/role="combobox"/);assert.match(markup,/aria-controls=/);assert.match(markup,/maxlength="10000"/);
