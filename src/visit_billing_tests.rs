@@ -184,34 +184,179 @@ impl Fixture {
         )
         .await
     }
-    /// The practice directory a claim is filled in from.
+    /// The practice directory a claim is filled in from, including its billing organization.
     async fn directory(&self, organization: bool) {
+        self.directory_without_organization().await;
+        if organization {
+            self.billing_organization("Synthetic Billing Organization", "000000017")
+                .await;
+        }
+    }
+    /// The clinician and the place, with no billing organization: the practice can name a provider
+    /// and an address but holds no tax ID for a claim.
+    async fn directory_without_organization(&self) {
         let (a, db) = (&self.owner, &self.db);
         sqlx::query("INSERT INTO practice_providers(tenant_id,id,display_name,npi) VALUES($1,$2,'Synthetic Clinician','1234567893')").bind(a.tenant_id).bind(a.sub).execute(db).await.unwrap();
         sqlx::query("INSERT INTO practice_facilities(tenant_id,id,name,address) VALUES($1,$2,'Synthetic Clinic','1 Synthetic Way, Austin TX 78701')").bind(a.tenant_id).bind(Uuid::new_v4()).execute(db).await.unwrap();
-        if organization {
-            let id = Uuid::new_v4();
-            let sealed = crate::provider_settings::seal_secret(
-                db,
-                a.tenant_id,
-                id,
-                "billing-organization-tax",
-                "000000017",
-            )
+    }
+    /// The practice adds one billing organization with a tax ID, as it does after a claim was
+    /// already prepared. Returns the organization's id.
+    async fn billing_organization(&self, name: &str, tax: &str) -> Uuid {
+        let (a, db) = (&self.owner, &self.db);
+        let id = Uuid::new_v4();
+        let sealed = crate::provider_settings::seal_secret(
+            db,
+            a.tenant_id,
+            id,
+            "billing-organization-tax",
+            tax,
+        )
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO practice_billing_organizations(tenant_id,id,name,tax_id_type,encrypted_tax_id,tax_id_last4) VALUES($1,$2,$3,'E',$4,$5)")
+            .bind(a.tenant_id)
+            .bind(id)
+            .bind(name)
+            .bind(sealed)
+            .bind(&tax[5..])
+            .execute(db)
             .await
             .unwrap();
-            sqlx::query("INSERT INTO practice_billing_organizations(tenant_id,id,name,tax_id_type,encrypted_tax_id,tax_id_last4) VALUES($1,$2,'Synthetic Billing Organization','E',$3,'0017')").bind(a.tenant_id).bind(id).bind(sealed).execute(db).await.unwrap();
-        }
+        id
     }
-    async fn claim(&self, claim: &Value) -> Value {
+    /// The claim detail as the owner sees it: the stored content, the plain-language problems
+    /// still on it, its version, and what a person must still supply. A claim is named by its id,
+    /// as a UUID or as the JSON string an endpoint returned, so callers never build a URL by hand.
+    async fn detail(&self, claim_id: &Value) -> Value {
         self.ok(
             "GET",
-            &format!("/api/v1/billing/claims/{}", claim.as_str().unwrap()),
+            &format!("/api/v1/billing/claims/{}", id(claim_id)),
             json!(null),
             None,
         )
-        .await["claim"]
-            .clone()
+        .await
+    }
+    async fn claim(&self, claim_id: &Value) -> Value {
+        self.detail(claim_id).await["claim"].clone()
+    }
+    /// A claim id as the URL form, so a hand-built path cannot carry JSON quotes.
+    fn path_id(&self, claim_id: &Value) -> String {
+        id(claim_id).to_string()
+    }
+    /// The `claim.refilled` revisions a draft has, newest version first.
+    async fn refills(&self, claim_id: &Value) -> Vec<Value> {
+        let claim_id = id(claim_id);
+        sqlx::query_scalar(
+            "SELECT jsonb_build_object('version',version,'reason',reason,'evidence',evidence) FROM claim_revisions WHERE tenant_id=$1 AND claim_id=$2 AND reason='claim.refilled' ORDER BY version DESC",
+        )
+        .bind(self.owner.tenant_id)
+        .bind(claim_id)
+        .fetch_all(&self.db)
+        .await
+        .unwrap()
+    }
+    async fn audit_count(&self, action: &str, claim_id: &Value) -> i64 {
+        let id = id(claim_id);
+        sqlx::query_scalar(
+            "SELECT count(*) FROM audit_events WHERE tenant_id=$1 AND action=$2 AND resource_id=$3",
+        )
+        .bind(self.owner.tenant_id)
+        .bind(action)
+        .bind(id)
+        .fetch_one(&self.db)
+        .await
+        .unwrap()
+    }
+    /// Point the patient's chart somewhere else, the way a front-desk correction does. The
+    /// demographics row is append-only in its version, so a write bumps it as the API would.
+    async fn move_patient(&self, p: Uuid, line1: &str) {
+        sqlx::query(
+            "UPDATE patient_demographics SET version = version + 1, content = content || jsonb_build_object('address', jsonb_build_object('line1',$3,'city','Austin','region','TX','postal_code','78701','country','US')) WHERE tenant_id=$1 AND patient_id=$2",
+        )
+        .bind(self.owner.tenant_id)
+        .bind(p)
+        .bind(line1)
+        .execute(&self.db)
+        .await
+        .unwrap();
+    }
+    /// Empties the patient's recorded address — the chart incomplete when the claim was prepared,
+    /// as an address left blank at reception is in real life.
+    async fn clear_patient_address(&self, p: Uuid) {
+        sqlx::query("UPDATE patient_demographics SET version = version + 1, content = content - 'address' WHERE tenant_id=$1 AND patient_id=$2")
+            .bind(self.owner.tenant_id)
+            .bind(p)
+            .execute(&self.db)
+            .await
+            .unwrap();
+    }
+    /// A policy holder who is someone other than the patient: the coverage says `spouse`, so the
+    /// subscriber's own address and date of birth are theirs, never taken from the patient.
+    async fn spouse_coverage(&self, p: Uuid, code: &str) -> (Value, Value) {
+        let payer = self.ok("POST","/api/v1/billing/payers",json!({"request_id":Uuid::new_v4(),"content":{"name":"Synthetic spouse plan","payer_code":code,"address":"Synthetic address","phone":"","active":true},"reason":"Synthetic payer"}),None).await;
+        let policy = self.ok("POST",&format!("/api/v1/patients/{p}/coverages"),json!({"request_id":Uuid::new_v4(),"content":{"payer_id":id(&payer),"priority":"primary","status":"active","member_id":"SYN-SPOUSE","group_number":"SYN-G","plan_name":"Synthetic plan","subscriber_name":"Sam Synthetic","subscriber_birth_date":null,"relationship":"spouse","effective_date":"2026-01-01","end_date":null,"copay_cents":null,"verification":"manually_verified","notes":"Synthetic"},"reason":"Synthetic coverage"}),None).await;
+        (payer, policy)
+    }
+    /// The patient's date of birth is recorded as unknown. The registration requires a date, so an
+    /// unverified patient is registered with a placeholder; it is not a date a claim may carry as
+    /// the policy holder's birth date, which is how a draft prepared then ends up with none.
+    async fn unknown_patient_birth_date(&self, p: Uuid) {
+        // A placeholder in the future, so no claim can carry it as a policy holder's birth date.
+        let unknown = chrono::Utc::now().date_naive() + chrono::Duration::days(1);
+        self.edit_patient(p, &format!("birth_date=DATE '{}'", unknown.to_string()))
+            .await;
+        self.record_identity(p, "Synthetic birth date unknown at registration")
+            .await;
+    }
+    /// The chart's date of birth is corrected to the patient's real one, after the claim was
+    /// prepared.
+    async fn set_patient_birth_date(&self, p: Uuid, date: &str) {
+        self.edit_patient(p, &format!("birth_date=DATE '{date}'"))
+            .await;
+        self.record_identity(p, "Synthetic birth date recorded")
+            .await;
+    }
+    /// The patient's registration identity is append-only in its version, so a correction to it
+    /// bumps `identity_version` and leaves a revision behind, exactly as the patient API does.
+    async fn edit_patient(&self, p: Uuid, set: &str) {
+        sqlx::query(&format!(
+            "UPDATE patients SET identity_version = identity_version + 1, {set} WHERE tenant_id=$1 AND id=$2"
+        ))
+        .bind(self.owner.tenant_id)
+        .bind(p)
+        .execute(&self.db)
+        .await
+        .unwrap();
+    }
+    async fn record_identity(&self, p: Uuid, reason: &str) {
+        let snapshot: Value = sqlx::query_scalar(
+            "SELECT jsonb_build_object('id',id,'mrn',mrn,'given_name',given_name,'family_name',family_name,'birth_date',birth_date) FROM patients WHERE tenant_id=$1 AND id=$2",
+        )
+        .bind(self.owner.tenant_id)
+        .bind(p)
+        .fetch_one(&self.db)
+        .await
+        .unwrap();
+        let version: i64 = sqlx::query_scalar(
+            "SELECT identity_version FROM patients WHERE tenant_id=$1 AND id=$2",
+        )
+        .bind(self.owner.tenant_id)
+        .bind(p)
+        .fetch_one(&self.db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO patient_identity_revisions(tenant_id,patient_id,version,snapshot,actor_id,reason) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING",
+        )
+        .bind(self.owner.tenant_id)
+        .bind(p)
+        .bind(version)
+        .bind(snapshot)
+        .bind(self.owner.sub)
+        .bind(reason)
+        .execute(&self.db)
+        .await
+        .unwrap();
     }
     /// Mark ready and record that it was sent, as a person does.
     async fn send(&self, claim_id: &Value) -> Value {
@@ -425,6 +570,9 @@ fn filled(content: &Value) -> Value {
     content
 }
 fn id(v: &Value) -> Uuid {
+    if let Some(text) = v.as_str() {
+        return Uuid::parse_str(text).unwrap_or_else(|_| panic!("invalid id: {v}"));
+    }
     Uuid::parse_str(
         v["id"]
             .as_str()
@@ -1442,4 +1590,449 @@ async fn a_reviewed_invoice_and_an_earlier_answer_keep_their_amounts() {
         "the primary's answer still stands"
     );
     assert_eq!(f.banner(p).await, 5000);
+}
+
+/// A draft claim carries whatever the practice, chart and coverage held the moment it was
+/// prepared. These tests cover the refill: a draft is completed from current records before it is
+/// shown, checked or released; a value a person typed is never replaced; and nothing already sent
+/// is touched. All data is synthetic.
+mod refill {
+    use super::*;
+
+    /// An insured visit whose claim was prepared with nothing else in the practice directory, so
+    /// every fillable field is blank and every one of them is asked of staff. The insurer's
+    /// identifier is distinct per call: a payer code stands for one insurer, and reusing one across
+    /// two payers is a data error the service refuses, not a second insurer.
+    async fn bare_draft(f: &Fixture, payer_code: &str) -> (Uuid, Uuid, Uuid, Value) {
+        let (p, _, visit) = f.visit(true).await;
+        let (_, policy) = f.coverage(p, "primary", payer_code, None).await;
+        let posted = f
+            .post(p, &f.charges(p, visit, Some(id(&policy)), 5000).await)
+            .await;
+        let (_, out) = f.prepare(&f.owner, p, id(&posted), json!({})).await;
+        assert_eq!(out["outcome"], "prepared", "{out}");
+        (p, visit, id(&posted), out["claim_id"].clone())
+    }
+
+    /// Staff type every detail the system does not hold, the way a biller does today.
+    async fn type_everything(f: &Fixture, claim_id: &Value, birth_date: &Value) -> Value {
+        let draft = f.claim(claim_id).await;
+        let mut content = draft["content"].clone();
+        // A claim frozen before the tax ID type existed simply has no such key, and the payer file
+        // has always sent such a tax ID as an EIN.
+        content.as_object_mut().unwrap().remove("tax_id_type");
+        content["subscriber_birth_date"] = birth_date.clone();
+        for (key, value) in [
+            ("billing_provider_name", "Typed By Hand Practice"),
+            ("billing_npi", "1234567893"),
+            ("rendering_npi", "1234567893"),
+            ("tax_id", "000000099"),
+            ("billing_address", "7 Hand Typed Road, Austin TX 78701"),
+            ("patient_address", "1 Synthetic Way, Austin TX 78701"),
+            ("subscriber_address", "1 Synthetic Way, Austin TX 78701"),
+        ] {
+            content[key] = json!(value);
+        }
+        f.ok(
+            "PUT",
+            &format!("/api/v1/billing/claims/{}", id(claim_id)),
+            json!({"content":content,"reason":"Synthetic correction by hand"}),
+            Some(version(&draft)),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_draft_claim_is_completed_from_records_filled_in_after_it_was_prepared() {
+        let f = setup().await;
+        // The practice has its clinician and its place, but its billing setup is unfinished: no
+        // billing organization and so no tax ID, and the claim is prepared with the tax ID blank.
+        f.directory_without_organization().await;
+        let (p, visit, account, claim_id) = bare_draft(&f, "SYN-R1").await;
+
+        let before = f.detail(&claim_id).await;
+        assert_eq!(
+            before["claim"]["content"]["tax_id"].as_str(),
+            Some(""),
+            "the draft is prepared with no tax ID to take"
+        );
+        assert!(
+            asked_for(&before["preflight_issues"], &["Tax ID"]),
+            "the tax ID problem is shown while the practice really has none: {}",
+            before["preflight_issues"]
+        );
+        let v0 = version(&before["claim"]);
+        assert!(f.refills(&claim_id).await.is_empty());
+
+        // The office manager finishes the billing setup and registers the tax ID. Nobody opens the
+        // claim or edits it.
+        f.billing_organization("Synthetic Billing Organization", "000000017")
+            .await;
+
+        // Opening the claim shows it filled, and the "Tax ID is required" problem is gone.
+        let after = f.detail(&claim_id).await;
+        // The stored JSON is read as well as the API's copy of it: an empty optional is dropped
+        // from storage by every other claim write, and a refill must not change that shape.
+        let stored = stored_content(&f, &claim_id).await;
+        let content = &after["claim"]["content"];
+        assert_eq!(&stored, content, "the screen shows exactly what is stored");
+        assert_eq!(content["tax_id"], "000000017");
+        assert_eq!(
+            content["tax_id_type"], "E",
+            "the claim says how this tax ID was issued"
+        );
+        assert_eq!(
+            content["billing_provider_name"], "Synthetic Clinic",
+            "the place the practice already held still stands: a refill completes blanks, it does              not re-decide fields that were answered"
+        );
+        assert!(
+            !asked_for(&after["preflight_issues"], &["Tax ID"]),
+            "the tax ID problem is gone: {}",
+            after["preflight_issues"]
+        );
+
+        // The claim version rules hold, and exactly one change is recorded.
+        assert_eq!(version(&after["claim"]), v0 + 1);
+        let refills = f.refills(&claim_id).await;
+        assert_eq!(refills.len(), 1, "one refill for one real change");
+        assert_eq!(refills[0]["evidence"]["filled"], json!(["tax_id"]));
+        // The audit entry commits with the revision it belongs to: one `claim.change` for the one
+        // change, and only that revision carries the refill reason.
+        assert_eq!(
+            f.audit_count("claim.change", &claim_id).await,
+            refills.len() as i64 + 1,
+            "the prepare and the refill each write one audit entry"
+        );
+        assert_eq!(
+            refills[0]["reason"], "claim.refilled",
+            "the refill is named in the claim's own history"
+        );
+
+        // Looking again completes nothing further, so nothing is rewritten or re-audited.
+        let again = f.detail(&claim_id).await;
+        assert_eq!(version(&again["claim"]), version(&after["claim"]));
+        assert_eq!(f.refills(&claim_id).await.len(), 1);
+        assert_eq!(f.audit_count("claim.change", &claim_id).await, 2);
+
+        // The visit card and the claim list agree with the detail screen.
+        let summary = f.summary(&f.owner, p, visit).await;
+        assert_eq!(
+            summary["state"].as_str(),
+            Some("send_claim"),
+            "what the refill completed was enough for the card to say: send it"
+        );
+        assert!(
+            !asked_for(&summary["claim"]["issues"], &["Tax ID", "tax ID"]),
+            "the visit card agrees with the claim screen: {}",
+            summary["claim"]["issues"]
+        );
+        let listed = f
+            .ok(
+                "GET",
+                &format!("/api/v1/billing/claims?account_id={account}"),
+                json!(null),
+                None,
+            )
+            .await;
+        assert_eq!(listed["items"].as_array().unwrap().len(), 1);
+
+        // The tax ID, the organization name and the NPIs reached the draft without a person
+        // typing any of them, so a release is no longer blocked on the details the practice holds.
+        let (status, released) = f
+            .call(
+                &f.owner,
+                "POST",
+                &format!("/api/v1/billing/claims/{}/actions", f.path_id(&claim_id)),
+                json!({"action":"ready","reason":"Synthetic review"}),
+                Some(version(&after["claim"])),
+            )
+            .await;
+        assert_eq!(
+            released["message"].as_str().unwrap_or(""),
+            "resolve claim preflight issues before releasing the packet",
+            "release outcome: {released}"
+        );
+        assert_eq!(status, axum::http::StatusCode::CONFLICT);
+        let restated = f.detail(&claim_id).await;
+        assert!(
+            !asked_for(&restated["preflight_issues"], &["Tax ID"]),
+            "the practice's details are no longer asked: {}",
+            restated["preflight_issues"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refill_never_replaces_what_staff_entered_on_the_draft() {
+        let f = setup().await;
+        f.directory(false).await;
+        let (p, _, _, claim_id) = bare_draft(&f, "SYN-R2").await;
+        let draft = f.claim(&claim_id).await;
+        let birth = draft["content"]["subscriber_birth_date"].clone();
+        assert_eq!(birth, "1990-01-01", "the patient's own date of birth");
+
+        // Staff type a tax ID of their own — one no practice record holds — and the rest too.
+        let edited = type_everything(&f, &claim_id, &birth).await;
+        assert_eq!(edited["content"]["tax_id"], "000000099");
+        let v = version(&edited);
+        assert!(f.refills(&claim_id).await.is_empty());
+
+        // The practice records its own tax ID, organization and place afterwards.
+        f.billing_organization("Synthetic Billing Organization", "000000017")
+            .await;
+        f.move_patient(p, "99 Later Way").await;
+
+        let after = f.detail(&claim_id).await;
+        let content = &after["claim"]["content"];
+        assert_eq!(
+            content["tax_id"], "000000099",
+            "the tax ID typed by hand stands"
+        );
+        assert!(
+            content["tax_id_type"].is_null() || content["tax_id_type"] == "",
+            "a tax ID typed before the field existed is left exactly as it was, so the payer file              still sends it as an EIN, as it always was: {}",
+            content["tax_id_type"]
+        );
+        assert_eq!(
+            content["billing_provider_name"], "Typed By Hand Practice",
+            "the name typed by hand stands"
+        );
+        assert_eq!(
+            content["billing_address"], "7 Hand Typed Road, Austin TX 78701",
+            "the address typed by hand stands"
+        );
+        assert_eq!(
+            content["patient_address"], "1 Synthetic Way, Austin TX 78701",
+            "the address typed by hand stands, not the one the chart later holds"
+        );
+        assert_eq!(content["subscriber_birth_date"], birth);
+        assert_eq!(
+            version(&after["claim"]),
+            v,
+            "nothing was blank, so the draft was not rewritten"
+        );
+        assert!(
+            f.refills(&claim_id).await.is_empty(),
+            "a draft with nothing missing is never refilled"
+        );
+        // One `claim.change` for the person's own edit, and no refill revision at all.
+        assert_eq!(f.audit_count("claim.change", &claim_id).await, 2);
+    }
+
+    #[tokio::test]
+    async fn a_claim_already_sent_is_never_touched_by_a_refill() {
+        let f = setup().await;
+        let (_, _, _, claim_id) = bare_draft(&f, "SYN-R3").await;
+        let draft = f.claim(&claim_id).await;
+        let birth = draft["content"]["subscriber_birth_date"].clone();
+        type_everything(&f, &claim_id, &birth).await;
+
+        // A person releases it and records that it went out.
+        let ready = f
+            .ok(
+                "POST",
+                &format!("/api/v1/billing/claims/{}/actions", f.path_id(&claim_id)),
+                json!({"action":"ready","reason":"Synthetic review"}),
+                Some(version(&f.claim(&claim_id).await)),
+            )
+            .await;
+        assert_eq!(ready["status"], "ready");
+        let sent = f
+            .ok(
+                "POST",
+                &format!("/api/v1/billing/claims/{}/actions", f.path_id(&claim_id)),
+                json!({"action":"record_submission","reference":"SYNTHETIC-TRANSPORT","event_date":"2026-10-26","reason":"Synthetic delivery fixture"}),
+                Some(version(&ready)),
+            )
+            .await;
+        assert_eq!(sent["status"], "submitted");
+        let content_before = sent["content"].clone();
+        let v_before = version(&sent);
+        assert!(f.refills(&claim_id).await.is_empty());
+
+        // The practice fills in everything it was missing, after the claim went out.
+        f.billing_organization("Synthetic Billing Organization", "000000017")
+            .await;
+        sqlx::query(
+            "INSERT INTO practice_providers(tenant_id,id,display_name,npi) VALUES($1,$2,'Synthetic Clinician','1234567893')",
+        )
+        .bind(f.owner.tenant_id)
+        .bind(f.owner.sub)
+        .execute(&f.db)
+        .await
+        .unwrap();
+
+        // Every screen that reads the claim leaves the sent content alone.
+        for _ in 0..2 {
+            let after = f.detail(&claim_id).await;
+            assert_eq!(
+                after["claim"]["content"], content_before,
+                "a sent claim keeps exactly the content that was sent"
+            );
+            assert_eq!(version(&after["claim"]), v_before);
+        }
+        assert!(
+            f.refills(&claim_id).await.is_empty(),
+            "a sent claim is never refilled"
+        );
+        // One audit entry per real state change — prepare, the person's edit, the release and the
+        // recorded submission — and not one from the reads above.
+        assert_eq!(f.audit_count("claim.change", &claim_id).await, 4);
+    }
+
+    #[tokio::test]
+    async fn a_self_policy_draft_takes_the_patient_address_and_birth_date_once_the_chart_is_completed(
+    ) {
+        let f = setup().await;
+        // The chart is incomplete: no address recorded and no date of birth.
+        let (p, _, visit) = f.visit(true).await;
+        f.clear_patient_address(p).await;
+        f.unknown_patient_birth_date(p).await;
+        // The practice directory is complete, so only the chart keeps the claim from being sent.
+        f.directory(true).await;
+        // The patient is their own policy holder: the subscriber's details are the patient's.
+        let (_, policy) = f.coverage(p, "primary", "SYN-SELF", None).await;
+        let posted = f
+            .post(p, &f.charges(p, visit, Some(id(&policy)), 5000).await)
+            .await;
+        let (_, out) = f.prepare(&f.owner, p, id(&posted), json!({})).await;
+        let claim_id = out["claim_id"].clone();
+
+        // The chart's three fields are what stand between this claim and the insurer. The
+        // practice's own half is already complete, so nothing else can account for them arriving.
+        let missing = issues_of(&f.detail(&claim_id).await["preflight_issues"]);
+        let outstanding = f.detail(&claim_id).await["preflight_issues"].clone();
+        for wanted in [
+            ["Patient address"].as_slice(),
+            ["Subscriber address", "policy holder's address"].as_slice(),
+            ["Subscriber date of birth", "policy holder's date of birth"].as_slice(),
+        ] {
+            assert!(
+                asked_for(&outstanding, wanted),
+                "{} should still be asked for: {missing:?}",
+                wanted[0]
+            );
+        }
+
+        // Reception completes the chart. Nobody opens or edits the claim after that.
+        f.move_patient(p, "99 Later Way").await;
+        f.set_patient_birth_date(p, "1991-02-03").await;
+
+        let after = f.detail(&claim_id).await;
+        let content = &after["claim"]["content"];
+        assert_eq!(
+            content["patient_address"].as_str(),
+            Some("99 Later Way, Austin, TX, 78701, US")
+        );
+        assert_eq!(
+            content["subscriber_address"], content["patient_address"],
+            "the policy holder is the patient, so their address is the patient's"
+        );
+        assert_eq!(content["subscriber_birth_date"], "1991-02-03");
+        // Opening the claim is what completed it: the visit card now reports nothing outstanding.
+        let card = f.summary(&f.owner, p, visit).await;
+        assert_eq!(
+            card["state"].as_str(),
+            Some("send_claim"),
+            "the card asks staff to send it, not to fix it: {}",
+            card["claim"]["issues"]
+        );
+        assert_eq!(card["claim"]["issues"], json!([]));
+        for wanted in [
+            ["Patient address", "patient address"].as_slice(),
+            ["Subscriber address", "policy holder's address"].as_slice(),
+            ["Subscriber date of birth", "policy holder's date of birth"].as_slice(),
+        ] {
+            assert!(
+                !asked_for(&after["preflight_issues"], wanted),
+                "{} is still asked for: {}",
+                wanted[0],
+                after["preflight_issues"]
+            );
+        }
+        assert_eq!(
+            f.refills(&claim_id).await[0]["evidence"]["filled"],
+            json!([
+                "patient_address",
+                "subscriber_address",
+                "subscriber_birth_date"
+            ]),
+            "only the chart's three fields are completed, nothing else"
+        );
+        // The chart's completion is the only change, recorded once, and then stable.
+        assert_eq!(f.refills(&claim_id).await.len(), 1);
+        assert_eq!(f.audit_count("claim.change", &claim_id).await, 2);
+        assert_eq!(
+            version(&f.detail(&claim_id).await["claim"]),
+            version(&after["claim"]),
+            "a completed draft is not rewritten by being looked at again"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refill_leaves_a_blank_subscriber_blank_when_the_policy_holder_is_someone_else() {
+        let f = setup().await;
+        f.directory(true).await;
+        let (p, visit) = {
+            let (p, _, visit) = f.visit(true).await;
+            (p, visit)
+        };
+        // The policy holder is the patient's spouse: a different person whose own address and
+        // date of birth the practice has not recorded.
+        let (_, policy) = f.spouse_coverage(p, "SYN-SPOUSE").await;
+        let posted = f
+            .post(p, &f.charges(p, visit, Some(id(&policy)), 5000).await)
+            .await;
+        let (_, out) = f.prepare(&f.owner, p, id(&posted), json!({})).await;
+
+        let content = &f.detail(&out["claim_id"]).await["claim"]["content"];
+        assert_eq!(
+            content["patient_address"].as_str(),
+            Some("1 Synthetic Way, Austin, TX, 78701, US"),
+            "the patient's own address comes from the chart"
+        );
+        assert_eq!(
+            content["subscriber_address"].as_str(),
+            Some(""),
+            "the patient's address is never copied onto a policy holder who is someone else"
+        );
+        assert!(
+            content["subscriber_birth_date"].is_null(),
+            "the patient's date of birth is never copied onto a policy holder who is someone else"
+        );
+    }
+}
+
+/// What a claim row holds, read straight from storage. Used where a test must look at a draft
+/// without going through the detail screen, which is itself what completes the draft.
+async fn stored_content(f: &Fixture, claim_id: &Value) -> Value {
+    sqlx::query_scalar("SELECT content FROM ehr_claims WHERE tenant_id=$1 AND id=$2")
+        .bind(f.owner.tenant_id)
+        .bind(id(claim_id))
+        .fetch_one(&f.db)
+        .await
+        .unwrap()
+}
+
+/// What the claim detail screen reports as still wrong with a claim, in the words `preflight`
+/// writes: "Tax ID is required", "Subscriber address is required", and so on.
+fn issues_of(issues: &Value) -> Vec<String> {
+    issues
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|issue| issue.as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// Whether a billing screen still asks for the thing named. The claim detail reports `preflight`'s
+/// own sentences; the visit card runs them through `plain_issue`, which names the field and the
+/// thing missing in plainer words. Both spellings are searched, so no screen can quietly disagree
+/// with another about what a claim still needs.
+fn asked_for(issues: &Value, wanted: &[&str]) -> bool {
+    issues_of(issues).iter().any(|issue| {
+        let issue = issue.to_ascii_lowercase();
+        wanted
+            .iter()
+            .any(|want| issue.contains(&want.to_ascii_lowercase()))
+    })
 }

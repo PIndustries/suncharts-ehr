@@ -36,7 +36,7 @@ fn bounded(v: &str, n: usize) -> Result<()> {
         Ok(())
     }
 }
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClaimContent {
     pub billing_provider_name: String,
@@ -325,6 +325,161 @@ pub(crate) fn claim_resend_plan_for(payer_control_number: &str) -> (&'static str
     } else {
         ("replacement", "7")
     }
+}
+
+/// Reason recorded on a refill revision and on the `claim.change` audit entry it writes. Kept
+/// here so the row history, the revision snapshot and the audit action name one cause.
+const REFILL_REASON: &str = "claim.refilled";
+
+/// Whether a draft's stored content is the shape a refill may complete. Beyond the fields
+/// themselves, this refuses anything whose JSON would not survive a round trip through
+/// [`ClaimContent`] unchanged: a stored `tax_id_type` of `""` (which `edit_claim` drops from the
+/// JSON), an unknown key, or a value of the wrong type. The refill round-trips what it writes, so
+/// without this a single field completed by the system could quietly rewrite the shape of the
+/// fields a person entered.
+fn refillable_shape(content: &ClaimContent, raw: &Value) -> bool {
+    match serde_json::to_value(content) {
+        Ok(round_trip) => round_trip == *raw,
+        Err(_) => false,
+    }
+}
+
+/// Completes a DRAFT claim's still-empty detail fields from the practice, patient and coverage
+/// records as they are now. A claim is filled once when it is prepared; if the practice had no
+/// tax ID, or the chart had no address, then, the draft stays empty afterwards and staff end up
+/// typing what the system already holds. This runs the same gatherer `prepare_claim` uses
+/// ([`crate::visit_billing::claim_defaults`]) and copies only a field the draft left blank.
+///
+/// Guarantees, in order:
+/// - Only `status = 'draft'` is touched. `ready`, `submitted`, `accepted`, `adjudicated`,
+///   `rejected` and `void` are returned as they are, read in this transaction: nothing is sent,
+///   and nothing already out with a payer is edited under a caller that only meant to look.
+/// - A value a person entered is never overwritten. A field counts as filled when the draft
+///   holds a non-blank string (or a date, for `subscriber_birth_date`); a fresh value is copied
+///   only into a field that is absent, null, blank, or not a string at all. `tax_id_type` travels
+///   with `tax_id`: an empty type alongside a filled tax ID is a claim frozen before that field
+///   existed, and `preflight` treats it as an EIN, so the type is left alone rather than changed
+///   under a claim whose tax ID a person may have typed by hand.
+/// - The version rules of every other claim write are kept: the row is updated with optimistic
+///   concurrency and its version bumped, then [`revision`] records the prior version and writes an
+///   audit entry, so state and audit commit atomically. An audit entry is written only when
+///   something actually changed. When a gatherer cannot run or its result will not validate, the
+///   draft is returned untouched — opening, checking or releasing a claim never fails because a
+///   best-effort completion could not be computed.
+///
+/// Concurrency: the caller's lock is passed in so a refill's two writes and the caller's own write
+/// happen under one lock and commit atomically with it. `claim_detail` passes `None`: it only
+/// reads, so `billing::tenant_lock` would sit held across the rest of the request and serialize
+/// every other read of that practice. `claim_action` holds that lock for its whole transaction
+/// already and passes it in, which also keeps a refill's row update atomic with the status change
+/// that depends on the version it produces.
+pub(crate) async fn refill_draft(
+    pool: &PgPool,
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    c: &Claim,
+    under_tenant_lock: bool,
+) -> Result<Claim> {
+    if c.status != "draft" {
+        return Ok(c.clone());
+    }
+    let stored: ClaimContent = match serde_json::from_value(c.content.clone()) {
+        Ok(content) => content,
+        Err(_) => return Ok(c.clone()),
+    };
+    // A draft whose stored JSON is not the shape a claim write produces is left for a person to
+    // look at rather than rewritten by a refill that would change what its other fields say.
+    if !refillable_shape(&stored, &c.content) {
+        return Ok(c.clone());
+    }
+    let account = account(tx, a, c.account_id, Some(c.patient_id)).await?;
+    // A claim is a professional claim against a posted insured account. Anything else cannot be
+    // completed by this gatherer, so leave it exactly as it is for a person to look at.
+    if account.status != "posted" || account.coverage_snapshot.is_none() {
+        return Ok(c.clone());
+    }
+    let fresh = match crate::visit_billing::claim_defaults(pool, a, c.patient_id, &account).await {
+        Ok(defaults) => defaults,
+        Err(_) => return Ok(c.clone()),
+    };
+    let mut content = stored.clone();
+    let mut filled: Vec<&'static str> = vec![];
+    macro_rules! fill {
+        ($field:ident) => {
+            if content.$field.trim().is_empty() && !fresh.$field.trim().is_empty() {
+                content.$field = fresh.$field.clone();
+                filled.push(stringify!($field));
+            }
+        };
+    }
+    fill!(billing_provider_name);
+    fill!(billing_npi);
+    fill!(tax_id);
+    // A tax ID is only sendable together with the way it was issued, so a tax ID taken from the
+    // practice brings its type with it. On a tax ID the draft already carries the type is left
+    // alone: a claim frozen before this field existed stores no key, and the payer file has always
+    // sent such a tax ID as an EIN, so completing it here could change how a value a person typed
+    // by hand is filed.
+    if content.tax_id.trim().is_empty() {
+        fill!(tax_id_type);
+    }
+    fill!(billing_address);
+    fill!(rendering_npi);
+    fill!(patient_address);
+    fill!(subscriber_address);
+    if content.subscriber_birth_date.is_none() && fresh.subscriber_birth_date.is_some() {
+        content.subscriber_birth_date = fresh.subscriber_birth_date;
+        filled.push("subscriber_birth_date");
+    }
+    // `tax_id_type` is `skip_serializing_if` empty, so filling it with an empty value writes
+    // nothing and must not be counted as a change. Every other field only lands in `filled` when a
+    // real value arrived.
+    let changed = !filled.is_empty();
+    if !changed {
+        return Ok(c.clone());
+    }
+    // An incomplete practice, chart or coverage can make a fresh value unsendable, e.g. a
+    // date of birth recorded in the future. Nothing is written rather than save an invalid draft.
+    if content.validate().is_err() {
+        return Ok(c.clone());
+    }
+    if !under_tenant_lock {
+        billing::tenant_lock(tx, a).await?;
+    }
+    // Read the row again after taking the lock: a person may have saved the draft between the
+    // caller's read and here. Only a version still matching the row just gathered is refilled.
+    let current = claim_row(tx, a, c.id).await?;
+    if current.status != "draft" || current.version != c.version {
+        return Ok(current);
+    }
+    let current_stored: ClaimContent = match serde_json::from_value(current.content.clone()) {
+        Ok(content) => content,
+        Err(_) => return Ok(current),
+    };
+    if !refillable_shape(&current_stored, &current.content) || current_stored != stored {
+        return Ok(current);
+    }
+    sqlx::query("UPDATE ehr_claims SET content=$3,version=version+1 WHERE tenant_id=$1 AND id=$2 AND status='draft' AND version=$4")
+        .bind(a.tenant_id)
+        .bind(c.id)
+        // Round-tripped through `ClaimContent` so an empty optional is dropped from the stored
+        // JSON exactly as `edit_claim` stores it: `tax_id_type` is `skip_serializing_if` empty, so
+        // a key held as `""` would be a shape no other claim write produces.
+        .bind(serde_json::to_value(&content).map_err(|_| Error::Invalid("invalid claim content"))?)
+        .bind(c.version)
+        .execute(&mut **tx)
+        .await?;
+    revision(
+        tx,
+        a,
+        c.id,
+        REFILL_REASON,
+        json!({"filled": filled, "source": "current_records"}),
+    )
+    .await?;
+    // `revision` snapshots the row as it was before its own read, so re-read to hand the caller
+    // the completed draft rather than the one it started with.
+    claim_row(tx, a, c.id).await
 }
 
 pub(crate) fn preflight(c: &Claim) -> Result<Vec<String>> {
@@ -819,6 +974,10 @@ async fn claim_detail(
     a.staff()?;
     let mut tx = db(&s)?.begin().await?;
     let c = claim_row(&mut tx, &a, id).await?;
+    // The single refill choke point for a draft being shown. `preflight` is a pure function of the
+    // claim row and is reached from the visit card, the claim list and the review screen, so
+    // completing the row here is what makes those checks agree; see `refill_draft`.
+    let c = refill_draft(db(&s)?, &mut tx, &a, &c, false).await?;
     let issues = preflight(&c)?;
     let submission_defaults = claim_submission_defaults(&mut tx, &a, &c).await?;
     let tracking = crate::retrieval::claim_tracking(&mut tx, &a, &c).await?;
@@ -1210,6 +1369,16 @@ async fn claim_action(
         ("ready", "draft") => {
             crate::claim_cob::require_outbound(&c)?;
             crate::claim_cob::validate_current(&mut tx, &a, &c).await?;
+            // Complete any still-empty detail field from current records before the preflight
+            // gate, under the tenant lock this transaction already holds. A refill bumps the
+            // version, so re-check optimistic concurrency: a person whose copy is now stale
+            // reloads and sees the completed draft, rather than releasing a claim they did not see.
+            let c = refill_draft(db(&s)?, &mut tx, &a, &c, true).await?;
+            if c.version != version {
+                return Err(Error::Conflict(
+                    "the claim was completed from current records; reload before releasing",
+                ));
+            }
             if !preflight(&c)?.is_empty() {
                 return Err(Error::Conflict(
                     "resolve claim preflight issues before releasing the packet",
