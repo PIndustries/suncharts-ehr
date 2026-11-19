@@ -53,6 +53,32 @@ function visitBillingStatus(s,ctx={}){
   default:return {headline:'Billing status unavailable',detail:'Refresh before relying on these amounts.',action:''};
  }
 }
+// The one next step a charge table hands to the person working in it, in the card's own words.
+// The card above (visitBillingStatus) and the footer under the charge table are asked the same
+// question, so both are answered from this one line and can never drift apart. A state that is
+// not about charges at all has no next step here, and is given nothing to press.
+function visitBillingChargeStep(s,ctx={}){
+ if(!s)return null;
+ const write=ctx.canWrite===true;
+ switch(s.state){
+   case 'sign_visit':return {text:'Sign the visit note to send these charges.',label:'Open the visit note',attribute:'data-revenue-documentation'};
+   case 'post_charges':return {text:write?'Check the charges, then post them.':'Check the charges; someone who can change them posts them.',label:write?'Post charges':'Review charges',attribute:`data-visit-post-charges="${esc(s.account?.id||'')}"`};
+   case 'send_claim':case 'fix_claim':{
+    // The card's own button is the one that opens the review panel beside the table; where the
+    // card answers with its own send instead, the line under the table sends the same way.
+    const status=visitBillingStatus(s,ctx),card=typeof reviewButton==='function'?reviewButton(s,ctx):'';
+    if(card)return {text:status.detail,label:'Review and send claim',attribute:'data-visit-review-open="account"',review:true};
+    if(!write||!s.claim?.id)return null;
+    return {text:status.detail,label:'Review and send claim',attribute:`data-visit-claim-send="${esc(s.claim.id)}"`};
+   }
+   default:return null;
+ }
+}
+// The one line under the charge table: the same next step the card above gives, or nothing at all.
+function visitBillingChargeStepMarkup(s,ctx={}){
+ const step=visitBillingChargeStep(s,ctx);if(!step)return '';
+ return `<p class="charge-table-next"><span>${esc(step.text)}</span> <button type="button" class="primary" ${step.attribute}>${esc(step.label)}</button></p>`;
+}
 function visitBillingReceiptNote(receipt){const how=visitBillingMethod(receipt.method),when=visitBillingDate(receipt.occurred_on);return [how,when].filter(Boolean).join(', ');}
 // What the claim is missing, grouped by where it is fixed. Each group is its own short line
 // with one button that opens the right place; everything else stays with the claim editor.

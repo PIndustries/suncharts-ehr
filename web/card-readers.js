@@ -213,7 +213,7 @@ document.addEventListener('click',event=>{
 // The readers the practice has added. The owner adds a reader by typing the code the reader
 // shows; every reader belongs to the practice's own Stripe account.
 const cardReaderListApi='/api/v1/billing/payments/readers';
-let cardReaderListState=null;
+let cardReaderListState=null,cardReaderAddressForm=null;
 function cardReaderRowMarkup(reader,manage){
  return `<div class="timeline-row"><div><b>${esc(reader.name)}</b><small>${esc(reader.model)} · ${reader.online?'Online':'Offline'}</small></div>${manage?`<div class="actions"><button type="button" data-rename-reader="${esc(reader.id)}">Rename</button><button type="button" data-remove-reader="${esc(reader.id)}">Remove</button></div>`:''}</div>`;
 }
@@ -226,9 +226,12 @@ function cardReaderListMarkup(){
 }
 function paintCardReaderList(){const host=$('card-reader-list');if(host)host.innerHTML=cardReaderListMarkup();}
 async function loadCardReaderList(current=()=>true){
+ // Opening another screen while this one waits must not leave the address prompt on screen.
+ const identity=me;
  const state=cardReaderListState={data:null,failed:false,form:''};
  try{state.data=await api(cardReaderListApi);}catch{state.failed=true;}
  if(cardReaderListState===state&&current())paintCardReaderList();
+ if(cardReaderAddressForm&&(me!==identity||cardReaderListState!==state))closeCardReaderAddressForm();
  return state.data;
 }
 // The preview build is marked in the sidebar by the server; production never carries the mark.
@@ -260,12 +263,87 @@ async function submitCardReaderForm(form){
   const code=String(values.code||'').trim(),content=code+'\n'+name;
   if(!code)return;
   if(cardReaderAddRequest?.content!==content)cardReaderAddRequest={content,id:crypto.randomUUID()};
-  await api(cardReaderListApi,'POST',{request_id:cardReaderAddRequest.id,code,name});
-  cardReaderAddRequest=null;
+  try{
+   await api(cardReaderListApi,'POST',{request_id:cardReaderAddRequest.id,code,name});
+   cardReaderAddRequest=null;
+  }catch(error){
+   // The payments service has no address for the practice. Ask for one right here, then try again.
+   if(error?.status!==409||error?.code!=='practice_address_missing')throw error;
+   openCardReaderAddressForm('We need the practice address before the reader can be added.',code,name);
+   return;
+  }
  }else await api(`${cardReaderListApi}/${encodeURIComponent(form.dataset.reader)}`,'PUT',{name});
  if(cardReaderListState!==state)return;
  await loadCardReaderList();
  notice(form.id==='card-reader-add-form'?'Reader added.':'Reader renamed.');
+}
+// Where the practice address can be kept, for a practice that would rather fill it in once.
+const cardReaderAdminHint='You can also save this address under Practice administration, Facilities, so you are not asked again.';
+// The practice address prompt. The reader is added by the same request, with a fresh request
+// identifier, once the address is accepted. An address saved here is used for this reader only;
+// it stays with the payments service, not the practice directory.
+function cardReaderAddressMarkup(reason,form){
+ const at=cardReaderAddressValues(form);
+ return `<form id="card-reader-address-form"><h4>Practice address</h4>${reason?`<p class="muted">${esc(reason)}</p>`:''}<label>Street address<input name="line1" required maxlength="55" autocomplete="off" value="${esc(at.line1)}"></label><label>Suite or unit (optional)<input name="line2" maxlength="55" autocomplete="off" value="${esc(at.line2)}"></label><label>City<input name="city" required maxlength="55" autocomplete="off" value="${esc(at.city)}"></label><label>State<input name="state" required maxlength="2" autocomplete="off" autocapitalize="characters" spellcheck="false" value="${esc(at.state)}"></label><label>ZIP<input name="postal_code" required maxlength="10" autocomplete="off" inputmode="numeric" spellcheck="false" value="${esc(at.postal_code)}"></label><p role="alert" data-address-error${form.error?'':' hidden'}>${esc(form.error||'')}</p><p class="muted">${cardReaderAdminHint}</p><button type="submit" class="primary">Add reader</button><button type="button" data-address-cancel>Cancel</button></form>`;
+}
+function cardReaderAddressValues(form){
+ const at=form?.values||{};
+ return {line1:at.line1||'',line2:at.line2||'',city:at.city||'',state:at.state||'',postal_code:at.postal_code||''};
+}
+function paintCardReaderAddress(){
+ let host=document.getElementById('suncharts-dialog-host');
+ if(!host){
+  if(typeof document.createElement!=='function'||!document.body?.append)return false;
+  host=document.createElement('div');host.id='suncharts-dialog-host';document.body.append(host);
+ }
+ const form=cardReaderAddressForm;
+ if(!form){host.hidden=true;host.innerHTML='';return true;}
+ host.hidden=false;host.innerHTML=`<div class="app-dialog-backdrop" data-address-cancel></div><section class="app-dialog" role="dialog" aria-modal="true" aria-labelledby="card-reader-address-title"><header><span class="app-dialog-mark" aria-hidden="true">?</span><div><p class="eyebrow">CARD READER SETUP</p><h2 id="card-reader-address-title">Practice address</h2></div></header>${cardReaderAddressMarkup(form.reason,form)}</section>`;
+ host.querySelector?.('input[name="line1"]')?.focus?.();
+ return true;
+}
+function openCardReaderAddressForm(reason,code,name,values){
+ cardReaderAddressForm={reason,code,name,values:cardReaderAddressValues(values),error:''};
+ if(!paintCardReaderAddress())return;
+ document.addEventListener('click',cardReaderAddressClick,true);
+ document.addEventListener('submit',cardReaderAddressSubmit,true);
+}
+function closeCardReaderAddressForm(){
+ if(!cardReaderAddressForm)return;
+ cardReaderAddressForm=null;
+ document.removeEventListener('click',cardReaderAddressClick,true);
+ document.removeEventListener('submit',cardReaderAddressSubmit,true);
+ paintCardReaderAddress();
+}
+function cardReaderAddressClick(event){
+ const control=event.target?.closest?.('button,[data-address-cancel]');if(!control||!cardReaderAddressForm)return;
+ const d=control.dataset||{};
+ if('addressCancel' in d||'dialogCancel' in d){event.preventDefault();closeCardReaderAddressForm();}
+}
+// The reader keeps its own pairing code and name; only the request identifier is new, so the
+// payments service sees this as another attempt rather than the one it already refused.
+async function sendCardReaderAddress(form){
+ const state=cardReaderAddressForm;if(!state)return;
+ const values=Object.fromEntries(new FormData(form)),address={
+  line1:String(values.line1||'').trim(),line2:String(values.line2||'').trim(),
+  city:String(values.city||'').trim(),state:String(values.state||'').trim().toUpperCase(),
+  postal_code:String(values.postal_code||'').trim(),
+ };
+ state.values=address;
+ try{
+  await api(cardReaderListApi,'POST',{request_id:crypto.randomUUID(),code:state.code,name:state.name,location_address:address});
+ }catch(error){
+  if(cardReaderAddressForm!==state)return;
+  state.error=error?.message||'The address was not accepted. Check it and try again.';
+  paintCardReaderAddress();
+  return;
+ }
+ closeCardReaderAddressForm();
+ notice('Reader added.');
+}
+function cardReaderAddressSubmit(event){
+ const form=event.target;if(form?.id!=='card-reader-address-form')return;
+ event.preventDefault();event.stopPropagation();run(()=>sendCardReaderAddress(form));
 }
 async function removeCardReader(id){
  const state=cardReaderListState;if(!state?.data?.can_manage||!cardReaderById(id))return;

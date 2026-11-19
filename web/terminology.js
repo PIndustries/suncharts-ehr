@@ -14,10 +14,16 @@ function terminologySnapshotMarkup(snapshot){return snapshot?`<p class="muted" d
 function terminologyContextCurrent(state){return state.generation===terminologyGeneration&&state.account===me&&state.host.isConnected&&state.row.isConnected&&state.form.isConnected&&state.patient===selected&&(state.scope!=='diagnosis'||state.visit===activeVisit?.id);}
 function clearTerminologySession(){terminologyGeneration++;for(const state of terminologyPickers.values())state.host.remove();terminologyPickers.clear();for(const state of terminologyComboboxes.values())closeTerminologyCombobox(state);terminologyComboboxes.clear();terminologyImport=null;terminologyImportRevision++;}
 
-function terminologyComboboxMarkup(scope,prefix,name,label,max,placeholder,value,system){return `<div class="terminology-combobox"><label for="${prefix}-${name}">${label}</label><input id="${prefix}-${name}" name="${name}" type="text" value="${esc(value||'')}" maxlength="${max}" required autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="${prefix}-${name}-list" aria-describedby="${prefix}-${name}-status" data-terminology-combobox data-terminology-scope="${scope}"${system?` data-terminology-system="${esc(system)}"`:''} placeholder="${placeholder}"><div class="terminology-suggestions" data-terminology-popup hidden><p id="${prefix}-${name}-status" data-terminology-status role="status" aria-live="polite"></p><ul id="${prefix}-${name}-list" role="listbox" aria-label="${scope==='diagnosis'?'Matching diagnoses':'Matching procedure codes'}" data-terminology-results></ul></div></div>`;}
+function terminologyComboboxMarkup(scope,prefix,name,label,max,placeholder,value,system,options={}){return `<div class="terminology-combobox"><label for="${prefix}-${name}">${label}</label><input id="${prefix}-${name}" name="${name}" type="text" value="${esc(value||'')}" maxlength="${max}" ${options.required===false?'':'required '}autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="${prefix}-${name}-list" aria-describedby="${prefix}-${name}-status" data-terminology-combobox data-terminology-scope="${scope}"${system?` data-terminology-system="${esc(system)}"`:''} placeholder="${placeholder}"><div class="terminology-suggestions" data-terminology-popup hidden><p id="${prefix}-${name}-status" data-terminology-status role="status" aria-live="polite"></p><ul id="${prefix}-${name}-list" role="listbox" aria-label="${scope==='diagnosis'?'Matching diagnoses':'Matching procedure codes'}" data-terminology-results></ul></div></div>`;}
+// One procedure box per charge line. The code and the description the form submits are kept on
+// the row as hidden fields under the same names the charge table and the code-list picker read, so
+// a single type-ahead answers for both: a choice fills them, a code typed by hand fills them on
+// leaving the box, and the box itself always shows the picked line as 'CODE: description'.
+function terminologyHiddenField(name,value,max){return `<input type="hidden" name="${name}" value="${esc(value||'')}" maxlength="${max}">`;}
+function terminologyProcedureDisplay(line={}){return line.code&&line.description?`${line.code}: ${line.description}`:line.code||line.description||'';}
 function terminologyProcedureFields(line={}){
  const prefix=`terminology-field-${++terminologyFieldId}`;
- return [['code','CPT / HCPCS procedure code',100,'Code or procedure name'],['description','Description',10000,'Procedure name or code']].map(([name,label,max,placeholder])=>terminologyComboboxMarkup('procedure',prefix,name,label,max,placeholder,line[name])).join('');
+ return terminologyComboboxMarkup('procedure',prefix,'procedure','Procedure',10000,'Type a CPT/HCPCS code or procedure name',terminologyProcedureDisplay(line),'',{required:false})+terminologyHiddenField('code',line.code,100)+terminologyHiddenField('description',line.description,10000);
 }
 function terminologyDiagnosisFields(row={}){
  const prefix=`terminology-field-${++terminologyFieldId}`;
@@ -35,6 +41,18 @@ function clearTerminologyComboboxMarkup(copy){
 }
 function terminologyRowScope(row){return row?.matches?.('[data-diagnosis-row]')?'diagnosis':'procedure';}
 function terminologyFieldPair(scope){return scope==='diagnosis'?{code:'code',text:'display'}:{code:'code',text:'description'};}
+// A procedure row carries one visible box; its query is what is typed there, and the code and
+// description the row submits are read straight out of the row's own hidden fields.
+function terminologyVisibleField(scope,row){return scope==='diagnosis'?row.querySelector('[name="display"]'):row.querySelector('[data-terminology-combobox]');}
+function terminologyDisplayText(scope,code,description){return scope==='procedure'&&description?`${code}: ${description}`:code||description||'';}
+function terminologyFillFields(scope,row,code,description){
+ const visible=terminologyVisibleField(scope,row);
+ if(visible&&scope==='procedure')visible.value=terminologyDisplayText(scope,code,description);
+ else if(visible)visible.value=description;
+ const hidden=terminologyFieldPair(scope);
+ for(const [name,value] of [[hidden.code,code],[hidden.text,description]]){const field=row.querySelector(`[name="${name}"]`);if(field&&field!==visible)field.value=value;}
+ return visible;
+}
 function terminologyComboboxContext(state){
  return state.generation===terminologyGeneration&&state.account===me&&state.patient===selected&&state.visit===(typeof activeVisit==='undefined'?null:activeVisit?.id||null)&&state.view===terminologyComboboxView()&&state.input.isConnected&&state.row.isConnected&&state.form.isConnected&&!state.input.closest('[hidden]')&&!state.input.disabled&&!state.input.readOnly&&(!state.form.dataset.patient||state.form.dataset.patient===selected);
 }
@@ -99,23 +117,45 @@ async function selectTerminologyCombobox(state,index){
   const detail=await api(`/api/v1/terminology/releases/${encodeURIComponent(item.release_id)}/codes/${encodeURIComponent(item.code)}`);
   if(!terminologyComboboxCurrent(state,request,values))return;
   if(detail.release_id!==item.release_id||detail.code!==item.code||!terminologyComboboxEligible(detail,values)){state.input.removeAttribute('aria-busy');terminologyComboboxStatus(state,'This code is no longer available for this service date. Search again; your entries were kept.');return;}
-  const pair=terminologyFieldPair(state.scope),code=state.row.querySelector(`[name="${pair.code}"]`),description=state.row.querySelector(`[name="${pair.text}"]`),system=state.row.querySelector('[name="code_system"]');
+  const visible=terminologyFillFields(state.scope,state.row,detail.code,detail.display),system=state.row.querySelector('[name="code_system"]');
   terminologyApplying.add(state.row);
   try{
-   code.value=detail.code;description.value=detail.display;if(system)system.value=detail.system;
+   if(system)system.value=detail.system;
    Object.assign(state.row.dataset,{catalogReleaseId:detail.release_id,catalogCode:detail.code,catalogDisplay:detail.display,catalogSystem:detail.system});
    state.row.querySelector('[data-terminology-selection]')?.remove();
    const note=document.createElement('p');note.dataset.terminologySelection='';note.className='muted';note.textContent=`Selected from ${terminologyReleaseLabel(detail)}.${state.scope==='diagnosis'?' Saving this list records which code list it came from.':' Save the charge account to record which code list this came from.'}`;state.row.append(note);
    for(const other of terminologyComboboxes.values())if(other.row===state.row)closeTerminologyCombobox(other);
-   for(const field of [code,description,system])field?.dispatchEvent(new Event('input',{bubbles:true}));
+   for(const field of [visible,system])field?.dispatchEvent(new Event('input',{bubbles:true}));
   }finally{terminologyApplying.delete(state.row);}
   state.input.focus();
  }catch(error){if(terminologyComboboxCurrent(state,request,values)){state.input.removeAttribute('aria-busy');terminologyComboboxStatus(state,`The selected code could not be checked: ${error.message}. Your entries were kept.`);}}
 }
-function terminologyAutoPickIndex(state){
+function terminologyBoxParts(text){
+ // The box holds 'CODE: description'; a code typed on its own is held as a code with no
+ // description yet.
+ const value=String(text||''),split=value.indexOf(':');
+ return split<0?{code:value.trim(),description:''}:{code:value.slice(0,split).trim(),description:value.slice(split+1).trim()};
+}
+// One of the results on screen is exactly the code that was typed. Leaving the box on that code
+// takes the listing, description and all; a code the list has no answer for is kept as typed.
+function terminologyExactCodeIndex(state){
  if(state.popup.hidden||!state.items.length||state.search?.query!==state.input.value.trim())return -1;
  const wanted=state.input.value.trim().toUpperCase(),matches=state.items.filter(item=>item.code.toUpperCase()===wanted);
  return matches.length===1?state.items.indexOf(matches[0]):-1;
+}
+function terminologyAutoPickIndex(state){return terminologyExactCodeIndex(state);}
+function terminologyManualCode(state){
+ // Nothing was chosen from the list, so what is in the box is what the row submits. A code alone
+ // fills the code only and leaves the description for whoever is entering the charge; a code and a
+ // description, written the way the box shows them, fill both.
+ if(!state||state.scope!=='procedure')return;
+ const pair=terminologyFieldPair(state.scope),code=state.row.querySelector(`[name="${pair.code}"]`),description=state.row.querySelector(`[name="${pair.text}"]`);
+ if(!code)return;
+ const {code:typed,description:detail}=terminologyBoxParts(state.input.value);
+ if(!typed||code.value===typed&&(description?.value||'')===detail)return;
+ terminologyApplying.add(state.row);
+ try{terminologyFillFields(state.scope,state.row,typed,detail);}finally{terminologyApplying.delete(state.row);}
+ state.input.dispatchEvent(new Event('input',{bubbles:true}));
 }
 document.addEventListener('focusin',event=>{
  if(!event.target.matches?.('[data-terminology-combobox]'))return;
@@ -126,7 +166,7 @@ document.addEventListener('focusin',event=>{
 document.addEventListener('focusout',event=>{
  const state=terminologyComboboxes.get(event.target);if(!state)return;
  if(event.relatedTarget?.closest?.('.terminology-combobox')===state.host)return;
- const index=terminologyAutoPickIndex(state);if(state.pendingPick!==null&&state.pendingPick!==undefined){state.pendingPick=null;return;}if(index>=0){event.preventDefault();void selectTerminologyCombobox(state,index);return;}closeTerminologyCombobox(state);
+ const index=terminologyAutoPickIndex(state);if(state.pendingPick!==null&&state.pendingPick!==undefined){state.pendingPick=null;return;}if(index>=0){event.preventDefault();void selectTerminologyCombobox(state,index);return;}closeTerminologyCombobox(state);terminologyManualCode(state);
 });
 document.addEventListener('pointerdown',event=>{if(event.target.closest?.('[data-terminology-option]'))event.preventDefault();});
 document.addEventListener('click',event=>{
@@ -173,7 +213,7 @@ async function openTerminologyPicker(button){
  const scope=button.dataset.terminologyOpen,row=button.closest(scope==='diagnosis'?'[data-diagnosis-row]':'.billing-charge-row'),form=row?.closest('form');if(!row||!form||scope!=='procedure')return;
   const host=document.createElement('section');host.className='amendment';host.dataset.terminologyPicker='';host.setAttribute('aria-label','Terminology lookup');
  const system=scope==='diagnosis'?'ICD-10-CM':terminologySystem(row.querySelector('[name="code_system"]')?.value)||'CPT';
- const state={scope,row,form,host,button,system,serviceDate:terminologyServiceDate(scope,form),query:row.querySelector('[name="code"]')?.value||'',patient:selected,visit:typeof activeVisit!=='undefined'?activeVisit?.id:null,account:me,generation:terminologyGeneration,request:0,items:[],releases:[]};
+ const state={scope,row,form,host,button,system,serviceDate:terminologyServiceDate(scope,form),query:row.querySelector('[name="code"]')?.value||row.querySelector('[data-terminology-combobox]')?.value||'',patient:selected,visit:typeof activeVisit!=='undefined'?activeVisit?.id:null,account:me,generation:terminologyGeneration,request:0,items:[],releases:[]};
   terminologyPickers.set(host,state);host.innerHTML=terminologyPickerMarkup(state);row.append(host);host.querySelector('[data-terminology-query]').focus();
   await loadTerminologyReleases(state);
   if(state.query.trim().length>=2&&terminologyContextCurrent(state))await searchTerminology(state);
@@ -212,18 +252,19 @@ function terminologySelectionCurrent(state,item){
 }
 async function selectTerminologyCode(state,index){
  const item=state.items[index];if(!item||!terminologySelectionCurrent(state,item)){terminologyPickerStatus(state,'The lookup context changed. Search again before choosing a code.',true);return;}
- const code=state.row.querySelector('[name="code"]'),display=state.row.querySelector(state.scope==='diagnosis'?'[name="display"]':'[name="description"]'),system=state.row.querySelector('[name="code_system"]'),before=[code.value,display.value,system?.value,terminologyServiceDate(state.scope,state.form)];
+ const pair=terminologyFieldPair(state.scope),code=state.row.querySelector(`[name="${pair.code}"]`),display=state.row.querySelector(`[name="${pair.text}"]`),visible=terminologyVisibleField(state.scope,state.row),system=state.row.querySelector('[name="code_system"]'),before=[code.value,display.value,system?.value,terminologyServiceDate(state.scope,state.form)];
  const request=++state.request,detail=await api(`/api/v1/terminology/releases/${encodeURIComponent(item.release_id)}/codes/${encodeURIComponent(item.code)}`);
  if(request!==state.request||!terminologySelectionCurrent(state,item))return;
  if(JSON.stringify(before)!==JSON.stringify([code.value,display.value,system?.value,terminologyServiceDate(state.scope,state.form)])){terminologyPickerStatus(state,'The row or service date changed while loading the code. Your edits were kept; search again before selecting.',true);return;}
  if(detail.code!==item.code||detail.release_id!==item.release_id||!terminologySelectionCurrent(state,detail)){terminologyPickerStatus(state,'This code changed since the search. Search again before choosing a code.',true);return;}
- code.value=detail.code;display.value=detail.display;display.maxLength=state.scope==='diagnosis'?2000:10000;
- if(state.scope==='procedure')state.row.querySelector('[name="code_system"]').value=detail.system;
+ const filled=terminologyFillFields(state.scope,state.row,detail.code,detail.display);
+ if(display)display.maxLength=state.scope==='diagnosis'?2000:10000;
+ if(state.scope==='procedure')system.value=detail.system;
  state.row.dataset.catalogReleaseId=detail.release_id;state.row.dataset.catalogCode=detail.code;state.row.dataset.catalogDisplay=detail.display;state.row.dataset.catalogSystem=detail.system;
- for(const field of [code,display])field.dispatchEvent(new Event('input',{bubbles:true}));
+ for(const field of new Set([code,display,filled].filter(Boolean)))field.dispatchEvent(new Event('input',{bubbles:true}));
  state.row.querySelector('[data-terminology-selection]')?.remove();
  const note=document.createElement('p');note.dataset.terminologySelection='';note.className='muted';note.textContent=`Selected from ${terminologyReleaseLabel(detail)}. Save this row to record which code list it came from. Choosing a code here does not mean the claim will be accepted.`;state.row.append(note);
- terminologyPickers.delete(state.host);state.host.remove();display.focus();
+ terminologyPickers.delete(state.host);state.host.remove();(filled||display).focus();
 }
 async function showTerminologyCatalogs(){
  if(me?.role!=='owner')return;
