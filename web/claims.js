@@ -20,6 +20,7 @@ function claimStatusCount(status){
 function claimStatusChipsHtml(){return `<nav class="practice-status-strip claims-status-strip" aria-label="Filter claims by status">${['all',...claimStatusChips].map(status=>`<button type="button" data-claim-status="${status}" aria-pressed="${claimStatusFilter===status}">${esc(claimStatusChipLabel(status))}<span>${claimStatusCount(status)}</span></button>`).join('')}</nav>`;}
 function claimRowMarkup(claim){return `<tr><td><b>${esc(claim.patient_name)}</b><small class="claim-control">Claim ${esc(claim.control_number)}</small></td><td>${esc(claim.payer_name)}<small>${esc(displayStatus(claim.frequency))}</small></td><td><span class="pill">${esc(claimStatusLabel(claim))}</span></td><td class="money-cell">${money(claim.total_cents)}</td><td><button type="button" data-claim-open="${claim.id}">Open claim</button></td></tr>`;}
 function claimRowsMarkup(claims){return claims.map(claimRowMarkup).join('');}
+
 function claimEmptyRow(claims){return `<tr><td colspan="5" class="table-empty">${claims.length?'No claims here with this status. Choose All to see every claim.':'No claims yet. A claim is prepared for you when a visit’s charges are posted.'}</td></tr>`;}
 function claimFinalStatus(claim,detail={}){return ['void','rejected'].includes(claim?.status)||detail?.tracking?.remittance_posted===true;}
 function claimWorkspaceMarkup(){
@@ -253,12 +254,38 @@ function claimPane(html,{quiet=false}={}){const context=claimContextSnapshot();r
 function claimHasRecordedSubmission(detail={}){return detail.tracking?.external_submission_recorded===true||(detail.tracking?.submissions||[]).some(item=>item.status==='delivered');}
 function claimHasPreparedSubmission(detail={}){return (detail.tracking?.submissions||[]).some(item=>item.status==='prepared');}
 // Claim rows use the same state names as the visit billing card.
-function claimStatusLabel(claim){return typeof visitBillingClaimState==='function'?visitBillingClaimState(claim):claimIsCrossover(claim)&&claim.status==='submitted'?'Crossover response received':displayStatus(claim.status);}
+// Claim rows carry the Claim.MD position the list endpoint read for them, so a claim the
+// clearinghouse holds for correction is named as such in the list and not only once opened.
+function claimStatusLabel(claim){return typeof visitBillingClaimState==='function'?visitBillingClaimState(claim):claim?.claimmd_position?.needs_correction===true?claimMdCorrectionWord:claimIsCrossover(claim)&&claim.status==='submitted'?'Crossover response received':displayStatus(claim.status);}
 function claimIsCrossover(claim){return Boolean(claim?.crossover_tracking_only===true||claim?.snapshot?.coordination_of_benefits?.crossover);}
 // The one word on the claim page. The database holds more statuses than staff work with, so several
 // of them share a word: 'Paid' needs the posted insurance payment, and 'Denied' arrives as a
 // rejection, which is why neither is a claim status of its own.
 const claimPlainWords={draft:'Not sent yet',ready:'Not sent yet',submitted:'Sent',accepted:'Accepted',rejected:'Rejected',void:'Voided',denied:'Denied',paid:'Paid'};
+// Claim.MD's two positions a claim row's own status cannot say, in the one word each screen uses.
+// A claim the clearinghouse holds for correction is worked on, not waited on; a claim it has only
+// acknowledged has not reached the payer at all, and saying "the insurer has it" would be untrue.
+const claimMdCorrectionWord='Needs correcting';
+function claimMdNeedsCorrection(detail={}){return detail?.claimmd_position?.needs_correction===true;}
+function claimMdOnlyAcknowledged(claim,detail={}){
+ if(detail?.claimmd_position?.acknowledged===true)return true;
+ if(detail?.claimmd_position?.acknowledged===false)return false;
+ // Without the server's position the claim's own provider messages answer the question:
+ // Claim.MD acknowledged the upload and nothing has been heard from the payer since.
+ const reports=detail?.tracking?.reports||[],latest=reports[reports.length-1]?.evidence;
+ return String(claim?.status||'')==='submitted'&&latest?.message?.status==='A'&&['CLMMD',undefined,'',null].includes(latest?.senderid)&&!claim?.payer_control_number;
+}
+// The provider message that has to be acted on: the server's open correction first, then the
+// newest Claim.MD warning on the claim, then the clearinghouse's words on the claim file.
+function claimMdCorrectionMessage(claim,detail={}){
+ const open=detail?.claimmd_position?.correction?.message;
+ if(typeof open==='string'&&open.trim())return open.trim();
+ const warning=[...(detail?.tracking?.reports||[])].reverse().find(report=>String(report?.evidence?.message?.status||'')==='W');
+ if(warning?.evidence?.message?.message)return String(warning.evidence.message.message).trim();
+ const needs=[...(detail?.tracking?.submissions||[])].reverse().find(item=>item?.technical_status==='needs_review');
+ if(needs?.payer_outcome_words)return String(needs.payer_outcome_words).trim();
+ return '';
+}
 function claimPlainStatus(claim,detail={}){
  if(!claim)return '';
  if(claimIsCrossover(claim))return 'Secondary payer answered';
@@ -268,6 +295,7 @@ function claimPlainStatus(claim,detail={}){
  // page tells the truth about where the claim is rather than about which column was last written.
  if(['draft','ready'].includes(status)&&claimHasRecordedSubmission(detail))return claimPlainWords.submitted;
  if(status==='adjudicated')return detail?.tracking?.remittance_posted===true?'Paid':'Accepted';
+ if(status==='submitted'&&claimMdNeedsCorrection(detail))return claimMdCorrectionWord;
  return claimPlainWords[status]||displayStatus(claim.status)||'Status unavailable';
 }
 // What the claim was billed for, and what the payer and the patient have put against it. The
@@ -630,8 +658,9 @@ function claimResponseWords(detail={}){
 }
 // The one status word, the claim's headline line. The claim number and version stay in their own
 // marked nodes so an automatic refresh can update them without touching the rest of the screen.
-function claimScreenHeadMarkup(claim,account,patient){
- return `<div class="section-head claim-screen-head"><div><h2>Claim review</h2><p class="claim-screen-who"><b>${esc(patient.given_name)} ${esc(patient.family_name)}</b> · Service ${esc(displayDate(account.content.service_date))} · ${esc(account.coverage_snapshot?.payer?.content?.name||'No insurer recorded')} · ${money(account.total_cents)}</p><small class="claim-control" data-claim-current-version>${esc(claim.control_number)} · v${claim.version}</small></div><div class="support-help-group"><span class="status-badge claim-status-word" data-claim-current-status>${esc(claimPlainStatus(claim))}</span>${typeof supportHelpButton==='function'?supportHelpButton('claim',`data-support-claim="${esc(claim.id)}" data-support-claim-label="${esc(claim.control_number)}" data-support-patient="${esc(claim.patient_id)}" data-support-patient-label="${esc(patient.family_name)}, ${esc(patient.given_name)} · MRN ${esc(patient.mrn)}"`):''}</div></div>`;
+function claimScreenHeadMarkup(claim,account,patient,detail={}){
+ return `<div class="section-head claim-screen-head"><div><h2>Claim review</h2><p class="claim-screen-who"><b>${esc(patient.given_name)} ${esc(patient.family_name)}</b> · Service ${esc(displayDate(account.content.service_date))} · ${esc(account.coverage_snapshot?.payer?.content?.name||'No insurer recorded')} · ${money(account.total_cents)}</p><small class="claim-control" data-claim-current-version>${esc(claim.control_number)} · v${claim.version}</small></div><div class="support-help-group"><span class="status-badge claim-status-word" data-claim-current-status>${esc(claimPlainStatus(claim,detail))}</span>
+${typeof supportHelpButton==='function'?supportHelpButton('claim',`data-support-claim="${esc(claim.id)}" data-support-claim-label="${esc(claim.control_number)}" data-support-patient="${esc(claim.patient_id)}" data-support-patient-label="${esc(patient.family_name)}, ${esc(patient.given_name)} · MRN ${esc(patient.mrn)}"`):''}</div></div>`;
 }
 // Where the Claim.MD panels put themselves: inside More details when it is open, and where they
 // have always gone otherwise. A stub screen with no panels simply puts them on the claim pane.
@@ -648,7 +677,7 @@ function claimScreenMarkup(claim,detail,history){
  const sections={recordOutside,providerDetails:claimProviderDetailsMarkup(claim),coverageRecord:claimCoverageRecordMarkup(claim),history:claimHistory(history),responseWords:claimRawResponseMarkup(detail),secondaryEvidence:secondaryEvidenceMarkup(claim)};
  const lines=chargeTable(account.content.lines.map((line,index)=>({...line,diagnosis_codes:(claim.content?.line_diagnosis_pointers?.[index]||[]).map(pointer=>claim.content?.diagnosis_codes?.[pointer-1]).filter(Boolean)})));
  const editClaim=billingWrite()&&claim.status==='draft'?'<button type="button" data-edit-claim>Edit claim details</button>':'';
- return `<section class="billing-account-detail">${claimScreenHeadMarkup(claim,account,patient)}
+ return `<section class="billing-account-detail">${claimScreenHeadMarkup(claim,account,patient,detail)}
  ${typeof claimProblemReport==='function'?claimProblemBoxMarkup(claimProblemReport(claim,detail),claimResponseWords(detail),claim.id):''}
  ${claimPrimaryActionMarkup(claim,detail,{connectionNotice:claimConnectionNotice(claim,detail),secondaryEvidence:sections.secondaryEvidence,recordOutside})}
  ${claimIsCrossover(claim)?'<p class="muted">Nothing is sent or downloaded for a crossover claim. The secondary payment stays with the original visit.</p>':claimMissingMarkup(missing)}

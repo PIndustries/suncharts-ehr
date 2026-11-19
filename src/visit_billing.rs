@@ -327,6 +327,18 @@ pub(crate) fn state_of(
     draft_needs_details: bool,
     claims_visible: bool,
 ) -> (&'static str, &'static str) {
+    state_of_with_claimmd(row, draft_needs_details, claims_visible, &Value::Null)
+}
+/// The same, with the claim's Claim.MD position. A correction the clearinghouse holds waits on
+/// the practice, not the other way round, so the card stops saying "nothing to do until they
+/// answer"; a claim Claim.MD has only received is named as received, because the payer has not
+/// been given the claim yet and staff may have to release it in Claim.MD themselves.
+pub(crate) fn state_of_with_claimmd(
+    row: &Value,
+    draft_needs_details: bool,
+    claims_visible: bool,
+    claimmd: &Value,
+) -> (&'static str, &'static str) {
     let posted = row["posted"] == true;
     let insured = row["insured"] == true;
     let owes = cents(&row["owes_now_cents"]);
@@ -365,6 +377,12 @@ pub(crate) fn state_of(
         Some("draft" | "ready") => ("send_claim", "staff"),
         Some("submitted" | "accepted") if row["response_to_review"].is_string() => {
             ("post_response", "staff")
+        }
+        Some("submitted" | "accepted") if claimmd["needs_correction"] == true => {
+            ("claimmd_correction", "staff")
+        }
+        Some("submitted" | "accepted") if claimmd["acknowledged"] == true => {
+            ("claimmd_received", "nobody")
         }
         Some("submitted" | "accepted") => ("waiting_insurer", "insurer"),
         _ if row["denied"] == true => ("denied", "staff"),
@@ -743,6 +761,20 @@ pub(crate) async fn summarize(
     let live: Vec<&ClaimView> = views.iter().filter(|c| c.status() != "void").collect();
     let open = live.iter().copied().find(|c| c.open());
     let latest = open.or_else(|| live.last().copied());
+    // Where Claim.MD stands on the claim this card words. A correction the clearinghouse holds
+    // is staff's work, not a wait on the insurer, and a claim Claim.MD has only acknowledged has
+    // not reached the payer at all. Read for the one claim the card is about, never per row.
+    let claimmd = match latest
+        .and_then(|c| c.row["id"].as_str())
+        .and_then(|id| Uuid::parse_str(id).ok())
+        .filter(|_| opt.claims && posted && insured)
+    {
+        Some(claim) => claims::claim_md_positions(tx, a.tenant_id, &[claim])
+            .await?
+            .remove(&claim)
+            .unwrap_or(Value::Null),
+        None => Value::Null,
+    };
 
     // The current draft's readiness, with the same checks the manual flow runs.
     let mut issues: Vec<Value> = vec![];
@@ -796,8 +828,14 @@ pub(crate) async fn summarize(
         None => ("add_charges", "staff"),
         Some(_) if void => ("add_charges", "staff"),
         Some(_) if charges_corrected_after_send => ("correct_claim", "staff"),
-        Some(_) => state_of(&money, !issues.is_empty(), opt.claims),
+        Some(_) => state_of_with_claimmd(&money, !issues.is_empty(), opt.claims, &claimmd),
     };
+    // The day the clearinghouse said the claim needs correcting, for the sentence that names
+    // where to release a claim Claim.MD is holding for approval.
+    let claimmd_since = claimmd["correction"]["at"]
+        .as_str()
+        .or_else(|| claimmd["received_at"].as_str())
+        .map(|value| value.to_owned());
 
     let insurance_status = if !insured {
         "none"
@@ -811,6 +849,8 @@ pub(crate) async fn summarize(
             None => "not_sent",
             Some(c) => match c.status() {
                 "draft" | "ready" => "not_sent",
+                "submitted" | "accepted" if claimmd["needs_correction"] == true => "correction",
+                "submitted" | "accepted" if claimmd["acknowledged"] == true => "received",
                 "submitted" | "accepted" => "waiting",
                 _ if denied => "denied",
                 _ => "answered",
@@ -831,6 +871,9 @@ pub(crate) async fn summarize(
             }
         }
         row["issues"] = json!(issues);
+        if claimmd.is_object() {
+            row["claimmd_position"] = claimmd.clone();
+        }
         if let Some(answer) = &c.answer {
             row["answer"] = json!({"paid_cents":answer.paid,"patient_responsibility_cents":answer.patient_responsibility,"denied":answer.denied,"payment_date":answer.payment_date,"remittance_id":answer.remittance_id});
         }
@@ -853,6 +896,14 @@ pub(crate) async fn summarize(
             "pending_cents": pending,
             "unassigned_cents": unassigned,
             "sent_on": latest.map(|c| c.row["sent_on"].clone()),
+            // Claim.MD's own words, carried to the visit card so the correction is named where
+            // staff read it and not only inside the claim.
+            "claimmd": claimmd.is_object().then(|| json!({
+                "needs_correction": claimmd["needs_correction"] == true,
+                "acknowledged": claimmd["acknowledged"] == true,
+                "message": claimmd["correction"]["message"].as_str().filter(|message| !message.trim().is_empty()),
+                "since": claimmd_since,
+            })),
         },
         "patient": {
             "copay_cents": expected,

@@ -3,12 +3,14 @@
 // One billing card per visit. Every amount comes from the server's visit billing summary;
 // this file only words and lays it out. One vocabulary names a visit's billing state here,
 // in the insurance claims list and on the patient billing page.
-const visitBillingStateNames={add_charges:'Add charges',sign_visit:'Sign the visit',post_charges:'Post charges',self_pay_collect:'Self-pay: collect payment',prepare_claim:'Preparing claim',claim_cancelled:'Claim cancelled',fix_claim:'Claim needs details',send_claim:'Send claim',correct_claim:'Charges changed after the claim was sent',waiting_insurer:'Waiting on insurer',post_response:'Insurer answered: review payment',denied:'Denied: fix and resend',review_response:'Review insurer answer',patient_owes:'Patient owes',review_balance:'Balance not on the statement',patient_credit:'Patient credit',paid_in_full:'Paid in full',insurance_outside:'Insurance billed outside SunCharts',claim_restricted:'Posted'};
+const visitBillingStateNames={add_charges:'Add charges',sign_visit:'Sign the visit',post_charges:'Post charges',self_pay_collect:'Self-pay: collect payment',prepare_claim:'Preparing claim',claim_cancelled:'Claim cancelled',fix_claim:'Claim needs details',send_claim:'Send claim',correct_claim:'Charges changed after the claim was sent',waiting_insurer:'Waiting on insurer',claimmd_correction:'Needs correcting',claimmd_received:'Received by Claim.MD',post_response:'Insurer answered: review payment',denied:'Denied: fix and resend',review_response:'Review insurer answer',patient_owes:'Patient owes',review_balance:'Balance not on the statement',patient_credit:'Patient credit',paid_in_full:'Paid in full',insurance_outside:'Insurance billed outside SunCharts',claim_restricted:'Posted'};
 function visitBillingStateName(state){return visitBillingStateNames[state]||'Billing status unavailable';}
 // A claim row carries only its own status; name it with the same words the visit card uses.
 function visitBillingClaimState(claim){
  if(!claim)return '';
  if((claim.crossover_tracking_only||claim.crossover)&&claim.status==='submitted')return 'Secondary insurer answered';
+ if(['submitted','accepted'].includes(claim.status)&&claim.claimmd_position?.needs_correction===true)return visitBillingStateNames.claimmd_correction;
+ if(claim.status==='submitted'&&claim.claimmd_position?.acknowledged===true)return visitBillingStateNames.claimmd_received;
  return ({draft:visitBillingStateNames.send_claim,ready:visitBillingStateNames.send_claim,submitted:visitBillingStateNames.waiting_insurer,accepted:visitBillingStateNames.waiting_insurer,rejected:visitBillingStateNames.denied,adjudicated:'Insurer answered',void:visitBillingStateNames.claim_cancelled})[claim.status]||'Claim status unavailable';
 }
 function visitBillingDate(value){
@@ -51,6 +53,8 @@ function visitBillingStatus(s,ctx={}){
    case 'fix_claim':return {headline:`Claim to ${insurer} needs details`,detail:'Nothing has been sent yet.',issues:s.claim?.issues||[],action:reviewButton(s,ctx)||(write?button('Fix claim details',`data-visit-claim-fix="${esc(claim)}"`):'')};
     case 'send_claim':return {headline:`Claim ready to send to ${insurer}`,detail:'Nothing has been sent yet.',action:visitBillingDirectSend(s,ctx)||reviewButton(s,ctx)||(write?button('Review and send claim',`data-visit-claim-send="${esc(claim)}"`):'')};
     case 'correct_claim':return {headline:'Charges changed after the claim was sent',detail:`Send a corrected claim to ${insurer}.`,action:button('Open claim',`data-revenue-claim="${esc(claim)}"`)};
+   case 'claimmd_correction':return {headline:'Claim.MD found a problem with this claim',detail:`${s.claimmd?.message?`Claim.MD says: “${s.claimmd.message}” `:''}Nothing has reached ${insurer} yet. Fix it in Edit charges (for example, add the modifier it asks for) and resend, or if nothing needs to change, approve the claim in Claim.MD.`,action:button('Open claim',`data-revenue-claim="${esc(claim)}"`)};
+   case 'claimmd_received':return {headline:'Received by Claim.MD',detail:`${insurer} has not answered yet. If this claim is held for approval in Claim.MD, approve it there (Manage Claims → Pending Approval).`,action:button('Check claim status',`data-revenue-claim="${esc(claim)}"`)};
    case 'waiting_insurer':return {headline:`Waiting on ${insurer}`,detail:`${s.insurance.sent_on?`Claim sent ${visitBillingDate(s.insurance.sent_on)}. `:''}Nothing to do until they answer.`,action:button('Check claim status',`data-revenue-claim="${esc(claim)}"`)};
    case 'post_response':return {headline:`${insurer} answered`,detail:'Review their payment and post it to this visit.',action:button('Review insurer payment',`data-revenue-remittance="${esc(s.claim?.response_to_review||'')}"`)};
    case 'denied':return {headline:`Denied by ${insurer}`,detail:'Fix the claim and send it again.',action:button('Fix and resend claim',`data-revenue-claim="${esc(claim)}"`)};
