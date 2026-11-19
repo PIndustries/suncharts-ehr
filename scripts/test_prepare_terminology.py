@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Synthetic fixed-width fixtures; no downloaded catalogs or CPT descriptors."""
 import contextlib
+import gzip
 import hashlib
 import importlib.util
 import io
@@ -20,7 +21,10 @@ importer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(importer)
 
 ICD_MEMBER = "synthetic-release/icd10cm-order-2027.txt"
+ICD26_MEMBER = "icd10cm-order-2026.txt"
+PCS_MEMBER = "icd10pcs_order_2027.txt"
 HCPCS_MEMBER = "HCPC2026_OCT_ANWEB_001.txt"
+HCPCS_JAN27_MEMBER = "HCPC2027_JAN_ANWEB.txt"
 START = "2026-10-01"
 
 
@@ -158,6 +162,182 @@ class HcpcsAnwebTests(unittest.TestCase):
         for invalid in ("2026-10-01", "20260229", "20260001", "20261000", "abcdefgh"):
             with self.subTest(value=invalid), self.assertRaises(ValueError):
                 importer.cms_date(invalid)
+
+
+class PcsOrderTests(unittest.TestCase):
+    def test_pcs_seven_character_codes_have_no_dot_and_headings_are_not_billable(self):
+        rows = "\r\n".join([
+            icd_row("001", flag="0", order=1,
+                    short="Central Nervous System, Bypass",
+                    display="Central Nervous System, Bypass"),
+            icd_row("0016070", flag="1", order=2,
+                    short="Bypass Cereb Vent to Nasophar",
+                    display="Bypass Cerebral Ventricle to Nasopharynx"),
+            icd_row("02HA04Z", flag="1", order=3,
+                    short="Reinsertion of valve", display="Reinsertion of valve"),
+        ])
+        prepared = importer.prepare("icd10pcs-2027", archive(PCS_MEMBER, rows))
+        codes = prepared["codes"]
+        self.assertEqual([row["code"] for row in codes], ["001", "0016070", "02HA04Z"])
+        self.assertEqual([row["billable"] for row in codes], [False, True, True])
+        self.assertEqual(prepared["system"], "ICD-10-PCS")
+        self.assertEqual(prepared["edition"], "FY2027")
+        self.assertEqual(prepared["effective_start"], START)
+        self.assertEqual(prepared["effective_end"], "2027-09-30")
+
+    def test_pcs_rows_reject_letter_i_or_o_and_bad_flags(self):
+        for row in (
+            icd_row("00I0000"), icd_row("00O0000"), icd_row("0016070", flag="2"),
+            icd_row("001607"), icd_row("0016070", display=""),
+        ):
+            with self.subTest(row=row[:16]), self.assertRaises(ValueError):
+                importer.prepare("icd10pcs-2027", archive(PCS_MEMBER, row))
+
+    def test_canonical_rules_accept_emitted_pcs_and_hcpcs_shapes(self):
+        # Mirrors canonical_code in src/terminology.rs for ICD-10-PCS and HCPCS.
+        def canonical(system, code):
+            compact = code.replace(".", "")
+            if len(compact) != len(code):
+                return False
+            if system == "ICD-10-PCS":
+                return (len(compact) == 7
+                        and all(c.isalnum() and c not in "IO" for c in compact))
+            if system == "HCPCS":
+                return len(compact) == 5 and compact[0].isalpha() and compact[1:].isdigit()
+            raise AssertionError(system)
+
+        pcs = [row["code"] for row in importer.icd_codes(
+            "\n".join([icd_row("0016070"), icd_row("02HA04Z")]), "ICD-10-PCS")]
+        self.assertTrue(all(canonical("ICD-10-PCS", code) or code == "001" for code in pcs))
+        self.assertTrue(canonical("ICD-10-PCS", "0016070"))
+        self.assertTrue(canonical("ICD-10-PCS", "02HA04Z"))
+        hcpcs = [row["code"] for row in importer.hcpcs_codes(hcpcs_row("B1234"), START)]
+        self.assertEqual([code for code in hcpcs if canonical("HCPCS", code)], ["B1234"])
+
+
+class MemberSelectionTests(unittest.TestCase):
+    def test_each_dataset_targets_its_own_year_and_month_member(self):
+        cases = {
+            "icd10cm-2026": "icd10cm-order-2026.txt",
+            "icd10cm-2027": "deep/icd10cm-order-2027.txt",
+            "icd10pcs-2027": "icd10pcs_order_2027.txt",
+            "hcpcs-2026-01": "HCPC2026_JAN_ANWEB_01122026.txt",
+            "hcpcs-2026-04": "HCPC2026_APR_ANWEB.txt",
+            "hcpcs-2026-07": "HCPC2026_JUL_ANWEB_06172026.txt",
+            "hcpcs-2026-10": "HCPC2026_OCT_ANWEB_09232026.txt",
+            "hcpcs-2027-01": "HCPC2027_JAN_ANWEB.txt",
+        }
+        for dataset, member in cases.items():
+            with self.subTest(dataset=dataset):
+                self.assertRegex(member, importer.member_pattern(dataset))
+
+    def test_patterns_reject_other_editions_and_sidecar_members(self):
+        for dataset, member in (
+            ("icd10cm-2026", "icd10cm-order-2027.txt"),
+            ("icd10cm-2027", "icd10cm-order-addenda-2027.txt"),
+            ("icd10pcs-2027", "order_addenda_2027.txt"),
+            ("hcpcs-2026-10", "HCPC2026_OCT_ANWEB_Transaction Report.txt"),
+            ("hcpcs-2027-01", "HCPC2026_JAN_ANWEB.txt"),
+            ("hcpcs-2027-01", "HCPC2027_recordlayout.txt"),
+        ):
+            with self.subTest(dataset=dataset, member=member):
+                self.assertNotRegex(member, importer.member_pattern(dataset))
+
+    def test_prepare_uses_the_year_matching_member(self):
+        raw = archive(ICD26_MEMBER, icd_row("QA00101"))
+        prepared = importer.prepare("icd10cm-2026", raw)
+        self.assertEqual(prepared["edition"], "FY2026")
+        self.assertEqual(prepared["effective_start"], "2025-10-01")
+        self.assertEqual(prepared["effective_end"], "2026-09-30")
+        with self.assertRaises(ValueError):
+            importer.prepare("icd10cm-2026", archive(ICD_MEMBER, icd_row("QA00101")))
+
+    def test_source_filenames_match_the_official_archive_names(self):
+        self.assertEqual(importer.source_filename("icd10cm-2026"), "icd10cm-2026.zip")
+        self.assertEqual(importer.source_filename("icd10pcs-2027"), "icd10pcs-2027.zip")
+        self.assertEqual(importer.source_filename("hcpcs-2027-01"), "hcpcs-january-2027.zip")
+        self.assertEqual(importer.source_filename("hcpcs-2026-04"), "hcpcs-april-2026.zip")
+
+    def test_hcpcs_january_2027_edition_is_open_ended(self):
+        spec = importer.DATASETS["hcpcs-2027-01"]
+        self.assertEqual(spec["effective_start"], "2027-01-01")
+        self.assertIsNone(spec["effective_end"])
+        raw = archive(HCPCS_JAN27_MEMBER, hcpcs_row())
+        prepared = importer.prepare("hcpcs-2027-01", raw)
+        self.assertEqual(prepared["edition"], "2027-01")
+        self.assertIsNone(prepared["effective_end"])
+
+
+class ShippedCatalogTests(unittest.TestCase):
+    def test_all_mode_writes_deterministic_catalogs_and_a_manifest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sources, output = root / "sources", root / "catalogs"
+            sources.mkdir()
+            for dataset in importer.DATASETS:
+                if dataset.startswith("icd10cm"):
+                    text = icd_row("QA00101")
+                elif dataset.startswith("icd10pcs"):
+                    text = icd_row("0016070")
+                else:
+                    text = hcpcs_row()
+                (sources / importer.source_filename(dataset)).write_bytes(
+                    archive(importer.member_pattern(dataset).replace("\\", "")
+                            .replace("$", "").replace("^", "").replace("(_[0-9]+)?", "_001"),
+                            text))
+            first = io.StringIO()
+            with contextlib.redirect_stdout(first):
+                importer.prepare_all(sources, output)
+            digest_a = {p.name: p.read_bytes()
+                        for p in sorted(output.iterdir()) if p.name.endswith(".json.gz")}
+            with contextlib.redirect_stdout(io.StringIO()):
+                importer.prepare_all(sources, output)
+            digest_b = {p.name: p.read_bytes()
+                        for p in sorted(output.iterdir()) if p.name.endswith(".json.gz")}
+
+            self.assertEqual(len(digest_a), len(importer.DATASETS))
+            self.assertEqual(digest_a, digest_b)
+            self.assertIn("icd-10-cm-FY2026.json.gz", digest_a)
+            self.assertIn("icd-10-pcs-FY2027.json.gz", digest_a)
+            self.assertIn("hcpcs-2027-01.json.gz", digest_a)
+
+            manifest = json.loads((output / "manifest.json").read_text())
+            self.assertEqual(len(manifest["datasets"]), len(importer.DATASETS))
+            by_file = {entry["file"]: entry for entry in manifest["datasets"]}
+            entry = by_file["icd-10-cm-FY2026.json.gz"]
+            self.assertEqual(entry["system"], "ICD-10-CM")
+            self.assertEqual(entry["edition"], "FY2026")
+            self.assertEqual(entry["effective_start"], "2025-10-01")
+            self.assertEqual(entry["effective_end"], "2026-09-30")
+            self.assertEqual(entry["code_count"], 1)
+            self.assertEqual(entry["source_sha256"],
+                             hashlib.sha256((sources / "icd10cm-2026.zip").read_bytes()).hexdigest())
+            self.assertEqual(entry["sha256"], hashlib.sha256(digest_a[entry["file"]]).hexdigest())
+            self.assertIsNone(by_file["hcpcs-2027-01.json.gz"]["effective_end"])
+
+            payload = json.loads(gzip.decompress(digest_a["icd-10-pcs-FY2027.json.gz"]))
+            self.assertEqual(payload["codes"][0]["code"], "0016070")
+            self.assertEqual(payload["request_id"], importer.request_id("icd10pcs-2027"))
+            self.assertEqual(payload["request_id"], json.loads(gzip.decompress(
+                digest_b["icd-10-pcs-FY2027.json.gz"]))["request_id"])
+            self.assertEqual(gzip.decompress(digest_a["hcpcs-2027-01.json.gz"])
+                             == gzip.decompress(digest_b["hcpcs-2027-01.json.gz"]), True)
+
+    def test_gzip_streams_carry_no_timestamp(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            source = output / "src.zip"
+            source.write_bytes(archive(ICD_MEMBER, icd_row("QA00101")))
+            importer.write_catalog("icd10cm-2027", source.read_bytes(), output)
+            stream = (output / "icd-10-cm-FY2027.json.gz").open("rb")
+            with stream:
+                header = stream.read(10)
+            self.assertEqual(header[4:8], b"\x00\x00\x00\x00")
+
+    def test_request_id_is_stable_and_unique_per_edition(self):
+        seen = {importer.request_id(key) for key in importer.DATASETS}
+        self.assertEqual(len(seen), len(importer.DATASETS))
+        self.assertEqual(importer.request_id("icd10cm-2027"), importer.request_id("icd10cm-2027"))
 
 
 class ArchiveAndCliTests(unittest.TestCase):

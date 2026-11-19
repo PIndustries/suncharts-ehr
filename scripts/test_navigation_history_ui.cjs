@@ -29,7 +29,8 @@ function fixture(billingHub=false){
  ctx.setEncounterSection=step=>{ctx.captureVisitDrafts();ctx.encounterSection=step;ctx.showChartSection('visits');};
  ctx.renderVisit=()=>{ctx.chartSection='visits';};ctx.showBillingAccount=id=>{ctx.billingSelected=id;};ctx.showOrder=id=>{ctx.labSelected=id;};
  ctx.showClaim=async id=>{await ctx.api(`/claims/${id}`);ctx.detail=['claim',id];};ctx.showEra=async id=>{await ctx.api(`/eras/${id}`);ctx.detail=['era',id];};ctx.openPaymentStatus=async id=>{ctx.showTool('Billing');await ctx.api(`/payments/${id}`);ctx.detail=['payment',id];};ctx.openPaymentSettings=async()=>{ctx.showTool('Billing');await ctx.api('/payment-settings');ctx.detail=['settings'];};ctx.openCardReaders=async()=>{ctx.showTool('Card readers');ctx.detail=['card-readers'];};
- ctx.encounterClaimRoute=()=>!nodes['clinical-workspace'].hidden&&ctx.chartSection==='visits'&&ctx.encounterSection==='charges'?ctx.claimRoute||null:null;
+ ctx.encounterShows=part=>['intake','visit','documentation','charges','checkout'].includes(ctx.encounterSection)&&ctx.chartSection==='visits';ctx.window=ctx;
+ ctx.encounterClaimRoute=()=>!nodes['clinical-workspace'].hidden&&ctx.chartSection==='visits'&&ctx.encounterShows('charges')?ctx.claimRoute||null:null;
  ctx.showEncounterClaim=async(id,account)=>{ctx.setEncounterSection('charges');await ctx.showClaim(id);ctx.claimRoute={account,claim:id};};
  ctx.beginClaim=async account=>{ctx.setEncounterSection('charges');await ctx.api(`/accounts/${account}`);ctx.claimRoute={account,claim:null};};
  ctx.showSupportTickets=async()=>{ctx.showTool('Support tickets');await ctx.api('/support');ctx.detail=null;};

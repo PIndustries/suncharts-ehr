@@ -31038,6 +31038,92 @@
         }
       }
     },
+    "/api/v1/terminology/cpt-install": {
+      "post": {
+        "operationId": "installLicensedCpt",
+        "summary": "Install the CPT list from the official CMS file under the practice's CPT license",
+        "tags": [
+          "Terminology"
+        ],
+        "description": "Owner only. The owner attests the practice holds a current AMA CPT license. The server downloads the pinned CMS physician fee schedule relative value file, checks its SHA-256, and installs every CPT code with its short descriptor for this tenant (licensed release, audit terminology.release.cpt_installed). If this tenant already has that edition it is returned with created:false and nothing is downloaded. 400 when the license is not attested or named or its date has passed; 503 when the CMS file cannot be downloaded.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "request_id",
+                  "license_attested",
+                  "license_reference"
+                ],
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "license_attested": {
+                    "type": "boolean"
+                  },
+                  "license_reference": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  },
+                  "license_valid_until": {
+                    "type": "string",
+                    "format": "date"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success; tenant-scoped data with Cache-Control: no-store",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "release": {
+                      "$ref": "#/components/schemas/TerminologyRelease"
+                    },
+                    "created": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "release",
+                    "created"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input, bounds, code syntax or cursor context"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Resource not found in this tenant or catalog license expired"
+          },
+          "409": {
+            "description": "Request ID or system/edition already exists with different content"
+          },
+          "413": {
+            "description": "Request exceeds 64 MiB"
+          }
+        }
+      }
+    },
     "/api/v1/terminology/releases": {
       "get": {
         "operationId": "listTerminologyReleases",

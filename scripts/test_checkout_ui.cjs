@@ -15,17 +15,28 @@ function fixture(){
  run(`human=s=>String(s||'').replaceAll('_',' ');localTime=s=>new Date(s).toISOString().slice(0,16);me={role:'owner',user_id:'clinician-1'};selected='patient-1';activeVisit={id:'visit-1',clinician_id:'clinician-1',status:'signed'};checkoutContext={patient:'patient-1',visit:'visit-1',key:'patient-1:visit-1'};checkoutState={version:0,visit:activeVisit,preview_digest:'digest-v1',preview_snapshot:{patient:{given_name:'Synthetic',family_name:'Patient',mrn:'SYN-1',birth_date:'1990-01-01'},medications:[],orders:[]},current_avs:null,releases:[],events:[],followups:[],checkout:{completed:false}};`);
  return {run,node,context,events,pending};
 }
-async function main(){
+ async function main(){
  let f=fixture();f.run('renderVisitCheckoutContent()');
- assert.match(f.node('visit-checkout').innerHTML,/data-version="0" data-digest="digest-v1"/);
- assert.match(f.node('visit-checkout').innerHTML,/Release after-visit summary/);
- assert.doesNotMatch(f.node('visit-checkout').innerHTML,/id="avs-delivery-form"|id="checkout-complete-form"/);
+ let html=f.node('visit-checkout').innerHTML;
+ assert.match(html,/data-version="0" data-digest="digest-v1"/);
+ // One button releases the summary and checks the visit out; no acknowledgement checkbox.
+ assert.match(html,/<button type="submit" class="primary">Release visit summary<\/button>/);
+ assert.doesNotMatch(html,/I reviewed the patient instructions|name="reviewed"|Release after-visit summary/);
+ assert.match(html,/data-checkout-discard>Discard instruction edits</);
+ assert.match(html,/<h2>Finish visit<\/h2>/);
+ assert.doesNotMatch(html,/id="avs-delivery-form"|id="checkout-complete-form"/);
+ // Payment is collected in the visit's payment block, never duplicated inside checkout.
+ assert.doesNotMatch(html,/Account payment links|Separate from appointment copay|Create test payment link|Payment account|renderAccountPaymentPanel/);
+ assert.doesNotMatch(html,/Charges &amp; payments|Open Charges & billing|No charges yet/);
+ // Follow-up tasks and patient instructions stay on the screen.
+ assert.match(html,/Follow-up tasks/);assert.match(html,/name="instructions"/);
+ console.log('PASS one release-and-checkout button, no acknowledgement, no duplicated charges or payment links');
  f.run(`checkoutState.visit={...activeVisit,status:'in_progress'};renderVisitCheckoutContent()`);
  assert.match(f.node('visit-checkout').innerHTML,/Sign the note before/);assert.doesNotMatch(f.node('visit-checkout').innerHTML,/id="avs-release-form"/);
  for(const role of ['front_desk','read_only']){f.run(`me.role=${JSON.stringify(role)};checkoutState.visit=activeVisit;renderVisitCheckoutContent()`);assert.doesNotMatch(f.node('visit-checkout').innerHTML,/id="avs-release-form"/);}
  console.log('PASS unsigned visits and role-protected AVS release');
  f=fixture();f.run(`checkoutState.current_avs={version:2,content:{instructions:'<script>unsafe()</script>',follow_up_instructions:'Call <clinic>'},snapshot:checkoutState.preview_snapshot,released_at:'2026-10-25T12:00:00Z'};checkoutState.releases=[checkoutState.current_avs];renderVisitCheckoutContent()`);
- let html=f.node('visit-checkout').innerHTML;assert.match(html,/&lt;script&gt;unsafe\(\)&lt;\/script&gt;/);assert.doesNotMatch(html,/<script>/);assert.match(html,/data-avs-version="2"/);assert.match(html,/opening the print dialog does not record that the summary was given/);assert.match(html,/Checking out does not collect a payment/);
+ html=f.node('visit-checkout').innerHTML;assert.match(html,/&lt;script&gt;unsafe\(\)&lt;\/script&gt;/);assert.doesNotMatch(html,/<script>/);assert.match(html,/data-avs-version="2"/);assert.match(html,/opening the print dialog does not record that the summary was given/);assert.match(html,/does not collect a payment or mark charges paid/);
  f.run(`checkoutState.checkout={completed:true,checked_out_at:'2026-10-25T13:00:00Z'};renderVisitCheckoutContent()`);assert.match(f.node('visit-checkout').innerHTML,/type="submit" disabled>Complete checkout/);
  console.log('PASS released summaries escaped and handoff/payment statuses independent');
  f=fixture();f.run(`checkoutDrafts.set(checkoutContext.key,{instructions:'Retained instruction edits',follow_up_instructions:'',version:1,digest:'old-digest'});checkoutState.version=2;renderVisitCheckoutContent()`);
@@ -33,8 +44,10 @@ async function main(){
  f.run(`api=async(p,m,b,v)=>{calls.push({p,m,b,v});return {};};loadVisitCheckout=async()=>calls.push({refreshed:true});notice=()=>{};run=action=>pending.push(Promise.resolve().then(action));`);
  const form={id:'avs-release-form',dataset:{version:'1',digest:'old-digest'},values:{instructions:'Retained instruction edits',follow_up_instructions:'Follow up',reason:'Reviewed patient summary'},remove(){},closest(){return null;}};
  f.events.get('submit').find(e=>e.options===true).callback({target:form,preventDefault(){},stopImmediatePropagation(){}});await Promise.all(f.pending);
- const sent=JSON.parse(JSON.stringify(f.context.calls[0]));assert.equal(sent.v,1);assert.equal(sent.b.reviewed_snapshot_digest,'old-digest');assert.equal(sent.b.reviewed,true);assert.equal(sent.p,'/api/v1/patients/patient-1/visits/visit-1/checkout/actions');
-  console.log('PASS stale AVS edits retained with their original version and review digest');
+ const sent=JSON.parse(JSON.stringify(f.context.calls[0]));assert.equal(sent.v,1);assert.equal(sent.b.reviewed_snapshot_digest,'old-digest');assert.equal(sent.b.reviewed,true); assert.equal(sent.p,'/api/v1/patients/patient-1/visits/visit-1/checkout/actions');
+ // The click that releases is the review: reviewed is sent true with no checkbox on screen.
+ assert.equal(f.run(`$('visit-checkout').innerHTML.includes('name="reviewed"')`),false);
+ console.log('PASS stale AVS edits retained with their original version and review digest');
   // The reviewed-copy rebase button: label, attribute and click handler path.
   f=fixture();f.run(`checkoutDrafts.set(checkoutContext.key,{instructions:'Retained instruction edits',follow_up_instructions:'',version:1,digest:'old-digest'});checkoutState.version=2;renderVisitCheckoutContent()`);
   html=f.node('visit-checkout').innerHTML;

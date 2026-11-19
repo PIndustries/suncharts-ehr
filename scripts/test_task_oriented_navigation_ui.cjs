@@ -16,7 +16,7 @@ assert.match(app,/manage\.includes\(title\)\?'MANAGE'/);
 assert.match(app,/today\.includes\(title\).*\?'TODAY'/);assert.match(app,/care\.includes\(title\)\?'CARE'/);assert.match(app,/revenue\.includes\(title\)\?'REVENUE'/);
 assert.match(app,/closest\?\.\('\.nav-more'\)/);assert.match(app,/more\.open=more===activeMore/);assert.match(app,/More tools ·/);
 assert.match(app,/function chartNavigation\(tabs\)/);
-assert.match(app,/patient-workspace-tabs/);assert.match(app,/Patient record/);assert.match(app,/encounter-step-tabs/);
+assert.match(app,/patient-workspace-tabs/);assert.match(app,/Patient record/);assert.match(app,/encounter-visit-actions/);assert.doesNotMatch(app,/encounter-step-tabs/,'the visit is one page, not a numbered step bar');
 assert.match(app,/function patientWorkflowActions\(\)/);for(const action of ['Start visit','Insurance & copay','Continue visit'])assert.ok(app.includes(action),`missing visible patient action ${action}`);
 assert.doesNotMatch(app,/class="patient-workflow-actions"/);
 assert.match(style,/\.patient-next-action/);

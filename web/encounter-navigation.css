@@ -15,10 +15,7 @@
 #patient-encounter-history{scroll-margin-top:110px}
 .encounter-selection{flex-wrap:wrap}
 .encounter-selection>button{align-self:end}
-#encounter-progress .encounter-step-tabs button{white-space:normal;max-width:260px;line-height:1.5;text-align:left}
-#encounter-progress .encounter-step-tabs button>span{flex-shrink:0}
 @media(max-width:760px){
  .patient-encounter-history .section-head,.encounter-history-row{align-items:flex-start;flex-wrap:wrap}
  .encounter-history-row>button{margin-top:4px}
- #encounter-progress .encounter-step-tabs button{max-width:210px}
 }

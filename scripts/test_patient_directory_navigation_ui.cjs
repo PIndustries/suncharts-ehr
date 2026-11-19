@@ -39,7 +39,7 @@ test('a stale directory response cannot replace a newly opened patient',async()=
  const pending=f.ctx.showClinical();await f.ctx.selectPatient('patient-a');const patientList=f.ctx.patients;resolve({items:[{id:'stale'}]});await pending;assert.equal(f.ctx.selected,'patient-a');assert.equal(f.ctx.patients,patientList);
 });
 test('completed encounter opens by exact patient-bound ID using only a read and preserves earlier drafts',async()=>{
- const f=fixture();await f.ctx.openPatientEncounter('visit-complete');assert.deepEqual(f.calls.filter(([method])=>method==='GET'),[['GET','/api/v1/visits/visit-complete']]);assert.equal(f.ctx.activeVisit.id,'visit-complete');assert.equal(f.ctx.activeVisit.status,'signed');assert.equal(f.drafts.get('visit-a'),'SYNTHETIC UNSAVED NOTE');assert.equal(f.evaluate('chartSection'),'visits');assert.equal(f.evaluate('encounterSection'),'documentation');assert(!f.calls.some(([method])=>['POST','PUT','DELETE'].includes(method)));
+ const f=fixture();await f.ctx.openPatientEncounter('visit-complete');assert.deepEqual(f.calls.filter(([method])=>method==='GET'),[['GET','/api/v1/visits/visit-complete']]);assert.equal(f.ctx.activeVisit.id,'visit-complete');assert.equal(f.ctx.activeVisit.status,'signed');assert.equal(f.drafts.get('visit-a'),'SYNTHETIC UNSAVED NOTE');assert.equal(f.evaluate('chartSection'),'visits');assert.equal(f.evaluate('encounterSection'),'visit');assert(!f.calls.some(([method])=>['POST','PUT','DELETE'].includes(method)));
 });
 test('encounter selection rejects foreign IDs and mismatched provider responses',async()=>{
  const f=fixture();await assert.rejects(f.ctx.openPatientEncounter('foreign-visit'),/this patient’s history/);assert(!f.calls.some(([method])=>method==='GET'));

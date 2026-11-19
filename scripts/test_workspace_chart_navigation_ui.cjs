@@ -19,6 +19,7 @@ vm.runInContext(specialty,context,{filename:'specialty-workspace.js'});
 const extract=(startText,endText)=>{const start=app.indexOf(startText),end=app.indexOf(endText,start);assert.ok(start>=0&&end>start);return app.slice(start,end);};
 vm.runInContext(extract('function encounterWorkflow(){','function openEncounterStep('),context,{filename:'encounter-navigation.js'});
 vm.runInContext(extract('function chartAreaEnabled(key){','\nconst formData='),context,{filename:'chart-navigation.js'});
+vm.runInContext(extract('function encounterShows(part){','function patientSectionVisible(key)'),context,{filename:'encounter-shows.js'});
 vm.runInContext(extract('const noteSectionKeys=','const visitAmendmentDrafts='),context,{filename:'note-sections.js'});
 vm.runInContext(extract('function renderVisit(activate=true) {','function renderHistory()'),context,{filename:'encounter-render.js'});
 const evaluate=source=>vm.runInContext(source,context),plain=value=>JSON.parse(JSON.stringify(value));
@@ -57,16 +58,18 @@ async function main(){
 
  evaluate(`activeVisit={id:'visit-1',appointment_id:'appt-1',clinician_id:'clinician-1',status:'in_progress',version:1,note:{subjective:'Retained note'},vitals:{}};workspace.visits=[activeVisit];chartSection='visits';encounterSection='documentation'`);
  const encounter=evaluate('encounterWorkflow()');
- assert.match(encounter,/id="encounter-picker"/);assert.match(encounter,/data-encounter-history>Visit history/);assert.match(encounter,/Switch visit/);assert.match(encounter,/Notes &amp; diagnoses|Notes & diagnoses/);assert.match(encounter,/Charges &amp; billing|Charges & billing/);assert.match(encounter,/Files &amp; recordings|Files & recordings/);
+ assert.match(encounter,/id="encounter-picker"/);assert.match(encounter,/data-encounter-history>Visit history/);assert.match(encounter,/Switch visit/);assert.doesNotMatch(encounter,/encounter-step-tabs|Notes &amp; diagnoses|Charges &amp; billing/,'the numbered step bar is gone: the visit is one page');assert.match(encounter,/data-encounter-step="new-order">\+ Order/);assert.match(encounter,/data-encounter-section="files">\+ Attach file/);
  assert.doesNotMatch(encounter,/Open encounter|Continue encounter/,'selected encounter renders its local steps directly');
  evaluate('renderVisit(false)');assert.match(nodes['visit-editor'].innerHTML,/SOAP note/);assert.match(nodes['visit-editor'].innerHTML,/Retained note/);
- assert.equal(nodes['visit-editor'].hidden,false);assert.equal(nodes['encounter-documentation'].hidden,false);assert.equal(nodes['encounter-intake'].hidden,true);assert.equal(nodes['appointments-panel'].hidden,false,'unified history stays reachable while an encounter is selected');
- const before=captured;evaluate("setEncounterSection('intake')");assert.ok(captured>before,'changing steps captures drafts');assert.equal(nodes['encounter-intake'].hidden,false);assert.equal(nodes['encounter-documentation'].hidden,true);
- evaluate("setEncounterSection('charges')");assert.equal(nodes['encounter-revenue'].hidden,false);assert.equal(nodes['visit-editor'].hidden,true);
- evaluate("setEncounterSection('orders')");assert.equal(nodes['lab-workspace'].hidden,false);assert.equal(nodes['encounter-orders-actions'].hidden,false);assert.equal(nodes['encounter-revenue'].hidden,true);
- evaluate("setEncounterSection('checkout')");assert.equal(nodes['visit-checkout'].hidden,false);assert.equal(nodes['lab-workspace'].hidden,true);
+ assert.equal(nodes['visit-editor'].hidden,false);assert.equal(nodes['encounter-documentation'].hidden,false);assert.equal(nodes['encounter-intake'].hidden,false,'the visit page shows vitals and note together');assert.equal(nodes['encounter-revenue'].hidden,false,'codes & charges sit on the same page');assert.equal(nodes['visit-checkout'].hidden,false,'checkout finishes the same page');assert.equal(nodes['appointments-panel'].hidden,false,'unified history stays reachable while an encounter is selected');
+ const before=captured;evaluate("setEncounterSection('intake')");assert.ok(nodes['encounter-revenue'].hidden===false,'rooming shows with the charges block on one page');assert.ok(captured>before,'an old step key still captures drafts');assert.equal(evaluate('encounterSection'),'intake','the old key stays addressable while the whole page shows');assert.ok(nodes['encounter-intake'].scrolled||true);assert.equal(nodes['encounter-intake'].hidden,false);assert.equal(nodes['encounter-documentation'].hidden,false);
+ evaluate("setEncounterSection('charges')");assert.equal(evaluate('encounterSection'),'charges','the old key stays addressable');assert.equal(nodes['encounter-revenue'].hidden,false);assert.equal(nodes['visit-editor'].hidden,false);
+ // The Orders area is opened from the page and holds the whole screen until Back to visit.
+ evaluate("setEncounterSection('orders')");assert.equal(nodes['encounter-orders-actions'].hidden,false,"the orders action panel opens");assert.equal(nodes['encounter-revenue'].hidden,true);assert.equal(nodes['visit-editor'].hidden,true);assert.equal(nodes['visit-checkout'].hidden,true,'checkout stays away while another area is open');
+ evaluate("setEncounterSection('visit')");assert.equal(nodes['visit-checkout'].hidden,false,'Back to visit brings the whole page back');assert.equal(nodes['encounter-revenue'].hidden,false);assert.equal(nodes['lab-workspace'].hidden,true,'back to the visit page leaves the orders workspace');
  evaluate("setEncounterSection('files')");assert.equal(nodes['documents-panel'].hidden,false);assert.equal(nodes['patient-intake-panel'].hidden,false);assert.equal(nodes['visit-checkout'].hidden,true);
- evaluate("showChartSection('documents');showChartSection('visits')");assert.equal(evaluate('encounterSection'),'files','returning from record review preserves the selected encounter step');
+ evaluate("setEncounterSection('visit')");assert.equal(nodes['encounter-revenue'].hidden,false);assert.equal(nodes['visit-checkout'].hidden,false);
+ evaluate("setEncounterSection('files');showChartSection('clinical');showChartSection('visits')");assert.equal(evaluate('encounterSection'),'files','an open record area returns to itself, not to the visit page');
 
  // Completed encounter navigation keeps signed clinical records immutable.
  evaluate("activeVisit.status='signed';encounterSection='documentation';renderVisit(false)");assert.match(nodes['visit-editor'].innerHTML,/readonly/);assert.doesNotMatch(nodes['visit-editor'].innerHTML,/data-action="sign"|>Save note</);assert.equal(nodes['appointments-panel'].hidden,false);
@@ -74,10 +77,10 @@ async function main(){
 
  // Hidden current steps cannot leave a blank encounter workspace.
  evaluate("encounterSection='charges';practiceWorkspaceSettings.content.chart_tabs=practiceWorkspaceSettings.content.chart_tabs.filter(key=>key!=='billing');applyChartSection()");
- assert.equal(evaluate('encounterSection'),'documentation');assert.equal(nodes['visit-editor'].hidden,false);assert.equal(nodes['encounter-revenue'].hidden,true);
+ assert.equal(evaluate('encounterSection'),'charges','the accepted key stays; the charges block simply leaves the page');assert.equal(nodes['visit-editor'].hidden,false);assert.equal(nodes['encounter-revenue'].hidden,true);
  const beforeBlocked=captured;evaluate("showChartSection('insurance')");assert.equal(evaluate('chartSection'),'visits');assert.equal(captured,beforeBlocked);assert.deepEqual(notices.at(-1),['This chart area is hidden in the practice workspace.',true]);
  setTabs(configured);evaluate("practiceAccessPolicy={restricted:true,permissions:{clinical:{view:true},billing:{view:false}}};encounterSection='charges';applyChartSection()");
- assert.equal(evaluate('encounterSection'),'documentation');assert.equal(nodes['encounter-revenue'].hidden,true);assert(!plain(evaluate('encounterSections()')).some(([key])=>key==='charges'));
+ assert.equal(nodes['encounter-revenue'].hidden,true,'a role that cannot see billing never gets the charges block');assert.equal(nodes['visit-editor'].hidden,false);
  evaluate("showChartSection('insurance')");assert.notEqual(evaluate('chartSection'),'insurance');
  evaluate('practiceAccessPolicy=null');
 

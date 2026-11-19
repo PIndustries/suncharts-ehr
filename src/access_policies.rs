@@ -452,6 +452,7 @@ fn action(method: &Method, path: &str) -> Option<Action> {
                 "referrals",
                 "refunds",
                 "releases",
+                "cpt-install",
                 "reminders",
                 "remittances",
                 "replies",

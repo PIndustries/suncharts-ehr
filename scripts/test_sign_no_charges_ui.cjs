@@ -59,6 +59,10 @@ function fixture({role='clinician',accounts=[],billingVisible=true,billingAllowe
   vm.runInContext(`api=async(path,method='GET',body,version)=>{testRequests.push(JSON.parse(JSON.stringify({path,method,body,version})));
     if(path==='/api/v1/visits/visit-1/sign'&&method==='POST')return {...activeVisit,status:'signed',version:activeVisit.version+1,signed_at:'2026-11-14T10:00:00Z'};
     throw new Error('Unexpected request '+path);};
+    // A chart tab opened on its own: the page parts are defined by app.js, the tab itself is another area.
+    chartSection='visits';
+    window.__openTab=()=>{chartSection='clinical';testRefresh();};
+    window.__closeTab=()=>{chartSection='visits';testRefresh();};
     selectPatient=async(patient,keep)=>{record('selectPatient',keep);};
     setEncounterSection=key=>{record('section',key);testRefresh();};
     showChartSection=key=>record('chart',key);
@@ -108,20 +112,27 @@ async function main(){
   let f=fixture();
   await f.click({action:'sign'});
   assert.ok(f.requests.some(r=>r.method==='POST'&&r.path==='/api/v1/visits/visit-1/sign'),'the note is signed');
+  // On the one-page visit the charges block sits below the note, so signing raises no reminder
+  // while the visit itself is open; the charges are already on the same screen.
+  assert.equal(f.reminder(),'','the one-page visit shows no charges reminder while the visit is open');
+  assert.ok(f.signedReminder()?.visitId==='visit-1','the reminder is still armed for this visit, for the areas away from the page');
+  const steps=f.sections.map(([kind,key])=>`${kind}:${key}`);
+  assert.ok(!steps.some(step=>step.startsWith('section:')),'signing leaves staff on the visit page itself');
+  assert.ok(steps.some(s=>s.startsWith('notice:')),'the ordinary signed notice still shows');
+  // Away from the visit page (the orders area, another chart tab) the reminder returns with its link.
+  f.sections.length=0;
+  f.context.window.__openTab();
   let reminder=f.reminder();
   assert.match(reminder,/role="status"/,'the reminder is announced but never blocks');
   assert.match(reminder,/No charges are posted for this visit yet\./);
   assert.equal(reminder.match(/<span>([\s\S]*?)<\/span>/)?.[1],'No charges are posted for this visit yet.','the reminder is the plain sentence, with no alarm prefix');
-  assert.match(reminder,/data-encounter-section="charges"[^>]*>Open Charges &amp; billing<\/button>/,'the link goes to the encounter\u2019s Charges & billing step');
+  assert.match(reminder,/data-encounter-section="charges"[^>]*>Open Charges &amp; billing<\/button>/,'the link goes back to the visit\u2019s charges block');
   assert.doesNotMatch(reminder,/\$|cents|amount/i,'the reminder names no money');
-  const steps=f.sections.map(([kind,key])=>`${kind}:${key}`);
-  assert.ok(steps.includes('section:charges'),'billing staff still land on the charges step after signing');
-  assert.ok(steps.some(s=>s.startsWith('notice:')),'the ordinary signed notice still shows');
   // Clicking the link uses the real step handler.
   f.sections.length=0;
   await f.click({encounterSection:'charges'});
   assert.deepEqual(f.sections.filter(([kind])=>kind==='section'),[['section','charges']]);
-  console.log('PASS signing with nothing posted shows a reminder linked to Charges & billing');
+  console.log('PASS signing on one page stays quiet; away from the visit a reminder links back to Charges & billing');
 
   // The reminder survives chart re-renders for the same visit and reopens with it.
   f.context.renderChart?null:null;
@@ -134,13 +145,13 @@ async function main(){
     const cases=[
       {label:'charges and checkout',checkout:true,billingVisible:true,billingAllowed:true,
         asked:'Signing locks the clinical note. Continue to charges and checkout after signing. Later corrections are preserved as signed amendments.',
-        notice:'Note signed. Next: charges, then checkout.',landed:'section:charges'},
+        notice:'Note signed. Next: charges, then checkout.',landed:null},
       {label:'checkout off',checkout:false,billingVisible:true,billingAllowed:true,
         asked:'Signing locks the clinical note. Continue to charges after signing. Later corrections are preserved as signed amendments.',
-        notice:'Note signed. Next: charges.',landed:'section:charges'},
+        notice:'Note signed. Next: charges.',landed:null},
       {label:'billing off',checkout:true,billingVisible:false,billingAllowed:true,
         asked:'Signing locks the clinical note. Continue to checkout after signing. Later corrections are preserved as signed amendments.',
-        notice:'Note signed. Next: checkout.',landed:'section:checkout'},
+        notice:'Note signed. Next: checkout.',landed:null},
       {label:'billing not allowed for the role',checkout:true,billingVisible:true,billingAllowed:false,
         asked:'Signing locks the clinical note. Continue to checkout after signing. Later corrections are preserved as signed amendments.',
         notice:'Note signed. Next: checkout.',landed:'section:checkout'},
@@ -158,8 +169,7 @@ async function main(){
       const steps=f.sections.map(([kind,key])=>`${kind}:${key}`);
       const notice=steps.find(step=>step.startsWith('notice:'));
       assert.equal(notice,'notice:'+testCase.notice,testCase.label+': the signed notice names only the steps shown');
-      if(testCase.landed)assert.ok(steps.includes(testCase.landed),testCase.label+': staff land on the next visible step');
-      else assert.ok(!steps.some(step=>step.startsWith('section:')),testCase.label+': with no next step the staff stay where they are');
+      assert.ok(!steps.some(step=>step.startsWith('section:')),testCase.label+': signing leaves staff on the visit page itself');
       const named=/checkout/i.test(testCase.notice+testCase.asked);
       if(testCase.checkout===false)assert.ok(!named,testCase.label+': checkout is never mentioned');
     }
@@ -167,31 +177,31 @@ async function main(){
   }
   await signNextStepWordings();
 
-  // Charges already posted: nothing to remind about.
+  // Charges already posted: nothing to remind about, even away from the page.
   f=fixture({accounts:[{id:'account-1',status:'posted',content:{visit_id:'visit-1'}}]});
-  await f.click({action:'sign'});
+  await f.click({action:'sign'});f.context.window.__openTab();
   assert.ok(f.requests.some(r=>r.path==='/api/v1/visits/visit-1/sign'),'signing is unchanged');
   assert.equal(f.reminder(),'','posted charges raise no reminder');
   console.log('PASS posted charges raise no reminder');
 
   // A void account is not posted: the reminder still shows.
   f=fixture({accounts:[{id:'account-1',status:'void',content:{visit_id:'visit-1'}}]});
-  await f.click({action:'sign'});
+  await f.click({action:'sign'});f.context.window.__openTab();
   assert.match(f.reminder(),/No charges are posted for this visit yet\./);
   // A draft account is not posted either.
   f=fixture({accounts:[{id:'account-1',status:'draft',content:{visit_id:'visit-1',total_cents:12000}}]});
-  await f.click({action:'sign'});
+  await f.click({action:'sign'});f.context.window.__openTab();
   assert.match(f.reminder(),/No charges are posted for this visit yet\./,'draft charges are not posted charges');
   // Another visit posted does not silence this one.
   f=fixture({accounts:[{id:'account-1',status:'posted',content:{visit_id:'visit-other'}}]});
-  await f.click({action:'sign'});
+  await f.click({action:'sign'});f.context.window.__openTab();
   assert.match(f.reminder(),/No charges are posted for this visit yet\./);
   console.log('PASS void, draft and another visit\u2019s account do not silence the reminder');
 
   // Users who cannot see billing see no reminder and no charges link.
   for(const [label,options] of [['billing hidden by the practice workspace',{billingVisible:false}],['billing not allowed for the role',{billingAllowed:false}]]){
     f=fixture(options);
-    await f.click({action:'sign'});
+    await f.click({action:'sign'});f.context.window.__openTab();
     assert.ok(f.requests.some(r=>r.path==='/api/v1/visits/visit-1/sign'),label+': signing still works');
     assert.equal(f.reminder(),'',label+': no reminder without billing visibility');
     assert.doesNotMatch(f.progress(),/sign-charge-reminder|Charges & billing/,label+': no charges wording anywhere');
@@ -201,9 +211,9 @@ async function main(){
 
   // Only the note's own visit gets the reminder: opening another encounter retires it.
   f=fixture();
-  await f.click({action:'sign'});
+  await f.click({action:'sign'});f.context.window.__openTab();
   assert.match(f.reminder(),/No charges are posted/);
-  vm.runInContext('postSignReminder=null',f.context);f.context.renderVisit(false);await f.settle();
+  vm.runInContext('postSignReminder=null',f.context);f.context.window.__closeTab();f.context.renderVisit(false);await f.settle();
   assert.equal(f.reminder(),'','clearing the reminder removes it on the next render');
   f=fixture();
   await f.click({action:'sign'});
@@ -249,39 +259,37 @@ async function main(){
       if(activeVisit)renderVisit(false);else applyChartSection();
     };`,f.context);
     // The stub steps only record; the real setEncounterSection applies the step, so the
-    // charge step must actually be on screen when the sign handler lands staff there.
+    // visit page must actually be applied when staff move about.
     vm.runInContext('setEncounterSection=key=>{record("section",key);showChartSection("visits");encounterSection=key;testRefresh();};',f.context);
     await f.click({action:'sign'});
     assert.ok(f.requests.some(r=>r.path==='/api/v1/patients/patient-1/workspace'),'the real selectPatient refetched the chart');
     assert.equal(f.signedReminder()?.visitId,'visit-1','the real selectPatient leaves the reminder on the signed visit');
-    assert.equal(f.reminder(),'','no reminder while the charges step is on screen');
-    assert.doesNotMatch(f.progress(),/sign-charge-reminder/,'the charges step shows no reminder');
-    await f.run("setEncounterSection('documentation')");
-    assert.match(f.reminder(),/No charges are posted for this visit yet\./,'moving to another step of the same visit shows the reminder');
-    // The reminder must also appear when staff move between steps, so the step switch
-    // has to refresh #encounter-progress (the real setEncounterSection chain does).
-    await f.run("setEncounterSection('charges')");
-    assert.doesNotMatch(vm.runInContext('$("encounter-progress").innerHTML',f.context),/sign-charge-reminder/,'setEncounterSection to charges refreshes the panel empty');
-    await f.run("setEncounterSection('checkout')");
-    assert.match(vm.runInContext('$("encounter-progress").innerHTML',f.context),/No charges are posted for this visit yet\./,'setEncounterSection to another step refreshes the panel');
+    assert.equal(f.reminder(),'','no reminder while the one-page visit is open');
+    assert.doesNotMatch(f.progress(),/sign-charge-reminder/,'the visit page shows no reminder');
+    // The reminder must appear when staff leave the page, so the navigation chain
+    // refreshes #encounter-progress (the real applyChartSection chain does).
+    f.context.window.__openTab();
+    assert.match(f.reminder(),/No charges are posted for this visit yet\./,'away from the visit page the reminder shows');
+    f.context.window.__closeTab();
+    assert.equal(f.reminder(),'','back on the visit page it goes quiet again');
     // Re-opening the same visit keeps the reminder.
     await f.run("await selectPatient('patient-1','visit-1')");
     assert.equal(f.signedReminder()?.visitId,'visit-1','re-opening the same visit keeps the reminder');
-    await f.run("setEncounterSection('charges')");
-    assert.equal(f.reminder(),'','the charges step stays quiet even on reopen');
-    await f.run("setEncounterSection('documentation')");
-    assert.match(f.reminder(),/No charges are posted for this visit yet\./,'the reminder returns on the other steps');
+    f.context.window.__openTab();
+    assert.match(f.reminder(),/No charges are posted for this visit yet\./,'the reminder returns away from the page');
+    f.context.window.__closeTab();
     // A different visit retires it — same patient first.
     await f.run("await selectPatient('patient-1','visit-2')");
     assert.equal(f.signedReminder(),null,'a different visit of the same patient retires the reminder');
     assert.equal(f.reminder(),'','the retired reminder renders nothing');
     // Then re-arm on the signed visit and open a different patient's encounter.
-    await f.run("await selectPatient('patient-1','visit-1');postSignReminder={visitId:'visit-1',message:'No charges are posted for this visit yet.'};setEncounterSection('documentation')");
+    await f.run("await selectPatient('patient-1','visit-1');postSignReminder={visitId:'visit-1',message:'No charges are posted for this visit yet.'}");
+    f.context.window.__openTab();
     assert.match(f.reminder(),/No charges are posted for this visit yet\./,'the reminder is armed again before the patient switch');
     await f.run("await selectPatient('patient-2','visit-9')");
     assert.equal(f.signedReminder(),null,'another patient\u2019s visit retires the reminder');
     assert.equal(f.reminder(),'','no reminder on the other patient\u2019s chart');
-    console.log('PASS the real selectPatient keeps the reminder for the signed visit only, and never on the charges step');
+    console.log('PASS the real selectPatient keeps the reminder for the signed visit only, quiet on the visit page itself');
   }
   await realFlow();
 
