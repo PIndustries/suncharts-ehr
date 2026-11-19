@@ -1247,6 +1247,12 @@ async fn missing_details_denials_deductibles_secondary_and_overpayment_are_repor
     assert_eq!(s["insurance"]["insurer"], "Synthetic primary plan");
     assert_eq!(s["claim"]["payer_name"], "Synthetic secondary plan");
     assert_eq!(s["claim"]["secondary"], true);
+    // The review panel checks the claim itself: the summary carries its content and the patient
+    // and account it was built from, so nothing the claim already has is reported missing.
+    assert_eq!(s["claim"]["content"]["subscriber_birth_date"], "1990-01-01");
+    assert_eq!(s["claim"]["content"]["diagnosis_codes"], json!(["Z00.00"]));
+    assert!(s["claim"]["snapshot"]["account"].is_object());
+    assert!(s["claim"]["snapshot"]["patient"].is_object());
     assert_eq!(
         s["patient"]["owes_now_cents"], 0,
         "the primary's patient amount is with the secondary now"
