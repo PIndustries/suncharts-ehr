@@ -95,7 +95,104 @@ async function refreshClaimInContext(id,context=claimContextSnapshot()){
  await showClaim(id);
  if(context.kind==='encounter'&&claimContextCurrent(context)&&typeof loadEncounterRevenueStatus==='function')void loadEncounterRevenueStatus(encounterChargeAccount(),true);
 }
-const claimIssues=items=>items.length?`<div class="mapping-notice"><b>Needs attention</b><ul>${items.map(i=>`<li>${esc(i)}</li>`).join('')}</ul></div>`:'<p class="claim-clear">No problems found.</p>';
+// What the claim is still missing, one short line per place it is fixed. The server names the
+// problem in its own terms; staff see the boxes they have to fill in, and one button per place that
+// opens it. Nothing here is a message we invent: every line comes from a server issue, and an issue
+// we cannot translate is left out of the list rather than shown in developer wording.
+const claimMissingRule=field=>({field,words:field.words,input:field.input,
+ match:source=>(source.fields||[]).includes(field.key)||(source.texts||[]).some(test=>test(field.text))});
+// `key` is the server's own field name when it gives one; `texts` are the words it says instead.
+// `input` is the box on this claim's own Edit form, empty when the fix lives on another record.
+const claimMissingGroups=[
+ {key:'practice',label:'Practice',action:'Open practice settings',attribute:'data-billing-organizations',
+  rules:[
+   {key:'billing_provider_name',texts:[/billing provider name|billing provider|legal billing name/i],words:'Billing provider name',input:'billing_provider_name'},
+   {key:'tax_id',texts:[/tax id|taxpayer|tax identification|\bein\b/i],words:'Practice tax ID (9 digits)',input:'tax_id'},
+   {key:'billing_npi',texts:[/\bbilling npi\b|billing provider npi/i],words:'Billing NPI (10 digits)',input:'billing_npi'},
+   {key:'rendering_npi',texts:[/rendering npi|rendering provider npi/i],words:'Rendering NPI (10 digits)',input:'rendering_npi'},
+   {key:'npi',texts:[/\bnpi\b|taxonomy/i],words:'Provider NPI (10 digits)',input:'billing_npi'},
+   {key:'billing_address',texts:[/billing address/i],words:'Billing address',input:'billing_address'}
+  ]},
+ {key:'patient',label:'Patient',action:'Open patient',attribute:'data-claim-patient',
+  rules:[
+   {key:'patient_address',texts:[/patient address/i],words:'Patient address',input:'patient_address'},
+   {key:'patient_birth_date',texts:[/patient (date of birth|birth date|dob)|date of birth of the patient/i],words:"Patient's date of birth",input:''},
+   {key:'patient_given_name',texts:[/patient first name/i],words:'Patient first name',input:''},
+   {key:'patient_family_name',texts:[/patient last name|patient family name/i],words:'Patient last name',input:''}
+  ]},
+ {key:'insurance',label:'Insurance',action:'Open insurance',attribute:'data-claim-insurance',
+  rules:[
+   {key:'member_id',texts:[/member id|subscriber id|insured id/i],words:'Member ID from the card',input:''},
+   {key:'subscriber_name',texts:[/policy holder name|subscriber name/i],words:'Policy holder name',input:''},
+   {key:'subscriber_address',texts:[/subscriber address|policy holder.{0,3} address/i],words:"Policy holder's address",input:'subscriber_address'},
+   {key:'subscriber_birth_date',texts:[/subscriber (date of birth|birth date|dob)|policy holder.{0,3} (date of birth|birth date)/i],words:"Policy holder's date of birth",input:'subscriber_birth_date'},
+   {key:'payer_name',texts:[/payer name|insurer name/i],words:'Insurance company name',input:''},
+   {key:'payer_code',texts:[/payer id|insurer id|payer code/i],words:'Insurance company ID',input:''},
+   {key:'group_number',texts:[/group number/i],words:'Group number',input:''},
+   {key:'plan_name',texts:[/plan name/i],words:'Insurance plan name',input:''}
+  ]},
+ // The claim keeps its own copy of what was sent, so these are always fixed on the claim form.
+ {key:'claim',label:'Claim',action:'Edit claim',attribute:'data-edit-claim',
+  rules:[
+   {key:'place_of_service',texts:[/place of service/i],words:'Place of service on the claim',input:'place_of_service'},
+   {key:'diagnosis_codes',texts:[/diagnosis code|diagnosis pointer|diagnosis reference|missing diagnosis|no diagnosis|diagnosis is required|at least one diagnosis/i],words:'A diagnosis on every charge line',input:'diagnosis_codes'}
+  ]}
+];
+// The detail the claim page last drew. The claim row itself carries no problems, so a fix started
+// from the list reads them off the screen the person is looking at.
+var claimDetailOnScreen;
+function claimDetailCache(claim){return claim&&claimDetailOnScreen&&claimDetailOnScreen.claimId===claim.id?claimDetailOnScreen.detail:null;}
+function claimMissingIssueText(issue){
+ if(typeof issue==='string')return issue;
+ if(issue&&typeof issue==='object')return String(issue.missing??issue.detail??issue.message??issue.issue??'').trim();
+ return String(issue??'').trim();
+}
+// The claim's own data, searched only to work out where a fix belongs - never shown from here.
+function claimMissingIssueSources(issue,text){
+ const codes=Array.isArray(issue?.codes)?issue.codes:[];
+ return {fields:[String(issue?.code??'').trim().toLowerCase(),...codes.map(code=>String(code).trim().toLowerCase())].filter(Boolean),texts:[text,...codes.map(String)]};
+}
+// Rules are tried practice → patient → insurance → claim, and within a group in the order written,
+// so a message naming both a tax ID and an NPI is listed once, under Practice.
+function claimMissingGroupsFor(issues){
+ const buckets=Object.fromEntries(claimMissingGroups.map(group=>[group.key,{words:[],inputs:new Set()}]));
+ const seen=new Set();
+ for(const issue of issues||[]){
+  const text=claimMissingIssueText(issue);
+  if(!text)continue;
+  const key=text.toLocaleLowerCase();
+  if(seen.has(key))continue;
+  const source=claimMissingIssueSources(issue,text);
+  for(const group of claimMissingGroups){
+   const rule=group.rules.find(claimMissingRule);
+   if(!rule)continue;
+   seen.add(key);
+   const bucket=buckets[group.key];
+   if(!bucket.words.includes(rule.words))bucket.words.push(rule.words);
+   if(rule.input)bucket.inputs.add(rule.input);
+   break;
+  }
+ }
+ return buckets;
+}
+// The boxes a named problem belongs in, so the one button focuses the right one.
+function claimMissingFocusFields(buckets){
+ const fields=new Set();
+ for(const bucket of Object.values(buckets||{}))(bucket.inputs||new Set()).forEach(field=>fields.add(field));
+ return fields;
+}
+function claimMissingGroupMarkup(group,bucket){
+ if(!bucket.words.length)return '';
+ return `<li data-missing-group="${group.key}"><b>${esc(group.label)}</b><ul>${bucket.words.map(words=>`<li>${esc(words)}</li>`).join('')}</ul><button type="button" ${group.attribute}>${esc(group.action)}</button></li>`;
+}
+function claimMissingMarkup(buckets){
+ const lines=claimMissingGroups.map(group=>claimMissingGroupMarkup(group,buckets[group.key])).join('');
+ if(!lines)return '';
+ return `<section class="claim-missing" data-claim-missing aria-label="Before this can be sent"><h3>Before this can be sent</h3><p class="muted">Each item says where it is fixed. Fix these and the claim can go out.</p><ul>${lines}</ul></section>`;
+}
+// Staff wording for a list of problems on a screen this brief does not cover (remittances,
+// acknowledgments). The claim page has its own grouped list above.
+const claimIssues=items=>items.length?`<div class="mapping-notice"><b>What needs fixing</b><ul>${items.map(i=>`<li>${esc(claimMissingIssueText(i))}</li>`).join('')}</ul></div>`:'<p class="claim-clear">No problems found.</p>';
 const claimHistory=h=>h.items.map(r=>`<details class="amendment"><summary>v${r.version} · ${esc(r.reason)} · ${esc(date(r.created_at))}</summary><p>Recorded by ${esc(r.actor_id)}</p><pre class="billing-source">${esc(JSON.stringify(r.evidence||r.snapshot,null,2))}</pre></details>`).join('');
 const claimTransport=t=>{
  if(!t||typeof t!=='object')return `${esc(t||'Clearinghouse status unavailable')}. Downloading a claim does not send it.`;
@@ -155,25 +252,144 @@ function claimHasPreparedSubmission(detail={}){return (detail.tracking?.submissi
 // Claim rows use the same state names as the visit billing card.
 function claimStatusLabel(claim){return typeof visitBillingClaimState==='function'?visitBillingClaimState(claim):claimIsCrossover(claim)&&claim.status==='submitted'?'Crossover response received':displayStatus(claim.status);}
 function claimIsCrossover(claim){return Boolean(claim?.crossover_tracking_only===true||claim?.snapshot?.coordination_of_benefits?.crossover);}
-// A claim that came back is worked on from the plain-words box at the top of the screen, not from
-// the send column, so the send column only has to say what to do.
-function claimCameBack(claim){return typeof claimProblemReport==='function'&&Boolean(claimProblemReport(claim));}
-function claimPrimaryActions(claim,detail={}){
- if(claimIsCrossover(claim)){const source=claim.snapshot.coordination_of_benefits.crossover;return `<section class="claim-workflow" aria-label="Crossover tracking"><article><h3>Secondary payer responded</h3><p>The primary payer forwarded this claim to the secondary payer, and the secondary payment is linked to the charges for the same visit. SunCharts did not send another claim.</p><button type="button" data-era-open="${esc(source.remittance_id)}">Review secondary payment</button></article><article><h3>Review before posting</h3><p>Review the secondary payment before posting it. A denial or a missing patient responsibility amount does not change what the patient owes.</p></article></section>`;}
-
- const canWrite=billingWrite(),connected=typeof claimMdConnectionState!=='undefined'&&claimMdConnectionState?.connected;
- const existing=(detail.tracking?.submissions||[]).filter(item=>['prepared','delivered'].includes(item.status)&&item.id).at(-1);
- let submit='';
- if(claimHasRecordedSubmission(detail))submit='<p>This claim has been sent. Check the payer response on this page before sending anything again.</p>';
- else if(claimHasPreparedSubmission(detail))submit='<p>A claim file is already prepared but may not have been sent. Open it to send it or to check its delivery before preparing another.</p>';
- else if(claim.status==='draft')submit=canWrite&&Array.isArray(detail.preflight_issues)?detail.preflight_issues.length?'<p>This claim is missing details. Fix what is listed below, then continue.</p><button type="button" class="primary" data-edit-claim>Fix claim details</button>':`<p>Check the diagnoses, procedures, insurance and provider details below. Continuing does not send the claim; you confirm on the next step.</p><button type="button" class="primary" data-claim-release="${esc(claim.id)}">Details are right: continue to send</button>`:canWrite?'<p>Check the diagnoses, procedures, insurance and provider details, then continue to send.</p>':'<p>Billing staff check these details and send the claim.</p>';
- else if(claim.status==='ready'&&canWrite)submit=connected?`<p>Check the claim details, then send it to Claim.MD.</p><button type="button" class="primary" data-claimmd-submit="${esc(claim.id)}">Review and send claim</button>`:`<p>Connect Claim.MD to send claims from SunCharts, or prepare a claim file to upload to your clearinghouse yourself.</p><button type="button" data-edi-claim="${esc(claim.id)}">Prepare claim file (837P)</button>`;
- else if(['submitted','accepted','adjudicated'].includes(claim.status))submit='<p>This claim has been sent. Check the payer response on this page before sending anything again.</p>';
-  else if(claim.status==='rejected')submit=claimCameBack(claim)?'<p>Use <b>Fix and resend</b> in the box at the top of this page.</p>':'<p>The reason is shown on this page. Open the claim, put the detail right, then send it again.</p>';
- else submit='<p>Only billing staff can send a claim.</p>';
- if(existing)submit+=`<button type="button" data-claim-existing-submission="${esc(existing.id)}">Open claim file</button>`;
- return `<section class="claim-workflow" aria-label="Claim actions"><article><h3>1. Preview claim</h3>${claim.snapshot?.coordination_of_benefits?'<p>See the primary payer result and the secondary services below. A CMS-1500 preview is not available for secondary claims.</p>':`<p>See the claim on a CMS-1500 form. Previewing or printing does not send it.</p><a class="button" href="${claimsBase}/${esc(claim.id)}/cms1500" target="_blank" rel="noopener">Preview claim (CMS-1500) ↗</a>`}</article><article><h3>2. Send claim</h3>${submit}</article><article><h3>3. See the response</h3><p>Delivery, payer responses and payments show on this page and update automatically while the claim is open.</p></article></section>`;
+// The one word on the claim page. The database holds more statuses than staff work with, so several
+// of them share a word: 'Paid' needs the posted insurance payment, and 'Denied' arrives as a
+// rejection, which is why neither is a claim status of its own.
+const claimPlainWords={draft:'Not sent yet',ready:'Not sent yet',submitted:'Sent',accepted:'Accepted',rejected:'Rejected',void:'Voided',denied:'Denied',paid:'Paid'};
+function claimPlainStatus(claim,detail={}){
+ if(!claim)return '';
+ if(claimIsCrossover(claim))return 'Secondary payer answered';
+ const status=String(claim.status||'').trim().toLowerCase();
+ // The claim row lags the clearinghouse answer by however long the last check took. A file the
+ // insurer has received means the claim is out, whatever the row still says, so the one word on the
+ // page tells the truth about where the claim is rather than about which column was last written.
+ if(['draft','ready'].includes(status)&&claimHasRecordedSubmission(detail))return claimPlainWords.submitted;
+ if(status==='adjudicated')return detail?.tracking?.remittance_posted===true?'Paid':'Accepted';
+ return claimPlainWords[status]||displayStatus(claim.status)||'Status unavailable';
 }
+// What the claim was billed for, and what the payer and the patient have put against it. The
+// balance in the snapshot is the one taken when the claim was prepared, so it is shown as that.
+function claimMoneySummaryMarkup(claim,detail={}){
+ const account=claim?.snapshot?.account||{},financial=claim?.snapshot?.financial_summary||{};
+ const payerPaid=detail?.tracking?.paid_cents??financial.insurance_paid_cents??null;
+ const cell=(label,amount,note)=>`<div class="claim-money-cell"><span>${esc(label)}</span><b>${amount}</b>${note?`<small>${esc(note)}</small>`:''}</div>`;
+ return `<div class="claim-money" data-claim-money>${cell('Billed',money(account.total_cents??0),'')}
+ <div class="claim-money-cell"><span>Insurer paid</span><b>${payerPaid===null?'Not recorded yet':money(payerPaid)}</b></div>
+ ${cell('Patient paid',money(financial.patient_payments_cents||0),'')}
+ ${cell('Balance when prepared',money(financial.open_balance_cents??account.total_cents??0),'Check the account before billing the patient.')}
+ <div class="claim-money-cell"><span>Insurance company</span><b>${esc(account.coverage_snapshot?.payer?.content?.name||'Not recorded')}</b><small>${esc(human(claim?.frequency||''))}</small></div></div>`;
+}
+// The CMS-1500 is the paper form for the payer being billed. A claim built on a secondary plan has
+// no form of its own to print - the primary result travels with it - so the link is not offered and
+// the reason is said instead.
+function claimCms1500Markup(claim){
+ if(claim.snapshot?.coordination_of_benefits)return '<p class="muted">A CMS-1500 preview is not available for a secondary claim. The primary payer result goes with it.</p>';
+ return `<b>Want to see the form?</b><p class="muted">Previewing or printing does not send anything.</p><a class="button" href="${claimsBase}/${esc(claim.id)}/cms1500" target="_blank" rel="noopener">Preview claim (CMS-1500) ↗</a>`;
+}
+function claimRecordedOutsideMarkup(claim){
+ return `<details class="amendment claim-advanced"><summary>${claim.status==='draft'?'Other options for this claim':'Record something done outside SunCharts'}</summary><form id="claim-action"><h3>${claim.status==='draft'?'Void this claim, or release it without opening the send form':'Record activity outside SunCharts'}</h3><div class="form-grid"><label>Action<select name="action">${(claim.status==='draft'?['ready','void_draft']:claim.status==='ready'?['record_submission','void_draft']:claim.status==='submitted'?['record_acceptance','record_rejection']:['record_rejection']).map(v=>`<option value="${v}">${esc(claimActionLabels[v]||human(v))}</option>`).join('')}</select></label>${claim.status==='draft'?'':`${billingField('reference','Reference number','','text',200)}${billingField('event_date','Date it happened','','date')}${billingField('payer_control_number','Payer claim number',claim.payer_control_number,'text',100)}`}${billingField('reason','Reason (saved in the claim history)','','text',1000,true)}</div><p class="muted">${claim.status==='draft'?'Releasing a claim does not send it. Most of the time, use the button at the top of this page instead.':claim.status==='ready'?'Use this only if the claim was already sent outside SunCharts, or to void it. To send it from here, use the button at the top of this page.':'Record an acceptance or rejection you received outside SunCharts. This does not send a claim or record an insurance payment.'}</p><button class="primary" type="submit">${claim.status==='draft'?'Save':'Record activity'}</button></form></details>`;
+}
+// The secondary-crossover panel: the secondary payer answered on its own, so there is nothing to
+// send from here and one button that opens the payment to review.
+function claimCrossoverMarkup(claim){
+ const source=claim.snapshot.coordination_of_benefits.crossover;
+ return `<section class="claim-primary" data-claim-primary aria-label="Crossover tracking"><div class="claim-primary-action"><p>The primary payer forwarded this claim to the secondary payer, and the secondary payment is linked to the same visit. SunCharts did not send another claim, and a denial or a missing patient share does not change what the patient owes.</p><button type="button" class="primary" data-era-open="${esc(source.remittance_id)}">Review secondary payment</button></div></section>`;
+}
+// One sentence, and the one button that is the next step. Anything else a person might want is in
+// More details, never a second button competing with this one.
+function claimPrimaryActionMarkup(claim,detail={},options={}){
+ if(claimIsCrossover(claim))return claimCrossoverMarkup(claim);
+ const canWrite=billingWrite(),connected=typeof claimMdConnectionState!=='undefined'&&claimMdConnectionState?.connected===true;
+ const blockers=Array.isArray(detail?.preflight_issues)?detail.preflight_issues.filter(Boolean):[];
+ const secondaryPlan=claim.snapshot?.account?.coverage_snapshot?.coverage?.content?.priority;
+ let words='',button='';
+ // A claim file the clearinghouse has already received is out the door whatever the claim row still
+ // says, so the next step cannot be to send it again. A file merely prepared is not proof it went.
+ const received=claimHasRecordedSubmission(detail);
+ if(claim.status==='void')words='This claim is voided. Nothing more goes to the insurer from it.';
+ else if(['submitted','accepted','adjudicated'].includes(claim.status))words=claimHasRecordedSubmission(detail)?'This claim has been sent. The answer shows on this page while the claim is open.':claimHasPreparedSubmission(detail)?'A claim file is prepared but not confirmed as received. Open it to check its delivery before preparing another.':'This claim has been sent. Nothing to do until the insurer answers.';
+ // The plain-words box at the top already carries the button that opens the claim with the problem
+ // field focused. Repeating it here would put two primary buttons on one screen for one action.
+ else if(claim.status==='rejected')words=claimCameBack(claim)?'The insurer answer and the button to fix it are at the top of this page.':'The insurer answer is at the top of this page.',button=claimCameBack(claim)?'':'<button type="button" class="primary" data-claim-fix-resend>Fix and resend</button>';
+ else if(!canWrite)words='Billing staff check these details and send the claim.';
+ else if(claim.status==='ready'&&received)words='This claim has been sent. The answer shows on this page while the claim is open.';
+ else if(claim.status==='ready'&&claimHasPreparedSubmission(detail))words='A claim file is prepared but not confirmed as received. Open it to check its delivery before preparing another.';
+ else if(claim.status==='ready'&&!blockers.length&&connected)words=`Everything checks out. Send it to ${claim.snapshot?.account?.coverage_snapshot?.payer?.content?.name||'the insurer'} and the answer will show here.`,button=`<button type="button" class="primary" data-claimmd-submit="${esc(claim.id)}">Send claim</button>`;
+ else if(claim.status==='ready'&&!connected)words='No claim connection is set up, so it cannot go out from here. Ask the practice owner to check Claim connections, or prepare a claim file to upload to your insurer yourself.',button=`<button type="button" class="primary" data-edi-claim="${esc(claim.id)}">Prepare claim file (837P)</button>`;
+ else if(claim.status==='draft'&&!blockers.length)words='Check the service lines, diagnoses and insurance below. The next step asks you to confirm before anything is sent.',button=`<button type="button" class="primary" data-claim-release="${esc(claim.id)}">Send claim</button>`;
+ else words=blockers.length?`${blockers.length} thing${blockers.length===1?'':'s'} still has to be put right, listed below.`:'This claim is being prepared.',button='<button type="button" class="primary" data-edit-claim>Edit claim</button>';
+ const cms=claimCms1500Markup(claim);
+ const secondary=canWrite&&claim.status==='adjudicated'&&secondaryPlan==='primary'?'<button type="button" data-secondary-claim>Bill secondary insurance</button>':'';
+ const correction=canWrite&&!claimIsCrossover(claim)&&claim.status==='adjudicated'&&claim.payer_control_number?'<button type="button" data-replacement-claim>Correct or void this claim</button>':'';
+ const download=!claimIsCrossover(claim)&&!['draft','void'].includes(claim.status)?`${claimPacketDownload(claim)}`:'';
+ const existing=(detail?.tracking?.submissions||[]).filter(item=>['prepared','delivered'].includes(item.status)&&item.id).at(-1);
+ const openFile=existing?`<button type="button" data-claim-existing-submission="${esc(existing.id)}">Open the claim file already prepared</button>`:'';
+ const extras=[secondary,correction,openFile].filter(Boolean).join('');
+ return `<section class="claim-primary" data-claim-primary aria-label="Next step"><div class="claim-primary-action"><p>${esc(words)}</p><div class="claim-primary-buttons">${button}</div>${options.connectionNotice||''}</div><div class="claim-primary-side">${cms}</div>${extras?`<div class="claim-primary-extra">${extras}</div>`:''}${download?`<p class="claim-primary-download">${download}</p>`:''}${claim.parent_id?`<p class="claim-primary-parent"><button type="button" data-claim-open="${claim.parent_id}">Open the claim this one corrects</button></p>`:''}${options.secondaryEvidence||''}</section>`;
+}
+// Everything that is not the next step, under one collapsed heading. The panels themselves are the
+// ones already on the screen; only where they sit changes. The claim's own status and version stay
+// outside so a refresh can still update them in place.
+function claimMoreDetailsMarkup(claim,detail={},history={items:[]},sections={}){
+ const rows=[
+  ['What happened',sections.timeline],
+  ['Claim progress',sections.lifecycle],
+  ['Claim.MD activity',sections.activity],
+  ['The insurer and clearinghouse wording',sections.responseWords],
+  [claim.status==='draft'?'Other options for this claim':'Record something done outside SunCharts',sections.recordOutside],
+  ['Provider, insurance and diagnosis details',sections.providerDetails],
+  ['The insurance on this claim',sections.coverageRecord],
+  ['Claim history',sections.history],
+ ].filter(([,body])=>String(body||'').trim());
+ return `<details class="claim-more" data-claim-more-details><summary>More details${rows.length?` <span class="pill">${rows.length}</span>`:''}</summary>${rows.map(([label,body])=>`<section class="claim-more-item"><h3>${esc(label)}</h3>${body}</section>`).join('')}</details>`;
+}
+// The insurer's or clearinghouse's own words, kept for the people who need to quote them, but under
+// More details rather than on the front of the screen.
+function claimRawResponseMarkup(detail={}){
+ const words=claimResponseWords(detail);
+ return words?`<p class="claim-response-words">${esc(words)}</p>`:'<p class="muted">No wording from the insurer or the clearinghouse yet.</p>';
+}
+// Provider, insurance and diagnosis values, named the way staff see them. Codes and identifiers
+// stay; the developer names, the stored address objects and the internal flags do not.
+const claimDetailLabels={billing_provider_name:'Billing provider name',billing_npi:'Billing NPI',rendering_npi:'Rendering NPI',tax_id:'Tax ID',tax_id_type:'Tax ID type',billing_address:'Billing address',patient_address:'Patient address',subscriber_address:'Policy holder address',subscriber_birth_date:'Policy holder date of birth',place_of_service:'Place of service',diagnosis_codes:'Diagnosis codes',line_diagnosis_pointers:'Diagnosis pointers per line',external_control_number:'Claim number from a previous system',notes:'Notes',synthetic_test:'Test claim'};
+const claimTaxIdTypeWords={'E':'Employer identification number','S':'Social security number','':''};
+function claimProviderDetailsMarkup(claim){
+ const content=claim?.content||{};
+ const rows=Object.entries(claimDetailLabels).map(([key,label])=>{
+  if(!(key in content))return '';
+  const value=content[key];
+  let shown;
+  if(key==='tax_id_type')shown=claimTaxIdTypeWords[value]??String(value??'');
+  else if(key==='synthetic_test')shown=value===true?'Yes — a made-up test claim':'No';
+  else if(key==='line_diagnosis_pointers')shown=Array.isArray(value)?value.map((pointers,index)=>`Line ${index+1}: ${(pointers||[]).join(', ')||'none'}`).join(' · '):'';
+  else if(Array.isArray(value))shown=value.join(', ');
+  else if(value&&typeof value==='object')shown=JSON.stringify(value);
+  else shown=value===null||value===undefined?'':String(value);
+  return `<dt>${esc(label)}</dt><dd>${esc(shown||'Not recorded')}</dd>`;
+ }).join('');
+ return `<dl class="billing-dl claim-detail-dl">${rows}</dl>`;
+}
+// The insurance the claim was prepared with. Kept whole because it is the record of what was sent,
+// but only ever under More details.
+function claimCoverageRecordMarkup(claim){
+ const coverage=claim?.snapshot?.account?.coverage_snapshot;
+ return coverage?`<details class="amendment claim-coverage-record"><summary>As it was recorded when this claim was prepared</summary><pre class="billing-source">${esc(JSON.stringify(coverage,null,2))}</pre></details>`:'';
+}
+// The claim record as a file, for the rare case a payer or another system asks for it. The wording
+// stays free of the file format: what is downloaded is the claim.
+function claimPacketDownload(claim){return `<a class="button" href="${claimsBase}/${esc(claim.id)}/packet" download>Download the claim file</a>`;}
+// One line, and only when the missing connection is the thing stopping the claim going out.
+// Everywhere else on this screen it goes unsaid: the Claim connections screen is the place for it.
+function claimConnectionNotice(claim,detail={}){
+ if(!billingWrite()||claimIsCrossover(claim))return '';
+ if(String(claim?.status||'').toLowerCase()!=='ready')return '';
+ if(Array.isArray(detail?.preflight_issues)&&detail.preflight_issues.length)return '';
+ if(typeof claimMdConnectionState!=='undefined'&&claimMdConnectionState?.connected===true)return '';
+ return '<p class="claim-connection-note" data-claim-connection-note>Claim.MD is not connected, so this claim cannot be sent from here. A claim file can still be prepared and uploaded yourself.</p>';
+}
+// A claim that came back is worked on from the plain-words box at the top of the screen, so the
+// next-step area has one button and never a second instruction competing with it.
+function claimCameBack(claim){return typeof claimProblemReport==='function'&&Boolean(claimProblemReport(claim));}
 // One step from a checked draft to the send form. Marking the claim ready is recorded the
 // same way as the manual action and sends nothing; the person still presses Send.
 async function releaseClaimToSend(id){
@@ -218,6 +434,7 @@ async function beginClaimFix(claimId,field){
   const account=claim.snapshot?.account;
   if(!account){notice('The charges for this claim could not be found. Refresh the claim and try again.');return;}
   const plan=claimFixPlan(claim,field);
+  const withMissing=claimFixMissingPlan(plan);
   if(plan.open==='insurance'){
     // The number that came back wrong is the one the insurance in the chart carries, so that is
     // the record opened. The claim keeps its frozen copy and is re-prepared once the plan is right.
@@ -228,7 +445,7 @@ async function beginClaimFix(claimId,field){
     // Still a draft on our side, so nothing ever reached the payer: this same claim is edited and
     // sent again, with its frequency code already the one for a first claim.
     claimEditor({...account,patient_id:claim.patient_id},claim);
-    claimFixFocus(plan);
+    claimFixFocus(withMissing);
     return;
   }
   // The claim is already on file with somebody, so the corrected claim has to be a new claim
@@ -241,20 +458,35 @@ async function beginClaimFix(claimId,field){
       ?{...account,patient_id:claim.patient_id,coverage_snapshot:claim.snapshot.account.coverage_snapshot,content:{...account.content,coverage_id:claim.snapshot.account.content.coverage_id}}
       :{...account,patient_id:claim.patient_id};
     claimEditor({...fresh.accounts.find(a=>a.id===claim.account_id)||linked,patient_id:claim.patient_id},null,null,claim);
-    claimFixFocus(plan);
+    claimFixFocus(withMissing);
   }catch(error){
     const reason=String(error?.message||'').trim();
     claimEditor({...account,patient_id:claim.patient_id},claim);
-    claimFixFocus(plan,`We could not start the linked corrected claim (${reason||'the practice’s billing data did not answer'}). This claim is opened as it stands — fix what you can here, or ask the practice owner to look at the message.`);
+    claimFixFocus(withMissing,`We could not start the linked corrected claim (${reason||'the practice’s billing data did not answer'}). This claim is opened as it stands — fix what you can here, or ask the practice owner to look at the message.`);
   }
 }
+// When the claim is missing several things, the boxes named by that list are the ones worth
+// focusing: the first of them takes focus, and the form's own notice already lists the rest.
+function claimFixMissingPlan(plan){
+ if(plan?.focus||plan?.open)return plan;
+ const buckets=claimMissingGroupsFor(claimDetailCache(claimCurrent)?.preflight_issues);
+ const fields=Array.from(claimMissingFocusFields(buckets));
+ if(!fields.length)return plan;
+ return {...plan,focus:fields[0],diagnosis:fields.includes('diagnosis_codes')};
+}
 // Where the fix happens, and what gets focused once the claim editor is open.
+// A diagnosis problem is put right on the tick boxes under the charge lines; the claim's own status
+// problems focus the box the missing item names.
+function claimFixBox(form,plan){
+  if(plan?.diagnosis)return form.querySelector?.('[data-diagnosis-line] input[type="checkbox"]');
+  return plan?.focus?form.querySelector?.(`[name="${plan.focus}"]`):null;
+}
 function claimFixFocus(plan,warning=''){
   const host=$('claim-editor')||claimWorkspaceHost();const form=host?.querySelector?.('#claim-editor-form');
   if(!form)return;
   const lines=[plan?.resend?.words,plan?.notice,warning].filter(Boolean);
   if(lines.length)form.insertAdjacentHTML?.('afterbegin',`<section class="mapping-notice" data-claim-fix-notice role="status">${lines.map(line=>`<p>${esc(line)}</p>`).join('')}</section>`);
-  const box=plan?.focus?form.querySelector?.(`[name="${plan.focus}"]`):null;
+  const box=claimFixBox(form,plan);
   if(box?.focus){box.focus({preventScroll:true});box.scrollIntoView?.({block:'center'});return;}
   form.querySelector?.('#claim-editor-heading')?.focus?.({preventScroll:true});
 }
@@ -276,6 +508,18 @@ async function claimFixInsurance(claim,plan,warning=''){
   box?.focus?.({preventScroll:true});
   if(typeof claim?.id!=='undefined')notice(`When the insurance is saved, open claim ${String(claim.control_number||'').trim()||'this claim'} again and use Fix and resend.`);
 }
+// "Open patient" and "Open insurance" from the claim page: the chart section that holds the record,
+// opened for the patient on this claim. A claim page is reached from the claims list, where no
+// patient is selected yet, so the chart is loaded first when it has to be.
+async function openClaimPatientRecord(patientId,section){
+ if(!patientId)return;
+ const context=claimContextSnapshot(),identity=typeof me==='undefined'?undefined:me;
+ if(selected!==patientId&&typeof selectPatient==='function'){
+  await selectPatient(patientId,true,()=>(typeof me==='undefined'?undefined:me)===identity&&claimContextCurrent(context));
+  if((typeof me==='undefined'?undefined:me)!==identity||!claimContextCurrent(context))return;
+ }
+ if(typeof showChartSection==='function')showChartSection(section==='profile'?'profile':'insurance');
+}
 async function reviewExistingClaimSubmission(id){
  const context=claimContextSnapshot(),claim=claimCurrent,identity=me,patient=selected,visit=typeof activeVisit==='undefined'?null:activeVisit?.id;
  requireClaimContext(context,claim);captureClaimDraft();
@@ -285,10 +529,44 @@ async function reviewExistingClaimSubmission(id){
 }
 function updateClaimStatusSurfaces(claim,context=claimContextSnapshot(),detail={}){
  if(!claimContextCurrent(context)||claim.id!==claimCurrent?.id)return;
- requireClaimContext(context,claim);const host=claimWorkspaceHost(context);
- const actions=host?.querySelector('.claim-workflow');if(actions)actions.outerHTML=claimPrimaryActions(claim,detail);
- const status=host?.querySelector('[data-claim-current-status]');if(status)status.textContent=claimStatusLabel(claim);
- const version=host?.querySelector('[data-claim-current-version]');if(version)version.textContent=`${claim.control_number} · v${claim.version}`;
+ requireClaimContext(context,claim);const host=claimWorkspaceHost(context);if(!host)return;
+ // The claim page as it stands, with the next step and the status word replaced where they sit. The
+ // panels inside More details keep whatever the person has opened and typed into.
+ const page=host.innerHTML;
+ const withPrimary=replaceMarkupSection(page,'data-claim-primary',claimPrimaryActionMarkup(claim,detail,{connectionNotice:claimConnectionNotice(claim,detail),secondaryEvidence:secondaryEvidenceMarkup(claim)}));
+ const withStatus=replaceMarkupSection(withPrimary,'data-claim-current-status',`<span class="status-badge claim-status-word" data-claim-current-status>${esc(claimPlainStatus(claim,detail))}</span>`);
+ const withVersion=replaceMarkupSection(withStatus,'data-claim-current-version',`<small class="claim-control" data-claim-current-version>${esc(claim.control_number)} · v${claim.version}</small>`);
+ if(withVersion!==page)host.innerHTML=withVersion;
+}
+// Swaps one labelled section of the drawn page for its new markup, matching on the opening tag so
+// the section's own nesting is respected. Returns the page untouched when that section is not on it,
+// which is how a refresh stays quiet about a panel the page never drew.
+// Swaps one labelled section of the drawn page for its new markup. The attribute is looked for
+// inside the opening tag only, and the section's own nesting is walked so a nested element of the
+// same kind cannot end the swap early. The page comes back untouched when that section is not on it,
+// which is how a refresh stays quiet about a panel the page never drew.
+// Swaps one labelled section of the drawn page for its new markup. The attribute is looked for
+// inside the opening tag only, and the element is closed by its own end tag or by its own short
+// `/>` - whichever comes first, since an empty element such as `<small data-x></small>` has both.
+// The nesting of that element's own kind is walked so a nested one cannot end the swap early. The
+// page comes back untouched when the section is not on it, which keeps a refresh quiet about a panel
+// the page never drew.
+function replaceMarkupSection(page,attribute,markup){
+ const wants=new RegExp(`\\s${attribute}(?:\\s|=|/?>|$)`,'i');
+ let at=-1,name='',selfClosed=false;
+ for(const tag of page.matchAll(/<([a-z0-9]+)((?:\s+[^<>]+)*?)(\/?)>/gi)){
+  if(wants.test(tag[2])){at=tag.index;name=tag[1];selfClosed=tag[3]==='/';break;}
+ }
+ if(at<0)return page;
+ if(selfClosed)return page.slice(0,at)+markup+page.slice(at+/<[^>]*>/.exec(page.slice(at))[0].length);
+ let depth=0,end=page.length,m;
+ const scan=new RegExp(`<${name}\\b[^<>]*>|</${name}\\s*>`,'gi');
+ scan.lastIndex=at;
+ while((m=scan.exec(page))!==null){
+  if(m[0][1]==='/'){if(--depth===0){end=scan.lastIndex;break;}}
+  else if(!/\/>$/.test(m[0]))depth++;
+ }
+ return page.slice(0,at)+markup+page.slice(end);
 }
 function claimStatusPaneMarkup(pane){return pane?.querySelector?.('.billing-account-detail')?.outerHTML??null;}
 async function claimDetailAutoRefreshLoad(){
@@ -320,13 +598,15 @@ async function insertClaimStatusTimeline(context,claim,detail,history){
  // The "Why it came back" box is rendered inside the claim pane markup, so look for it
  // there and sit the timeline directly under it. The lifecycle panel is inserted later
  // and separately, so its own anchor stays the fallback.
- const pane=host?.querySelector?.('.billing-account-detail');
- const box=pane?.querySelector?.('[data-claim-problem-box]');
- const anchor=box||host?.querySelector?.('.claim-lifecycle')||pane?.querySelector?.('.section-head');
- if(!anchor?.insertAdjacentHTML)return;
- // Directly under the rejection box when there is one; before the lifecycle panel or
- // the pane heading otherwise.
- anchor.insertAdjacentHTML(box?'afterend':'beforebegin','<div class="claim-status-timeline-host" data-claim-timeline><p class="muted">Reading what happened to this claim…</p></div>');
+  const pane=host?.querySelector?.('.billing-account-detail');
+  const box=pane?.querySelector?.('[data-claim-problem-box]');
+  // "What happened" belongs under More details; the rejection box and the lifecycle panel are the
+  // anchors we fall back to when the screen is drawn without it.
+  const anchor=box||host?.querySelector?.('[data-claim-more-details]')||host?.querySelector?.('.claim-lifecycle')||pane?.querySelector?.('.section-head');
+  if(!anchor?.insertAdjacentHTML)return;
+  // Directly under the rejection box when there is one; inside More details, before everything
+  // else, otherwise.
+  anchor.insertAdjacentHTML(box?'afterend':'beforebegin','<div class="claim-status-timeline-host" data-claim-timeline><p class="muted">Reading what happened to this claim…</p></div>');
  const slot=host.querySelector('[data-claim-timeline]'),identity=typeof me==='undefined'?undefined:me;
  let html='<p class="muted">What happened to this claim is not available right now. The claim details below are unaffected.</p>';
  try{const built=await build(claim,detail,history,{});if(built)html=built;}catch{}
@@ -345,22 +625,53 @@ function claimResponseWords(detail={}){
   const recorded=(detail.history?.items||[]).filter(item=>item?.evidence?.action==='record_rejection'||String(item?.reason||'').toLowerCase().includes('reject')).map(item=>String(item.reason||'').trim());
   return [...new Set([...reports,...feed,...revisions,...recorded].filter(Boolean))].join(' ');
 }
+// The one status word, the claim's headline line. The claim number and version stay in their own
+// marked nodes so an automatic refresh can update them without touching the rest of the screen.
+function claimScreenHeadMarkup(claim,account,patient){
+ return `<div class="section-head claim-screen-head"><div><h2>Claim review</h2><p class="claim-screen-who"><b>${esc(patient.given_name)} ${esc(patient.family_name)}</b> · Service ${esc(displayDate(account.content.service_date))} · ${esc(account.coverage_snapshot?.payer?.content?.name||'No insurer recorded')} · ${money(account.total_cents)}</p><small class="claim-control" data-claim-current-version>${esc(claim.control_number)} · v${claim.version}</small></div><div class="support-help-group"><span class="status-badge claim-status-word" data-claim-current-status>${esc(claimPlainStatus(claim))}</span>${typeof supportHelpButton==='function'?supportHelpButton('claim',`data-support-claim="${esc(claim.id)}" data-support-claim-label="${esc(claim.control_number)}" data-support-patient="${esc(claim.patient_id)}" data-support-patient-label="${esc(patient.family_name)}, ${esc(patient.given_name)} · MRN ${esc(patient.mrn)}"`):''}</div></div>`;
+}
+// Where the Claim.MD panels put themselves: inside More details when it is open, and where they
+// have always gone otherwise. A stub screen with no panels simply puts them on the claim pane.
+function claimPanelAnchor(host){
+ const more=host?.querySelector?.('[data-claim-more-details]');
+ if(more?.insertAdjacentHTML&&host?.querySelector?.('[data-claim-more="claim-progress"] .claim-lifecycle, [data-claim-more="claim-progress"] .claimmd-claim-activity'))return more;
+ return host?.querySelector?.('.billing-account-detail')||host;
+}
+function claimScreenMarkup(claim,detail,history){
+ const account=claim.snapshot.account,patient=claim.snapshot.patient;
+ const missing=claimMissingGroupsFor(claimIsCrossover(claim)?[]:detail.preflight_issues);
+ const recordOutside=billingWrite()&&!claimIsCrossover(claim)&&['draft','ready','submitted','accepted'].includes(claim.status)?claimRecordedOutsideMarkup(claim):'';
+ const withdraw=billingWrite()&&claimIsCrossover(claim)&&['submitted','accepted','rejected'].includes(claim.status)?`<form id="claim-action"><h3>Remove a wrong crossover link</h3><input type="hidden" name="action" value="withdraw_crossover"><p>You can remove this link only while the secondary payment is not posted. The payment can be linked again later.</p>${billingField('reason','Reason for removing this link','','text',1000,true)}<button type="submit">Remove crossover link</button></form>`:'';
+ const sections={recordOutside,providerDetails:claimProviderDetailsMarkup(claim),coverageRecord:claimCoverageRecordMarkup(claim),history:claimHistory(history),responseWords:claimRawResponseMarkup(detail),secondaryEvidence:secondaryEvidenceMarkup(claim)};
+ const lines=chargeTable(account.content.lines.map((line,index)=>({...line,diagnosis_codes:(claim.content?.line_diagnosis_pointers?.[index]||[]).map(pointer=>claim.content?.diagnosis_codes?.[pointer-1]).filter(Boolean)})));
+ const editClaim=billingWrite()&&claim.status==='draft'?'<button type="button" data-edit-claim>Edit claim details</button>':'';
+ return `<section class="billing-account-detail">${claimScreenHeadMarkup(claim,account,patient)}
+ ${typeof claimProblemReport==='function'?claimProblemBoxMarkup(claimProblemReport(claim,detail),claimResponseWords(detail),claim.id):''}
+ ${claimPrimaryActionMarkup(claim,detail,{connectionNotice:claimConnectionNotice(claim,detail),secondaryEvidence:sections.secondaryEvidence,recordOutside})}
+ ${claimIsCrossover(claim)?'<p class="muted">Nothing is sent or downloaded for a crossover claim. The secondary payment stays with the original visit.</p>':claimMissingMarkup(missing)}
+ ${claimMoneySummaryMarkup(claim,detail)}
+ <div class="claim-lines" data-claim-lines>${lines}</div>
+ ${withdraw}
+ ${claimMoreDetailsMarkup(claim,detail,history,sections)}
+ <div class="actions"><button type="button" data-claim-account="${esc(claim.account_id)}" data-patient="${esc(claim.patient_id)}">Visit billing</button>${editClaim}<button type="button" data-claim-patient="${esc(claim.patient_id)}">Open patient</button><button type="button" data-claim-insurance="${esc(claim.patient_id)}">Open insurance</button></div>
+ <div id="claim-editor"></div></section>`;
+}
 async function showClaim(id){
  const context=claimContextSnapshot(),identity=typeof me==='undefined'?undefined:me;
- const [d,h]=await Promise.all([api(`${claimsBase}/${id}`),api(`${claimsBase}/${id}/history`)]);if(!claimContextCurrent(context)||identity!==(typeof me==='undefined'?undefined:me))return;requireClaimContext(context,d.claim);claimCurrent=d.claim;context.claim=d.claim.id;const c=d.claim,b=c.snapshot.account,p=c.snapshot.patient;
- const fs=c.snapshot.financial_summary||{patient_payments_cents:0,open_balance_cents:b.total_cents};
- claimPane(`<section class="billing-account-detail"><div class="section-head"><div><h2>Claim review</h2><p>${esc(p.given_name)} ${esc(p.family_name)} · Service ${esc(displayDate(b.content.service_date))}</p><small class="claim-control" data-claim-current-version>${esc(c.control_number)} · v${c.version}</small></div><div class="support-help-group"><span class="status-badge" data-claim-current-status>${esc(claimStatusLabel(c))}</span>${typeof supportHelpButton==='function'?supportHelpButton('claim',`data-support-claim="${esc(c.id)}" data-support-claim-label="${esc(c.control_number)}" data-support-patient="${esc(c.patient_id)}" data-support-patient-label="${esc(p.family_name)}, ${esc(p.given_name)} · MRN ${esc(p.mrn)}"`):''}</div></div>${typeof claimProblemReport==='function'?claimProblemBoxMarkup(claimProblemReport(c,d),claimResponseWords(d),c.id):''}${claimPrimaryActions(c,d)}${secondaryEvidenceMarkup(c)}<div class="billing-totals"><span>Total charge <b>${money(b.total_cents)}</b></span><span>Patient paid <b>${money(fs.patient_payments_cents||0)}</b></span><span>Balance when claim was created <b>${money(fs.open_balance_cents??b.total_cents)}</b></span><span>Claim frequency <b>${esc(human(c.frequency))}</b></span><span>Payer <b>${esc(b.coverage_snapshot.payer.content.name)}</b></span></div><p class="muted">${claimIsCrossover(c)?'This tracks the secondary payer response. No claim was sent from SunCharts, and the charges and payments stay on the original visit.':'The claim bills the total charge. The balance shown is from when the claim was created, so check the current account before billing the patient.'}</p>${c.parent_id?`<button type="button" data-claim-open="${c.parent_id}">Open original claim</button>`:''}${claimIsCrossover(c)?'':claimIssues(d.preflight_issues)}${chargeTable(b.content.lines.map((line,i)=>({...line,diagnosis_codes:(c.content.line_diagnosis_pointers[i]||[]).map(n=>c.content.diagnosis_codes[n-1]).filter(Boolean)})))}<details class="amendment"><summary>Provider, insurance and diagnosis details</summary><dl class="billing-dl">${Object.entries(c.content).map(([k,v])=>`<dt>${esc(human(k))}</dt><dd>${esc(Array.isArray(v)?JSON.stringify(v):v??'Not recorded')}</dd>`).join('')}</dl><pre class="billing-source">${esc(JSON.stringify(b.coverage_snapshot,null,2))}</pre></details><div class="actions"><button type="button" data-claim-account="${c.account_id}" data-patient="${c.patient_id}">Visit billing</button>${!claimIsCrossover(c)&&c.status!=='draft'&&c.status!=='void'?`<a class="button" href="${claimsBase}/${c.id}/packet" download>Download claim data (JSON)</a>`:''}${billingWrite()&&c.status==='draft'?'<button type="button" data-edit-claim>Edit claim details</button>':''}${billingWrite()&&c.status==='adjudicated'&&b.coverage_snapshot?.coverage?.content?.priority==='primary'?'<button type="button" data-secondary-claim>Bill secondary insurance</button>':''}${billingWrite()&&!claimIsCrossover(c)&&c.status==='adjudicated'&&c.payer_control_number&&b.coverage_snapshot?.coverage?.content?.priority!=='primary'?'':billingWrite()&&!claimIsCrossover(c)&&c.status==='adjudicated'&&c.payer_control_number?`<button type="button" data-replacement-claim>Correct or void this claim</button>`:''}</div><p class="muted">${claimIsCrossover(c)?'Nothing is sent or downloaded for a crossover claim.':claimTransport(d.transport)}</p>
- ${billingWrite()&&claimIsCrossover(c)&&['submitted','accepted','rejected'].includes(c.status)?`<form id="claim-action"><h3>Remove a wrong crossover link</h3><input type="hidden" name="action" value="withdraw_crossover"><p>You can remove this link only while the secondary payment is not posted. The payment can be linked again later.</p>${billingField('reason','Reason for removing this link','','text',1000,true)}<button type="submit">Remove crossover link</button></form>`:''}${billingWrite()&&!claimIsCrossover(c)&&['draft','ready','submitted','accepted'].includes(c.status)?`<details class="amendment"><summary>${c.status==='draft'?'Other options for this claim':'Record something done outside SunCharts'}</summary><form id="claim-action"><h3>${c.status==='draft'?'Void this claim, or release it without opening the send form':'Record activity outside SunCharts'}</h3><div class="form-grid"><label>Action<select name="action">${(c.status==='draft'?['ready','void_draft']:c.status==='ready'?['record_submission','void_draft']:c.status==='submitted'?['record_acceptance','record_rejection']:['record_rejection']).map(v=>`<option value="${v}">${esc(claimActionLabels[v]||human(v))}</option>`).join('')}</select></label>${c.status==='draft'?'':`${billingField('reference','Reference number','','text',200)}${billingField('event_date','Date it happened','','date')}${billingField('payer_control_number','Payer claim number',c.payer_control_number,'text',100)}`}${billingField('reason','Reason (saved in the claim history)','','text',1000,true)}</div><p class="muted">${c.status==='draft'?'Releasing a claim does not send it. Most of the time, use “Details are right: continue to send” above instead.':c.status==='ready'?'Use this only if the claim was already sent outside SunCharts, or to void it. To send it from here, use Review and send claim.':'Record an acceptance or rejection you received outside SunCharts. This does not send a claim or record an insurance payment.'}</p><button class="primary" type="submit">${c.status==='draft'?'Save':'Record activity'}</button></form></details>`:''}<h3>Claim history</h3>${claimHistory(h)}<div id="claim-editor"></div></section>`);
-
- const lifecycle=typeof claimMdClaimLifecycle==='function'?claimMdClaimLifecycle(c,d,h):'';
- if(lifecycle){const claimDetail=claimWorkspaceHost(context).querySelector('.billing-account-detail'),claimHead=claimDetail.querySelector?.('.section-head');if(claimHead?.insertAdjacentHTML)claimHead.insertAdjacentHTML('afterend',lifecycle);else claimDetail.insertAdjacentHTML('afterbegin',lifecycle);}
- // "What happened" gets its own container, placed after the rejection box above the
- // lifecycle panel, so the other panels can be replaced without touching it.
- insertClaimStatusTimeline(context,c,d,h);
- const action=$('claim-action');if(action){action.claimViewContext=context;action.claimRecord=c;}
- if(typeof startClaimMdTracking==='function')startClaimMdTracking(c.id);
- if(typeof showClaimMdClaimActivity==='function')await showClaimMdClaimActivity(c);
- if(typeof registerAutoRefresh==='function'){if(['submitted','accepted','adjudicated'].includes(c.status)&&claimContextCurrent(context)&&context.kind==='worklist')registerClaimDetailAutoRefresh();else unregisterAutoRefresh('claim-status');}
+ const [d,h]=await Promise.all([api(`${claimsBase}/${id}`),api(`${claimsBase}/${id}/history`)]);if(!claimContextCurrent(context)||identity!==(typeof me==='undefined'?undefined:me))return;requireClaimContext(context,d.claim);claimCurrent=d.claim;context.claim=d.claim.id;
+ claimPane(claimScreenMarkup(d.claim,d,h));claimDetailOnScreen={claimId:d.claim.id,detail:d};
+  // The Claim.MD panels and the "what happened" timeline are filled in after the screen is drawn,
+  // and sit inside More details. Each is left alone when its own script is not loaded.
+  const claim=d.claim;
+  const lifecycle=typeof claimMdClaimLifecycle==='function'?claimMdClaimLifecycle(claim,d,h):'';
+  if(lifecycle){const anchor=claimPanelAnchor(claimWorkspaceHost(context));if(anchor?.insertAdjacentHTML)anchor.insertAdjacentHTML('beforeend',`<section class="claim-more-item" data-claim-more="claim-progress"><h3>Claim progress</h3>${lifecycle}</section>`);}
+  // "What happened" gets its own container, placed after the rejection box above the
+  // lifecycle panel, so the other panels can be replaced without touching it.
+  insertClaimStatusTimeline(context,claim,d,h);
+  const action=$('claim-action');if(action){action.claimViewContext=context;action.claimRecord=claim;}
+  if(typeof startClaimMdTracking==='function')startClaimMdTracking(claim.id);
+  if(typeof showClaimMdClaimActivity==='function')await showClaimMdClaimActivity(claim);
+  if(typeof registerAutoRefresh==='function'){if(['submitted','accepted','adjudicated'].includes(claim.status)&&claimContextCurrent(context)&&context.kind==='worklist')registerClaimDetailAutoRefresh();else unregisterAutoRefresh('claim-status');}
 }
 function claimChargeDiagnosisDefaults(account){
  const diagnosisCodes=[],pointers=(account.content.lines||[]).map(line=>{
@@ -430,11 +741,48 @@ function claimPatientAddressDefault(account){
  if(parts.some(value=>value!=null&&typeof value!=='string'))return '';
  return parts.filter(value=>typeof value==='string'&&value.trim()).map(value=>value.trim()).join(', ');
 }
+// The diagnoses that apply to each charge line, as ticks against this claim's own diagnosis codes -
+// the boxes replace the hand-typed pointer numbers, and the form still submits the same pointer
+// positions the server expects. Up to four per line, in the order the codes are listed.
+const claimLineDiagnosisLimit=4;
+// Positions are counted against the list the claim itself carries, so the numbers written down can
+// only ever point at what the form showed.
+function claimDiagnosisChoices(content){
+ return (Array.isArray(content?.diagnosis_codes)?content.diagnosis_codes:[]).map(code=>String(code??'').trim()).filter(Boolean).slice(0,12);
+}
+// The codes the boxes offer for a fresh claim: the ones recorded against the charges, cleaned the
+// same way the rest of billing cleans a typed list.
+function claimChargeDiagnosisCodes(lines){
+ const typed=(lines||[]).flatMap(line=>Array.isArray(line?.diagnosis_codes)?line.diagnosis_codes:[]).map(code=>String(code??''));
+ return typeof diagnosisCodeList==='function'?diagnosisCodeList(typed).slice(0,12):typed.map(code=>code.trim()).filter(Boolean).slice(0,12);
+}
+// The codes one line points at. A pointer outside the list is dropped rather than guessed at, so a
+// stale claim still shows its other lines correctly.
+function claimLineCheckedCodes(codes,pointers){
+ return (Array.isArray(pointers)?pointers:[]).map(pointer=>codes[pointer-1]).filter(Boolean);
+}
+function claimLineDiagnosisMarkup(account,content){
+ const codes=claimDiagnosisChoices(content);
+ const pointers=Array.isArray(content.line_diagnosis_pointers)?content.line_diagnosis_pointers:[];
+ if(!codes.length)return '<p class="muted claim-line-diagnosis-empty">Fill in the diagnosis codes above first, then tick which ones apply to each charge line.</p>';
+ return `<fieldset class="claim-line-diagnosis"><legend>Which diagnoses apply to each line</legend><p class="muted">Tick up to ${claimLineDiagnosisLimit} for each charge line. The first one ticked is the main reason for that line.</p>${account.content.lines.map((line,index)=>{
+  const checked=new Set(claimLineCheckedCodes(codes,pointers[index]));
+  return `<div class="claim-line-diagnosis-row" data-diagnosis-line="${index}"><b>Line ${index+1}: ${esc(line.code)}</b><div class="scope-options">${codes.map(code=>`<label><input type="checkbox" name="diagnosis_line_${index}" value="${esc(code)}" ${checked.has(code)?'checked':''}>${esc(code)}</label>`).join('')}</div></div>`;
+ }).join('')}</fieldset>`;
+}
+// Reads the ticks back into pointer positions, numbered against the codes the claim carries and
+// never more than four to a line.
+function claimLineDiagnosisValues(form,pointed,lineCount){
+ return Array.from({length:lineCount},(_,index)=>{
+  const ticked=Array.from(form?.querySelectorAll?.(`[name="diagnosis_line_${index}"]:checked`)||[]).map(box=>String(box.value));
+  return pointed.map((code,position)=>position+1).filter(position=>ticked.includes(pointed[position-1])).slice(0,claimLineDiagnosisLimit);
+ });
+}
 function claimEditor(b,c=null,source=null,parent=null,coordination=null){
  captureClaimDraft();b={...b,patient_id:b.patient_id||c?.patient_id||parent?.patient_id};
  const context=claimContextSnapshot();requireClaimContext(context,c||parent||{patient_id:b.patient_id,account_id:b.id});
  claimAccount=b;claimSource=source;const defaults=typeof claimmdClaimProviderDefaults==='function'?claimmdClaimProviderDefaults():{},coverage=b.coverage_snapshot?.coverage?.content||{},patientAddress=source?'':claimPatientAddressDefault(b),diagnoses=source?{diagnosis_codes:[],line_diagnosis_pointers:b.content.lines.map(()=>[])}:claimChargeDiagnosisDefaults(b);const v=c?.content||(coordination?{...parent.content,subscriber_address:coverage.relationship==='self'?parent.content.patient_address:'',subscriber_birth_date:coverage.subscriber_birth_date||'',external_control_number:''}:parent?.content)||{billing_provider_name:defaults.billing_provider_name||'',billing_npi:defaults.billing_npi||'',tax_id:'',billing_address:defaults.billing_address||'',rendering_npi:defaults.rendering_npi||'',patient_address:patientAddress,subscriber_address:coverage.relationship==='self'?patientAddress:'',subscriber_birth_date:coverage.subscriber_birth_date||'',place_of_service:'',...diagnoses,external_control_number:'',notes:'',synthetic_test:false};
- const html=`<form id="claim-editor-form" data-request="${crypto.randomUUID()}" data-edit="${c?.id||''}" data-parent="${parent?.id||''}"><h3>${c?'Edit draft claim':source?'Create a claim from an imported record':coordination?'Create secondary claim':parent?'Create corrected claim':'Create claim'}</h3>${sourceNotice(source)}<p>${money(b.total_cents)} in charges · Service ${esc(displayDate(b.content.service_date))}</p><div class="form-grid">${parent&&!coordination?selectField('frequency','Claim frequency',parent.payer_control_number?['replacement','void_request']:['original'],parent.payer_control_number?'replacement':'original'):'<input type="hidden" name="frequency" value="original">'}${billingField('billing_provider_name','Billing provider name',v.billing_provider_name)}${billingField('billing_npi','Billing NPI',v.billing_npi,'text',10)}${billingField('rendering_npi','Rendering NPI',v.rendering_npi,'text',10)}${billingField('tax_id','Tax ID / EIN (9 digits)',v.tax_id,'text',9)}${billingField('billing_address','Billing address',v.billing_address,'text',1000)}${billingField('patient_address','Patient address',v.patient_address,'text',1000)}${billingField('subscriber_address','Subscriber address',v.subscriber_address,'text',1000)}${billingField('subscriber_birth_date','Subscriber date of birth',v.subscriber_birth_date||'','date')}${billingField('place_of_service','Place of service code (2 digits, 11 = office)',v.place_of_service,'text',2)}${billingField('diagnosis_codes','ICD-10 diagnosis codes (comma-separated)',v.diagnosis_codes.join(', '),'text',250)}${billingField('external_control_number','Claim number from a previous system',v.external_control_number,'text',100)}</div><p class="muted">For each line, enter which diagnoses apply by their position in the list above (1 = first diagnosis).</p>${b.content.lines.map((l,i)=>billingField(`pointer_${i}`,`Line ${i+1}: ${esc(l.code)} - diagnosis pointers`,(v.line_diagnosis_pointers[i]||[]).join(', '),'text',30)).join('')}<label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>${billingField('reason','Reason (saved in the claim history)','','text',1000,true)}${source?'<label class="review-ack"><input type="checkbox" required> I checked that the patient, payer, charges and claim number match the imported record.</label>':''}<button type="submit" class="primary">Save draft claim</button></form>`;
+ const html=`<form id="claim-editor-form" data-request="${crypto.randomUUID()}" data-edit="${c?.id||''}" data-parent="${parent?.id||''}"><h3>${c?'Edit draft claim':source?'Create a claim from an imported record':coordination?'Create secondary claim':parent?'Create corrected claim':'Create claim'}</h3>${sourceNotice(source)}<p>${money(b.total_cents)} in charges · Service ${esc(displayDate(b.content.service_date))}</p><div class="form-grid">${parent&&!coordination?selectField('frequency','Claim frequency',parent.payer_control_number?['replacement','void_request']:['original'],parent.payer_control_number?'replacement':'original'):'<input type="hidden" name="frequency" value="original">'}${billingField('billing_provider_name','Billing provider name',v.billing_provider_name)}${billingField('billing_npi','Billing NPI',v.billing_npi,'text',10)}${billingField('rendering_npi','Rendering NPI',v.rendering_npi,'text',10)}${billingField('tax_id','Tax ID / EIN (9 digits)',v.tax_id,'text',9)}${billingField('billing_address','Billing address',v.billing_address,'text',1000)}${billingField('patient_address','Patient address',v.patient_address,'text',1000)}${billingField('subscriber_address','Subscriber address',v.subscriber_address,'text',1000)}${billingField('subscriber_birth_date','Subscriber date of birth',v.subscriber_birth_date||'','date')}${billingField('place_of_service','Place of service code (2 digits, 11 = office)',v.place_of_service,'text',2)}${billingField('diagnosis_codes','ICD-10 diagnosis codes (comma-separated)',v.diagnosis_codes.join(', '),'text',250)}${billingField('external_control_number','Claim number from a previous system',v.external_control_number,'text',100)}</div>${claimLineDiagnosisMarkup(b,v)}<label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>${billingField('reason','Reason (saved in the claim history)','','text',1000,true)}${source?'<label class="review-ack"><input type="checkbox" required> I checked that the patient, payer, charges and claim number match the imported record.</label>':''}<button type="submit" class="primary">Save draft claim</button></form>`;
  if($('claim-editor'))$('claim-editor').innerHTML=html;else claimPane(html);
  const editorHost=$('claim-editor')||claimWorkspaceHost(context);
  if(editorHost){editorHost.scrollIntoView({block:'start'});const editorHeading=editorHost.querySelector('#claim-editor-form h3');if(editorHeading){editorHeading.tabIndex=-1;editorHeading.focus({preventScroll:true});editorHeading.id='claim-editor-heading';}}
@@ -481,7 +829,9 @@ document.addEventListener('click',e=>{const chip=e.target.closest?.('#claims-too
  if(b.dataset.claimExistingSubmission){await reviewExistingClaimSubmission(b.dataset.claimExistingSubmission);return;}
  if(b.dataset.claimRelease){await releaseClaimToSend(b.dataset.claimRelease);return;}
  if(b.dataset.claimOpen){await showClaim(b.dataset.claimOpen);return;}if(b.hasAttribute('data-edit-claim')){claimEditor(claimCurrent.snapshot.account,claimCurrent);return;}
-  if(b.hasAttribute('data-claim-fix-resend')){await beginClaimFix(b.dataset.claimFixClaim||'',b.dataset.claimFixField||'');return;}
+  if(b.hasAttribute('data-claim-fix-resend')){await beginClaimFix(b.dataset.claimFixClaim||claimCurrent?.id||'',b.dataset.claimFixField||'');return;}
+ if(b.dataset.claimPatient){await openClaimPatientRecord(b.dataset.claimPatient,'profile');return;}
+ if(b.dataset.claimInsurance){await openClaimPatientRecord(b.dataset.claimInsurance,'insurance');return;}
  if(b.hasAttribute('data-secondary-claim')){await reviewSecondaryClaim();return;}
  if(b.hasAttribute('data-replacement-claim')){const context=claimContextSnapshot(),c=claimCurrent;requireClaimContext(context,c);const b=await api(`/api/v1/patients/${c.patient_id}/billing`);if(!claimContextCurrent(context))return;const account=b.accounts.find(a=>a.id===c.account_id);claimEditor({...account,patient_id:c.patient_id,...(c.snapshot.coordination_of_benefits?{coverage_snapshot:c.snapshot.account.coverage_snapshot,content:{...account.content,coverage_id:c.snapshot.account.content.coverage_id}}:{})},null,null,c);return;}
  if(b.hasAttribute('data-new-era')){eraImportEditor();return;}if(b.dataset.eraOpen){await showEra(b.dataset.eraOpen);return;}if(b.dataset.eraSource){const s=window.eraSources.find(s=>s.source_history_id===b.dataset.eraSource);if(s.batch_id)await showEraBatch(s.batch_id);else if(s.native_id)await showEra(s.native_id);else eraImportEditor(s);return;}if(b.dataset.eraInspect!==undefined)await inspectEraMatch(Number(b.dataset.eraInspect));
@@ -490,11 +840,15 @@ function lockClaimForm(form){
  const fields=Array.from(form.querySelectorAll?.('input,select,textarea')||[]).map(field=>[field,field.disabled]);fields.forEach(([field])=>field.disabled=true);return ()=>fields.forEach(([field,disabled])=>field.disabled=disabled);
 }
 async function saveClaimEditorForm(form,data){
+ // The diagnosis ticks are read off the form element itself, the way every other field is read. A
+ // caller that hands the values over without the boxes falls back to what the claim already holds,
+ // so a saved draft is never silently emptied of its diagnosis pointers.
+ const readTicked=typeof form?.querySelectorAll==='function';
  if(form.claimDraftStale)throw new Error('The claim changed since you started. See the notice at the top of this form first.');
  const context=form.claimViewContext||claimContextSnapshot(),account=form.claimAccount||claimAccount,record=form.claimRecord||claimCurrent,source=form.claimSource||claimSource;
  requireClaimContext(context,{patient_id:account.patient_id,account_id:account.id});captureClaimDraft(form);
  const content={};for(const key of ['billing_provider_name','billing_npi','tax_id','billing_address','rendering_npi','patient_address','subscriber_address','place_of_service','external_control_number','notes'])content[key]=data[key];content.tax_id_type=form.claimRecord?.content?.tax_id_type||'';
- content.synthetic_test=data.synthetic_test==='on';content.subscriber_birth_date=data.subscriber_birth_date||null;content.diagnosis_codes=data.diagnosis_codes.split(',').map(s=>s.trim()).filter(Boolean);content.line_diagnosis_pointers=account.content.lines.map((_,i)=>data[`pointer_${i}`].split(',').map(s=>s.trim()).filter(Boolean).map(Number));
+ content.synthetic_test=data.synthetic_test==='on';content.subscriber_birth_date=data.subscriber_birth_date||null;content.diagnosis_codes=data.diagnosis_codes.split(',').map(s=>s.trim()).filter(Boolean);content.line_diagnosis_pointers=readTicked?claimLineDiagnosisValues(form,claimDiagnosisChoices(content),account.content.lines.length):(record?.content?.line_diagnosis_pointers||[]);
  const unlock=lockClaimForm(form);
  try{
   const claim=form.dataset.edit?await api(`${claimsBase}/${form.dataset.edit}`,'PUT',{content,reason:data.reason},record.version):await api(`/api/v1/patients/${account.patient_id}/billing/accounts/${account.id}/claims`,'POST',{request_id:form.dataset.request,source_history_id:source?.source_history_id||null,parent_id:form.dataset.parent||null,frequency:data.frequency,content,reason:data.reason,...(form.claimCoordination?{coordination:form.claimCoordination}:{})},account.version);

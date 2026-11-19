@@ -330,8 +330,9 @@ const advance=async()=>{
  assert.match(second.outerHTML,/<div class="charge-drug"/,'the saved row still carries its drug detail');
  // The table itself never grows a save button or a reason box: it saves itself.
  assert.doesNotMatch(openForm().outerHTML,/>Save charges<|>Cancel<|name="reason"/,'the table saves itself: no save button, no cancel, no reason box');
- // Totals live: line total, grand total, and the copay line.
- assert.equal(second.querySelector('[data-charge-line-total]').textContent,'$18.00');
+ // Totals live, and kept to one place under the lines: what the lines come to, and the copay line.
+ assert.ok(!second.querySelector('[data-charge-line-total]'),'a line carries no total of its own');
+ assert.ok(!openForm().outerHTML.includes('Line total'),'the row holds no total column to make it wide');
  assert.equal(form.querySelector('[data-charge-total]').textContent,'$168.00','the total moves as lines move');
  assert.match(form.querySelector('[data-charge-pays]').textContent,/Patient pays now \$25\.00/,'the copay is shown as what the patient pays now');
  // Row problems in plain words: an incomplete row says what is missing, nothing more.

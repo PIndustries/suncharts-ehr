@@ -144,8 +144,14 @@ function fixture(data={version:3,visit:{id:'v1',version:3,status:'in_progress'},
  console.log('PASS a complete diagnosis row saves itself on a short debounce and the unsaved notice becomes a quiet Saved');
 
  // Identical typing never re-saves; a newer edit saves again with the newer version.
+ // After the first save the form carries the version the server answered with, so the next
+ // autosave is never refused as someone-else-changed-it.
+ const firstAnswer=f.calls.find(c=>c.method==='PUT');
+ assert.equal(Number(f.run("Number($('visit-diagnoses-form').dataset.version)")),firstAnswer.version+1,'the form carries the version the first save returned');
  f.form.elements.reason.value='Second reason';f.send('input',f.field(0,'display'));await f.flush();
- puts=f.calls.filter(c=>c.method==='PUT');assert.equal(puts.length,2);assert.equal(puts[1].version,Number(f.run("Number($('visit-diagnoses-form').dataset.version)")), 'the second save uses the version the first save returned');assert.equal(puts[1].body.reason,'Second reason');
+ puts=f.calls.filter(c=>c.method==='PUT');assert.equal(puts.length,2);
+ assert.equal(puts[1].version,firstAnswer.version+1,'the second save uses the version the first save returned');
+ assert.equal(puts[1].body.reason,'Second reason');
  f.send('input',f.field(0,'display'));await f.flush();
  assert.equal(f.calls.filter(c=>c.method==='PUT').length,2,'the same saved values never save twice');
  console.log('PASS autosave follows the shared version forward and skips work already saved');

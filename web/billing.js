@@ -178,7 +178,7 @@ function showBillingAccount(id,activate=true,reveal=false){
  const host=billingDetailHost();if(!host)return;for(const id of ['billing-detail','encounter-billing-detail'])if($(id)&&$(id)!==host)$(id).replaceChildren();host.innerHTML=`<section class="billing-account-detail"><div class="section-head"><div><h3>Account ${a.id.slice(0,8)}</h3><p class="muted">Service ${esc(a.content.service_date)} · v${a.version} · ${a.source_history_id?'Reconciled source':'Visit'}</p></div><span class="status-badge ${a.status==='posted'?'checked_in':'completed'}">${esc(a.status)}</span></div>
  ${!encounter?`<div class="billing-totals"><span>Charges <b>${money(a.total_cents)}</b></span><span>Net recorded entries <b>${money(entrySum(a.id))}</b></span><span>Open balance <b>${a.status==='posted'?money(billBalance(a)):'Not posted'}</b></span></div>`:''}
  <p>${frozen?`Payer on file: <b>${esc(frozen.payer.content.name)}</b> · Member ${esc(frozen.coverage.content.member_id)} · ${esc(frozen.coverage.content.verification)}`:a.content.coverage_id?'Insurance selected; coverage is captured when posted.':'Self-pay. No insurance selected.'}</p>${chargeTable(a.content.lines)}${billingChargeDraftRecovery(a)}${accountDiagnosisSummary(a.diagnosis_snapshot)}${accountDiagnosisDraftRecovery(a)}<p class="note-text">${esc(a.content.notes)}</p>
- <div class="actions">${billingCan()&&a.status==='draft'?'<button type="button" data-edit-bill>Edit draft</button>' + (a.content.visit_id?'<button type="button" data-link-account-diagnoses>Link visit diagnoses</button>':'') + '':''}${!encounter&&billingCan()&&a.status==='posted'&&frozenElectronicPayer?`<button type="button" class="primary" data-new-claim="${a.id}">Create insurance claim</button>`:''}<button type="button" data-bill-history>Account history</button></div>${!encounter&&a.status==='posted'&&frozenElectronicPayer?'<p class="muted">Creating a claim opens the reviewed native claim lifecycle. Nothing is sent until the claim is ready and a person explicitly submits it through Claim.MD.</p>':''}${a.status==='posted'&&frozen&&!frozenElectronicPayer?'<div class="mapping-notice"><b>Local-only insurance account</b><p>This frozen payer mapping has no Claim.MD payer ID, so it cannot create an electronic claim.</p></div>':''}<div id="bill-history"></div>
+ <div class="actions">${billingCan()&&a.status==='draft'?'<button type="button" data-edit-bill>Edit draft</button>':''}${!encounter&&billingCan()&&a.status==='posted'&&frozenElectronicPayer?`<button type="button" class="primary" data-new-claim="${a.id}">Create insurance claim</button>`:''}<button type="button" data-bill-history>Account history</button></div>${!encounter&&a.status==='posted'&&frozenElectronicPayer?'<p class="muted">Creating a claim opens the reviewed native claim lifecycle. Nothing is sent until the claim is ready and a person explicitly submits it through Claim.MD.</p>':''}${a.status==='posted'&&frozen&&!frozenElectronicPayer?'<div class="mapping-notice"><b>Local-only insurance account</b><p>This frozen payer mapping has no Claim.MD payer ID, so it cannot create an electronic claim.</p></div>':''}<div id="bill-history"></div>
  ${billingAccountActionForm(a,missingElectronicPayer,'Review / action reason','Posting locks the charges. The visit note must be signed first.','Post charges','Void draft','Post as local-only insurance activity. I understand this account cannot create an electronic claim.')}
  ${a.status==='posted'?`<section class="billing-section"><div class="actions">${!encounter&&billingCan('create')?'<button type="button" data-build-patient-invoice>Build patient invoice</button>':''}${!encounter?'<button type="button" data-patient-invoices>Saved patient invoices</button>':''}${billingCan()&&typeof availableCopayCreditForAccount==='function'&&availableCopayCreditForAccount(a)>0?'<button type="button" data-apply-copays>Apply recorded copay credit</button>':''}</div><p class="muted">Review patient responsibility separately from insurance. Recorded copays and patient credits reduce the invoice; building an invoice does not charge a card or submit a claim.</p></section>`:''}${encounter?'<details class="encounter-account-record"><summary>Payments, adjustments &amp; processor history</summary>':''}<h3>Recorded ledger entries</h3><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Recorded activity</th><th>Evidence / reason</th><th class="money-cell">Balance effect</th><th></th></tr></thead><tbody>${entries.map(e=>`<tr><td>${esc(ledgerKind(e.kind))}<small>${esc(e.content.occurred_on)} · ${esc(e.content.party)}</small></td><td>${esc(e.content.reference||'No reference')}<small>${esc(e.content.reason)}</small>${e.content.remittance_id?'<small>ERA posting · review in Claims & remittances</small>':''}${e.content.managed_payment_id?'<small>Verified test processor payment · reconcile or refund in Payments</small>':''}${e.content.hosted_copay_operation_id?'<small>Verified '+(e.content.test_mode?'test ':'')+'card copay · review hosted payment status in Insurance</small>':''}${e.reverses_id?`<small>Reverses ${esc(e.reverses_id.slice(0,8))}</small>`:''}</td><td class="money-cell">${money(e.effect_cents)}</td><td>${billingCan()&&!e.content.remittance_id&&!e.content.managed_payment_id&&!e.content.hosted_copay_operation_id&&e.kind!=='reversal'&&!entries.some(r=>r.reverses_id===e.id)?`<button type="button" data-reverse-entry="${e.id}">Reverse</button>`:''}</td></tr>`).join('')||'<tr><td colspan="4">No recorded payments or adjustments.</td></tr>'}</tbody></table></div>
  ${billingCan('create')&&a.status==='posted'?'<div class="actions"><button type="button" data-new-ledger>Record payment / adjustment</button></div>':''}${a.status==='posted'?'<div id="account-payment-panel"></div>':''}${encounter?'</details>':''}</section>`;
@@ -234,8 +234,8 @@ function renderChargeEncounterDiagnoses(form){
  for(const row of form.querySelectorAll('.billing-charge-row')){
   const host=row.querySelector('[data-charge-diagnoses]');if(!host)continue;
   if(!state||!chargeDiagnosisCurrent(form,state)){host.innerHTML='';continue;}
-  if(state.loading){host.innerHTML='<p class="muted">Loading saved visit diagnoses…</p>';continue;}
-  if(state.error){host.innerHTML='<p>Saved visit diagnoses could not be loaded. Your entered codes are unchanged.</p><button type="button" data-reload-charge-diagnoses>Retry diagnoses</button>';continue;}
+  if(state.loading){host.innerHTML='<p class="muted">Loading the diagnoses above…</p>';continue;}
+  if(state.error){host.innerHTML='<p>The diagnoses above could not be loaded. Your chosen codes are unchanged.</p><button type="button" data-reload-charge-diagnoses>Try again</button>';continue;}
   // A brand-new line starts with the visit's diagnoses selected, once. A line that already
   // has codes, or that staff have changed, is never filled in again.
   const field=row.querySelector('[name="diagnoses"]');
@@ -243,12 +243,89 @@ function renderChargeEncounterDiagnoses(form){
   // line whose codes were cleared by hand is never quietly refilled on a later refresh.
   if(row.dataset?.diagnosesDefault==='pending'){
    row.dataset.diagnosesDefault='done';
-   if(!disabled&&field&&!field.value.trim()&&state.diagnoses.length){field.value=state.diagnoses.slice(0,12).map(d=>d.code).join(', ');if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();}
+   if(!disabled&&field&&!field.value.trim()&&state.diagnoses.length){
+    const given=chargeDiagnosisDefaultCodes(state.diagnoses);
+    field.value=given;markChargeDiagnosisAuto(row,given);
+    if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();
+   }
   }
   if(!field)continue;
-  const codes=field.value.split(',').map(v=>v.trim().toUpperCase());
-  host.innerHTML=`<fieldset><legend>Saved visit diagnoses</legend>${state.diagnoses.length?`<p class="muted">The diagnoses from this visit are ticked for you. Untick any that do not apply.</p><div class="scope-options">${state.diagnoses.map(d=>`<label><input type="checkbox" data-charge-diagnosis="${esc(d.code)}" ${disabled?'disabled':''} ${codes.includes(d.code.toUpperCase())?'checked':''}>${esc(d.code)} · ${esc(d.display)}</label>`).join('')}</div>`:'<p class="muted">No saved visit diagnoses. Save them in Notes & diagnoses first, then reload here.</p>'}<button type="button" data-reload-charge-diagnoses>Reload saved diagnoses</button></fieldset>`;
+  host.innerHTML=chargeDiagnosisChargesMarkup(state.diagnoses,field.value,disabled);
  }
+}
+// The letters the visit's diagnoses are known by on this screen: A for the one the visit lists
+// first, B for the next, and so on in the visit's order. The same letters head the diagnoses above
+// the charge lines and the chips on every line, so the two read as one form rather than a list and
+// a set of boxes. Past Z the letters start again; a claim line carries four diagnoses at most.
+function visitDiagnosisLetter(index){return String.fromCharCode(65+(index%26));}
+function chargeDiagnosisLetters(diagnoses){return diagnoses.map((d,index)=>({letter:visitDiagnosisLetter(index),code:d.code,display:d.display}));}
+function chargeDiagnosisLetterOf(code,lettered){return (lettered||[]).find(d=>d.code.toUpperCase()===String(code||'').trim().toUpperCase())?.letter||'';}
+function chargeDiagnosisChosen(value){return String(value||'').split(',').map(code=>code.trim().toUpperCase()).filter(Boolean);}
+// The small letter badge in front of a diagnosis row. The diagnoses above the table are drawn by the
+// visit's own editor, in its own words; this is the only piece of its markup this screen adds, and
+// it changes nothing about how a diagnosis is entered or saved.
+function diagnosisLetterBadge(index){return Number.isInteger(index)&&index>=0?`<span class="charge-dx-letter">${visitDiagnosisLetter(index)}</span>`:'';}
+// One compact chip per letter. Pressing a chip is how a line says which of the visit's diagnoses it
+// was for, and the letters stop where a claim line stops: a fifth is refused, in words.
+function chargeDiagnosisChipsMarkup(lettered,codes,disabled){
+ if(!lettered.length)return '<p class="muted">Nothing here yet. Add the diagnoses above and they appear on every line as soon as they save.</p>';
+ const on=code=>codes.includes(code.toUpperCase());
+ return `<div class="charge-dx-chips">${lettered.map(d=>`<button type="button" class="charge-dx-chip"${on(d.code)?' data-chip-on=""':''}${disabled?' disabled':''} data-charge-diagnosis="${esc(d.code)}" aria-pressed="${on(d.code)?'true':'false'}" title="${esc(d.code)} · ${esc(d.display)}"><span class="charge-dx-chip-letter">${esc(d.letter)}</span><span class="sr-only">${esc(d.code)} · ${esc(d.display)}</span></button>`).join('')}</div><p class="charge-dx-chip-codes" data-charge-diagnosis-codes>${codes.length?esc(codes.map(code=>{const letter=chargeDiagnosisLetterOf(code,lettered);return letter?`${letter} (${code})`:code;}).join(', ')):'Nothing chosen yet.'}</p>`;
+}
+// The box on the line that answers for its diagnoses: one word over the letters, so the column's
+// heading and the row's narrow-screen label say the same thing.
+function chargeDiagnosisChargesMarkup(diagnoses,value,disabled){
+ return `<fieldset><legend>Diagnoses</legend>${chargeDiagnosisChipsMarkup(chargeDiagnosisLetters(diagnoses),chargeDiagnosisChosen(value),disabled)}</fieldset>`;
+}
+// How many diagnoses a charge line can carry on the claim it goes out on. A new line is pointed at
+// the visit's diagnoses in order, up to this many.
+const chargeDiagnosisLineLimit=4;
+// A line whose codes were filled in from the visit by the last refresh, and nothing since. Only
+// such a line is moved when the visit's diagnoses change: a code typed by hand, a tick unticked,
+// or anything saved is the person's own answer and is left alone.
+function chargeDiagnosisAutoFilled(row){return (row.dataset.diagnosesAuto||row.getAttribute?.('data-diagnoses-auto')||'')===(row.querySelector('[name="diagnoses"]')?.value||'').trim();}
+// The marker has to be read back after a re-render, and a re-render builds rows from markup: like
+// the code and the amount, what a line was filled with is written into the row's own markup, so it
+// is still there when the table is drawn again.
+function markChargeDiagnosisAuto(row,values){row.dataset.diagnosesAuto=values;if(row.setAttribute)row.setAttribute('data-diagnoses-auto',values);}
+// An empty line — no code, no codes yet — was answered by nobody, so the visit may still fill it
+// in: at the first refresh, after a save on either screen, or the moment it is added. A line that
+// came in carrying codes is a different thing; those are an answer already given.
+function chargeDiagnosisLineUnanswered(row){return !String(row.querySelector?.('[name="code"]')?.value||'').trim()&&String(row.querySelector?.('[name="diagnoses"]')?.value||'').trim()==='';}
+function chargeDiagnosisDefaultCodes(diagnoses){return diagnoses.slice(0,chargeDiagnosisLineLimit).map(d=>d.code).join(', ');}
+// The visit's diagnoses were just saved — from the section above the table, or from the visit's
+// Diagnoses screen. Every line's choices follow at once, with nothing reloaded and nothing the
+// person typed disturbed: a line still holding what the visit last gave it is re-pointed at the
+// visit as it now stands, and any other line keeps exactly what it holds.
+function chargeDiagnosesVisitUpdated(visitId){
+ const form=$('billing-account-form');if(!form||form.elements.visit_id?.value!==visitId)return;
+ if(!form.chargeDiagnosisState||!chargeDiagnosisCurrent(form,form.chargeDiagnosisState))return;
+ // The visit's own record is what a line must be pointed at — not the copy this screen last
+ // loaded. The diagnoses save happens somewhere else on the page, so the list here is re-read
+ // from the server before any line moves; a line whose codes were filled in by the visit is
+ // re-pointed at the visit as it now stands, and any other line keeps exactly what it holds.
+ void refreshChargeEncounterDiagnoses(form);
+}
+async function refreshChargeEncounterDiagnoses(form){
+ const state=form.chargeDiagnosisState;
+ try{
+  const data=await api(`/api/v1/visits/${encodeURIComponent(state.visit)}/diagnoses`);
+  if(!chargeDiagnosisCurrent(form,state))return;
+  state.diagnoses=Array.isArray(data.diagnoses)?data.diagnoses:[];state.version=data.version;state.error=false;
+ }catch{state.error=true;renderChargeEncounterDiagnoses(form);return;}
+ for(const row of chargeLiveRows(form)){
+  const field=row.querySelector('[name="diagnoses"]');if(!field)continue;
+  if(!chargeDiagnosisAutoFilled(row)&&!chargeDiagnosisLineUnanswered(row))continue;
+  const next=chargeDiagnosisDefaultCodes(state.diagnoses);
+  if(field.value===next)continue;
+  field.value=next;markChargeDiagnosisAuto(row,next);
+ }
+ renderChargeEncounterDiagnoses(form);captureBillingChargeDraft();
+}
+function followVisitDiagnoses(){
+ if(typeof visitDiagnosisListeners==='undefined'||typeof activeVisit==='undefined')return;
+ if(visitDiagnosisListeners.has(chargeDiagnosesVisitUpdated))return;
+ visitDiagnosisListeners.add(chargeDiagnosesVisitUpdated);
 }
 async function loadChargeEncounterDiagnoses(form){
  if(!form||form.dataset.patient!==selected)return;
@@ -256,20 +333,58 @@ async function loadChargeEncounterDiagnoses(form){
  if(!state.visit){state.loading=false;renderChargeEncounterDiagnoses(form);return;}
  try{const data=await api(`/api/v1/visits/${encodeURIComponent(state.visit)}/diagnoses`);if(!chargeDiagnosisCurrent(form,state))return;state.diagnoses=Array.isArray(data.diagnoses)?data.diagnoses:[];state.version=data.version;}
  catch{if(chargeDiagnosisCurrent(form,state))state.error=true;}
- finally{state.loading=false;if(chargeDiagnosisCurrent(form,state))renderChargeEncounterDiagnoses(form);}
+ finally{
+  if(chargeDiagnosisCurrent(form,state)){
+   state.loading=false;
+   // A line that arrived with the visit's codes on it, or with nothing at all, keeps following the
+   // visit from here on. One that came from the previous system, or that staff have changed, does
+   // not — its codes are an answer already given.
+   if(!form.dataset.draftReadOnly&&!form.dataset.draftStale)for(const row of chargeLiveRows(form)){const field=row.querySelector('[name="diagnoses"]');if(field&&chargeDiagnosisAutoFilled(row))markChargeDiagnosisAuto(row,(field.value||'').trim());}
+   followVisitDiagnoses();
+   // An empty line still gets its first answer from the visit here, not from a render pass that
+   // may have already run while the list was loading.
+   if(!form.dataset.draftReadOnly&&!form.dataset.draftStale)for(const row of chargeLiveRows(form)){
+    const field=row.querySelector('[name="diagnoses"]');if(!field||!chargeDiagnosisLineUnanswered(row))continue;
+    const next=chargeDiagnosisDefaultCodes(state.diagnoses);
+    if(field.value===next)continue;
+    field.value=next;markChargeDiagnosisAuto(row,next);
+   }
+   renderChargeEncounterDiagnoses(form);
+  }
+ }
 }
 document.addEventListener('change',event=>{
  const form=event.target.closest?.('#billing-account-form');if(!form||form.dataset.patient!==selected)return;
  if(event.target.name==='visit_id'){void loadChargeEncounterDiagnoses(form);return;}
  if(['service_date','coverage_id'].includes(event.target.name)){const host=form.querySelector('[data-charge-coverage-order]');if(host)host.innerHTML=billingCoverageOrderMarkup(form.elements.service_date.value,form.elements.coverage_id.value,form.dataset.compact==='true');}
- if(event.target.hasAttribute?.('data-charge-diagnosis')){
-  const state=form.chargeDiagnosisState;if(!state||!chargeDiagnosisCurrent(form,state)||state.loading||state.error||form.dataset.draftReadOnly||form.dataset.draftStale)return;
-  const code=event.target.dataset.chargeDiagnosis;if(!state.diagnoses.some(d=>d.code===code))return;
-  const row=event.target.closest('.billing-charge-row'),field=row.querySelector('[name="diagnoses"]'),codes=field.value.split(',').map(v=>v.trim()).filter(Boolean),matched=codes.some(c=>c.toUpperCase()===code.toUpperCase());
-  field.value=(event.target.checked?(matched?codes:[...codes,code]):codes.filter(c=>c.toUpperCase()!==code.toUpperCase())).join(', ');captureBillingChargeDraft();
- }else if(event.target.name==='diagnoses')renderChargeEncounterDiagnoses(form);
+ // The chips answer for the line; a code put in by hand, or by something filling the box in, is an
+ // answer too, and the chips are brought back in step with it.
+ else if(event.target.name==='diagnoses')renderChargeEncounterDiagnoses(form);
 });
-document.addEventListener('click',event=>{if(!event.target.closest?.('[data-reload-charge-diagnoses]'))return;event.preventDefault();void loadChargeEncounterDiagnoses($('billing-account-form'));});
+document.addEventListener('click',event=>{
+ if(event.target.closest?.('[data-reload-charge-diagnoses]')){event.preventDefault();void loadChargeEncounterDiagnoses($('billing-account-form'));return;}
+ // Only the chip itself answers: a click that lands on anything else is whatever else it was for.
+ const chip=event.target.hasAttribute?.('data-charge-diagnosis')?event.target:null;if(!chip)return;
+ const form=chip.closest?.('#billing-account-form');if(!form||form.dataset.patient!==selected)return;
+ event.preventDefault();
+ const row=chip.closest('.billing-charge-row'),field=row?.querySelector('[name="diagnoses"]');if(!field)return;
+ const state=form.chargeDiagnosisState;
+ if(!state||!chargeDiagnosisCurrent(form,state)||state.loading||state.error||form.dataset.draftReadOnly||form.dataset.draftStale)return;
+ if(!state.diagnoses.some(d=>d.code===chip.dataset.chargeDiagnosis))return;
+ chargeDiagnosisChipToggle(row,field,chip.dataset.chargeDiagnosis);
+});
+// Pressing a chip is the line's own answer from that moment on, so the line stops being re-pointed
+// at the visit's list. A fifth letter is refused with the claim rule that sets the limit, in words a
+// front desk person can act on.
+function chargeDiagnosisChipToggle(row,field,code){
+ const codes=chargeDiagnosisChosen(field.value),upper=code.toUpperCase();
+ if(codes.includes(upper))field.value=codes.filter(c=>c!==upper).join(', ');
+ else if(codes.length>=chargeDiagnosisLineLimit){notice(`A line can point to ${chargeDiagnosisLineLimit} diagnoses.`);return;}
+ else field.value=[...codes,upper].join(', ');
+ markChargeDiagnosisAuto(row,'');
+ const form=$('billing-account-form');
+ renderChargeEncounterDiagnoses(form);renderChargeRowProblems(form);captureBillingChargeDraft();scheduleChargeAutosave(form);
+}
 function coveragePayerSetup(){
  const search=typeof claimmdCoveragePayerSearch==='function'?claimmdCoveragePayerSearch():'';
  if(billingPayers.length)return `${search}${me.role==='owner'?`<details class="amendment"><summary>Add a payer that is not listed</summary>${coveragePayerForm()}</details>`:''}`;
@@ -310,18 +425,64 @@ function chargeMiniField(name,label,value='',max=200,required=false){return `<la
 // the row beside it, so the code cell holds the box and the description column only has what the
 // code list was chosen from. With no procedure screen loaded, one plain box goes in the code cell
 // and its matching description field stays in the description column.
-function chargeProcedureFallback(l){return `${chargeMiniField('code','Procedure',l.code||'',100,true)}${chargeMiniField('description','Description',l.description||'',10000,true)}`;}
+// With no procedure screen loaded, one plain box takes the procedure; its matching description
+// field travels on the line unseen, exactly as a chosen code's does.
+function chargeProcedureFallback(l){return chargeMiniField('code','Procedure',l.code||'',100,true);}
 function chargeCodeCell(l){
  const extra=chargeIsDrugCode(l.code)?' open':'';
  return `${typeof terminologyProcedureFields==='function'?terminologyProcedureFields(l):chargeProcedureFallback(l)}<div class="charge-drug"${extra}><p class="charge-drug-title">Drug given</p><div class="charge-drug-grid"><label>NDC code<input name="ndc_code" type="text" maxlength="13" value="${esc(l.ndc_code||'')}" placeholder="11 digits"></label><label>Quantity<input name="ndc_quantity" type="text" maxlength="7" value="${esc(l.ndc_quantity||'')}" placeholder="Amount given"></label><label>Unit<select name="ndc_unit">${ndcUnits.map(([v,name])=>`<option value="${v}" ${v===(l.ndc_unit||'')?'selected':''}>${v?`${v} — ${name}`:''}</option>`).join('')}</select></label></div><p class="muted">For an injected drug fill all three; leave them blank for any other service.</p></div>`;
 }
+// What the code list the line came from, kept with the procedure box that chose it. The box the
+// person reads is the procedure box alone; the code list record and the lookup sit with it.
 function chargeDescriptionCell(l){
  const extra=typeof terminologyLookupButton==='function'?terminologyLookupButton('procedure'):'';
  const snapshot=typeof terminologySnapshotMarkup==='function'?terminologySnapshotMarkup(l.catalog_snapshot):'';
- const shown=typeof terminologyProcedureFields==='function'?'':chargeMiniField('description','Description',l.description||'',10000,true);
- return `${shown}<div class="charge-description-extra">${extra}${snapshot}</div>`;
+ return `<div class="charge-description-extra">${extra}${snapshot}</div>`;
 }
-function chargeDiagnosisCell(l){return chargeMiniField('diagnoses','Diagnoses for this service',(l.diagnosis_codes||[]).join(', '),1200);}
+// What the line submits for the service, out of sight: a chosen code leaves its words in the
+// procedure box a person reads, so the description never needs a box — or a column — of its own.
+function chargeHiddenField(name,value,max){return `<input type="hidden" name="${name}" value="${esc(value||'')}" maxlength="${max}">`;}
+function chargeLineDescriptionCell(l){return chargeHiddenField('description',l.description,10000);}
+// What a line says the service was, in the words it was chosen with. A code taken from the code
+// list leaves those words in the procedure box as well as the field the line submits; a code typed
+// straight into the box is described by the box, which is all anyone has for it.
+function chargeLineDescription(row){
+ if(!row?.querySelector)return '';
+ const entered=row.querySelector('[name="description"]')?.value||'';
+ if(entered.trim())return entered;
+ const shown=(row.querySelector('[name="procedure"]')?.value||'').trim();
+ const code=(row.querySelector('[name="code"]')?.value||'').trim().toUpperCase();
+ if(!shown)return '';
+ return code&&shown.toUpperCase().startsWith(`${code}:`)?shown.slice(code.length+1).trim():shown;
+}
+// The codes a line points at are still the field the line submits; the letters on the chips beside
+// it are how they are chosen, never a second copy of them.
+function chargeDiagnosisCodesField(l){return `<input type="hidden" name="diagnoses" value="${esc((l.diagnosis_codes||[]).join(', '))}" maxlength="1200">`;}
+// A line's diagnoses are chosen from the letters above the table: the chips fill this field, and
+// the field stays the one the line submits, saves and sends.
+// The letters of the visit’s diagnoses, chosen here and nowhere else, the sentence saying what
+// the line still needs, and the field the line submits: the chips fill it, so a line can never
+// carry a code this visit never recorded.
+function chargeDiagnosisCell(l){return chargeDiagnosisCodesField(l)+'<div class="charge-dx-chips-slot" data-charge-diagnoses></div>'+chargeNoteCell()+chargeProblemCell();}
+// The visit's diagnoses, entered and saved in the same words and the same boxes as the visit's
+// Diagnoses screen: this holds that screen's own host and lets its own code draw it, so there is
+// one diagnosis editor in this application rather than two that could drift. It sits directly
+// above the charge lines, because every charge line answers to one of these.
+// It is the charge form's neighbour, not part of the form: an editor inside an editor cannot be
+// submitted, and the diagnoses save finds its own form by id.
+// Named for what it holds and nothing else: the letters on the charge lines below are these
+// diagnoses, so one plain word says where each belongs without repeating the visit in both.
+function chargeDiagnosisSectionMarkup(){
+ return `<section class="charge-visit-diagnoses" data-charge-diagnosis-editor><h3>Diagnoses</h3><div id="visit-diagnoses"><p class="muted">Loading…</p></div></section>`;
+}
+// Placing the section is not drawing it. The diagnoses code fills its own host and saves on its
+// own, exactly as it does on the visit's Diagnoses screen; this only asks it to, and only when the
+// host now on screen is the one laid down with this charge table.
+function openChargeDiagnosisSection(){
+ if(typeof renderVisitDiagnoses!=='function'||typeof activeVisit==='undefined'||!activeVisit)return;
+ if(!billingEditorHost()?.querySelector?.('[data-charge-diagnosis-editor]'))return;
+ void renderVisitDiagnoses();
+}
 // The amount an edit leaves behind, in cents, or nothing at all while it is not yet an amount.
 // The amount each line was saved at, remembered on the row, survives while it is edited.
 function seedChargeRowAmounts(form){for(const row of chargeLiveRows(form))chargeRowMemory(row).amountCents=chargeRowAmountCents(row);}
@@ -427,14 +588,23 @@ function chargeTableNextPaint(button,label='Nothing has been sent yet.'){
  chargeTableNextLine(slot,{markup:painted,painted:true});
  chargeTableNextWritten.delete(slot);
 }
-function chargeLinesMarkup(lines,compact){return `<div class="billing-table-wrap charge-table-wrap"><table class="billing-table charge-table" id="billing-charge-lines"><caption class="sr-only">Charges on this visit</caption><thead><tr><th>Code</th><th>Description</th><th>Modifiers</th><th>Units</th><th>Diagnoses</th><th>Amount</th><th class="money-cell">Line total</th><th></th></tr></thead><tbody>${lines.map((l,index)=>chargeRow(l,compact,chargeLineKey(l,index))).join('')}</tbody></table></div>`;}
+// One row per line, read left to right the way a paper encounter form is filled in: the procedure,
+// its modifiers, how many, the letters of the diagnoses it was for, the amount, then remove.
+// Each box is headed with its column, which doubles as the row's only label on a narrow screen;
+// the description a code carries rides on the line unseen, and
+// what the lines come to is totalled once in the row underneath them.
+function chargeLinesMarkup(lines,compact){return `<div class="billing-table-wrap charge-table-wrap"><table class="billing-table charge-table" id="billing-charge-lines"><caption class="sr-only">Procedures on this visit</caption><thead><tr><th>Procedure</th><th>Modifiers</th><th>Units</th><th>Diagnoses</th><th>Amount</th><th></th></tr></thead><tbody>${lines.map((l,index)=>chargeRow(l,compact,chargeLineKey(l,index))).join('')}</tbody></table><div class="charge-lines-totals" data-charge-line-totals><span>Total charges <b data-charge-total>${money(0)}</b></span><span data-charge-copay>Copay</span><span class="charge-table-hint" data-charge-pays></span></div></div>`;}
 // Each line keeps one identity for as long as it is on screen, so what it remembers — the amount
 // last typed, the code list chosen, a line waiting to be removed, and whether the practice
 // filled it in from an earlier visit — is found again after that row is drawn again.
 function chargeLineKey(l,index){return `line-${index + 1}${l?.fromEarlierVisit?` ${chargeProposedFlag}`:''}`;}
 // The row's own note slot: one short plain sentence left on a line that still needs something
-// looked at — an amount no price list covers, a drug amount carried over from the last visit.
-function chargeNoteCell(){return '<td class="charge-cell-note" data-charge-note-cell colspan="2"></td>';}
+// looked at — an amount no price list covers, a drug amount carried over from the last visit. It
+// sits inside the line, under the letters, where there is room for a sentence.
+function chargeNoteCell(){return '<div class="charge-cell-note" data-charge-note-cell></div>';}
+// What a line still needs is written under the letters it is about, in the same box, so the row
+// never grows a column of its own.
+function chargeProblemCell(){return '<p class="charge-cell-problem" data-charge-problem role="status"></p>';}
 // What each line comes to, and what the two totals mean, all recomputed from what is on
 // the screen. The patient's share uses the copay already recorded on the visit's coverage.
 function chargeLineTotalCents(row){const units=Math.trunc(Number(row.querySelector('[name="units"]')?.value))||0;const amount=chargeRowAmount(row);return amount==null?0:amount*units;}
@@ -475,11 +645,14 @@ function chargeRowCapture(row){
 }
 function chargeRowAmount(row){return chargeRowMemory(row).amountCents??chargeRowAmountCents(row);}
 function chargeRowTable(form){return form?.querySelector?.('#billing-charge-lines')||null;}
+// Read left to right, the columns a claim line is made of, in the order they are filled in.
+// Anything a line carries that is not a box on the row travels on the row itself, unseen, so the
+// line stays one row high.
+function chargeLineTail(l){return chargeLineDescriptionCell(l);}
 function chargeTableHost(form){return !!chargeRowTable(form);}
 function chargeTableTotals(host){
  const rows=Array.from(host.querySelectorAll?.('.billing-charge-row')||[]).filter(row=>row.isConnected!==false&&!chargeRowRemoved(row));
  const total=rows.reduce((sum,row)=>sum+chargeLineTotalCents(row),0);
- for(const row of rows){const cell=row.querySelector('[data-charge-line-total]');if(cell)cell.textContent=money(chargeLineTotalCents(row));}
  const copay=typeof visitPlanCopayCents==='function'?visitPlanCopayCents():null;
  const pays=Math.min(total,copay??total);
  for(const node of host.querySelectorAll('[data-charge-total]'))node.textContent=money(total);
@@ -498,13 +671,16 @@ function chargeRowValue(row){
  chargeRowCapture(row);
  const code=(row.querySelector('[name="code"]')?.value||'').trim().toUpperCase();
  const system=chargeCodeSystem({code});
- const description=row.querySelector('[name="description"]')?.value||'';
- return {code_system:system,code,description,...chargeRowData(row)};
+ return {code_system:system,code,description:chargeLineDescription(row),...chargeRowData(row)};
 }
+// What a line describes, in the words it was chosen with. A chosen code leaves those words in the
+// box a person reads and in the field the line carries; a code typed by hand without the box ever
+// being used is described by the box itself, which is all anyone has for it.
 // Plain words, on the row itself, for the one thing that stops this line being complete.
 function chargeRowProblems(row){
+ if(!row?.querySelector)return [];
  const code=(row.querySelector('[name="code"]')?.value||'').trim();
- const description=(row.querySelector('[name="description"]')?.value||'').trim();
+ const description=chargeLineDescription(row).trim();
  const amount=chargeRowAmount(row),units=Math.trunc(Number(row.querySelector('[name="units"]')?.value));
  const diagnoses=(row.querySelector('[name="diagnoses"]')?.value||'').trim();
  const ndc=(row.querySelector('[name="ndc_code"]')?.value||'').trim(),quantity=(row.querySelector('[name="ndc_quantity"]')?.value||'').trim(),unit=(row.querySelector('[name="ndc_unit"]')?.value||'').trim();
@@ -519,6 +695,8 @@ function chargeRowProblems(row){
  if(ndc&&!(quantity&&unit))problems.push('For a drug, add its NDC code, the amount given and the unit.');
  return problems;
 }
+// A line's sentence and the letters it is about are written in the same pass, so a line never shows
+// a complaint about its diagnoses beside chips that already answered it.
 function renderChargeRowProblems(form){
  if(!chargeTableHost(form))return;
  const busy=!!(form?.dataset.chargeSaving||form?.dataset.chargeConflict||form?.dataset.draftReadOnly||form?.dataset.draftStale);
@@ -528,6 +706,7 @@ function renderChargeRowProblems(form){
   if(problems.length){cell.textContent=problems.join(' ');row.setAttribute('data-charge-problem','true');}
   else{cell.textContent='';row.removeAttribute('data-charge-problem');}
  }
+ renderChargeEncounterDiagnoses(form);
 }
 function chargeLineCount(form){return Array.from(form?.querySelectorAll?.('.billing-charge-row')||[]).filter(row=>!chargeRowRemoved(row)).length;}
 // A removed line waits, taken out of the table, until it has been saved away or undone.
@@ -537,7 +716,6 @@ function addChargeRow(){
  body.insertAdjacentHTML('beforeend',chargeRow({},form.dataset.compact==='true',chargeLineKey(null,chargeLiveRows(form).length)));
  const row=body.lastElementChild;
  row?.querySelector('[name="code"]')?.focus();
- renderChargeEncounterDiagnoses(form);
  chargeTableTotals(form);renderChargeRowProblems(form);
  captureBillingChargeDraft();
  scheduleChargeAutosave(form);
@@ -725,7 +903,7 @@ function restoreChargeTyping(form,typing){
  chargeTableTotals(form);
 }
 function chargeRow(l={},compact=false,key=''){
- return `<tr class="billing-charge-row"${key?` data-charge-key="${key}"`:''} ${!l.code&&l.amount_cents==null&&!(l.diagnosis_codes||[]).length?'data-diagnoses-default="pending"':''} data-catalog-release-id="${esc(l.catalog_release_id||'')}" data-catalog-code="${esc(l.code||'')}" data-catalog-display="${esc(l.description||'')}" data-catalog-system="${esc(l.code_system||chargeCodeSystem(l))}" data-charge-system="${esc(l.code_system||chargeCodeSystem(l))}"${l.amount_cents==null?'':' data-charge-amount="'+l.amount_cents+'"'}${l.fee_schedule_id?` data-fee-schedule="${esc(l.fee_schedule_id)}"`:''}${l.fee_entry_key?` data-fee-entry="${esc(l.fee_entry_key)}"`:''}><td class="charge-cell-code">${chargeCodeCell(l)}${chargeRowExtras(l,compact)}</td><td class="charge-cell-description">${chargeDescriptionCell(l)}</td><td class="charge-cell-modifiers">${chargeMiniField('modifiers','Modifiers',l.modifiers||'',100)}</td><td class="charge-cell-units"><label>Units<input name="units" type="number" min="1" max="1000" step="1" value="${l.units===undefined?1:l.units}" required></label></td><td class="charge-cell-diagnoses">${chargeDiagnosisCell(l)}<div data-charge-diagnoses></div></td><td class="charge-cell-amount">${chargeMiniField('amount','Amount',dollars(l.amount_cents),30,true)}${typeof feeLineMarkup==='function'?feeLineMarkup(l):''}${l.source_fee!==undefined?`<p class="mapping-notice">Source fee: ${esc(l.source_fee)} · Check whether that was the whole line or one unit, then enter the amount for the whole line.</p>`:''}</td><td class="charge-cell-total money-cell" data-charge-line-total>${money(l.amount_cents||0)}</td><td class="charge-cell-remove"><button type="button" data-remove-charge>Remove</button></td>${chargeNoteCell()}<td class="charge-cell-problem" data-charge-problem colspan="2"></td></tr>`;
+ return `<tr class="billing-charge-row"${key?` data-charge-key="${key}"`:''} ${!l.code&&l.amount_cents==null&&!(l.diagnosis_codes||[]).length?'data-diagnoses-default="pending"':''} data-catalog-release-id="${esc(l.catalog_release_id||'')}" data-catalog-code="${esc(l.code||'')}" data-catalog-display="${esc(l.description||'')}" data-catalog-system="${esc(l.code_system||chargeCodeSystem(l))}" data-charge-system="${esc(l.code_system||chargeCodeSystem(l))}"${l.amount_cents==null?'':' data-charge-amount="'+l.amount_cents+'"'}${l.fee_schedule_id?` data-fee-schedule="${esc(l.fee_schedule_id)}"`:''}${l.fee_entry_key?` data-fee-entry="${esc(l.fee_entry_key)}"`:''}><td class="charge-cell-code">${chargeCodeCell(l)}${chargeDescriptionCell(l)}${chargeRowExtras(l,compact)}</td><td class="charge-cell-modifiers">${chargeMiniField('modifiers','Modifiers',l.modifiers||'',100)}</td><td class="charge-cell-units"><label>Units<input name="units" type="number" min="1" max="1000" step="1" value="${l.units===undefined?1:l.units}" required></label></td><td class="charge-cell-diagnoses">${chargeDiagnosisCell(l)}</td><td class="charge-cell-amount">${chargeMiniField('amount','Amount',dollars(l.amount_cents),30,true)}${typeof feeLineMarkup==='function'?feeLineMarkup(l):''}${l.source_fee!==undefined?`<p class="mapping-notice">Source fee: ${esc(l.source_fee)} · Check whether that was the whole line or one unit, then enter the amount for the whole line.</p>`:''}</td><td class="charge-cell-remove"><button type="button" data-remove-charge>Remove</button></td>${chargeLineTail(l)}</tr>`;
 }
 // The browser can only point at an invalid control that is visible, so the tucked-away visit,
 // insurance and fee fields are opened before validation runs whenever one of them fails.
@@ -979,8 +1157,7 @@ function accountEditor(a,m,encounterContext=false){
  // A charge editor opened for a visit is a live table: the lines, then one box with the visit,
  // insurance and fee details. Nothing a line needs sits behind a closed box, and every edit
  // saves itself. Reconciling a record from the previous system keeps its one review step.
- const compact=!!v.visit_id,sourceLines=m?' data-charge-lines-source=""':'',chargeVisitBlock=`<div class="form-grid"><label>Visit<select name="visit_id" ${sourceBacked?'':'required'}><option value="">${sourceBacked?'Source kept — no visit found for it':'Choose a patient visit'}</option>${workspace.visits.map(vis=>`<option value="${vis.id}" ${v.visit_id===vis.id?'selected':''}>${esc((workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.title||'Visit')+' · '+date(workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.starts_at||vis.created_at))} · ${esc(human(vis.status))}</option>`).join('')}</select></label>${billingField('service_date','Service date',v.service_date,'date',0,true)}<label>Billing coverage<select name="coverage_id"><option value="">Self-pay / no selected coverage</option>${workspace.billing.coverages.map(c=>`<option value="${c.id}" ${v.coverage_id===c.id?'selected':''}>${esc(human(c.content.priority))} · ${esc(payerName(c.content.payer_id))} · ${esc(c.content.member_id)}</option>`).join('')}</select></label><label>Currency<input value="USD" readonly></label></div>`,chargeNotesBlock=`<label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>`,chargeLinesBlock=`${chargeLinesMarkup(v.lines,compact)}<div class="charge-table-foot"><button type="button" data-add-charge>${compact?'+ Add another charge':'+ Charge line'}</button><p class="charge-table-status" data-charge-status role="status" aria-live="polite"></p></div><div class="charge-table-next-slot" data-charge-next>${chargeTableNextMarkup(v.visit_id,chargeTableNextWritten)}</div>`,chargeOptionsBlock=`${chargeVisitBlock}<div data-charge-coverage-order>${billingCoverageOrderMarkup(v.service_date,v.coverage_id,compact)}</div>${typeof feeContextMarkup==='function'?feeContextMarkup(v.fee_context):''}${chargeNotesBlock}`,chargeTotalsBlock=`<div class="charge-table-totals"><span>Total charges <b data-charge-total>${money(0)}</b></span><span data-charge-copay>Copay</span><span class="charge-table-hint" data-charge-pays></span></div>`,
-  chargeFormBody=compact?`${chargeLinesBlock}${chargeTotalsBlock}<details data-visit-charge-options><summary>Visit, insurance and fee options</summary>${chargeOptionsBlock}</details>`:`${chargeOptionsBlock}<p class="muted">Enter the amount for the whole line, not for one unit.</p>${chargeLinesBlock}${chargeTotalsBlock}`;
+ const compact=!!v.visit_id,sourceLines=m?' data-charge-lines-source=""':'',chargeVisitBlock=`<div class="form-grid"><label>Visit<select name="visit_id" ${sourceBacked?'':'required'}><option value="">${sourceBacked?'Source kept — no visit found for it':'Choose a patient visit'}</option>${workspace.visits.map(vis=>`<option value="${vis.id}" ${v.visit_id===vis.id?'selected':''}>${esc((workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.title||'Visit')+' · '+date(workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.starts_at||vis.created_at))} · ${esc(human(vis.status))}</option>`).join('')}</select></label>${billingField('service_date','Service date',v.service_date,'date',0,true)}<label>Billing coverage<select name="coverage_id"><option value="">Self-pay / no selected coverage</option>${workspace.billing.coverages.map(c=>`<option value="${c.id}" ${v.coverage_id===c.id?'selected':''}>${esc(human(c.content.priority))} · ${esc(payerName(c.content.payer_id))} · ${esc(c.content.member_id)}</option>`).join('')}</select></label><label>Currency<input value="USD" readonly></label></div>`,chargeNotesBlock=`<label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>`,chargeLinesBlock=`${chargeLinesMarkup(v.lines,compact)}<div class="charge-table-foot"><button type="button" data-add-charge>${compact?'+ Add another charge':'+ Charge line'}</button><p class="charge-table-status" data-charge-status role="status" aria-live="polite"></p></div><div class="charge-table-next-slot" data-charge-next>${chargeTableNextMarkup(v.visit_id,chargeTableNextWritten)}</div>`,chargeOptionsBlock=`${chargeVisitBlock}<div data-charge-coverage-order>${billingCoverageOrderMarkup(v.service_date,v.coverage_id,compact)}</div>${typeof feeContextMarkup==='function'?feeContextMarkup(v.fee_context):''}${chargeNotesBlock}`,  chargeFormBody=compact?`${chargeLinesBlock}<details data-visit-charge-options><summary>Visit, insurance and fee options</summary>${chargeOptionsBlock}</details>`:`${chargeOptionsBlock}<p class="muted">Enter the amount for the whole line, not for one unit.</p>${chargeLinesBlock}`;
  // Charges for the visit in hand come from that visit alone; a reconciliation of a record from
  // the previous system, or a chart opened elsewhere, is never filled in from another visit.
  // Charges are only ever filled in for the visit this table is being opened for, and only from
@@ -988,15 +1165,15 @@ function accountEditor(a,m,encounterContext=false){
  // opened elsewhere, is never filled in from another visit.
  const proposalVisit=v.visit_id?(workspace.visits||[]).find(vis=>vis.id===v.visit_id&&vis.patient_id===selected)||null:null;
  const proposal=chargeProposeBeforeRender(!a&&!m?proposalVisit:null);
- if(restoreBillingChargeDraft(a,m?.source_history_id,v.visit_id)){const restored=$('billing-account-form');seedChargeRowAmounts(restored);chargeTableTotals(restored);renderChargeRowProblems(restored);void loadChargeEncounterDiagnoses(restored);return;}
- openBillingEditor(`<form id="billing-account-form"${sourceLines} data-compact="${compact}" data-id="${a?.id||''}" data-version="${a?.version||''}" data-request="${crypto.randomUUID()}" data-source="${m?.source_history_id||''}"><h3>${a?'Edit draft charges':m?'Reconcile source billing to draft':'Charges for this visit'}</h3>${sourceNotice(m)}${chargeFormBody}${m?`<label class="review-ack"><input type="checkbox" name="verified" required> I verified the source visit, charges, fee basis, diagnoses and prior payment history. This creates a draft only.</label>${billingField('reason','Reason for this reconciliation','','text',1000,true)}<div class="actions"><button class="primary" type="submit">Create draft charges</button><button type="button" data-cancel-billing>Cancel</button></div>`:''}</form>`);
+ if(restoreBillingChargeDraft(a,m?.source_history_id,v.visit_id)){const restored=$('billing-account-form');seedChargeRowAmounts(restored);chargeTableTotals(restored);renderChargeRowProblems(restored);openChargeDiagnosisSection();void loadChargeEncounterDiagnoses(restored);return;}
+ openBillingEditor(`${compact&&typeof renderVisitDiagnoses==='function'?chargeDiagnosisSectionMarkup():''}<form id="billing-account-form"${sourceLines} data-compact="${compact}" data-id="${a?.id||''}" data-version="${a?.version||''}" data-request="${crypto.randomUUID()}" data-source="${m?.source_history_id||''}"><h3>${a?'Edit draft charges':m?'Reconcile source billing to draft':'Charges for this visit'}</h3>${sourceNotice(m)}${chargeFormBody}${m?`<label class="review-ack"><input type="checkbox" name="verified" required> I verified the source visit, charges, fee basis, diagnoses and prior payment history. This creates a draft only.</label>${billingField('reason','Reason for this reconciliation','','text',1000,true)}<div class="actions"><button class="primary" type="submit">Create draft charges</button><button type="button" data-cancel-billing>Cancel</button></div>`:''}</form>`);
  const form=$('billing-account-form');if(form){form.dataset.patient=selected;form.dataset.draftKey=billingChargeKey(a?.id,m?.source_history_id,v.visit_id);form.dataset.autosave=m?'off':'on';
   // Filled in from the earlier visit, or the blank line the table always starts with: the rows
   // are decided here, once, after this screen was opened and after any retained edits came back.
   chargeProposeAfterRender(form,proposal);
   if(m){const baseline=billingChargeMarkup(form);if(baseline)billingChargeBaselines.set(form,baseline);}
   else{billingChargeBaselines.set(form,chargeTableSignature(a?.content||{lines:chargeLiveRows(form).map(chargeRowValue)}));seedChargeRowAmounts(form);chargeTableTotals(form);renderChargeRowProblems(form);}
-  void loadChargeEncounterDiagnoses(form);if(typeof loadFeeContext==='function')void loadFeeContext(form);}
+  openChargeDiagnosisSection();void loadChargeEncounterDiagnoses(form);if(typeof loadFeeContext==='function')void loadFeeContext(form);}
 }
 function ledgerEditor(original){
  openBillingEditor(`<form id="billing-ledger-form" data-request="${crypto.randomUUID()}" data-reverses="${original?.id||''}"><h3>${original?'Reverse recorded entry':'Record payment / adjustment'}</h3><p class="muted">This records accounting evidence only. No card, bank or payer transaction is executed.</p>${original?`<p>Reverse ${esc(ledgerKind(original.kind))}: ${money(original.effect_cents)}. The original entry is retained.</p>`:`<div class="form-grid">${selectField('kind','Entry kind',['payment','adjustment_credit','adjustment_debit'],'payment')}${billingField('amount','Amount (USD)','','text',30,true)}${selectField('party','Recorded party',['patient','insurer','other'],'patient')}${selectField('method','Evidence method',['cash','check','external','other','none'],'external')}${billingField('reference','Receipt / EOB reference','','text',200)}</div>`}${billingField('occurred_on','Activity date','','date',0,true)}${billingField('reason','Reason / evidence','','text',1000,true)}<p class="muted">Do not enter payment-card numbers, bank details or credentials. Reversals and credits cannot create an overpayment.</p><div class="actions"><button type="submit" class="primary">${original?'Record reversal':'Record ledger entry'}</button><button type="button" data-cancel-billing>Cancel</button></div></form>`);
