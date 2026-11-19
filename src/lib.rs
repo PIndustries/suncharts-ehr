@@ -1045,6 +1045,16 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/visit-layout.css",
+            get(|| async {
+                web_asset(
+                    "visit-layout.css",
+                    "text/css",
+                    include_str!("../web/visit-layout.css"),
+                )
+            }),
+        )
+        .route(
             "/document-files-groups.css",
             get(|| async {
                 web_asset(
