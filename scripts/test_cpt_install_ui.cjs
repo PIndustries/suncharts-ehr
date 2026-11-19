@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
-// The CPT section on the owner's Code lists screen: the license box and reference are required,
-// the button says it is working, and an installed CPT list is simply reported. Synthetic only.
+// The CPT section, folded into the owner's Codes & prices screen: the license box and reference are
+// required, the button says it is working, and an installed CPT list is simply reported. Synthetic only.
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const source=fs.readFileSync('web/terminology.js','utf8');
 const esc=v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
