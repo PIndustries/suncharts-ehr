@@ -82,104 +82,53 @@ function paymentGroupReceiptFacts(receipts,context){
 function paymentGroupTenderRows(facts){
  return facts.lines.map(line=>`<div><dt>${esc(line.label)}</dt><dd>${money(line.amount)}</dd></div>`).join('');
 }
-// The visit's clinical and charge evidence, read from the endpoints the encounter's Billing tab
-// already uses: the visit's own diagnoses, and the charge lines inside the patient's billing
-// accounts. A read that fails is held silently; the receipt says plainly that the section could
-// not be loaded rather than showing an empty table as if the visit had nothing.
-let visitReceiptEvidence={key:'',diagnoses:null,lines:null,account:null,failed:false};
-function visitReceiptCacheKey(visitId){return `${typeof selected!=='undefined'?selected:''}|${typeof me!=='undefined'&&me?me.user_id||String(me):''}|${visitId||''}`;}
-async function loadVisitReceiptEvidence(visitId){
- const key=visitReceiptCacheKey(visitId);
- if(visitReceiptEvidence.key===key&&!visitReceiptEvidence.failed)return visitReceiptEvidence;
- const next={key,diagnoses:null,lines:null,account:null,failed:false};
- visitReceiptEvidence=next;
- if(!visitId){next.failed=true;return next;}
- const account=(typeof workspace!=='undefined'?workspace?.billing?.accounts:null||[]).find(a=>a.status!=='void'&&a.content?.visit_id===visitId)||null;
- try{
-  const [diagnosisData]=await Promise.all([api(`/api/v1/visits/${encodeURIComponent(visitId)}/diagnoses`)]);
-  next.diagnoses=Array.isArray(diagnosisData?.diagnoses)?diagnosisData.diagnoses:[];
-  next.account=account;
-  next.lines=account&&Array.isArray(account.content?.lines)?account.content.lines:[];
- }catch{next.failed=true;}
- if(visitReceiptEvidence!==next)return visitReceiptEvidence;
- return next;
+// A receipt reads like a visit receipt: diagnoses (ICD-10), then the procedures and their charges,
+// then how the patient paid. Both come from the encounter the payment belongs to: its diagnoses
+// list and the charge lines on its billing account. Loaded just before printing; a failed read
+// prints a plain note in that section instead of an empty table.
+async function visitReceiptEvidence(appointmentId){
+ const visit=(typeof workspace!=='undefined'&&workspace?.visits||[]).find(v=>v.appointment_id===appointmentId)||null;
+ if(!visit)return null;
+ const account=(workspace?.billing?.accounts||[]).filter(a=>a.status!=='void'&&a.content?.visit_id===visit.id).pop()||null;
+ let diagnoses=null;
+ try{const data=await api(`/api/v1/visits/${encodeURIComponent(visit.id)}/diagnoses`);diagnoses=(data?.diagnoses||[]).filter(d=>d&&String(d.code||'').trim()).sort((a,b)=>(a.rank??99)-(b.rank??99));}catch{}
+ return {visit,account,diagnoses,lines:Array.isArray(account?.content?.lines)?account.content.lines:[]};
 }
-function visitReceiptServiceDate(visit,account){
- const day=account?.content?.service_date||(typeof encounterDateLabel==='function'&&visit?encounterDateLabel(visit):'');
- return day||'Date not recorded';
+function visitReceiptServiceDate(evidence){return evidence?.account?.content?.service_date||'';}
+function visitReceiptSections(evidence){
+ if(!evidence)return '';
+ const day=visitReceiptServiceDate(evidence),list=evidence.diagnoses;
+ const diagnoses=`<h2>Diagnoses</h2>${list===null?'<p>Diagnoses could not be loaded. Ask the practice for an updated copy.</p>':list.length?`<table><thead><tr><th>ICD-10</th><th>Description</th></tr></thead><tbody>${list.map(d=>`<tr><td><b>${esc(String(d.code).trim())}</b></td><td>${esc(d.display||'')}</td></tr>`).join('')}</tbody></table>`:'<p>No diagnoses recorded.</p>'}`;
+ const lines=evidence.lines,total=lines.reduce((sum,l)=>sum+Number(l.amount_cents||0),0);
+ const rows=lines.map(l=>{const from=l.service_from||day,to=l.service_to&&l.service_to!==from?' – '+l.service_to:'';return `<tr><td>${esc(from+to)}</td><td><b>${esc(l.code)}</b></td><td>${esc(String(l.modifiers||'').trim())}</td><td>${esc(l.description||'')}</td><td class="amount">${esc(String(l.units??''))}</td><td class="amount">${money(Number(l.amount_cents||0))}</td></tr>`;}).join('');
+ const procedures=`<h2>Procedures</h2>${lines.length?`<table><thead><tr><th>Date</th><th>Code</th><th>Modifiers</th><th>Description</th><th class="amount">Units</th><th class="amount">Charge</th></tr></thead><tbody>${rows}</tbody></table><dl><dt>Total charges</dt><dd>${money(total)}</dd></dl>`:'<p>No charges posted yet.</p>'}`;
+ const coverage=evidence.account?.coverage_id||evidence.account?.content?.coverage_id;
+ const plan=coverage?(workspace?.billing?.coverages||[]).find(c=>c.id===coverage)?.content?.plan_name:'';
+ const insurance=coverage?`<h2>Insurance</h2><dl><dt>Billed to</dt><dd>${esc(plan||'Insurance on file')}</dd></dl>`:'';
+ return diagnoses+procedures+insurance;
 }
-// A member or policy number is never printed in full; the last four characters only, when known.
-function visitReceiptLast4(value){const text=String(value||'').replace(/\s+/g,'');return text.length>=4?text.slice(-4):'';}
-// One row per charge line: service date, CPT/HCPCS code, modifiers, what was done, units and the
-// charge. The total the lines add to closes the section, so the receipt reads like the claim's
-// service lines a patient may see from an insurer.
-function visitReceiptProcedureRows(lines,serviceDate){
- return (lines||[]).map(l=>`<tr><td>${esc(l.service_date||serviceDate)}</td><td><b>${esc(l.code_system||'CPT')} ${esc(l.code)}</b><small>${esc(l.description||'Description not recorded')}</small></td><td>${esc(String(l.modifiers||'').trim()||'—')}</td><td class="amount">${esc(l.units==null?'—':l.units)}</td><td class="amount">${money(Number(l.amount_cents||0))}</td></tr>`).join('');
-}
-// Diagnoses, then procedures, then insurance / payments / balance. Everything is optional: a
-// receipt with no evidence loaded still prints what it knows and says what it does not.
-function visitReceiptMrnFrom(context){const p=context?.patient;return p&&typeof p==='object'?String(p.mrn||''):'';}
-function visitReceiptNameFrom(context,patient){const p=patient||context?.patient;return p&&typeof p==='object'&&p.given_name?`${p.given_name} ${p.family_name||''}`.trim():'Patient';}
-// One visit's whole story in print order: header facts, diagnoses, procedures and charges, then
-// insurance. Payments, balance and the total the receipt answers for are added by each document.
-function visitReceiptBodyMarkup(context,visit,evidence,serviceDate){
- const number=typeof encounterNumberText==='function'&&visit?encounterNumberText(visit):(typeof encounterNumberForAppointment==='function'&&visit?.appointment_id?encounterNumberForAppointment(visit.appointment_id):'');
- const provider=(typeof workspace!=='undefined'&&workspace?.providers?workspace.providers:[]).find(p=>p.id===visit?.clinician_id)||null;
- const name=visitReceiptNameFrom(context,context?.patient),mrn=visitReceiptMrnFrom(context);
- const meta=`<section class="document-meta"><div><span class="document-label">Patient</span><p class="patient-print-name">${esc(name)}</p>${mrn?`<small>MRN ${esc(mrn)}</small>`:''}</div><div class="document-reference"><span class="document-label">Visit</span><small>${number?esc(number)+'<br>':''}Date of service ${esc(serviceDate)}${provider?.name?`<br>Rendering provider ${esc(provider.name)}`:''}</small></div></section>`;
- const procedures=`<h2>Procedures and charges</h2>${evidence&&evidence.failed?'<p>Charge lines could not be loaded for this encounter. Ask the practice for an updated copy.</p>':!evidence||!(evidence.lines||[]).length?'<p class="muted">No charges posted yet.</p>':`<table><thead><tr><th>Date of service</th><th>Code / description</th><th>Modifiers</th><th class="amount">Units</th><th class="amount">Charge</th></tr></thead><tbody>${visitReceiptProcedureRows(evidence.lines,serviceDate)}</tbody></table><dl><dt class="total-label">Total charges</dt><dd class="total-value">${money((evidence.lines||[]).reduce((sum,l)=>sum+Number(l.amount_cents||0),0))}</dd></dl>`}`;
- return `${meta}${visitReceiptDiagnosesSection(evidence)}${procedures}${visitReceiptInsuranceSection(evidence)}`;
-}
-function visitReceiptDiagnosesSection(evidence){
- if(evidence&&evidence.failed)return '';
- if(!evidence)return '<h2>Diagnoses</h2><p class="muted">Diagnoses are not shown on this copy.</p>';
- const list=(evidence.diagnoses||[]).filter(d=>d&&String(d.code||'').trim());
- return `<h2>Diagnoses</h2>${list.length?`<table><thead><tr><th>Order</th><th>ICD-10 code</th><th>Description</th></tr></thead><tbody>${list.map((d,index)=>`<tr><td>${index===0?'Primary':`#${index+1}`}</td><td><b>${esc(String(d.code).trim())}</b></td><td>${esc(d.display||'Description not recorded')}</td></tr>`).join('')}</tbody></table>`:'<p class="muted">No diagnoses recorded for this encounter.</p>'}`;
-}
-// Insurance side: plan name, whether the claim was billed, and what the insurer paid or wrote off
-// when the encounter's billing summary already says so. Member IDs stay off the print entirely.
-function visitReceiptInsuranceSection(evidence){
- const summary=typeof encounterRevenueState!=='undefined'&&encounterRevenueState?.data?.summary&&encounterRevenueState.visit===evidence?.account?.content?.visit_id?encounterRevenueState.data.summary:null;
- const account=evidence?.account,insured=Boolean(account?.coverage_snapshot||account?.content?.coverage_id||summary?.insurance?.insured);
- if(!insured)return '';
- const plan=account?.coverage_snapshot?.payer?.content?.name||summary?.insurance?.insurer||'';
- const rows=[`<dt>Insurance</dt><dd>${plan?esc(plan):'Plan on file (name not recorded)'}</dd>`];
- if(account?.coverage_snapshot)rows.push('<dt>Claim</dt><dd>Billed to insurance</dd>');
- if(Number(summary?.insurance?.paid_cents||0)>0)rows.push(`<dt>Insurance paid</dt><dd>${money(Number(summary.insurance.paid_cents))}</dd>`);
- if(Number(summary?.insurance?.adjusted_cents||0)!==0)rows.push(`<dt>Insurance adjustments</dt><dd>${money(Math.abs(Number(summary.insurance.adjusted_cents)))}</dd>`);
- return `<h2>Insurance</h2><dl>${rows.join('')}</dl>`;
-}
-function visitReceiptMrn(){const p=typeof workspace!=='undefined'?workspace?.patient:null;return p&&typeof p==='object'?p.mrn:'';}
-function visitReceiptPatientName(){const p=typeof workspace!=='undefined'?workspace?.patient:null;return p&&typeof p==='object'&&p.given_name?`${p.given_name} ${p.family_name||''}`.trim():'';}
-function contextPatientName(){return visitReceiptPatientName()||'Patient';}
-// Every payment recorded for this encounter: earlier payments as one line each, and the payment
-// being receipted now as its own line. The encounter's billing summary (when it answers for this
-// encounter) closes the section with the patient's current balance.
-function visitReceiptPaymentsSection(receipts,currentKeys,summary,forEncounter){
- const others=(summary?.receipts||[]).filter(r=>!r.voided&&!currentKeys.has(r.payment_group_id||r.id));
- const currentTotal=(receipts||[]).filter(r=>!r.voided).reduce((sum,r)=>sum+Number(r.amount_cents||0)-Number(r.hosted_checkout?.refunded_cents||r.refunded_cents||0),0);
- const rows=others.map(r=>`<div><dt>${typeof visitBillingDate==='function'?esc(visitBillingDate(r.occurred_on))||esc(r.occurred_on||''):esc(r.occurred_on||'')} · ${esc(typeof visitBillingMethod==='function'?human(visitBillingMethod(r.method)||r.method):human(r.method||'payment'))}</dt><dd>${money(Number(r.amount_cents||0)-Number(r.refunded_cents||0))}</dd></div>`).join('');
- const current=currentTotal>0?`<div><dt>This payment</dt><dd>${money(currentTotal)}</dd></div>`:'';
- const owes=summary&&forEncounter&&Number.isSafeInteger(Number(summary.patient?.owes_now_cents))?Number(summary.patient.owes_now_cents):null;
- return `<h2>Payments on this encounter</h2><dl>${rows}${current}${owes===null?'':`<dt class="total-label">Patient balance for this encounter</dt><dd class="total-value">${money(Math.max(0,owes))}</dd>`}</dl>`;
-}
-function visitReceiptSummaryFor(visitId){
- if(typeof encounterRevenueState==='undefined'||!encounterRevenueState?.data?.summary)return null;
- return encounterRevenueState.visit===visitId&&encounterRevenueState.patient===selected?encounterRevenueState.data.summary:null;
-}
-// The encounter this receipt answers for, from the opened chart: the visit linked to the
-// payment's appointment. Nothing is searched for across patients or sign-ins.
-function visitReceiptEncounter(patientId,appointmentId){
- if(typeof workspace==='undefined'||!workspace||workspace.patient_id!==patientId)return null;
- return (workspace.visits||[]).find(v=>v.appointment_id===appointmentId)||null;
+function visitReceiptVisitFacts(evidence,number){
+ const day=visitReceiptServiceDate(evidence),provider=evidence?.account?.content?.claim_details?.rendering_provider_name||'';
+ if(!number&&evidence?.visit&&typeof encounterNumberText==='function')number=encounterNumberText(evidence.visit);
+ return `${number?'Encounter '+esc(number)+'<br>':''}${day?'Date of service '+esc(day)+'<br>':''}${provider?'Provider '+esc(provider)+'<br>':''}`;
 }
 function paymentGroupReceiptDocument(receipts,context){
  const facts=paymentGroupReceiptFacts(receipts,context),patient=context.patient,branding=patientPrintBranding(context.practiceName),title='Payment receipt';
- return `${patientPrintHead(title,branding)}<body class="patient-receipt">${patientPrintHeader(title,branding)}<section class="document-meta"><div><span class="document-label">Received from</span><p class="patient-print-name">${esc(patient.given_name)} ${esc(patient.family_name)}</p>${patient.mrn?`<small>MRN ${esc(patient.mrn)}</small>`:''}</div><div class="document-reference"><span class="document-label">Receipt details</span><small>${facts.number?esc(facts.number)+'<br>':''}Payment received ${esc(facts.when)}</small></div></section><section class="document-total"><span>Total paid</span><strong>${money(facts.total)}</strong></section><h2>How it was paid</h2><dl>${paymentGroupTenderRows(facts)}<dt>Total paid</dt><dd>${money(facts.total)}</dd>${Number.isSafeInteger(facts.balance)?`<dt>Patient balance after this payment</dt><dd>${money(Math.max(0,facts.balance))}</dd>`:''}</dl><footer><p>This is a copy of the practice’s recorded payment receipt. It is not an invoice and does not determine final insurance or patient responsibility.</p><small>Copy prepared ${esc(date(context.printedAt||new Date().toISOString()))}.</small>${patientPrintFooter()}</footer></body></html>`;
+ return `${patientPrintHead(title,branding)}<body class="patient-receipt">${patientPrintHeader(title,branding)}<section class="document-meta"><div><span class="document-label">Received from</span><p class="patient-print-name">${esc(patient.given_name)} ${esc(patient.family_name)}</p>${patient.mrn?`<small>MRN ${esc(patient.mrn)}</small>`:''}</div><div class="document-reference"><span class="document-label">Receipt details</span><small>${(n=>n?(n.startsWith('Payment ')?esc(n):'Receipt '+esc(n))+'<br>':'')(typeof receiptNumberFor!=='function'?'':receiptNumberFor(receipts[0]?.appointment_id,receipts[0]?.payment_group_id||receipts[0]?.id))}${visitReceiptVisitFacts(context.visitEvidence,facts.number)}Payment received ${esc(facts.when)}</small></div></section>${visitReceiptSections(context.visitEvidence)}<section class="document-total"><span>Total paid</span><strong>${money(facts.total)}</strong></section><h2>How it was paid</h2><dl>${facts.lines.map(line=>`<dt>${esc(line.label)}</dt><dd>${money(line.amount)}</dd>`).join('')}<dt>Total paid</dt><dd>${money(facts.total)}</dd>${Number.isSafeInteger(facts.balance)?`<dt>Patient balance after this payment</dt><dd>${money(Math.max(0,facts.balance))}</dd>`:''}</dl><footer><p>This is a copy of the practice’s recorded payment receipt. It is not an invoice and does not determine final insurance or patient responsibility.</p><small>Copy prepared ${esc(date(context.printedAt||new Date().toISOString()))}.</small>${patientPrintFooter()}</footer></body></html>`;
 }
 function paymentGroupReceiptCardMarkup(receipts,context){
  const facts=paymentGroupReceiptFacts(receipts,context),patient=context.patient,branding=patientPrintBranding(context.practiceName);
  return `<article class="copay-receipt-card" data-copay-receipt-view data-payment-group-receipt><header>${branding.logo?`<img src="${esc(branding.logo)}" alt="Current practice logo" referrerpolicy="no-referrer">`:''}<div><p>${esc(branding.name||'Practice payment record')}</p><h3 tabindex="-1">Payment receipt</h3></div><button type="button" data-print-copay-card>Print / save PDF</button></header><div class="copay-receipt-amount"><div><span>Total paid</span><strong>${money(facts.total)}</strong></div><span class="copay-receipt-status">Payment recorded</span></div><dl><div><dt>Patient</dt><dd>${esc(patient.given_name)} ${esc(patient.family_name)}</dd></div>${facts.number?`<div><dt>Encounter</dt><dd>${esc(facts.number)}</dd></div>`:''}<div><dt>Payment date</dt><dd>${esc(facts.when)}</dd></div>${paymentGroupTenderRows(facts)}${Number.isSafeInteger(facts.balance)?`<div><dt>Balance after payment</dt><dd>${money(Math.max(0,facts.balance))}</dd></div>`:''}</dl><footer><p>Recorded payment evidence, not an invoice or a determination of insurance responsibility.</p>${patientPrintFooter()}</footer></article>`;
+}
+// Receipts open in a preview window first, so staff see exactly what the patient gets (practice
+// logo, codes, charges and payments), then press Print. Closing it returns to where they were.
+function openReceiptPreview(documentHtml,title){
+ const panel=document.createElement('div');panel.className='receipt-preview';
+ panel.innerHTML=`<iframe class="receipt-preview-frame" title="${esc(title||'Payment receipt')}" sandbox="allow-same-origin allow-modals"></iframe><div class="actions"><button type="button" class="primary" data-receipt-preview-print>Print</button><button type="button" data-sheet-close>Close</button></div>`;
+ const frame=panel.querySelector('iframe');frame.srcdoc=documentHtml;
+ const dialog=sheetOpen(title||'Payment receipt',panel);dialog.classList.add('sheet-wide','receipt-preview-sheet');
+ panel.querySelector('[data-receipt-preview-print]').addEventListener('click',()=>{frame.contentWindow?.focus();frame.contentWindow?.print();});
+ return dialog;
 }
 let paymentGroupOpening=0;
 async function showPaymentGroupReceipt(group,appointmentId){
@@ -192,23 +141,17 @@ async function showPaymentGroupReceipt(group,appointmentId){
  const first=await api(`/api/v1/billing/copay-receipts/${encodeURIComponent(receipts[0].id)}`);
  if(opening!==paymentGroupOpening||!currentHostedCopayView(view))return;
  const p=encounterRevenueState?.data?.summary?.patient||{},balance=Number.isSafeInteger(p.owes_now_cents)?p.owes_now_cents:undefined;
- const context={...first.context,balanceCents:balance};
- const visit=(workspace.visits||[]).find(v=>v.appointment_id===(appointmentId||receipts[0].appointment_id));
- if(visit&&activeVisit?.id!==visit.id)await selectPatient(view.patient,visit.id,()=>opening===paymentGroupOpening);
- if(typeof setEncounterSection==='function')setEncounterSection('charges');
- const host=$('encounter-copay-receipt');if(!host)return;
- host.hidden=false;host.innerHTML=paymentGroupReceiptCardMarkup(receipts,context);
- const card=host.querySelector('[data-copay-receipt-view]');
- card.copayPrint={receipt:receipts,context,identity:me,current:()=>opening===paymentGroupOpening&&me===view.identity&&selected===view.patient&&$('encounter-copay-receipt')===host,group:true};
- host.scrollIntoView({block:'start'});card.querySelector('h3')?.focus({preventScroll:true});
+ const visitEvidence=await visitReceiptEvidence(appointmentId||receipts[0].appointment_id);
+ if(opening!==paymentGroupOpening||!currentHostedCopayView(view))return;
+ openReceiptPreview(paymentGroupReceiptDocument(receipts,{...first.context,balanceCents:balance,visitEvidence,printedAt:new Date().toISOString()}));
 }
 // 'Print receipt' inside the Collect payment window: load the same grouped receipt a moment after
 // the payment lands and send it straight to the browser print dialog. The window stays open and the
 // page does not move — no section switch, no scroll, nothing dropped into the encounter.
 async function printPaymentGroupReceiptFromCollect(group,button){
- if(!group||!button||button.disabled||!collectDialog?.isConnected)return;
+ // run() already disables the pressed button while this loads, so a second press cannot start another.
+ if(!group||!button||!collectDialog?.isConnected)return;
  const view=hostedCopayView();
- button.disabled=true;
  try{
   const data=await api(`/api/v1/patients/${encodeURIComponent(view.patient)}/billing/payment-groups/${encodeURIComponent(group)}`);
   const receipts=(data.receipts||[]).filter(r=>r.payment_group_id===group);
@@ -216,16 +159,12 @@ async function printPaymentGroupReceiptFromCollect(group,button){
   // The context (patient, practice) comes from the same receipt endpoint a single receipt uses.
   const first=await api(`/api/v1/billing/copay-receipts/${encodeURIComponent(receipts[0].id)}`);
   const p=encounterRevenueState?.data?.summary?.patient||{},balance=Number.isSafeInteger(p.owes_now_cents)?p.owes_now_cents:undefined;
-  const context={...first.context,balanceCents:balance,printedAt:new Date().toISOString()};
+  const visitEvidence=await visitReceiptEvidence(receipts[0].appointment_id);
+  const context={...first.context,balanceCents:balance,visitEvidence,printedAt:new Date().toISOString()};
   if(me!==view.identity||!collectDialog?.isConnected||!button.isConnected)return;
-  const host=button.closest('.collect-done')||collectDialog;
-  host.querySelector('.copay-print-source')?.remove();
-  const frame=document.createElement('iframe');
-  frame.className='copay-print-source';frame.title='Payment receipt print document';frame.setAttribute('aria-hidden','true');frame.setAttribute('sandbox','allow-same-origin allow-modals');
-  frame.addEventListener('load',()=>{button.disabled=false;if(me!==view.identity||frame.isConnected===false||!collectDialog?.contains(frame))return;frame.contentWindow.focus();frame.contentWindow.print();},{once:true});
-  host.append(frame);frame.srcdoc=paymentGroupReceiptDocument(receipts,context);
+  button.closest('.collect-done')?.querySelector('.collect-print-error')?.remove();
+  openReceiptPreview(paymentGroupReceiptDocument(receipts,context));
  }catch(error){
-  if(button.isConnected)button.disabled=false;
   const host=button.closest?.('.collect-done')||collectDialog;
   if(host?.isConnected!==false)host?.querySelector?.('.collect-print-error')?.remove();
   if(host){const message=document.createElement('p');message.className='muted collect-print-error';message.setAttribute('role','status');message.textContent='The receipt could not be loaded. Try again.';host.append(message);}
@@ -233,10 +172,10 @@ async function printPaymentGroupReceiptFromCollect(group,button){
 }
 function copayReceiptDocument(receipt,context){
  const patient=context.patient,appointment=context.appointment,corrected=Number(receipt.reversed_cents||0)>0,hosted=receipt.hosted_checkout,refunded=Number(hosted?.refunded_cents||0),test=hosted?.livemode===false;
- const status=receipt.voided?'Voided receipt':corrected?'Receipt with corrected allocation':refunded?'Card copay receipt with verified refund':hosted?'Card copay receipt':'Copay receipt';
+ const status=receipt.voided?'Voided receipt':corrected?'Receipt with corrected allocation':refunded?'Card payment receipt with verified refund':hosted?'Card payment receipt':'Payment receipt';
  const allocation=receipt.voided?'<p>This receipt record was voided and is retained for history. Voiding the record does not issue a refund.</p>':corrected?'<p>A charge allocation was reversed after this payment was recorded. Contact the practice to confirm its current disposition. A ledger reversal does not establish that a refund was issued.</p>':`<dt>${refunded?'Original charge allocations':'Applied to visit charges'}</dt><dd>${money(Number(receipt.allocated_cents||0))}</dd><dt>Remaining credit not yet applied</dt><dd>${money(copayUnapplied(receipt))}</dd>`;
  const branding=patientPrintBranding(context.practiceName),title=(test?testPaymentTag(' - '):'')+status;
- return `${patientPrintHead(title,branding)}<body class="patient-receipt">${patientPrintHeader(title,branding)}<section class="document-meta"><div><span class="document-label">Received from</span><p class="patient-print-name">${esc(patient.given_name)} ${esc(patient.family_name)}</p>${patient.mrn?`<small>MRN ${esc(patient.mrn)}</small>`:''}</div><div class="document-reference"><span class="document-label">Receipt details</span><small>Receipt ${esc(receipt.id)}<br>${hosted?'Payment received (UTC date)':'Payment received'} ${esc(receipt.occurred_on)}${receipt.created_at?'<br>Recorded '+esc(date(receipt.created_at)):''}</small></div></section><section class="document-total"><span>${receipt.voided?'Original recorded amount':'Amount received'}</span><strong>${money(receipt.amount_cents)}</strong></section><p class="document-appointment">${appointment?`Appointment: ${esc(appointment.title||'Scheduled appointment')}<br>${esc(date(appointment.starts_at))}`:`Appointment reference: <span class="reference">${esc(receipt.appointment_id)}</span>`}</p><h2>Payment details</h2><dl><dt>Payment method</dt><dd>${hosted?'Card · Confirmed by Stripe':esc(invoicePaymentMethod(receipt.method))}</dd>${refunded?`<dt>Verified refunded amount</dt><dd>${money(refunded)}</dd><dt>Net card payment</dt><dd>${money(receipt.amount_cents-refunded)}</dd>`:''}${receipt.reference?`<dt>Receipt / check reference</dt><dd class="reference">${esc(receipt.reference)}</dd>`:''}${!receipt.voided&&!corrected?allocation:''}</dl>${receipt.voided||corrected?allocation:''}<footer>${test&&testPaymentTag()?`<p class="copay-mode-label">${testPaymentTag()}</p>`:''}${hosted?.status==='needs_review'?'<p class="document-warning">This payment requires reconciliation. Confirm its current status with the practice.</p>':''}<p>This is a copy of the practice’s recorded payment receipt. It is not an invoice and does not determine final insurance or patient responsibility.</p><small>Copy prepared ${esc(date(context.printedAt))}. Patient, appointment and practice branding reflect the chart when this copy was prepared.</small>${patientPrintFooter()}</footer></body></html>`;
+ return `${patientPrintHead(title,branding)}<body class="patient-receipt">${patientPrintHeader(title,branding)}<section class="document-meta"><div><span class="document-label">Received from</span><p class="patient-print-name">${esc(patient.given_name)} ${esc(patient.family_name)}</p>${patient.mrn?`<small>MRN ${esc(patient.mrn)}</small>`:''}</div><div class="document-reference"><span class="document-label">Receipt details</span><small>${(n=>n?(n.startsWith('Payment ')?esc(n):'Receipt '+esc(n))+'<br>':'')(typeof receiptNumberFor!=='function'?'':receiptNumberFor(receipt.appointment_id,receipt.payment_group_id||receipt.id))}${visitReceiptVisitFacts(context.visitEvidence,typeof encounterNumberForAppointment==='function'?encounterNumberForAppointment(receipt.appointment_id):'')}${hosted?'Payment received (UTC date)':'Payment received'} ${esc(receipt.occurred_on)}${receipt.created_at?'<br>Recorded '+esc(date(receipt.created_at)):''}</small></div></section>${visitReceiptSections(context.visitEvidence)}<section class="document-total"><span>${receipt.voided?'Original recorded amount':'Amount received'}</span><strong>${money(receipt.amount_cents)}</strong></section><p class="document-appointment">${appointment?`Appointment: ${esc(appointment.title||'Scheduled appointment')}<br>${esc(date(appointment.starts_at))}`:`Appointment reference: <span class="reference">${esc(receipt.appointment_id)}</span>`}</p><h2>Payment details</h2><dl><dt>Payment method</dt><dd>${hosted?'Card · Confirmed by Stripe':esc(invoicePaymentMethod(receipt.method))}</dd>${refunded?`<dt>Verified refunded amount</dt><dd>${money(refunded)}</dd><dt>Net card payment</dt><dd>${money(receipt.amount_cents-refunded)}</dd>`:''}${receipt.reference?`<dt>Receipt / check reference</dt><dd class="reference">${esc(receipt.reference)}</dd>`:''}${!receipt.voided&&!corrected?allocation:''}</dl>${receipt.voided||corrected?allocation:''}<footer>${test&&testPaymentTag()?`<p class="copay-mode-label">${testPaymentTag()}</p>`:''}${hosted?.status==='needs_review'?'<p class="document-warning">This payment requires reconciliation. Confirm its current status with the practice.</p>':''}<p>This is a copy of the practice’s recorded payment receipt. It is not an invoice and does not determine final insurance or patient responsibility.</p><small>Copy prepared ${esc(date(context.printedAt))}. Patient, appointment and practice branding reflect the chart when this copy was prepared.</small>${patientPrintFooter()}</footer></body></html>`;
 }
 function copayReceiptCardMarkup(receipt,context){
  const branding=patientPrintBranding(context.practiceName),hosted=receipt.hosted_checkout,refunded=Number(hosted?.refunded_cents||0),reversed=Number(receipt.reversed_cents||0),held=hosted?.status==='needs_review';
@@ -250,12 +189,15 @@ function renderCopayReceiptCard(host,receipt,context,current){
  card.copayPrint={receipt,context,identity:me,current};
  host.scrollIntoView({block:'start'});card.querySelector('h3')?.focus({preventScroll:true});
 }
-function printCopayReceiptCard(card,button){
+async function printCopayReceiptCard(card,button){
  const state=card?.copayPrint;if(!state||state.identity!==me||card.isConnected===false||!state.current())return;
  card.querySelector('.copay-print-source')?.remove();button.disabled=true;
  const frame=document.createElement('iframe');frame.className='copay-print-source';frame.title='Payment receipt print document';frame.setAttribute('aria-hidden','true');frame.setAttribute('sandbox','allow-same-origin allow-modals');
  frame.addEventListener('load',()=>{button.disabled=false;if(state.identity!==me||card.isConnected===false||!state.current())return;frame.contentWindow.focus();frame.contentWindow.print();},{once:true});
- frame.srcdoc=(state.group?paymentGroupReceiptDocument:copayReceiptDocument)(state.receipt,{...state.context,printedAt:new Date().toISOString()});card.append(frame);
+ const appointmentId=(state.group?state.receipt[0]:state.receipt)?.appointment_id;
+ const visitEvidence=state.context.visitEvidence!==undefined?state.context.visitEvidence:await visitReceiptEvidence(appointmentId);
+ if(state.identity!==me||card.isConnected===false||!state.current()){button.disabled=false;return;}
+ frame.srcdoc=(state.group?paymentGroupReceiptDocument:copayReceiptDocument)(state.receipt,{...state.context,visitEvidence,printedAt:new Date().toISOString()});card.append(frame);
 }
 let copayReceiptOpening=0;
 async function showCopayReceipt(id,appointmentId){
@@ -271,13 +213,9 @@ async function showCopayReceipt(id,appointmentId){
  if(receipt?.id!==id||receipt.patient_id!==view.patient||receipt.appointment_id!==expected||!context?.patient||context.appointment&&context.appointment.id!==expected)throw new Error('This receipt does not match the selected patient and appointment.');
  const visit=(workspace.visits||[]).find(v=>v.appointment_id===expected),clinical=typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('clinical');
  if(visit&&clinical&&(typeof chartAreaEnabled!=='function'||chartAreaEnabled('visits'))){
-  if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();
-  if(activeVisit?.id!==visit.id)await selectPatient(view.patient,visit.id,current);
-  if(opening!==copayReceiptOpening||me!==view.identity||selected!==view.patient||activeVisit?.id!==visit.id||activeVisit.appointment_id!==expected)return;
-  setEncounterSection('charges');
-  const host=$('encounter-copay-receipt');if(!host)return;
-  const visible=()=>me===view.identity&&selected===view.patient&&chartSection==='visits'&&activeVisit?.id===visit.id&&activeVisit.appointment_id===expected&&$('encounter-copay-receipt')===host;
-  renderCopayReceiptCard(host,receipt,context,visible);
+  const visitEvidence=await visitReceiptEvidence(expected);
+  if(!current())return;
+  openReceiptPreview(copayReceiptDocument(receipt,{...context,visitEvidence,printedAt:new Date().toISOString()}));
  }else{
   const s=await showPatientBillingWorkspace({patientId:view.patient,tab:'payments',mode:receipt.hosted_checkout?.livemode===false?'test':'recorded'});
   if(opening!==copayReceiptOpening||me!==view.identity||!patientBillingCurrent(s)||s.patientId!==view.patient)return;
@@ -720,7 +658,7 @@ document.addEventListener('click',event=>{
  if(button.dataset.revenueInvoice||button.dataset.revenueInvoices){event.preventDefault();billingSelected=button.dataset.revenueInvoice||button.dataset.revenueInvoices;run(async()=>{if(button.dataset.revenueInvoice)patientInvoiceEditor();else await showPatientInvoices();});return;}
  if(button.dataset.paymentGroup){event.preventDefault();run(()=>showPaymentGroupReceipt(button.dataset.paymentGroup,button.dataset.appointment));return;}
  if(button.dataset.copayReceipt){event.preventDefault();run(()=>showCopayReceipt(button.dataset.copayReceipt,button.dataset.appointment));return;}
- if(button.hasAttribute('data-print-copay-card')){event.preventDefault();printCopayReceiptCard(button.closest('[data-copay-receipt-view]'),button);return;}
+ if(button.hasAttribute('data-print-copay-card')){event.preventDefault();printCopayReceiptCard(button.closest('[data-copay-receipt-view]'),button).catch(()=>{button.disabled=false;});return;}
  if(button.dataset.copayAccount){event.preventDefault();run(()=>openEncounterBillingAccount(button.dataset.copayAccount));return;}
  if(button.hasAttribute('data-record-copay')){event.preventDefault();openCopayReceiptEditor(button.dataset.recordCopay);return;}
  if(button.hasAttribute('data-encounter-charges')){event.preventDefault();openEncounterCharges();return;}

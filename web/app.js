@@ -1060,6 +1060,8 @@ function rememberVisit(v,savedKind) {
   const draft=visitDrafts.get(v.id);if(draft){delete draft[savedKind];for(const kind of ['note','vitals'])if(draft[kind]?.version===previous.version)draft[kind].version=v.version;if(!draft.note&&!draft.vitals)visitDrafts.delete(v.id);}
   for(const kind of ['note','vitals']){const form=$(kind+'-form');if(form?.dataset?.visitId===v.id&&Number(form.dataset.version)===previous.version)form.dataset.version=String(v.version);}
  }
+ // A saved visit comes back without its encounter number (that is counted on the chart list); keep it.
+ if(v.encounter_number==null){const known=workspace.visits.find(old=>old.id===v.id)?.encounter_number??activeVisit?.encounter_number;if(known!=null)v.encounter_number=known;}
  activeVisit=v; workspace.visits=workspace.visits.map(old=>old.id===v.id?v:old); if(savedKind)captureVisitDrafts(false);updateDraftStatus();if(typeof showVisitNoteAuthorship==='function')showVisitNoteAuthorship();refreshEncounterProgress();if(savedKind&&savedKind!=='rooming'&&typeof renderRooming==='function')void renderRooming();if(savedKind&&savedKind!=='diagnoses'&&typeof renderVisitDiagnoses==='function')void renderVisitDiagnoses();
 }
 document.addEventListener('submit',e=>{

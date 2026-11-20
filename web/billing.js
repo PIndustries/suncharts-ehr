@@ -174,6 +174,16 @@ function showEncounterBillingAccount(a,entries,frozen,missingElectronicPayer,fro
 }
 // Money the patient paid at the desk for this encounter (cash, check, card on the reader, card on
 // file, payment link) is listed with the other payments, so one list shows everything paid.
+// A receipt number people can read out: the encounter number plus the payment's place on that
+// encounter, oldest first (ENC-0042-03 is the third payment on ENC-0042). Voided payments keep
+// their place, so a number never moves to another payment.
+function receiptNumberFor(appointmentId,key){
+ const keys=[];
+ for(const r of [...(typeof workspace!=='undefined'&&workspace?.billing?.copays||[])].filter(r=>r.appointment_id===appointmentId).sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at))||String(a.id).localeCompare(String(b.id)))){const k=r.payment_group_id||r.id;if(!keys.includes(k))keys.push(k);}
+ const n=keys.indexOf(key)+1;if(!n)return '';
+ const encounter=typeof encounterNumberForAppointment==='function'?encounterNumberForAppointment(appointmentId):'';
+ return encounter?`${encounter}-${String(n).padStart(2,'0')}`:`Payment ${n} on this visit`;
+}
 function billingEncounterReceiptRows(a){
  const visit=(workspace.visits||[]).find(v=>v.id===a?.content?.visit_id);if(!visit)return '';
  const receipts=(workspace.billing?.copays||[]).filter(r=>r.appointment_id===visit.appointment_id&&!r.voided);
@@ -187,7 +197,8 @@ function billingEncounterReceiptRows(a){
   const methods=[...new Set(parts.map(how))],tag=methods.join(' + '),breakdown=parts.map(r=>`${how(r)} ${money(net(r))}${r.method==='check'&&r.reference?' (check #'+r.reference+')':''}`).join(', ');
   const test=parts.some(r=>r.hosted_checkout?.livemode===false)?'<small>Test payment</small>':'';
   const button=parts.length>1&&first.payment_group_id?`<button type="button" data-payment-group="${esc(first.payment_group_id)}" data-appointment="${esc(first.appointment_id)}">Receipt</button>`:`<button type="button" data-copay-receipt="${esc(first.id)}" data-appointment="${esc(first.appointment_id)}">Receipt</button>`;
-  return `<tr class="payment-row"><td>Payment<small>${esc(visitBillingDate(first.occurred_on))}</small></td><td><span class="payment-tag" title="${esc(breakdown)}">${esc(tag)}</span>${test}${refunded?`<small>${money(refunded)} refunded</small>`:''}</td><td class="money-cell">−${money(total)}</td><td>${button}</td></tr>`;}).join('');
+  const number=receiptNumberFor(first.appointment_id,first.payment_group_id||first.id);
+  return `<tr class="payment-row"><td>${number&&!number.startsWith('Payment ')?`Receipt ${esc(number)}`:'Payment'}<small>${esc(visitBillingDate(first.occurred_on))}</small></td><td><span class="payment-tag" title="${esc(breakdown)}">${esc(tag)}</span>${test}${refunded?`<small>${money(refunded)} refunded</small>`:''}</td><td class="money-cell">−${money(total)}</td><td>${button}</td></tr>`;}).join('');
 }
 function showBillingAccount(id,activate=true,reveal=false){
  if(activate)showChartSection('billing');billingSelected=id;const a=workspace.billing.accounts.find(v=>v.id===id),entries=workspace.billing.entries.filter(e=>e.account_id===id),frozen=a.coverage_snapshot,coverage=workspace.billing.coverages.find(c=>c.id===a.content.coverage_id),payer=billingPayers.find(p=>p.id===coverage?.content.payer_id),missingElectronicPayer=!!a.content.coverage_id&&!String(payer?.content.payer_code||'').trim(),frozenElectronicPayer=String(frozen?.payer?.content?.payer_code||'').trim();

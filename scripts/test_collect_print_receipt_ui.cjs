@@ -3,9 +3,9 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-// 'Print receipt' on the Collect payment success panel must open the browser print dialog for that
-// payment's one grouped receipt right away: the window stays open, the page does not move and no
-// receipt card is dropped into the encounter. The test drives the real click handler and the real
+// 'Print receipt' on the Collect payment success panel opens that payment's one grouped receipt in a
+// preview window (Print and Close): the payment window stays open under it, the page does not move
+// and no receipt card is dropped into the encounter. The test drives the real click handler and the real
 // grouped receipt document in web/patient-revenue.js against vm stubs.
 const RECEIPT_URL=id=>`/api/v1/billing/copay-receipts/${id}`;
 const groupUrl=g=>`/api/v1/patients/patient/billing/payment-groups/${g}`;
@@ -14,7 +14,7 @@ const FAIL_TEXT='The receipt could not be loaded. Try again.';
 function harness(opts){
   const failGroup=!!(opts&&opts.failGroup),emptyGroup=!!(opts&&opts.emptyGroup);
   const identity={role:'owner'};
-  const calls={api:[],sections:[],selected:[],close:0,scroll:0,print:0,focus:0,errors:[]};
+  const calls={api:[],sections:[],selected:[],previews:[],close:0,scroll:0,print:0,focus:0,errors:[]};
   const receiptHost={id:'encounter-copay-receipt',hidden:true,innerHTML:'',scrollIntoView(){calls.scroll++;}};
   const mounts=[];
   const mounted=(parent,child)=>{mounts.push({parent,child});child.parentNode=parent;};
@@ -72,8 +72,9 @@ function harness(opts){
     selectPatient(...a){calls.selected.push(a);return Promise.resolve();},
     sheetClose(){calls.close++;},
     notice(e){calls.errors.push(e&&e.message);},
-    // The real run() awaits the action and turns a throw into a notice, which is what matters here.
-    run:action=>Promise.resolve(action()).catch(e=>{calls.errors.push(e&&e.message);}),
+    // Like the real run(): the pressed button is disabled while the action runs, and a throw becomes
+    // a notice. The action must still run with its button already disabled.
+    run:action=>{button.disabled=true;return new Promise(r=>r(action())).catch(e=>{calls.errors.push(e&&e.message);}).finally(()=>{button.disabled=false;});},
     // api() is a round trip, so nothing is known until its awaits settle.
     api:async url=>{
       calls.api.push(url);
@@ -91,6 +92,7 @@ function harness(opts){
     }};
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync('web/patient-revenue.js','utf8'),ctx);
+  ctx.openReceiptPreview=(doc,title)=>{calls.previews.push(doc);};
   // The window is open with its success panel showing, as collectPartTaken leaves it. Both
   // encounterRevenueState and collectDialog are module-level lets, so they are set inside the module.
   ctx.panelRef=panel;
@@ -112,17 +114,14 @@ function harness(opts){
     await h.flush();
     assert.deepEqual(h.calls.errors,[],'nothing threw');
     assert.deepEqual(h.calls.api,[groupUrl('group-1'),RECEIPT_URL('r1')],'the payment group is loaded, then the first receipt for its context');
-    const doc=h.frame.srcdoc;
-    assert.ok(doc&&doc.startsWith('<html>'),'srcdoc is a whole print document');
+    assert.equal(h.calls.previews.length,1,'one preview window opens');
+    const doc=h.calls.previews[0];
+    assert.ok(doc&&doc.startsWith('<html>'),'the preview shows the whole print document');
     for(const text of ['Synthetic Practice','Avery Synthetic','MRN1','ENC-0007','Cash','$40.00','Total paid','$100.00','Patient balance after this payment','$14.00'])
-      assert.ok(doc.includes(text),'the printed receipt carries '+text);
-    assert.ok(!doc.includes('r3')&&!doc.includes('$1.00'),'only the receipts of this payment group reach the printer');
-    assert.equal(h.frame.attrs.sandbox,'allow-same-origin allow-modals','the print frame is sandboxed like the existing print path');
-    assert.equal(h.frame.attrs['aria-hidden'],'true','the print frame is hidden from assistive technology');
-    assert.equal(h.frame.parentNode,h.panel,'the iframe lives inside the success panel, not the page');
-    assert.equal(h.calls.print,1,'the browser print dialog opens as soon as the frame loads');
-    assert.equal(h.calls.focus,1,'the frame is focused before printing');
-    assert.equal(h.button.disabled,false,'the button is usable again after printing');
+      assert.ok(doc.includes(text),'the receipt carries '+text);
+    assert.ok(!doc.includes('r3')&&!doc.includes('$1.00'),'only the receipts of this payment group are shown');
+    assert.equal(h.calls.print,0,'printing waits for the Print button in the preview');
+    assert.equal(h.button.disabled,false,'the button is usable again afterwards');
     assert.equal(h.calls.sections.length,0,'the encounter section is never switched');
     assert.equal(h.calls.selected.length,0,'no patient or visit is re-selected');
     assert.equal(h.calls.scroll,0,'the page does not scroll');
@@ -139,7 +138,7 @@ function harness(opts){
     assert.equal(message.parent,h.panel,'the failure message is shown in the success panel');
     assert.equal(message.child.attrs.role,'status','the failure message is announced');
     assert.equal(h.button.disabled,false,'the button is re-enabled so staff can try again');
-    assert.equal(h.calls.print,0,'nothing prints');
+    assert.equal(h.calls.previews.length,0,'no preview opens');
     assert.equal(h.calls.close,0,'the window stays open');
     assert.equal(h.calls.sections.length,0,'the page still does not move');
   }
@@ -149,8 +148,8 @@ function harness(opts){
     h.click();
     await h.flush();
     assert.ok(h.mounts.some(m=>m.child.textContent===FAIL_TEXT),'an empty group reads as a failed load');
-    assert.equal(h.calls.print,0,'nothing prints for an empty group');
+    assert.equal(h.calls.previews.length,0,'no preview for an empty group');
     assert.equal(h.button.disabled,false,'the button is re-enabled');
   }
-  console.log('PASS collect Print receipt prints the grouped receipt in place: the window stays open, the page does not move, failures retry');
+  console.log('PASS collect Print receipt opens the grouped receipt in a preview even with its button disabled by run(): the window stays open, the page does not move, failures retry');
 })();

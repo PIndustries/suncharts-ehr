@@ -37,24 +37,21 @@ function fixture(){
  // Exercise the real chart fetch/publication guard, with rendering isolated from unrelated panels.
  vm.runInContext(app.slice(app.indexOf('async function selectPatient('),app.indexOf('async function openPatientEncounter(')),ctx);
  ctx.captureBillingChargeDraft=()=>calls.push(['charge-drafts']);
+ ctx.openReceiptPreview=doc=>calls.push(['preview',doc]);
  vm.runInContext("insuranceAppointmentSelection.set(selected,'appointment-old')",ctx);
  return {ctx,nodes,calls,handlers,frames,context,Node};
 }
 const deferred=()=>{let resolve;return {promise:new Promise(r=>resolve=r),resolve:v=>resolve(v)};};
 (async()=>{
- let f=fixture();const editor=f.nodes['encounter-billing-editor'];editor.innerHTML='unsaved charge editor';
+ // A receipt opens in a preview window over the page the staff member is on: no visit switch, no
+ // section change, nothing written. The preview is the printable document itself.
+ let f=fixture();const editor=f.nodes['encounter-billing-editor'];editor.innerHTML='unsaved charge editor';const previewed=[];f.ctx.openReceiptPreview=doc=>previewed.push(doc);
  await f.ctx.showCopayReceipt(receipt.id,appointment.id);
- assert.equal(f.ctx.activeVisit.id,visit.id);assert.equal(f.ctx.chartSection,'visits');assert.equal(f.ctx.encounterSection,'charges');
- assert.equal(editor.innerHTML,'unsaved charge editor');assert(f.calls.some(c=>c[0]==='charge-drafts'));assert(f.calls.some(c=>c[0]==='note-drafts'));
- const host=f.nodes['encounter-copay-receipt'];assert(host.card.heading.focused);assert.equal(f.frames.length,0,'ordinary receipt view creates no iframe');
- for(const text of ['$25.00','Earlier therapy visit','2026-10-25','Payment captured','Synthetic Practice','Powered by P.Industries'])assert(host.innerHTML.includes(text),text);
- assert(!host.innerHTML.includes('PRIVATE STAFF EVIDENCE'));assert(!host.innerHTML.includes('<script>'));assert.match(host.innerHTML,/Avery &lt;script&gt;/);assert.match(host.innerHTML,/SYNTHETIC-RECEIPT&lt;&amp;/);
+ assert.equal(previewed.length,1,'one preview window');assert.equal(f.ctx.activeVisit.id,'visit-new','the open encounter stays open');assert(!f.calls.some(c=>c[0]==='section'),'no section switch');
+ assert.equal(editor.innerHTML,'unsaved charge editor');assert.equal(f.frames.length,0,'no hidden print frame');
+ const doc=previewed[0];for(const text of ['$25.00','Synthetic Practice','Powered by P.Industries','LEGACY-123'])assert(doc.includes(text),text);
+ assert(!doc.includes('PRIVATE STAFF EVIDENCE'));assert(!doc.includes('<script>'));assert.match(doc,/Avery &lt;script&gt;/);assert.match(doc,/SYNTHETIC-RECEIPT&lt;&amp;/);assert.match(doc,/default-src 'none'/);
  assert(f.calls.filter(c=>c[0]==='api').every(c=>c[2]==='GET'),'view never refreshes or creates a payment');
- const button={dataset:{},disabled:false,hasAttribute:k=>k==='data-print-copay-card',closest:s=>s==='[data-copay-receipt-view]'?host.card:null};
- for(const listener of f.handlers.click)listener({target:{closest:s=>s==='button'?button:null},preventDefault(){}});
- assert.equal(f.frames.length,1);assert(!f.calls.some(c=>c[0]==='print'),'wait for print document and branding to load');
- let frame=f.frames[0];assert.equal(frame.attributes.sandbox,'allow-same-origin allow-modals');assert.match(frame.srcdoc,/default-src 'none'/);assert.match(frame.srcdoc,/href="\/patient-print\.css"/);assert.match(frame.srcdoc,/LEGACY-123/);frame.load();assert(f.calls.some(c=>c[0]==='print'));
- f.ctx.printCopayReceiptCard(host.card,button);frame=f.frames[1];f.ctx.me={role:'owner',tenant_id:'other'};frame.load();assert.equal(f.calls.filter(c=>c[0]==='print').length,1,'late iframe cannot print across sign-in changes');
 
  // Previsit and clinical-denied viewers use the same patient billing receipt surface, never another encounter.
  for(const clinical of [true,false]){f=fixture();if(clinical)f.ctx.workspace.visits=[];else f.ctx.workspaceResourceAllowed=resource=>resource!=='clinical';await f.ctx.showCopayReceipt(receipt.id,appointment.id);assert.equal(f.ctx.activeVisit.id,'visit-new');assert.deepEqual(JSON.parse(JSON.stringify(f.calls.find(c=>c[0]==='hub')[1])),{patientId:'patient',tab:'payments',mode:'test'});assert.deepEqual(JSON.parse(JSON.stringify(f.calls.find(c=>c[0]==='hub-receipt').slice(1))),['receipt','receipt-old',{appointmentId:'appointment-old'}]);assert.equal(f.calls.filter(c=>c[0]==='api').length,1,'billing fallback does not read clinical workspace');}

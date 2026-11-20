@@ -222,3 +222,7 @@
 
 .payment-tag{display:inline-block;padding:2px 8px;border-radius:999px;border:1px solid var(--line);font-size:var(--fs-sm);cursor:default}
 .payment-row small{display:block;color:var(--muted)}
+/* Receipt preview window: the receipt exactly as it prints, with Print and Close below. */
+.receipt-preview{display:flex;flex-direction:column;gap:12px}
+.receipt-preview-frame{width:100%;height:min(70vh,900px);border:1px solid var(--line);border-radius:8px;background:var(--paper)}
+.receipt-preview .actions{display:flex;gap:8px;justify-content:flex-end}
