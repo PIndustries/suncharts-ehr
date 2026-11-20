@@ -153,11 +153,11 @@
 @media(max-width:700px){.patient-banner .patient-banner-row.patient-banner-claim{grid-template-columns:1fr}}
 /* Where a claim is, at a glance: done steps green, a step skipped on the way amber, the step it is on
    now glowing, later steps quiet. The selectors match the compact and banner bars above. */
-:is(.claim-progress-bar,.claim-lifecycle.claim-progress-compact ol.claim-progress-bar,.patient-banner-claim .claim-progress-bar)>li.is-complete>.claim-progress-fill{background:var(--success-line)}
-:is(.claim-progress-bar,.claim-lifecycle.claim-progress-compact ol.claim-progress-bar,.patient-banner-claim .claim-progress-bar)>li.is-missed>.claim-progress-fill{background:var(--warning-line)}
-:is(.claim-progress-bar,.claim-lifecycle.claim-progress-compact ol.claim-progress-bar,.patient-banner-claim .claim-progress-bar)>li.is-current>.claim-progress-fill{background:var(--accent);animation:claim-step-glow 1.8s ease-in-out infinite}
+:is(.claim-progress-bar,.claim-lifecycle.claim-progress-compact ol.claim-progress-bar,.patient-banner-claim .claim-progress-bar)>li.is-complete>.claim-progress-fill{background:var(--success-text)}
+:is(.claim-progress-bar,.claim-lifecycle.claim-progress-compact ol.claim-progress-bar,.patient-banner-claim .claim-progress-bar)>li.is-missed>.claim-progress-fill{background:var(--warning-text)}
+:is(.claim-progress-bar,.claim-lifecycle.claim-progress-compact ol.claim-progress-bar,.patient-banner-claim .claim-progress-bar)>li.is-current>.claim-progress-fill{background:var(--blue);animation:claim-step-glow 1.8s ease-in-out infinite}
 :is(.claim-progress-bar,.claim-lifecycle.claim-progress-compact ol.claim-progress-bar,.patient-banner-claim .claim-progress-bar)>li.is-upcoming>.claim-progress-fill{background:var(--line);opacity:.6}
-@keyframes claim-step-glow{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 0%,transparent);filter:brightness(1)}50%{box-shadow:0 0 10px 2px color-mix(in srgb,var(--accent) 75%,transparent);filter:brightness(1.4)}}
+@keyframes claim-step-glow{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--blue) 0%,transparent);filter:brightness(1)}50%{box-shadow:0 0 10px 2px color-mix(in srgb,var(--blue) 75%,transparent);filter:brightness(1.4)}}
 .patient-banner-claim-now{font-weight:500}
 @media(prefers-reduced-motion:reduce){:is(.claim-progress-bar,.patient-banner-claim .claim-progress-bar)>li.is-current>.claim-progress-fill{animation:none}}
 /* Editing the codes: the encounter's own diagnoses and procedure lines shown as a panel over the page. */
@@ -168,3 +168,6 @@
 #encounter-revenue[data-codes-editing]>.codes-editor-bar{display:flex !important;order:0;position:sticky;top:0;z-index:2;align-items:center;justify-content:space-between;gap:12px;margin:0 -20px 10px;padding:14px 20px 10px;background:var(--surface);border-bottom:1px solid var(--line)}
 .codes-editor-bar h3{margin:0}
 @media(prefers-reduced-motion:reduce){#encounter-revenue[data-codes-editing]{animation:none}}
+.note-signed-line{margin:0 0 8px}
+#amendment-form.in-sheet>h3{display:none}
+#amendment-form:not(.in-sheet){display:none}

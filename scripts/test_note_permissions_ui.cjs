@@ -116,7 +116,7 @@ async function main(){
  await f.click({action:'sign'});assert.equal(count(f,'POST','/sign'),0,'a support session never signs');
  f=fixture({user:'support',role:'owner',delegated:true,display:'platform_admin:synthetic',note:{...soap,saved_by:savedBy('support','Support staff',{support:true})},status:'signed',signedBy:'assigned'});await f.settle();
  assert.doesNotMatch(f.editor(),/amendment-form|data-action="focus-amendment"/);
- assert.match(f.editor(),/A clinician at the practice must sign any correction\./);
+ assert.match(f.editor(),/class="note-signed-line muted"/,'the signed note says who signed it, without a warning block');
  assert.match(f.line('note-authorship'),/^Last saved by Support staff, /,'what support drafted stays named as support');
  console.log('PASS a support session drafts, is told a clinician must sign, and is never offered signing or corrections');
 
@@ -195,7 +195,7 @@ async function main(){
  f=fixture({user:'desk',role:'front_desk',note:draft,status:'signed',signedBy:'covering',amendments});await f.settle();
  assert.match(f.line('note-signed-by'),/^Signed by Dr\. Casey Covering, [^.]*2026[^.]*\. Visit assigned to Dr\. Avery Assigned\.$/);
  assert.equal(f.line('amendment-author-amendment-1'),' by Dr. Olive Owner');
- assert.match(f.editor(),/The original SOAP note and vitals cannot be overwritten\. A clinician can add a correction\.<\/div>/);
+ assert.doesNotMatch(f.editor(),/cannot be overwritten/,'no warning block on a signed note');
  assert.doesNotMatch(f.editor(),/amendment-form|>Save note<|data-action="sign"|You can read this note/);
  f=fixture({user:'desk',role:'front_desk',note:draft,status:'signed',signedBy:'assigned'});await f.settle();
  assert.match(f.line('note-signed-by'),/^Signed by Dr\. Avery Assigned, [^.]*2026[^.]*\.$/,'the assigned clinician’s own signature needs no second name');
@@ -205,7 +205,7 @@ async function main(){
  }
  for(const [user,role] of [['nurse','nurse'],['assistant','medical_assistant']]){
   f=fixture({user,role,note:draft,status:'signed',signedBy:'assigned'});await f.settle();
-  assert.equal(f.nodes.get('amendment-form'),undefined,role);assert.match(f.editor(),/A clinician can add a correction\./,role);
+  assert.equal(f.nodes.get('amendment-form'),undefined,role);assert.doesNotMatch(f.editor(),/data-action="focus-amendment"/,role);
  }
  f=fixture({user:'assigned',role:'clinician',note:{...soap,saved_by:savedBy('assigned')},status:'signed',signedBy:'assigned'});await f.settle();
  assert.match(f.line('note-signed-by'),/^Signed by Dr\. Avery Assigned, /);assert.equal(count(f,'GET','/note-authorship'),0,'your own signed note asks for no names');

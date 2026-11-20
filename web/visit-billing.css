@@ -279,7 +279,7 @@
 /* The areas read as a segmented control, apart from the encounter's own tabs above them. */
 .billing-parts{gap:6px;border-bottom:0;margin:14px 0 14px;padding:4px;border:1px solid var(--line);border-radius:10px;background:var(--surface-soft);width:fit-content;max-width:100%;flex-wrap:wrap}
 .billing-parts button{border:0;border-radius:7px;padding:6px 14px}
-.billing-parts button[aria-selected="true"]{background:var(--accent);color:var(--accent-ink,var(--paper));border-bottom-color:transparent}
+.billing-parts button[aria-selected="true"]{background:var(--blue);color:var(--paper);border-bottom-color:transparent}
 .visit-billing-totals{display:none}
 #encounter-revenue[data-invoice-tab="billing"][data-billing-part]:not([data-billing-part="payments"]) .visit-billing-totals{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 0}
 .visit-billing-totals span{display:grid;gap:2px;padding:8px 14px;border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);min-width:140px}
@@ -288,3 +288,11 @@
 .visit-billing-totals .is-clear{border-color:var(--success-line);background:var(--success-bg);color:var(--success-text)}
 .visit-billing-totals .is-due small,.visit-billing-totals .is-clear small{color:inherit}
 #encounter-revenue[data-invoice-tab="billing"][data-billing-part]:not([data-billing-part="payments"]) .visit-billing-breakdown{display:none}
+.codes-strip-actions{display:grid;gap:6px;justify-items:end;align-content:start}
+/* The tab you are on is unmistakable: filled and underlined; the others are quiet. */
+#encounter-revenue .invoice-tabs{gap:4px}
+#encounter-revenue .invoice-tabs button{border:0;border-bottom:3px solid transparent;border-radius:8px 8px 0 0;background:none;color:var(--muted);padding:9px 18px;font-weight:600}
+#encounter-revenue .invoice-tabs button:hover{color:var(--ink);background:var(--surface-soft)}
+#encounter-revenue .invoice-tabs button[aria-selected="true"]{color:var(--ink);background:color-mix(in srgb,var(--blue) 24%,transparent);border-bottom-color:var(--blue)}
+/* Codes read in full: long names wrap instead of being cut off. */
+.encounter-codes-strip li>span:not(.codes-strip-code):not(.codes-strip-amount):not(.muted){white-space:normal;overflow:visible}

@@ -287,6 +287,7 @@ function encounterRevenueStatusMarkup(account,data={}){
 }
 function paintEncounterRevenue(state,current){
  if(!current())return;const node=$('encounter-revenue-status');if(!node)return;
+ if(typeof encounterCodesStripClaimSync==='function')encounterCodesStripClaimSync();
   const open=Array.from(node.querySelectorAll?.('details[data-revenue-disclosure][open]')||[]).map(d=>d.dataset.revenueDisclosure);
   // A failure line beside the send survives the refresh that follows it: the card is the same
   // card, and the person needs to still see why the send stopped once the card settles.
@@ -1019,7 +1020,30 @@ function encounterCodesStripMarkup(evidence){
  const total=lines.reduce((sum,line)=>sum+(Number(line.amount_cents)||0),0);
  const procedures=lines.length?`<ol>${lines.map(line=>`<li><span class="codes-strip-code">${esc(line.code||'')}${line.modifiers?'-'+esc(String(line.modifiers).trim().replace(/[,\s]+/g,'-')):''}</span> <span>${esc(line.description||'')}${Number(line.units)>1?` × ${esc(line.units)}`:''}</span><span class="codes-strip-amount">${line.amount_cents==null?'':money(line.amount_cents)}</span></li>`).join('')}</ol><p class="codes-strip-total"><span>Total charges</span><b>${money(total)}</b></p>`:'<p class="muted">No procedures yet.</p>';
  const any=(list&&list.length)||lines.length;
- return `<div class="codes-strip-col"><h4>Diagnoses (ICD-10)</h4>${diagnoses}</div><div class="codes-strip-col"><h4>Procedures (CPT)</h4>${procedures}</div><button type="button" class="text-button" data-codes-strip-edit>${any?'Edit codes':'Add codes'}</button>`;
+ return `<div class="codes-strip-col"><h4>Diagnoses (ICD-10)</h4>${diagnoses}</div><div class="codes-strip-col"><h4>Procedures (CPT)</h4>${procedures}</div><div class="codes-strip-actions"><button type="button" class="text-button" data-codes-strip-edit>${any?'Edit codes':'Add codes'}</button><button type="button" class="text-button" data-codes-strip-cms hidden>Preview CMS-1500</button></div>`;
+}
+// The claim form is offered beside the codes once this encounter has a claim to show.
+function encounterCodesStripClaimSync(){
+ const button=typeof $==='function'?$('encounter-codes-strip')?.querySelector?.('[data-codes-strip-cms]'):null;if(!button)return;
+ const claim=encounterRevenueState.data?.summary?.claim,id=claim?.id&&claim.status!=='void'&&!claim.secondary&&!claim.crossover?claim.id:'';
+ button.hidden=!id;button.dataset.codesStripCms=id;
+}
+// The CMS-1500 view of the claim, opened over the page. Looking at it sends nothing.
+async function openClaimFormPreview(claimId){
+ const response=await fetch(`/api/v1/billing/claims/${encodeURIComponent(claimId)}/cms1500`,{credentials:'same-origin'});
+ if(!response.ok)throw new Error('The claim form could not be opened. Refresh the encounter and try again.');
+ // The form's own zoom and print buttons need its script, which a preview does not run; the sheet has Print.
+ const html=(await response.text()).replace(/<div class=preview-actions[\s\S]*?<\/div>/,'');
+ const dialog=openReceiptPreview(html,'Claim form (CMS-1500)'),frame=dialog.querySelector('iframe');
+ // Open fitted to the window: the whole width of the form is visible without scrolling sideways.
+ const fit=()=>{
+  const page=frame.contentDocument?.documentElement;if(!page)return;
+  frame.style.transform='';frame.style.width='11.2in';frame.style.height='auto';
+  const width=page.scrollWidth,height=page.scrollHeight,room=frame.parentElement.clientWidth,scale=Math.min(1,room/width);
+  frame.style.width=`${width}px`;frame.style.height=`${height}px`;frame.style.transformOrigin='top left';frame.style.transform=`scale(${scale})`;
+  frame.style.marginBottom=`${Math.round(height*(scale-1))}px`;frame.style.marginRight=`${Math.round(width*(scale-1))}px`;frame.style.maxWidth='none';
+ };
+ frame.addEventListener('load',()=>{fit();setTimeout(fit,300);});
 }
 let encounterCodesStripToken=0;
 async function encounterCodesStripRender(){
@@ -1028,7 +1052,7 @@ async function encounterCodesStripRender(){
  if(!strip.innerHTML)strip.innerHTML='<p class="muted">Loading codes…</p>';
  const evidence=await visitReceiptEvidence(visit.appointment_id);
  if(token!==encounterCodesStripToken||(typeof activeVisit!=='undefined'?activeVisit:null)!==visit)return;
- const node=$('encounter-codes-strip');if(node)node.innerHTML=encounterCodesStripMarkup(evidence);
+ const node=$('encounter-codes-strip');if(node){node.innerHTML=encounterCodesStripMarkup(evidence);encounterCodesStripClaimSync();}
 }
 // Put the strip under the encounter tabs and the Billing areas under the next step.
 function encounterBillingChrome(host){
@@ -1062,6 +1086,7 @@ if(typeof document!=='undefined'&&document.addEventListener){
   const part=event.target?.closest?.('[data-billing-part-key]');
   if(part?.dataset?.billingPartKey){event.preventDefault();billingPartSet(part.dataset.billingPartKey);return;}
   if(event.target?.closest?.('[data-codes-strip-edit]')){event.preventDefault();encounterCodesEditorOpen();return;}
+  const cms=event.target?.closest?.('[data-codes-strip-cms]');if(cms){event.preventDefault();if(cms.dataset.codesStripCms)run(()=>openClaimFormPreview(cms.dataset.codesStripCms));return;}
   if(event.target?.closest?.('[data-codes-editor-close]')){event.preventDefault();encounterCodesEditorClose();return;}
  });
  // A button whose work lands in another area opens that area first, so nothing happens out of sight.

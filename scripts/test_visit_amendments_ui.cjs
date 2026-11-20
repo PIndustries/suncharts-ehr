@@ -50,7 +50,7 @@ function fixture(){
 async function main(){
  let f=fixture(),html=f.nodes.get('visit-editor').innerHTML;
  const note=html.match(/<form id="note-form"[\s\S]*?<\/form>/)[0];
- assert.equal([...note.matchAll(/readonly/g)].length,4);assert.match(html,/Signed note — read-only/);assert.match(html,/Original|original SOAP note and vitals cannot be overwritten/);
+ assert.equal([...note.matchAll(/readonly/g)].length,4);assert.doesNotMatch(html,/Signed note — read-only|cannot be overwritten/,'no warning block on a signed note');assert.match(html,/data-action="focus-amendment" aria-controls="amendment-form">Edit note</);
  assert.doesNotMatch(html.match(/<form id="amendment-form"[\s\S]*?<\/form>/)[0],/readonly/);
  f.click('focus-amendment');assert.equal(f.focused(),'amendment-form:reason');assert.ok(f.scrolls()>0);
  const form=f.type('Correct transcription','Retained <correction>'),sameForm=f.nodes.get('amendment-form');assert.equal(form,sameForm,'typing never replaces the editor or loses focus');
@@ -69,10 +69,10 @@ async function main(){
  f.run("activeVisit.clinician_id='other';renderVisit(false)");assert.ok(f.nodes.get('amendment-form'),'the owner or another clinician may correct a colleague’s signed note');assert.match(f.nodes.get('visit-editor').innerHTML,/data-action="focus-amendment"/);
  for(const role of ['nurse','medical_assistant','front_desk','read_only']){
   f.run(`me={...me,role:${JSON.stringify(role)}};renderVisit(false)`);assert.equal(f.nodes.get('amendment-form'),undefined,role);
-  assert.doesNotMatch(f.nodes.get('visit-editor').innerHTML,/data-action="focus-amendment"|Only the assigned clinician/,role);assert.match(f.nodes.get('visit-editor').innerHTML,/cannot be overwritten\. A clinician can add a correction\.<\/div>/,role);
+  assert.doesNotMatch(f.nodes.get('visit-editor').innerHTML,/data-action="focus-amendment"|Only the assigned clinician/,role);
  }
  f.run("me={...me,role:'owner',delegated:true};renderVisit(false)");assert.equal(f.nodes.get('amendment-form'),undefined);
- assert.match(f.nodes.get('visit-editor').innerHTML,/cannot be overwritten\. A clinician at the practice must sign any correction\.<\/div>/);assert.doesNotMatch(f.nodes.get('visit-editor').innerHTML,/data-action="focus-amendment"/);
+ assert.doesNotMatch(f.nodes.get('visit-editor').innerHTML,/data-action="focus-amendment"/);
  console.log('PASS drafts remain isolated by tenant, patient, encounter and staff session; any clinician or the owner may correct, support staff and a support session may not');
 
  f=fixture();f.type('Reason','Correction');f.run('activeVisit={...activeVisit,version:2};renderVisit(false)');
