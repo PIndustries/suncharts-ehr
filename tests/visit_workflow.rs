@@ -505,6 +505,15 @@ async fn complete_visit_is_durable_scoped_versioned_and_append_only() {
     assert_eq!(signed["status"], "signed");
     assert_eq!(signed["signed_by"], json!(doctor.sub));
     assert_eq!(signed["version"], 4);
+    // Signing finishes the appointment: the schedule must not keep showing it as checked in.
+    let state: String =
+        sqlx::query_scalar("SELECT status FROM appointments WHERE tenant_id=$1 AND id=$2")
+            .bind(tenant)
+            .bind(appointment)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(state, "completed");
     assert_eq!(
         call(
             &app,
