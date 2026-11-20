@@ -82,7 +82,8 @@
 .invoice-tabs{display:flex;flex-wrap:wrap;gap:2px;margin:0 0 14px;border-bottom:1px solid var(--line)}
 .invoice-tabs button{border:0;border-bottom:3px solid transparent;border-radius:0;background:none;color:var(--muted);padding:8px 14px;font-weight:600;cursor:pointer}
 .invoice-tabs button.active{color:var(--ink);border-bottom-color:var(--accent)}
-#encounter-revenue[data-invoice-tab="invoice"]>#encounter-claims,#encounter-revenue[data-invoice-tab="invoice"]>#visit-billing-history,#encounter-revenue[data-invoice-tab="invoice"]>#visit-billing-payments{display:none}
+#encounter-revenue[data-invoice-tab="encounter"]>#encounter-claims,#encounter-revenue[data-invoice-tab="encounter"]>#visit-billing-history,#encounter-revenue[data-invoice-tab="encounter"]>#visit-billing-payments,#encounter-revenue[data-invoice-tab="encounter"]>#visit-billing-invoices{display:none}
+#encounter-revenue[data-invoice-tab="invoices"]>:not(.invoice-tabs):not(#visit-billing-invoices){display:none}
 #encounter-revenue[data-invoice-tab="claim"]>:not(.invoice-tabs):not(#encounter-claims){display:none}
 #encounter-revenue[data-invoice-tab="payments"]>:not(.invoice-tabs):not(#visit-billing-payments):not(#visit-billing-collect):not(#encounter-copay-receipt){display:none}
 #encounter-revenue[data-invoice-tab="history"]>:not(.invoice-tabs):not(#visit-billing-history){display:none}
@@ -92,3 +93,8 @@
 @keyframes invoice-tab-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 .invoice-tabs button{transition:color .18s ease,border-color .18s ease}
 @media(prefers-reduced-motion:reduce){#encounter-revenue[data-invoice-tab]>:not(.invoice-tabs){animation:none}}
+.encounter-invoice-list{list-style:none;margin:0;padding:0;display:grid}
+.encounter-invoice-list li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--line)}
+.encounter-invoice-list li:first-child{border-top:0}
+.encounter-invoice-list span{display:grid}
+.encounter-invoice-list small{color:var(--muted)}

@@ -200,7 +200,7 @@ function visitBillingMore(s,ctx={}){
  const posted=s.account?.status==='posted',claim=s.claim,items=[];
  if(ctx.canCreate&&s.account?.status==='draft')items.push('<button type="button" data-encounter-charges>Change charges</button>');
  if(posted&&ctx.canCreate&&s.state!=='self_pay_collect'&&s.state!=='patient_owes'&&s.visit)items.push('<button type="button" data-visit-collect>Collect a payment</button>');
- if(posted&&ctx.canCreate)items.push('<button type="button" data-visit-statement>Patient statement</button>');
+ if(posted&&ctx.canCreate)items.push('<button type="button" data-visit-statement>Create invoice</button>');
  if(posted&&ctx.canCreate)items.push('<button type="button" data-new-ledger>Record a payment, write-off or adjustment</button>');
  if(posted)items.push('<button type="button" data-visit-history="payments">Refunds and card payments</button>');
  if(claim&&ctx.claimsAllowed){
@@ -213,7 +213,7 @@ function visitBillingMore(s,ctx={}){
 function visitBillingCardMarkup(s,ctx={}){
    const status=visitBillingStatus(s,ctx),owing=['patient_owes','self_pay_collect'].includes(s.state),posted=s.account?.status==='posted';
    const issues=visitBillingMissingMarkup(status.issues,s.claim?.id||'',ctx);
-   const secondary=owing&&ctx.canCreate?'<button type="button" data-visit-statement>Statement</button>':'';
+   const secondary=owing&&ctx.canCreate?'<button type="button" data-visit-statement>Create invoice</button>':'';
    const sent=typeof visitBillingSentLine==='function'?visitBillingSentLine(s,ctx):'';
    const direct=s.state==='send_claim'?visitBillingDirectSend(s,ctx):'';
    const main=status.action;
@@ -223,7 +223,7 @@ function visitBillingCardMarkup(s,ctx={}){
    const action=direct&&!main.includes(direct)?`${main}${review}`:main;
       return `<section class="visit-billing-card" data-visit-billing-state="${esc(s.state)}"><div class="visit-billing-status"><div><span class="eyebrow">${s.waiting_on==='nobody'?'Status':'Next step'}</span><p class="visit-billing-headline">${esc(status.headline)}</p><p class="muted">${esc(status.detail)}</p>${issues}</div><div class="actions">${action||''}${secondary}</div></div>${sent}${visitBillingBreakdown(s,ctx)}${posted||s.account||s.visit?visitBillingMore(s,ctx):''}</section>`;
 }
-const visitBillingFilters=[['all','Everything'],['charges','Charges'],['insurance','Insurance'],['payments','Payments'],['statements','Statements sent']];
+const visitBillingFilters=[['all','Everything'],['charges','Charges'],['insurance','Insurance'],['payments','Payments'],['statements','Invoices']];
 function visitBillingEventText(event){
  const amount=event.amount_cents==null?'':money(event.amount_cents),insurer=event.insurer||'the insurer',how=visitBillingMethod(event.method),by=how?` (${how})`:'';
  switch(event.code){
@@ -252,13 +252,13 @@ function visitBillingEventText(event){
   case 'claim_rejected':return `${insurer} rejected the claim`;
   case 'claim_answered':return `${insurer} answered${event.patient_responsibility_cents==null?'':`: patient owes ${money(event.patient_responsibility_cents)}`}`;
   case 'claim_cancelled':return 'Claim cancelled';
-  case 'statement':return `Statement prepared: ${amount} due`;
+  case 'statement':return `Invoice created: ${amount} due`;
   default:return 'Billing activity';
  }
 }
 function visitBillingEventActions(event,ctx={}){
  if(event.receipt_id)return `<button type="button" class="text-button" data-copay-receipt="${esc(event.receipt_id)}" data-appointment="${esc(event.appointment_id)}">Receipt</button>`;
- if(event.invoice_id)return `<button type="button" class="text-button" data-visit-statement-open="${esc(event.invoice_id)}">View statement</button>`;
+ if(event.invoice_id)return `<button type="button" class="text-button" data-visit-statement-open="${esc(event.invoice_id)}">View invoice</button>`;
  if(event.claim_id&&ctx.claimsAllowed)return `<button type="button" class="text-button" data-revenue-claim="${esc(event.claim_id)}">Open claim</button>`;
  return '';
 }

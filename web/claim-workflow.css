@@ -102,3 +102,5 @@
 .claim-history-list li:first-child{border-top:0}
 .claim-history-list small{color:var(--muted)}
 @keyframes invoice-tab-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.sheet-dialog.sheet-wide{width:min(900px,calc(100vw - 32px))}
+.invoice-sheet .avs-print-frame{width:100%;min-height:60vh;border:1px solid var(--line);border-radius:8px}
