@@ -255,9 +255,9 @@ SELECT jsonb_build_object('id',o.id,'patient_id',o.patient_id,'status',o.status,
  'total_cents',o.total_cents,'balance_cents',o.balance,'patient_credit_cents',o.patient_credit,'patient_payments_cents',o.patient_payments,'insurer_paid_cents',o.insurer_paid,
  'receipts_applied_cents',o.receipts_applied,'unapplied_cents',CASE WHEN o.posted THEN o.unapplied ELSE 0 END,'responsibility_cents',o.responsibility,'responsibility_source',o.responsibility_source,
  'owes_now_cents',o.owes_now,
- 'pending_cents',CASE WHEN o.posted AND o.insured AND NOT o.answered THEN greatest(o.balance-o.owes_now,0) ELSE 0 END,
+ 'pending_cents',CASE WHEN o.posted AND o.insured AND NOT o.answered THEN greatest(o.balance+greatest(o.patient_credit-o.responsibility,0)-o.owes_now,0) ELSE 0 END,
  'unassigned_cents',CASE WHEN o.posted AND ((o.insured AND o.answered) OR (NOT o.insured AND o.responsibility_source='reviewed_statement')) THEN greatest(o.balance-o.owes_now,0) ELSE 0 END,
- 'overpaid_cents',CASE WHEN o.posted THEN greatest(CASE WHEN o.answered OR NOT o.insured THEN greatest(o.patient_credit-o.responsibility,0) ELSE 0 END,-o.balance) ELSE 0 END,
+ 'overpaid_cents',CASE WHEN o.posted THEN greatest(greatest(o.patient_credit-o.responsibility,0),-o.balance) ELSE 0 END,
  'answered',o.answered,'denied',o.denied,'any_void',o.any_void,'claim_id',o.claim_id,'claim_status',o.claim_status,'response_to_review',o.response_to_review,'test_activity',o.test_activity)
 FROM owed o WHERE $4::boolean IS NULL OR o.test_activity=$4"#;
 

@@ -661,9 +661,20 @@ fn adds_up(s: &Value) {
         n(&s["balance_cents"]),
         "{s}"
     );
+    // Until the insurer answers, patient money beyond the patient's share is credit on the
+    // account, not a smaller insurance claim: the insurer's share is still charges less the
+    // patient's share, so the split exceeds the balance by exactly that credit.
+    let status = i["status"].as_str().unwrap_or("");
+    let waiting_on_insurer = s["insurance"]["insured"] == true
+        && !matches!(status, "none" | "not_billed" | "answered" | "denied");
+    let expected = if waiting_on_insurer {
+        n(&s["balance_cents"]) + n(&p["overpaid_cents"])
+    } else {
+        n(&s["balance_cents"]).max(0)
+    };
     assert_eq!(
         n(&i["pending_cents"]) + n(&i["unassigned_cents"]) + n(&p["owes_now_cents"]),
-        n(&s["balance_cents"]).max(0),
+        expected,
         "{s}"
     );
 }

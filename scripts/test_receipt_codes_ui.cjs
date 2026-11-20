@@ -28,7 +28,7 @@ function load(diagnoses){
   api:async url=>{if(diagnoses instanceof Error)throw diagnoses;assert.equal(url,'/api/v1/visits/visit-1/diagnoses');return {diagnoses};}};
  vm.createContext(ctx);
  const billing=fs.readFileSync('web/billing.js','utf8');
- vm.runInContext(billing.slice(billing.indexOf('function receiptNumberFor('),billing.indexOf('function billingEncounterReceiptRows(')),ctx);
+ vm.runInContext(billing.slice(billing.indexOf('function ledgerReferenceText('),billing.indexOf('function billingEncounterReceiptRows(')),ctx);
  vm.runInContext(fs.readFileSync('web/patient-revenue.js','utf8'),ctx);
  return ctx;
 }
@@ -74,5 +74,15 @@ const at=(html,text)=>{const i=html.indexOf(text);assert.ok(i>=0,'missing '+text
   assert.match(html,/No charges posted yet\./);assert.match(html,/Diagnoses could not be loaded/);assert.ok(!html.includes('<table>'));
   assert.equal(c.visitReceiptSections(null),'','no encounter: no visit sections');
  }
- console.log('PASS receipts: readable ENC receipt numbers, diagnoses then procedures then payment, plain empty and failed states');
+ // Ledger references: card processor ids never reach staff; typed references stay as typed.
+ {
+  const c=load([]);
+  assert.equal(c.ledgerReferenceText('ch_3UdlWyJ8EepDCOA91GIhspSn'),'Card payment');
+  assert.equal(c.ledgerReferenceText('pi_3UdlWyJ8EepDCOA91GIhspSn'),'Card payment');
+  assert.equal(c.ledgerReferenceText('re_3UdlWyJ8EepDCOA91GIhspSn'),'Card refund');
+  assert.equal(c.ledgerReferenceText('1042'),'1042');
+  assert.equal(c.ledgerReferenceText('Check <1042>'),'Check &lt;1042&gt;');
+  assert.match(c.ledgerReferenceText(''),/—/);
+ }
+ console.log('PASS receipts: readable ENC receipt numbers, no card processor ids in the ledger, diagnoses then procedures then payment, plain empty and failed states');
 })().catch(e=>{console.error(e);process.exitCode=1;});
