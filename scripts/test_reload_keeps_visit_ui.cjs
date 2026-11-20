@@ -20,12 +20,12 @@ function fixture({hash='',visits=[visit],enterLandsOnHome=false}={}){
  ctx.captureVisitDrafts=()=>{ctx.captureCount++;if(ctx.selected&&ctx.activeVisit&&ctx.formText)drafts.set(`${ctx.selected}:${ctx.activeVisit.id}`,ctx.formText);};
  ctx.run=async action=>{if(ctx.busy)return;ctx.busy=true;try{await action();}catch(error){calls.push(['error',error.message]);}finally{ctx.busy=false;}};
  ctx.api=async(path,method='GET')=>{calls.push([method,path]);if(method!=='GET')ctx.mutations++;return {};};
- ctx.showTool=title=>{nodes['clinical-workspace'].hidden=true;ctx.page=title;activeNav=({'Practice home':'nav-practice','Patients & visits':'nav-clinical','Billing':'nav-billing'})[title]??null;};
+ ctx.showTool=title=>{nodes['clinical-workspace'].hidden=true;ctx.page=title;activeNav=({'Practice home':'nav-practice','Patients & encounters':'nav-clinical','Billing':'nav-billing'})[title]??null;};
  ctx.showPracticeWorkspace=async()=>{ctx.showTool('Practice home');await ctx.api('/practice');};
  ctx.showBillingQueue=async()=>{ctx.showTool('Billing');await ctx.api('/billing');};
  // The reload case: the patient and encounter the address names are opened again,
  // exactly as app.js does it after a fetch round trip.
- ctx.showClinical=async()=>{ctx.captureVisitDrafts();ctx.showTool('Patients & visits');ctx.selected=null;ctx.activeVisit=null;ctx.workspace=null;ctx.chartSection='overview';await ctx.api('/patients');nodes['clinical-workspace'].hidden=false;};
+ ctx.showClinical=async()=>{ctx.captureVisitDrafts();ctx.showTool('Patients & encounters');ctx.selected=null;ctx.activeVisit=null;ctx.workspace=null;ctx.chartSection='overview';await ctx.api('/patients');nodes['clinical-workspace'].hidden=false;};
  ctx.selectPatient=async(id,keepVisit)=>{
   ctx.captureVisitDrafts();await ctx.api(`/patients/${id}`);
   ctx.selected=id;ctx.workspace={patient:{id},appointments:[],visits:visits.map(vid=>({id:vid,status:'in_progress'})),billing:{accounts:[]},labs:{orders:[]}};
@@ -50,7 +50,7 @@ test('reload reopens the same patient, encounter and step of that encounter',asy
  const f=fixture({hash:`#/patients/${patient}/encounter/${visit}/charges`}),c=f.ctx;
  await c.enter();await f.settle();
  assert.equal(c.selected,patient);assert.equal(c.activeVisit.id,visit);assert.equal(c.chartSection,'visits');assert.equal(c.encounterSection,'charges');
- assert.equal(c.page,'Patients & visits');assert.equal(c.mutations,0,'a reload only reads the record back');
+ assert.equal(c.page,'Patients & encounters');assert.equal(c.mutations,0,'a reload only reads the record back');
  assert.equal(f.directoryShown(),false,'the reopened chart does not fall back to the directory');
  assert.equal(f.entries().length,1,'reopening the address on reload does not add a history entry');
  assert.equal(c.location.hash,`#/patients/${patient}/encounter/${visit}/charges`,'the address still names the reopened encounter');
@@ -65,7 +65,7 @@ test('a real reload where enter() leaves #/home in the address still reopens the
  assert.equal(c.activeVisit?.id,visit,'the loaded visit is opened');
  assert.equal(c.chartSection,'visits');assert.equal(c.encounterSection,'documentation','the loaded step is shown');
  assert.equal(c.location.hash,`#/patients/${patient}/encounter/${visit}/documentation`,'the final address is the loaded one, not #/home');
- assert.equal(c.page,'Patients & visits');assert.equal(c.mutations,0,'the reopen only reads the record back');
+ assert.equal(c.page,'Patients & encounters');assert.equal(c.mutations,0,'the reopen only reads the record back');
 });
 
 test('a reload loaded on #/home or no address behaves as before',async()=>{

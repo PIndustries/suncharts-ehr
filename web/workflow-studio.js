@@ -268,7 +268,7 @@ const studioWorkspaceGroups={today:['practice','schedule','followup','portal'],c
 const studioWorkspaceGroupLabels={today:'Today',care:'Care delivery',revenue:'Financial',manage:'Manage'};
 const studioWorkspaceDestinations={
  practice:{title:'Practice home',links:[['view','worklist','Patient worklist','Open patient and visit work'],['view','results','Results review','Review native order and result status'],['view','shortcuts','Workspace shortcuts','Open existing EHR workspaces']]},
- clinical:{title:'Patients & visits',charts:'all'},
+ clinical:{title:'Patients & encounters',charts:'all'},
  schedule:{title:'Schedule',links:[['form','schedule-booking','Appointment form','Create or revise a native appointment'],['action','schedule-action','Check-in and appointment actions','Record check-in, cancellation or no-show after review'],['form','schedule-block-form','Provider time block','Manage availability without changing existing appointments']]},
  labs:{title:'Labs & results',charts:['orders'],links:[['form','lab-order-form','Clinical order form','Native order preparation; clinical authorization required']]},
  specialty:{title:'Specialty care',charts:['functional_status','specialty_care','referrals']},

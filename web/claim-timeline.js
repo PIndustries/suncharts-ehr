@@ -336,7 +336,7 @@ function claimTimelineMarkup(timeline){
   </li>`).join('');
  const ids=[timeline.identifiers.payerControlNumber?`<span class="claim-timeline-id"><code class="claim-control">${esc(timeline.identifiers.payerControlNumber)}</code><small>Payer claim number</small></span>`:'',
   timeline.identifiers.claimMdClaimId?`<span class="claim-timeline-id"><code class="claim-control">${esc(timeline.identifiers.claimMdClaimId)}</code><small>Claim.MD claim ID</small></span>`:''].join('');
- return `<section class="claim-timeline" aria-label="What happened to this claim"><div class="section-head"><div><p class="eyebrow">WHAT HAPPENED</p><h3>${esc(timeline.current)}</h3>${ids?`<div class="claim-timeline-ids">${ids}</div>`:''}</div></div><ol class="claim-timeline-steps">${rows}</ol><p class="muted">Every step is written in the words the payer or Claim.MD used, with the code that produced it. Nothing here changes the claim or the patient balance.</p></section>`;
+ return `<section class="claim-timeline" aria-label="What happened to this claim"><div class="section-head"><div><p class="eyebrow">WHAT HAPPENED</p><h3>${esc(timeline.current)}</h3>${ids?`<div class="claim-timeline-ids">${ids}</div>`:''}</div></div><ol class="claim-timeline-steps">${rows}</ol><p class="muted">Each step is in the words the insurer or the clearinghouse used. Nothing here changes the claim or the balance.</p></section>`;
 }
 // Data the claim screen does not already hold, fetched through existing endpoints
 // and remembered for this page so opening a claim twice does not call twice.
