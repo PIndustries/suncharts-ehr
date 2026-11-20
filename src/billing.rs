@@ -639,6 +639,10 @@ pub fn router() -> Router<State> {
         )
         .route("/api/v1/patients/{p}/billing/copays", post(record_copay))
         .route(
+            "/api/v1/patients/{p}/billing/payment-groups/{group_id}",
+            get(payment_group),
+        )
+        .route(
             "/api/v1/patients/{p}/billing/copays/{id}/void",
             post(void_copay),
         )
@@ -1576,6 +1580,10 @@ struct CopayInput {
     occurred_on: NaiveDate,
     reason: String,
     received_confirmed: bool,
+    /// Shared by the parts of one payment taken in pieces. Omitted from the request digest
+    /// when absent, so earlier requests hash exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    payment_group_id: Option<Uuid>,
 }
 pub(crate) async fn copay_rows(
     tx: &mut Transaction<'_, Postgres>,
@@ -1675,8 +1683,8 @@ pub(crate) async fn record_verified_hosted_copay(
     {
         return Err(Error::Invalid("invalid verified hosted copay evidence"));
     }
-    let bound: Option<(Option<Value>,)> = sqlx::query_as(
-        "SELECT coverage_snapshot FROM copay_checkout_attempts WHERE tenant_id=$1 AND id=$2
+    let bound: Option<(Option<Value>, Option<Uuid>)> = sqlx::query_as(
+        "SELECT coverage_snapshot,payment_group_id FROM copay_checkout_attempts WHERE tenant_id=$1 AND id=$2
          AND patient_id=$3 AND appointment_id=$4 AND coverage_id IS NOT DISTINCT FROM $5
          AND amount_cents=$6 AND livemode=$7 FOR UPDATE",
     )
@@ -1689,7 +1697,7 @@ pub(crate) async fn record_verified_hosted_copay(
     .bind(livemode)
     .fetch_optional(&mut **tx)
     .await?;
-    let (coverage_snapshot,) = bound.ok_or(Error::Conflict(
+    let (coverage_snapshot, payment_group) = bound.ok_or(Error::Conflict(
         "hosted copay operation does not match captured evidence",
     ))?;
     let hash = digest(&(
@@ -1719,10 +1727,10 @@ pub(crate) async fn record_verified_hosted_copay(
         return Ok(id);
     }
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO billing_copay_receipts(tenant_id,id,patient_id,appointment_id,coverage_id,amount_cents,method,reference,occurred_on,reason,coverage_snapshot,request_id,creation_hash,actor_id) VALUES($1,$2,$3,$4,$5,$6,'external',$7,$8,'Verified hosted card copay',$9,$10,$11,$12)")
+    sqlx::query("INSERT INTO billing_copay_receipts(tenant_id,id,patient_id,appointment_id,coverage_id,amount_cents,method,reference,occurred_on,reason,coverage_snapshot,request_id,creation_hash,actor_id,payment_group_id) VALUES($1,$2,$3,$4,$5,$6,'external',$7,$8,'Verified hosted card copay',$9,$10,$11,$12,$13)")
         .bind(a.tenant_id).bind(id).bind(p).bind(appointment).bind(coverage).bind(amount)
         .bind(provider_charge).bind(occurred_on).bind(coverage_snapshot)
-        .bind(operation).bind(hash).bind(a.sub).execute(&mut **tx).await?;
+        .bind(operation).bind(hash).bind(a.sub).bind(payment_group).execute(&mut **tx).await?;
     // Link before allocation so both immediate and later allocations carry the
     // same immutable operation identity and explicit test/live provenance.
     let linked = sqlx::query("UPDATE copay_checkout_attempts SET receipt_id=$3,status='paid' WHERE tenant_id=$1 AND id=$2 AND receipt_id IS NULL")
@@ -1907,8 +1915,8 @@ async fn record_copay(
         None
     };
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO billing_copay_receipts(tenant_id,id,patient_id,appointment_id,coverage_id,amount_cents,method,reference,occurred_on,reason,coverage_snapshot,request_id,creation_hash,actor_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
-        .bind(a.tenant_id).bind(id).bind(p).bind(v.appointment_id).bind(v.coverage_id).bind(v.amount_cents).bind(v.method).bind(v.reference.trim()).bind(v.occurred_on).bind(v.reason.trim()).bind(coverage).bind(v.request_id).bind(hash).bind(a.sub).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO billing_copay_receipts(tenant_id,id,patient_id,appointment_id,coverage_id,amount_cents,method,reference,occurred_on,reason,coverage_snapshot,request_id,creation_hash,actor_id,payment_group_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
+        .bind(a.tenant_id).bind(id).bind(p).bind(v.appointment_id).bind(v.coverage_id).bind(v.amount_cents).bind(v.method).bind(v.reference.trim()).bind(v.occurred_on).bind(v.reason.trim()).bind(coverage).bind(v.request_id).bind(hash).bind(a.sub).bind(v.payment_group_id).execute(&mut *tx).await?;
     crate::postgres::audit(&mut tx, &a, "billing.copay_recorded", id).await?;
     let account:Option<Uuid>=sqlx::query_scalar("SELECT b.id FROM billing_accounts b JOIN visits v ON v.tenant_id=b.tenant_id AND v.id=b.visit_id WHERE b.tenant_id=$1 AND b.patient_id=$2 AND v.appointment_id=$3 AND b.status='posted'").bind(a.tenant_id).bind(p).bind(v.appointment_id).fetch_optional(&mut *tx).await?;
     if let Some(account) = account {
@@ -1937,6 +1945,23 @@ async fn record_copay(
         .ok_or(Error::NotFound)?;
     tx.commit().await?;
     Ok(Json(row))
+}
+async fn payment_group(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((p, group)): Path<(Uuid, Uuid)>,
+) -> Result<Json<Value>> {
+    a.staff()?;
+    let mut tx = db(&s)?.begin().await?;
+    patient(&mut tx, &a, p).await?;
+    let rows: Vec<Value> = copay_rows(&mut tx, &a, p, None)
+        .await?
+        .into_iter()
+        .filter(|r| r["payment_group_id"] == group.to_string())
+        .collect();
+    crate::postgres::audit(&mut tx, &a, "billing.payment_group_read", group).await?;
+    tx.commit().await?;
+    Ok(Json(json!({"payment_group_id":group,"receipts":rows})))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -207,6 +207,7 @@ fn input(live: bool) -> Create {
         reason: "Reviewed synthetic copay".into(),
         reader_id: None,
         saved_card_setup_id: None,
+        payment_group_id: None,
     }
 }
 fn policy(live: bool) -> Policy {

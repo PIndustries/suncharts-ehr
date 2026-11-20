@@ -9,6 +9,7 @@ use crate::saved_card_payments::{
 fn card_input(setup: Uuid) -> Create {
     Create {
         saved_card_setup_id: Some(setup),
+        payment_group_id: None,
         reason: "Copay charged to card on file".into(),
         ..input(false)
     }

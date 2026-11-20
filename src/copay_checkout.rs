@@ -296,6 +296,9 @@ struct Create {
     /// the patient's agreement to later charges.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     saved_card_setup_id: Option<Uuid>,
+    /// Shared by the parts of one payment taken in pieces; written onto the receipt when paid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    payment_group_id: Option<Uuid>,
 }
 pub(crate) async fn current_binding(
     pool: &PgPool,
@@ -453,7 +456,7 @@ async fn create_with(
     };
     let id = Uuid::new_v4();
     let return_url = format!("{}/?copay_checkout={id}", origin.trim_end_matches('/'));
-    sqlx::query("INSERT INTO copay_checkout_attempts(tenant_id,id,patient_id,appointment_id,coverage_id,coverage_snapshot,setting_id,credential_revision,installation_id,provider_account_id,livemode,amount_cents,request_id,creation_hash,requested_by,reason,return_url,channel,reader_id,saved_card_setup_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)").bind(a.tenant_id).bind(id).bind(patient).bind(appointment).bind(input.coverage_id).bind(coverage).bind(binding.setting).bind(binding.revision).bind(binding.installation).bind(account).bind(mode).bind(input.amount_cents).bind(input.request_id).bind(hash).bind(a.sub).bind(input.reason.trim()).bind(return_url).bind(channel).bind(&input.reader_id).bind(input.saved_card_setup_id).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO copay_checkout_attempts(tenant_id,id,patient_id,appointment_id,coverage_id,coverage_snapshot,setting_id,credential_revision,installation_id,provider_account_id,livemode,amount_cents,request_id,creation_hash,requested_by,reason,return_url,channel,reader_id,saved_card_setup_id,payment_group_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)").bind(a.tenant_id).bind(id).bind(patient).bind(appointment).bind(input.coverage_id).bind(coverage).bind(binding.setting).bind(binding.revision).bind(binding.installation).bind(account).bind(mode).bind(input.amount_cents).bind(input.request_id).bind(hash).bind(a.sub).bind(input.reason.trim()).bind(return_url).bind(channel).bind(&input.reader_id).bind(input.saved_card_setup_id).bind(input.payment_group_id).execute(&mut *tx).await?;
     event(
         &mut tx,
         a,
