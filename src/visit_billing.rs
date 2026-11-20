@@ -255,9 +255,9 @@ SELECT jsonb_build_object('id',o.id,'patient_id',o.patient_id,'status',o.status,
  'total_cents',o.total_cents,'balance_cents',o.balance,'patient_credit_cents',o.patient_credit,'patient_payments_cents',o.patient_payments,'insurer_paid_cents',o.insurer_paid,
  'receipts_applied_cents',o.receipts_applied,'unapplied_cents',CASE WHEN o.posted THEN o.unapplied ELSE 0 END,'responsibility_cents',o.responsibility,'responsibility_source',o.responsibility_source,
  'owes_now_cents',o.owes_now,
- 'pending_cents',CASE WHEN o.posted AND o.insured AND NOT o.answered THEN greatest(o.balance-o.owes_now,0) ELSE 0 END,
+ 'pending_cents',CASE WHEN o.posted AND o.insured AND NOT o.answered THEN greatest(o.balance+greatest(o.patient_credit-o.responsibility,0)-o.owes_now,0) ELSE 0 END,
  'unassigned_cents',CASE WHEN o.posted AND ((o.insured AND o.answered) OR (NOT o.insured AND o.responsibility_source='reviewed_statement')) THEN greatest(o.balance-o.owes_now,0) ELSE 0 END,
- 'overpaid_cents',CASE WHEN o.posted THEN greatest(CASE WHEN o.answered OR NOT o.insured THEN greatest(o.patient_credit-o.responsibility,0) ELSE 0 END,-o.balance) ELSE 0 END,
+ 'overpaid_cents',CASE WHEN o.posted THEN greatest(greatest(o.patient_credit-o.responsibility,0),-o.balance) ELSE 0 END,
  'answered',o.answered,'denied',o.denied,'any_void',o.any_void,'claim_id',o.claim_id,'claim_status',o.claim_status,'response_to_review',o.response_to_review,'test_activity',o.test_activity)
 FROM owed o WHERE $4::boolean IS NULL OR o.test_activity=$4"#;
 
@@ -1602,9 +1602,60 @@ async fn make_statement(
 ) -> Result<Json<Value>> {
     Ok(Json(statement(db(&s)?, &a, p, id).await?))
 }
+/// One line of money and claim state per charge account for a patient, for the encounter list:
+/// charges, what insurance and the patient paid, what is still pending with insurance, what the
+/// patient owes now and any credit. Claim state only for staff who may view claims.
+async fn encounter_balances(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(p): Path<Uuid>,
+) -> Result<Json<Value>> {
+    a.staff()?;
+    let claims = crate::access_policies::require_native(&s, &a, "claims", "view")
+        .await
+        .is_ok();
+    let mut tx = db(&s)?.begin().await?;
+    let known: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM patients WHERE tenant_id=$1 AND id=$2)")
+            .bind(a.tenant_id)
+            .bind(p)
+            .fetch_one(&mut *tx)
+            .await?;
+    if !known {
+        return Err(Error::NotFound);
+    }
+    let rows = balances(&mut tx, a.tenant_id, Some(&[p]), None, None).await?;
+    let items: Vec<Value> = rows
+        .iter()
+        .filter(|r| r["patient_id"] == json!(p))
+        .map(|r| {
+            json!({
+                "account_id": r["id"],
+                "status": r["status"],
+                "posted": r["posted"],
+                "insured": r["insured"],
+                "total_cents": r["total_cents"],
+                "insurer_paid_cents": r["insurer_paid_cents"],
+                "patient_payments_cents": r["patient_payments_cents"],
+                "pending_cents": r["pending_cents"],
+                "owes_now_cents": r["owes_now_cents"],
+                "overpaid_cents": r["overpaid_cents"],
+                "claim_status": if claims { r["claim_status"].clone() } else { Value::Null },
+                "denied": if claims { r["denied"].clone() } else { Value::Null },
+            })
+        })
+        .collect();
+    crate::postgres::audit(&mut tx, &a, "billing.encounter_balances_read", p).await?;
+    tx.commit().await?;
+    Ok(Json(json!({ "items": items })))
+}
 pub fn router() -> Router<State> {
     Router::new()
         .route("/api/v1/patients/{p}/billing/visit-summary", get(read))
+        .route(
+            "/api/v1/patients/{p}/billing/encounters",
+            get(encounter_balances),
+        )
         .route(
             "/api/v1/patients/{p}/billing/accounts/{id}/claims/prepare",
             post(prepare),

@@ -132,10 +132,10 @@ async function testDelegatedRoomingControls(){
   f.evaluate(`activeVisit.status='signed';renderVisit(false)`);
   assert.doesNotMatch(f.node('visit-editor').innerHTML,/>Save vitals<|>Save note<|data-action="sign"|id="amendment-form"/,role);
  }
+ // With no encounter open the Encounters tab adds no second Start visit: the patient banner offers it
+ // (rooming staff for any checked-in patient today, clinicians for their own).
  f.evaluate(`me.role='nurse';activeVisit=null;workspace.appointments=[{id:'arrived',status:'checked_in',clinician_id:'another-clinician'}]`);
- assert.match(f.evaluate('encounterWorkflow()'),/data-start="arrived"/);
- f.evaluate(`me.role='front_desk'`);
- assert.doesNotMatch(f.evaluate('encounterWorkflow()'),/data-start="arrived"/);
+ assert.equal(f.evaluate('encounterWorkflow()'),'');
 }
 
 async function testVisitDrafts(){
