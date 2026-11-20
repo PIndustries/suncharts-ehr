@@ -1372,7 +1372,10 @@ async fn every_screen_shows_the_same_patient_owes_now_and_support_sessions_never
             .fetch_one(&f.db)
             .await
             .unwrap();
-    assert_eq!(preparer, support.sub, "recorded as the support session that asked");
+    assert_eq!(
+        preparer, support.sub,
+        "recorded as the support session that asked"
+    );
     // Exactly what the first open writes: one draft claim, its first revision, one audit row.
     assert_eq!(
         f.count("SELECT count(*) FROM ehr_claims WHERE tenant_id=$1 AND status='draft'")
