@@ -490,10 +490,13 @@ td.money-cell,th.money-cell{text-align:right;font-variant-numeric:tabular-nums}
 /* The procedure box must show a chosen line whole — "99213: Office o/p est low 20 min" — on a
    1280 px screen, so the code column gets the table's leftover width; where the leftover is
    smaller the box wraps the words onto a second line instead of clipping them. */
-.charge-cell-code{width:auto;min-width:19rem}
+.charge-cell-code{width:auto;min-width:16rem}
+/* Code is a short field of its own; the description sits under it, the full width of the cell. */
+.charge-cell-code .terminology-combobox,.charge-cell-code>label:first-child{width:10ch;min-width:9rem;max-width:100%}
+.charge-cell-code input[name="procedure"],.charge-cell-code input[name="code"]{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.02em}
+.charge-cell-code .charge-description-field{margin-top:6px}
 .charge-cell-diagnoses{width:13rem}
 .charge-cell-amount{width:7.5rem}
-.charge-cell-code input[name="procedure"]{white-space:normal;overflow-wrap:anywhere}
 .charge-cell-units{width:5.5rem}
 .charge-cell-modifiers{width:6.5rem}
 .charge-cell-remove{width:1%;white-space:nowrap}

@@ -429,7 +429,7 @@ function chargeMiniField(name,label,value='',max=200,required=false){return `<la
 // and its matching description field stays in the description column.
 // With no procedure screen loaded, one plain box takes the procedure; its matching description
 // field travels on the line unseen, exactly as a chosen code's does.
-function chargeProcedureFallback(l){return chargeMiniField('code','Procedure',l.code||'',100,true);}
+function chargeProcedureFallback(l){return `<label>Code<input name="code" type="text" value="${esc(l.code||'')}" maxlength="100" required></label><label class="charge-description-field">Description<input name="description" type="text" value="${esc(l.description||'')}" maxlength="10000" autocomplete="off" placeholder="What this service was"></label>`;}
 function chargeCodeCell(l){
  const extra=chargeIsDrugCode(l.code)||l.ndc_code||l.ndc_quantity||l.ndc_unit?'':' hidden';
  return `${typeof terminologyProcedureFields==='function'?terminologyProcedureFields(l):chargeProcedureFallback(l)}<div class="charge-drug"${extra}><p class="charge-drug-title">Drug given</p><div class="charge-drug-grid"><label>NDC code<input name="ndc_code" type="text" maxlength="13" value="${esc(l.ndc_code||'')}" placeholder="11 digits"></label><label>Quantity<input name="ndc_quantity" type="text" maxlength="7" value="${esc(l.ndc_quantity||'')}" placeholder="Amount given"></label><label>Unit<select name="ndc_unit">${ndcUnits.map(([v,name])=>`<option value="${v}" ${v===(l.ndc_unit||'')?'selected':''}>${v?`${v} — ${name}`:''}</option>`).join('')}</select></label></div><p class="muted">For an injected drug fill all three; leave them blank for any other service.</p></div>`;
@@ -444,7 +444,7 @@ function chargeDescriptionCell(l){
 // What the line submits for the service, out of sight: a chosen code leaves its words in the
 // procedure box a person reads, so the description never needs a box — or a column — of its own.
 function chargeHiddenField(name,value,max){return `<input type="hidden" name="${name}" value="${esc(value||'')}" maxlength="${max}">`;}
-function chargeLineDescriptionCell(l){return chargeHiddenField('description',l.description,10000);}
+function chargeLineDescriptionCell(){return '';}
 // What a line says the service was, in the words it was chosen with. A code taken from the code
 // list leaves those words in the procedure box as well as the field the line submits; a code typed
 // straight into the box is described by the box, which is all anyone has for it.
@@ -454,8 +454,8 @@ function chargeLineDescription(row){
  if(entered.trim())return entered;
  const shown=(row.querySelector('[name="procedure"]')?.value||'').trim();
  const code=(row.querySelector('[name="code"]')?.value||'').trim().toUpperCase();
- if(!shown)return '';
- return code&&shown.toUpperCase().startsWith(`${code}:`)?shown.slice(code.length+1).trim():shown;
+ if(!shown||!code)return '';
+ return shown.toUpperCase().startsWith(`${code}:`)?shown.slice(code.length+1).trim():'';
 }
 // The codes a line points at are still the field the line submits; the letters on the chips beside
 // it are how they are chosen, never a second copy of them.
@@ -1045,9 +1045,15 @@ function modifierChoicesFor(code){
  if(/^J/.test(code))return ['JZ','JW'];
  return ['59','XS','RT','LT','50','76'];
 }
+// The code a row is on now: the box being typed in while it holds a code, otherwise the code the
+// row carries (a pick from the code list, an earlier visit, a draft or a saved line fills that).
+function chargeRowCodeNow(row){
+ const typed=(row.querySelector('[name="procedure"]')?.value||'').split(':')[0].trim().toUpperCase();
+ return /^[A-Z0-9]{4,7}$/.test(typed)?typed:(row.querySelector('[name="code"]')?.value||'').trim().toUpperCase();
+}
 function modifierOptionsRender(row){
  const host=row?.querySelector?.('[data-modifier-options]'),input=row?.querySelector?.('[name="modifiers"]');if(!host||!input)return;
- const code=(row.querySelector('[name="code"]')?.value||'').trim().toUpperCase(),chosen=String(input.value||'').toUpperCase().split(/[,\s]+/).filter(Boolean);
+ const code=chargeRowCodeNow(row),chosen=String(input.value||'').toUpperCase().split(/[,\s]+/).filter(Boolean);
  const fit=modifierChoicesFor(code),key=code+'|'+chosen.join(',');if(host.dataset.key===key)return;host.dataset.key=key;
  const chip=m=>`<button type="button" class="modifier-chip${chosen.includes(m)?' is-on':''}" data-modifier-toggle="${m}" aria-pressed="${chosen.includes(m)}" title="${esc(modifierWords[m]||m)}">${m}<small>${esc(modifierWords[m]||'')}</small></button>`;
  const others=Object.keys(modifierWords).filter(m=>!fit.includes(m));
@@ -1063,7 +1069,7 @@ function modifierToggle(row,m){
 if(typeof document!=='undefined'){
  document.addEventListener('click',event=>{const b=event.target?.closest?.('[data-modifier-toggle]');if(!b)return;event.preventDefault();modifierToggle(b.closest('.billing-charge-row'),b.dataset.modifierToggle);});
  document.addEventListener('change',event=>{const sel=event.target?.closest?.('[data-modifier-more]');if(!sel||!sel.value)return;const value=sel.value;sel.value='';modifierToggle(sel.closest('.billing-charge-row'),value);});
- document.addEventListener('input',event=>{if(event.target?.name==='code'&&event.target.closest?.('.billing-charge-row'))modifierOptionsRender(event.target.closest('.billing-charge-row'));});
+ document.addEventListener('input',event=>{if(['code','procedure'].includes(event.target?.name)&&event.target.closest?.('.billing-charge-row'))modifierOptionsRender(event.target.closest('.billing-charge-row'));});
 }
 function chargeDraftBody(form){
  const correction=form.dataset.mode==='correction';
@@ -1111,7 +1117,7 @@ function restoreChargeTyping(form,typing){
  chargeTableTotals(form);
 }
 function chargeRow(l={},compact=false,key=''){
- return `<tr class="billing-charge-row"${key?` data-charge-key="${key}"`:''} ${!l.code&&l.amount_cents==null&&!(l.diagnosis_codes||[]).length?'data-diagnoses-default="pending"':''} data-catalog-release-id="${esc(l.catalog_release_id||'')}" data-catalog-code="${esc(l.code||'')}" data-catalog-display="${esc(l.description||'')}" data-catalog-system="${esc(l.code_system||chargeCodeSystem(l))}" data-charge-system="${esc(l.code_system||chargeCodeSystem(l))}"${l.amount_cents==null?'':' data-charge-amount="'+l.amount_cents+'"'}${l.fee_schedule_id?` data-fee-schedule="${esc(l.fee_schedule_id)}"`:''}${l.fee_entry_key?` data-fee-entry="${esc(l.fee_entry_key)}"`:''}><td class="charge-cell-code">${chargeCodeCell(l)}${chargeDescriptionCell(l)}${chargeRowExtras(l,compact)}</td><td class="charge-cell-modifiers">${compact?`<label>Modifiers<input name="modifiers" type="text" value="${esc(l.modifiers||'')}" maxlength="100" readonly placeholder="None"></label><div class="modifier-options" data-modifier-options></div>`:chargeMiniField('modifiers','Modifiers',l.modifiers||'',100)}</td><td class="charge-cell-units"><label>Units<input name="units" type="number" min="1" max="1000" step="1" value="${l.units===undefined?1:l.units}" required></label></td><td class="charge-cell-diagnoses">${chargeDiagnosisCell(l)}</td><td class="charge-cell-amount">${chargeMiniField('amount','Amount',dollars(l.amount_cents),30,true)}${typeof feeLineMarkup==='function'?feeLineMarkup(l):''}${l.source_fee!==undefined?`<p class="mapping-notice">Source fee: ${esc(l.source_fee)} · Check whether that was the whole line or one unit, then enter the amount for the whole line.</p>`:''}</td><td class="charge-cell-remove"><button type="button" data-remove-charge>Remove</button></td>${chargeLineTail(l)}</tr>`;
+ return `<tr class="billing-charge-row"${key?` data-charge-key="${key}"`:''} ${!l.code&&l.amount_cents==null&&!(l.diagnosis_codes||[]).length?'data-diagnoses-default="pending"':''} data-catalog-release-id="${esc(l.catalog_release_id||'')}" data-catalog-code="${esc(l.code||'')}" data-catalog-display="${esc(l.description||'')}" data-catalog-system="${esc(l.code_system||chargeCodeSystem(l))}" data-charge-system="${esc(l.code_system||chargeCodeSystem(l))}"${l.amount_cents==null?'':' data-charge-amount="'+l.amount_cents+'"'}${l.fee_schedule_id?` data-fee-schedule="${esc(l.fee_schedule_id)}"`:''}${l.fee_entry_key?` data-fee-entry="${esc(l.fee_entry_key)}"`:''}><td class="charge-cell-code">${chargeCodeCell(l)}${chargeDescriptionCell(l)}${chargeRowExtras(l,compact)}</td><td class="charge-cell-modifiers">${compact?`<label>Modifiers<input name="modifiers" type="text" value="${esc(l.modifiers||'')}" maxlength="100" readonly placeholder="None"></label><div class="modifier-options" data-modifier-options></div>`:chargeMiniField('modifiers','Modifiers',l.modifiers||'',100)+'<div class="modifier-options" data-modifier-options></div>'}</td><td class="charge-cell-units"><label>Units<input name="units" type="number" min="1" max="1000" step="1" value="${l.units===undefined?1:l.units}" required></label></td><td class="charge-cell-diagnoses">${chargeDiagnosisCell(l)}</td><td class="charge-cell-amount">${chargeMiniField('amount','Amount',dollars(l.amount_cents),30,true)}${typeof feeLineMarkup==='function'?feeLineMarkup(l):''}${l.source_fee!==undefined?`<p class="mapping-notice">Source fee: ${esc(l.source_fee)} · Check whether that was the whole line or one unit, then enter the amount for the whole line.</p>`:''}</td><td class="charge-cell-remove"><button type="button" data-remove-charge>Remove</button></td>${chargeLineTail(l)}</tr>`;
 }
 // The browser can only point at an invalid control that is visible, so the tucked-away visit,
 // insurance and fee fields are opened before validation runs whenever one of them fails.
