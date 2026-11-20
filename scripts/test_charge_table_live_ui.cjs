@@ -387,5 +387,23 @@ const advance=async()=>{
  const finished=nodes['encounter-billing-editor'].innerHTML;
  assert.match(finished,/Charges for this encounter/,'a posted account is shown as finished charges');
  assert.ok(!finished.includes('data-add-charge')&&!finished.includes('data-remove-charge'),'a finished table has nothing to press');
+ // The code and the description are two fields of their own, and the modifier choices follow the
+ // code however it arrives: typed, set by a pick from the code list, or restored with the row.
+ await openTable([]);
+ let blank=rowsNow()[0];
+ assert.ok(blank.querySelector('[name="code"]')&&blank.querySelector('[name="description"]')&&blank.querySelector('[name="code"]')!==blank.querySelector('[name="description"]'),'Code and Description are separate fields in the row');
+ assert.match(blank.querySelector('[data-modifier-options]').textContent,/Enter the code/,'no code yet, no modifier choices');
+ type(blank.querySelector('[name="code"]'),'99213');
+ assert.match(blank.querySelector('[data-modifier-options]').innerHTML,/data-modifier-toggle="25"/,'a typed code shows its modifier chips');
+ blank.querySelector('[name="code"]').value='64612';
+ vm.runInContext('chargeTableTotals(document.getElementById("billing-account-form"))',ctx);
+ assert.match(blank.querySelector('[data-modifier-options]').innerHTML,/data-modifier-toggle="50"/,'a code set without a typing event still refreshes the chips on the next render');
+ const picked={querySelector:selector=>({'[name="procedure"]':{value:'J0585'},'[name="code"]':{value:'old'}})[selector]||null};
+ ctx.pickedRow=picked;
+ assert.equal(vm.runInContext('chargeRowCodeNow(pickedRow)',ctx),'J0585','a code in the lookup box is the row\'s code while the hidden field catches up');
+ type(blank.querySelector('[name="description"]'),'Office visit, established patient');
+ assert.equal(vm.runInContext('chargeRowValue(document.getElementById("billing-charge-lines").querySelectorAll(".billing-charge-row")[0])',ctx).description,'Office visit, established patient','the description field is what the line saves');
+ blank.querySelector('[name="description"]').value='';
+ assert.ok(vm.runInContext('chargeRowProblems(document.getElementById("billing-charge-lines").querySelectorAll(".billing-charge-row")[0])',ctx).includes('Add what this service was.'),'a code without a description still asks for one');
  console.log('PASS charge table: add and focus, debounced POST then PUT with the server version, live totals and copay, plain-worded row problems, remove with undo, 409 refresh, and a read-only finished table');
 })().catch(error=>{console.error(error);process.exit(1);});
