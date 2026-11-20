@@ -11,10 +11,10 @@ const vb=load({...base(),$:()=>null,me:{role:'owner'}},'web/billing.js','web/vis
 const part=(id,cents,method,group,extra={})=>({id,appointment_id:'appointment',amount_cents:cents,method,occurred_on:'2026-11-12',voided:false,payment_group_id:group,...extra});
 const summary=visitSummary({receipts:[part('r1',5000,'card','g1'),part('r2',2500,'cash','g1'),part('r3',2500,'check','g1'),part('r4',1000,'cash',null)]});
 const html=vb.visitBillingBreakdown(summary,{canCreate:true,canWrite:true});
-assert.match(html,/data-payment-group="g1" data-appointment="appointment">Receipt: Payment \$100\.00 · card \$50\.00, cash \$25\.00, check \$25\.00<\/button>/);
-assert.equal((html.match(/data-payment-group=/g)||[]).length,1,'one receipt button for the whole payment');
-assert.equal((html.match(/data-copay-receipt=/g)||[]).length,1,'only the ungrouped receipt keeps its own button');
-assert.match(html,/data-copay-receipt="r4"/);assert.doesNotMatch(html,/data-copay-receipt="r[123]"/);
+assert.match(html,/<th scope="row">Patient paid<\/th><td>2 payments · [^]*?<td class="money-cell">\$110\.00<\/td>/,"one grouped payment plus one single payment, one line");assert.doesNotMatch(html,/cash \$25\.00, check/,"the methods are not spelled out on the breakdown");
+assert.equal((html.match(/data-payment-group=/g)||[]).length,0,'each payment and its one receipt are in the Payments list, not repeated on the breakdown');
+assert.equal((html.match(/data-copay-receipt=/g)||[]).length,0,'receipts are in the Payments list, not on the breakdown');
+assert.doesNotMatch(html,/data-copay-receipt="r[1234]"/,'no per-part receipt buttons on the breakdown');
 
 // Combined receipt: every tender, the total and the balance after payment.
 const pr=load({...base(),encounterNumberForAppointment:()=>'ENC-0007',invoicePaymentMethod:m=>m},'web/billing.js','web/patient-revenue.js');
