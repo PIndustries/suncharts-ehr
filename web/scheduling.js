@@ -141,14 +141,18 @@ async function attachScheduleLocations(){
  try{
   const directory=await api('/api/v1/schedule/locations');
   if($('schedule-booking')!==form||actor!==me?.user_id)return;
-  const facilityChoices=document.createElement('datalist'),roomChoices=document.createElement('datalist');
-  facilityChoices.id='schedule-facility-choices';roomChoices.id='schedule-room-choices';
-  const option=value=>{const node=document.createElement('option');node.value=value;return node;};
-  facilityChoices.replaceChildren(...directory.items.map(f=>option(f.name)));
-  const updateRooms=()=>roomChoices.replaceChildren(...(directory.items.find(f=>f.name===facility.value)?.rooms||[]).map(r=>option(r.name)));
-  facility.setAttribute('list',facilityChoices.id);room.setAttribute('list',roomChoices.id);form.appendChild(facilityChoices);form.appendChild(roomChoices);facility.addEventListener('input',updateRooms);updateRooms();
-  hint.textContent=directory.has_more?'Location choices are limited. Existing location text remains supported; server conflict checks apply.':'Choose a practice facility and room, or retain an existing location. Server conflict checks apply.';
- }catch{if($('schedule-booking')===form&&actor===me?.user_id)hint.textContent='Practice location choices could not load. Existing location text remains supported; refresh before choosing a new location.';}
+  // Facility and room are picked from the practice's own list, never typed: free text breaks room
+  // conflict checks, reports and automation. A location already on the appointment stays selectable.
+  const toSelect=(input,label)=>{const select=document.createElement('select');select.name=input.name;select.id=input.id||'';select.required=input.required;select.dataset.current=input.value||'';select.setAttribute('aria-label',label);input.replaceWith(select);return select;};
+  const fill=(select,names,emptyLabel)=>{const current=select.dataset.current;const list=[...new Set(names)];
+   const options=[`<option value="">${esc(emptyLabel)}</option>`,...(current&&!list.includes(current)?[`<option value="${esc(current)}">${esc(current)} (current)</option>`]:[]),...list.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`)];
+   select.innerHTML=options.join('');select.value=current&&[...select.options].some(o=>o.value===current)?current:'';};
+  const facilitySelect=toSelect(facility,'Facility'),roomSelect=toSelect(room,'Room');
+  fill(facilitySelect,directory.items.map(f=>f.name),directory.items.length?'Choose a facility':'No facilities set up yet');
+  const updateRooms=()=>{const rooms=directory.items.find(f=>f.name===facilitySelect.value)?.rooms||[];roomSelect.dataset.current=roomSelect.value||roomSelect.dataset.current;fill(roomSelect,rooms.map(r=>r.name),!facilitySelect.value?'Choose a facility first':rooms.length?'No room':'No rooms set up for this facility');roomSelect.disabled=!facilitySelect.value&&!roomSelect.dataset.current;};
+  facilitySelect.addEventListener('change',()=>{roomSelect.dataset.current='';roomSelect.value='';updateRooms();});updateRooms();
+  hint.textContent=directory.items.length?'Rooms are checked for double booking when you save. Add facilities and rooms in Practice administration.':'Add your facilities and rooms in Practice administration to choose them here.';
+ }catch{if($('schedule-booking')===form&&actor===me?.user_id)hint.textContent='Facilities and rooms could not load. Refresh to choose a room.';}
 }
 async function appointmentEditor(a,sourceMapping,chartContext,bookingDate=scheduleDate,slotTime,slotProvider){
  if(!a&&!chartContext)await loadSchedulePatients();
