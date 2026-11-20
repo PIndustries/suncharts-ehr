@@ -226,3 +226,18 @@
 .receipt-preview{display:flex;flex-direction:column;gap:12px}
 .receipt-preview-frame{width:100%;height:min(70vh,900px);border:1px solid var(--line);border-radius:8px;background:var(--paper)}
 .receipt-preview .actions{display:flex;gap:8px;justify-content:flex-end}
+/* Appointment preparation steps carry their state: done, needs a look, not done. */
+.insurance-workflow-stages button{display:flex;align-items:center;gap:8px;text-align:left}
+.prep-stage-text{display:flex;flex-direction:column;line-height:1.2}
+.prep-stage-text small{font-weight:400;color:var(--muted)}
+.prep-mark{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;width:22px;height:22px;border-radius:50%;font-weight:700;font-size:var(--fs-sm)}
+.prep-done{background:var(--success-bg);color:var(--success-text);border:1px solid var(--success-line)}
+.prep-check{background:var(--warning-bg);color:var(--warning-text);border:1px solid var(--warning-line)}
+.prep-todo{background:var(--error-bg);color:var(--error-text);border:1px solid var(--error-line)}
+.prep-summary{display:flex;align-items:center;gap:8px;font-weight:600}
+.insurance-workflow-stages button .prep-stage-text{display:flex;flex-direction:column;width:auto;height:auto;background:none;color:inherit;border-radius:0;font-size:inherit;place-items:initial}
+.insurance-workflow-stages button .prep-mark{width:24px;height:24px;font-size:var(--fs-sm)}
+.insurance-workflow-stages button .prep-done,.prep-summary .prep-done{background:var(--success-bg);color:var(--success-text)}
+.insurance-workflow-stages button .prep-check{background:var(--warning-bg);color:var(--warning-text)}
+.insurance-workflow-stages button .prep-todo{background:var(--error-bg);color:var(--error-text)}
+.insurance-workflow-stages{gap:28px}

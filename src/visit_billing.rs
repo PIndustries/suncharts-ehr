@@ -1602,9 +1602,60 @@ async fn make_statement(
 ) -> Result<Json<Value>> {
     Ok(Json(statement(db(&s)?, &a, p, id).await?))
 }
+/// One line of money and claim state per charge account for a patient, for the encounter list:
+/// charges, what insurance and the patient paid, what is still pending with insurance, what the
+/// patient owes now and any credit. Claim state only for staff who may view claims.
+async fn encounter_balances(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(p): Path<Uuid>,
+) -> Result<Json<Value>> {
+    a.staff()?;
+    let claims = crate::access_policies::require_native(&s, &a, "claims", "view")
+        .await
+        .is_ok();
+    let mut tx = db(&s)?.begin().await?;
+    let known: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM patients WHERE tenant_id=$1 AND id=$2)")
+            .bind(a.tenant_id)
+            .bind(p)
+            .fetch_one(&mut *tx)
+            .await?;
+    if !known {
+        return Err(Error::NotFound);
+    }
+    let rows = balances(&mut tx, a.tenant_id, Some(&[p]), None, None).await?;
+    let items: Vec<Value> = rows
+        .iter()
+        .filter(|r| r["patient_id"] == json!(p))
+        .map(|r| {
+            json!({
+                "account_id": r["id"],
+                "status": r["status"],
+                "posted": r["posted"],
+                "insured": r["insured"],
+                "total_cents": r["total_cents"],
+                "insurer_paid_cents": r["insurer_paid_cents"],
+                "patient_payments_cents": r["patient_payments_cents"],
+                "pending_cents": r["pending_cents"],
+                "owes_now_cents": r["owes_now_cents"],
+                "overpaid_cents": r["overpaid_cents"],
+                "claim_status": if claims { r["claim_status"].clone() } else { Value::Null },
+                "denied": if claims { r["denied"].clone() } else { Value::Null },
+            })
+        })
+        .collect();
+    crate::postgres::audit(&mut tx, &a, "billing.encounter_balances_read", p).await?;
+    tx.commit().await?;
+    Ok(Json(json!({ "items": items })))
+}
 pub fn router() -> Router<State> {
     Router::new()
         .route("/api/v1/patients/{p}/billing/visit-summary", get(read))
+        .route(
+            "/api/v1/patients/{p}/billing/encounters",
+            get(encounter_balances),
+        )
         .route(
             "/api/v1/patients/{p}/billing/accounts/{id}/claims/prepare",
             post(prepare),

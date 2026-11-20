@@ -109,18 +109,55 @@ function patientEncounterHistoryEntries(){
  const timestamp=entry=>Date.parse(entry.appointment?.starts_at||entry.visit?.created_at||entry.visit?.signed_at||'')||0;
  return entries.sort((a,b)=>timestamp(b)-timestamp(a)||String(a.visit?.id||a.appointment.id).localeCompare(String(b.visit?.id||b.appointment.id)));
 }
+// What each encounter in the list is about at a glance: diagnoses and procedures from its charges,
+// then its money and claim state from the server (one request per patient, filled in when it lands).
+let encounterBalanceCache={patient:null,items:null,loading:null};
+function encounterHistoryAccount(visit){return (workspace?.billing?.accounts||[]).filter(a=>a.status!=='void'&&a.content?.visit_id===visit.id).pop()||null;}
+function encounterHistoryDetails(visit){
+ const account=encounterHistoryAccount(visit);
+ if(!account)return '<small class="encounter-history-codes muted">No charges yet</small>';
+ const lines=account.content?.lines||[];
+ const procedures=lines.map(l=>esc(l.code)+(String(l.modifiers||'').trim()?'-'+esc(String(l.modifiers).trim().replace(/\s+/g,'-')):'')).join(', ');
+ const diagnoses=[...new Set(lines.flatMap(l=>l.diagnosis_codes||[]))].map(esc).join(', ');
+ return `<small class="encounter-history-codes">${procedures?'Procedures '+procedures:'No procedures'}${diagnoses?' · Diagnoses '+diagnoses:''}</small><small class="encounter-history-money" data-encounter-money="${esc(account.id)}">${account.status==='posted'?'Charges '+money(Number(account.total_cents||0)):'Charges not posted yet · '+money(Number(account.total_cents||0))}</small>`;
+}
+function encounterClaimWords(row){
+ if(row.denied===true)return 'Claim denied';
+ return ({draft:'Claim not sent',ready:'Claim ready to send',submitted:'Claim sent',accepted:'Claim accepted by the payer',adjudicated:'Insurance answered',rejected:'Claim rejected',paid:'Insurance paid'})[row.claim_status]||'';
+}
+function encounterMoneyWords(row){
+ const parts=['Charges '+money(Number(row.total_cents||0))];
+ if(!row.posted)return 'Charges not posted yet · '+money(Number(row.total_cents||0));
+ if(Number(row.insurer_paid_cents)>0)parts.push('Insurance paid '+money(Number(row.insurer_paid_cents)));
+ if(Number(row.pending_cents)>0)parts.push('Insurance pending '+money(Number(row.pending_cents)));
+ if(Number(row.patient_payments_cents)>0)parts.push('Patient paid '+money(Number(row.patient_payments_cents)));
+ parts.push(Number(row.owes_now_cents)>0?'Patient owes '+money(Number(row.owes_now_cents)):Number(row.overpaid_cents)>0?'Credit '+money(Number(row.overpaid_cents)):'Patient owes nothing');
+ const claim=encounterClaimWords(row);if(claim)parts.push(claim);
+ return parts.join(' · ');
+}
+async function fillEncounterHistoryMoney(){
+ const patient=selected;if(!patient||!document.querySelector?.('[data-encounter-money]'))return;
+ if(encounterBalanceCache.patient!==patient||!encounterBalanceCache.items){
+  if(encounterBalanceCache.patient!==patient||!encounterBalanceCache.loading){encounterBalanceCache={patient,items:null,loading:api(`/api/v1/patients/${encodeURIComponent(patient)}/billing/encounters`).then(r=>r.items||[]).catch(()=>null)};}
+  const items=await encounterBalanceCache.loading;if(encounterBalanceCache.patient!==patient)return;encounterBalanceCache.items=items;
+ }
+ const items=encounterBalanceCache.items;if(!items||selected!==patient)return;
+ for(const node of document.querySelectorAll('[data-encounter-money]')){const row=items.find(r=>r.account_id===node.dataset.encounterMoney);if(row)node.textContent=encounterMoneyWords(row);}
+}
 function patientEncounterHistoryRows(limit,compact=false){
  const entries=patientEncounterHistoryEntries(),rows=Number.isInteger(limit)?entries.slice(0,limit):entries;
  return rows.map(({visit:v,appointment:a})=>{
-  const providerId=a?.clinician_id||v?.clinician_id,provider=scheduleProviders.find(p=>p.id===providerId)?.label||(providerId===me.user_id?'You':'Assigned clinician');
+  const providerId=a?.clinician_id||v?.clinician_id,provider=scheduleProviders.find(p=>p.id===providerId)?.label||(v&&encounterHistoryAccount(v)?.content?.claim_details?.rendering_provider_name)||(providerId===me.user_id?'You':'Assigned clinician');
   const signed=v?.status==='signed',completed=a?.status==='completed',status=v?(signed?(completed?'Completed · Signed':'Signed'):'In progress'):scheduleLabel(a.status);
   const when=a?.starts_at||v?.created_at||v?.signed_at;
   const action=v?`<button type="button" class="quiet" data-visit="${esc(v.id)}">${signed?'Open completed encounter':'Continue encounter'}</button>`:a.status==='booked'&&canSchedule()?`<button type="button" data-check-in="${esc(a.id)}">Check in</button>`:a.status==='checked_in'&&((typeof isRoomingStaff==='function'&&isRoomingStaff())||(['owner','clinician'].includes(me.role)&&a.clinician_id===me.user_id))?`<button type="button" class="primary" data-start="${esc(a.id)}">Start visit</button>`:'';
-  return `<div class="${compact?'chart-history-row':'timeline-row encounter-history-row'}${v?.id===activeVisit?.id?' selected-encounter':''}" ${v?`data-history-visit="${esc(v.id)}"`:`data-history-appointment="${esc(a.id)}"`}><div><strong>${esc(a?.title||'Office visit')}</strong><small>${when?esc(date(when)):'No date'} · ${esc(status)}</small>${compact?'':`<small>${esc(provider)}${a?.category?' · '+esc(a.category):''}${a?.facility?' · '+esc(a.facility):''}${a?.room?' · Room '+esc(a.room):''}</small>${!v&&['completed','in_progress'].includes(a.status)?'<small>No visit note was started for this appointment.</small>':''}${v?.id===activeVisit?.id?'<small>Selected encounter</small>':''}`}</div>${action}</div>`;
+  return `<div class="${compact?'chart-history-row':'timeline-row encounter-history-row'}${v?.id===activeVisit?.id?' selected-encounter':''}" ${v?`data-history-visit="${esc(v.id)}"`:`data-history-appointment="${esc(a.id)}"`}><div><strong>${v&&typeof encounterNumberText==='function'&&encounterNumberText(v)?esc(encounterNumberText(v))+' · ':''}${esc(a?.title||'Office visit')}</strong><small>${when?esc(date(when)):'No date'} · ${esc(status)}</small>${compact?'':`<small>${esc(provider)}${a?.category?' · '+esc(a.category):''}${a?.facility?' · '+esc(a.facility):''}${a?.room?' · Room '+esc(a.room):''}</small>${!v&&['completed','in_progress'].includes(a.status)?'<small>No visit note was started for this appointment.</small>':''}${v?encounterHistoryDetails(v):''}${v?.id===activeVisit?.id?'<small>Selected encounter</small>':''}`}</div>${action}</div>`;
  }).join('')||'<p class="muted">No visits or appointments yet.</p>';
 }
 function patientAppointmentWorkspace(){
  const count=patientEncounterHistoryEntries().length;
+ // The list is placed by the caller; fill in each encounter's money once it is on the page.
+ if(typeof setTimeout==='function')setTimeout(()=>{void fillEncounterHistoryMoney();},0);
  return `<section id="appointments-panel" class="panel patient-appointments patient-encounter-history"><div class="section-head"><div><h2>Encounter history</h2></div>${canSchedule()?`<button type="button" data-chart-book="${esc(selected)}">Book appointment</button>`:''}</div><details id="patient-encounter-history" ${activeVisit?'':'open'}><summary>${activeVisit?'Other encounters and appointments':'Visits and appointments'} <span class="pill">${count}</span></summary>${patientEncounterHistoryRows()}</details><div id="chart-booking-editor"></div></section>`;
 }
 async function openPatientAppointmentEditor(patientId){

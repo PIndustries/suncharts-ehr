@@ -2589,3 +2589,54 @@ async fn parts_of_one_payment_share_a_group_that_the_summary_and_group_endpoint_
         .await;
     assert!(other["receipts"].as_array().unwrap().is_empty());
 }
+
+/// Before the insurer answers, patient money above the plan copay is credit on the account: the
+/// insurance pending figure stays charges less the copay, and the encounter list reports the same
+/// figures for each encounter.
+#[tokio::test]
+async fn patient_overpayment_before_the_insurer_answers_is_credit_not_a_smaller_claim() {
+    let f = setup().await;
+    f.directory(true).await;
+    let (p, appointment, visit) = f.visit(true).await;
+    let (_payer, policy) = f.coverage(p, "primary", "SYN-P", Some(2500)).await;
+    let draft = f.charges(p, visit, Some(id(&policy)), 10000).await;
+    let posted = f.post(p, &draft).await;
+    f.copay(p, appointment, 4000).await;
+
+    let s = f.summary(&f.owner, p, visit).await;
+    adds_up(&s);
+    assert_eq!(s["insurance"]["pending_cents"], 7500, "{s}");
+    assert_eq!(s["patient"]["owes_now_cents"], 0, "{s}");
+    assert_eq!(s["patient"]["overpaid_cents"], 1500, "{s}");
+
+    let (status, list) = f
+        .call(
+            &f.owner,
+            "GET",
+            &format!("/api/v1/patients/{p}/billing/encounters"),
+            json!(null),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let items = list["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{list}");
+    let row = &items[0];
+    assert_eq!(row["account_id"], json!(id(&posted)));
+    assert_eq!(row["total_cents"], 10000);
+    assert_eq!(row["pending_cents"], 7500);
+    assert_eq!(row["owes_now_cents"], 0);
+    assert_eq!(row["overpaid_cents"], 1500);
+    assert_eq!(row["patient_payments_cents"], 4000);
+
+    let (status, _) = f
+        .call(
+            &f.owner,
+            "GET",
+            &format!("/api/v1/patients/{}/billing/encounters", Uuid::new_v4()),
+            json!(null),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
