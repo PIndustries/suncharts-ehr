@@ -24,6 +24,16 @@
 .claim-missing ul ul li{font-size:var(--fs-sm)}
 .claim-missing ul ul li::after{content:';'}
 .claim-missing ul ul li:last-child::after{content:''}
+.claim-quick-fix{display:grid;gap:.6rem;margin:.4rem 0 .8rem;padding:.75rem .9rem;border:1px solid var(--line);border-radius:.45rem;background:var(--surface);color:var(--ink)}
+.claim-quick-fix h4{margin:0;font-size:var(--fs-body)}
+.claim-quick-fix fieldset{margin:0;padding:0;border:0;min-width:0}
+.claim-quick-fix legend{font-weight:600;padding:0;margin-bottom:.3rem}
+.claim-quick-fix legend small{font-weight:400;color:var(--muted)}
+.claim-quick-fix label{display:grid;gap:.2rem;min-width:0}
+.claim-quick-fix input{width:100%;box-sizing:border-box}
+.claim-quick-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1.2fr) minmax(0,1.2fr) minmax(0,.6fr) minmax(0,.8fr);gap:.5rem}
+.claim-quick-fix .actions{margin:0}
+@media(max-width:760px){.claim-quick-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
 @media(max-width:760px){.claim-missing>ul>li{grid-template-columns:1fr;gap:.25rem}}
 
 /* What the claim was billed for, and what has been put against it. */
