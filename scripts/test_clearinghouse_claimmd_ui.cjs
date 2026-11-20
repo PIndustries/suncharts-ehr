@@ -104,7 +104,7 @@ for(const file of ['web/claimmd-native.js','web/provider-settings.js','web/clear
  assert.equal(detailHeadingFocus?.preventScroll,true);
  assert.doesNotMatch(fs.readFileSync('web/clearinghouse.js','utf8'),/\.scrollIntoView\(/);
  const nativeSource=fs.readFileSync('web/claimmd-native.js','utf8');
- assert.match(nativeSource,/Where this claim stands/);
+ assert.match(nativeSource,/claim-progress-bar/);
  assert.match(nativeSource,/Test claim\$\{live/);
  assert.match(nativeSource,/synthetic_test_reviewed/);
  assert.match(fs.readFileSync('web/claims.js','utf8'),/SCTEST control number/);

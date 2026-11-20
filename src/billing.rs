@@ -879,6 +879,9 @@ struct Action {
     reason: String,
     #[serde(default)]
     local_only: bool,
+    /// The person posting has reviewed charges that were held for review.
+    #[serde(default)]
+    review_approved: bool,
 }
 async fn account_action(
     a: Actor,
@@ -900,8 +903,18 @@ async fn account_action(
     }
     let content: AccountContent = serde_json::from_value(old.content)
         .map_err(|_| Error::Invalid("invalid stored billing account"))?;
+    let held = content
+        .claim_details
+        .as_ref()
+        .is_some_and(|details| details.review_requested);
     let (status, snapshot) = match v.action.as_str() {
         "post" => {
+            // Charges held for review are posted only by someone who says they reviewed them.
+            if held && !v.review_approved {
+                return Err(Error::Conflict(
+                    "These charges are held for review. Review them, then choose Approve and post.",
+                ));
+            }
             let snapshot =
                 account_links(&mut tx, &a, p, &content, old.source_history_id, true).await?;
             let missing_electronic_payer = snapshot.as_ref().is_some_and(|snapshot| {

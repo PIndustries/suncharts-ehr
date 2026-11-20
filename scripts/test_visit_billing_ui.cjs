@@ -126,7 +126,7 @@ const options=ctx.hostedCopayMarkup(hostedState,true);
 for(const [attribute,label] of [['data-reader-copay','Card on reader'],['data-saved-card-copay','Card on file'],['data-collect-card-copay','Online payment link']])assert.ok(options.includes(`${attribute}="appointment" >${label}</button>`),label+options);
 assert.doesNotMatch(options,/Check payment status|Card payment details|additional collection|class="primary"/);
 assert.match(ctx.hostedCopayMarkup({...hostedState,items:[{id:'op',appointment_id:'appointment',amount_cents:1000,livemode:true,status:'open',created_at:'2026-11-12T15:00:00Z'}]},true),/Awaiting card payment[\s\S]*Check card payment status/);
-assert.match(ctx.hostedCopayMarkup({...hostedState,availability:{available:false,reason:'Card payments are not set up.'}},true),/Card payments are not set up\./);
+assert.match(ctx.hostedCopayMarkup({...hostedState,availability:{available:false,reason:'Card payments are not set up.'}},true),/Card payments aren’t set up yet\./);
 const more=ctx.visitBillingMore(answered,all);
 for(const expected of ['data-visit-statement>Patient statement','data-new-ledger>Record a payment, write-off or adjustment','data-visit-history="payments">Refunds and card payments','data-revenue-claim="claim">Open claim: correct, void or bill secondary insurance','/api/v1/billing/claims/claim/cms1500','data-chart-section="insurance">Insurance and eligibility'])assert.ok(more.includes(expected),expected);
 assert.match(more,/^<details class="visit-billing-more" data-revenue-disclosure="more"><summary>More actions<\/summary>/);

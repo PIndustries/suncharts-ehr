@@ -235,6 +235,9 @@ async function loadEncounterRevenueStatus(account,force=false){
   finally{state.pending=null;render();
    // The claim made from these codes shows under them as soon as the summary names it.
    if(current()&&$('encounter-revenue')?.dataset?.invoiceTab==='billing'&&typeof encounterClaimMount==='function')encounterClaimMount();
+   // The banner's claim bar follows this encounter's claim, whichever tab is open.
+   const claimId=state.data?.summary?.claim?.id;
+   if(current()&&claimId&&typeof patientBannerClaim!=='undefined'&&patientBannerClaim.claim?.id!==claimId&&typeof claimMdClaimLifecycle==='function'&&typeof claimsBase!=='undefined')void api(`${claimsBase}/${encodeURIComponent(claimId)}`).then(detail=>{if(current()&&detail?.claim?.id===claimId)claimMdClaimLifecycle(detail.claim,detail);}).catch(()=>{});
   if(current()&&typeof setTimeout==='function'&&state.data?.summary?.account?.status==='posted'){clearTimeout(state.timer);state.timer=setTimeout(()=>{const node=$('encounter-revenue-status');if(current()&&node&&(!node.getClientRects||node.getClientRects().length))void loadEncounterRevenueStatus(encounterChargeAccount(),true);},20000);}}
  })();
  return state.pending;
@@ -266,6 +269,7 @@ function showVisitStatement(invoice){
  const frame=document.createElement('iframe');frame.id='patient-invoice-frame';frame.title='Patient statement print preview';frame.className='avs-print-frame';frame.setAttribute('sandbox','allow-same-origin allow-modals');frame.srcdoc=patientInvoiceDocument(invoice);$('patient-invoice-preview')?.append(frame);
 }
 function openVisitCollect(){
+ if(typeof sheetOpen==='function'&&typeof document!=='undefined'&&document.createElement&&openCollectModal())return;
  const panel=$('visit-billing-collect');if(!panel)return;
  const summary=encounterRevenueState.data?.summary,note=$('visit-billing-collect-note');
  if(note)note.textContent=summary?`Patient owes now ${money(summary.patient.owes_now_cents)}.`:'';
@@ -405,10 +409,17 @@ async function postVisitChargesFromCard(options={}){
  }
 const insured=state.data?.summary?.insurance?.insured===true&&account.content.coverage_id!=null;
  const message=options.send&&insured?`Charges of ${money(account.total_cents)} become final and the claim is sent once it is ready.`:insured?`Charges of ${money(account.total_cents)} become final and the insurance claim is prepared.`:`Charges of ${money(account.total_cents)} become final.`;
- if(!await confirmAction(message,{title:'Post these charges?',confirmLabel:options.send&&insured?'Post charges and send claim':'Post charges'})){visitChargePostResult.cancelled=true;return false;}
+ // Codes are checked on every post, as approving an encounter does elsewhere: what must be fixed
+ // stops the post and is shown on the table; what should be checked is asked about once.
+ const form=$('billing-account-form'),findings=form&&typeof encounterCodeFindings==='function'?encounterCodeFindings(form):[];
+ const fixes=findings.filter(f=>f.level==='fix'),reviews=findings.filter(f=>f.level==='review');
+ if(fixes.length){const host=form.querySelector('[data-code-check]');if(host){host.innerHTML=encounterCodeFindingsMarkup(findings);host.scrollIntoView?.({block:'center',behavior:'smooth'});if(typeof flashUpdated==='function')flashUpdated(host);}notice(`${fixes.length===1?'1 thing needs':fixes.length+' things need'} fixing before these charges can be posted.`,true);visitChargePostResult.cancelled=true;return false;}
+ const held=account.content.claim_details?.review_requested===true;
+ const checks=reviews.length?`\n\nCheck before posting:\n${reviews.map(f=>'• '+f.text).join('\n')}`:'';
+ if(!await confirmAction(message+(held?' These charges were held for review; posting approves them.':'')+checks,{title:held?'Approve and post these charges?':'Post these charges?',confirmLabel:held?'Approve and post':options.send&&insured?'Post charges and send claim':'Post charges'})){visitChargePostResult.cancelled=true;return false;}
  visitChargePostResult.posted=true;
  const patient=selected,identity=me;
- await api(`${billingBase()}/${account.id}/actions`,'POST',{action:'post',reason:'Charges posted',local_only:false},account.version);
+ await api(`${billingBase()}/${account.id}/actions`,'POST',{action:'post',reason:held?'Charges reviewed and posted':'Charges posted',local_only:false,...(held?{review_approved:true}:{})},account.version);
  if(selected!==patient||me!==identity)return;
  // The same refresh the lower form does: this encounter reopened on its billing step. Then the
  // card's own state is dropped so it reads what the server now says. A chart opened on
@@ -521,7 +532,7 @@ document.addEventListener('click',event=>{
  if(button.dataset.refreshEligibility){event.preventDefault();loadInsuranceEligibility(button.dataset.refreshEligibility,true);return;}
  if(button.hasAttribute('data-refresh-revenue')){event.preventDefault();loadEncounterRevenueStatus(encounterChargeAccount(),true);return;}
  if(button.hasAttribute('data-visit-collect')){event.preventDefault();openVisitCollect();return;}
- if(button.hasAttribute('data-visit-collect-close')){event.preventDefault();const panel=$('visit-billing-collect');if(panel)panel.hidden=true;return;}
+ if(button.hasAttribute('data-visit-collect-close')){event.preventDefault();if(collectDialog){sheetClose(collectDialog);return;}const panel=$('visit-billing-collect');if(panel)panel.hidden=true;return;}
  if(button.dataset.visitClaimPrepare!==undefined){event.preventDefault();button.disabled=true;run(()=>prepareVisitClaim(button.dataset.visitClaimPrepare==='again'));return;}
  if(button.dataset.visitClaimDirectSend){event.preventDefault();run(()=>sendVisitClaimNow(button.dataset.visitClaimDirectSend,button));return;}
  if(button.dataset.visitPostAndSend){event.preventDefault();run(()=>postVisitChargesAndSend());return;}
@@ -638,13 +649,13 @@ function hostedCopayMarkup(state,encounter=false){
  // The reader button sits beside the card link and is left out until card payments are set up.
  const collect=`<button type="button" ${!encounter&&!received&&!pending?'class="primary"':''} data-collect-card-copay="${esc(state.appointment)}" ${available?'':'disabled'}>${received?'Take another card payment':'Collect card copay'}</button>${state.availability?.available?`<button type="button" data-reader-copay="${esc(state.appointment)}" ${available?'':'disabled'}>Take card payment on reader</button><button type="button" data-saved-card-copay="${esc(state.appointment)}" ${available?'':'disabled'}>Charge card on file</button>`:''}`;
  const refresh=active[0]||state.items.find(item=>item.status!=='expired');
- const setup=!state.availability?.available?(me?.role==='owner'?'<p><button type="button" data-payment-settings>Stripe setup & card readiness</button></p>':'<p class="muted">A practice administrator must review Stripe setup and card readiness.</p>'):'';
+ const setup=!state.availability?.available?(me?.role==='owner'?'<p><button type="button" data-payment-settings>Set up card payments</button></p>':'<p class="muted">Ask the practice owner to set up card payments.</p>'):'';
  const historyContent=`${received&&!pending&&!state.uncertain?collect:''}${historyReceipts.length?copayReceiptMarkup(historyReceipts,{modeShown:test,encounter}):''}${history.map(item=>hostedCopayOperationMarkup(item,{modeShown:test,hideRefresh:true})).join('')}${state.uncertain&&state.retry?`<button type="button" data-retry-hosted-copay="${esc(state.appointment)}">${state.retry.reader_id?`Send the same ${money(state.retry.amount_cents)} payment to the reader`:state.retry.saved_card_setup_id?`Check the ${money(state.retry.amount_cents)} card charge`:`Retry the same ${money(state.retry.amount_cents)} checkout request`}</button>`:''}`;
  // On the encounter's billing card these are the ways to collect; cash or check sits beside them.
  if(encounter){
   const options=state.availability?.available?`<div class="actions visit-billing-collect-options"><button type="button" data-reader-copay="${esc(state.appointment)}" ${available?'':'disabled'}>Card on reader</button><button type="button" data-saved-card-copay="${esc(state.appointment)}" ${available?'':'disabled'}>Card on file</button><button type="button" data-collect-card-copay="${esc(state.appointment)}" ${available?'':'disabled'}>Online payment link</button></div>`:'';
   const earlier=`${receipts.length?copayReceiptMarkup(receipts,{modeShown:test,encounter}):''}${history.map(item=>hostedCopayOperationMarkup(item,{modeShown:test,hideRefresh:true})).join('')}${state.uncertain&&state.retry?`<button type="button" data-retry-hosted-copay="${esc(state.appointment)}">${state.retry.reader_id?`Send the same ${money(state.retry.amount_cents)} payment to the reader`:state.retry.saved_card_setup_id?`Check the ${money(state.retry.amount_cents)} card charge`:`Retry the same ${money(state.retry.amount_cents)} checkout request`}</button>`:''}`;
-  return `${test&&typeof testPaymentLabel==='function'&&testPaymentLabel()?`<p class="copay-mode-label">${testPaymentLabel()}</p>`:''}${state.uncertain?'<p role="status">The previous request has an uncertain result. Check its status before collecting again.</p>':''}${state.error?'<p role="status">Card payment status is unavailable. Check its status before collecting.</p>':!state.availability?'<p class="muted">Loading card payment options…</p>':!state.availability.available?`<p class="muted">${esc(state.availability.reason||'Card payments are not set up for this practice.')}</p>`:''}${setup}${active.map(item=>hostedCopayOperationMarkup(item,{modeShown:test,hideRefresh:true,receiptShown:receiptIds.has(item.receipt_id)})).join('')}${options}${state.items.length||state.uncertain||state.error?`<button type="button" class="text-button" ${refresh?`data-refresh-hosted-copay="${esc(refresh.id)}" data-appointment="${esc(state.appointment)}"`:`data-refresh-hosted-copay-list="${esc(state.appointment)}"`}>Check card payment status</button>`:''}${earlier?`<details class="encounter-account-record" data-hosted-disclosure="history"><summary>Payments taken for this encounter</summary>${earlier}</details>`:''}`;
+  return `${test&&typeof testPaymentLabel==='function'&&testPaymentLabel()?`<p class="copay-mode-label">${testPaymentLabel()}</p>`:''}${state.uncertain?'<p role="status">The previous request has an uncertain result. Check its status before collecting again.</p>':''}${state.error?'<p role="status">Card payment status is unavailable. Check its status before collecting.</p>':!state.availability?'<p class="muted">Loading card payment options…</p>':!state.availability.available?`<p class="muted">Card payments aren’t set up yet.</p>`:''}${setup}${active.map(item=>hostedCopayOperationMarkup(item,{modeShown:test,hideRefresh:true,receiptShown:receiptIds.has(item.receipt_id)})).join('')}${options}${state.items.length||state.uncertain||state.error?`<button type="button" class="text-button" ${refresh?`data-refresh-hosted-copay="${esc(refresh.id)}" data-appointment="${esc(state.appointment)}"`:`data-refresh-hosted-copay-list="${esc(state.appointment)}"`}>Check card payment status</button>`:''}${earlier?`<details class="encounter-account-record" data-hosted-disclosure="history"><summary>Payments taken for this encounter</summary>${earlier}</details>`:''}`;
  }
  return `${test&&typeof testPaymentLabel==='function'&&testPaymentLabel()?`<p class="copay-mode-label">${testPaymentLabel()}</p>`:''}${state.uncertain?'<p role="status">The previous request has an uncertain result. Check its status before collecting again.</p>':''}${state.error?'<p role="status">Card payment status is unavailable. Check its status before collecting.</p>':!state.availability?'<p class="muted">Loading card payment availability…</p>':!state.availability.available?`<p class="muted">${esc(state.availability.reason||'Card collection is unavailable for this practice.')}</p>`:''}${setup}${active.map(item=>hostedCopayOperationMarkup(item,{modeShown:test,primary:!encounter,hideRefresh:true,receiptShown:receiptIds.has(item.receipt_id)})).join('')}${currentReceipts.length?copayReceiptMarkup(currentReceipts.slice(0,1),{modeShown:test,primary:!encounter&&!pending,encounter}):''}${!received&&!pending&&!state.uncertain?collect:''}<button type="button" class="text-button" ${refresh?`data-refresh-hosted-copay="${esc(refresh.id)}" data-appointment="${esc(state.appointment)}"`:`data-refresh-hosted-copay-list="${esc(state.appointment)}"`}>Check payment status</button>${historyContent?`<details class="${encounter?'encounter-account-record':'insurance-supporting-records'}" data-hosted-disclosure="history"><summary>${encounter?'Card payment details':'Payment history'}${received?' &amp; additional collection':''}</summary>${historyContent}</details>`:''}`;
 }
@@ -716,6 +727,7 @@ function showSavedCardCopay(state,operation,panelId){
  if(!drawReaderCopay(panelId,'<div id="saved-card-payment-live"></div>'))return;
  watchSavedCardPayment({operation,refreshUrl:`${base}/refresh`,
   accept:next=>{if(currentHostedCopayState(state))acceptHostedCopayOperation(state,next);},
+  finished:done=>{if(collectDialog&&['paid','refunded'].includes(done.status))collectPartTaken(done.amount_cents,'card on file',done.receipt_id?{id:done.receipt_id}:null,done.appointment_id);},
   approved:paid=>paid.receipt_id?`<button type="button" class="primary" data-hosted-copay-receipt="${esc(paid.receipt_id)}" data-appointment="${esc(paid.appointment_id)}">View / print receipt</button>`:'',
   // One press makes the card link for the same amount; it appears in the copay list above.
   link:async declined=>{if(!currentHostedCopayState(state))return;const made=await api(hostedCopayBase(state),'POST',{request_id:crypto.randomUUID(),amount_cents:declined.amount_cents,coverage_id:state.savedCardCoverage||null,livemode:declined.livemode===true,reason:'Card link sent after the bank asked the patient to confirm'});if(!currentHostedCopayState(state))return;acceptHostedCopayOperation(state,made.operation);stopSavedCardPayment();const slot=readerCopaySlot(panelId);if(slot)slot.innerHTML='<p role="status">Card link created. Open it or send it from the copay list.</p>';}});
@@ -739,6 +751,7 @@ function showReaderCopay(state,operation,panelId){
  watchReaderPayment({operation,readerName:reader?.name,statusUrl:base,cancelUrl:`${base}/reader-cancel`,
   // Try again keeps the amount that was just attempted.
   again:()=>openReaderCopayEditor(state.appointment,panelId,operation.amount_cents),
+  finished:done=>{if(collectDialog&&['paid','refunded'].includes(done.status))collectPartTaken(done.amount_cents,'card on the reader',done.receipt_id?{id:done.receipt_id}:null,done.appointment_id);},
   accept:next=>{if(currentHostedCopayState(state))acceptHostedCopayOperation(state,next);},
   approved:paid=>paid.receipt_id?`<button type="button" class="primary" data-hosted-copay-receipt="${esc(paid.receipt_id)}" data-appointment="${esc(paid.appointment_id)}">View / print receipt</button>`:''});
 }
@@ -899,3 +912,107 @@ function renderEncounterInvoices(){
  // charges are the codes, and payments always go to the encounter.
  host.innerHTML=`<div class="section-head"><div><h3>Statements</h3><p class="muted">${owes==null?'':owes>0?`The patient owes ${money(owes)}. `:'The patient owes nothing on this encounter. '}A statement shows the patient what they owe today.</p></div>${give}</div>${statements.length?`<ol class="encounter-invoice-list">${statements.map(event=>`<li><span><b>${esc(visitBillingDate(event.at))}</b><small>${event.amount_cents==null?'Statement':`Statement · ${money(event.amount_cents)} due`}</small></span><button type="button" data-visit-statement-open="${esc(event.invoice_id)}">View</button></li>`).join('')}</ol>`:''}`;
 }
+
+// ---- Collect payment, in one window ----------------------------------------------------------
+// Every way a patient pays sits in one window over the encounter: cash, check, the card reader,
+// a card on file, or a payment link. The reader and card flows are the existing ones, drawn in
+// the window, so their live status is what staff watch while the patient pays.
+const collectMethods=[['cash','Cash'],['check','Check'],['reader','Card reader'],['saved','Card on file'],['link','Payment link']];
+let collectDialog=null;
+// One payment can be taken in parts — card, then cash, then a check — against one amount to
+// collect. Each method starts at what is left; the window lists what was taken.
+let collectSession={target:null,taken:[]};
+function collectTakenCents(){return collectSession.taken.reduce((sum,part)=>sum+part.amount,0);}
+function collectLeftCents(){return collectSession.target==null?null:Math.max(0,collectSession.target-collectTakenCents());}
+function collectProgressMarkup(){
+ const left=collectLeftCents(),taken=collectSession.taken;
+ return `<div class="collect-target"><label>Amount to collect<input name="collect_target" inputmode="decimal" value="${collectSession.target==null?'':esc(dollars(collectSession.target))}" autocomplete="off" data-collect-target></label>${taken.length?`<ul class="collect-taken">${taken.map(part=>`<li>✓ ${money(part.amount)} ${esc(part.label)}</li>`).join('')}</ul>`:''}<p class="collect-left"><span>Left to pay</span><b>${left==null?'—':money(left)}</b></p></div>`;
+}
+function collectProgressPaint(){const node=collectDialog?.querySelector('[data-collect-progress]');if(node){node.innerHTML=collectProgressMarkup();if(typeof flashUpdated==='function')flashUpdated(node);}}
+// A part was taken: count it, and either ask for the rest or finish.
+function collectPartTaken(amount,label,receipt,appointment){
+ if(!collectDialog)return;
+ collectSession.taken.push({amount,label});collectDialog.dataset.refresh='1';collectProgressPaint();
+ const left=collectLeftCents(),slot=$('encounter-hosted-copay-reader');if(!slot)return;
+ const receiptButton=receipt?.id?`<button type="button" data-collect-receipt="${esc(receipt.id)}" data-appointment="${esc(appointment||'')}">Print receipt</button>`:'';
+ if(left>0){slot.innerHTML=`<section class="collect-step-done" role="status"><p><b>✓ ${money(amount)} ${esc(label)} taken.</b> ${money(left)} left to pay. Choose how to take the rest above.</p><div class="actions">${receiptButton}</div></section>`;return;}
+ slot.innerHTML=`<section class="collect-done" role="status"><div class="collect-done-mark" aria-hidden="true">✓</div><h3>${collectSession.taken.length>1?`${money(collectTakenCents())} paid in ${collectSession.taken.length} parts`:`${money(amount)} ${esc(label)} recorded`}</h3><p class="muted">The payment goes to this encounter's balance.</p><div class="actions">${receiptButton}<button type="button" class="primary" data-sheet-close>Done</button></div></section>`;
+}
+function collectAppointmentId(){return $('encounter-hosted-copay')?.dataset.appointment||(typeof revenueAppointment==='function'?revenueAppointment()?.id:null)||null;}
+function collectOwedMarkup(){
+ const summary=encounterRevenueState?.data?.summary,p=summary?.patient||{},owes=p.owes_now_cents;
+ const visit=typeof activeVisit!=='undefined'?activeVisit:null,number=typeof encounterNumberText==='function'?encounterNumberText(visit):'';
+ // What the patient has already paid toward this encounter, and any credit on the account that
+ // can be used before taking more money.
+ const receipts=(summary?.receipts||[]).filter(r=>!r.voided);
+ const copay=p.copay_cents!=null?`<li><span>Plan copay</span><b>${money(p.copay_cents)}</b>${p.copay_due_cents===0?'<em class="is-paid">Paid</em>':p.copay_paid_cents?`<em>${money(p.copay_paid_cents)} paid · ${money(p.copay_due_cents)} due</em>`:'<em>Due</em>'}</li>`:'';
+ const paid=receipts.length?`<li><span>Paid on this encounter</span><b>${money(receipts.reduce((sum,r)=>sum+Number(r.amount_cents||0)-Number(r.refunded_cents||0),0))}</b><em>${receipts.map(r=>`${money(r.amount_cents)} ${esc(r.method==='card'?'card':r.method||'')}${r.occurred_on?' · '+esc(visitBillingDate(r.occurred_on)):''}`).join(', ')}</em></li>`:'';
+ const credit=Number(p.unapplied_cents||0)>0?`<li class="has-credit"><span>Credit on account</span><b>${money(p.unapplied_cents)}</b><button type="button" data-apply-copays>Use ${money(p.unapplied_cents)} credit</button></li>`:'';
+ const account=typeof encounterChargeAccount==='function'?encounterChargeAccount():null,lines=account?.content?.lines||[];
+ const items=lines.length?`<details class="collect-lines"${lines.length<=4?' open':''}><summary>${lines.length} ${lines.length===1?'charge':'charges'} · ${money(account.total_cents??lines.reduce((sum,l)=>sum+Number(l.amount_cents||0),0))}</summary><ul>${lines.map(l=>`<li><span><b>${esc(l.code)}</b>${l.modifiers?' · '+esc(l.modifiers):''} ${esc(l.description||'')}</span><span>${Number(l.units)>1?esc(String(l.units))+' × ':''}${money(l.amount_cents)}</span></li>`).join('')}</ul>${summary?.insurance?.insured&&p.owes_now_cents!=null&&summary.charges_cents!=null?`<p class="muted">Insurance is billed for the rest; the patient pays their share now.</p>`:''}</details>`:'';
+ return `${items}<div class="collect-owed"><span>${number?esc(number)+' · ':''}Patient owes now</span><b>${owes==null?'—':money(owes)}</b></div>${copay||paid||credit?`<ul class="collect-paid-so-far">${copay}${paid}${credit}</ul>`:''}`;
+}
+function openCollectModal(){
+ const panel=$('visit-billing-collect');if(!panel)return false;
+ if(collectDialog?.isConnected){collectDialog.querySelector('[data-collect-method].active')?.focus?.();return true;}
+ const home=panel.parentNode,marker=document.createComment('visit-billing-collect');home.insertBefore(marker,panel);
+ let head=panel.querySelector('[data-collect-head]');if(!head){head=document.createElement('div');head.dataset.collectHead='';panel.prepend(head);}
+ const pm=encounterRevenueState?.data?.summary?.patient||{},owes=pm.owes_now_cents,due=Number.isSafeInteger(owes)&&owes>0?owes:Number.isSafeInteger(pm.copay_due_cents)&&pm.copay_due_cents>0?pm.copay_due_cents:null;collectSession={target:due,taken:[]};
+ head.innerHTML=`${collectOwedMarkup()}<div data-collect-progress>${collectProgressMarkup()}</div><nav class="invoice-tabs collect-methods" role="tablist" aria-label="How the patient is paying">${collectMethods.map(([key,label])=>`<button type="button" role="tab" data-collect-method="${key}" aria-selected="false">${label}</button>`).join('')}</nav>`;
+ panel.hidden=false;
+ const dialog=sheetOpen('Collect payment',panel);dialog.classList.add('sheet-wide','collect-sheet');collectDialog=dialog;
+ dialog.addEventListener('close',()=>{collectDialog=null;if(marker.parentNode){panel.hidden=true;head.remove();const slot=$('encounter-hosted-copay-reader');if(slot&&!slot.querySelector('[data-reader-payment="waiting"],[data-reader-payment="finishing"]'))slot.replaceChildren();marker.parentNode.insertBefore(panel,marker);marker.remove();}else panel.remove();if(dialog.dataset.refresh)void collectRefresh();},{once:true});
+ let remembered='cash';try{const k=localStorage.getItem('suncharts.collectMethod');if(collectMethods.some(([key])=>key===k))remembered=k;}catch{}
+ collectMethod(remembered);
+ return true;
+}
+function collectMethod(key){
+ const dialog=collectDialog;if(!dialog)return;
+ for(const b of dialog.querySelectorAll('[data-collect-method]')){const on=b.dataset.collectMethod===key;b.classList.toggle('active',on);b.setAttribute('aria-selected',String(on));}
+ dialog.dataset.method=key;
+ try{localStorage.setItem('suncharts.collectMethod',key);}catch{}
+ const slot=$('encounter-hosted-copay-reader'),appointment=collectAppointmentId();
+ if(typeof stopReaderPayment==='function'&&!slot?.querySelector('[data-reader-payment="waiting"],[data-reader-payment="finishing"]'))stopReaderPayment();
+ if(!slot)return;
+ if(!appointment){slot.innerHTML='<p role="status">Book or select the appointment for this encounter before taking a payment.</p>';return;}
+ if(key==='cash'||key==='check'){slot.innerHTML=collectCashMarkup(key,appointment);slot.querySelector('[name="amount"]')?.focus();return;}
+ slot.innerHTML='<p class="muted collect-loading">Getting ready…</p>';
+ const opener=key==='reader'?openReaderCopayEditor:key==='saved'?openSavedCardCopayEditor:openHostedCopayEditor,left=collectLeftCents();
+ run(async()=>{try{await opener(appointment,'encounter-hosted-copay',left!=null&&left>0?left:undefined);}finally{const loading=slot.querySelector('.collect-loading');if(loading)loading.remove();}});
+}
+function collectCashMarkup(method,appointmentId){
+ const appointment=(workspace.appointments||[]).find(item=>item.id===appointmentId);
+ const coverage=typeof revenueCoverage==='function'?revenueCoverage(revenueServiceDate(appointment)):null,plan=coverage?.content.copay_cents;
+ const left=collectLeftCents(),amount=left!=null&&left>0?left:visitCollectAmount(appointmentId,plan),check=method==='check';
+ return `<form id="collect-cash-form" class="collect-cash" data-method="${method}" data-appointment="${esc(appointmentId)}" data-coverage="${esc(coverage?.id||'')}" data-patient="${esc(selected)}" data-request="${crypto.randomUUID()}"><label class="collect-amount">Amount received<input name="amount" inputmode="decimal" required value="${amount==null?'':esc(dollars(amount))}" autocomplete="off"></label>${check?'<label>Check number<input name="reference" required maxlength="200" autocomplete="off"></label>':'<label>Note (optional)<input name="reference" maxlength="200" autocomplete="off"></label>'}<button type="submit" class="primary collect-submit" data-collect-submit>Record ${amount==null?'':money(amount)+' '}${check?'check':'cash'}</button><p class="muted">Pressing this records that the money was received. Nothing is charged.</p></form>`;
+}
+function collectToday(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
+async function submitCollectCash(form){
+ const amountText=String(form.elements.amount.value||'').replace(/[$\s,]/g,'');let amount;try{amount=cents(amountText);}catch{amount=null;}
+ if(!amount||amount<=0)throw new Error('Enter the amount received.');
+ const patient=form.dataset.patient,method=form.dataset.method,button=form.querySelector('[data-collect-submit]');
+ if(patient!==selected)throw new Error('This payment window belongs to another patient. Close it and open it again.');
+ button.disabled=true;button.textContent='Recording…';
+ let receipt;
+ try{receipt=await api(`/api/v1/patients/${encodeURIComponent(patient)}/billing/copays`,'POST',{request_id:form.dataset.request,appointment_id:form.dataset.appointment,coverage_id:form.dataset.coverage||null,amount_cents:amount,method,reference:String(form.elements.reference?.value||'').trim(),occurred_on:collectToday(),reason:method==='check'?'Check received at the desk':'Cash received at the desk',received_confirmed:true});}
+ catch(error){button.disabled=false;button.textContent=`Record ${money(amount)} ${method}`;throw error;}
+ collectPartTaken(amount,method==='check'?'check':'cash',receipt,form.dataset.appointment);
+}
+// After the window closes, the encounter reads its balance and payments again.
+async function collectRefresh(){
+ const patient=selected,visit=typeof activeVisit!=='undefined'?activeVisit?.id:null;if(!patient)return;
+ await selectPatient(patient,visit);if(selected!==patient)return;
+ if(typeof setEncounterSection==='function')setEncounterSection('charges');
+}
+if(typeof document!=='undefined'){
+ document.addEventListener('click',event=>{
+  const tab=event.target?.closest?.('[data-collect-method]');if(tab?.dataset?.collectMethod){event.preventDefault();collectMethod(tab.dataset.collectMethod);return;}
+  const receipt=event.target?.closest?.('[data-collect-receipt]');if(receipt?.dataset?.collectReceipt){event.preventDefault();const id=receipt.dataset.collectReceipt,appointment=receipt.dataset.appointment;const dialog=collectDialog;if(dialog){delete dialog.dataset.refresh;sheetClose(dialog,()=>run(()=>showCopayReceipt(id,appointment)));}return;}
+ });
+ document.addEventListener('submit',event=>{if(event.target?.id!=='collect-cash-form')return;event.preventDefault();run(()=>submitCollectCash(event.target));});
+ document.addEventListener('change',event=>{if(!event.target?.hasAttribute?.('data-collect-target'))return;let value=null;try{value=cents(String(event.target.value||'').replace(/[$\s,]/g,''));}catch{}collectSession.target=value&&value>0?value:null;collectProgressPaint();const active=collectDialog?.querySelector('[data-collect-method].active')?.dataset.collectMethod;if(active==='cash'||active==='check')collectMethod(active);});
+ document.addEventListener('input',event=>{const form=event.target?.closest?.('#collect-cash-form');if(!form||event.target.name!=='amount')return;const button=form.querySelector('[data-collect-submit]');let amount=null;try{amount=cents(String(event.target.value||'').replace(/[$\s,]/g,''));}catch{}button.textContent=`Record ${amount?money(amount)+' ':''}${form.dataset.method==='check'?'check':'cash'}`;});
+}
+
+// Using credit from the payment window closes it first, so the encounter reloads with the credit applied.
+if(typeof document!=='undefined')document.addEventListener('click',event=>{const b=event.target?.closest?.('[data-apply-copays]');if(!b||!collectDialog||!collectDialog.contains(b))return;const account=encounterChargeAccount();if(account)billingSelected=account.id;delete collectDialog.dataset.refresh;sheetClose(collectDialog);},true);

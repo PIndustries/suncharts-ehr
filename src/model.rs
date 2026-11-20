@@ -102,6 +102,12 @@ pub struct Visit {
     pub vitals: Option<Value>,
     pub signed_by: Option<Uuid>,
     pub signed_at: Option<DateTime<Utc>>,
+    /// The encounter's number in the practice (1, 2, 3, ... in the order encounters were started),
+    /// shown as ENC-0042 so staff and patients can refer to it. Read with the patient's chart;
+    /// not stored.
+    #[sqlx(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encounter_number: Option<i64>,
 }
 
 /// The free-text sections of a visit note, in the order they are shown.

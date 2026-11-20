@@ -767,6 +767,7 @@ async function showClaim(id){
   const action=$('claim-action');if(action){action.claimViewContext=context;action.claimRecord=claim;}
   if(typeof startClaimMdTracking==='function')startClaimMdTracking(claim.id);
   if(typeof showClaimMdClaimActivity==='function')await showClaimMdClaimActivity(claim);
+  if(claimContextCurrent(context))claimProgressToHead(claimWorkspaceHost(context));
   if(claimContextCurrent(context)&&context?.kind!=='encounter')claimDetailTabs(claimWorkspaceHost(context));
   if(typeof registerAutoRefresh==='function'){if(['submitted','accepted','adjudicated'].includes(claim.status)&&claimContextCurrent(context)&&context.kind==='worklist')registerClaimDetailAutoRefresh();else unregisterAutoRefresh('claim-status');}
 }
@@ -1059,6 +1060,12 @@ document.addEventListener('click',event=>{
 // History and the rest, one shown at a time. The tab last used is remembered.
 const claimTabNames={'Claim progress':'Progress','Clearinghouse activity':'Clearinghouse','The insurer and clearinghouse wording':'Responses','Other options for this claim':'More','Record something done outside SunCharts':'Done outside SunCharts','Provider, insurance and diagnosis details':'Claim details','The insurance on this claim':'Insurance','Claim history':'History','What happened':'What happened'};
 const claimTabOrder=['Progress','Responses','Claim details','Insurance','History','Clearinghouse','What happened','Done outside SunCharts','More'];
+// The progress bar sits under the claim's name, not in a box of its own further down.
+function claimProgressToHead(host){
+ const head=host?.querySelector?.('.claim-screen-head'),bar=host?.querySelector?.('.claim-lifecycle');if(!head||!bar||bar.previousElementSibling===head)return;
+ const item=bar.closest?.('.claim-more-item');head.after(bar);
+ if(item&&!item.querySelector('*:not(h3)'))item.remove();
+}
 function claimDetailTabs(host){
  const detail=host?.querySelector?.('.billing-account-detail');if(!detail||typeof document==='undefined'||!document.createElement)return;
  const items=[...detail.querySelectorAll('.claim-more-item')].filter(item=>!item.closest('.claim-tabs-panels'));

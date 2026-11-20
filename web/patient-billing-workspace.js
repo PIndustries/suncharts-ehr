@@ -3,7 +3,8 @@
 
 // One patient billing view serves the chart and the practice worklist. Only opaque
 // navigation identifiers enter history; patient data stays in memory.
-const patientBillingTabs=[['overview','Overview'],['invoices','Invoices'],['payments','Payments'],['methods','Payment methods'],['subscriptions','Subscriptions & plans']];
+// Statements are part of Payments: an encounter's money is one place, not a separate invoice record.
+const patientBillingTabs=[['overview','Overview'],['payments','Payments'],['methods','Payment methods'],['subscriptions','Subscriptions & plans']];
 let patientBillingWorkspace=null,patientBillingGeneration=0;
 function patientBillingAllowed(resource='billing'){
  return typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed(resource);
@@ -150,10 +151,11 @@ async function loadPatientBillingTab(s){
   let html;
   if(s.modeAuto&&!await patientBillingNative(s))return;
   if(s.patientId&&!s.patient){if(!await patientBillingNative(s))return;}
-  if(s.tab==='payments'&&s.patientId)html=patientBillingTestNotice(s)+await patientBillingPaymentHistory(s);
+  if(s.tab==='invoices')s.tab='payments';
+  if(s.tab==='payments'&&s.patientId){html=patientBillingTestNotice(s)+await patientBillingPaymentHistory(s);const statements=await patientBillingInvoices(s).catch(()=>'');if(statements)html+=`<section class="patient-billing-statements">${statements}</section>`;}
   else if(s.tab==='overview'||s.tab==='payments'){
    const data=await patientBillingNative(s);if(!data)return;
-   html=patientBillingTestNotice(s)+patientBillingSummary(data)+(s.tab==='overview'?`${s.patientId?'<div class="actions"><button type="button" class="primary" data-hub-tab="invoices">Create invoice</button><button type="button" data-hub-tab="methods">Save a card on file</button><button type="button" data-hub-tab="subscriptions">Start membership or payment plan</button></div><section id="patient-billing-balances" class="billing-section" hidden></section>':''}${patientBillingAccounts(data,s)}`:patientBillingReceipts(data,s));
+   html=patientBillingTestNotice(s)+patientBillingSummary(data)+(s.tab==='overview'?`${s.patientId?'<div class="actions"><button type="button" class="primary" data-hub-tab="payments">Payments and statements</button><button type="button" data-hub-tab="methods">Save a card on file</button><button type="button" data-hub-tab="subscriptions">Start membership or payment plan</button></div><section id="patient-billing-balances" class="billing-section" hidden></section>':''}${patientBillingAccounts(data,s)}`:patientBillingReceipts(data,s));
   }else if(s.tab==='invoices')html=patientBillingTestNotice(s)+await patientBillingInvoices(s);
   else if(s.tab==='subscriptions'&&s.patientId&&typeof loadPatientPaymentPlans==='function')html='<section id="patient-billing-memberships" class="billing-section"><p role="status">Loading practice memberships…</p></section><section id="patient-billing-installments" class="billing-section"><p role="status">Loading visit payment plans…</p></section><details class="billing-section"><summary>Other Stripe subscription records</summary><section id="patient-billing-profile-section"><p role="status">Loading Stripe subscription records…</p></section></details>';
   else html=s.patientId?`<section id="patient-billing-profile-section"><p role="status">Loading ${s.tab==='methods'?'payment methods':'subscriptions'}…</p></section>`:patientBillingChoosePatient(s.tab==='methods'?'payment methods':'subscriptions');
@@ -189,7 +191,7 @@ function registerPatientBillingAutoRefresh(s){
 
 function patientBillingProviderDate(value){return Number.isSafeInteger(value)&&value>0?date(new Date(value*1000).toISOString()):'Not recorded';}
 function patientBillingProfileKey(tab){return tab==='methods'?'payment_methods':tab==='subscriptions'?'subscriptions':'invoices';}
-function patientBillingProfileTarget(s){return s.host.querySelector(s.tab==='invoices'?'#patient-billing-stripe-invoices':'#patient-billing-profile-section');}
+function patientBillingProfileTarget(s){return s.host.querySelector(s.tab==='invoices'||s.tab==='payments'&&s.host.querySelector('#patient-billing-stripe-invoices')?'#patient-billing-stripe-invoices':'#patient-billing-profile-section');}
 async function loadPatientBillingProfile(s,request){
  const target=patientBillingProfileTarget(s);if(!target)return;
  const profileRequest=++s.profileRequest,tab=s.tab,key=patientBillingProfileKey(tab),query=new URLSearchParams();
@@ -384,6 +386,7 @@ async function searchPatientBillingPatients(s,query,after){
  }catch(error){if(patientBillingCurrent(s)&&s.searchRequest===request)host.innerHTML=`<p role="alert">${esc(error.message||'Patient search is unavailable.')}</p>`;}
 }
 async function changePatientBillingTab(tab){
+ if(tab==='invoices')tab='payments';
  const s=patientBillingWorkspace;if(!patientBillingCurrent(s)||!patientBillingTabs.some(([key])=>key===tab))return;
  if(typeof capturePatientPaymentPlanDrafts==='function')capturePatientPaymentPlanDrafts();
  s.tab=tab;s.paymentsAfter=null;const scope=s.host.querySelector('.patient-billing-scope');if(scope)scope.hidden=['methods','subscriptions'].includes(tab);s.invoicesAfter=null;s.accountsAfter=null;s.copaysAfter=null;s.native=null;s.profileCursors={};s.profileRequest++;

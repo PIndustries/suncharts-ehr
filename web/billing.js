@@ -169,7 +169,7 @@ function showEncounterBillingAccount(a,entries,frozen,missingElectronicPayer,fro
  <div class="actions">${billingCan()&&a.status==='draft'?'<button type="button" data-edit-bill>Edit draft</button>'+(a.content.visit_id?'<button type="button" data-link-account-diagnoses>Link visit diagnoses</button>':''):''}</div>${a.status==='posted'&&frozen&&!frozenElectronicPayer?'<div class="mapping-notice"><b>This insurer is billed outside SunCharts</b><p>The insurer had no payer ID when the charges were posted, so no electronic claim can be made for this encounter.</p></div>':''}
  ${billingAccountActionForm(a,missingElectronicPayer,'Reason (saved in the history)','Posting makes the charges final'+(a.content.coverage_id?' and prepares the insurance claim for you to review':'')+'. The encounter note must be signed first.','Post charges','Remove these charges','Post without an electronic claim. I understand this encounter cannot be billed to the insurer from SunCharts.')}</section>`;
  const ledger=$('visit-billing-ledger');if(!ledger)return;
- ledger.innerHTML=`<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>What was recorded</th><th>Reference / reason</th><th class="money-cell">Change to balance</th><th></th></tr></thead><tbody>${entries.map(e=>`<tr><td>${esc(ledgerKind(e.kind))}<small>${esc(visitBillingDate(e.content.occurred_on))} · ${esc(e.content.party==='insurer'?'insurance':e.content.party)}</small></td><td>${esc(e.content.reference||'No reference')}<small>${esc(e.content.reason)}</small>${e.content.remittance_id?'<small>From the insurer’s payment. Change it from the claim.</small>':''}${e.content.managed_payment_id?'<small>Card payment. Refund it from the card payment below.</small>':''}${e.content.hosted_copay_operation_id?'<small>'+(e.content.test_mode?'Test card':'Card')+' payment taken for this encounter</small>':''}${e.reverses_id?'<small>Undoes an earlier entry</small>':''}</td><td class="money-cell">${money(e.effect_cents)}</td><td>${billingCan()&&!e.content.remittance_id&&!e.content.managed_payment_id&&!e.content.hosted_copay_operation_id&&e.kind!=='reversal'&&!entries.some(r=>r.reverses_id===e.id)?`<button type="button" data-reverse-entry="${e.id}">Reverse</button>`:''}</td></tr>`).join('')||'<tr><td colspan="4">No payments or adjustments yet.</td></tr>'}</tbody></table></div>${billingCan('create')&&a.status==='posted'?'<div class="actions"><button type="button" data-new-ledger>Record a payment, write-off or adjustment</button></div>':''}`;
+ ledger.innerHTML=`<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>What was recorded</th><th>Reference / reason</th><th class="money-cell">Change to balance</th><th></th></tr></thead><tbody>${entries.map(e=>`<tr><td>${esc(ledgerKind(e.kind))}<small>${esc(visitBillingDate(e.content.occurred_on))} · ${esc(e.content.party==='insurer'?'insurance':e.content.party)}</small></td><td>${esc(e.content.reference||'No reference')}<small>${esc(e.content.reason)}</small>${e.content.remittance_id?'<small>From the insurer’s payment. Change it from the claim.</small>':''}${e.content.managed_payment_id?'<small>Card payment. Refund it from the card payment below.</small>':''}${e.content.hosted_copay_operation_id?'<small>'+(e.content.test_mode?'Test card':'Card')+' payment taken for this encounter</small>':''}${e.reverses_id?'<small>Undoes an earlier entry</small>':''}</td><td class="money-cell">${money(e.effect_cents)}</td><td>${billingCan()&&!e.content.remittance_id&&!e.content.managed_payment_id&&!e.content.hosted_copay_operation_id&&e.kind!=='reversal'&&!entries.some(r=>r.reverses_id===e.id)?`<button type="button" data-reverse-entry="${e.id}">Reverse</button>`:''}</td></tr>`).join('')||'<tr><td colspan="4">No payments or adjustments yet.</td></tr>'}</tbody></table></div>${billingCan('create')&&a.status==='posted'?`<div class="actions">${typeof $==='function'&&$('visit-billing-collect')?'<button type="button" class="primary" data-visit-collect>Take payment</button>':''}<button type="button" data-new-ledger>Write-off or adjustment</button></div>`:''}`;
  
 }
 function showBillingAccount(id,activate=true,reveal=false){
@@ -990,35 +990,46 @@ if(typeof document!=='undefined')document.addEventListener('change',event=>{
 const encounterEmCodes=/^99(20[2-5]|21[1-5])$/,encounterToxinCodes=/^J058[5-8]$/,encounterChemodenervation=/^646(1[2-7]|4[2-7])$/,encounterGuidance=/^9587[34]$/;
 function encounterCodeFindings(form){
  const rows=chargeLiveRows(form).map(row=>({code:(row.querySelector('[name="code"]')?.value||'').trim().toUpperCase(),modifiers:String(row.querySelector('[name="modifiers"]')?.value||'').toUpperCase().split(/[,\s]+/).filter(Boolean),units:Math.trunc(Number(row.querySelector('[name="units"]')?.value))||0,diagnoses:String(row.querySelector('[name="diagnoses"]')?.value||'').trim(),ndc:(row.querySelector('[name="ndc_code"]')?.value||'').trim()})).filter(r=>r.code);
- const out=[],codes=rows.map(r=>r.code);
+ // Two levels, as other systems grade them: 'fix' stops posting until it is fixed; 'review' is
+ // shown before posting and can be posted anyway.
+ const out=[],fix=text=>out.push({level:'fix',text}),review=text=>out.push({level:'review',text}),codes=rows.map(r=>r.code);
  const others=rows.filter(r=>!encounterEmCodes.test(r.code));
  for(const r of rows){
-  if(!r.diagnoses)out.push(`${r.code}: link at least one diagnosis.`);
-  if(r.units<1)out.push(`${r.code}: enter how many units.`);
-  if(r.modifiers.length>4)out.push(`${r.code}: a claim line takes at most four modifiers.`);
-  if(encounterEmCodes.test(r.code)&&others.length&&!r.modifiers.includes('25'))out.push(`${r.code}: an office visit billed with a procedure on the same day usually needs modifier 25.`);
+  if(!r.diagnoses)fix(`${r.code}: link at least one diagnosis.`);
+  if(r.units<1)fix(`${r.code}: enter how many units.`);
+  if(r.modifiers.length>4)fix(`${r.code}: a claim line takes at most four modifiers.`);
+  if(encounterEmCodes.test(r.code)&&others.length&&!r.modifiers.includes('25'))review(`${r.code}: an office visit billed with a procedure on the same day usually needs modifier 25.`);
   if(encounterToxinCodes.test(r.code)){
-   if(!r.ndc)out.push(`${r.code}: add the drug's NDC code, quantity and unit.`);
-   if(!r.modifiers.includes('JW')&&!r.modifiers.includes('JZ'))out.push(`${r.code}: Medicare needs JZ when no drug was discarded, or a separate JW line for the amount discarded.`);
+   if(!r.ndc)fix(`${r.code}: add the drug's NDC code, quantity and unit.`);
+   // A correct wastage claim is two lines: the dose given with no modifier, the amount
+   // discarded with JW. Only a drug with neither JZ nor a JW line for it is flagged.
+   const same=rows.filter(x=>x.code===r.code),hasJW=same.some(x=>x.modifiers.includes('JW')),hasJZ=same.some(x=>x.modifiers.includes('JZ'));
+   if(!hasJW&&!hasJZ&&r===same[0])review(`${r.code}: Medicare needs JZ when no drug was discarded, or a separate JW line for the amount discarded.`);
+   if(hasJW&&hasJZ&&r===same[0])fix(`${r.code}: use JZ (nothing discarded) or a JW line (amount discarded), not both.`);
   }
-  if(encounterChemodenervation.test(r.code)&&!codes.some(c=>encounterToxinCodes.test(c)))out.push(`${r.code}: no botulinum toxin line (J0585 to J0588) was entered for this injection.`);
-  if(encounterGuidance.test(r.code)&&!codes.some(c=>encounterChemodenervation.test(c)))out.push(`${r.code}: guidance is an add-on and is billed with a chemodenervation code.`);
-  if(/^6464[2-7]$/.test(r.code)&&r.modifiers.includes('50'))out.push(`${r.code}: do not use modifier 50; bill the extra-extremity add-on (64643 or 64645) instead.`);
-  if(r.code==='J0587'&&r.units>10)out.push('J0587 is billed per 100 units: check the units are the dose divided by 100.');
+  if(encounterChemodenervation.test(r.code)&&!codes.some(c=>encounterToxinCodes.test(c)))review(`${r.code}: no botulinum toxin line (J0585 to J0588) was entered for this injection.`);
+  if(encounterGuidance.test(r.code)&&!codes.some(c=>encounterChemodenervation.test(c)))fix(`${r.code}: guidance is an add-on and is billed with a chemodenervation code.`);
+  if(/^6464[2-7]$/.test(r.code)&&r.modifiers.includes('50'))fix(`${r.code}: do not use modifier 50; bill the extra-extremity add-on (64643 or 64645) instead.`);
+  if(r.code==='J0587'&&r.units>10)review('J0587 is billed per 100 units: check the units are the dose divided by 100.');
  }
- if(codes.includes('95874')&&codes.includes('95873'))out.push('95873 and 95874 are never billed together: keep one guidance code.');
- const seen=new Map();for(const r of rows){const key=r.code+'|'+r.modifiers.slice().sort().join(',');if(seen.has(key)&&!r.modifiers.includes('JW')&&!r.modifiers.includes('59')&&!r.modifiers.includes('XS'))out.push(`${r.code} is entered twice with the same modifiers: use units, or add 59/XS if they were separate sites.`);seen.set(key,1);}
+ if(codes.includes('95874')&&codes.includes('95873'))fix('95873 and 95874 are never billed together: keep one guidance code.');
+ const seen=new Map();for(const r of rows){const key=r.code+'|'+r.modifiers.slice().sort().join(',');if(seen.has(key)&&!r.modifiers.includes('JW')&&!r.modifiers.includes('59')&&!r.modifiers.includes('XS'))review(`${r.code} is entered twice with the same modifiers: use units, or add 59/XS if they were separate sites.`);seen.set(key,1);}
  const tele=form.elements?.cd_encounter_mode?.value==='telehealth',place=form.elements?.cd_place_of_service?.value||'';
- if(tele&&!['02','10',''].includes(place))out.push('Telehealth: the place of service is usually 02 or 10.');
- if(tele&&rows.some(r=>encounterEmCodes.test(r.code)&&!r.modifiers.includes('95')))out.push('Telehealth: many payers want modifier 95 on the visit code.');
- const dx=new Set(rows.flatMap(r=>r.diagnoses.split(/[,\s]+/).filter(Boolean)));if(dx.size>12)out.push('A claim carries at most 12 diagnoses.');
+ if(tele&&!['02','10',''].includes(place))review('Telehealth: the place of service is usually 02 or 10.');
+ if(tele&&rows.some(r=>encounterEmCodes.test(r.code)&&!r.modifiers.includes('95')))review('Telehealth: many payers want modifier 95 on the visit code.');
+ const dx=new Set(rows.flatMap(r=>r.diagnoses.split(/[,\s]+/).filter(Boolean)));if(dx.size>12)fix('A claim carries at most 12 diagnoses.');
  return out;
+}
+function encounterCodeFindingsMarkup(findings){
+ if(!findings.length)return '<p class="code-check-ok">No coding problems found.</p>';
+ const fixes=findings.filter(f=>f.level==='fix'),reviews=findings.filter(f=>f.level==='review');
+ return `${fixes.length?`<div class="code-check-fix"><b>Fix before posting</b><ul>${fixes.map(f=>`<li>${esc(f.text)}</li>`).join('')}</ul></div>`:''}${reviews.length?`<div class="code-check-review"><b>Check before posting</b><ul>${reviews.map(f=>`<li>${esc(f.text)}</li>`).join('')}</ul></div>`:''}<p class="muted">These are the common payer rules for this kind of encounter. They run again when the charges are posted.</p>`;
 }
 if(typeof document!=='undefined')document.addEventListener('click',event=>{
  const button=event.target?.closest?.('[data-check-codes]');if(!button)return;event.preventDefault();
  const form=button.closest('form'),host=form?.querySelector('[data-code-check]');if(!host)return;
  const findings=encounterCodeFindings(form);
- host.innerHTML=findings.length?`<p><b>${findings.length===1?'1 thing to check':findings.length+' things to check'}</b> before posting.</p><ul>${findings.map(f=>`<li>${esc(f)}</li>`).join('')}</ul><p class="muted">These are the common payer rules. The full payer edits run again when the claim is checked.</p>`:'<p>No coding problems found.</p>';
+ host.innerHTML=encounterCodeFindingsMarkup(findings);
  if(typeof flashUpdated==='function')flashUpdated(host);
 });
 // Modifiers are picked, not typed: the ones that fit the line's code first, in plain words, and

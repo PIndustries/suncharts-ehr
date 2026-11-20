@@ -216,7 +216,7 @@ impl ClinicalBackend for PostgresBackend {
         let patient = patient_row(&mut tx, a, id).await?;
         let appointments=sqlx::query_as("SELECT * FROM appointments WHERE tenant_id=$1 AND patient_id=$2 ORDER BY starts_at DESC LIMIT 100")
             .bind(a.tenant_id).bind(id).fetch_all(&mut *tx).await?;
-        let visits=sqlx::query_as("SELECT * FROM visits WHERE tenant_id=$1 AND patient_id=$2 ORDER BY created_at DESC LIMIT 100")
+        let visits=sqlx::query_as("SELECT v.*,n.encounter_number FROM visits v JOIN (SELECT id,row_number() OVER (ORDER BY created_at,id) AS encounter_number FROM visits WHERE tenant_id=$1) n ON n.id=v.id WHERE v.tenant_id=$1 AND v.patient_id=$2 ORDER BY v.created_at DESC LIMIT 100")
             .bind(a.tenant_id).bind(id).fetch_all(&mut *tx).await?;
         let amendments=sqlx::query_as("SELECT a.* FROM amendments a JOIN visits v ON v.tenant_id=a.tenant_id AND v.id=a.visit_id WHERE v.tenant_id=$1 AND v.patient_id=$2 ORDER BY a.created_at,a.id")
             .bind(a.tenant_id).bind(id).fetch_all(&mut *tx).await?;

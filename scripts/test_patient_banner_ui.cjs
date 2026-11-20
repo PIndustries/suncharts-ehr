@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
+// The banner's dates are checked in UTC so results do not depend on the machine's time zone.
+process.env.TZ='UTC';
 // The patient banner: every state of every item, escaping, the More menu, refresh after
 // saves, and the stylesheet rules that keep it themed and compact. Synthetic data only.
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
