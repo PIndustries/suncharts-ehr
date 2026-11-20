@@ -51,7 +51,7 @@ const count=(s,needle)=>s.split(needle).length-1;
  assert.doesNotMatch(panel,/Continue to Stripe checkout|No copay receipt/);
  assert(panel.indexOf('data-collect-card-copay')>panel.indexOf('<details'),'additional collection is explicit and collapsed after capture');
  assert.equal(count(panel,'Test payment'),1);assert.doesNotMatch(panel,/mapping-notice|TEST ·/);
- const encounter=ctx.encounterHostedCopayMarkup(oldState);assert.equal(count(encounter,'data-copay-receipt="receipt-old"'),1);assert.equal(count(encounter,'Test payment'),1);
+ const encounter=ctx.encounterHostedCopayMarkup(oldState);assert.equal(count(encounter,'data-copay-receipt="receipt-old"'),1);assert.equal(count(encounter,'Test payment'),0,'the encounter payment list keeps no lone test line; the Collect payment window carries the badge');
  const paintsBefore=bannerPaints;ctx.chartSection='visits';ctx.refreshPatientChartContext();assert.equal(bannerPaints,paintsBefore+1);
  ctx.workspace.patient={archived:true};assert.match(ctx.insuranceContinueMarkup({...next,status:'checked_in'}),/Restore it before/);assert.doesNotMatch(ctx.insuranceContinueMarkup({...next,status:'checked_in'}),/data-start/);assert.doesNotMatch(ctx.insuranceContinueMarkup(next),/data-insurance-check-in/);assert.match(ctx.insuranceContinueMarkup(old),/Review signed visit/);signed.status='in_progress';assert.match(ctx.insuranceContinueMarkup(old),/Continue encounter/);signed.status='signed';ctx.workspace.patient.archived=false;
  ctx.chartAreaEnabled=()=>false;assert.doesNotMatch(ctx.insuranceContinueMarkup(old),/data-visit|data-start|data-check-in/);assert.match(ctx.insuranceContinueMarkup(old),/needs clinical access/);

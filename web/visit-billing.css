@@ -161,6 +161,9 @@
 .collect-owed b{font-size:1.9rem;line-height:1.1}
 .collect-owed small{color:var(--muted)}
 .collect-methods{margin-bottom:16px}
+/* No way of paying is chosen when the window opens, so no panel shows until a tab is pressed. */
+.collect-sheet:not([data-method]) .collect-methods+[data-collect-holder]{display:none}
+.sheet-head .collect-test-badge{margin-left:auto}
 #encounter-hosted-copay-reader:not(:empty){animation:invoice-tab-in .22s ease}
 .collect-cash{display:grid;gap:12px;max-width:420px}
 .collect-amount input{font-size:1.5rem;padding:10px 12px;height:auto}
