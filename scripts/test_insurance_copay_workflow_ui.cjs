@@ -23,19 +23,19 @@ const count=(s,needle)=>s.split(needle).length-1;
  ctx.workspace.billing.coverages.push({...coverage,id:'secondary',content:{...coverage.content,priority:'secondary',member_id:'SECONDARY-PLAN'}},{...coverage,id:'tertiary',content:{...coverage.content,priority:'tertiary',member_id:'TERTIARY-PLAN'}},{...coverage,id:'old-coverage',content:{...coverage.content,end_date:'2025-01-01',member_id:'PRIOR-PLAN'}});
  ctx.renderPatientInsurance();await tick();
  let html=node('insurance-workspace').innerHTML;
- const stage=node('insurance-copay-title');let focused=false,scrolled=false;stage.focus=()=>{focused=true;};stage.scrollIntoView=()=>{scrolled=true;};const beforeJump=calls.length,beforeStageMarkup=html,beforeSelected=ctx.selected,beforeVisit=ctx.activeVisit;node('insurance-editor').innerHTML='UNSAVED COVERAGE DRAFT';const stageButton={dataset:{insuranceStage:'insurance-copay-title'},hasAttribute:()=>false};for(const handler of handlers.click)handler({target:{closest:selector=>selector==='button'?stageButton:null},preventDefault(){}});assert(focused&&scrolled);assert.equal(calls.length,beforeJump);assert.equal(node('insurance-workspace').innerHTML,beforeStageMarkup);assert.equal(node('insurance-editor').innerHTML,'UNSAVED COVERAGE DRAFT');assert.equal(ctx.selected,beforeSelected);assert.equal(ctx.activeVisit,beforeVisit);assert.doesNotMatch(html,/href="#insurance-/,'stage jumps do not create browser Back entries');
+ // The Insurance tab holds insurance only: no appointment steps, copay or encounter actions.
  assert(html.indexOf('SECONDARY-PLAN')<html.indexOf('Inactive &amp; prior coverage'));assert(html.indexOf('TERTIARY-PLAN')<html.indexOf('Inactive &amp; prior coverage'));assert(html.indexOf('PRIOR-PLAN')>html.indexOf('Inactive &amp; prior coverage'));
- assert.match(html,/1\. Review insurance/);assert.match(html,/2\. Collect copay/);assert.match(html,/3\. Encounter</,'a signed visit is not offered as something to start');assert.doesNotMatch(html,/Start the encounter/);
- assert.match(html,/data-visit="signed-visit">Open encounter/);
- assert.ok(bannerPaints>0,'the banner is repainted with the insurance workspace');assert.match(html,/insurance-appointment-context/,'the appointment under review is named in the insurance workspace itself');
+ assert.match(html,/<h2>Insurance</);assert.match(html,/Plans on file/);assert.doesNotMatch(html,/Collect copay|Start the encounter|insurance-workflow-stages|data-visit=|data-record-copay|insurance-hosted-copay/,'copay and encounter actions live with the appointment and the encounter, not on the Insurance tab');
+ // Before an encounter exists the appointment's copay is on the Encounters tab; once it exists, in its Billing.
+ assert.ok(bannerPaints>0,'the banner is repainted with the insurance workspace');
  let panel=ctx.hostedCopayMarkup(ctx.hostedCopayStateFor(old.id));
  assert.equal(count(panel,'Continue to Stripe checkout'),1);assert.equal(count(panel,'class="button primary"'),1);
  assert.equal(count(panel,'Check payment status'),1);assert.match(panel,/data-refresh-hosted-copay="operation-old" data-appointment="appointment-old"/);assert.equal(count(panel,'Test payment'),1);
  assert.doesNotMatch(panel,/data-collect-card-copay|mapping-notice|TEST ·/);
  assert.equal(ctx.hostedCopayStateFor(old.id).items.length,1,'server response items remain filtered to the exact selected appointment');
  change(next.id);await tick();html=node('insurance-workspace').innerHTML;
- assert.match(html,/data-insurance-check-in="appointment-next">Check in this appointment/);assert.doesNotMatch(html,/data-visit="signed-visit"/);
- assert.match(html,/Upcoming office visit/);assert.match(html,/2026-11-12/);
+ assert.doesNotMatch(html,/data-visit="signed-visit"|data-insurance-check-in/);
+ assert.match(html,/2026|Nov/,'eligibility names the visit date it checks');
  assert.equal(ctx.activeVisit,signed,'insurance selection does not relabel or replace the selected clinical encounter');
  assert.equal(signed.note.subjective,'Immutable synthetic original');
  assert.equal(ctx.revenueAppointment().id,next.id);assert.equal(ctx.revenueServiceDate(ctx.revenueAppointment()),'2026-11-12');
@@ -65,14 +65,14 @@ const count=(s,needle)=>s.split(needle).length-1;
  assert.equal(ctx.patientLifecycleMarkup(active),'','an active chart shows no archive panel until Archive is chosen from the banner\'s More menu');
  assert.doesNotMatch(ctx.patientLifecycleMarkup({...active,archived:true}),/patient-record-management/);assert.match(ctx.patientLifecycleMarkup({...active,archived:true}),/Archived patient chart/);
  vm.runInContext("patientLifecycleDrafts.set('patient',{reason:'Synthetic reason',confirmed:false,archived:true,version:1})",ctx);assert.match(ctx.patientLifecycleMarkup(active),/<div class="patient-record-management">/);assert.match(ctx.patientLifecycleMarkup(active),/id="patient-lifecycle-form"/);assert.equal(ctx.patientLifecycleMarkup({...active,can_manage:false}),'');assert.match(ctx.patientLifecycleMarkup(active),/Synthetic reason/);
- const css=fs.readFileSync('web/style.css','utf8');assert.match(css,/insurance-appointment-context\{[^}]*background:var\(--surface-soft,#f5f8fa\)/);assert.match(css,/insurance-workflow-stages button>span\{[^}]*background:var\(--accent\);color:var\(--blue\)/);assert.match(css,/a\.button\.primary:focus-visible\{outline:2px solid var\(--focus,#247fa5\)/);assert.match(css,/\.chart-context\{position:relative;top:auto\}/,'chart header no longer covers the workflow while scrolling');
+ const css=fs.readFileSync('web/style.css','utf8');assert.match(css,/a\.button\.primary:focus-visible\{outline:2px solid var\(--focus,#247fa5\)/);assert.match(css,/\.chart-context\{position:relative;top:auto\}/,'chart header no longer covers the workflow while scrolling');
  assert(calls.every(([,method])=>method==='GET'));
  const emptyState={...oldState,items:[],uncertain:false,retry:null};assert.doesNotMatch(ctx.encounterHostedCopayMarkup(emptyState),/class="primary"/);
  // Execute the guided action with a different clinical encounter active. It must stay on A.
  ctx.chartAreaEnabled=()=>true;ctx.workspaceResourceAllowed=()=>false;assert.doesNotMatch(ctx.insuranceContinueMarkup(old),/data-visit/,'a configured encounter tab does not grant clinical permission');ctx.workspaceResourceAllowed=()=>true;ctx.chartSection='insurance';change(next.id);await tick();
  let releaseCheckIn;ctx.api=async(url,method)=>{calls.push([url,method]);assert.equal(url,'/api/v1/appointments/appointment-next/check-in');return new Promise(resolve=>releaseCheckIn=resolve);};
  const checkIn=()=>{const button={dataset:{insuranceCheckIn:next.id},hasAttribute:()=>false};for(const handler of handlers.click)handler({target:{closest:selector=>selector==='button'?button:null},preventDefault(){}});return ctx.promise;};
- let request=checkIn();releaseCheckIn({...next,status:'checked_in',patient_id:'patient'});await request;assert.equal(ctx.activeVisit,signed);assert.equal(ctx.chartSection,'insurance');assert.equal(ctx.revenueAppointment().id,next.id);assert.match(node('insurance-workspace').innerHTML,/data-start="appointment-next"/);assert.doesNotMatch(node('insurance-workspace').innerHTML,/data-visit="signed-visit"/);
+ let request=checkIn();releaseCheckIn({...next,status:'checked_in',patient_id:'patient'});await request;assert.equal(ctx.activeVisit,signed);assert.equal(ctx.chartSection,'insurance');assert.equal(ctx.revenueAppointment().id,next.id);assert.doesNotMatch(node('insurance-workspace').innerHTML,/data-start=/,'starting the visit is the banner’s job');assert.doesNotMatch(node('insurance-workspace').innerHTML,/data-visit="signed-visit"/);
  ctx.workspace.appointments=ctx.workspace.appointments.map(a=>a.id===next.id?next:a);request=checkIn();ctx.selected='other-patient';node('insurance-workspace').innerHTML='OTHER PATIENT';releaseCheckIn({...next,status:'checked_in',patient_id:'patient'});await request;assert.equal(node('insurance-workspace').innerHTML,'OTHER PATIENT');assert.equal(ctx.workspace.appointments.find(a=>a.id===next.id).status,'booked','late check-in response cannot update a replaced view');
  // The consolidated status control retains the original provider-refresh POST, scoped to its operation.
  ctx.selected='patient';ctx.chartSection='insurance';ctx.loadHostedCopays=async id=>ctx.hostedCopayStateFor(id);ctx.loadInsuranceEligibility=()=>{};change(old.id);
