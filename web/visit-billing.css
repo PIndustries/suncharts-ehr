@@ -95,7 +95,7 @@
 #encounter-revenue[data-invoice-tab="note"]{padding-bottom:0}
 #encounter-revenue[data-invoice-tab="note"]>.invoice-tabs,#encounter-revenue[data-invoice-tab="checkout"]>.invoice-tabs{margin-bottom:0}
 #encounter-revenue[data-invoice-tab="codes"]>:is(#visit-billing-collect,#encounter-copay-receipt,#visit-billing-invoices,#visit-billing-payments,#visit-billing-history,#encounter-claims){display:none}
-#encounter-revenue[data-invoice-tab="claim"]>:not(.invoice-tabs):not(#encounter-revenue-status):not(#encounter-claims){display:none}
+#encounter-revenue[data-invoice-tab="claim"]>:not(.invoice-tabs):not(#encounter-claims){display:none}
 #encounter-revenue[data-invoice-tab="payments"]>:not(.invoice-tabs):not(#encounter-revenue-status):not(#visit-billing-payments):not(#visit-billing-collect):not(#encounter-copay-receipt){display:none}
 #encounter-revenue[data-invoice-tab="invoices"]>:not(.invoice-tabs):not(#encounter-revenue-status):not(#visit-billing-invoices){display:none}
 #encounter-revenue[data-invoice-tab="checkout"]>:not(.invoice-tabs):not(#encounter-revenue-status){display:none}
