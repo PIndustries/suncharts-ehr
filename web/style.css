@@ -331,7 +331,7 @@ body{font-size:var(--fs-body);line-height:1.45;letter-spacing:0}button,input,sel
 .workspace-back{flex:none;white-space:nowrap;min-height:30px}.page-heading:has(.workspace-back:not([hidden])){gap:12px}
 
 /* Keep encounter claim review focused while preserving the billing controls and drafts. */
-#encounter-revenue:has(> #encounter-claims:not([hidden])) > :not(#encounter-claims){display:none}
+/* the encounter's tabs decide what shows (visit-billing.css) */
 
 /* Chart menus must remain outside the rounded header rather than being clipped. */
 .chart-context{overflow:visible}
