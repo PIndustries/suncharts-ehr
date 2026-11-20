@@ -508,7 +508,7 @@ async function enter() {
   $('identity-role').textContent=roleLabel;
   $('identity').title=me.email&&me.email!==userLabel?`${userLabel} · ${me.email} · ${roleLabel}`:`${userLabel} · ${roleLabel}`;
   $('identity').setAttribute('aria-label',`Signed in as ${userLabel}, ${roleLabel}`);
-  setPage('Patients & visits');
+  setPage('Patients & encounters');
   if(typeof refreshConnectionBadge==='function')void refreshConnectionBadge();
   if(typeof startConnectUpdates==='function')void startConnectUpdates(me);
   $('nav-migration').hidden=me.role!=='owner'||$('nav-migration').dataset.workspaceHidden==='true';
@@ -753,11 +753,16 @@ function setEncounterSection(key){
  // simply scrolls to the block it names. Saved routes keep working.
  // The page is already open on the screen and every block sits on it, so a saved route naming
  // one of these keys lands on the page itself; the browser simply restores its scroll position.
+ // The encounter is in tabs: the note steps open the Note tab, checkout its own tab, and charges
+ // the billing tab used last.
+ const tab=key==='checkout'?'checkout':['visit','intake','documentation'].includes(key)?'note':null;
+ if(tab&&typeof invoiceTabSet==='function')invoiceTabSet(tab,false);
  if(key==='visit')return;
  if(key==='intake'){const host=$('encounter-intake');host?.scrollIntoView?.({block:'start'});return;}
  if(key==='documentation'){const host=$('note-form')||$('visit-diagnoses');host?.scrollIntoView?.({block:'start'});return;}
  if(key==='checkout'){const host=$('visit-checkout');host?.scrollIntoView?.({block:'start'});return;}
  if(key==='charges'){
+  if(typeof encounterTabForget==='function')encounterTabForget();
   if(typeof renderEncounterRevenue==='function')void renderEncounterRevenue();
   const host=$('encounter-revenue');host?.scrollIntoView?.({block:'start'});return;
  }
@@ -870,6 +875,8 @@ function applyChartSection(){
  const canViewBilling=typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('billing');
  const revenueVisible=inEncounter&&hasVisit&&onVisitPage&&encounterShows('charges')&&chartAreaEnabled('billing')&&canViewBilling;
  if($('encounter-revenue'))$('encounter-revenue').hidden=!revenueVisible;
+ // Without the billing block there is no tab bar, so the page shows every block as before.
+ if(!revenueVisible&&$('visit-page-host')?.dataset)delete $('visit-page-host').dataset.encounterTab;
  if($('encounter-orders-actions'))$('encounter-orders-actions').hidden=!(inEncounter&&hasVisit&&!onVisitPage&&step==='orders'&&chartAreaEnabled('orders'));
  if($('visit-checkout'))$('visit-checkout').hidden=!(inEncounter&&hasVisit&&onVisitPage&&chartAreaEnabled('checkout'));
  if($('encounter-progress')){$('encounter-progress').hidden=!inEncounter;if(inEncounter&&typeof refreshEncounterProgress==='function')refreshEncounterProgress();}
@@ -934,7 +941,7 @@ function setPage(title) {
   'Practice administration':'Manage staff access, providers, facilities and rooms',
   'Codes & prices':'Choose the code sets staff look up and the prices your codes start a charge at',
   'Partners':'Set up payments and choose the billing partner that works this practice',
-  'Patients & visits':'Find a patient, review their chart and continue visit work',
+  'Patients & encounters':'Find a patient, review their chart and continue visit work',
   'Schedule':'Book appointments, manage provider availability and follow reminders',
   'Pre-visit readiness':'Review public bookings, patient forms and visit preparation',
   'Appointment reminders':'Review due reminders, contact readiness and delivery history',
@@ -964,13 +971,13 @@ function setPage(title) {
   'Data import':'Bring in patient records from your previous system'
  };
  const today=['Practice home','Practice overview','Schedule','Pre-visit readiness','Appointment reminders','Reminder settings','Follow-up tasks','Inbox','Patient portal inbox','Communications','Send & review'];
- const care=['Patients & visits','Labs & results','Specialty care','Referrals','Referral delivery settings'];
+ const care=['Patients & encounters','Labs & results','Specialty care','Referrals','Referral delivery settings'];
  const revenue=['Billing & insurance','Payment settings','Payment review','Claims & remittances','Clearinghouse','Claim connections'];
  const manage=['Sun','Workflow Studio','Automation Center','AI review','Sun review','Practice administration','Codes & prices','Partners','Integrations','Connect services','Support tickets','Data import'];
  $('page-title').textContent=title;
  $('page-description').textContent=descriptions[title]||'Practice workspace';
  $('workspace-section').textContent=(today.includes(title)||title.startsWith('Patient portal'))?'TODAY':care.includes(title)?'CARE':revenue.includes(title)?'REVENUE':manage.includes(title)?'MANAGE':'PRACTICE';
- const active=['Practice home','Practice overview'].includes(title)?'nav-practice':title==='Workflow Studio'?'nav-workflows':title==='Automation Center'?'nav-automation':['AI review','Sun review'].includes(title)?'nav-ai-review':['Inbox','Communications','Send & review'].includes(title)||title.startsWith('Patient portal')?'nav-portal':title==='Patients & visits'?'nav-clinical':title==='Pre-visit readiness'?'nav-previsit':['Schedule','Appointment reminders','Reminder settings'].includes(title)?'nav-schedule':title==='Labs & results'?'nav-labs':title==='Specialty care'?'nav-specialty':['Billing & insurance','Payment settings','Payment review'].includes(title)?'nav-billing':['Clearinghouse','Claim connections','Claim lifecycle'].includes(title)?'nav-edi':title==='Claims & remittances'?'nav-claims':['Referrals','Referral delivery settings'].includes(title)?'nav-referrals':title==='Follow-up tasks'?'nav-followup':['Integrations','Connect services','Support tickets'].includes(title)?'nav-apps':title==='Data import'?'nav-migration':['Practice administration','Codes & prices'].includes(title)?'nav-admin':null;
+ const active=['Practice home','Practice overview'].includes(title)?'nav-practice':title==='Workflow Studio'?'nav-workflows':title==='Automation Center'?'nav-automation':['AI review','Sun review'].includes(title)?'nav-ai-review':['Inbox','Communications','Send & review'].includes(title)||title.startsWith('Patient portal')?'nav-portal':title==='Patients & encounters'?'nav-clinical':title==='Pre-visit readiness'?'nav-previsit':['Schedule','Appointment reminders','Reminder settings'].includes(title)?'nav-schedule':title==='Labs & results'?'nav-labs':title==='Specialty care'?'nav-specialty':['Billing & insurance','Payment settings','Payment review'].includes(title)?'nav-billing':['Clearinghouse','Claim connections','Claim lifecycle'].includes(title)?'nav-edi':title==='Claims & remittances'?'nav-claims':['Referrals','Referral delivery settings'].includes(title)?'nav-referrals':title==='Follow-up tasks'?'nav-followup':['Integrations','Connect services','Support tickets'].includes(title)?'nav-apps':title==='Data import'?'nav-migration':['Practice administration','Codes & prices'].includes(title)?'nav-admin':null;
  for(const id of ['nav-practice','nav-workflows','nav-automation','nav-ai-review','nav-communications','nav-clinical','nav-schedule','nav-previsit','nav-labs','nav-specialty','nav-referrals','nav-followup','nav-portal','nav-billing','nav-claims','nav-edi','nav-apps','nav-migration','nav-admin']){if(!$(id))continue;if(id===active)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}
  const activeItem=active?$(active):null,activeMore=activeItem?.closest?.('.nav-more');
  document.querySelectorAll?.('#workspace-navigation .nav-more').forEach(more=>{
@@ -1022,7 +1029,7 @@ function returnSunToChat(){
 }
 async function showClinical() {
  const openingIdentity=me,openingGeneration=++patientWorkspaceGeneration;
- captureVisitDrafts();showTool('Patients & visits');
+ captureVisitDrafts();showTool('Patients & encounters');
  selected=undefined;activeVisit=undefined;workspace=undefined;chartSection='overview';
  $('chart').innerHTML=patientDirectoryLanding();setPatientDirectoryVisible(true);
  $('tools').innerHTML='<p class="muted" role="status">Loading patient directory…</p>';
@@ -1102,7 +1109,7 @@ document.addEventListener('click',e=>{
   if(button.id==='cancel-patient'){ $('patient-form').reset();$('patient-form').hidden=true;return; }
   // Module handlers must be allowed to claim their own actions without this
   // listener briefly acquiring the shared busy gate and swallowing the click.
-  const navigationTitles={'nav-schedule':'Schedule','nav-workflows':'Workflow Studio','nav-automation':'Automation Center','nav-communications':'Inbox','nav-ai-review':'Sun review','nav-referrals':'Referrals','nav-portal':'Inbox','nav-followup':'Follow-up tasks','nav-labs':'Labs & results','nav-specialty':'Specialty care','nav-edi':'Claim lifecycle','nav-claims':'Claims & remittances','nav-billing':'Billing & insurance','nav-admin':'Practice administration','nav-apps':'Integrations','nav-migration':'Data import','nav-clinical':'Patients & visits','nav-customize':'Practice administration'};
+  const navigationTitles={'nav-schedule':'Schedule','nav-workflows':'Workflow Studio','nav-automation':'Automation Center','nav-communications':'Inbox','nav-ai-review':'Sun review','nav-referrals':'Referrals','nav-portal':'Inbox','nav-followup':'Follow-up tasks','nav-labs':'Labs & results','nav-specialty':'Specialty care','nav-edi':'Claim lifecycle','nav-claims':'Claims & remittances','nav-billing':'Billing & insurance','nav-admin':'Practice administration','nav-apps':'Integrations','nav-migration':'Data import','nav-clinical':'Patients & encounters','nav-customize':'Practice administration'};
   const navigationTitle=navigationTitles[button.id]||(button.hasAttribute('data-open-schedule')?'Schedule':null);
   const ownsAction=navigationTitle||['logout','load-more'].includes(button.id)||['data-consent','data-disable-client','data-revoke','data-reconcile','data-commit','data-patient','data-check-in','data-start','data-visit'].some(name=>button.hasAttribute(name))||['reload','discard-visit-draft','discard-amendment-draft','sign'].includes(button.dataset.action);
   if(!ownsAction)return;

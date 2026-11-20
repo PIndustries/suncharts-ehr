@@ -749,7 +749,7 @@ function claimScreenMarkup(claim,detail,history){
  ${inVisit?'':`<div class="claim-lines" data-claim-lines>${lines}</div>`}
  ${withdraw}
  ${claimMoreDetailsMarkup(claim,detail,history,sections)}
- ${inVisit?(editClaim?`<div class="actions">${editClaim}</div>`:''):`<div class="actions"><button type="button" data-claim-account="${esc(claim.account_id)}" data-patient="${esc(claim.patient_id)}">Open encounter</button>${editClaim}</div>`}
+ ${inVisit?'':`<div class="actions"><button type="button" data-claim-account="${esc(claim.account_id)}" data-patient="${esc(claim.patient_id)}">Open encounter</button>${editClaim}</div>`}
  <div id="claim-editor"></div></section>`;
 }
 async function showClaim(id){
@@ -1057,7 +1057,8 @@ document.addEventListener('click',event=>{
 });
 // The claim's details as tabs rather than one long drop-down: Progress, Claim details, Insurance,
 // History and the rest, one shown at a time. The tab last used is remembered.
-const claimTabNames={'Claim progress':'Progress','Clearinghouse activity':'Clearinghouse','The insurer and clearinghouse wording':'Payer wording','Other options for this claim':'Other options','Record something done outside SunCharts':'Done outside SunCharts','Provider, insurance and diagnosis details':'Claim details','The insurance on this claim':'Insurance','Claim history':'History','What happened':'What happened'};
+const claimTabNames={'Claim progress':'Progress','Clearinghouse activity':'Clearinghouse','The insurer and clearinghouse wording':'Responses','Other options for this claim':'More','Record something done outside SunCharts':'Done outside SunCharts','Provider, insurance and diagnosis details':'Claim details','The insurance on this claim':'Insurance','Claim history':'History','What happened':'What happened'};
+const claimTabOrder=['Progress','Responses','Claim details','Insurance','History','Clearinghouse','What happened','Done outside SunCharts','More'];
 function claimDetailTabs(host){
  const detail=host?.querySelector?.('.billing-account-detail');if(!detail||typeof document==='undefined'||!document.createElement)return;
  const items=[...detail.querySelectorAll('.claim-more-item')].filter(item=>!item.closest('.claim-tabs-panels'));
@@ -1070,8 +1071,12 @@ function claimDetailTabs(host){
   heading?.remove();item.dataset.claimTab=name;item.setAttribute('role','tabpanel');
   item.querySelectorAll('details.claim-advanced').forEach(d=>{d.open=true;d.classList.add('claim-advanced-open');});
   panels.append(item);
-  bar.insertAdjacentHTML('beforeend',`<button type="button" role="tab" data-claim-tab-key="${esc(name)}">${esc(name)}</button>`);
  }
+ // One order on every claim: where it stands first, the rarely needed last.
+ const rank=name=>{const at=claimTabOrder.indexOf(name);return at<0?claimTabOrder.length:at;};
+ for(const item of [...panels.children].sort((a,b)=>rank(a.dataset.claimTab)-rank(b.dataset.claimTab)))panels.append(item);
+ bar.replaceChildren();
+ for(const item of panels.children)bar.insertAdjacentHTML('beforeend',`<button type="button" role="tab" data-claim-tab-key="${esc(item.dataset.claimTab)}">${esc(item.dataset.claimTab)}</button>`);
  let remembered='';try{remembered=localStorage.getItem('suncharts.claimTab')||'';}catch{}
  const names=[...panels.children].map(item=>item.dataset.claimTab);
  claimTabSet(box,names.includes(remembered)?remembered:names.includes('Progress')?'Progress':names[0],false);

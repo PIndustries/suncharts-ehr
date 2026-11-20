@@ -13,7 +13,7 @@ function fixture(billingHub=false){
  ctx.captureVisitDrafts=()=>{ctx.captureCount++;if(ctx.selected&&ctx.activeVisit&&ctx.formText)drafts.set(`${ctx.selected}:${ctx.activeVisit.id}`,ctx.formText);};
  ctx.run=async action=>{if(ctx.busy)return;ctx.busy=true;try{await action();}catch(error){calls.push(['error',error.message]);}finally{ctx.busy=false;}};
  ctx.api=async(path,method='GET')=>{calls.push([method,path]);if(method!=='GET')ctx.mutations++;return {};};
- ctx.showTool=title=>{nodes['clinical-workspace'].hidden=true;ctx.page=title;activeNav=({'Practice home':'nav-practice','Schedule':'nav-schedule','Patients & visits':'nav-clinical','Billing':'nav-billing','Claims':'nav-claims','Integrations':'nav-apps','Support tickets':'nav-apps','Inbox':'nav-portal','Send & review':'nav-portal',Sun:null})[title]??null;};
+ ctx.showTool=title=>{nodes['clinical-workspace'].hidden=true;ctx.page=title;activeNav=({'Practice home':'nav-practice','Schedule':'nav-schedule','Patients & encounters':'nav-clinical','Billing':'nav-billing','Claims':'nav-claims','Integrations':'nav-apps','Support tickets':'nav-apps','Inbox':'nav-portal','Send & review':'nav-portal',Sun:null})[title]??null;};
  ctx.showPracticeWorkspace=async()=>{ctx.showTool('Practice home');await ctx.api('/practice');};
  ctx.showBillingQueue=async()=>{ctx.showTool('Billing');await ctx.api('/billing');};
  ctx.showClaimsWorkspace=async()=>{ctx.showTool('Claims');await ctx.api('/claims');};
@@ -23,7 +23,7 @@ function fixture(billingHub=false){
  ctx.showOutboundWorkspace=async(provider='ringcentral')=>{ctx.showTool('Send & review');ctx.channel=provider;await ctx.api('/outbound');};
  ctx.showSunPage=async()=>{ctx.showTool('Sun');await ctx.api('/sun');};
  ctx.showSchedule=async()=>{ctx.showTool('Schedule');await ctx.api('/schedule');};
- ctx.showClinical=async()=>{ctx.captureVisitDrafts();ctx.showTool('Patients & visits');ctx.selected=null;ctx.activeVisit=null;ctx.workspace=null;ctx.chartSection='overview';await ctx.api('/patients');nodes['clinical-workspace'].hidden=false;};
+ ctx.showClinical=async()=>{ctx.captureVisitDrafts();ctx.showTool('Patients & encounters');ctx.selected=null;ctx.activeVisit=null;ctx.workspace=null;ctx.chartSection='overview';await ctx.api('/patients');nodes['clinical-workspace'].hidden=false;};
  ctx.selectPatient=async(patient,visit)=>{ctx.captureVisitDrafts();await ctx.api(`/patients/${patient}`);ctx.selected=patient;ctx.activeVisit=visit?{id:visit,status:'in_progress'}:null;ctx.claimRoute=null;ctx.fileRoute=null;ctx.workspace={patient:{id:patient},appointments:[{id:'appointment-one'},{id:'appointment-two'}],billing:{accounts:[{id:'account',content:{visit_id:visit}}]},labs:{orders:[{id:'order'}]}};ctx.formText=drafts.get(`${patient}:${visit}`)||'';};
  ctx.showChartSection=section=>{ctx.captureVisitDrafts();ctx.chartSection=section;};
  ctx.setEncounterSection=step=>{ctx.captureVisitDrafts();ctx.encounterSection=step;ctx.showChartSection('visits');};
@@ -107,7 +107,7 @@ test('patient chart reads from a previous sign-in never publish into the next se
  }
 });
 test('Back restores claim review within its original encounter and only performs reads',async()=>{
- const f=fixture(),c=f.ctx;await c.enter();await c.run(async()=>{await c.showClinical();await c.selectPatient('patient-one','visit-one');c.setEncounterSection('charges');});await c.run(()=>c.showEncounterClaim('claim-one','account'));c.setEncounterSection('documentation');f.history.back();await f.settle();assert.equal(c.selected,'patient-one');assert.equal(c.activeVisit.id,'visit-one');assert.equal(c.encounterSection,'charges');assert.deepEqual(c.claimRoute,{account:'account',claim:'claim-one'});assert.equal(c.page,'Patients & visits');assert.equal(c.mutations,0);
+ const f=fixture(),c=f.ctx;await c.enter();await c.run(async()=>{await c.showClinical();await c.selectPatient('patient-one','visit-one');c.setEncounterSection('charges');});await c.run(()=>c.showEncounterClaim('claim-one','account'));c.setEncounterSection('documentation');f.history.back();await f.settle();assert.equal(c.selected,'patient-one');assert.equal(c.activeVisit.id,'visit-one');assert.equal(c.encounterSection,'charges');assert.deepEqual(c.claimRoute,{account:'account',claim:'claim-one'});assert.equal(c.page,'Patients & encounters');assert.equal(c.mutations,0);
 });
 test('an open document editor can hold Back until its save or discard decision',async()=>{
  const f=fixture(),c=f.ctx;await c.enter();await c.run(()=>c.showBillingQueue());c.beforeWorkspaceHistoryRestore=async()=>false;const at=f.index(),count=f.calls.length;f.history.back();await f.settle();assert.equal(f.index(),at);assert.equal(c.page,'Billing');assert.equal(f.calls.length,count);c.beforeWorkspaceHistoryRestore=async()=>true;f.history.back();await f.settle();assert.equal(c.page,'Practice home');assert.equal(f.index(),0);

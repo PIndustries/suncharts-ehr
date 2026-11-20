@@ -73,7 +73,7 @@ async function showClaimMdClaimActivity(claim){
  const lifecycle=(typeof claimWorkspaceHost==='function'?claimWorkspaceHost(context):$('claims-detail'))?.querySelector('.claim-lifecycle');if(!lifecycle)return;
  const current=()=>identity===me&&(!context||claimContextCurrent(context))&&(typeof claimWorkspaceHost==='function'?claimWorkspaceHost(context):$('claims-detail'))?.querySelector('.claim-lifecycle')===lifecycle;
  const active=claimMdConnectionState?.active;
- if(!active?.id){lifecycle.insertAdjacentHTML('afterend','<section class="claimmd-claim-activity mapping-notice"><b>Claim.MD activity unavailable</b><p>Connect and verify Claim.MD in Integrations. Claim preparation and local ledger work remain available.</p></section>');return;}
+ if(!active?.id){lifecycle.insertAdjacentHTML('afterend','<section class="claimmd-claim-activity mapping-notice"><b>No clearinghouse connected</b><p>Connect one in Claim connections to send claims and see their responses. You can still prepare claims here.</p></section>');return;}
  let account,extended;
  try{[account,extended]=await Promise.all([api(`/api/v1/billing/claimmd/${active.id}/operations`),api('/api/v1/billing/claimmd/operations')]);}
  catch(error){if(!current())return;lifecycle.insertAdjacentHTML('afterend','<section class="claimmd-claim-activity mapping-notice"><b>Claim.MD evidence could not be loaded</b><p>The native claim remains available. Refresh this claim to try the provider evidence request again.</p></section>');return;}

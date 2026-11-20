@@ -25,3 +25,6 @@
  /* A wide charge table scrolls inside its column rather than widening the page. */
  #visit-page-host>#encounter-revenue .billing-table-wrap{overflow:auto}
 }
+
+/* With the encounter in tabs, one tab shows at a time across the full width: no side columns. */
+#visit-page-host[data-encounter-tab]{display:flex;flex-direction:column;align-items:stretch}

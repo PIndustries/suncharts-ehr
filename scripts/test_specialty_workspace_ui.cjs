@@ -29,8 +29,8 @@ assert.equal(JSON.stringify(restrictedTabs),JSON.stringify([['overview','Summary
 const native={append(node){node.parentNode=this;}},care={append(node){node.parentNode=this;}},label={textContent:''};
 nodes['nav-clinical'].parentNode=native;nodes['nav-clinical'].querySelector=()=>label;
 context.document.querySelector=selector=>selector.includes('nav-care-label')?care:null;
-vm.runInContext(`practiceWorkspaceSettings.content.module_labels={clinical:'<Patients & visits>'};practiceWorkspaceSettings.content.module_groups={clinical:'care'};applyPracticeWorkspaceSettings()`,context);
-assert.equal(label.textContent,'<Patients & visits>');assert.equal(nodes['nav-clinical'].parentNode,care);
+vm.runInContext(`practiceWorkspaceSettings.content.module_labels={clinical:'<Patients & encounters>'};practiceWorkspaceSettings.content.module_groups={clinical:'care'};applyPracticeWorkspaceSettings()`,context);
+assert.equal(label.textContent,'<Patients & encounters>');assert.equal(nodes['nav-clinical'].parentNode,care);
 vm.runInContext(`practiceWorkspaceSettings.content.module_labels={};practiceWorkspaceSettings.content.module_groups={};applyPracticeWorkspaceSettings()`,context);
 assert.equal(label.textContent,'Patients');assert.equal(nodes['nav-clinical'].parentNode,native);
 vm.runInContext('clearWorkspaceAccessSession()',context);

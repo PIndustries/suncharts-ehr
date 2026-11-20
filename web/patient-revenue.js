@@ -347,7 +347,7 @@ function renderEncounterRevenue(){
  // no live nodes to protect, and the host is re-written there (below).
  const holder=typeof document.createElement==='function'?document.createElement('div'):null;
  const rebuilt=holder||{set innerHTML(html){this._html=html;},get innerHTML(){return this._html||'';}};
- rebuilt.innerHTML=`${typeof invoiceTabsMarkup==='function'?invoiceTabsMarkup():''}<div class="section-head"><div><h2>Charges and balance</h2><p class="muted">${esc(visitBillingDate(serviceDate))} · ${account?account.status==='posted'?'Posted':'Charges can still be changed':'No charges yet'}</p></div>${billingCan('create')&&account?.status==='draft'?'<button type="button" data-encounter-charges>Edit charges</button>':billingCan('create')&&account?.status==='posted'&&!account.source_history_id?'<button type="button" data-encounter-charges-correct>Edit charges</button>':''}</div><div id="encounter-revenue-status">${encounterRevenueStatusMarkup(account,encounterRevenueState.visit===visit.id&&encounterRevenueState.patient===selected?encounterRevenueState.data||{}:{})}</div><section id="visit-billing-collect" class="billing-section" hidden><div class="section-head"><h3>Collect payment</h3><button type="button" class="text-button" data-visit-collect-close>Close</button></div><p class="muted" id="visit-billing-collect-note"></p>${hostedCopayPanel(appointment,'encounter-hosted-copay')}${billingCan('create')&&appointment?`<div class="actions"><button type="button" data-record-copay="${esc(appointment.id)}">Cash or check</button></div>`:''}</section><div id="encounter-copay-receipt" hidden></div><section id="visit-billing-review" class="billing-section" hidden></section><div id="encounter-billing-editor"></div>${account?'<div class="invoice-lines" id="encounter-billing-detail"></div>':''}${account?'<section class="billing-section" id="visit-billing-invoices"></section>':''}${account?'<section class="billing-section" id="visit-billing-payments"><h3>Payments and adjustments</h3><div id="visit-billing-ledger"></div></section>':''}<details class="encounter-account-record" id="visit-billing-history"><summary>History</summary><div id="visit-billing-timeline"><p class="muted">Loading history…</p></div>${owner?`<details class="encounter-account-record" id="visit-billing-details" hidden><summary>Technical details</summary><div id="visit-billing-technical"></div><p class="muted">${coverage?esc(payerName(coverage.content.payer_id)):'No insurance on file'} · Plan copay ${coverage?.content.copay_cents==null?'not recorded':money(coverage.content.copay_cents)}</p>${typeof billingCoverageOrderMarkup==='function'?billingCoverageOrderMarkup(serviceDate,account?.content.coverage_id||coverage?.id):''}${account?'<div class="actions"><button type="button" data-bill-history>Change log for these charges</button></div><div id="bill-history"></div>':''}</details>`:''}</details><section id="encounter-claims" hidden></section>`;
+ rebuilt.innerHTML=`${typeof invoiceTabsMarkup==='function'?invoiceTabsMarkup():''}<div class="section-head"><div><h2>Procedures and charges</h2><p class="muted">${esc(visitBillingDate(serviceDate))} · ${account?account.status==='posted'?'Posted':'Charges can still be changed':'No charges yet'}</p></div>${billingCan('create')&&account?.status==='draft'?'<button type="button" data-encounter-charges>Edit charges</button>':billingCan('create')&&account?.status==='posted'&&!account.source_history_id?'<button type="button" data-encounter-charges-correct>Edit charges</button>':''}</div><div id="encounter-revenue-status">${encounterRevenueStatusMarkup(account,encounterRevenueState.visit===visit.id&&encounterRevenueState.patient===selected?encounterRevenueState.data||{}:{})}</div><section id="visit-billing-collect" class="billing-section" hidden><div class="section-head"><h3>Collect payment</h3><button type="button" class="text-button" data-visit-collect-close>Close</button></div><p class="muted" id="visit-billing-collect-note"></p>${hostedCopayPanel(appointment,'encounter-hosted-copay')}${billingCan('create')&&appointment?`<div class="actions"><button type="button" data-record-copay="${esc(appointment.id)}">Cash or check</button></div>`:''}</section><div id="encounter-copay-receipt" hidden></div><section id="visit-billing-review" class="billing-section" hidden></section><div id="encounter-billing-editor"></div>${account?'<div class="invoice-lines" id="encounter-billing-detail"></div>':''}${account?'<section class="billing-section" id="visit-billing-invoices"></section>':''}${account?'<section class="billing-section" id="visit-billing-payments"><h3>Payments and adjustments</h3><div id="visit-billing-ledger"></div></section>':''}<details class="encounter-account-record" id="visit-billing-history"><summary>History</summary><div id="visit-billing-timeline"><p class="muted">Loading history…</p></div>${owner?`<details class="encounter-account-record" id="visit-billing-details" hidden><summary>Technical details</summary><div id="visit-billing-technical"></div><p class="muted">${coverage?esc(payerName(coverage.content.payer_id)):'No insurance on file'} · Plan copay ${coverage?.content.copay_cents==null?'not recorded':money(coverage.content.copay_cents)}</p>${typeof billingCoverageOrderMarkup==='function'?billingCoverageOrderMarkup(serviceDate,account?.content.coverage_id||coverage?.id):''}${account?'<div class="actions"><button type="button" data-bill-history>Change log for these charges</button></div><div id="bill-history"></div>':''}</details>`:''}</details><section id="encounter-claims" hidden></section>`;
   // The body is written as before; the host, held outside that markup, is then moved to the top of
   // the block above the charge lines — moved, never re-created, so what it holds comes with it.
   const bodyMarkup=rebuilt.innerHTML;
@@ -355,7 +355,7 @@ function renderEncounterRevenue(){
   if(diagnosesHost&&typeof host.insertBefore==='function'){
    // insertBefore moves the node: the host was already taken out above, so it is only put back.
    host.insertBefore(diagnosesHost,host.firstChild||null);
-   const tabs=host.querySelector?.('.invoice-tabs');if(tabs)host.insertBefore(tabs,host.firstChild);
+   const tabs=host.querySelector?.('.invoice-tabs');if(tabs){host.insertBefore(tabs,host.firstChild);const status=host.querySelector?.('#encounter-revenue-status');if(status)host.insertBefore(status,tabs.nextSibling);}
   }else host.innerHTML=(diagnosesHost?diagnosesHost.outerHTML:'')+bodyMarkup;
  // A chart opened on another page keeps its panel empty; the billing step re-opens it.
  if(chartSection!=='visits'&&typeof visitReviewClose==='function')visitReviewClose();
@@ -604,7 +604,7 @@ async function openHostedCopayReturn(id){
   insuranceAppointmentSelection.set(operation.patient_id,operation.appointment_id);
   activeVisit=workspace.visits?.find(visit=>visit.appointment_id===operation.appointment_id);
   chartSection=activeVisit?'visits':'insurance';encounterSection='charges';
-  showTool('Patients & visits');$('tools').replaceChildren();$('tools').hidden=true;$('clinical-workspace').hidden=false;
+  showTool('Patients & encounters');$('tools').replaceChildren();$('tools').hidden=true;$('clinical-workspace').hidden=false;
   $('new-patient').hidden=!canRegisterPatient();$('toggle-directory').hidden=false;
   const state=hostedCopayStateFor(operation.appointment_id);acceptHostedCopayOperation(state,operation);
   renderChart();showChartSection(chartSection);if(activeVisit)setEncounterSection('charges');
@@ -821,22 +821,41 @@ async function createHostedCopay(state,body,panelId){
 // The encounter's invoice is one record shown in tabs: Invoice (diagnoses, line items, totals and the
 // next step), Claim, Payments and History. The tab last used is remembered, so moving between
 // visits and patients comes back to the same place instead of a long scroll.
-const invoiceTabs=[['encounter','Encounter'],['claim','Claim'],['invoices','Invoices'],['payments','Payments'],['history','History']];
-function invoiceTabsMarkup(){return `<nav class="invoice-tabs" role="tablist" aria-label="This encounter">${invoiceTabs.map(([key,label])=>`<button type="button" role="tab" data-invoice-tab-key="${key}" aria-selected="false">${label}</button>`).join('')}</nav>`;}
-function invoiceTabRemembered(){try{let key=localStorage.getItem('suncharts.invoiceTab');if(key==='invoice')key='encounter';return invoiceTabs.some(([k])=>k===key)?key:'encounter';}catch{return 'encounter';}}
+const invoiceTabs=[['note','Note'],['codes','Codes'],['claim','Claim'],['payments','Payments'],['invoices','Invoices'],['checkout','Checkout'],['history','History']];
+// The tabs that belong to billing; only these are remembered from one encounter to the next.
+const encounterBillingTabs=['codes','claim','payments','invoices','history'];
+// The tab open on the encounter on the screen, kept while that encounter is re-drawn after a save.
+let encounterTabFor={visit:null,key:null};
+function invoiceTabsMarkup(){return `<nav class="invoice-tabs encounter-tabs" role="tablist" aria-label="This encounter">${invoiceTabs.map(([key,label])=>`<button type="button" role="tab" data-invoice-tab-key="${key}" aria-selected="false">${label}</button>`).join('')}</nav>`;}
+// Which tab an encounter opens on: the one already open on it; the note while it is being written
+// (Visit, Rooming, Notes); Checkout when asked for; otherwise the billing tab used last.
+function invoiceTabRemembered(){
+ const visit=typeof activeVisit!=='undefined'&&activeVisit?activeVisit.id:null;
+ if(visit&&encounterTabFor.visit===visit&&encounterTabFor.key)return encounterTabFor.key;
+ const step=typeof encounterSection==='undefined'?'charges':encounterSection;
+ if(step==='checkout')return 'checkout';
+ if(['visit','intake','documentation'].includes(step))return 'note';
+ try{let key=localStorage.getItem('suncharts.invoiceTab');if(key==='invoice'||key==='encounter')key='codes';return encounterBillingTabs.includes(key)?key:'codes';}catch{return 'codes';}
+}
+function encounterTabForget(){encounterTabFor={visit:null,key:null};}
 function invoiceTabSet(key,remember=true){
+ if(key==='encounter'||key==='invoice')key='codes';
  const host=typeof $==='function'?$('encounter-revenue'):null;if(!host||!invoiceTabs.some(([k])=>k===key))return;
  host.dataset.invoiceTab=key;
+ // The whole encounter page follows the tab: the note, checkout and the other encounters list
+ // show only on their own tab, so nothing is stacked under anything else.
+ const page=$('visit-page-host');if(page?.dataset)page.dataset.encounterTab=key;
+ if(typeof activeVisit!=='undefined'&&activeVisit)encounterTabFor={visit:activeVisit.id,key};
  const buttons=typeof host.querySelectorAll==='function'?Array.from(host.querySelectorAll('[data-invoice-tab-key]')||[]):[];
  for(const button of buttons){if(!button?.dataset)continue;const on=button.dataset.invoiceTabKey===key;button.setAttribute?.('aria-selected',String(on));button.classList?.toggle('active',on);}
- if(remember)try{localStorage.setItem('suncharts.invoiceTab',key);}catch{}
+ if(remember&&encounterBillingTabs.includes(key))try{localStorage.setItem('suncharts.invoiceTab',key);}catch{}
  if(key==='history'){const history=$('visit-billing-history');if(history)history.open=true;}
  if(key==='invoices')renderEncounterInvoices();
  if(key==='claim'){
   const claims=$('encounter-claims');if(!claims||!claims.hidden)return;
   const claimId=encounterRevenueState?.data?.summary?.claim?.id,account=encounterChargeAccount();
   if(claimId&&account&&typeof showEncounterClaim==='function'){run(()=>showEncounterClaim(claimId,account.id));return;}
-  claims.hidden=false;claims.innerHTML='<p class="muted">No insurance claim for this encounter yet. It is prepared from the invoice once the charges are posted.</p>';
+  claims.hidden=false;claims.innerHTML=`<p class="muted">${account?.status==='posted'?'No insurance claim for this encounter.':'The insurance claim is made when the charges are posted on the Codes tab.'}</p>`;
  }
 }
 document.addEventListener('click',event=>{const tab=event.target?.closest?.('[data-invoice-tab-key]');if(!tab?.dataset?.invoiceTabKey)return;event.preventDefault();invoiceTabSet(tab.dataset.invoiceTabKey);});

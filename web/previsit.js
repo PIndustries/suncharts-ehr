@@ -292,7 +292,7 @@ async function returnToPatientIntakeChart(){
  const host=$('tools'),anchor=host?.firstElementChild;
  const current=()=>previsitChartReturn===saved&&me===saved.identity&&$('tools')===host&&host?.firstElementChild===anchor;
  await selectPatient(saved.patient,saved.visit,current);if(!current()||selected!==saved.patient)return true;
- previsitChartReturn=null;showTool('Patients & visits');host.replaceChildren();host.hidden=true;
+ previsitChartReturn=null;showTool('Patients & encounters');host.replaceChildren();host.hidden=true;
  $('clinical-workspace').hidden=false;$('new-patient').hidden=!canRegisterPatient();$('toggle-directory').hidden=false;
  showChartSection('documents');$('patient-intake-panel')?.scrollIntoView({block:'start'});return true;
 }
