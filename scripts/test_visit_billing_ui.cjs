@@ -69,8 +69,8 @@ for(const [summary,headline,label,attribute,detail,shown] of states){
  assert.match(html,detail,summary.state);assert.ok(html.includes(`data-visit-billing-state="${summary.state}"`));
 }
 for(const [summary] of states){const html=card(summary).replace(/<[^>]*>/g,' ');assert.doesNotMatch(html,/Waiting on your office/,'the office is never named as the one who waits');assert.doesNotMatch(html,/Waiting on the patient|Waiting on the insurer(?!’s)/,'staff see "Waiting for" the patient or the insurer');if(summary.state==='sign_visit')assert.doesNotMatch(html,/must be signed[^\n]*Waiting on the clinician/,'a sentence that already says the note must be signed does not also say who it waits on');}
-// A delegated support session is told who prepares the claim and is given no way to do it.
-const support=card(visitSummary({state:'prepare_claim',claim:null}),{...all,delegated:true});assert.match(support,/Claim not prepared yet/);assert.match(support,/A member of the practice prepares the claim to Synthetic Medicare PPO by opening this encounter/);assert.deepEqual(primaries(support),[]);assert.doesNotMatch(support,/data-visit-claim-prepare/);
+// A delegated support session acts for the practice: it is given the same Prepare claim button.
+const support=card(visitSummary({state:'prepare_claim',claim:null}),{...all,delegated:true});assert.doesNotMatch(support,/A support session does not prepare claims/);assert.match(support,/data-visit-claim-prepare/);
 b0=ctx.visitBillingBreakdown(selfPay({state:'review_balance',insurance:{unassigned_cents:7000},patient:{owes_now_cents:0,responsibility_source:'reviewed_statement'}}),all);assert.match(b0,/<th scope="row">Not on the statement<\/th><td>Write it off, adjust it or send a new statement<\/td><td class="money-cell">\$70\.00/);assert.match(b0,/What the latest statement says, less what they paid/);
 const done=card(selfPay({state:'paid_in_full',waiting_on:'nobody',patient:{owes_now_cents:0},balance_cents:0}));
 assert.match(done,/<span class="eyebrow">Status<\/span><p class="visit-billing-headline">Paid in full<\/p>/);assert.deepEqual(primaries(done),[]);
@@ -277,10 +277,11 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
    ['secondary',visitSummary({claim:{status:'ready',secondary:true}}),all],
    ['crossover',visitSummary({claim:{status:'ready',crossover:true}}),all],
    ['no payer id',visitSummary({claim:{status:'ready'},insurance:{electronic:false}}),all],
-   ['support session',readySummary,{...all,delegated:true}],
    ['read-only',readySummary,{...all,canWrite:false}],
    ['claims hidden',readySummary,{...all,claimsAllowed:false}],
   ]){const html=card(shown,context);assert.doesNotMatch(html,/data-visit-claim-direct-send/,`${why}: nothing to press`);}
+  // A support session acts for the practice and gets the same one-click send.
+  assert.match(card(readySummary,{...all,delegated:true}),/data-visit-claim-direct-send/,'support session: the same send button');
   // A card drawn away from the live visit keeps the review button instead of a send: the send
   // reads the account the screen is actually on, and this card does not know it.
   ctx.billingStep.reviewCard={...readySummary};
@@ -463,8 +464,8 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
  assert.equal(sent.filter(c=>c[1]==='POST').length,1);await ctx.loadEncounterRevenueStatus(ctx.workspace.billing.accounts[0],true);assert.equal(sent.filter(c=>c[1]==='POST').length,1,'no retry loop');
  reply=(url,method,body)=>url.endsWith('/claims/prepare')?{outcome:'prepared'}:visitSummary({account:{version:3}});click({visitClaimPrepare:'again'});await ctx.pending;await settle();
  assert.equal(JSON.stringify(sent.filter(c=>c[1]==='POST').at(-1)[2]),'{"again":true}');assert.equal(ctx.noticed,'Claim prepared from this encounter. Nothing was sent.');assert.match(node('encounter-revenue-status').innerHTML,/Claim ready to send/);
- // A delegated support session never triggers the automatic draft, by its own flag or the server's.
- for(const [identity,viewer] of [[{role:'owner',delegated:true},{delegated:false}],[{role:'owner'},{delegated:true}]]){ctx.me=identity;node('encounter-revenue').dataset.revenueKey='';ctx.workspace.billing.accounts=[{...account,version:ctx.workspace.billing.accounts[0].version+1}];sent.length=0;reply=()=>visitSummary({state:'prepare_claim',claim:null,account:{version:ctx.workspace.billing.accounts[0].version},viewer});ctx.renderEncounterRevenue();await settle();assert.equal(sent.filter(c=>c[1]==='POST').length,0,'support session wrote nothing');assert.match(node('encounter-revenue-status').innerHTML,/Claim not prepared yet/);assert.deepEqual(primaries(node('encounter-revenue-status').innerHTML),[]);}
+ // A delegated support session never triggers the automatic draft, by its own flag or the server's; it prepares by pressing.
+ for(const [identity,viewer] of [[{role:'owner',delegated:true},{delegated:false}],[{role:'owner'},{delegated:true}]]){ctx.me=identity;node('encounter-revenue').dataset.revenueKey='';ctx.workspace.billing.accounts=[{...account,version:ctx.workspace.billing.accounts[0].version+1}];sent.length=0;reply=()=>visitSummary({state:'prepare_claim',claim:null,account:{version:ctx.workspace.billing.accounts[0].version},viewer});ctx.renderEncounterRevenue();await settle();assert.equal(sent.filter(c=>c[1]==='POST').length,0,'support session wrote nothing');assert.match(node('encounter-revenue-status').innerHTML,/data-visit-claim-prepare/,'it is offered the Prepare claim button to press itself');}
  ctx.me={role:'front_desk'};
  // Opening the encounter on another step (its note, from the schedule or the chart) prepares nothing; going to the billing step does.
  ctx.encounterSection='documentation';node('encounter-revenue').dataset.revenueKey='';ctx.workspace.billing.accounts=[{...account,version:30}];sent.length=0;let made=false;reply=url=>{if(url.endsWith('/claims/prepare')){made=true;return {outcome:'prepared'};}return made?visitSummary({account:{version:30}}):visitSummary({state:'prepare_claim',claim:null,account:{version:30}});};ctx.renderEncounterRevenue();await settle();

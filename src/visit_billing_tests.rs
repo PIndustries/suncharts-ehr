@@ -1341,8 +1341,9 @@ async fn every_screen_shows_the_same_patient_owes_now_and_support_sessions_never
     assert_eq!(row["billing_state"], card["state"]);
     assert_eq!(row["billing_state"], "prepare_claim");
 
-    // A delegated support session has the owner's authority but is not the practice:
-    // opening the visit prepares nothing, automatically or by request.
+    // A delegated support session acts with the owner's authority: when it asks, it prepares the
+    // claim, recorded in its own name. Opening the visit alone writes nothing (the screen never
+    // asks on a support session's behalf).
     let support = Actor {
         sub: Uuid::new_v4(),
         ..f.owner.clone()
@@ -1352,33 +1353,26 @@ async fn every_screen_shows_the_same_patient_owes_now_and_support_sessions_never
     assert_eq!(seen["viewer"]["delegated"], true);
     assert_eq!(seen["state"], "prepare_claim");
     assert_eq!(card["viewer"]["delegated"], false);
-    for body in [json!({}), json!({"again":true})] {
-        let (status, out) = f.prepare(&support, p, account, body).await;
-        assert_eq!(
-            (status, out),
-            (StatusCode::OK, json!({"outcome":"delegated"}))
-        );
-    }
     assert_eq!(
         f.count("SELECT count(*) FROM ehr_claims WHERE tenant_id=$1")
             .await,
-        0
+        0,
+        "reading the summary prepares nothing"
     );
-    assert_eq!(
-        f.count("SELECT count(*) FROM claim_revisions WHERE tenant_id=$1")
-            .await,
-        0
-    );
-    // A member of the practice opening the visit prepares it, in their own name.
-    let (_, out) = f.prepare(&f.owner, p, account, json!({})).await;
+    let (status, out) = f.prepare(&support, p, account, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{out}");
     assert_eq!(out["outcome"], "prepared");
+    // Asking again, from the practice or the support session, returns the same claim.
+    let (_, again) = f.prepare(&f.owner, p, account, json!({})).await;
+    assert_eq!(again["outcome"], "exists");
+    assert_eq!(again["claim_id"], out["claim_id"]);
     let preparer: Uuid =
         sqlx::query_scalar("SELECT actor_id FROM claim_revisions WHERE tenant_id=$1")
             .bind(f.owner.tenant_id)
             .fetch_one(&f.db)
             .await
             .unwrap();
-    assert_eq!(preparer, f.owner.sub);
+    assert_eq!(preparer, support.sub, "recorded as the support session that asked");
     // Exactly what the first open writes: one draft claim, its first revision, one audit row.
     assert_eq!(
         f.count("SELECT count(*) FROM ehr_claims WHERE tenant_id=$1 AND status='draft'")

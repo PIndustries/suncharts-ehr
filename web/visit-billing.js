@@ -48,7 +48,7 @@ function visitBillingStatus(s,ctx={}){
    case 'sign_visit':return {headline:'Charges can still be changed',detail:'The encounter note must be signed before the charges are posted.',action:reviewButton(s,ctx)||button('Continue the encounter note','data-revenue-documentation')};
    case 'post_charges':return {headline:'Post charges',detail:`Check the charges, then post them. ${s.insurance.insured?`The claim to ${insurer} is prepared for you next.`:'The patient is billed next.'}`,action:button(write?'Post charges':'Review charges',`data-visit-post-charges="${esc(account)}"`)};
    case 'self_pay_collect':return {headline:'Self-pay: collect payment',detail:`Patient owes ${owes}. Waiting for the patient.`,action:create?button('Collect payment','data-visit-collect'):''};
-  case 'prepare_claim':return ctx.delegated?{headline:'Claim not prepared yet',detail:`A member of the practice prepares the claim to ${insurer} by opening this encounter. A support session does not prepare claims.`,action:''}:ctx.prepareError?{headline:`The claim to ${insurer} could not be prepared`,detail:ctx.prepareError,action:create?button('Try again','data-visit-claim-prepare'):''}:create?{headline:`Preparing the claim to ${insurer}`,detail:'The claim is filled in from this encounter. Nothing is sent until you send it.',action:ctx.preparing?'':button('Prepare claim','data-visit-claim-prepare')}:{headline:'Posted',detail:`Billing staff prepare the claim to ${insurer}.`,action:''};
+  case 'prepare_claim':return ctx.prepareError?{headline:`The claim to ${insurer} could not be prepared`,detail:ctx.prepareError,action:create?button('Try again','data-visit-claim-prepare'):''}:create?{headline:`Preparing the claim to ${insurer}`,detail:'The claim is filled in from this encounter. Nothing is sent until you send it.',action:ctx.preparing?'':button('Prepare claim','data-visit-claim-prepare')}:{headline:'Posted',detail:`Billing staff prepare the claim to ${insurer}.`,action:''};
    case 'claim_cancelled':return {headline:`The claim to ${insurer} was cancelled`,detail:'Nothing is with the insurer.',action:create?button('Prepare a new claim','data-visit-claim-prepare="again"'):''};
    case 'fix_claim':return {headline:`Claim to ${insurer} needs details`,detail:'Nothing has been sent yet. Fill in what is missing right on the claim below.',issues:s.claim?.issues||[],action:write?button('Fix claim details',`data-visit-claim-fix="${esc(claim)}"`):''};
     case 'send_claim':return {headline:`Claim ready to send to ${insurer}`,detail:'Nothing has been sent yet.',action:visitBillingDirectSend(s,ctx)||reviewButton(s,ctx)||(write?button('Review and send claim',`data-visit-claim-send="${esc(claim)}"`):'')};
@@ -73,7 +73,7 @@ function visitBillingStatus(s,ctx={}){
 // screen is actually on: on the post_charges state a draft in hand, on the send_claim state the
 // claim the server has already filled in and checked.
 function visitBillingDirectFlow(s,ctx,claim){
- if(!ctx.canWrite||ctx.claimsAllowed===false||ctx.delegated||ctx.noDirectSend)return false;
+ if(!ctx.canWrite||ctx.claimsAllowed===false||ctx.noDirectSend)return false;
  if(!s.insurance?.insured||!s.insurance.electronic||!s.account)return false;
  if(typeof visitBillingCardCurrent==='function'&&!visitBillingCardCurrent(s))return false;
  if(claim&&(claim.secondary||claim.crossover||['submitted','accepted','adjudicated','void'].includes(claim.status)))return false;
