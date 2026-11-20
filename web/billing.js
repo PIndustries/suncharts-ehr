@@ -835,6 +835,17 @@ function undoChargeRemoval(form){
  captureBillingChargeDraft();
  scheduleChargeAutosave(form);
 }
+// What stops a line from being saved at all (the rest can be filled in later). A row nobody has
+// typed in yet stops nothing.
+function chargeRowUnsavable(row){
+ const code=(row.querySelector('[name="code"]')?.value||'').trim(),description=chargeLineDescription(row).trim(),amount=chargeRowAmount(row);
+ if(!code&&!description&&amount==null)return '';
+ return !code?'add the procedure code':!description?'add what this service was':amount==null?'add the amount':'';
+}
+function chargeTableWaiting(form){
+ for(const row of chargeLiveRows(form)){const missing=chargeRowUnsavable(row);if(missing)return `Not saved yet. Line ${chargeRowLabel(row)}: ${missing}.`;}
+ return '';
+}
 function chargeRowLabel(row){const code=(row.querySelector('[name="code"]')?.value||'').trim();return code||'without a code';}
 // One quiet line beside the table: saving, saved, or what went wrong with one way to retry.
 function setChargeStatus(form,state,message){
@@ -861,6 +872,7 @@ function scheduleChargeAutosave(form,delay=700){
  if(!form?.isConnected||form.dataset.patient!==selected||!chargeLineCount(form))return;
  if(form.dataset.chargeSaving||form.dataset.chargeConflict||form.dataset.draftReadOnly||form.dataset.draftStale)return;
  const identity=me,patient=selected,editing=!!form.dataset.id;
+ const waiting=chargeTableWaiting(form);if(waiting){renderChargeRowProblems(form);setChargeStatus(form,'waiting',waiting);return;}
  const version=Number(form.dataset.version),body=chargeDraftBody(form);
  form.dataset.chargeSaving='true';delete form.dataset.chargeSavedAt;
  renderChargeRowProblems(form);setChargeStatus(form,'saving');
@@ -902,6 +914,7 @@ async function saveChargeTable(form){
  if(form.dataset.chargeSaving||form.dataset.chargeConflict||form.dataset.draftReadOnly||form.dataset.draftStale)return;
  if(form.dataset.mode==='correction')return correctChargeTable(form);
  const identity=me,patient=selected,editing=!!form.dataset.id;
+ const waiting=chargeTableWaiting(form);if(waiting){renderChargeRowProblems(form);setChargeStatus(form,'waiting',waiting);return;}
  const version=Number(form.dataset.version),body=chargeDraftBody(form);
  form.dataset.chargeSaving='true';delete form.dataset.chargeSavedAt;
  renderChargeRowProblems(form);setChargeStatus(form,'saving');

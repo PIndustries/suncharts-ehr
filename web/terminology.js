@@ -110,7 +110,7 @@ function terminologyDollars(value){const cents=Math.trunc(Number(value));return 
 function renderTerminologyCombobox(state){
  // A code the practice keeps on its own list shows its price on the right; a code list shows
  // which list it came from.
- state.list.innerHTML=state.items.map((item,index)=>{const price=item.practice&&item.price_cents!=null?terminologyDollars(item.price_cents):'';return `<li id="${state.list.id}-option-${index}" role="option" aria-selected="${index===state.active}" data-terminology-option="${index}"><span><b>${esc(item.code)}</b> ${esc(item.display)}</span>${price?`<small data-terminology-price>$${price}</small>`:item.practice?'':`<small>${esc(terminologyReleaseLabel(item))}</small>`}</li>`;}).join('');
+ state.list.innerHTML=state.items.map((item,index)=>{const price=item.practice&&item.price_cents!=null?terminologyDollars(item.price_cents):'';return `<li id="${state.list.id}-option-${index}" role="option" aria-selected="${index===state.active}" data-terminology-option="${index}"><span><b>${esc(item.code)}</b> ${esc(item.display)}</span>${price?`<small data-terminology-price>$${price}</small>`:item.practice?'':`<small>${esc(terminologyReleaseLabel(item))}</small>`}</li>`;}).join('')+(state.more?'<li class="terminology-more" data-terminology-more>Show more results</li>':'');
  if(state.active<0)state.input.removeAttribute('aria-activedescendant');
  else{const id=`${state.list.id}-option-${state.active}`;state.input.setAttribute('aria-activedescendant',id);state.list.querySelector(`[data-terminology-option="${state.active}"]`)?.scrollIntoView?.({block:'nearest'});}
 }
@@ -132,7 +132,7 @@ function scheduleTerminologyCombobox(input,immediate=false){
 // HCPCS code list. Nothing has to be chosen before searching.
 async function searchProcedureCombobox(state,request,values){
  if(!terminologyComboboxCurrent(state,request,values))return;
- const dated=/^\d{4}-\d{2}-\d{2}$/.test(values.serviceDate),list=system=>dated?api(`/api/v1/terminology/codes?${new URLSearchParams({system,q:values.query,service_date:values.serviceDate,billable:'true',active:'true',limit:'8'})}`).catch(()=>null):Promise.resolve(null);
+ const dated=/^\d{4}-\d{2}-\d{2}$/.test(values.serviceDate),list=system=>dated?api(`/api/v1/terminology/codes?${new URLSearchParams({system,q:values.query,service_date:values.serviceDate,billable:'true',active:'true',limit:'25'})}`).catch(()=>null):Promise.resolve(null);
  const own=selected?api(`/api/v1/patients/${encodeURIComponent(selected)}/procedure-codes?${new URLSearchParams({q:values.query})}`).catch(()=>null):Promise.resolve(null);
  const [mine,cpt,hcpcs]=await Promise.all([own,list('CPT'),list('HCPCS')]);
  if(!terminologyComboboxCurrent(state,request,values))return;
@@ -144,16 +144,17 @@ async function searchProcedureCombobox(state,request,values){
   practice([...(cpt?.items||[]),...(hcpcs?.items||[])],'catalog');
   const query=values.query.toUpperCase();
   // What was typed head-on first, then the practice's own order; nothing else outranks it.
-  state.input.removeAttribute('aria-busy');state.items=[...seen.entries()].map(([key,item],index)=>({item,index,lead:key.startsWith(query)?1:0})).sort((a,b)=>b.lead-a.lead||a.index-b.index).map(entry=>entry.item).slice(0,8);state.active=-1;renderTerminologyCombobox(state);
-  terminologyComboboxStatus(state,state.items.length?'':mine&&mine.disabled===true?'Procedure codes are turned off for this practice. Type the code by hand.':'No match. Keep typing, or type the code and leave the box to use it as typed.');
+  state.input.removeAttribute('aria-busy');state.items=[...seen.entries()].map(([key,item],index)=>({item,index,lead:key.startsWith(query)?1:0})).sort((a,b)=>b.lead-a.lead||a.index-b.index).map(entry=>entry.item).slice(0,25);state.active=-1;state.more=null;renderTerminologyCombobox(state);
+  terminologyComboboxStatus(state,state.items.length?'':mine&&mine.disabled===true?'Procedure codes are turned off for this practice. Type the code by hand.':/^[0-9]{4}[0-9A-TV-Z]$|^[A-Z][0-9]{4}$/i.test(values.query.trim())?`${values.query.trim().toUpperCase()} is not on your code list yet. Press Tab to use it as typed, then add its name and amount. You can save it with its price for next time.`:'No match. Keep typing, or type the code and leave the box to use it as typed.');
+  if(state.items.length)terminologyComboboxStatus(state,`${state.items.length} match${state.items.length===1?'':'es'}. Scroll the list, or keep typing to narrow it.`);
 }
 async function searchTerminologyCombobox(state,request,values){
  if(!terminologyComboboxCurrent(state,request,values))return;
  try{
-  const params=new URLSearchParams({system:values.system,q:values.query,service_date:values.serviceDate,billable:'true',active:'true',limit:'8'}),result=await api(`/api/v1/terminology/codes?${params}`);
+  const params=new URLSearchParams({system:values.system,q:values.query,service_date:values.serviceDate,billable:'true',active:'true',limit:'25'}),result=await api(`/api/v1/terminology/codes?${params}`);
   if(!terminologyComboboxCurrent(state,request,values))return;
-   state.input.removeAttribute('aria-busy');state.items=(result.items||[]).filter(item=>terminologyComboboxEligible(item,values));state.search=values;state.active=-1;renderTerminologyCombobox(state);
-   terminologyComboboxStatus(state,result.disabled===true?`${values.system} codes are turned off for this practice. Type the code by hand.`:state.items.length?`${state.items.length} matches. Use ↑ and ↓, then Enter, or select a result.${result.next_cursor?' Keep typing to narrow the list.':''}`:result.release===null?`No ${values.system} code list is installed for ${values.serviceDate}. Type a reviewed code and description yourself. A practice owner can install an authorized list under Codes & prices.`:'No match in the code list. Keep typing or enter a reviewed code and description yourself.');
+   state.input.removeAttribute('aria-busy');state.items=(result.items||[]).filter(item=>terminologyComboboxEligible(item,values));state.search=values;state.active=-1;state.more=result.next_cursor?{params:Object.fromEntries(params),after:result.next_cursor}:null;renderTerminologyCombobox(state);
+   terminologyComboboxStatus(state,result.disabled===true?`${values.system} codes are turned off for this practice. Type the code by hand.`:state.items.length?`${state.items.length} match${state.items.length===1?'':'es'} shown. Scroll the list${result.next_cursor?', choose Show more at the bottom,':''} or keep typing to narrow it.`:result.release===null?`No ${values.system} code list is installed for ${values.serviceDate}. Type a reviewed code and description yourself. A practice owner can install an authorized list under Codes & prices.`:'No match in the code list. Keep typing or enter a reviewed code and description yourself.');
  }catch(error){if(terminologyComboboxCurrent(state,request,values)){state.input.removeAttribute('aria-busy');terminologyComboboxStatus(state,`The code list search is not available right now: ${error.message}. Your entries are unchanged; you can still type the code in by hand.`);}}
 }
 async function selectTerminologyCombobox(state,index){
@@ -548,3 +549,19 @@ document.addEventListener('submit',event=>{
    await api('/api/v1/terminology/releases','POST',body);if(draft.account!==me||draft.generation!==terminologyGeneration)return;await showTerminologyCatalogs();notice('The code list was imported into this EHR. Existing clinical and billing records were not rewritten.');
  });
 },true);
+
+// More results a page at a time, added under the ones already showing. The box keeps its focus.
+if(typeof document!=='undefined'&&document.addEventListener)document.addEventListener('mousedown',event=>{
+ const more=event.target?.closest?.('[data-terminology-more]');if(!more?.hasAttribute?.('data-terminology-more'))return;
+ event.preventDefault();
+ const state=[...terminologyComboboxes.values()].find(item=>item.list?.contains?.(more));if(!state?.more)return;
+ const page=state.more,request=state.request;state.more=null;more.textContent='Loading…';
+ api(`/api/v1/terminology/codes?${new URLSearchParams({...page.params,after:page.after})}`).then(result=>{
+  if(state.request!==request)return;
+  const seen=new Set(state.items.map(item=>item.code));
+  state.items=state.items.concat((result.items||[]).filter(item=>!seen.has(item.code)&&terminologyComboboxEligible(item,state.search)));
+  state.more=result.next_cursor?{params:page.params,after:result.next_cursor}:null;
+  const top=state.list.scrollTop;renderTerminologyCombobox(state);state.list.scrollTop=top;
+  terminologyComboboxStatus(state,`${state.items.length} matches shown. Scroll the list${state.more?', choose Show more at the bottom,':''} or keep typing to narrow it.`);
+ }).catch(()=>{state.more=page;renderTerminologyCombobox(state);});
+});

@@ -53,7 +53,7 @@ function fixture(){
  assert.equal(f.timers.size,1);assert.equal([...f.timers.values()][0].delay,250);assert.equal(f.calls.length,0);await f.flush();assert.equal(f.calls.length,3,'one search asks the practice codes and both code lists at once');
  const cptCall=()=>new URL(f.calls.find(c=>c.path.includes('system=CPT')).path,'http://fixture').searchParams;
  assert.ok(f.calls.some(c=>c.path==='/api/v1/patients/patient-1/procedure-codes?q=9000'));assert.ok(f.calls.some(c=>c.path.includes('system=HCPCS')));
- let params=cptCall();assert.equal(params.get('q'),'9000');assert.equal(params.get('system'),'CPT');assert.equal(params.get('service_date'),'2026-11-07');assert.equal(params.get('limit'),'8');assert.equal(params.get('billable'),'true');
+ let params=cptCall();assert.equal(params.get('q'),'9000');assert.equal(params.get('system'),'CPT');assert.equal(params.get('service_date'),'2026-11-07');assert.equal(params.get('limit'),'25');assert.equal(params.get('billable'),'true');
  assert.match(f.hosts.procedure.list.innerHTML,/role="option"/);assert.match(f.hosts.procedure.list.innerHTML,/Synthetic procedure &lt;one&gt;/);assert.equal(f.box().getAttribute('aria-expanded'),'true');
  // Picking a result fills both submitted fields and shows the line as CODE: description.
  assert.equal(f.send('keydown',f.box(),{key:'ArrowDown'}).prevented,true);assert.equal(f.box().getAttribute('aria-activedescendant'),'list-procedure-option-0');

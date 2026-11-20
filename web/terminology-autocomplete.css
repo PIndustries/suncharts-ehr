@@ -8,5 +8,8 @@
 .terminology-suggestions > ul { list-style:none; padding:0; margin:0; max-height:19rem; overflow:auto; overscroll-behavior:contain; }
 .terminology-suggestions [role="option"] { padding:.65rem .8rem; border-top:1px solid var(--border,#dce6ea); cursor:pointer; line-height:1.4; overflow-wrap:anywhere; }
 .terminology-suggestions [role="option"] small { display:block; font-size:var(--fs-sm); margin-top:.25rem; color:var(--muted,#59717e); }
-.terminology-suggestions [role="option"][aria-selected="true"],.terminology-suggestions [role="option"]:hover { background:var(--accent-soft,#e0f1f3); outline:2px solid var(--accent,#157485); outline-offset:-2px; }
+.terminology-suggestions [role="option"][aria-selected="true"],.terminology-suggestions [role="option"]:hover { background:color-mix(in srgb,var(--blue) 22%,var(--surface)); color:var(--ink); outline:2px solid var(--blue); outline-offset:-2px; }
+.terminology-suggestions > ul { overflow-y:scroll; scrollbar-width:thin; scrollbar-color:var(--muted) transparent; }
+.terminology-suggestions .terminology-more { padding:.65rem .8rem; border-top:1px solid var(--line); cursor:pointer; font-weight:600; color:var(--blue); text-align:center; }
+.terminology-suggestions .terminology-more:hover { background:color-mix(in srgb,var(--blue) 14%,var(--surface)); }
 @media (max-width:600px) { .terminology-suggestions { width:100%; min-width:0; max-width:100%; } }

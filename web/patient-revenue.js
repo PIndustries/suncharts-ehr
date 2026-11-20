@@ -1060,7 +1060,8 @@ function encounterBillingChrome(host){
  const tabs=host.querySelector('.invoice-tabs'),status=host.querySelector('#encounter-revenue-status');
  if(tabs&&typeof tabs.after==='function'&&!host.querySelector('#encounter-codes-strip')){const strip=document.createElement('section');strip.id='encounter-codes-strip';strip.className='encounter-codes-strip';strip.setAttribute('aria-label','Codes on this encounter');tabs.after(strip);}
  if(status&&typeof status.insertAdjacentHTML==='function'&&!host.querySelector('.billing-parts'))status.insertAdjacentHTML('afterend',billingPartsMarkup());
- if(tabs&&!host.querySelector('.codes-editor-bar'))tabs.insertAdjacentHTML?.('beforebegin','<div class="codes-editor-bar"><h3>Edit codes</h3><button type="button" class="primary" data-codes-editor-close>Done</button></div>');
+ if(tabs&&!host.querySelector('.codes-editor-bar'))tabs.insertAdjacentHTML?.('beforebegin','<div class="codes-editor-bar"><h3>Edit codes</h3><button type="button" data-codes-editor-close aria-label="Close without checking">Close</button></div>');
+ if(!host.querySelector('.codes-editor-foot'))host.insertAdjacentHTML?.('beforeend','<div class="codes-editor-foot"><p class="muted" data-codes-editor-state role="status">Diagnoses and procedures save as you go.</p><button type="button" class="primary" data-codes-editor-save>Save and close</button></div>');
  billingPartSet(host.dataset?.codesEditing!==undefined?'codes':billingPartRemembered(),false);
 }
 // Editing the codes happens over the page: the diagnoses and the procedure lines open as a panel on
@@ -1080,6 +1081,30 @@ function encounterCodesEditorOpen(tries=0,create=false){
  if(typeof renderEncounterDiagnoses==='function'&&!$('encounter-diagnoses')?.firstElementChild)renderEncounterDiagnoses();
  host.scrollTop=0;host.querySelector('[data-codes-editor-close]')?.focus?.({preventScroll:true});
 }
+// Save and close: save what is waiting (the diagnoses list, the procedure lines), and close only once
+// it is all saved. Whatever stops a save is said in plain words beside the button.
+async function encounterCodesEditorSave(){
+ const host=typeof $==='function'?$('encounter-revenue'):null;if(!host)return;
+ const say=text=>{const node=$('encounter-revenue')?.querySelector?.('[data-codes-editor-state]');if(node)node.textContent=text;};
+ const diagnosesForm=()=>$('visit-diagnoses-form'),diagnosesDirty=()=>!!diagnosesForm()?.querySelector?.('[data-diagnosis-discard],[data-action="discard-diagnosis-draft"]')||/have not saved yet/.test(diagnosesForm()?.textContent||'');
+ const chargeForm=()=>$('billing-account-form');
+ const waiting=()=>{const form=chargeForm();return form&&typeof chargeTableWaiting==='function'?chargeTableWaiting(form):'';};
+ const blocked=waiting();if(blocked){say(blocked);return;}
+ say('Saving…');
+ if(diagnosesDirty())diagnosesForm()?.requestSubmit?.();
+ const form=chargeForm();
+ if(form&&typeof chargeLiveRows==='function'&&chargeLiveRows(form).some(row=>(row.querySelector('[name="code"]')?.value||'').trim())){
+  clearTimeout(form.chargeSaveTimer);form.chargeSaveTimer=null;
+  if(typeof saveChargeTable==='function'&&form.dataset.autosave!=='off')await saveChargeTable(form);
+ }
+ for(let tries=0;tries<40;tries+=1){
+  await new Promise(resolve=>setTimeout(resolve,150));
+  const now=chargeForm(),failed=now?.querySelector?.('[data-charge-status] [data-retry-charge-save]');
+  if(failed){say('The procedures could not be saved. The reason is shown under the table.');return;}
+  if(!now?.dataset.chargeSaving&&!diagnosesDirty()){say('Saved.');encounterCodesEditorClose();return;}
+ }
+ say(diagnosesDirty()?'The diagnoses are not saved yet. Check the list above, then try again.':'Still saving. Try again in a moment.');
+}
 function encounterCodesEditorClose(){
  const host=typeof $==='function'?$('encounter-revenue'):null;if(!host?.dataset||host.dataset.codesEditing===undefined)return;
  delete host.dataset.codesEditing;
@@ -1092,6 +1117,7 @@ if(typeof document!=='undefined'&&document.addEventListener){
   if(part?.dataset?.billingPartKey){event.preventDefault();billingPartSet(part.dataset.billingPartKey);return;}
   if(event.target?.closest?.('[data-codes-strip-edit]')?.hasAttribute?.('data-codes-strip-edit')){event.preventDefault();encounterCodesEditorOpen(0,true);return;}
   const cms=event.target?.closest?.('[data-codes-strip-cms]');if(cms?.hasAttribute?.('data-codes-strip-cms')){event.preventDefault();if(cms.dataset?.codesStripCms)run(()=>openClaimFormPreview(cms.dataset.codesStripCms));return;}
+  if(event.target?.closest?.('[data-codes-editor-save]')?.hasAttribute?.('data-codes-editor-save')){event.preventDefault();run(()=>encounterCodesEditorSave());return;}
   if(event.target?.closest?.('[data-codes-editor-close]')?.hasAttribute?.('data-codes-editor-close')){event.preventDefault();encounterCodesEditorClose();return;}
  });
  // A button whose work lands in another area opens that area first, so nothing happens out of sight.
