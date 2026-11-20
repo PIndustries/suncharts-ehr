@@ -495,7 +495,7 @@ function scheduleCopyIntakeLink(button){
 async function scheduleMarkerOpen(a,kind){
  const m=scheduleMarker(a.id);
  if(kind==='forms'&&m?.forms?.status==='submitted'&&typeof openWorkflowIntakePacket==='function'){await openWorkflowIntakePacket(m.forms.packet_id);return;}
- if(kind==='copay'&&!scheduleClosed(a)&&scheduleAllowed('billing')&&Number(m?.copay?.due_cents)>Number(m?.copay?.paid_cents)){await scheduleOpenChartStep(a,'insurance','insurance-copay-title');return;}
+ if(kind==='copay'&&!scheduleClosed(a)&&scheduleAllowed('billing')&&Number(m?.copay?.due_cents)>Number(m?.copay?.paid_cents)){await scheduleOpenChartStep(a,'visits','insurance-copay-title');return;}
  if(kind==='balance'&&scheduleAllowed('billing')){await scheduleOpenChartStep(a,'billing');return;}
  if(kind==='note'&&m?.visit_id&&scheduleAllowed('clinical')){await scheduleOpenVisit(a);return;}
   if(kind==='charges'&&m?.visit_id&&scheduleAllowed('billing')&&scheduleAllowed('clinical')){await scheduleOpenVisit(a,'charges');return;}
@@ -521,7 +521,7 @@ async function scheduleBoardClick(b){
   case 'send-intake':await scheduleSendIntake(a);break;
   case 'review-intake':{const packet=scheduleMarker(a.id)?.forms?.packet_id;if(!packet||typeof openWorkflowIntakePacket!=='function')throw new Error('Reload the schedule and open the form again.');await openWorkflowIntakePacket(packet);break;}
   case 'check-eligibility':await scheduleCheckEligibility(a);break;
-  case 'collect-copay':await scheduleOpenChartStep(a,'insurance','insurance-copay-title');break;
+  case 'collect-copay':await scheduleOpenChartStep(a,'visits','insurance-copay-title');break;
   case 'insurance':await scheduleOpenChartStep(a,'insurance','insurance-review-title');break;
   case 'billing':await scheduleOpenChartStep(a,'billing');break;
   case 'copy-link':scheduleCopyIntakeLink(b);break;

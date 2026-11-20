@@ -299,7 +299,7 @@ async function main(){
  assert.equal(g.c.insuranceAppointmentSelection.get('patient-a'),'a');
  g=await act('check-eligibility','booked',{insurance:{status:'self_pay'}});await assert.rejects(g.c.pending,/no active insurance/);assert.equal(g.calls.filter(call=>call[0]==='api').length,0);
  g=await act('collect-copay','checked_in');
- assert.deepEqual(plain(g.calls.filter(call=>call[0]!=='notice')),[['clinical'],['select','patient-a',null],['section','insurance']]);assert.equal(g.c.insuranceAppointmentSelection.get('patient-a'),'a','the copay step opens for this appointment');
+ assert.deepEqual(plain(g.calls.filter(call=>call[0]!=='notice')),[['clinical'],['select','patient-a',null],['section','visits']],'the copay is taken on the appointment in the Encounters tab, not the Insurance tab');
  g=await act('billing','booked');assert.deepEqual(plain(g.calls.at(-1)),['section','billing']);
  g=await act('visit','in_progress',{visit_id:'visit-a'});assert.deepEqual(plain(g.calls),[['clinical'],['select','patient-a','visit-a']]);
  g=await act('charges','completed',{visit_id:'visit-a'});assert.deepEqual(plain(g.calls),[['clinical'],['select','patient-a','visit-a'],['encounter','charges']]);
@@ -315,7 +315,7 @@ async function main(){
  assert.deepEqual(await marker('forms','booked',{forms:{status:'submitted',packet_id:'packet-a'}}),[['intake','packet-a']]);
  assert.deepEqual(await marker('forms','booked',{forms:{status:'sent',packet_id:'packet-a'}}),[['detail','a']]);
  assert.deepEqual(await marker('insurance','booked'),[['detail','a']]);
- assert.deepEqual((await marker('copay','booked')).at(-1),['section','insurance']);
+ assert.deepEqual((await marker('copay','booked')).at(-1),['section','visits']);
  assert.deepEqual((await marker('balance','booked')).at(-1),['section','billing']);
  assert.deepEqual(await marker('note','completed',{visit_id:'visit-a',note:'in_progress'}),[['clinical'],['select','patient-a','visit-a']]);
  assert.deepEqual((await marker('charges','completed',{visit_id:'visit-a',charges:'draft'})).at(-1),['encounter','charges']);
