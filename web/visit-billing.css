@@ -101,7 +101,7 @@
 #encounter-revenue[data-invoice-tab="billing"]>#encounter-billing-editor:has(form)~#encounter-billing-detail{display:none}
 #encounter-revenue[data-invoice-tab="billing"] #encounter-billing-editor form>h3{display:none}
 #encounter-revenue[data-invoice-tab="billing"]>#encounter-claims{margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
-#encounter-revenue[data-invoice-tab="billing"] #encounter-claims [data-claim-primary]{display:none}
+#encounter-revenue[data-invoice-tab="billing"] #encounter-claims:not([data-claim-send-open]) [data-claim-primary]{display:none}
 /* Payments: what is owed, collecting, the payments and the statements given to the patient. */
 #encounter-revenue[data-invoice-tab="payments"]>:not(.invoice-tabs):not(#encounter-revenue-status):not(#visit-billing-payments):not(#visit-billing-collect):not(#encounter-copay-receipt):not(#visit-billing-invoices){display:none}
 #encounter-revenue[data-invoice-tab="checkout"]>:not(.invoice-tabs):not(#encounter-revenue-status){display:none}
@@ -130,7 +130,7 @@
 #encounter-revenue[data-invoice-tab="billing"]>#encounter-claims{order:5}
 #encounter-revenue[data-invoice-tab="billing"]>.section-head:has(~#encounter-billing-editor form){display:none}
 #encounter-revenue[data-invoice-tab="billing"] #encounter-claims [data-claim-missing]{display:none}
-.charge-encounter-head{display:grid;gap:8px;margin:0 0 14px;padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.charge-encounter-head{display:grid;gap:8px;margin:14px 0;padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
 .charge-encounter-head h4,.charge-lines-title{margin:0;font-size:var(--fs-body)}
 .charge-lines-title{margin:4px 0 8px}
 .charge-encounter-head label:has(select[name="visit_id"]),.charge-encounter-head label:has(input[readonly][value="USD"]){display:none}

@@ -20,13 +20,14 @@ const chargeLine=html=>{const start=html.indexOf('<tr class="billing-charge-row"
  ctx.chartSection='visits';ctx.activeVisit={id:'visit-a',appointment_id:'appt-a',status:'in_progress'};
  ctx.accountEditor(null,null,true);
  const visit=nodes['encounter-billing-editor'].innerHTML,box='<details class="charge-more-options">';
- assert.match(visit,/<section class="charge-encounter-head" data-visit-charge-options><h4>Insurance and dates<\/h4>/,'insurance and the date of service open the form, as on a paper encounter form');
- assert.ok(visit.indexOf('data-visit-charge-options')<visit.indexOf('id="billing-charge-lines"'),'above the procedures');
+ assert.match(visit,/<section class="charge-encounter-head" data-visit-charge-options><h4>Insurance and dates<\/h4>/,'insurance and the date of service have their own section');
+ assert.ok(visit.indexOf('charge-lines-title">Procedures')<visit.indexOf('data-visit-charge-options'),'procedures come first, right under the diagnoses; insurance and dates follow');
+ assert.ok(visit.indexOf('data-check-codes')<visit.indexOf('data-visit-charge-options'),'Check codes stays with the procedures');
  assert.match(visit,/<details class="charge-more-options"><summary>Fees and notes<\/summary>/,'fees and notes are tucked under the procedures');
  // The encounter form carries the claim details a paper encounter form has: prior authorization,
  // dates, the providers and place of service, the hospital stay and claim boxes, and staff notes.
  for(const name of ['prior_authorization_number','current_illness_date','through_date','paper_only','rendering_npi','place_of_service','encounter_mode','referring_provider_name','referring_npi','supervising_provider_name','supervising_npi','hospitalization_from','hospitalization_to','claim_codes','additional_claim_info','business_office_note'])assert.match(visit,new RegExp(`name="cd_${name}"`),name);
- assert.ok(visit.indexOf('data-encounter-provider')<visit.indexOf('id="billing-charge-lines"'),'provider and place sit above the procedures');
+ assert.ok(visit.indexOf('data-encounter-provider')>visit.indexOf('id="billing-charge-lines"'),'provider and place come after the procedures');
  // Only what was filled in is sent; an untouched form sends no claim details at all.
  const els=(values,checked=false)=>({elements:new Proxy({},{get:(_,key)=>key==='cd_paper_only'?{checked}:String(key).startsWith('cd_')?{value:values[String(key).slice(3)]||''}:undefined})});
  assert.equal(ctx.encounterClaimDetailsValue(els({})),null,'nothing filled in, nothing sent');

@@ -673,7 +673,14 @@ document.addEventListener('click',event=>{
  if(button.dataset.visitClaimPrepare!==undefined){event.preventDefault();button.disabled=true;run(()=>prepareVisitClaim(button.dataset.visitClaimPrepare==='again'));return;}
  if(button.dataset.visitClaimDirectSend){event.preventDefault();run(()=>sendVisitClaimNow(button.dataset.visitClaimDirectSend,button));return;}
  if(button.dataset.visitPostAndSend){event.preventDefault();run(()=>postVisitChargesAndSend());return;}
- if(button.dataset.visitClaimSend||button.dataset.visitClaimFix){event.preventDefault();run(async()=>{const account=encounterChargeAccount();if(!account)throw new Error('Open the encounter for these charges first.');const id=button.dataset.visitClaimSend||button.dataset.visitClaimFix;await showEncounterClaim(id,account.id);if(button.dataset.visitClaimFix&&typeof claimCurrent!=='undefined'&&claimCurrent?.id===id&&claimCurrent.status==='draft'){if(typeof openClaimQuickFix==='function'&&openClaimQuickFix())return;claimEditor(claimCurrent.snapshot.account,claimCurrent);}else $('encounter-claims')?.scrollIntoView({block:'start'});});return;}
+ if(button.dataset.visitClaimSend||button.dataset.visitClaimFix){event.preventDefault();run(async()=>{const account=encounterChargeAccount();if(!account)throw new Error('Open the encounter for these charges first.');const id=button.dataset.visitClaimSend||button.dataset.visitClaimFix;await showEncounterClaim(id,account.id);if(button.dataset.visitClaimFix&&typeof claimCurrent!=='undefined'&&claimCurrent?.id===id&&claimCurrent.status==='draft'){if(typeof openClaimQuickFix==='function'&&openClaimQuickFix())return;claimEditor(claimCurrent.snapshot.account,claimCurrent);}else{
+  // The claim's own next step (its Send claim button) is folded away on the Billing tab while the
+  // review panel does the sending. When this button is the way in (no review panel for this
+  // session), show it, or the press lands on a claim with nothing to press.
+  const host=$('encounter-claims');host?.setAttribute?.('data-claim-send-open','');
+  const step=host?.querySelector?.('[data-claim-primary]');(step||host)?.scrollIntoView?.({block:'start'});
+  step?.querySelector?.('.claim-primary-buttons button')?.focus?.({preventScroll:true});
+ }});return;}
  if(button.hasAttribute('data-visit-statement')){event.preventDefault();run(()=>openVisitStatement());return;}
  if(button.dataset.visitStatementOpen){event.preventDefault();run(async()=>{const view=hostedCopayView(),invoice=await api(`/api/v1/billing/invoices/${encodeURIComponent(button.dataset.visitStatementOpen)}`);if(!currentHostedCopayView(view,false))return;if(invoice.patient_id!==view.patient||invoice.account_id!==encounterChargeAccount()?.id)throw new Error('This statement does not belong to the open visit.');showVisitStatement(invoice);});return;}
  if(button.hasAttribute('data-visit-statement-close')){event.preventDefault();const sheet=button.closest?.('dialog.sheet-dialog');if(sheet&&typeof sheetClose==='function')sheetClose(sheet);$('encounter-billing-editor')?.replaceChildren();return;}
