@@ -26,7 +26,7 @@ assert.match(plain,new RegExp('<input name="ndc_code"[^>]*value=""'));
 assert.match(plain,new RegExp('<option value="" selected>'));
 assert.match(plain,new RegExp('<div class="charge-drug" hidden>'),'an office visit line shows no NDC fields');
 assert.doesNotMatch(plain,/name="code_system"/,'a charge line never shows a code system box');
-// A visit row keeps the same drug fields in the row, and tucks only the code list note away.
+// An encounter row keeps the same drug fields in the row, and tucks only the code list note away.
 const compact=ctx.chargeRow({code:'J0585',amount_cents:12500,ndc_code:'00023114501',ndc_quantity:'2.5',ndc_unit:'ML'},true);
 assert.match(compact,new RegExp('<div class="charge-drug">'));
 assert.match(compact,new RegExp('<details class="charge-more"><summary>Code list this came from</summary>'));

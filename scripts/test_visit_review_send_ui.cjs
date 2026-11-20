@@ -14,7 +14,7 @@ const nodes={},handlers={},sent=[];
 const node=id=>nodes[id]??={id,innerHTML:'',dataset:{},hidden:false,open:false,scrollIntoView(){},querySelector(sel){return (this._q??={})[sel]??null;},querySelectorAll(){return [];},replaceChildren(){this.innerHTML='';},insertAdjacentHTML(){},focus(){},};
 const accountOf=(overrides={})=>({id:'account',patient_id:'patient',version:4,status:'posted',total_cents:28000,content:{visit_id:'visit',service_date:'2026-11-12',lines:[{code:'99213',description:'Office visit',units:1,amount_cents:28000,diagnosis_codes:['M62.81']}]},coverage_snapshot:{coverage:{content:{relationship:'self',member_id:'SYN-MEMBER'}},payer:{content:{name:'Synthetic Medicare PPO',payer_code:'SYN'}}},...overrides});
 let account=accountOf();
-// The screen finds the visit's charge account through workspace.billing.accounts, exactly as
+// The screen finds the encounter's charge account through workspace.billing.accounts, exactly as
 // encounterChargeAccount does. Keeping that array in step with the fixture is the whole bridge.
 function setAccount(next){account=next;vmAccount();return account;}
 function vmAccount(){ctx.workspace.billing={...ctx.workspace.billing,accounts:[account]};}
@@ -70,7 +70,7 @@ const click=dataset=>{
  // The summary's money lines come from the account in hand, the way /visit-summary fills them.
 const runChain=(claimId,options={})=>vm.runInContext('visitReviewRun',ctx)(claimId,{afterPost:()=>{setAccount({...account,status:'posted',version:account.version+1});showOnScreen(reviewSummary());},afterSend:()=>{},quietRefresh:true,confirmPost:true,...options});
 // A post from the panel is the same call the lower form makes; without it the chain posts nothing.
-// The state the visit is in before anything has been posted or prepared; visit-summary gives
+// The state the encounter is in before anything has been posted or prepared; visit-summary gives
 // it no claim yet, and the practice's own details come from its billing setup, not a claim.
 const postSummary=()=>{const s=visitSummary({state:'post_charges',waiting_on:'staff',account:{id:'account',status:'draft',version:4,total_cents:28000},charges_cents:28000,balance_cents:null,claim:null,insurance:{insured:true,insurer:'Synthetic Medicare PPO',electronic:true,status:'not_billed',pending_cents:27000},patient:{copay_cents:1000,owes_now_cents:0}});return {...s,claim:null};};
 function reviewSummary(overrides={}){
@@ -122,11 +122,11 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
  reset();openPanel(reviewSummary());
  let panel=panelHost().innerHTML;
  assert.match(panel,/Check the claim before it goes out/);assert.match(panel,/data-visit-review-close/);
- assert.match(panel,/What this visit comes to/);assert.match(panel,/\$280\.00/,'the charges total is said');
+ assert.match(panel,/What this encounter comes to/);assert.match(panel,/\$280\.00/,'the charges total is said');
  assert.match(panel,/Synthetic Medicare PPO/,'who is billed is said');assert.match(panel,/\$10\.00/,'the expected copay is said');
  assert.match(panel,/The claim form/);assert.match(panel,/cms1500/,'the CMS-1500 view is offered, and opening it sends nothing');
  assert.match(panel,/data-visit-review-send/,'the one send button is there');
- // A claim carrying its own copy of the visit's charge lines has each of them drawn on the form.
+ // A claim carrying its own copy of the encounter's charge lines has each of them drawn on the form.
  // The line mapper shadows its own name inside the map callback on the main branch, so a claim with
  // lines crashes instead of rendering; this is the case that catches it.
  openPanel(reviewSummary({claim:{id:claim.id,status:'ready',version:claim.version,content:claim.content,snapshot:claim.snapshot}}));
@@ -176,7 +176,7 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
  assert.ok(sent[0].body.reason.trim().length>0&&sent[0].body.reason.length<=1000,'the post carries a reason');
   // A chain that cannot find its claim stops where it is and sends nothing onward.
   reset();setAccount(accountOf({status:'draft'}));showOnScreen(postSummary());
-  // The server prepares nothing: after the post the screen still shows no claim for this visit.
+  // The server prepares nothing: after the post the screen still shows no claim for this encounter.
   vm.runInContext("var _api=api;api=async(p,m,b,v)=>{if(p.indexOf('/claims/prepare')>=0)return {outcome:'not_prepared',issues:['no charges to claim']};return _api(p,m,b,v);}",ctx);
   const gone=reviewSummary({claim:null});
   ran=await vm.runInContext('visitReviewRun',ctx)(null,{needPost:true,needPrepare:true,allowUnsigned:true,quietRefresh:true,confirmPost:true,
@@ -228,7 +228,7 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
  assert.equal(sent.length,0,'an unticked send writes nothing');
  assert.match(panelHost().innerHTML,/note is not signed/,'the panel says what it is waiting for');
   // Ticking it sends once, and the send says so on its face: the chain posts the draft, fills
-  // the claim in from the visit, releases it, submits it and asks Claim.MD to deliver it.
+  // the claim in from the encounter, releases it, submits it and asks Claim.MD to deliver it.
   panelHost()._q={'[data-note-sign-ack]':{checked:true}};
   click({'visit-review-send':''});await settle();if(ctx.failed)throw new Error(ctx.failed);
   assert.ok(sent.some(c=>c.path.endsWith('/837p')),'ticked, the send goes through');
@@ -260,17 +260,17 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
  // The panel is open on another visit's card: this card keeps its own button instead.
  setAccount(accountOf());
  let out=ctx.visitBillingCardMarkup(reviewSummary({visit:{id:'another-visit',appointment_id:'other',status:'signed'}}),all);
- assert.equal((out.match(/Review and send to Claim\.MD/g)||[]).length,0,'a card drawn away from the live visit keeps its own button');
- assert.match(out,/Review and send claim|Fix claim details|Post charges|Prepare claim/,'and it still offers the visit its own next step');
+ assert.equal((out.match(/Review and send to the clearinghouse/g)||[]).length,0,'a card drawn away from the live visit keeps its own button');
+ assert.match(out,/Review and send claim|Fix claim details|Post charges|Prepare claim/,'and it still offers the encounter its own next step');
  showOnScreen(reviewSummary());
  out=ctx.visitBillingCardMarkup(reviewSummary(),all);
- assert.match(out,/class="primary" data-visit-review-open="account">Review and send to Claim\.MD</);
+ assert.match(out,/class="primary" data-visit-review-open="account">Review and send to the clearinghouse</);
  assert.equal((out.match(/class="primary"/g)||[]).length,1,'one primary button on the card');
   out=ctx.visitBillingCardMarkup(reviewSummary(),{...all,delegated:true});
-  assert.doesNotMatch(out,/Review and send to Claim\.MD/,'a support session is not offered the review-and-send panel');
+  assert.doesNotMatch(out,/Review and send to the clearinghouse/,'a support session is not offered the review-and-send panel');
  showOnScreen(reviewSummary({claim:{id:'claim',status:'submitted',version:3}}));
  out=ctx.visitBillingCardMarkup(reviewSummary({claim:{id:'claim',status:'submitted',version:3}}),all);
- assert.doesNotMatch(out,/Review and send to Claim\.MD/,'a claim already with the insurer is not offered again');
+ assert.doesNotMatch(out,/Review and send to the clearinghouse/,'a claim already with the insurer is not offered again');
  assert.match(out,/data-visit-billing-sent/);assert.match(out,/Check status/,'the card says where the claim is and gives one way to look');
 
   // ---- No horizontal overflow is invited ----

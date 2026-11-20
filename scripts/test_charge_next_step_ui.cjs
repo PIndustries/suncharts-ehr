@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
-// The one line under the charge table. A doctor working in a visit's charges asked where the
-// charges are actually sent from; the visit billing card above the table has always known the
-// next step, and the table had nothing to say. This script opens a visit's charge table with the
+// The one line under the charge table. A doctor working in an encounter's charges asked where the
+// charges are actually sent from; the encounter billing card above the table has always known the
+// next step, and the table had nothing to say. This script opens an encounter's charge table with the
 // billing step holding each state in turn, and checks the table now says the same next step the
-// card says, in the same plain words, once only, and nothing at all when the visit has no charge
+// card says, in the same plain words, once only, and nothing at all when the encounter has no charge
 // step left. The DOM is the same small hand-written element stub the other charge UI scripts use;
 // web/billing.js, web/visit-billing.js, web/visit-review.js and web/patient-revenue.js are loaded
 // into a node vm and driven through the handlers they install on the document. Every value below
@@ -181,10 +181,10 @@ function dispatch(type,target){
 }
 const click=node=>dispatch('click',node);
 const openHost=html=>{const host=makeNode('div');host.innerHTML=html;return host;};
-// The billing step, laid out as the visit's Charges screen lays it out.
+// The billing step, laid out as the encounter's Charges screen lays it out.
 function buildPanels(){
  for(const id of Object.keys(nodes))delete nodes[id];
- // The panels the visit's Charges step is made of, each findable by id the way the page finds it.
+ // The panels the encounter's Charges step is made of, each findable by id the way the page finds it.
  const revenue=makeNode('div');revenue.attrs.id='encounter-revenue';nodes['encounter-revenue']=revenue;
  for(const [id,tag] of [['encounter-revenue-status','div'],['visit-billing-review','section'],['encounter-billing-editor','div'],['encounter-charge-details','details'],['encounter-billing-detail','div']]){
   const panel=makeNode(tag);panel.attrs.id=id;nodes[id]=panel;revenue.append(panel);
@@ -195,10 +195,10 @@ function buildPanels(){
 
 // ---- the synthetic visit ---------------------------------------------------------------
 const {visitSummary,selfPay}=require('./visit_billing_fixture.cjs');
-// The one-page visit lays the charge table out compactly, with the visit and its options behind a
-// disclosure; a draft charge table for a visit is only ever entered that way, so the stub's form
+// The one-page visit lays the charge table out compactly, with the encounter and its options behind a
+// disclosure; a draft charge table for an encounter is only ever entered that way, so the stub's form
 // The stub's form element answers for the hidden selects behind the compact table's disclosure
-// the way a browser's does: the visit the table is on, and the coverage its insurance runs through.
+// the way a browser's does: the encounter the table is on, and the coverage its insurance runs through.
 const hiddenSelectAnswer=html=>html
  .replace('<select name="visit_id" required>','<input type="hidden" name="visit_id" value="visit" required>')
  .replace('<select name="coverage_id"><option value="">Self-pay / no selected coverage</option>','<select name="coverage_id" required><option value="coverage" selected>Synthetic Medicare PPO</option>');
@@ -208,7 +208,7 @@ parseMarkup=function(html){return realParseMarkup(hiddenSelectAnswer(String(html
 // shadows itself inside a map callback, and a test global called line used to paper over it.
 const chargeLine={code_system:'CPT',code:'99213',description:'Synthetic office visit',modifiers:'',units:1,amount_cents:15000,diagnosis_codes:['Z00.00']};
 const accountOf=(status='posted',version=2)=>({id:'account',version,status,patient_id:'patient',total_cents:28000,content:{visit_id:'visit',service_date:'2026-11-12',coverage_id:'coverage',lines:[{...chargeLine}],notes:''}});
-// The charge account the claim's copy of the visit is taken from: a frozen payer on file, and the
+// The charge account the claim's copy of the encounter is taken from: a frozen payer on file, and the
 // charge lines the claim carries.
 const reviewAccount={id:'account',patient_id:'patient',version:5,status:'posted',total_cents:28000,content:{visit_id:'visit',service_date:'2026-11-12',lines:[{code_system:'CPT',code:'99213',description:'Synthetic office visit',units:1,amount_cents:28000,diagnosis_codes:['Z00.00']}]},coverage_snapshot:{coverage:{content:{relationship:'self',member_id:'SYN-MEMBER'}},payer:{content:{name:'Synthetic Medicare PPO',payer_code:'SYN'}}}};
 const coverage={id:'coverage',version:2,content:{payer_id:'payer',priority:'primary',status:'active',effective_date:'2026-01-01',end_date:null,member_id:'SYN-MEMBER',copay_cents:null}};
@@ -223,7 +223,7 @@ const ctx={console,Date,Intl,URL,URLSearchParams,Map,Set,WeakMap,WeakSet,Array,M
  esc:v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'),
  human:v=>String(v??'').replaceAll('_',' '),date:v=>String(v),money:n=>'$'+(n/100).toFixed(2),dollars:c=>c==null?'':(c/100).toFixed(2),cents:v=>Math.round(Number(v)*100),
  payerName:()=>'Synthetic Medicare PPO',billingCan:()=>true,workspaceResourceAllowed:()=>true,
- // The payer directory the billing screens read: this visit's insurer, with its Claim.MD payer ID.
+ // The payer directory the billing screens read: this encounter's insurer, with its Claim.MD payer ID.
  billingPayers:[{id:'payer',content:{name:'Synthetic Medicare PPO',payer_code:'SYN'}}],
  claimmdClaimProviderDefaults:()=>({}),claimPatientAddressDefault:()=>('1 Synthetic Way, Synthetic City, SY 00000, US'),
  claimMdConnectionState:{connected:true},loadClaimMdConnection:async()=>{},claimsApiBase:'/api/v1/billing/claims',$:id=>documentStub.getElementById(id),
@@ -235,7 +235,7 @@ const ctx={console,Date,Intl,URL,URLSearchParams,Map,Set,WeakMap,WeakSet,Array,M
  billingEditorHost(){return (ctx.chartSection==='insurance'&&$('insurance-editor'))||(ctx.chartSection==='visits'&&$('encounter-billing-editor'))||$('billing-editor');},
  billingDetailHost(){return ctx.chartSection==='visits'&&$('encounter-billing-detail')||$('billing-detail');},
  showEncounterClaim:async id=>{ctx.openedClaim=id;},claimEditor:()=>{},refreshEncounterProgress(){},
- // The visit is reopened through the chart's own way back to a patient: recorded here so a test can
+ // The encounter is reopened through the chart's own way back to a patient: recorded here so a test can
  // see the screen went that way rather than somewhere else.
  selectPatient:async()=>{ctx.sent.push(['rerender']);},
   // A visit-summary reply hands back what the server now says, the same summary shape the card was
@@ -273,7 +273,7 @@ const cardButton=()=>{
  return {attribute:tag.replace(/^<button/,'').replace(/>$/,''),label,html};
 };
 // The line under the table, read as the person reads it.
-// The line only exists on a table that is on screen; a visit with no live table is given nothing.
+// The line only exists on a table that is on screen; an encounter with no live table is given nothing.
 const nextLine=()=>{
  const node=openForm()?.querySelector('.charge-table-next');if(!node)return null;
  const button=node.querySelector('button');
@@ -288,9 +288,9 @@ const nextLine=()=>{
 // the claim itself holds, so a claim put together by the practice shows the send button open.
 const claimContent=()=>({billing_provider_name:'Synthetic Care Group',billing_address:'1 Synthetic Way',tax_id:'123456789',billing_npi:'1234567890',rendering_npi:'0987654321',billing_taxonomy:'207R00000X',patient_address:'1 Synthetic Way',subscriber_address:'1 Synthetic Way',subscriber_birth_date:'1980-01-01',place_of_service:'11',diagnosis_codes:['Z00.00'],line_diagnosis_pointers:[[1]]});
 const claimReady=(over={})=>({id:'claim',status:'ready',version:2,payer_name:'Synthetic Medicare PPO',automatic:true,content:claimContent(),snapshot:{account:ctx.reviewAccount,patient:{given_name:'Synthetic',family_name:'Patient'}},issues:[],...over});
-// The visit is opened on its Charges step with the billing step holding this visit's summary,
+// The encounter is opened on its Charges step with the billing step holding this encounter's summary,
 // then its charges are opened the way staff open them: the card's own button.
-// The billing step holding this visit's summary, as a visit-summary reply leaves it: the same
+// The billing step holding this encounter's summary, as an encounter-summary reply leaves it: the same
 // patient, sign-in, visit and account the screen is on, and its card drawn from this summary.
 const stepFor=(summary,version)=>{
  const step={patient:'patient',identity:ctx.me,visit:'visit',account:'account',version,pending:null,data:{summary},loadedAt:Date.now(),filter:'all',prepared:true,review:null,reviewCard:summary};
@@ -308,9 +308,9 @@ const enterTable=async()=>{
  else if($('encounter-charge-details')&&$('encounter-billing-detail')?.innerHTML)vm.runInContext('openEncounterCharges()',ctx);
  await settle();
 };
-// A visit opened on the step it is actually opened on: the chart on Visits, the encounter panel
+// An encounter opened on the step it is actually opened on: the chart on Visits, the encounter panel
 // built with the step chosen, then the step itself drawn. The page builds the charge table itself
-// in one case only — a visit with no charges of its own — so a visit that has them is entered the
+// in one case only — an encounter with no charges of its own — so an encounter that has them is entered the
 // way staff enter it, by pressing the card's own way in.
 const openCharges=async summary=>{
  buildPanels();
@@ -320,7 +320,7 @@ const openCharges=async summary=>{
  vm.runInContext('billingSelected=null;chargeTableBaselines=new WeakMap();billingChargeDrafts.clear();encounterRevenueState={patient:null,identity:null,account:null,pending:null,data:null,loadedAt:0};',ctx);
  stepFor(summary,record.version);
  vm.runInContext('renderEncounterRevenue()',ctx);
- if(!$('encounter-revenue-status'))throw new Error('the billing step drew no card for this visit');
+ if(!$('encounter-revenue-status'))throw new Error('the billing step drew no card for this encounter');
  await enterTable();
  return openForm();
 };
@@ -333,14 +333,14 @@ const settle=async()=>{for(let step=0;step<40;step++)await new Promise(resolve=>
  let form=await openCharges(unsigned);
  assert.ok(form,'the charges table is on screen');
  let line1=nextLine();
- assert.deepEqual(line1,{text:'Sign the visit note to send these charges.',label:'Open the visit note',attribute:'data-revenue-documentation'});
+ assert.deepEqual(line1,{text:'Sign the encounter note to send these charges.',label:'Open the encounter note',attribute:'data-revenue-documentation'});
  assert.equal(stepAttributes(cardButton().attribute),'data-revenue-documentation','the footer names the same next step as the card');
  // The line sits directly under the table, after its last line and before anything else.
  const editor=nodes['encounter-billing-editor'].innerHTML;
  assert.ok(editor.indexOf('id="billing-charge-lines"')<editor.indexOf('data-charge-next'),'the next step sits under the charge lines');
  assert.ok(editor.indexOf('data-add-charge')<editor.indexOf('data-charge-next'),'and under the add-a-line button that belongs to the table');
- assert.ok(editor.indexOf('data-charge-next')<editor.indexOf('<details data-visit-charge-options'),'ahead of the visit and fee options');
- // Pressing it opens the visit note, through the hook the card's button uses. The step was opened
+ assert.ok(editor.indexOf('data-charge-next')<editor.indexOf('<details data-visit-charge-options'),'ahead of the encounter and fee options');
+ // Pressing it opens the encounter note, through the hook the card's button uses. The step was opened
  // by pressing something first, and opening a step is the page's own business, so the record of
  // what the footer pressed is taken from here on, not from the trip to the charge table.
  // Anything the trip to the charge table left in flight is settled before the footer is pressed,
@@ -348,7 +348,7 @@ const settle=async()=>{for(let step=0;step<40;step++)await new Promise(resolve=>
  await settle();
  ctx.sectionOpened=null;ctx.sent.length=0;
  click($('billing-charge-lines').closest('form').querySelector('.charge-table-next button'));
- assert.equal(ctx.sectionOpened,'documentation','the footer button opens the visit note');
+ assert.equal(ctx.sectionOpened,'documentation','the footer button opens the encounter note');
  assert.equal(ctx.sent.length,0,'nothing is sent by opening the note');
 
   // ---- 2. the charges can be posted ------------------------------------------------------
@@ -372,7 +372,7 @@ const settle=async()=>{for(let step=0;step<40;step++)await new Promise(resolve=>
   assert.deepEqual(asked,[['Charges of $280.00 become final and the claim is sent once it is ready.','Post these charges?','Post charges and send claim']],'one plain ask, naming the send that follows, and only before anything is sent');
   const posts=()=>ctx.sent.filter(call=>String(call[0]).endsWith('/actions'));
   assert.deepEqual(posts().map(call=>[call[0],call[1],JSON.stringify(call[2]),call[3]]),[['/api/v1/patients/patient/billing/accounts/account/actions','POST','{"action":"post","reason":"Charges posted","local_only":false}',2]],'the lower form\'s endpoint, action, a default reason and the account version');
-  assert.ok(ctx.sent.some(call=>call[0]==='rerender'),'the visit is reopened the way the lower form reopens it');
+  assert.ok(ctx.sent.some(call=>call[0]==='rerender'),'the encounter is reopened the way the lower form reopens it');
   assert.equal(ctx.sent.at(-1)[0],'/api/v1/patients/patient/billing/visit-summary?visit_id=visit','then the card reads what the server now says');
   assert.equal(ctx.noticed,'Charges posted.','the screen says the charges were posted, not something else');
   // The line under the table moves with the card: a posted visit has its charges on their way, not
@@ -383,7 +383,7 @@ const settle=async()=>{for(let step=0;step<40;step++)await new Promise(resolve=>
   assert.ok(kept===null||kept.label==='Post charges','the footer either steps aside or asks for the post, never a send');
 
   // ---- 3. the claim is ready, and one press sends it --------------------------------------
-  // A visit whose charges are already posted has no live table to work in — the card's Charges
+  // An encounter whose charges are already posted has no live table to work in — the card's Charges
   // disclosure holds them read-only — so its send is taken from the card's own button, and the
   // footer's one send is checked on a draft the practice is still working.
   const ready=visitSummary({state:'send_claim',account:{id:'account',status:'posted',version:5},claim:claimReady()});
@@ -429,7 +429,7 @@ const settle=async()=>{for(let step=0;step<40;step++)await new Promise(resolve=>
 
  // ---- 4. a state that is not about charges says nothing ---------------------------------
  for(const summary of [
-  // A visit whose charges are no longer on the table at all — the card is what staff are looking
+  // An encounter whose charges are no longer on the table at all — the card is what staff are looking
   // at, and its table has to be opened before anything can be typed — is given no line either.
   visitSummary({state:'waiting_insurer',waiting_on:'insurer',account:{id:'account',status:'posted',version:6},insurance:{insured:true,insurer:'Synthetic Medicare PPO',electronic:true,status:'waiting',sent_on:'2026-11-12',pending_cents:27000,unassigned_cents:0},claim:{id:'claim',status:'submitted',sent_on:'2026-11-12'}}),
   selfPay({state:'paid_in_full',waiting_on:'nobody',account:{id:'account',status:'posted',version:7},patient:{copay_cents:null,received_cents:28000,receipts_applied_cents:28000,owes_now_cents:0,responsibility_source:'self_pay'},balance_cents:0}),
@@ -437,7 +437,7 @@ const settle=async()=>{for(let step=0;step<40;step++)await new Promise(resolve=>
  ]){
   ctx.activeVisit={id:'visit',appointment_id:'appointment',status:'signed',version:3};
   await openCharges(summary);
-  assert.equal(nextLine(),null,`${summary.state}: a visit with no charge step left is given nothing to press`);
+  assert.equal(nextLine(),null,`${summary.state}: an encounter with no charge step left is given nothing to press`);
   assert.doesNotMatch(nodes['encounter-billing-editor'].innerHTML,/data-charge-next/,'and no empty place for one is left under the lines');
  }
  // A table opened for something the billing step knows nothing about keeps quiet too.
@@ -446,14 +446,14 @@ const settle=async()=>{for(let step=0;step<40;step++)await new Promise(resolve=>
  assert.equal(nextLine(),null,'a charge form outside an open visit promises no next step');
  ctx.chartSection='visits';
 
- // ---- 5. the line is plain words and follows the visit ----------------------------------
+ // ---- 5. the line is plain words and follows the encounter ----------------------------------
  ctx.activeVisit={id:'visit',appointment_id:'appointment',status:'in_progress',version:3};
  ctx.workspace.visits=[{id:'visit',appointment_id:'appointment',status:'in_progress'}];
  await openCharges(unsigned);
  const words=nodes['encounter-billing-editor'].innerHTML.slice(nodes['encounter-billing-editor'].innerHTML.indexOf('data-charge-next')).replace(/<[^>]*>/g,' ');
- assert.doesNotMatch(words,/encounter|catalog|snapshot|payload|endpoint|schema|account id|draft|version/i,'the line says nothing developer-flavoured');
+ assert.doesNotMatch(words,/catalog|snapshot|payload|endpoint|schema|account id|draft|version/i,'the line says nothing developer-flavoured');
  // The state moves: the same table is told the note is signed, and the line changes with it.
- // A payer with no insurer ID is billed outside SunCharts, so the visit's own post is the step:
+ // A payer with no insurer ID is billed outside SunCharts, so the encounter's own post is the step:
  // the same table, the same card, with nothing to send electronically.
  ctx.activeVisit={id:'visit',appointment_id:'appointment',status:'signed',version:3};
  ctx.workspace.visits=[{id:'visit',appointment_id:'appointment',status:'signed'}];
@@ -462,7 +462,7 @@ const settle=async()=>{for(let step=0;step<40;step++)await new Promise(resolve=>
  vm.runInContext('paintEncounterRevenue(encounterRevenueState,()=>true)',ctx);
  await enterTable();
  await settle();
- assert.equal(nextLine().label,'Post charges','the line follows the visit\u2019s own state');
+ assert.equal(nextLine().label,'Post charges','the line follows the encounter\u2019s own state');
  assert.match($('encounter-revenue-status').innerHTML,/Post charges/,'and the card moved with it');
  console.log('PASS charge table footer: one next step under the table, the same step the card gives, the send handed to the review panel, nothing for a state with no charge step, and plain words');
 })().catch(error=>{console.error(error);process.exitCode=1;});

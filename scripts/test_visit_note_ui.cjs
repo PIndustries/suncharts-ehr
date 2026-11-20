@@ -84,7 +84,7 @@ async function main(){
  assert.equal(f.asked.length,0,'one click fills an empty note without a question');
  assert.deepEqual(text(f),earlier);
  assert.deepEqual(f.from(),{visit_id:'visit-0',version:3,sections});
- assert.match(f.nodes.get('note-source-line').textContent,/^Started from the visit on [^.]*2026\. Review every section before signing\.$/);
+ assert.match(f.nodes.get('note-source-line').textContent,/^Started from the encounter on [^.]*2026\. Review every section before signing\.$/);
  assert.equal(f.nodes.get('note-source-line').hidden,false);
  assert.match(f.bar(),/role="status">Subjective, Objective, Assessment, Plan and Procedure brought in\. Review before signing\.<\/span><button type="button" class="text-button" data-note-undo>Undo<\/button>$/);
  assert.match(f.bar(),/<button type="button" class="" data-note-same="all">/,'no longer the primary action once the note has text');
@@ -95,7 +95,7 @@ async function main(){
  // The draft, its origin and the Undo step survive leaving and re-rendering the editor.
  f.run('captureVisitDrafts();renderVisit(false)');await f.settle();
  assert.deepEqual(text(f),earlier);assert.deepEqual(f.from().sections,sections);
- assert.match(f.editor(),/<p id="note-source-line" class="note-source muted">Started from the visit on [^<]*2026\. Review every section before signing\.<\/p>/);
+ assert.match(f.editor(),/<p id="note-source-line" class="note-source muted">Started from the encounter on [^<]*2026\. Review every section before signing\.<\/p>/);
  assert.match(f.bar(),/data-note-undo/);assert.equal(f.requests.length,1,'the earlier note is read once per visit');
  f.type({plan:'Earlier P, now edited'});
  await f.click({noteUndo:''});
@@ -167,7 +167,7 @@ async function main(){
  assert.equal(put.version,1);assert.equal(f.run('visitDrafts.has("visit-1")'),false,'the saved note leaves no unsaved draft');
  assert.doesNotMatch(f.bar()+f.run('String(visitNoteUndo.size)'),/data-note-undo|1/,'Undo ends when the note is saved');
  f.run('renderVisit(false)');await f.settle();
- assert.match(f.editor(),/Started from the visit on [^<]*2026\. Review every section before signing\./,'the line stays until signing');
+ assert.match(f.editor(),/Started from the encounter on [^<]*2026\. Review every section before signing\./,'the line stays until signing');
  await f.click({action:'sign'},[true]);
  assert.ok(f.requests.some(r=>r.path.endsWith('/sign')),'a saved note with an origin can be signed');
  f=fixture();await f.settle();f.type({subjective:'S',objective:'O',assessment:'A',plan:'P',procedure:'Synthetic procedure text'});await f.submit();
@@ -213,7 +213,7 @@ async function main(){
  f=signed({subjective:'Frozen S',objective:'Frozen O',assessment:'Frozen A',plan:'Frozen P',procedure:'Frozen <procedure>',started_from:{visit_id:'visit-0',version:3,sections:['plan','procedure'],visit_date:'2026-11-04T15:00:00Z'}});await f.settle();note=f.noteForm();
  assert.equal([...note.matchAll(/readonly/g)].length,5);
  assert.match(note,/name="plan" maxlength="10000" readonly>Frozen P<\/textarea><\/label><\/div><div class="note-section note-procedure"><label>Procedure<textarea name="procedure" maxlength="10000" readonly>Frozen &lt;procedure&gt;<\/textarea>/,'signed Procedure is read-only, below Plan');
- assert.match(f.editor(),/<p id="note-source-line" class="note-source muted">Started from the visit on [^<]*2026\.<\/p>/,'a reviewer can see the signed note was started from an earlier one');
+ assert.match(f.editor(),/<p id="note-source-line" class="note-source muted">Started from the encounter on [^<]*2026\.<\/p>/,'a reviewer can see the signed note was started from an earlier one');
  assert.doesNotMatch(f.editor(),/Review every section|note-previous|data-note-same|name="started_from"|placeholder="Procedure performed/);
  assert.ok(!f.requests.some(r=>r.path.endsWith('/previous-note')),'a signed note never asks for the earlier note');
  console.log('PASS signed view shows Procedure only when recorded and keeps older notes unchanged');

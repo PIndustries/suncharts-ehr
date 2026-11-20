@@ -16,11 +16,11 @@ const chargeLine=html=>{const start=html.indexOf('<tr class="billing-charge-row"
 (async()=>{
  ctx.revenueServiceDate=()=>'2026-11-13';
  ctx.api=async()=>({version:3,diagnoses:[]});
- // Opened from inside the visit: the charge lines come first, everything else is tucked away.
+ // Opened from inside the encounter: the charge lines come first, everything else is tucked away.
  ctx.chartSection='visits';ctx.activeVisit={id:'visit-a',appointment_id:'appt-a',status:'in_progress'};
  ctx.accountEditor(null,null,true);
  const visit=nodes['encounter-billing-editor'].innerHTML,box='<details data-visit-charge-options>';
- assert.match(visit,/<details data-visit-charge-options><summary>Visit, insurance and fee options<\/summary>/,'the visit details sit in one collapsed box');
+ assert.match(visit,/<details data-visit-charge-options><summary>Visit, insurance and fee options<\/summary>/,'the encounter details sit in one collapsed box');
  assert.ok(!/<details[^>]*\bopen/.test(visit),'the box starts closed');
  const row=chargeLine(visit);
  assert.match(visit,/<table class="billing-table charge-table" id="billing-charge-lines"><caption class="sr-only">/,  'the lines are one table');
@@ -45,7 +45,7 @@ const chargeLine=html=>{const start=html.indexOf('<tr class="billing-charge-row"
  assert.doesNotMatch(visit,/>Diagnoses for this service</,'the letters answer for the line; there is no free-text box to label');
  assert.ok(visit.indexOf('data-charge-line-totals')>visit.indexOf('</table>'),'the totals sit under the lines, not in a column beside them');
  assert.match(visit,/data-charge-total/,'the totals sit under the table and move as lines change');
- assert.doesNotMatch(visit,/Account notes|Line total \(USD\)|Reviewed ICD-10|Check approved fee|Catalog release options|Record each service once|Code system/,'no long or developer wording is shown in the visit charge table');
+ assert.doesNotMatch(visit,/Account notes|Line total \(USD\)|Reviewed ICD-10|Check approved fee|Catalog release options|Record each service once|Code system/,'no long or developer wording is shown in the encounter charge table');
  // Saving with a required field left empty inside the box opens it so the browser can show the problem.
  const broken={checkValidity:()=>false},ok={checkValidity:()=>true},fields=[ok,broken],tuckedBox={open:false,querySelectorAll:()=>fields};
  const chargeForm={id:'billing-account-form',querySelector:selector=>selector==='[data-visit-charge-options]'?tuckedBox:null};
@@ -62,5 +62,5 @@ const chargeLine=html=>{const start=html.indexOf('<tr class="billing-charge-row"
  assert.match(flat,/<p class="muted">Enter the amount for the whole line, not for one unit\.<\/p>/);
  assert.match(flat,/<h4>Insurance on [^<]+<\/h4>/,'the Billing tab form still lists the insurance on file');
  assert.match(flat,/data-add-charge>\+ Charge line</);assert.match(flat,/<label>Notes<textarea name="notes"/);
- console.log('PASS live visit charge table: one table with the columns staff asked for, no save button or reason box, one closed options box holding the visit fields, opened on save when a field inside is invalid, Billing tab layout unchanged');
+ console.log('PASS live visit charge table: one table with the columns staff asked for, no save button or reason box, one closed options box holding the encounter fields, opened on save when a field inside is invalid, Billing tab layout unchanged');
 })().catch(error=>{console.error(error);process.exitCode=1;});

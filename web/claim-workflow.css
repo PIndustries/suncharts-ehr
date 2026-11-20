@@ -64,3 +64,43 @@
 .claim-line-diagnosis-row{padding:.5rem 0;border-top:1px solid var(--line,#e6ecef)}
 .claim-line-diagnosis-row:first-of-type{border-top:0}
 .claim-line-diagnosis-row .scope-options{margin:.3rem 0 0}
+.claim-quick-view{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:.5rem 1rem;margin:.3rem 0 .6rem}
+.claim-quick-view ul{display:flex!important;flex-wrap:wrap;gap:.1rem .9rem}
+.claim-quick-view li::after{content:';'}
+.claim-quick-view li:last-child::after{content:''}
+/* A claim shown inside a visit sits in the visit's narrow right-hand column: everything stacks. */
+#encounter-claims{container-type:inline-size}
+@container (max-width:680px){
+ .claim-primary{grid-template-columns:1fr}
+ .claim-missing>ul>li{grid-template-columns:1fr;justify-items:start;gap:.25rem}
+ .claim-lifecycle ol{grid-template-columns:1fr!important}
+ #encounter-claims .section-head{flex-wrap:wrap}
+}
+/* Sheets: edits open over the page, slide up and fade in, and fade out when done. */
+.sheet-dialog{border:0;border-radius:14px;padding:0;width:min(560px,calc(100vw - 32px));max-height:calc(100vh - 48px);overflow:auto;background:var(--surface);color:var(--ink);box-shadow:0 24px 60px rgb(0 0 0 / .28)}
+.sheet-dialog[open]{animation:sheet-in .28s cubic-bezier(.2,.8,.2,1)}
+.sheet-dialog.closing{animation:sheet-out .18s ease-in forwards}
+.sheet-dialog::backdrop{background:rgb(8 18 28 / .38);backdrop-filter:blur(3px);animation:sheet-fade .28s ease}
+.sheet-head{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:1rem 1.2rem .4rem}
+.sheet-head h3{margin:0;font-size:1.08rem}
+.sheet-close{border:0;background:none;font-size:1.5rem;line-height:1;color:var(--muted);cursor:pointer;padding:.2rem .4rem;border-radius:8px}
+.sheet-close:hover{background:var(--surface-soft)}
+.sheet-body{padding:.4rem 1.2rem 1.2rem}
+.sheet-body .claim-quick-fix{border:0;padding:0;margin:0;background:none}
+@keyframes sheet-in{from{opacity:0;transform:translateY(14px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes sheet-out{to{opacity:0;transform:translateY(10px) scale(.98)}}
+@keyframes sheet-fade{from{opacity:0}to{opacity:1}}
+/* What just changed glows briefly. */
+.just-updated{animation:just-updated 1.6s ease}
+@keyframes just-updated{0%{box-shadow:0 0 0 0 var(--accent)}20%{box-shadow:0 0 0 4px var(--accent)}100%{box-shadow:0 0 0 0 transparent}}
+@media(prefers-reduced-motion:reduce){.sheet-dialog[open],.sheet-dialog.closing,.sheet-dialog::backdrop,.just-updated{animation:none}}
+.claim-tabs{margin:1rem 0}
+.claim-tabs-panels>[data-claim-tab]{animation:invoice-tab-in .22s ease}
+.claim-tabs .claim-advanced-open>summary{display:none}
+.claim-history-list{list-style:none;margin:0;padding:0;display:grid;gap:.5rem}
+.claim-history-list li{display:grid;gap:.1rem;padding:.5rem 0;border-top:1px solid var(--line)}
+.claim-history-list li:first-child{border-top:0}
+.claim-history-list small{color:var(--muted)}
+@keyframes invoice-tab-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.sheet-dialog.sheet-wide{width:min(900px,calc(100vw - 32px))}
+.invoice-sheet .avs-print-frame{width:100%;min-height:60vh;border:1px solid var(--line);border-radius:8px}

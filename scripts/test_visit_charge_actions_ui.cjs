@@ -31,11 +31,11 @@ const actionBody=()=>JSON.parse(JSON.stringify(lastAction()[2]));
  ctx.showBillingAccount('account',false);let html=formHtml();
  assert.match(html,/<h3>Review and post charges<\/h3>/);
  assert.doesNotMatch(html,/<select|>Confirm</,'no action picker and no generic Confirm left');
- assert.match(html,/Posting makes the charges final and prepares the insurance claim for you to review\. The visit note must be signed first\./,'the helper sentence stays');
+ assert.match(html,/Posting makes the charges final and prepares the insurance claim for you to review\. The encounter note must be signed first\./,'the helper sentence stays');
  assert.match(html,/<button type="submit" class="primary" name="action" value="post">Post charges<\/button><button type="submit" name="action" value="void">Remove these charges<\/button>/,'each action is its own button');
  // The same block on the billing page's own account view keeps its own wording.
  ctx.chartSection='billing';ctx.showBillingAccount('account',false);html=node('billing-detail').innerHTML;
- assert.match(html,/<h3>Review and post charges<\/h3>[\s\S]*Posting locks the charges\. The visit note must be signed first\./);
+ assert.match(html,/<h3>Review and post charges<\/h3>[\s\S]*Posting locks the charges\. The encounter note must be signed first\./);
  assert.doesNotMatch(html,/<select|>Confirm</);
  assert.match(html,/<button type="submit" class="primary" name="action" value="post">Post charges<\/button><button type="submit" name="action" value="void">Void draft<\/button>/);
  ctx.chartSection='visits';
@@ -47,12 +47,12 @@ const actionBody=()=>JSON.parse(JSON.stringify(lastAction()[2]));
  await submit({action:'void',reason:'Recorded for the wrong visit'});
  assert.deepEqual(actionBody(),{action:'void',reason:'Recorded for the wrong visit',local_only:false});
  // The local-only acknowledgement still travels with posting when the payer has no electronic ID.
- await submit({action:'post',reason:'Bill this visit outside SunCharts',local_only:'true'});
+ await submit({action:'post',reason:'Bill this encounter outside SunCharts',local_only:'true'});
  assert.equal(actionBody().local_only,true);
  // An unsigned visit note blocks posting only; the helper sentence stays visible.
  ctx.workspace.visits=[{id:'visit',appointment_id:'appt',status:'in_progress'}];ctx.activeVisit={...ctx.activeVisit,status:'in_progress'};
  ctx.showBillingAccount('account',false);html=formHtml();
- assert.match(html,/The visit note must be signed first/);
+ assert.match(html,/The encounter note must be signed first/);
  assert.match(html,/<button type="submit" class="primary" name="action" value="post" disabled>Post charges<\/button>/,'posting waits for the signed note');
  assert.match(html,/<button type="submit" name="action" value="void">Remove these charges<\/button>/,'removing wrong charges stays available');
  console.log('PASS charge actions as named buttons: exact post/void bodies, local-only acknowledgement, unsigned note blocks posting only');

@@ -56,9 +56,9 @@ const mutations=f=>f.calls.filter(call=>call[1]==='POST');
  // An invoice with an existing immutable plan is not a missing responsibility review.
  f.s.eligibleInvoices=[{...f.invoice,eligible:false,existing_plan_id:f.plan.id}];
  assert.match(c.installmentPlanForm(f.s),/All reviewed invoices already have payment plans/);
- assert.doesNotMatch(c.installmentPlanForm(f.s),/Check what the patient owes for the visit|id="installment-preview-form"/);
+ assert.doesNotMatch(c.installmentPlanForm(f.s),/Check what the patient owes for the encounter|id="installment-preview-form"/);
  f.s.eligibleInvoices.push({...f.invoice,invoice_id:'another-invoice'});assert.match(c.installmentPlanForm(f.s),/id="installment-preview-form"/);
- f.s.eligibleInvoices=[];f.s.installmentPlans=[];assert.match(c.installmentPlanForm(f.s),/Check what the patient owes for the visit/);
+ f.s.eligibleInvoices=[];f.s.installmentPlans=[];assert.match(c.installmentPlanForm(f.s),/Check what the patient owes for the encounter/);
  // Creating the plan never collects; collecting requires fresh patient-present consent.
  f=fixture();c=f.ctx;f.collection.elements.patient_present.checked=false;await c.createInstallmentCheckout(f.s,f.collection);assert.equal(mutations(f).length,0);f.collection.elements.patient_present.checked=true;await c.createInstallmentCheckout(f.s,f.collection);assert.equal(mutations(f).length,1);assert.equal(mutations(f)[0][3],1);assert.equal(mutations(f)[0][2].patient_present,true);assert.equal(mutations(f)[0][2].amount_cents,250,'collection sends the exact amount the patient reviewed');assert.match(f.nodes['patient-billing-installments'].innerHTML,/No patient ledger capture is confirmed/);
  // Return refresh can retrieve only the existing operation, never create Checkout.

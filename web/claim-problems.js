@@ -98,7 +98,7 @@ function claimProblemHasContent(claim){
 }
 function claimProblemDuplicateWords(claim){
   const number=claimProblemText(claim?.payer_control_number);
-  return `The insurer already has a claim for these charges, so this one came back as a duplicate. Check the payments already posted for this visit before sending anything again.${number?` Their claim number is ${number}; a corrected claim has to go as a replacement carrying that number.`:' If this really is a corrected claim, it needs the insurer’s claim number from the first answer.'}`;
+  return `The insurer already has a claim for these charges, so this one came back as a duplicate. Check the payments already posted for this encounter before sending anything again.${number?` Their claim number is ${number}; a corrected claim has to go as a replacement carrying that number.`:' If this really is a corrected claim, it needs the insurer’s claim number from the first answer.'}`;
 }
 function claimProblemEligibilityWords(claim){
   const coverage=claimProblemCoverage(claim);
@@ -137,7 +137,7 @@ const claimProblemRecognisers=[
   }},
   {key:'no_authorization',field:'prior_authorization',say(claim,evidence){
     if(!claimProblemIncludesAny(evidence,claimProblemPhrases.no_authorization))return '';
-    return 'This plan needed an approval or referral that is not on the claim. Add the authorization number to the claim, or follow the plan’s rules for a service approved after the visit.';
+    return 'This plan needed an approval or referral that is not on the claim. Add the authorization number to the claim, or follow the plan’s rules for a service approved after the encounter.';
   }},
   {key:'duplicate',field:'',say(claim,evidence){
     if(!claimProblemIncludesAny(evidence,claimProblemPhrases.duplicate))return '';
@@ -153,11 +153,11 @@ const claimProblemRecognisers=[
   }},
   {key:'diagnosis_pointer',field:'diagnosis_pointer',say(claim,evidence){
     if(!claimProblemIncludesAny(evidence,claimProblemPhrases.diagnosis_pointer))return '';
-    return 'Each charge line has to point at the diagnosis or diagnoses that explain it. Open the claim, set the diagnoses that apply to each line, and make the first one the main reason for the visit.';
+    return 'Each charge line has to point at the diagnosis or diagnoses that explain it. Open the claim, set the diagnoses that apply to each line, and make the first one the main reason for the encounter.';
   }},
   {key:'coding',field:'coding',say(claim,evidence){
     if(!claimProblemIncludesAny(evidence,claimProblemPhrases.coding))return '';
-    return 'The insurer will not pay the procedure code or a modifier on one of the lines. Check the code and its modifiers against what was actually done at the visit.';
+    return 'The insurer will not pay the procedure code or a modifier on one of the lines. Check the code and its modifiers against what was actually done at the encounter.';
   }}
 ];
 

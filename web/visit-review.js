@@ -12,9 +12,9 @@
 const visitReviewStages=[
   {key:'check',label:'Read the claim as it stands now',doing:'Reading the claim as it stands now…',done:'Claim read',skip:''},
   {key:'post',label:'Post the charges',doing:'Posting the charges…',done:'Charges posted',skip:'Already posted'},
-  {key:'prepare',label:'Fill in the claim',doing:'Filling in the claim from this visit…',done:'Claim filled in',skip:'Already filled in'},
+  {key:'prepare',label:'Fill in the claim',doing:'Filling in the claim from this encounter…',done:'Claim filled in',skip:'Already filled in'},
   {key:'ready',label:'Check the claim',doing:'Checking the claim…',done:'Checked',skip:'Already checked'},
-  {key:'send',label:'Send to Claim.MD',doing:'Sending to Claim.MD…',done:'Sent to Claim.MD',skip:''},
+  {key:'send',label:'Send to the clearinghouse',doing:'Sending to the clearinghouse…',done:'Sent to the clearinghouse',skip:''},
 ];
 const visitReviewStageTitle={check:'the current claim being read',post:'the charges being posted',prepare:'the claim being filled in',ready:'the claim being checked',send:'the claim being sent'};
 // The claims endpoint, read where it is used: web/claims.js owns `claimsBase`, and a screen may
@@ -38,7 +38,7 @@ function visitReviewCheck(key,options={}){
 }
 function visitReviewAccount(){return typeof encounterChargeAccount==='function'?encounterChargeAccount():null;}
 function visitReviewChargesReady(s){
- // The claim table is known only while this visit's draft account is what the chart holds;
+ // The claim table is known only while this encounter's draft account is what the chart holds;
  // once the charges are frozen the claim carries its own copy.
  const account=visitReviewAccount();
  if(s.account?.status!=='draft')return {known:false,lines:[]};
@@ -135,10 +135,10 @@ function visitReviewNote(s,ctx={}){
   const account=typeof encounterChargeAccount==='function'?encounterChargeAccount():null;
   const stillDraft=!account||account.status==='draft';
   return [visitReviewCheck('note-unsigned',{group:'visit',blocking:false,
-    text:'The visit note is not signed yet. The claim itself does not need the signature; posting the charges does.',
+    text:'The encounter note is not signed yet. The claim itself does not need the signature; posting the charges does.',
     action:ctx.canSign?'Sign the note':'Ask the clinician to sign the note',
     attribute:ctx.canSign?'data-visit-review-fix="note"':'data-revenue-documentation'}),
-    ...(stillDraft?[visitReviewCheck('post-needs-signature',{group:'visit',blocking:false,text:'Until the note is signed this practice cannot post the charges, and posting makes them final. You can still send what is ready.'}),visitReviewCheck('sign-the-note',{group:'visit',blocking:false,text:'Sign it from the visit note, then come back and press the same button.',action:ctx.canSign?'Sign the note':'Ask the clinician to sign the note',attribute:ctx.canSign?'data-visit-review-fix="note"':'data-revenue-documentation'})]:[visitReviewCheck('post-done',{group:'visit',blocking:false,text:'The charges are already posted, so the unsigned note no longer holds anything up here.'})])];
+    ...(stillDraft?[visitReviewCheck('post-needs-signature',{group:'visit',blocking:false,text:'Until the note is signed this practice cannot post the charges, and posting makes them final. You can still send what is ready.'}),visitReviewCheck('sign-the-note',{group:'visit',blocking:false,text:'Sign it from the encounter note, then come back and press the same button.',action:ctx.canSign?'Sign the note':'Ask the clinician to sign the note',attribute:ctx.canSign?'data-visit-review-fix="note"':'data-revenue-documentation'})]:[visitReviewCheck('post-done',{group:'visit',blocking:false,text:'The charges are already posted, so the unsigned note no longer holds anything up here.'})])];
 }
 function visitReviewServer(s){
   const claim=s.claim||{};
@@ -165,9 +165,9 @@ function visitReviewChecks(s,ctx={}){
   const out=[];
   if(!ctx.claimsAllowed)out.push(visitReviewCheck('claims-not-allowed',{group:'claim',blocking:true,text:'This sign-in cannot see insurance claims, so nothing can be sent from here.',action:'',fix:'blocked'}));
   else if(s.claim?.secondary||s.claim?.crossover)out.push(visitReviewCheck('secondary-claim',{group:'claim',blocking:true,text:'This claim comes from another insurer’s answer. It is worked on from the primary claim.',action:'Open the primary claim',attribute:`data-revenue-claim="${esc(s.claim.id||'')}"`,fix:'blocked'}));
-  else if(!s.insurance.insured)out.push(visitReviewCheck('self-pay',{group:'claim',blocking:false,text:'There is no insurance on this visit, so nothing is sent to Claim.MD. The patient is billed instead.'}));
-  else if(!s.insurance.electronic)out.push(visitReviewCheck('no-payer-id',{group:'insurance',blocking:true,text:`${visitBillingInsurer(s)} has no insurer ID here, so no claim can be sent electronically. Add it, or record the visit as billed outside SunCharts.`,action:'Edit insurance',attribute:'data-chart-section="insurance"'}));
-  else if(!s.account)out.push(visitReviewCheck('no-charges',{group:'charges',blocking:true,text:'No charges have been added to this visit yet.',action:'Add charges',attribute:'data-encounter-charges'}));
+  else if(!s.insurance.insured)out.push(visitReviewCheck('self-pay',{group:'claim',blocking:false,text:'There is no insurance on this encounter, so nothing is sent to the clearinghouse. The patient is billed instead.'}));
+  else if(!s.insurance.electronic)out.push(visitReviewCheck('no-payer-id',{group:'insurance',blocking:true,text:`${visitBillingInsurer(s)} has no insurer ID here, so no claim can be sent electronically. Add it, or record the encounter as billed outside SunCharts.`,action:'Edit insurance',attribute:'data-chart-section="insurance"'}));
+  else if(!s.account)out.push(visitReviewCheck('no-charges',{group:'charges',blocking:true,text:'No charges have been added to this encounter yet.',action:'Add charges',attribute:'data-encounter-charges'}));
   else{
     out.push(...visitReviewNote(s,ctx));
     out.push(...visitReviewLineProblems(s,ctx));
@@ -187,14 +187,14 @@ function visitReviewMustFix(checks){return checks.filter(check=>check.level==='m
 function visitReviewSummaryMarkup(s){
   if(!s)return '';
   const who=s.insurance.insured?`Insurance — ${esc(visitBillingInsurer(s))}`:'No insurance — the patient is billed';
-  const copay=s.insurance.insured?(s.patient.copay_cents==null?'No copay recorded on this plan.':`The patient is expected to pay ${money(s.patient.copay_cents)} at this visit.`):'No insurance, so the patient is billed for the whole visit.';
+  const copay=s.insurance.insured?(s.patient.copay_cents==null?'No copay recorded on this plan.':`The patient is expected to pay ${money(s.patient.copay_cents)} at this encounter.`):'No insurance, so the patient is billed for the whole visit.';
   const row=(label,value)=>`<div class="visit-billing-review-summary-row"><span>${label}</span><b>${value}</b></div>`;
-  return `<h4>What goes out</h4>${row('This visit’s charges',s.charges_cents==null?'Nothing added yet':money(s.charges_cents))}${row('Who is billed',who)}${row('Expected patient copay',esc(copay))}`;
+  return `<h4>What goes out</h4>${row('This encounter’s charges',s.charges_cents==null?'Nothing added yet':money(s.charges_cents))}${row('Who is billed',who)}${row('Expected patient copay',esc(copay))}`;
 }
 // The claim form the practice would file, filled from what the claim will actually carry.
 function visitReviewFormMarkup(s){
   const claim=s?.claim;
-  if(!claim)return '<h4>The claim form</h4><p class="muted">The claim form appears here as soon as the claim is filled in from this visit. Nothing is sent before you choose Send to Claim.MD.</p>';
+  if(!claim)return '<h4>The claim form</h4><p class="muted">The claim form appears here as soon as the claim is filled in from this encounter. Nothing is sent before you choose Send to the clearinghouse.</p>';
   const content=claim.content||{},account=claim.snapshot?.account||{},patient=claim.snapshot?.patient||{},coverage=account.coverage_snapshot?.coverage?.content||{},payer=account.coverage_snapshot?.payer?.content||{};
   const field=(number,label,value)=>`<div class="visit-billing-review-field"><span>${number} · ${esc(label)}</span><b>${esc(visitReviewFormValue(value))||'—'}</b></div>`;
   const reviewLine=(charge,pointers)=>`<tr><td>${esc(visitReviewFormValue(`${charge.code_system||''} ${charge.code||''}`.trim(),13))}</td><td>${esc(visitReviewFormValue(charge.description,28))}</td><td class="money-cell">${Number(charge.units||0)||0}</td><td class="money-cell">${money(charge.amount_cents||0)}</td><td>${(pointers||[]).map(n=>esc(visitReviewFormValue((content.diagnosis_codes||[])[n-1]||'',8))).filter(Boolean).join(' ')||'—'}</td></tr>`;
@@ -217,7 +217,7 @@ function visitReviewBlockMarkup(s,ctx,checks){
   if(ctx.sent)return visitReviewSentMarkup(s);
   if(blocked)return `<p role="status" data-review-blocked><b>${must.length===1?'One thing must be put right first.':`${must.length} things must be put right first.`}</b> Use the button beside each one. Until then the send button stays closed.</p>`;
   const post=s.account?.status==='draft';
-  return `<div class="actions">${visitReviewButton(ctx.askNote?'Send anyway — the note is not signed yet':post?'Post charges, then send to Claim.MD':'Send to Claim.MD','class="primary" data-visit-review-send')}${ctx.askNote?`<p class="muted" role="status">The visit note is still not signed. Sending does not need the signature, but the charges become final when they are posted.</p>`:post?'<p class="muted">This posts the charges — they become final — fills the claim in, then sends it. Nothing has been sent until you press it.</p>':'<p class="muted">Nothing has been sent yet. Sending tells Claim.MD to deliver this claim to the insurer.</p>'}</div>`;
+  return `<div class="actions">${visitReviewButton(ctx.askNote?'Send anyway — the note is not signed yet':post?'Post charges, then send to the clearinghouse':'Send to the clearinghouse','class="primary" data-visit-review-send')}${ctx.askNote?`<p class="muted" role="status">The encounter note is still not signed. Sending does not need the signature, but the charges become final when they are posted.</p>`:post?'<p class="muted">This posts the charges — they become final — fills the claim in, then sends it. Nothing has been sent until you press it.</p>':'<p class="muted">Nothing has been sent yet. Sending tells Claim.MD to deliver this claim to the insurer.</p>'}</div>`;
 }
 function visitReviewPanelBody(s,ctx={}){
   const checks=visitReviewChecks(s,ctx),must=visitReviewMustFix(checks);
@@ -229,7 +229,7 @@ function visitReviewPanelBody(s,ctx={}){
   return `<div class="visit-billing-review-top"><div><h3>Check before it goes out</h3><p class="muted">Everything a claim needs, in plain words. Only what the insurer or our system actually refuses will stop a send.</p></div><div class="actions">${visitReviewButton('Check again','data-visit-review-refresh="again"')}</div></div>${visitReviewProgressMarkup(ctx.progress)}${noteAsk}${visitReviewBlockMarkup(s,ctx,checks)}${list||'<p class="visit-billing-review-clear" role="status">Nothing to fix. The claim is ready and nothing has been sent yet.</p>'}`;
 }
 function visitReviewPanelMarkup(s,ctx={}){
-  return `<section class="visit-billing-review" data-visit-review-panel><div class="section-head"><div><h2>Check the claim before it goes out</h2><p class="muted">The charges, the form and one button that does the rest.</p></div><div class="actions">${visitReviewButton('Close','data-visit-review-close')}</div></div><div id="visit-billing-review-body">${visitReviewPanelBody(s,ctx)}</div><section class="visit-billing-review-money"><h4>What this visit comes to</h4>${visitReviewSummaryMarkup(s)}</section>${visitReviewFormMarkup(s)}</section>`;
+  return `<section class="visit-billing-review" data-visit-review-panel><div class="section-head"><div><h2>Check the claim before it goes out</h2><p class="muted">The charges, the form and one button that does the rest.</p></div><div class="actions">${visitReviewButton('Close','data-visit-review-close')}</div></div><div id="visit-billing-review-body">${visitReviewPanelBody(s,ctx)}</div><section class="visit-billing-review-money"><h4>What this encounter comes to</h4>${visitReviewSummaryMarkup(s)}</section>${visitReviewFormMarkup(s)}</section>`;
 }
 
 // Opening and re-drawing the panel. The card's own status line is left as the server's summary
@@ -249,7 +249,7 @@ function visitReviewOpen(ctx={}){
   const summary=encounterRevenueState.data?.summary;
   host.hidden=false;host.innerHTML=summary?visitReviewPanelMarkup(summary,visitReviewContext(ctx)):'<p class="muted">Loading the review…</p>';
   // The line under the charge table does the same job as the card's button, so while the panel is
-  // open it says so too; closing the panel hands it back to the visit's own next step.
+  // open it says so too; closing the panel hands it back to the encounter's own next step.
   if(typeof chargeTableNextPaint==='function')chargeTableNextPaint(visitReviewButton('Review and send claim','data-visit-review-open="account"'));
   const heading=host.querySelector('h2');if(heading){heading.tabIndex=-1;heading.focus({preventScroll:true});}
   host.scrollIntoView?.({block:'start'});
@@ -268,7 +268,7 @@ function visitReviewClose(){
   const claimHost=$('encounter-claims');
   if(claimHost&&claimHost.hidden===false&&typeof claimViewContext!=='undefined'&&claimViewContext?.kind==='encounter'){claimHost.replaceChildren();claimHost.hidden=true;claimViewContext=null;}
 }
-// One-click send from the visit card and from the line under the charge table. It runs exactly
+// One-click send from the encounter card and from the line under the charge table. It runs exactly
 // the chain the review panel's own final button uses today — read the claim back, release a draft,
 // submit the 837 and ask the route to deliver it — minus the panel: the server's own refusals and
 // Claim.MD's answers are still what stop a send, and nothing is invented here. While it runs the
@@ -279,24 +279,24 @@ function visitClaimErrorText(error){return String(error?.message||'').replace(/\
 async function visitClaimDirectSend(claimId,button){
  const patient=selected,identity=me;
  const account=typeof encounterChargeAccount==='function'?encounterChargeAccount():null;
- if(!account)throw new Error('Open the visit for these charges first.');
+ if(!account)throw new Error('Open the encounter for these charges first.');
  const current=()=>selected===patient&&me===identity;
  const stop=(message,code)=>{const failure=new Error(message);failure.claimSendCode=code;throw failure;};
  if(button){button.disabled=true;button.textContent='Sending…';}
  try{
-  if(!claimId)stop('The claim for this visit could not be found. Refresh the visit and try again.','refresh');
+  if(!claimId)stop('The claim for this encounter could not be found. Refresh the encounter and try again.','refresh');
   if(typeof loadClaimMdConnection==='function')await loadClaimMdConnection();
   if(!current())return false;
-  if(!(typeof claimMdConnectionState!=='undefined'&&claimMdConnectionState?.connected))stop('Claim.MD is not connected, so nothing can be sent. Ask the practice owner to check the Claim.MD connection.','refresh');
+  if(!(typeof claimMdConnectionState!=='undefined'&&claimMdConnectionState?.connected))stop('No clearinghouse is connected, so nothing can be sent. Ask the practice owner to check the Claim.MD connection.','refresh');
   // The claim is read from the server before anything is released: a screen left open with edits
   // in it never sends on a stale copy. This is the same read the panel's chain makes.
   const base=visitReviewClaimsBase();
   const detail=await api(`${base}/${encodeURIComponent(claimId)}`);
   if(!current())return false;
-  if(detail?.claim?.id!==claimId)stop('The claim that loaded is not the one you opened. Refresh the visit and try again.','refresh');
-  if(['submitted','accepted','adjudicated','void'].includes(detail.claim.status))stop('This claim is already with the insurer. Its status shows on the visit.','refresh');
+  if(detail?.claim?.id!==claimId)stop('The claim that loaded is not the one you opened. Refresh the encounter and try again.','refresh');
+  if(['submitted','accepted','adjudicated','void'].includes(detail.claim.status))stop('This claim is already with the insurer. Its status shows on the encounter.','refresh');
   const already=(typeof claimHasRecordedSubmission==='function'&&claimHasRecordedSubmission(detail))||(typeof claimHasPreparedSubmission==='function'&&claimHasPreparedSubmission(detail));
-  if(already)stop('This claim already has a claim file with Claim.MD. Open the claim to check whether it was sent before sending again.','refresh');
+  if(already)stop('This claim already has a claim file with the clearinghouse. Open the claim to check whether it was sent before sending again.','refresh');
   // The server's own refusals stop the send here, before anything is released or sent.
   const refused=(Array.isArray(detail.preflight_issues)?detail.preflight_issues:[]).map(issue=>String(issue||'').trim()).filter(Boolean);
   if(refused.length)stop(`The claim is missing what the insurer needs: ${refused.join('; ')}.`,'refresh');
@@ -306,19 +306,19 @@ async function visitClaimDirectSend(claimId,button){
    if(!current())return false;
    const reread=await api(`${base}/${encodeURIComponent(claimId)}`);
    if(!current())return false;
-   if(reread?.claim?.id!==claimId)stop('The claim that loaded is not the one you opened. Refresh the visit and try again.','refresh');
+   if(reread?.claim?.id!==claimId)stop('The claim that loaded is not the one you opened. Refresh the encounter and try again.','refresh');
    version=reread.claim.version;
   }
   const route=((typeof detail.transport==='object'?detail.transport:null)?.routes||[]).find(candidate=>candidate.provider==='claim_md')||{};
   const sent=await api(`${base}/${encodeURIComponent(claimId)}/837p`,'POST',{request_id:crypto.randomUUID(),details:{},acknowledged:false},version);
   if(!current())return false;
-  await api(`/api/v1/billing/submissions/${encodeURIComponent(sent.id)}/delivery`,'POST',{request_id:crypto.randomUUID(),route_key:route.route_key||'',reason:'Sent from the visit'},sent.version);
+  await api(`/api/v1/billing/submissions/${encodeURIComponent(sent.id)}/delivery`,'POST',{request_id:crypto.randomUUID(),route_key:route.route_key||'',reason:'Sent from the encounter'},sent.version);
   if(!current())return true;
   await loadEncounterRevenueStatus(encounterChargeAccount(),true);
   if(typeof notice==='function')notice(`Claim sent to ${visitBillingInsurer(encounterRevenueState.data?.summary||{})}.`);
   return true;
  }catch(error){
-  // The server's own words stay beside the button; nothing else on the visit changes.
+  // The server's own words stay beside the button; nothing else on the encounter changes.
   if(current()&&button){button.disabled=false;button.textContent=`Send claim to ${visitBillingInsurer(encounterRevenueState.data?.summary||{})}`;}
   throw error;
  }finally{
@@ -327,9 +327,9 @@ async function visitClaimDirectSend(claimId,button){
 }
 // The card's one main button: review first, then send from the same place.
 // The card offers the review button only where it is the truth about this chart: the claim
-// steps run on the visit's own data, so a card out of step with it keeps its own button.
+// steps run on the encounter's own data, so a card out of step with it keeps its own button.
 function visitBillingCardCurrent(s){
- // The card's own buttons belong to the card of the visit this screen is actually showing: the
+ // The card's own buttons belong to the card of the encounter this screen is actually showing: the
  // same visit, the same charge account, and the summary the step currently holds. A card drawn
  // from a copy of another visit, or one the step has moved on from, keeps its own buttons.
  if(typeof encounterRevenueState==='undefined'||!s?.account)return false;
@@ -348,7 +348,7 @@ function visitBillingReviewButton(s,ctx={}){
   if(!['post_charges','prepare_claim','claim_cancelled','fix_claim','send_claim'].includes(s.state))return '';
   if(['submitted','accepted','adjudicated','void'].includes(s.claim?.status))return '';
   if(!visitBillingCardCurrent(s))return '';
-  return `<button type="button" class="primary" data-visit-review-open="account">Review and send to Claim.MD</button>`;
+  return `<button type="button" class="primary" data-visit-review-open="account">Review and send to the clearinghouse</button>`;
 }
 // After a claim is with the insurer the card says so and gives the one way to look at it.
 function visitBillingSentLine(s,ctx={}){
@@ -369,7 +369,7 @@ function visitReviewStepFailure(step,reason){
 async function visitReviewRun(claimId,options={}){
  const patient=selected,identity=me,visitId=typeof activeVisit!=='undefined'?activeVisit?.id:null;
  const account=typeof encounterChargeAccount==='function'?encounterChargeAccount():null;
- if(!account)throw new Error('Open the visit for these charges first.');
+ if(!account)throw new Error('Open the encounter for these charges first.');
  const current=()=>selected===patient&&me===identity&&(typeof activeVisit==='undefined'?true:activeVisit?.id===visitId);
  const state=encounterRevenueState,previous=state.review;
  const needPost=options.needPost!==false&&account.status==='draft';
@@ -390,11 +390,11 @@ async function visitReviewRun(claimId,options={}){
      // anything is released: the person may have the charge table open with edits in it, and
      // a claim that moved on since the button was pressed is never sent on a stale copy.
      const ok=await advance('check',async()=>{
-      if(!claim.id)throw new Error('The claim for this visit could not be found. Refresh the visit and try again.');
+      if(!claim.id)throw new Error('The claim for this encounter could not be found. Refresh the encounter and try again.');
       const found=await api(`${visitReviewClaimsBase()}/${claim.id}`);
-      if(!current())throw new Error('This page changed. Open the visit again.');
+      if(!current())throw new Error('This page changed. Open the encounter again.');
       if(found?.claim?.id!==claim.id)throw new Error('The claim that loaded is not the one you opened. Try again.');
-      if(['submitted','accepted','adjudicated','void'].includes(found.claim.status))throw new Error('This claim is already with the insurer. Its status shows on the visit.');
+      if(['submitted','accepted','adjudicated','void'].includes(found.claim.status))throw new Error('This claim is already with the insurer. Its status shows on the encounter.');
       return true;
      });
      if(!ok){review.busy=false;paint();return false;}
@@ -402,7 +402,7 @@ async function visitReviewRun(claimId,options={}){
     if(needPost){
      const ok=await advance('post',async()=>{
       if(options.confirmPost&&typeof confirmAction==='function'&&!await confirmAction(`Charges of ${money(account.total_cents)} become final and the claim goes to ${visitBillingInsurer(state.data?.summary||{})}.`,{title:'Post these charges?',confirmLabel:'Post charges'}))throw new Error('Cancelled before anything was sent.');
-      if(!current())throw new Error('This page changed. Open the visit again.');
+      if(!current())throw new Error('This page changed. Open the encounter again.');
       await api(`${billingBase()}/${account.id}/actions`,'POST',{action:'post',reason:'Charges posted',local_only:false},account.version);
       if(options.afterPost)await options.afterPost();
      });
@@ -416,30 +416,30 @@ async function visitReviewRun(claimId,options={}){
       const fresh=typeof encounterChargeAccount==='function'?encounterChargeAccount():account;
       if(fresh.status!=='posted')throw new Error('The charges are not final yet, so the claim could not be filled in.');
       const prepared=await api(`/api/v1/patients/${encodeURIComponent(selected)}/billing/accounts/${encodeURIComponent(fresh.id)}/claims/prepare`,'POST',{});
-      if(!current())throw new Error('This page changed. Open the visit again.');
-      // The server names the claim it filled in for this visit. The chain only ever carries on
+      if(!current())throw new Error('This page changed. Open the encounter again.');
+      // The server names the claim it filled in for this encounter. The chain only ever carries on
       // that one, never a copy left on a screen that may have moved on; the detail read below
       // still brings the claim, and its version, back from the server.
       if(prepared?.outcome==='prepared'||prepared?.outcome==='exists'){
-       if(!prepared.claim_id)throw new Error('The claim for this visit could not be found. Refresh the visit and try again.');
-       if(claim.id&&prepared.claim_id!==claim.id)throw new Error('This claim does not belong to the visit you are on. Refresh and try again.');
+       if(!prepared.claim_id)throw new Error('The claim for this encounter could not be found. Refresh the encounter and try again.');
+       if(claim.id&&prepared.claim_id!==claim.id)throw new Error('This claim does not belong to the encounter you are on. Refresh and try again.');
        claim={id:prepared.claim_id,version:null};
        return false;
       }
       if(prepared?.outcome==='delegated')throw new Error('A support session does not prepare claims. A member of the practice sends this one.');
-      if(prepared?.outcome==='cancelled')throw new Error('The claim filled in here was cancelled. Prepare a new claim from this visit first.');
+      if(prepared?.outcome==='cancelled')throw new Error('The claim filled in here was cancelled. Prepare a new claim from this encounter first.');
       if(prepared?.outcome==='not_needed')return true;
-      throw new Error('The claim could not be filled in from this visit. Refresh the visit and try again.');
+      throw new Error('The claim could not be filled in from this encounter. Refresh the encounter and try again.');
      });
      if(!ok){review.busy=false;paint();return false;}
     }
-    if(!claim.id)throw new Error('The claim for this visit could not be found. Refresh the visit and try again.');
-    if(claimId&&claim.id!==claimId)throw new Error('This claim does not belong to the visit you are on. Refresh and try again.');
+    if(!claim.id)throw new Error('The claim for this encounter could not be found. Refresh the encounter and try again.');
+    if(claimId&&claim.id!==claimId)throw new Error('This claim does not belong to the encounter you are on. Refresh and try again.');
   if(!current()){review.busy=false;return false;}
   if(typeof loadClaimMdConnection==='function')await loadClaimMdConnection();
   if(!current()){review.busy=false;return false;}
   if(!options.allowUnsigned&&typeof encounterRevenueVisitUnsigned==='function'&&encounterRevenueVisitUnsigned(account)){review.busy=false;review.askNote=true;paint({askNote:true});return false;}
-  if(!(typeof claimMdConnectionState!=='undefined'&&claimMdConnectionState?.connected))throw new Error('Claim.MD is not connected, so nothing can be sent. Ask the practice owner to check the Claim.MD connection.');
+  if(!(typeof claimMdConnectionState!=='undefined'&&claimMdConnectionState?.connected))throw new Error('No clearinghouse is connected, so nothing can be sent. Ask the practice owner to check the Claim.MD connection.');
    const stopHere=(key,reason)=>{
     // The chain stops at this step: nothing further is sent, the step shows as stopped with
     // the reason, and the button comes back as Try again.
@@ -453,7 +453,7 @@ async function visitReviewRun(claimId,options={}){
    if(detail?.claim?.id!==claim.id)throw new Error('The claim that loaded is not the one you opened. Try again.');
    claim.version=detail.claim.version;
    const already=(typeof claimHasRecordedSubmission==='function'&&claimHasRecordedSubmission(detail))||(typeof claimHasPreparedSubmission==='function'&&claimHasPreparedSubmission(detail));
-   if(already)return stopHere('ready','This claim already has a claim file with Claim.MD. Open the claim to check whether it was sent before sending again.');
+   if(already)return stopHere('ready','This claim already has a claim file with the clearinghouse. Open the claim to check whether it was sent before sending again.');
    // The server's own refusals stop the chain here, before anything is released or sent.
    const refused=(Array.isArray(detail.preflight_issues)?detail.preflight_issues:[]).map(issue=>String(issue||'').trim()).filter(Boolean);
    if(refused.length)return stopHere('ready',`The claim is missing what the insurer needs: ${refused.join('; ')}.`);
@@ -465,7 +465,7 @@ async function visitReviewRun(claimId,options={}){
   if(!okReady){review.busy=false;paint();return false;}
   const sent=await api(`${visitReviewClaimsBase()}/${claim.id}/837p`,'POST',{request_id:crypto.randomUUID(),details:{},acknowledged:options.acknowledged===true},claim.version);
   const route=(detail.transport?.routes||[]).find(candidate=>candidate.provider==='claim_md')||{};
-  const delivered=await api(`/api/v1/billing/submissions/${sent.id}/delivery`,'POST',{request_id:crypto.randomUUID(),route_key:route.route_key||'',reason:'Sent from the visit'},sent.version);
+  const delivered=await api(`/api/v1/billing/submissions/${sent.id}/delivery`,'POST',{request_id:crypto.randomUUID(),route_key:route.route_key||'',reason:'Sent from the encounter'},sent.version);
   const okSend=await advance('send',async()=>{if(delivered?.submission?.id&&delivered.submission.id!==sent.id)throw new Error('The claim file that went out is not the one prepared here. Open the claim to check its status.');});
   review.busy=false;
   if(!okSend){paint();return false;}
@@ -476,9 +476,9 @@ async function visitReviewRun(claimId,options={}){
   }
   if(!current())return true;
   paint({sent:true});
-  // On the visit's own billing step the card is what staff read, so the notice names the insurer
+  // On the encounter's own billing step the card is what staff read, so the notice names the insurer
   // there; in the claim workspace, away from the card, it says where the claim file went.
-  if(typeof notice==='function')notice($('encounter-revenue-status')&&typeof encounterChargeAccount==='function'&&encounterChargeAccount()?`Claim sent to ${visitBillingInsurer(state.data?.summary||{})}.`:'Claim sent to Claim.MD. Its status updates on this visit.');
+  if(typeof notice==='function')notice($('encounter-revenue-status')&&typeof encounterChargeAccount==='function'&&encounterChargeAccount()?`Claim sent to ${visitBillingInsurer(state.data?.summary||{})}.`:'Claim sent to Claim.MD. Its status updates on this encounter.');
   return true;
  }finally{
   review.busy=false;

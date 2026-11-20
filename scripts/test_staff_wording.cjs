@@ -11,8 +11,8 @@ const assert = require('node:assert/strict');
 const ROOT = path.resolve(__dirname, '..');
 const WEB_DIR = path.join(ROOT, 'web');
 const BASELINE_PATH = path.join(__dirname, 'staff_wording_baseline.json');
+// 'encounter' is the clinic's own word for the encounter record (owner, 2026-11-19), so it is allowed.
 const BANNED_WORDS = [
-  'encounter',
   'catalog',
   'snapshot',
   'payload',
@@ -191,28 +191,28 @@ function buildBaseline() {
   };
   // A tag attribute is ignored, the visible text between tags is checked.
   assert.deepEqual(
-    scan("const a = '<div class=\"encounter snapshot\">Encounter summary';"),
-    { encounter: 1 },
+    scan("const a = '<div class=\"catalog snapshot\">Catalog summary';"),
+    { catalog: 1 },
     'tag attributes must not be counted',
   );
   // A template ${...} part is dropped, its contents never counted.
   assert.deepEqual(
-    scan('const a = `Visit ${encounter.snapshotId} saved`;'),
+    scan('const a = `Visit ${catalog.snapshotId} saved`;'),
     {},
     'template expressions must be dropped',
   );
   // A one-word literal is a key, id or route and is ignored.
-  assert.deepEqual(scan("const a = 'encounters';"), {}, 'bare keys must be ignored');
+  assert.deepEqual(scan("const a = 'catalogs';"), {}, 'bare keys must be ignored');
   assert.deepEqual(
-    scan("const a = '/api/encounters'; const b = 'https://x/encounters';"),
+    scan("const a = '/api/catalogs'; const b = 'https://x/catalogs';"),
     {},
     'paths and URLs must be ignored',
   );
   // The plural is counted; an unrelated longer word is not.
   assert.deepEqual(
-    scan("const a = 'Encounters listed'; const b = 'no encountered here';"),
-    { encounter: 1 },
-    'Encounters counts, encountered does not',
+    scan("const a = 'Catalogs listed'; const b = 'no catalogued here';"),
+    { catalog: 1 },
+    'Catalogs counts, catalogued does not',
   );
   // JSON is matched case-sensitively; json in lowercase is left alone.
   assert.deepEqual(

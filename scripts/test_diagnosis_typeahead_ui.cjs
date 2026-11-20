@@ -75,7 +75,7 @@ function fixture(data={version:3,visit:{id:'v1',version:3,status:'in_progress'},
  await f.flush();
  const search=f.calls.find(c=>c.path.includes('/codes?'));
  let params=new URL(search.path,'http://fixture').searchParams;
- assert.equal(params.get('q'),'E1');assert.equal(params.get('system'),'ICD-10-CM');assert.equal(params.get('service_date'),'2026-11-07','diagnosis lookups use the visit service date');assert.equal(params.get('billable'),'true');assert.equal(params.get('active'),'true');assert.equal(params.get('limit'),'8');
+ assert.equal(params.get('q'),'E1');assert.equal(params.get('system'),'ICD-10-CM');assert.equal(params.get('service_date'),'2026-11-07','diagnosis lookups use the encounter service date');assert.equal(params.get('billable'),'true');assert.equal(params.get('active'),'true');assert.equal(params.get('limit'),'8');
  assert.match(f.rows[0].list.innerHTML,/E11\.9/);assert.match(f.rows[0].list.innerHTML,/Type 2 diabetes/);assert.equal(code.getAttribute('aria-expanded'),'true');
  console.log('PASS typing in the code box searches ICD-10-CM after a 150 ms debounce and shows code plus description');
 

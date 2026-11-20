@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
-// Charges filled in from the last visit. Opening the Charges step of a visit that is still in
+// Charges filled in from the last visit. Opening the Charges step of an encounter that is still in
 // progress and has no charge account puts the patient's most recent earlier services on the live
-// table at this visit's practice prices, with this visit's diagnoses — no button pressed, no
+// table at this encounter's practice prices, with this encounter's diagnoses — no button pressed, no
 // amount copied from the old visit, and nothing that ever has to be typed again.
 //
 // No npm packages: the rows are markup strings, parsed into the same small hand-written element
@@ -251,7 +251,7 @@ const practicePriceHost={id:'schedule-practice',name:'Practice prices'};
 const sent=[],feeSent=[];
 const session=new Map();
 const codesIn=url=>{try{return new URLSearchParams(url.split('?')[1]).getAll('code');}catch{return [];}};
-// What the page asks for, answered as a practice's own server would, so every panel the visit
+// What the page asks for, answered as a practice's own server would, so every panel the encounter
 // step draws has its data. The numbers are synthetic and belong to no one.
 const blankSummary=()=>({visit_id:'visit-current',status:'in_progress',service_date:'2026-11-13',account:null,claim:null,patient:{owes_now_cents:0},insurance:{paid_cents:0,submitted_cents:0,pending_cents:0}});
 const visitSummary=blankSummary();
@@ -260,15 +260,15 @@ function apiReply(url,method,body){
  if(url.includes('/fee-quote')){
   const query=new URLSearchParams(url.split('?')[1]),code=query.get('code'),units=Number(query.get('units'));
   feeSent.push(code);
-  if(!prices[code])return {quote:null,reason:'No approved price for this code at this visit.'};
+  if(!prices[code])return {quote:null,reason:'No approved price for this code at this encounter.'};
   return {quote:{schedule_id:practicePriceHost.id,entry_key:`CPT:${code}:`,schedule:{name:practicePriceHost.name,qp_basis:'Practice prices',locality:'Practice'},unit_amount_cents:prices[code],units,expected_line_amount_cents:prices[code]*units}};
  }
  if(url.includes('/visit-summary')){
   if(ctx.summaryFails)throw new Error('synthetic outage');
   const visit=visits.find(v=>v.id===visitSummary.visit_id);
   // The state is derived the way a practice's own server would derive it, because the two states
-  // that matter here decide the whole visit: a visit with no charge account is at 'add_charges',
-  // and a visit whose charges are still a draft waits on the visit note being signed. A summary
+  // that matter here decide the whole visit: an encounter with no charge account is at 'add_charges',
+  // and an encounter whose charges are still a draft waits on the encounter note being signed. A summary
   // that offered 'add_charges' beside an existing account would be a reply no server sends, and
   // the card would be shown a button that has nothing to add.
   const account=visitSummary.account;
@@ -312,7 +312,7 @@ vm.runInContext(fs.readFileSync('web/billing.js','utf8'),context);
 vm.runInContext(fs.readFileSync('web/fees.js','utf8'),context);
 vm.runInContext(fs.readFileSync('web/visit-billing.js','utf8'),context);
 vm.runInContext(fs.readFileSync('web/patient-revenue.js','utf8'),context);
-// Card collection is another screen's work; the panel is left out of this visit's card here.
+// Card collection is another screen's work; the panel is left out of this encounter's card here.
 vm.runInContext('hostedCopayPanel=()=>"";loadHostedCopays=async()=>null;encounterRevenueState={patient:null,identity:null,account:null,pending:null,data:null,loadedAt:0};',ctx);
 
 const $=id=>documentStub.getElementById(id);
@@ -324,7 +324,7 @@ const amountOf=row=>row.querySelector('[name="amount"]').value;
 const why=()=>({card:$('encounter-revenue-status')?.innerHTML.replace(/<[^>]*>/g,' ').slice(0,220),propose:vm.runInContext('JSON.stringify(chargeProposeCard())',ctx),ctx:vm.runInContext('JSON.stringify(chargeProposeContext(activeVisit))',ctx),choice:vm.runInContext('chargeProposalChoice(activeVisit.id)',ctx)});
 const noteOf=row=>row.querySelector('[data-charge-note-cell]')?.textContent.trim()??'(no cell)';
 // A new browser tab, made by hand: every panel the billing page can fill is put back empty, and
-// nothing remembered about a visit carries into the next opening of it.
+// nothing remembered about an encounter carries into the next opening of it.
 const freshTab=()=>{
  session.clear();sent.length=0;feeSent.length=0;
  for(const id of Object.keys(nodes))delete nodes[id];
@@ -357,22 +357,22 @@ const reset=(accounts,{id='visit-current',status='in_progress'}={})=>{
  vm.runInContext('chargeProposalChoices.clear();encounterRevenueState={patient:null,identity:null,account:null,pending:null,data:null,loadedAt:0};',ctx);
  ctx.sessionBroken=false;ctx.me={role:'owner'};
  // The page's own encounterChargeAccount() reads the chart, and is left exactly as the page
- // defines it: whether this visit has charges of its own is a fact the test sets by putting
+ // defines it: whether this encounter has charges of its own is a fact the test sets by putting
  // accounts in the chart, never by replacing the function that reads them.
  ctx.workspace.billing.accounts=accounts.map(a=>({...a,content:{...a.content,lines:[...a.content.lines]}}));
  summaryFor(ctx.workspace.billing.accounts,id,status);
  setVisit(id,status);
 };
-// The visit's Charges step, opened the way the practice opens it. The contract, in one place:
+// The encounter's Charges step, opened the way the practice opens it. The contract, in one place:
 //
 //   1. Opening the step draws it with renderEncounterRevenue() and presses nothing. The page builds
-//      the charge table itself in exactly one case: the visit has no charge account and there are
+//      the charge table itself in exactly one case: the encounter has no charge account and there are
 //      charges to fill in from an earlier visit. So the form returned is that filled-in table, or
 //      nothing at all — and "nothing" is the honest starting point every other case is measured
 //      from, since a table the practice has not been offered yet is not on screen.
-//   2. A visit that already has charges of its own is opened the way staff open it, by the card's
-//      own button. That is pressCardCharges() below, which is only ever called for such a visit and
-//      says so out loud if it is asked to open a visit with nothing to open.
+//   2. An encounter that already has charges of its own is opened the way staff open it, by the card's
+//      own button. That is pressCardCharges() below, which is only ever called for such an encounter and
+//      says so out loud if it is asked to open an encounter with nothing to open.
 //
 // The step is drawn, never both drawn and pressed: pressing the card here would build the very
 // table the fill-in is being asked about, and the test would pass for the wrong reason.
@@ -382,7 +382,7 @@ const openStep=async(visitId='visit-current',status='in_progress')=>{
  vm.runInContext('renderEncounterRevenue()',ctx);await settle();
  return $('billing-account-form')||null;
 };
-// 2. The card's own button for a visit whose charges already exist, pressed through the live
+// 2. The card's own button for an encounter whose charges already exist, pressed through the live
 // handler just as a person's click would be.
 const pressCardCharges=async()=>{
  const card=$('encounter-revenue-status');
@@ -398,12 +398,12 @@ const pressCardCharges=async()=>{
  let form=await openStep();
  assert.ok(form,'opening an empty visit\u2019s charges step gives a charge table');
  assert.equal(JSON.stringify(codes()),'["99213","J9270"]','the services from the earlier visit are on the table at once');
- assert.match(form.outerHTML,/Filled in from the visit on Oct 18, 2026\. Change anything you like\./,'one quiet line says where the lines came from');
+ assert.match(form.outerHTML,/Filled in from the encounter on Oct 18, 2026\. Change anything you like\./,'one quiet line says where the lines came from');
  assert.ok(form.querySelector('[data-charge-proposal-blank]'),'and the line offers a way to start blank instead');
- // Amounts come from this visit's practice prices, never from the old visit's amounts.
+ // Amounts come from this encounter's practice prices, never from the old visit's amounts.
  const first=liveRow('99213'),second=liveRow('J9270');
  assert.ok(first&&second,'the two carried lines are on the table in front of the practice');
- assert.equal(amountOf(first),'160.00','the amount is the practice price for this visit');
+ assert.equal(amountOf(first),'160.00','the amount is the practice price for this encounter');
  assert.equal(first.querySelector('[data-fee-line]').dataset.feeSchedule,practicePriceHost.id,'the line is linked to the practice price list');
  assert.ok(!first.outerHTML.includes('schedule-old'),'the earlier visit\u2019s price link does not come across');
  assert.ok(!first.outerHTML.includes('150.00'),'the amount the old visit was billed at is not carried over');
@@ -417,9 +417,9 @@ const pressCardCharges=async()=>{
  // No price list entry: the amount stays empty and the row says what it needs, in plain words.
  assert.equal(amountOf(second),'','a code the price list does not cover is left with no amount');
  assert.match(noteOf(second),/Enter the amount/,'and the row says what it still needs');
- // Diagnoses always come from this visit, never from the earlier one.
- assert.ok(sent.some(call=>call.url.includes('/visits/visit-current/diagnoses')),'this visit\u2019s diagnoses are read for the lines');
- assert.equal(JSON.stringify(liveRow('99213').querySelectorAll('[data-charge-diagnosis]').map(box=>box.dataset.chargeDiagnosis).sort()),'["J10.0","M62.81"]','this visit\u2019s diagnoses are offered on the line');
+ // Diagnoses always come from this encounter, never from the earlier one.
+ assert.ok(sent.some(call=>call.url.includes('/visits/visit-current/diagnoses')),'this encounter\u2019s diagnoses are read for the lines');
+ assert.equal(JSON.stringify(liveRow('99213').querySelectorAll('[data-charge-diagnosis]').map(box=>box.dataset.chargeDiagnosis).sort()),'["J10.0","M62.81"]','this encounter\u2019s diagnoses are offered on the line');
  assert.ok(!form.outerHTML.includes('Z00.00'),'the earlier visit\u2019s diagnoses never come across');
  // The carried-over drug amount is flagged for a look: a note on the row, not a wall between the
  // practice and the table. The row keeps whatever its own line still needs to be complete.
@@ -441,23 +441,23 @@ const pressCardCharges=async()=>{
  const saved=code=>posted.body.content.lines.find(l=>l.code===code);
  assert.equal(JSON.stringify(posted.body.content.lines.map(l=>l.code).sort()),'["99213","J9270"]');
  assert.equal(saved('99213').amount_cents,16000,'the draft is saved at the practice price');
- assert.equal(JSON.stringify(saved('99213').diagnosis_codes),'["J10.0"]','the diagnoses saved are this visit\u2019s');
+ assert.equal(JSON.stringify(saved('99213').diagnosis_codes),'["J10.0"]','the diagnoses saved are this encounter\u2019s');
  assert.equal(JSON.stringify(saved('J9270').diagnosis_codes),'["M62.81"]','and on every line, never the earlier visit\u2019s');
  assert.equal(saved('J9270').amount_cents,900,'an amount the practice typed is saved as typed');
  assert.equal(saved('J9270').ndc_quantity,'50','the drug detail saves with the line');
  assert.ok(!JSON.stringify(posted.body).includes('filled-in-earlier-visit'),'the filled-in mark stays in the browser');
 
  // ---- 2. which visit counts as the earlier one -----------------------------------------
- // A visit that already has charges of its own is shown as they are, never filled in again. It is
+ // An encounter that already has charges of its own is shown as they are, never filled in again. It is
  // opened the way staff open it — by the card's own button — because opening the step alone leaves
  // the table shut, as it does for every visit that is not being filled in.
  reset([earlierAccount,emptyAccount,currentDraft]);
  await openStep();
  assert.ok(!$('billing-account-form'),'a visit with charges of its own is not given a table on being opened');
  form=await pressCardCharges();
- assert.equal(JSON.stringify(codes()),'["99213"]','the visit\u2019s own draft charges are shown unchanged');
- assert.ok(!form.outerHTML.includes('Filled in from the visit'),'a visit with charges of its own is offered nothing');
- // A visit whose only other accounts have no lines has nothing to be filled in from.
+ assert.equal(JSON.stringify(codes()),'["99213"]','the encounter\u2019s own draft charges are shown unchanged');
+ assert.ok(!form.outerHTML.includes('Filled in from the encounter'),'a visit with charges of its own is offered nothing');
+ // An encounter whose only other accounts have no lines has nothing to be filled in from.
  reset([emptyAccount]);
  form=await openStep();
  assert.ok(!form,'with no earlier charges the step still waits for its Add charges button');
@@ -465,10 +465,10 @@ const pressCardCharges=async()=>{
  reset([account('account-old','visit-old','2026-08-02',[{code_system:'CPT',code:'20610',description:'Older injection',units:1,amount_cents:9000,diagnosis_codes:[]}]),earlierAccount]);
  form=await openStep();
  assert.equal(JSON.stringify(codes()),'["99213","J9270"]','the most recent earlier visit is the one filled in from');
- // An account already holding this visit's charges is not a source, nor is a voided one.
+ // An account already holding this encounter's charges is not a source, nor is a voided one.
  reset([account('account-current-2','visit-current','2026-11-13',[{...lineOffice}]),account('account-void','visit-void','2026-10-18',[{...lineDrug}],'void')]);
  form=await openStep();
- assert.ok(!form,'an account for this visit and a voided one are nothing to fill in from');
+ assert.ok(!form,'an account for this encounter and a voided one are nothing to fill in from');
  // A charge record from the previous system is not the practice's own charge history.
  reset([account('account-source','visit-source','2026-10-18',[{...lineOffice}],'posted',{source_history_id:'source-1'})]);
  form=await openStep();
@@ -485,16 +485,16 @@ const pressCardCharges=async()=>{
  form=await openStep();
  click(form.querySelector('[data-charge-proposal-blank]'));
  assert.equal(JSON.stringify(codes()),'[""]','Start blank empties the table down to one blank line');
- assert.ok(!openForm().outerHTML.includes('Filled in from the visit'),'and takes the quiet line away with it');
+ assert.ok(!openForm().outerHTML.includes('Filled in from the encounter'),'and takes the quiet line away with it');
  assert.ok(!openForm().querySelector('[data-charge-proposal-blank]'),'and nothing is left to press');
  // The answer staff gave by pressing Start blank is kept: leaving the step and coming back finds
- // the table shut, the visit not refilled from the earlier visit, and the card back to its usual
- // ask rather than the fill-in's "Check the charges". Reopening a visit that has no account of its
+ // the table shut, the encounter not refilled from the earlier visit, and the card back to its usual
+ // ask rather than the fill-in's "Check the charges". Reopening an encounter that has no account of its
  // own can only ever produce the fill-in, so this is the honest check that it was refused.
  closeStep();
  await openStep();
  assert.ok(!$('billing-account-form'),'a visit staff emptied is not quietly given a table again');
- assert.ok(!($('encounter-revenue-status')?.innerHTML.includes('Filled in from the visit')),'nor is the visit still spoken of as filled in');
+ assert.ok(!($('encounter-revenue-status')?.innerHTML.includes('Filled in from the encounter')),'nor is the encounter still spoken of as filled in');
  assert.ok(!($('encounter-revenue-status')?.innerHTML.includes('Check the charges')),'and the card asks for charges in its usual words');
  // Emptying the table by hand is the same answer, and is kept the same way.
  reset([earlierAccount]);
@@ -505,7 +505,7 @@ const pressCardCharges=async()=>{
  closeStep();
  await openStep();
  assert.ok(!$('billing-account-form'),'a table staff emptied themselves is never quietly refilled');
- assert.ok(!($('encounter-revenue-status')?.innerHTML.includes('Filled in from the visit')));
+ assert.ok(!($('encounter-revenue-status')?.innerHTML.includes('Filled in from the encounter')));
  // A browser that will not hand out its session still behaves: the memory lives in the page.
  reset([earlierAccount]);
  ctx.sessionBroken=true;
@@ -514,45 +514,45 @@ const pressCardCharges=async()=>{
  click(form.querySelector('[data-charge-proposal-blank]'));
  closeStep();
  await openStep();
- assert.ok(!$('billing-account-form'),'and the choice is still remembered for this visit without the session store');
+ assert.ok(!$('billing-account-form'),'and the choice is still remembered for this encounter without the session store');
 
  // ---- 4. who is ever offered this ------------------------------------------------------
- // Read-only staff are not offered charges to change, and are not blocked from the visit. The page
+ // Read-only staff are not offered charges to change, and are not blocked from the encounter. The page
  // decides this through its own billingWrite(), which reads the signed-in role, so the role is what
  // is changed here; a stub over billingCan() would switch off one caller and leave the table open.
  reset([earlierAccount]);
  ctx.me={role:'scribe'};
  await openStep();
  assert.ok(!$('billing-account-form'),'staff who cannot write are not put in front of a table to change');
- // A visit that is no longer in progress is never offered it.
+ // An encounter that is no longer in progress is never offered it.
  reset([earlierAccount]);
  ctx.workspace.billing.accounts=[];
  form=await openStep('visit-earlier','signed');
  assert.ok(!form,'a visit that is not in progress still waits for its own button');
- // Once the visit has an account the table is never refilled from an earlier visit: the charges on
- // screen are the visit's own, opened the way staff open them.
+ // Once the encounter has an account the table is never refilled from an earlier visit: the charges on
+ // screen are the encounter's own, opened the way staff open them.
  reset([earlierAccount,currentDraft]);
  await openStep();
  form=await pressCardCharges();
- assert.ok(!form.outerHTML.includes('Filled in from the visit'),'an account that exists is left alone');
+ assert.ok(!form.outerHTML.includes('Filled in from the encounter'),'an account that exists is left alone');
  assert.equal(JSON.stringify(codes()),'["99213"]','and what is shown are its own charges');
- // A visit that was filled in, saved, and whose account was then taken away again is not silently
- // offered the lines a second time: the practice has already been given its answer for this visit.
- // The charge table refuses it from its own memory of the visit, so reopening the step — the only
+ // An encounter that was filled in, saved, and whose account was then taken away again is not silently
+ // offered the lines a second time: the practice has already been given its answer for this encounter.
+ // The charge table refuses it from its own memory of the encounter, so reopening the step — the only
  // thing that can ever produce a fill-in — is what proves it.
  reset([earlierAccount]);
  form=await openStep();
  type(form.querySelector('[name="diagnoses"]'),'J10.0');
  await advance();
- assert.ok(sent.some(call=>call.method==='POST'),'the filled-in table was saved as this visit\u2019s charges');
+ assert.ok(sent.some(call=>call.method==='POST'),'the filled-in table was saved as this encounter\u2019s charges');
  ctx.workspace.billing.accounts=[earlierAccount];
  summaryFor(ctx.workspace.billing.accounts,'visit-current','in_progress');
  closeStep();
  await openStep();
- assert.ok(!$('billing-account-form'),'the visit was already filled in once; it is not offered a second time');
+ assert.ok(!$('billing-account-form'),'the encounter was already filled in once; it is not offered a second time');
 
- // ---- 5. the visit billing card stops asking for charges by hand ------------------------
- // The card is drawn straight from a visit summary at 'add_charges' — a visit with no charges yet —
+ // ---- 5. the encounter billing card stops asking for charges by hand ------------------------
+ // The card is drawn straight from an encounter summary at 'add_charges' — an encounter with no charges yet —
  // with the practice's owner looking at it. It reads the chart for anything to fill in from, which
  // is why the accounts in the chart decide its words. Whether a person may press anything is the
  // card's own context: canCreate and canWrite.
@@ -569,9 +569,9 @@ const pressCardCharges=async()=>{
  reset([emptyAccount]);
  card=markup();
  assert.match(card,/<p class="visit-billing-headline">Add charges<\/p>/);
- assert.match(card,/Add the procedures done at this visit\./);
+ assert.match(card,/Add the procedures done at this encounter\./);
  assert.match(card,/data-encounter-charges[^>]*>Add charges<\/button>/);
- // A visit whose charges are already being worked on is a different state, and is left alone: the
+ // An encounter whose charges are already being worked on is a different state, and is left alone: the
  // card does not speak of a fill-in for charges the practice already has.
  reset([currentDraft]);
  card=ctx.visitBillingCardMarkup({...addCharges(),state:'sign_visit',account:structuredClone(currentDraft)},owner);
@@ -596,13 +596,13 @@ const pressCardCharges=async()=>{
 
  // ---- 6. plain words only ---------------------------------------------------------------
  const cardText=markup().replace(/<[^>]*>/g,' ');
- assert.doesNotMatch(cardText,/encounter|catalog|snapshot|payload|endpoint|schema|tenant|JSON/i,'the card says nothing developer-flavoured');
+ assert.doesNotMatch(cardText,/catalog|snapshot|payload|endpoint|schema|tenant|JSON/i,'the card says nothing developer-flavoured');
  reset([earlierAccount]);
  form=await openStep();
  const formText=openForm().outerHTML.replace(/<[^>]*>/g,' ');
  assert.doesNotMatch(formText,/proposed|payload|endpoint|schema|tenant|auto-?fill/i,'the table says nothing developer-flavoured');
- assert.match(fs.readFileSync('web/billing.js','utf8'),/Filled in from the visit on /,'the quiet line is worded for staff');
+ assert.match(fs.readFileSync('web/billing.js','utf8'),/Filled in from the encounter on /,'the quiet line is worded for staff');
  assert.match(fs.readFileSync('web/style.css','utf8'),/\.charge-table-proposal\{/,'the quiet line has its own quiet styling');
 
- console.log('PASS auto charges: filled in from the most recent earlier visit at practice prices with this visit\u2019s diagnoses, an empty amount and a plain note where the price list has nothing, drug detail flagged for a check, never back after Start blank or an emptied table, never for a visit that is not in progress or staff who cannot write, and a card that stops asking for hand entry');
+ console.log('PASS auto charges: filled in from the most recent earlier visit at practice prices with this encounter\u2019s diagnoses, an empty amount and a plain note where the price list has nothing, drug detail flagged for a check, never back after Start blank or an emptied table, never for an encounter that is not in progress or staff who cannot write, and a card that stops asking for hand entry');
 })().catch(error=>{console.error(error);process.exit(1);});

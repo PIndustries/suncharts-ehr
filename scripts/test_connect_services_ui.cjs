@@ -105,7 +105,7 @@ function fixture(role='owner'){
    return f;
   };
   const file=(name,type,size)=>({name,type,size});
-  // Opening support from an encounter attaches the patient and the visit; an open claim comes along too.
+  // Opening support from an encounter attaches the patient and the encounter; an open claim comes along too.
   let f=setup();f.c.document.querySelector=selector=>selector==='[data-support-claim]'?{dataset:{supportClaim:C,supportClaimLabel:'SC0001',supportPatient:P,supportPatientLabel:'ignored'},closest:()=>null}:null;
   await f.run('openSupportFromHere()');
   assert.match(f.nodes.tools.innerHTML,/Attach the patient, visit or claim instead/);assert.match(f.nodes.tools.innerHTML,/data-support-extras="new"/);
@@ -121,8 +121,8 @@ function fixture(role='owner'){
   f=setup();await f.run('openSupportFromHere()');await f.click({'data-support-link-remove':'0'});
   assert.doesNotMatch(f.host.innerHTML,/Patient ·/);assert.match(f.host.innerHTML,/Visit Nov 1, 2026/);
   f.run(`supportAddLink(supportExtrasFor('new'),{kind:'patient',id:'${P2}',label:'Example, Blake · MRN SYN-2'})`);
-  let form=f.form({subject:'Issue',message:'Please look at this visit'});await f.submit(form);
-  let sent=f.calls.find(a=>a[1]==='POST');assert.deepEqual(JSON.parse(JSON.stringify(sent[2])),{request_id:'10000000-0000-4000-8000-000000000001',message:'Please look at this visit',subject:'Issue',links:[{kind:'visit',id:V},{kind:'patient',id:P2}]},'only kind and id are sent; the server writes the label');
+  let form=f.form({subject:'Issue',message:'Please look at this encounter'});await f.submit(form);
+  let sent=f.calls.find(a=>a[1]==='POST');assert.deepEqual(JSON.parse(JSON.stringify(sent[2])),{request_id:'10000000-0000-4000-8000-000000000001',message:'Please look at this encounter',subject:'Issue',links:[{kind:'visit',id:V},{kind:'patient',id:P2}]},'only kind and id are sent; the server writes the label');
   assert.equal(f.run("supportExtras.has('new')"),false,'sent attachments do not stay on the next message');
   f=setup();f.run(`supportAddLink(supportExtrasFor('new'),{kind:'patient',id:'${P2}',label:'Example, Blake · MRN SYN-2'})`);await f.run('openSupportFromHere()');f.c.selected=undefined;f.c.document.querySelector=()=>({dataset:{supportClaim:C,supportClaimLabel:'SC0001'},closest:()=>null});await f.run('openSupportFromHere()');
   assert.deepEqual(JSON.parse(JSON.stringify(f.run("supportExtrasFor('new').links.map(l=>l.kind+':'+l.id)"))),['patient:'+P2,'claim:'+C],'a new context replaces the earlier automatic chips only');

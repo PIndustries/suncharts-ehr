@@ -91,7 +91,7 @@ const rich=plan([
   assert.match(t.card(),/Checking with Synthetic Health…/,'the card says what is happening while the insurer answers');
   assert.doesNotMatch(t.card(),/<form|<input|<select/,'no form is shown for a check');
   const [post]=t.posts();assert.equal(post.url,`/api/v1/patients/patient-1/coverages/${ids.coverage}/claimmd-eligibility/check`);
-  assert.deepEqual(JSON.parse(JSON.stringify(post.body)),{request_id:'request-1',automatic:false,appointment_id:'appointment-1',service_date:TODAY},'the browser sends the click and the visit, never subscriber or provider fields');
+  assert.deepEqual(JSON.parse(JSON.stringify(post.body)),{request_id:'request-1',automatic:false,appointment_id:'appointment-1',service_date:TODAY},'the browser sends the click and the encounter, never subscriber or provider fields');
   release();await clicking;await tick();
   assert.match(t.card(),/eligibility-pill active">Active</);assert.doesNotMatch(t.card(),/Checking with/);
   assert.equal(t.posts().length,1);assert.equal(t.node('billing-editor').innerHTML,'','nothing opens in the editor');
@@ -164,7 +164,7 @@ const rich=plan([
   const t=setup({role:'front_desk'}),html=t.show([check({response_snapshot:rich})]),plain=text(html);
   assert.match(html,/<span class="eligibility-pill active">Active<\/span>/);
   assert.ok(plain.includes(`on ${t.c.claimmdDay(TODAY)} · Checked at 2026-11-13T15:00:02Z by Synthetic Owner`),plain.slice(0,200));
-  for(const shown of ['Synthetic Gold PPO &lt;b&gt;','Preferred Provider Organization (PPO)','GRP-77','Jan 1, 2026 – Dec 31, 2026','SYNTHETIC PATIENT','What the patient pays at a visit','<dt>Office visit copay</dt><dd>$15.00</dd>','<dt>Coinsurance</dt><dd>20%</dd>','<dt>Deductible</dt><dd>$1,500.00 left of $3,000.00</dd>','<dt>Out-of-pocket limit</dt><dd>$4,200.00 left of $6,500.00</dd>','<summary>Out of network</summary>','<summary>See all benefits</summary>','20 visits per year &lt;script&gt;','Limitations'])assert.ok(html.includes(shown),shown);
+  for(const shown of ['Synthetic Gold PPO &lt;b&gt;','Preferred Provider Organization (PPO)','GRP-77','Jan 1, 2026 – Dec 31, 2026','SYNTHETIC PATIENT','What the patient pays at an encounter','<dt>Office visit copay</dt><dd>$15.00</dd>','<dt>Coinsurance</dt><dd>20%</dd>','<dt>Deductible</dt><dd>$1,500.00 left of $3,000.00</dd>','<dt>Out-of-pocket limit</dt><dd>$4,200.00 left of $6,500.00</dd>','<summary>Out of network</summary>','<summary>See all benefits</summary>','20 visits per year &lt;script&gt;','Limitations'])assert.ok(html.includes(shown),shown);
   const outOfNetwork=html.slice(html.indexOf('<summary>Out of network</summary>'),html.indexOf('This is what the insurer reported'));
   for(const shown of ['<dd>$60.00</dd>','<dd>40%</dd>','<dd>$9,000.00</dd>','<dt>Out-of-pocket limit</dt><dd>Not reported by the insurer</dd>'])assert.ok(outOfNetwork.includes(shown),shown);
   const beforeDetails=html.slice(0,html.indexOf('<summary>See all benefits</summary>')),details=html.slice(html.indexOf('<summary>See all benefits</summary>'));
@@ -184,7 +184,7 @@ const rich=plan([
   const planLevel=setup().show([check({response_snapshot:plan([benefit('30','1'),benefit('30','B',{benefit_amount:'0',inplan_network:'W'})])})]);assert.match(planLevel,/<dt>Copay<\/dt><dd>\$0\.00<\/dd>/,'plan-level copay last, and a zero copay is a real answer');assert.match(planLevel,/Save \$0\.00 as this plan's copay/);
   const bare=setup().show([check({response_snapshot:plan([benefit('30','1')],{group_number:'',plan_begin_date:''})})]);for(const label of ['Office visit copay','Coinsurance','Deductible','Out-of-pocket limit'])assert.ok(bare.includes(`<dt>${label==='Office visit copay'?'Copay':label}</dt><dd>Not reported by the insurer</dd>`),label);assert.doesNotMatch(bare,/Group number|Coverage dates|data-eligibility-copay/);
   assert.equal(setup().c.claimmdBenefitValue({benefit_percent:'0.5'}),'0.5%','percentages are already percent units');assert.equal(setup().c.claimmdBenefitValue({benefit_amount:'malformed',benefit_percent:'101'}),'');
-  const otherDate=setup().show([check({response_snapshot:rich,request_snapshot:{...check().request_snapshot,request:{...check().request_snapshot.request,service_date:'2026-10-01'}}})]);assert.match(otherDate,/This answer is for Oct 1, 2026\. The visit is on /);
+  const otherDate=setup().show([check({response_snapshot:rich,request_snapshot:{...check().request_snapshot,request:{...check().request_snapshot.request,service_date:'2026-10-01'}}})]);assert.match(otherDate,/This answer is for Oct 1, 2026\. The encounter is on /);
   console.log('PASS active plan summary: status, plan, what the patient pays in network first, family and limits in details');
  }
  {

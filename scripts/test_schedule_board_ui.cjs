@@ -132,7 +132,7 @@ async function main(){
  f.run("scheduleProvider='p2'");f.load([appointment('b','10:00','10:30',{clinician_id:'p2'})]);
  assert.deepEqual(columns(),[['p2','Dr. Sam Rivera',1,0]],'a chosen provider: a single wide column');
  f.run("scheduleProvider=''");f.load([]);assert.deepEqual(columns(),[['','All providers',0,0]]);
- // A provider who has left still shows the visits they had.
+ // A provider who has left still shows the encounters they had.
  f.load([appointment('a','09:00','09:30'),appointment('old','10:00','10:30',{clinician_id:'left',provider_label:'Dr. Former'})]);
  assert.deepEqual(columns().map(col=>col[1]),['Dr. Dana Owner','Dr. Former']);
 
@@ -145,7 +145,7 @@ async function main(){
  assert.match(html,/<span class="appt-status">Checked in<\/span>/,'the status is always written out, never colour alone');
  assert.match(html,/<span class="appt-time">9:00 AM<span class="appt-time-end"> – 9:30 AM<\/span><\/span><strong class="appt-patient">Example, a<\/strong><span class="appt-meta">Video visit · Dr. Dana Owner<\/span>/);
  assert.doesNotMatch(html,/owner@example\.test/,'the provider is named, not shown by sign-in email');
- f.run("scheduleProviders=[{id:'p1',label:'owner@example.test'}]");assert.match(f.run(`scheduleCard(${JSON.stringify(appointment('a','09:00','09:30',{provider_label:'Dr. Recorded Name'}))},'day')`),/Dr\. Recorded Name/,'a name recorded with the visit beats an email in the provider list');
+ f.run("scheduleProviders=[{id:'p1',label:'owner@example.test'}]");assert.match(f.run(`scheduleCard(${JSON.stringify(appointment('a','09:00','09:30',{provider_label:'Dr. Recorded Name'}))},'day')`),/Dr\. Recorded Name/,'a name recorded with the encounter beats an email in the provider list');
  f.run('scheduleProviders=[]');assert.match(f.run(`scheduleCard(${JSON.stringify(appointment('a','09:00','09:30'))},'day')`),/owner@example\.test/,'the email is the last resort when no name exists');
  f.run("scheduleProviders=[{id:'p1',label:'Dr. Dana Owner'},{id:'p2',label:'Dr. Sam Rivera'}]");
  assert.deepEqual(plain(f.run("['Office visit','New patient','Follow-up','Telehealth','Procedure','Nurse check',''].map(category=>scheduleVisitType({category}))")),['office','new','followup','telehealth','procedure','other','other']);
@@ -162,7 +162,7 @@ async function main(){
  f.load([appointment('a','09:00','09:30')],[base]);html=f.run("scheduleMarkersHtml(scheduleState.appointments[0],'day')");
  assert.match(html,/class="appt-marker appt-marker-offer" data-board-action="send-intake" data-appointment="a"[^>]*>.*Send intake form/,'with no form sent, the card offers to send one');
  f.c.me.role='nurse';assert.doesNotMatch(f.run("scheduleMarkersHtml(scheduleState.appointments[0],'day')"),/send-intake/);f.c.me.role='owner';
- f.load([appointment('a','09:00','09:30',{status:'completed'})],[base]);assert.doesNotMatch(f.run("scheduleMarkersHtml(scheduleState.appointments[0],'day')"),/send-intake/,'not offered once the visit is over');
+ f.load([appointment('a','09:00','09:30',{status:'completed'})],[base]);assert.doesNotMatch(f.run("scheduleMarkersHtml(scheduleState.appointments[0],'day')"),/send-intake/,'not offered once the encounter is over');
  assert.deepEqual(one({insurance:{status:'active',coverage_id:'c'}},'insurance'),[['Active','green']]);
  assert.deepEqual(one({insurance:{status:'not_active',coverage_id:'c'}},'insurance'),[['Not active','red']]);
  assert.deepEqual(one({insurance:{status:'not_checked',coverage_id:'c'}},'insurance'),[['Not checked','grey']]);
@@ -183,7 +183,7 @@ async function main(){
  assert.deepEqual(one({note:'not_started',visit_id:'v'},'note','completed'),[['Note not started','amber']]);
  assert.deepEqual(one({note:null},'note','completed'),[['Note not started','amber']]);
  assert.deepEqual(one({note:'in_progress',visit_id:'v'},'note','in_progress'),[['Note in progress','grey']]);
- assert.deepEqual(one({note:'in_progress',visit_id:'v'},'note','booked'),[],'no note marker before the visit starts');
+ assert.deepEqual(one({note:'in_progress',visit_id:'v'},'note','booked'),[],'no note marker before the encounter starts');
  assert.deepEqual(one({charges:'posted',visit_id:'v'},'charges','completed'),[['Charges posted','green']]);
  assert.deepEqual(one({charges:'draft',visit_id:'v'},'charges','completed'),[['Charges draft','amber']]);
  assert.deepEqual(one({charges:'none',visit_id:'v'},'charges','completed'),[['No charges','amber']]);
@@ -276,7 +276,7 @@ async function main(){
  assert.deepEqual(markersFor({copay:{due_cents:1500,paid_cents:1500,test_paid_cents:0}},'no_show').map(m=>m.label),['Copay paid'],'money already taken stays visible');
  assert.deepEqual(actions('booked','front_desk'),['check-in','schedule-chart','send-intake','check-eligibility','insurance','collect-copay','billing','schedule-edit','schedule-pick-move','cancel']);
  assert.deepEqual(actions('checked_in','front_desk'),['schedule-chart','send-intake','check-eligibility','insurance','collect-copay','billing','cancel'],'the front desk does not start visits');
- assert.deepEqual(actions('checked_in','nurse'),['schedule-start','schedule-chart','insurance','billing'],'rooming staff start the visit but do not send forms, take payment or cancel');
+ assert.deepEqual(actions('checked_in','nurse'),['schedule-start','schedule-chart','insurance','billing'],'rooming staff start the encounter but do not send forms, take payment or cancel');
  assert.deepEqual(actions('booked','read_only'),['schedule-chart','insurance','billing'],'a read-only role can only look');
  assert.deepEqual(actions('booked','owner',{forms:{status:'submitted',packet_id:'k'}}).slice(0,3),['check-in','schedule-chart','review-intake']);
  f.c.me={role:'owner',user_id:'p1',tenant_id:'tenant'};

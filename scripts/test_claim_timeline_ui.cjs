@@ -48,7 +48,7 @@ const history={items:[{version:1,created_at:'2026-11-11T15:30:00Z',reason:'Claim
 
  // A sent claim waiting on the payer: created, sent, and one plain status line.
  const waiting=f.context.buildClaimTimeline({claim:claim(),tracking:detail().tracking,history:[...history.items],now:NOW});
- eq(waiting.steps.map(step=>step.label),['Created','Sent to Claim.MD']);
+ eq(waiting.steps.map(step=>step.label),['Created','Sent to the clearinghouse']);
  assert.strictEqual(waiting.steps[1].detail,'File 000000421 · Claim.MD');
  assert.match(waiting.current,/Waiting on the insurance company since Nov 12, 2026, 6 days/);
  assert.strictEqual(waiting.identifiers.payerControlNumber,'ICN-998877');

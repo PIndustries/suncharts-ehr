@@ -19,7 +19,7 @@ function refuseVisitNoteSigning(form,missing){
  showVisitNoteMessage(`Fill in ${visitNoteNames(missing)} before signing.`);
  form?.elements?.[missing[0]]?.focus?.();
 }
-// Names of the people on a note: who the visit is assigned to, who signed it and who corrected it.
+// Names of the people on a note: who the encounter is assigned to, who signed it and who corrected it.
 // The signed-in person is known already; anyone else is asked for once per saved version.
 function visitNotePersonIds(visit){return [visit.clinician_id,visit.signed_by,...(workspace?.amendments||[]).filter(a=>a.visit_id===visit.id).map(a=>a.author_id)].filter(Boolean);}
 function visitNotePerson(visit,id){

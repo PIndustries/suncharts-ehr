@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
-// An open chart gives the screen to the visit: the patient list is hidden by default
+// An open chart gives the screen to the encounter: the patient list is hidden by default
 // (and the device remembers otherwise), and Archive sits in the Patient record menu.
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const root=path.join(__dirname,'..'),app=fs.readFileSync(path.join(root,'web/app.js'),'utf8'),lifecycle=fs.readFileSync(path.join(root,'web/patient-lifecycle.js'),'utf8'),style=fs.readFileSync(path.join(root,'web/style.css'),'utf8');

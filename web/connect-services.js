@@ -112,7 +112,7 @@ function supportAddLink(extras,link,auto=false){
  if(extras.links.length>=supportLinkLimit){extras.problem='Up to 10 patients, visits or claims per message.';return;}
  extras.links.push({kind:link.kind,id:link.id,label:link.label,auto});
 }
-// What is on screen right now: the open chart, the visit being worked on, and any open claim.
+// What is on screen right now: the open chart, the encounter being worked on, and any open claim.
 function supportCurrentContext(){
  const links=[],add=link=>{if(supportUuid(link.id)&&!links.some(item=>item.kind===link.kind&&item.id===link.id))links.push(link);};
  const chart=typeof selected!=='undefined'&&selected&&typeof workspace!=='undefined'&&workspace?.patient&&$('clinical-workspace')?.hidden===false;
@@ -312,7 +312,7 @@ function supportOpenLink(kind,id){
  // The address opens the record the same way a bookmark does.
  if(kind==='patient')location.hash='#/patients/'+id+'/overview';
  else if(kind==='claim')location.hash='#/claims/'+id;
- else if(kind==='visit')api('/api/v1/visits/'+id).then(visit=>{if(supportUuid(visit.patient_id))location.hash='#/patients/'+visit.patient_id+'/encounter/'+id;else notice('This visit could not be opened.',true);},()=>notice('This visit could not be opened.',true));
+ else if(kind==='visit')api('/api/v1/visits/'+id).then(visit=>{if(supportUuid(visit.patient_id))location.hash='#/patients/'+visit.patient_id+'/encounter/'+id;else notice('This encounter could not be opened.',true);},()=>notice('This encounter could not be opened.',true));
 }
 function supportMessageExtras(message){
  const links=(Array.isArray(message.links)?message.links:[]).filter(link=>link&&['patient','visit','claim'].includes(link.kind)&&supportUuid(link.id)).slice(0,supportLinkLimit);
@@ -351,7 +351,7 @@ function supportExtrasClick(event,b){
   run(()=>supportChoose(picker,picker.patients.find(item=>item.id===b.dataset.supportPickPatient)));
  }else if(b.dataset.supportPick&&picker?.patient){
   const [kind,id]=b.dataset.supportPick.split(':'),item=(kind==='visit'?picker.visits:kind==='claim'?picker.claims:[]).find(row=>row.id===id);
-  // The patient was attached by the same picker, so the visit or claim joins their chips.
+  // The patient was attached by the same picker, so the encounter or claim joins their chips.
   if(item)supportAddLink(supportExtrasFor(picker.key),{kind,id,label:item.label});
  }
  render();return handled();
@@ -367,7 +367,7 @@ function supportType(picker,value){
  picker.busy=true;supportPaint(picker);
  picker.timer=setTimeout(()=>{picker.timer=null;supportSearchPages(picker);},supportDelay);
 }
-// When a visit happened, in the same wording the schedule already uses.
+// When an encounter happened, in the same wording the schedule already uses.
 function visitDateLabel(visit,appointments=[]){
   const booked=appointments.find(a=>a.id===visit?.appointment_id);
   const when=supportLabel(visit?.visit_date)||supportLabel(booked?.starts_at)||supportLabel(visit?.starts_at)||supportLabel(visit?.scheduled_for);

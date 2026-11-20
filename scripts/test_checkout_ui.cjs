@@ -19,13 +19,13 @@ function fixture(){
  let f=fixture();f.run('renderVisitCheckoutContent()');
  let html=f.node('visit-checkout').innerHTML;
  assert.match(html,/data-version="0" data-digest="digest-v1"/);
- // One button releases the summary and checks the visit out; no acknowledgement checkbox.
+ // One button releases the summary and checks the encounter out; no acknowledgement checkbox.
  assert.match(html,/<button type="submit" class="primary">Release visit summary<\/button>/);
  assert.doesNotMatch(html,/I reviewed the patient instructions|name="reviewed"|Release after-visit summary/);
  assert.match(html,/data-checkout-discard>Discard instruction edits</);
- assert.match(html,/<h2>Finish visit<\/h2>/);
+ assert.match(html,/<h2>Finish encounter<\/h2>/);
  assert.doesNotMatch(html,/id="avs-delivery-form"|id="checkout-complete-form"/);
- // Payment is collected in the visit's payment block, never duplicated inside checkout.
+ // Payment is collected in the encounter's payment block, never duplicated inside checkout.
  assert.doesNotMatch(html,/Account payment links|Separate from appointment copay|Create test payment link|Payment account|renderAccountPaymentPanel/);
  assert.doesNotMatch(html,/Charges &amp; payments|Open Charges & billing|No charges yet/);
  // Follow-up tasks and patient instructions stay on the screen.

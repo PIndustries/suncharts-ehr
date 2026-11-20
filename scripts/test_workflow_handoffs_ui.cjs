@@ -50,7 +50,7 @@ async function main(){
  }
  for(const resource of ['signed_visit','functional_status','neurotoxin','order','referral','follow_up','payment']){
   fixture(resource,'staff_task',{item:{visit_id:null},proof:{ready:false,status:'missing',resource_id:null,action:{module:resource==='payment'?'billing':resource==='follow_up'?'followup':'clinical',patient_id:'patient-1',appointment_id:'appointment-1',visit_id:null}}});
-  assert.match(run('pathwayStepCard(fixtureStep,fixtureItem,fixtureReadiness)'),/Open appointment to start the visit/);
+  assert.match(run('pathwayStepCard(fixtureStep,fixtureItem,fixtureReadiness)'),/Open appointment to start the encounter/);
   await run("journeyOpenNative('run-1','step')");assert.deepEqual(calls,[['schedule'],['appointment','appointment-1']],`${resource} never selects another active encounter when this appointment has no visit`);
  }
  fixture('intake_reviewed','patient_form');await run("journeyOpenNative('run-1','step')");assert.deepEqual(calls,[['packet','intake_reviewed-1']]);

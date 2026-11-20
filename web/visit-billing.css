@@ -74,3 +74,27 @@
 
 /* The invoice shows its charge lines once: while Edit charges is open the editable table replaces the read-only lines. */
 #encounter-billing-editor:not(:empty)~#encounter-billing-detail{display:none}
+.visit-billing-card{container-type:inline-size}
+@container (max-width:620px){.visit-billing-status{flex-direction:column;align-items:stretch}.visit-billing-status .actions{justify-content:flex-start}}
+.visit-billing-missing-list{list-style:none;margin:8px 0 0;padding:8px 10px;display:grid;gap:4px;color:var(--warning-text);background:var(--warning-bg);border:1px solid var(--warning-line);border-radius:6px;font-size:var(--fs-sm)}
+.visit-billing-missing-list b{margin-right:6px}
+/* The visit's invoice in tabs: one record, one tab shown at a time. */
+.invoice-tabs{display:flex;flex-wrap:wrap;gap:2px;margin:0 0 14px;border-bottom:1px solid var(--line)}
+.invoice-tabs button{border:0;border-bottom:3px solid transparent;border-radius:0;background:none;color:var(--muted);padding:8px 14px;font-weight:600;cursor:pointer}
+.invoice-tabs button.active{color:var(--ink);border-bottom-color:var(--accent)}
+#encounter-revenue[data-invoice-tab="encounter"]>#encounter-claims,#encounter-revenue[data-invoice-tab="encounter"]>#visit-billing-history,#encounter-revenue[data-invoice-tab="encounter"]>#visit-billing-payments,#encounter-revenue[data-invoice-tab="encounter"]>#visit-billing-invoices{display:none}
+#encounter-revenue[data-invoice-tab="invoices"]>:not(.invoice-tabs):not(#visit-billing-invoices){display:none}
+#encounter-revenue[data-invoice-tab="claim"]>:not(.invoice-tabs):not(#encounter-claims){display:none}
+#encounter-revenue[data-invoice-tab="payments"]>:not(.invoice-tabs):not(#visit-billing-payments):not(#visit-billing-collect):not(#encounter-copay-receipt){display:none}
+#encounter-revenue[data-invoice-tab="history"]>:not(.invoice-tabs):not(#visit-billing-history){display:none}
+#encounter-revenue[data-invoice-tab="history"] #visit-billing-history>summary{display:none}
+/* Switching tabs fades the new tab in. */
+#encounter-revenue[data-invoice-tab]>:not(.invoice-tabs){animation:invoice-tab-in .22s ease}
+@keyframes invoice-tab-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.invoice-tabs button{transition:color .18s ease,border-color .18s ease}
+@media(prefers-reduced-motion:reduce){#encounter-revenue[data-invoice-tab]>:not(.invoice-tabs){animation:none}}
+.encounter-invoice-list{list-style:none;margin:0;padding:0;display:grid}
+.encounter-invoice-list li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--line)}
+.encounter-invoice-list li:first-child{border-top:0}
+.encounter-invoice-list span{display:grid}
+.encounter-invoice-list small{color:var(--muted)}

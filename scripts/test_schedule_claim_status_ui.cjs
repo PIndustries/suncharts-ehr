@@ -59,10 +59,10 @@ async function main(){
  assert.deepEqual(chipFor({status:'answered',claim_id:CLAIM}),[{tone:'green',kind:'claim',tip:sentence('answered'),label:'Insurer answered'}]);
  assert.deepEqual(chipFor(null),[],'a self-pay visit, unposted charges or no visit says nothing about a claim');
  assert.deepEqual(chipFor({status:'not_sent',claim_id:null},'in_progress'),[{tone:'amber',kind:'claim',tip:sentence('not_sent'),label:'Claim not sent'}],'a visit still open already has posted charges, so its unsent claim is shown');
- // Money facts stay on the card once the visit is closed, exactly like copay and balance.
+ // Money facts stay on the card once the encounter is closed, exactly like copay and balance.
  assert.deepEqual(chipFor({status:'not_sent',claim_id:null},'cancelled').map(m=>m.label),['Claim not sent']);
  assert.deepEqual(chipFor({status:'answered',claim_id:CLAIM},'no_show').map(m=>m.label),['Insurer answered']);
- assert.deepEqual(chipFor({status:'rejected',claim_id:CLAIM},'completed'),[{tone:'red',kind:'claim',tip:sentence('rejected'),label:'Claim rejected'}],'money work stays visible after the visit');
+ assert.deepEqual(chipFor({status:'rejected',claim_id:CLAIM},'completed'),[{tone:'red',kind:'claim',tip:sentence('rejected'),label:'Claim rejected'}],'money work stays visible after the encounter');
  assert.deepEqual(chipFor({status:'not_sent',claim_id:null},'completed','week').map(m=>m.label),['Claim not sent'],'the month and list cards keep a claim that still needs sending');
  assert.deepEqual(chipFor({status:'answered',claim_id:CLAIM},'completed','week').map(m=>m.label),['Insurer answered'],'a settled claim still shows where it stands on the small cards');
 
@@ -73,7 +73,7 @@ async function main(){
  assert.match(html,new RegExp(`data-board-action="open-claim" data-appointment="a" data-claim="${CLAIM}">Open claim</button>`));
  html=panel({status:'not_sent',claim_id:null});
  assert.match(html,/<dt>Insurance claim<\/dt><dd><span class="appt-fact-state tone-amber">Charges are posted but the claim has not been sent\.<\/span>/);
- assert.match(html,new RegExp(`data-board-action="charges" data-appointment="a">Open invoice</button>`),'with no claim yet the visit’s own billing step is the way in');
+ assert.match(html,new RegExp(`data-board-action="charges" data-appointment="a">Open invoice</button>`),'with no claim yet the encounter’s own billing step is the way in');
  assert.doesNotMatch(html,/data-claim=/);
  assert.doesNotMatch(panel(null),/Insurance claim/,'no claim, no row');
  const row=(claim,denied=[],extra={})=>{const g=fixture({denied});g.load([appointment('a','09:00','09:30',{status:'completed'})],[{...base,...extra,claim}]);const row=g.run('schedulePanelFacts(scheduleState.appointments[0])').match(/<dt>Insurance claim<\/dt>[\s\S]*?<\/dd>/)?.[0]||'';return [...row.matchAll(/data-board-action="([a-z-]+)"/g)].map(m=>m[1]);};
@@ -81,7 +81,7 @@ async function main(){
  // Without claims access the server leaves the claim out altogether, so there is no row.
  assert.deepEqual(row(null,['claims']),[]);
  assert.deepEqual(row({status:'not_sent',claim_id:null}),['charges']);
- assert.deepEqual(row({status:'not_sent',claim_id:null},[],{visit_id:null}),[],'nothing to open for a visit that has none');
+ assert.deepEqual(row({status:'not_sent',claim_id:null},[],{visit_id:null}),[],'nothing to open for an encounter that has none');
  assert.deepEqual(row({status:'not_sent',claim_id:null},['billing']),[],'no billing access, no button');
 
  // ---- Clicks follow the routes that already exist ----
@@ -90,14 +90,14 @@ async function main(){
  assert.deepEqual(out.hash,`#/claims/${CLAIM}`,'the chip opens the claim through the claims screen address');
  assert.deepEqual(out.calls,[],'no second mechanism is invented');
  out=await act({marker:'claim',markerAppointment:'a'},[{...base,claim:{status:'not_sent',claim_id:null}}]);
- assert.deepEqual(out.calls.at(-1),['encounter','charges'],'with no claim the chip opens the visit’s Charges & billing step');
+ assert.deepEqual(out.calls.at(-1),['encounter','charges'],'with no claim the chip opens the encounter’s Charges & billing step');
  assert.equal(out.hash,'');
  out=await act({boardAction:'open-claim',appointment:'a',claim:CLAIM},[]);
  assert.deepEqual(out.hash,`#/claims/${CLAIM}`);
  out=await act({boardAction:'open-claim',appointment:'a',claim:'not-an-id'},[]);
  assert.match(out.error,/Open the schedule again/,'a bad identifier is refused before the address changes');assert.equal(out.hash,'');
 
- // ---- The summary line counts the visits that still need claim work ----
+ // ---- The summary line counts the encounters that still need claim work ----
  const clock=value=>`${String(value).padStart(2,'0')}:00`;
  const visits=['a','b','c','d','e'].map((id,index)=>appointment(id,clock(9+index),clock(9+index+1),{status:'completed'}));
  const markers=visits.map(v=>({...base,appointment_id:v.id,patient_id:v.patient_id,claim:null}));
@@ -120,7 +120,7 @@ async function main(){
  f.load(visits,withClaim('a',{status:'not_sent',claim_id:null}));
  assert.match(summary(f),/· 1 claims not sent$/);assert.doesNotMatch(summary(f),/claims rejected/);
  f.load(visits,markers);assert.doesNotMatch(summary(f),/claims/);
- // The counts follow the visits on screen, whatever view is open.
+ // The counts follow the encounters on screen, whatever view is open.
  f.run("scheduleMode='month'");f.load(visits,withClaim('a',{status:'rejected',claim_id:CLAIM}));
  assert.match(summary(f),/1 claims rejected/);
  console.log('PASS schedule claim chips: every claim step with its own words and colour, the panel row and both destinations, clicks on the routes that already exist, and the two summary counts as filters');

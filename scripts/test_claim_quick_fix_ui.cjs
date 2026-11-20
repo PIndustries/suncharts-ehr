@@ -26,6 +26,8 @@ for(const name of ['address_line1','address_city','address_region','address_post
 assert.doesNotMatch(html,/name="subscriber_address"/,'the patient is the policy holder: the address above is used');
 assert.match(html,/value="1980-02-03"/,"the policy holder's date of birth starts as the patient's");
 assert.match(html,/Save and check again/);
+// View first: the list of what is missing with one Fix here button; the boxes open on Fix here, Cancel closes them.
+assert.match(html,/<form id="claim-quick-fix"[^>]* hidden>/);assert.match(html,/data-claim-quick-view><ul><li>Patient address<\/li><li>Policy holder&#39;s address<\/li><li>Policy holder&#39;s date of birth<\/li><\/ul><button type="button" class="primary" data-claim-quick-fix-open>Fix here<\/button>/);assert.match(html,/data-claim-quick-fix-cancel>Cancel</);
 // What cannot be filled in here keeps its one button; the Patient group, now fully fixable here, has none.
 assert.match(html,/data-missing-group="insurance"><b>Insurance<\/b><ul><li>Insurance company name<\/li><\/ul><button type="button" data-claim-insurance>/);
 assert.doesNotMatch(html,/data-missing-group="patient"/);assert.doesNotMatch(html,/data-claim-patient/);
