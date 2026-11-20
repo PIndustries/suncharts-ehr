@@ -934,21 +934,12 @@ async fn account_action(
         "void" => ("void", None),
         _ => return Err(Error::Invalid("choose post or void")),
     };
-    let insured = snapshot.is_some();
     sqlx::query("UPDATE billing_accounts SET status=$3,coverage_snapshot=$4,version=version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(id).bind(status).bind(snapshot).execute(&mut *tx).await?;
     if status == "posted" {
         allocate_copays(&mut tx, &a, p, id).await?;
     }
     let row = account_revision(&mut tx, &a, p, id, &v.reason).await?;
     tx.commit().await?;
-    // Posting an encounter's insured charges makes its claim right away, whichever screen posted
-    // them, as approving an encounter does in other systems. The claim stays a draft for a person
-    // to check and send; a claim that cannot be prepared yet is left for the encounter's card.
-    if status == "posted" && content.visit_id.is_some() && insured {
-        if let Ok(pool) = db(&s) {
-            let _ = crate::visit_billing::prepare_claim(pool, &a, p, id, false).await;
-        }
-    }
     Ok(Json(row))
 }
 #[derive(Deserialize, Serialize)]
