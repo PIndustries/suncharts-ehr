@@ -197,3 +197,9 @@
 
 @media(max-width:1100px){#schedule-workspace .schedule-grid{--grid-col-min:200px}#schedule-workspace .schedule-grid-week{--grid-col-min:112px}#schedule-workspace .schedule-zoom{margin-left:0}}
 @media print{#schedule-workspace .schedule-grid .grid-scroll{max-height:none;overflow:visible}#schedule-workspace .appt-marker-offer,#schedule-workspace .grid-add{display:none}}
+/* The appointment panel is narrow: its fields share the width without pushing past the edge, and
+   pairs (start/end, facility/room) drop to one per line when they cannot both fit. */
+#schedule-workspace .schedule-detail{overflow-x:hidden}
+#schedule-workspace .schedule-detail .form-grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr))}
+#schedule-workspace .schedule-detail :is(input,select,textarea){min-width:0;max-width:100%;box-sizing:border-box}
+#schedule-workspace .schedule-detail fieldset{min-width:0}
