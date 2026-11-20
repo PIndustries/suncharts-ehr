@@ -517,6 +517,7 @@ function renderEncounterRevenue(){
  // with nothing to fill in from keeps waiting for its Add charges button.
  if(!account&&typeof chartSection!=='undefined'&&chartSection==='visits'&&encounterOnBillingStep()&&encounterChargesFilledIn())openEncounterCharges();
 
+ if(typeof encounterBillingChrome==='function')encounterBillingChrome(host);
  if(typeof invoiceTabSet==='function')invoiceTabSet(invoiceTabRemembered(),false);
  loadEncounterRevenueStatus(account);
  if(codesVisible&&encounterDiagnosesHost())renderEncounterDiagnoses();
@@ -997,6 +998,84 @@ const encounterBillingTabs=['billing','history'];
 const encounterTabAliases={encounter:'billing',invoice:'billing',codes:'billing',claim:'billing',invoices:'billing',payments:'billing',checkout:'note'};
 // The tab open on the encounter on the screen, kept while that encounter is re-drawn after a save.
 let encounterTabFor={visit:null,key:null};
+// The Billing tab shows one area at a time: the codes, the claim details, the payments, the claim.
+// The next step and the money stay above them. The area used last is remembered.
+const billingParts=[['details','Claim details'],['payments','Payments'],['claim','Claim']],billingPartKeys=['codes','details','payments','claim'];
+function billingPartsMarkup(){return `<nav class="billing-parts" role="tablist" aria-label="Billing for this encounter">${billingParts.map(([key,label])=>`<button type="button" role="tab" data-billing-part-key="${key}" aria-selected="false">${label}</button>`).join('')}</nav>`;}
+function billingPartRemembered(){try{const key=localStorage.getItem('suncharts.billingPart');return billingParts.some(([k])=>k===key)?key:'details';}catch{return 'details';}}
+function billingPartSet(key,remember=true){
+ const host=typeof $==='function'?$('encounter-revenue'):null;if(!host?.dataset||!billingPartKeys.includes(key))return;
+ host.dataset.billingPart=key;
+ const buttons=typeof host.querySelectorAll==='function'?Array.from(host.querySelectorAll('[data-billing-part-key]')||[]):[];
+ for(const button of buttons){if(!button?.dataset)continue;const on=button.dataset.billingPartKey===key;button.setAttribute?.('aria-selected',String(on));button.classList?.toggle('active',on);}
+ if(remember&&key!=='codes')try{localStorage.setItem('suncharts.billingPart',key);}catch{}
+ if(key!=='codes')encounterCodesStripRender();
+}
+// The codes on this encounter, read-only, on every tab: diagnoses (ICD-10) then procedures (CPT).
+// The Codes area of Billing shows them in full, so the strip steps aside there.
+function encounterCodesStripMarkup(evidence){
+ const list=evidence?.diagnoses,lines=evidence?.lines||[],letter=i=>typeof visitDiagnosisLetter==='function'?visitDiagnosisLetter(i):String.fromCharCode(65+i);
+ const diagnoses=!evidence||list===null||list===undefined?'<p class="muted">Diagnoses could not be loaded.</p>':list.length?`<ol>${list.map((d,i)=>`<li><b>${letter(i)}</b> <span class="codes-strip-code">${esc(String(d.code).trim())}</span> <span>${esc(d.display||'')}</span>${i===0?' <span class="muted">primary</span>':''}</li>`).join('')}</ol>`:'<p class="muted">No diagnoses yet.</p>';
+ const total=lines.reduce((sum,line)=>sum+(Number(line.amount_cents)||0),0);
+ const procedures=lines.length?`<ol>${lines.map(line=>`<li><span class="codes-strip-code">${esc(line.code||'')}${line.modifiers?'-'+esc(String(line.modifiers).trim().replace(/[,\s]+/g,'-')):''}</span> <span>${esc(line.description||'')}${Number(line.units)>1?` × ${esc(line.units)}`:''}</span><span class="codes-strip-amount">${line.amount_cents==null?'':money(line.amount_cents)}</span></li>`).join('')}</ol><p class="codes-strip-total"><span>Total charges</span><b>${money(total)}</b></p>`:'<p class="muted">No procedures yet.</p>';
+ const any=(list&&list.length)||lines.length;
+ return `<div class="codes-strip-col"><h4>Diagnoses (ICD-10)</h4>${diagnoses}</div><div class="codes-strip-col"><h4>Procedures (CPT)</h4>${procedures}</div><button type="button" class="text-button" data-codes-strip-edit>${any?'Edit codes':'Add codes'}</button>`;
+}
+let encounterCodesStripToken=0;
+async function encounterCodesStripRender(){
+ const strip=typeof $==='function'?$('encounter-codes-strip'):null,visit=typeof activeVisit!=='undefined'?activeVisit:null;if(!strip?.isConnected||!visit)return;
+ const token=++encounterCodesStripToken;
+ if(!strip.innerHTML)strip.innerHTML='<p class="muted">Loading codes…</p>';
+ const evidence=await visitReceiptEvidence(visit.appointment_id);
+ if(token!==encounterCodesStripToken||(typeof activeVisit!=='undefined'?activeVisit:null)!==visit)return;
+ const node=$('encounter-codes-strip');if(node)node.innerHTML=encounterCodesStripMarkup(evidence);
+}
+// Put the strip under the encounter tabs and the Billing areas under the next step.
+function encounterBillingChrome(host){
+ if(!host?.querySelector||typeof document==='undefined'||typeof document.createElement!=='function')return;
+ const tabs=host.querySelector('.invoice-tabs'),status=host.querySelector('#encounter-revenue-status');
+ if(tabs&&typeof tabs.after==='function'&&!host.querySelector('#encounter-codes-strip')){const strip=document.createElement('section');strip.id='encounter-codes-strip';strip.className='encounter-codes-strip';strip.setAttribute('aria-label','Codes on this encounter');tabs.after(strip);}
+ if(status&&typeof status.insertAdjacentHTML==='function'&&!host.querySelector('.billing-parts'))status.insertAdjacentHTML('afterend',billingPartsMarkup());
+ if(tabs&&!host.querySelector('.codes-editor-bar'))tabs.insertAdjacentHTML?.('beforebegin','<div class="codes-editor-bar"><h3>Edit codes</h3><button type="button" class="primary" data-codes-editor-close>Done</button></div>');
+ billingPartSet(host.dataset?.codesEditing!==undefined?'codes':billingPartRemembered(),false);
+}
+// Editing the codes happens over the page: the diagnoses and the procedure lines open as a panel on
+// top of whatever tab is showing, and the page under it does not move. Nothing is taken out of the
+// page to do it, so saving and refreshing work as they always did.
+function encounterCodesEditorOpen(tries=0){
+ const host=typeof $==='function'?$('encounter-revenue'):null;if(!host?.dataset)return;
+ if(!host.querySelector?.('#billing-account-form')){if(tries<20){setTimeout(()=>encounterCodesEditorOpen(tries+1),100);return;}invoiceTabSet('billing');return;}
+ if(host.dataset.codesEditing!==undefined)return;
+ host.dataset.partBeforeEditing=host.dataset.billingPart||billingPartRemembered();
+ billingPartSet('codes',false);host.dataset.codesEditing='';
+ if(typeof renderEncounterDiagnoses==='function'&&!$('encounter-diagnoses')?.firstElementChild)renderEncounterDiagnoses();
+ host.scrollTop=0;host.querySelector('[data-codes-editor-close]')?.focus?.({preventScroll:true});
+}
+function encounterCodesEditorClose(){
+ const host=typeof $==='function'?$('encounter-revenue'):null;if(!host?.dataset||host.dataset.codesEditing===undefined)return;
+ delete host.dataset.codesEditing;
+ const back=host.dataset.partBeforeEditing;delete host.dataset.partBeforeEditing;
+ billingPartSet(billingParts.some(([k])=>k===back)?back:billingPartRemembered(),false);encounterCodesStripRender();
+}
+if(typeof document!=='undefined'&&document.addEventListener){
+ document.addEventListener('click',event=>{
+  const part=event.target?.closest?.('[data-billing-part-key]');
+  if(part?.dataset?.billingPartKey){event.preventDefault();billingPartSet(part.dataset.billingPartKey);return;}
+  if(event.target?.closest?.('[data-codes-strip-edit]')){event.preventDefault();encounterCodesEditorOpen();return;}
+  if(event.target?.closest?.('[data-codes-editor-close]')){event.preventDefault();encounterCodesEditorClose();return;}
+ });
+ // A button whose work lands in another area opens that area first, so nothing happens out of sight.
+ document.addEventListener('click',event=>{
+  const button=event.target?.closest?.('button');if(!button?.closest?.('#encounter-revenue,#patient-banner'))return;
+  const has=names=>names.some(name=>button.hasAttribute(name));
+  if(has(['data-encounter-charges'])||button.dataset?.visitReviewFix==='line')setTimeout(()=>encounterCodesEditorOpen(),0);
+  else if(has(['data-visit-claim-send','data-visit-claim-fix','data-visit-claim-prepare','data-revenue-claim','data-claim-open','data-revenue-remittance']))billingPartSet('claim',false);
+  else if(has(['data-visit-collect']))billingPartSet('payments',false);
+ },true);
+ document.addEventListener('keydown',event=>{if(event.key!=='Escape'||document.querySelector?.('dialog[open]'))return;if($('encounter-revenue')?.dataset?.codesEditing!==undefined){event.preventDefault();encounterCodesEditorClose();}});
+ // A field the browser refuses on save has to be on screen to be fixed.
+ document.addEventListener('invalid',event=>{const field=event.target;if(!field?.closest?.('#billing-account-form'))return;if(field.closest('[data-visit-charge-options],[data-encounter-provider],details.charge-more-options')){encounterCodesEditorClose();invoiceTabSet('billing');billingPartSet('details',false);}else encounterCodesEditorOpen();},true);
+}
 function invoiceTabsMarkup(){return `<nav class="invoice-tabs encounter-tabs" role="tablist" aria-label="This encounter">${invoiceTabs.map(([key,label])=>`<button type="button" role="tab" data-invoice-tab-key="${key}" aria-selected="false">${label}</button>`).join('')}</nav>`;}
 // Which tab an encounter opens on: the one already open on it; the note while it is being written
 // (Visit, Rooming, Notes); Checkout when asked for; otherwise the billing tab used last.
@@ -1022,6 +1101,7 @@ function invoiceTabSet(key,remember=true){
  if(remember&&encounterBillingTabs.includes(key))try{localStorage.setItem('suncharts.invoiceTab',key);}catch{}
  if(key==='history'){const history=$('visit-billing-history');if(history)history.open=true;}
  if(key==='billing')renderEncounterInvoices();
+ if(typeof encounterCodesStripRender==='function')encounterCodesStripRender();
  // Billing: the codes are edited right there, and the insurance claim made from them sits below.
  if(key==='billing'){encounterChargeTableInline();encounterClaimMount();}
 }

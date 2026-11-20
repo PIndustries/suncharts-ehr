@@ -91,7 +91,7 @@
 #visit-page-host[data-encounter-tab]:not([data-encounter-tab="note"])>#visit-editor{display:none}
 #visit-page-host[data-encounter-tab]:not([data-encounter-tab="note"])>#visit-checkout{display:none}
 #chart:has(>#visit-page-host[data-encounter-tab]:not([data-encounter-tab="history"])) #appointments-panel{display:none}
-#encounter-revenue[data-invoice-tab="note"]>:not(.invoice-tabs){display:none}
+#encounter-revenue[data-invoice-tab="note"]>:not(.invoice-tabs):not(#encounter-codes-strip){display:none}
 #encounter-revenue[data-invoice-tab="note"]{padding-bottom:0}
 #encounter-revenue[data-invoice-tab="note"]>.invoice-tabs,#encounter-revenue[data-invoice-tab="checkout"]>.invoice-tabs{margin-bottom:0}
 /* Billing: the next step, the diagnoses, the procedures table (edited in place) and the claim made from them. */
@@ -105,7 +105,7 @@
 /* Payments: what is owed, collecting, the payments and the statements given to the patient. */
 #encounter-revenue[data-invoice-tab="payments"]>:not(.invoice-tabs):not(#encounter-revenue-status):not(#visit-billing-payments):not(#visit-billing-collect):not(#encounter-copay-receipt):not(#visit-billing-invoices){display:none}
 #encounter-revenue[data-invoice-tab="checkout"]>:not(.invoice-tabs):not(#encounter-revenue-status){display:none}
-#encounter-revenue[data-invoice-tab="history"]>:not(.invoice-tabs):not(#visit-billing-history){display:none}
+#encounter-revenue[data-invoice-tab="history"]>:not(.invoice-tabs):not(#visit-billing-history):not(#encounter-codes-strip){display:none}
 #encounter-revenue[data-invoice-tab="history"] #visit-billing-history>summary{display:none}
 /* Switching tabs fades the new tab in. */
 #encounter-revenue[data-invoice-tab]>:not(.invoice-tabs){animation:invoice-tab-in .22s ease}
@@ -246,3 +246,45 @@
 .encounter-provider-summary dt{font-size:var(--fs-sm);color:var(--muted)}
 .encounter-provider-summary dd{margin:0}
 .encounter-coverage-line{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 16px;margin:0}
+/* The codes on the encounter, on every tab. */
+.encounter-codes-strip{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr) auto;gap:8px 20px;align-items:start;margin:10px 0 12px;padding:10px 14px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.encounter-codes-strip:empty{display:none}
+.encounter-codes-strip h4{margin:0 0 4px;font-size:var(--fs-sm);color:var(--muted);font-weight:600}
+.encounter-codes-strip ol{list-style:none;margin:0;padding:0;display:grid;gap:2px}
+.encounter-codes-strip li{display:flex;gap:8px;align-items:baseline;min-width:0}
+.encounter-codes-strip li>span:not(.codes-strip-code):not(.codes-strip-amount):not(.muted){min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.codes-strip-code{font-weight:650;font-variant-numeric:tabular-nums;white-space:nowrap}
+.codes-strip-amount{margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}
+.codes-strip-total{display:flex;justify-content:space-between;margin:4px 0 0;padding-top:4px;border-top:1px solid var(--line)}
+.encounter-codes-strip p{margin:0}
+@media(max-width:900px){.encounter-codes-strip{grid-template-columns:1fr}}
+/* Billing shows one area at a time under the next step. */
+.billing-parts{display:flex;gap:4px;margin:14px 0 12px;border-bottom:1px solid var(--line)}
+.billing-parts button{border:0;border-bottom:2px solid transparent;border-radius:0;background:none;padding:8px 14px;color:var(--muted);font-weight:600;cursor:pointer}
+.billing-parts button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent)}
+#encounter-revenue:not([data-invoice-tab="billing"])>.billing-parts{display:none}
+#encounter-revenue[data-invoice-tab="billing"][data-billing-part="codes"]>:is(#visit-billing-payments,#visit-billing-invoices,#visit-billing-collect,#encounter-copay-receipt,#encounter-claims){display:none}
+#encounter-revenue[data-invoice-tab="billing"][data-billing-part="codes"] #billing-account-form>:is([data-visit-charge-options],[data-encounter-provider],details.charge-more-options){display:none}
+#encounter-revenue[data-invoice-tab="billing"][data-billing-part="details"]>:is(#encounter-diagnoses,.section-head,#visit-billing-payments,#visit-billing-invoices,#visit-billing-collect,#encounter-copay-receipt,#encounter-claims,#encounter-billing-detail){display:none}
+#encounter-revenue[data-invoice-tab="billing"][data-billing-part="details"] #billing-account-form>:is(.charge-lines-title,.charge-table-wrap,.charge-table-foot,.encounter-form-actions){display:none}
+#encounter-revenue[data-invoice-tab="billing"]:is([data-billing-part="payments"],[data-billing-part="claim"])>:is(#encounter-diagnoses,.section-head,#encounter-billing-detail){display:none}
+#encounter-revenue[data-invoice-tab="billing"]:is([data-billing-part="payments"],[data-billing-part="claim"])>#encounter-billing-editor:has(#billing-account-form){display:none}
+#encounter-revenue[data-invoice-tab="billing"][data-billing-part="payments"]>#encounter-claims{display:none}
+#encounter-revenue[data-invoice-tab="billing"][data-billing-part="claim"]>:is(#visit-billing-payments,#visit-billing-invoices,#visit-billing-collect,#encounter-copay-receipt){display:none}
+#encounter-revenue[data-invoice-tab="billing"][data-billing-part="claim"]>#encounter-claims{margin-top:0;padding-top:0;border-top:0}
+/* With Billing in areas, the next step leads: tabs, the codes strip, the next step, the areas, then the area itself. */
+#encounter-revenue[data-invoice-tab="billing"]>#encounter-codes-strip{order:1}
+#encounter-revenue[data-invoice-tab="billing"]>#encounter-revenue-status{order:1;margin:0 0 4px}
+#encounter-revenue[data-invoice-tab="billing"]>.billing-parts{order:2}
+/* The areas read as a segmented control, apart from the encounter's own tabs above them. */
+.billing-parts{gap:6px;border-bottom:0;margin:14px 0 14px;padding:4px;border:1px solid var(--line);border-radius:10px;background:var(--surface-soft);width:fit-content;max-width:100%;flex-wrap:wrap}
+.billing-parts button{border:0;border-radius:7px;padding:6px 14px}
+.billing-parts button[aria-selected="true"]{background:var(--accent);color:var(--accent-ink,var(--paper));border-bottom-color:transparent}
+.visit-billing-totals{display:none}
+#encounter-revenue[data-invoice-tab="billing"][data-billing-part]:not([data-billing-part="payments"]) .visit-billing-totals{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 0}
+.visit-billing-totals span{display:grid;gap:2px;padding:8px 14px;border:1px solid var(--line);border-radius:8px;background:var(--surface-soft);min-width:140px}
+.visit-billing-totals small{color:var(--muted);font-size:var(--fs-sm)}
+.visit-billing-totals .is-due{border-color:var(--error-line);background:var(--error-bg);color:var(--error-text)}
+.visit-billing-totals .is-clear{border-color:var(--success-line);background:var(--success-bg);color:var(--success-text)}
+.visit-billing-totals .is-due small,.visit-billing-totals .is-clear small{color:inherit}
+#encounter-revenue[data-invoice-tab="billing"][data-billing-part]:not([data-billing-part="payments"]) .visit-billing-breakdown{display:none}

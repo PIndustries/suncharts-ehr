@@ -160,3 +160,11 @@
 @keyframes claim-step-glow{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 0%,transparent);filter:brightness(1)}50%{box-shadow:0 0 10px 2px color-mix(in srgb,var(--accent) 75%,transparent);filter:brightness(1.4)}}
 .patient-banner-claim-now{font-weight:500}
 @media(prefers-reduced-motion:reduce){:is(.claim-progress-bar,.patient-banner-claim .claim-progress-bar)>li.is-current>.claim-progress-fill{animation:none}}
+/* Editing the codes: the encounter's own diagnoses and procedure lines shown as a panel over the page. */
+.codes-editor-bar{display:none}
+#encounter-revenue[data-codes-editing]{position:fixed;z-index:200;top:4vh;left:50%;transform:translateX(-50%);width:min(1000px,calc(100vw - 32px));max-height:92vh;overflow:auto;overscroll-behavior:contain;display:flex;flex-direction:column;margin:0;padding:0 20px 18px;border:0;border-radius:14px;background:var(--surface);box-shadow:0 0 0 100vmax rgb(8 18 28 / .55),0 24px 60px rgb(0 0 0 / .28);animation:sheet-in .28s cubic-bezier(.2,.8,.2,1)}
+#encounter-revenue[data-codes-editing]>*{display:none !important}
+#encounter-revenue[data-codes-editing]>:is(#encounter-diagnoses,#encounter-billing-editor){display:block !important;order:1}
+#encounter-revenue[data-codes-editing]>.codes-editor-bar{display:flex !important;order:0;position:sticky;top:0;z-index:2;align-items:center;justify-content:space-between;gap:12px;margin:0 -20px 10px;padding:14px 20px 10px;background:var(--surface);border-bottom:1px solid var(--line)}
+.codes-editor-bar h3{margin:0}
+@media(prefers-reduced-motion:reduce){#encounter-revenue[data-codes-editing]{animation:none}}

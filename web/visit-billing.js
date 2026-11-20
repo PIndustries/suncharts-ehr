@@ -229,6 +229,13 @@ function visitBillingMore(s,ctx={}){
  items.push('<button type="button" data-chart-section="insurance">Insurance and eligibility</button>');
  return `<details class="visit-billing-more" data-revenue-disclosure="more"><summary>More actions</summary><div class="actions">${items.join('')}</div></details>`;
 }
+// The money in one line, for the Billing areas where the full table would push the work down the
+// page. The table itself stays on Payments.
+function visitBillingTotalsLine(s){
+ if(s.charges_cents==null)return '';
+ const i=s.insurance||{},p=s.patient||{},item=(label,value,tone='')=>`<span${tone?` class="${tone}"`:''}><small>${label}</small><b>${value}</b></span>`;
+ return `<p class="visit-billing-totals">${item('Charges',money(s.charges_cents))}${i.insured?item(i.paid_cents>0?'Insurance paid':'Insurance pending',money(i.paid_cents>0?i.paid_cents:i.pending_cents||0)):''}${p.overpaid_cents>0?item('Patient credit',money(p.overpaid_cents)):''}${item('Patient owes now',money(p.owes_now_cents||0),p.owes_now_cents>0?'is-due':'is-clear')}</p>`;
+}
 function visitBillingCardMarkup(s,ctx={}){
    const status=visitBillingStatus(s,ctx),owing=['patient_owes','self_pay_collect'].includes(s.state),posted=s.account?.status==='posted';
    const issues=visitBillingMissingMarkup(status.issues,s.claim?.id||'',ctx);
@@ -240,7 +247,7 @@ function visitBillingCardMarkup(s,ctx={}){
    // The one-click send keeps its small review link beside it; a card left opening the review
    // panel says it once, as its single main button.
    const action=direct&&!main.includes(direct)?`${main}${review}`:main;
-      return `<section class="visit-billing-card" data-visit-billing-state="${esc(s.state)}"><div class="visit-billing-status"><div><span class="eyebrow">${s.waiting_on==='nobody'?'Status':'Next step'}</span><p class="visit-billing-headline">${esc(status.headline)}</p><p class="muted">${esc(status.detail)}</p>${issues}</div><div class="actions">${action||''}${secondary}</div></div>${sent}${visitBillingBreakdown(s,ctx)}${posted||s.account||s.visit?visitBillingMore(s,ctx):''}</section>`;
+      return `<section class="visit-billing-card" data-visit-billing-state="${esc(s.state)}"><div class="visit-billing-status"><div><span class="eyebrow">${s.waiting_on==='nobody'?'Status':'Next step'}</span><p class="visit-billing-headline">${esc(status.headline)}</p><p class="muted">${esc(status.detail)}</p>${issues}</div><div class="actions">${action||''}${secondary}</div></div>${sent}${visitBillingTotalsLine(s)}${visitBillingBreakdown(s,ctx)}${posted||s.account||s.visit?visitBillingMore(s,ctx):''}</section>`;
 }
 const visitBillingFilters=[['all','Everything'],['charges','Charges'],['insurance','Insurance'],['payments','Payments'],['statements','Statements']];
 function visitBillingEventText(event){
