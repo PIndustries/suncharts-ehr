@@ -56,6 +56,22 @@ async fn owner(s: &State, h: &HeaderMap, write: bool) -> Result<Actor> {
     }
     Ok(a)
 }
+/// Who may add a code to the practice list or set its price: the owner, and the staff who enter
+/// charges. Staff other than the owner may add a code and change a price, and nothing else: turning
+/// a code off, renaming it, and switching a whole code set stay with the owner.
+async fn price_editor(s: &State, h: &HeaderMap) -> Result<Actor> {
+    let a = s
+        .browser
+        .as_ref()
+        .ok_or(Error::Unauthorized)?
+        .authenticate(h, true)
+        .await?;
+    a.scheduling()?;
+    if !matches!(a.role, Role::Owner) {
+        crate::access_policies::require_native(s, &a, "billing", "edit").await?;
+    }
+    Ok(a)
+}
 async fn locked<'a>(s: &'a State, a: &Actor) -> Result<Transaction<'a, Postgres>> {
     let mut tx = db(s)?.begin().await?;
     crate::billing::tenant_lock(&mut tx, a).await?;
@@ -348,7 +364,11 @@ async fn create(
     h: HeaderMap,
     Json(body): Json<NewCode>,
 ) -> Result<Response> {
-    let a = owner(&s, &h, true).await?;
+    let a = price_editor(&s, &h).await?;
+    let is_owner = matches!(a.role, Role::Owner);
+    if !is_owner && !body.enabled {
+        return Err(Error::Forbidden);
+    }
     let selected = system(&body.system)?;
     let code = crate::terminology::canonical_code(selected, &body.code)
         .map_err(|_| Error::Invalid("code is not valid for its system"))?;
@@ -360,7 +380,9 @@ async fn create(
         &body.modifiers,
     )?;
     let mut tx = locked(&s, &a).await?;
-    crate::partner_support::verify_owner_in_tx(&mut tx, &a, &h).await?;
+    if is_owner {
+        crate::partner_support::verify_owner_in_tx(&mut tx, &a, &h).await?;
+    }
     if let Some((id, existing)) = sqlx::query_as::<_, (Uuid, String)>(
         "SELECT id,system||':'||code FROM practice_codes WHERE tenant_id=$1 AND request_id=$2",
     )
@@ -427,7 +449,8 @@ async fn update(
     h: HeaderMap,
     Json(body): Json<CodeUpdate>,
 ) -> Result<Response> {
-    let a = owner(&s, &h, true).await?;
+    let a = price_editor(&s, &h).await?;
+    let is_owner = matches!(a.role, Role::Owner);
     let expected = version(&h)?;
     let display = body.display.trim().to_owned();
     let mods = fields(
@@ -437,7 +460,9 @@ async fn update(
         &body.modifiers,
     )?;
     let mut tx = locked(&s, &a).await?;
-    crate::partner_support::verify_owner_in_tx(&mut tx, &a, &h).await?;
+    if is_owner {
+        crate::partner_support::verify_owner_in_tx(&mut tx, &a, &h).await?;
+    }
     let current: Option<i64> = sqlx::query_scalar(
         "SELECT version FROM practice_codes WHERE tenant_id=$1 AND id=$2 FOR UPDATE",
     )
@@ -448,6 +473,23 @@ async fn update(
     let current = current.ok_or(Error::NotFound)?;
     if current != expected {
         return Err(Error::Conflict("code changed; reload before saving"));
+    }
+    if !is_owner {
+        // Staff change the price only; everything else about the code must be sent back unchanged.
+        let kept: (String, bool, i32, String) = sqlx::query_as(
+            "SELECT display,enabled,default_units,modifiers FROM practice_codes WHERE tenant_id=$1 AND id=$2",
+        )
+        .bind(a.tenant_id)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if kept.0 != display
+            || kept.1 != body.enabled
+            || kept.2 != body.default_units
+            || kept.3 != mods
+        {
+            return Err(Error::Forbidden);
+        }
     }
     sqlx::query("UPDATE practice_codes SET display=$3,enabled=$4,price_cents=$5,default_units=$6,modifiers=$7,version=version+1,updated_by=$8,updated_at=now() WHERE tenant_id=$1 AND id=$2")
         .bind(a.tenant_id)

@@ -98,7 +98,7 @@ async function priceMemoryCheck(row){
  if(price!=null){node.textContent=now.unit===price?`Practice price ${money(price)}${units>1?` × ${units}`:''}.`:`Changed for this encounter. The practice price is ${money(price)}${units>1?' per unit':''}.`;return;}
  if(!typed){node.textContent=`No practice price for ${facts.code} yet. Type the amount: keep it for this encounter only, or save it as the practice price.`;return;}
  node.replaceChildren('One-time amount for this encounter. ');
- if(me?.role!=='owner'||now.unit==null)return;
+ if(!(typeof billingCan==='function'?billingCan('edit'):me?.role==='owner')||now.unit==null)return;
  const button=document.createElement('button');button.type='button';button.className='text-button';button.dataset.priceMemorySave='';
  button.textContent=`Save ${money(now.unit)} as the practice price for ${facts.code}`;
  node.append(button);node.priceMemory={facts:now,known};

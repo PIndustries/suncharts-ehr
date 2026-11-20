@@ -460,7 +460,7 @@ async fn owner_creates_updates_and_replays_codes_with_validation_and_conflicts()
     cleanup(f).await;
 }
 #[tokio::test]
-async fn writes_are_owner_only_and_billing_staff_read_the_list() {
+async fn charge_staff_add_codes_and_prices_and_the_rest_is_owner_only() {
     let f = setup().await;
     let (status, item) = create(
         &f.app,
@@ -473,21 +473,58 @@ async fn writes_are_owner_only_and_billing_staff_read_the_list() {
     let (_, clinician_cookie) = user(&f, "clinician").await;
     let (_, front_cookie) = user(&f, "front_desk").await;
     let (_, reader_cookie) = user(&f, "read_only").await;
-    // Staff may not write, whatever their native role.
+    // Staff who enter charges may add a code and set a price, and nothing else. Read-only staff
+    // may not write at all.
+    assert_eq!(
+        call(
+            &f.app,
+            &reader_cookie,
+            "POST",
+            "/api/v1/practice/codes",
+            code_body("CPT", "99215", "Nope"),
+            None
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, added) = call(
+        &f.app,
+        &clinician_cookie,
+        "POST",
+        "/api/v1/practice/codes",
+        code_body("CPT", "99215", "Office visit, established, high"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{added}");
+    let added_id = added["id"].as_str().unwrap().to_owned();
+    let (status, priced) = call(
+        &f.app,
+        &front_cookie,
+        "PUT",
+        &format!("/api/v1/practice/codes/{added_id}"),
+        json!({"display":added["display"],"enabled":true,"price_cents":21000,"default_units":added["default_units"],"modifiers":added["modifiers"]}),
+        Some(added["version"].as_i64().unwrap()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{priced}");
+    assert_eq!(priced["price_cents"], 21000);
+    // Turning a code off stays with the owner.
+    assert_eq!(
+        call(
+            &f.app,
+            &front_cookie,
+            "PUT",
+            &format!("/api/v1/practice/codes/{added_id}"),
+            json!({"display":added["display"],"enabled":false,"price_cents":21000,"default_units":added["default_units"],"modifiers":added["modifiers"]}),
+            Some(priced["version"].as_i64().unwrap()),
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
     for cookie in [&clinician_cookie, &front_cookie, &reader_cookie] {
-        assert_eq!(
-            call(
-                &f.app,
-                cookie,
-                "POST",
-                "/api/v1/practice/codes",
-                code_body("CPT", "99214", "Nope"),
-                None
-            )
-            .await
-            .0,
-            StatusCode::FORBIDDEN
-        );
         assert_eq!(
             call(
                 &f.app,
