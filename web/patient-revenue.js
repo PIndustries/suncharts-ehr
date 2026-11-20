@@ -82,6 +82,97 @@ function paymentGroupReceiptFacts(receipts,context){
 function paymentGroupTenderRows(facts){
  return facts.lines.map(line=>`<div><dt>${esc(line.label)}</dt><dd>${money(line.amount)}</dd></div>`).join('');
 }
+// The visit's clinical and charge evidence, read from the endpoints the encounter's Billing tab
+// already uses: the visit's own diagnoses, and the charge lines inside the patient's billing
+// accounts. A read that fails is held silently; the receipt says plainly that the section could
+// not be loaded rather than showing an empty table as if the visit had nothing.
+let visitReceiptEvidence={key:'',diagnoses:null,lines:null,account:null,failed:false};
+function visitReceiptCacheKey(visitId){return `${typeof selected!=='undefined'?selected:''}|${typeof me!=='undefined'&&me?me.user_id||String(me):''}|${visitId||''}`;}
+async function loadVisitReceiptEvidence(visitId){
+ const key=visitReceiptCacheKey(visitId);
+ if(visitReceiptEvidence.key===key&&!visitReceiptEvidence.failed)return visitReceiptEvidence;
+ const next={key,diagnoses:null,lines:null,account:null,failed:false};
+ visitReceiptEvidence=next;
+ if(!visitId){next.failed=true;return next;}
+ const account=(typeof workspace!=='undefined'?workspace?.billing?.accounts:null||[]).find(a=>a.status!=='void'&&a.content?.visit_id===visitId)||null;
+ try{
+  const [diagnosisData]=await Promise.all([api(`/api/v1/visits/${encodeURIComponent(visitId)}/diagnoses`)]);
+  next.diagnoses=Array.isArray(diagnosisData?.diagnoses)?diagnosisData.diagnoses:[];
+  next.account=account;
+  next.lines=account&&Array.isArray(account.content?.lines)?account.content.lines:[];
+ }catch{next.failed=true;}
+ if(visitReceiptEvidence!==next)return visitReceiptEvidence;
+ return next;
+}
+function visitReceiptServiceDate(visit,account){
+ const day=account?.content?.service_date||(typeof encounterDateLabel==='function'&&visit?encounterDateLabel(visit):'');
+ return day||'Date not recorded';
+}
+// A member or policy number is never printed in full; the last four characters only, when known.
+function visitReceiptLast4(value){const text=String(value||'').replace(/\s+/g,'');return text.length>=4?text.slice(-4):'';}
+// One row per charge line: service date, CPT/HCPCS code, modifiers, what was done, units and the
+// charge. The total the lines add to closes the section, so the receipt reads like the claim's
+// service lines a patient may see from an insurer.
+function visitReceiptProcedureRows(lines,serviceDate){
+ return (lines||[]).map(l=>`<tr><td>${esc(l.service_date||serviceDate)}</td><td><b>${esc(l.code_system||'CPT')} ${esc(l.code)}</b><small>${esc(l.description||'Description not recorded')}</small></td><td>${esc(String(l.modifiers||'').trim()||'—')}</td><td class="amount">${esc(l.units==null?'—':l.units)}</td><td class="amount">${money(Number(l.amount_cents||0))}</td></tr>`).join('');
+}
+// Diagnoses, then procedures, then insurance / payments / balance. Everything is optional: a
+// receipt with no evidence loaded still prints what it knows and says what it does not.
+function visitReceiptMrnFrom(context){const p=context?.patient;return p&&typeof p==='object'?String(p.mrn||''):'';}
+function visitReceiptNameFrom(context,patient){const p=patient||context?.patient;return p&&typeof p==='object'&&p.given_name?`${p.given_name} ${p.family_name||''}`.trim():'Patient';}
+// One visit's whole story in print order: header facts, diagnoses, procedures and charges, then
+// insurance. Payments, balance and the total the receipt answers for are added by each document.
+function visitReceiptBodyMarkup(context,visit,evidence,serviceDate){
+ const number=typeof encounterNumberText==='function'&&visit?encounterNumberText(visit):(typeof encounterNumberForAppointment==='function'&&visit?.appointment_id?encounterNumberForAppointment(visit.appointment_id):'');
+ const provider=(typeof workspace!=='undefined'&&workspace?.providers?workspace.providers:[]).find(p=>p.id===visit?.clinician_id)||null;
+ const name=visitReceiptNameFrom(context,context?.patient),mrn=visitReceiptMrnFrom(context);
+ const meta=`<section class="document-meta"><div><span class="document-label">Patient</span><p class="patient-print-name">${esc(name)}</p>${mrn?`<small>MRN ${esc(mrn)}</small>`:''}</div><div class="document-reference"><span class="document-label">Visit</span><small>${number?esc(number)+'<br>':''}Date of service ${esc(serviceDate)}${provider?.name?`<br>Rendering provider ${esc(provider.name)}`:''}</small></div></section>`;
+ const procedures=`<h2>Procedures and charges</h2>${evidence&&evidence.failed?'<p>Charge lines could not be loaded for this encounter. Ask the practice for an updated copy.</p>':!evidence||!(evidence.lines||[]).length?'<p class="muted">No charges posted yet.</p>':`<table><thead><tr><th>Date of service</th><th>Code / description</th><th>Modifiers</th><th class="amount">Units</th><th class="amount">Charge</th></tr></thead><tbody>${visitReceiptProcedureRows(evidence.lines,serviceDate)}</tbody></table><dl><dt class="total-label">Total charges</dt><dd class="total-value">${money((evidence.lines||[]).reduce((sum,l)=>sum+Number(l.amount_cents||0),0))}</dd></dl>`}`;
+ return `${meta}${visitReceiptDiagnosesSection(evidence)}${procedures}${visitReceiptInsuranceSection(evidence)}`;
+}
+function visitReceiptDiagnosesSection(evidence){
+ if(evidence&&evidence.failed)return '';
+ if(!evidence)return '<h2>Diagnoses</h2><p class="muted">Diagnoses are not shown on this copy.</p>';
+ const list=(evidence.diagnoses||[]).filter(d=>d&&String(d.code||'').trim());
+ return `<h2>Diagnoses</h2>${list.length?`<table><thead><tr><th>Order</th><th>ICD-10 code</th><th>Description</th></tr></thead><tbody>${list.map((d,index)=>`<tr><td>${index===0?'Primary':`#${index+1}`}</td><td><b>${esc(String(d.code).trim())}</b></td><td>${esc(d.display||'Description not recorded')}</td></tr>`).join('')}</tbody></table>`:'<p class="muted">No diagnoses recorded for this encounter.</p>'}`;
+}
+// Insurance side: plan name, whether the claim was billed, and what the insurer paid or wrote off
+// when the encounter's billing summary already says so. Member IDs stay off the print entirely.
+function visitReceiptInsuranceSection(evidence){
+ const summary=typeof encounterRevenueState!=='undefined'&&encounterRevenueState?.data?.summary&&encounterRevenueState.visit===evidence?.account?.content?.visit_id?encounterRevenueState.data.summary:null;
+ const account=evidence?.account,insured=Boolean(account?.coverage_snapshot||account?.content?.coverage_id||summary?.insurance?.insured);
+ if(!insured)return '';
+ const plan=account?.coverage_snapshot?.payer?.content?.name||summary?.insurance?.insurer||'';
+ const rows=[`<dt>Insurance</dt><dd>${plan?esc(plan):'Plan on file (name not recorded)'}</dd>`];
+ if(account?.coverage_snapshot)rows.push('<dt>Claim</dt><dd>Billed to insurance</dd>');
+ if(Number(summary?.insurance?.paid_cents||0)>0)rows.push(`<dt>Insurance paid</dt><dd>${money(Number(summary.insurance.paid_cents))}</dd>`);
+ if(Number(summary?.insurance?.adjusted_cents||0)!==0)rows.push(`<dt>Insurance adjustments</dt><dd>${money(Math.abs(Number(summary.insurance.adjusted_cents)))}</dd>`);
+ return `<h2>Insurance</h2><dl>${rows.join('')}</dl>`;
+}
+function visitReceiptMrn(){const p=typeof workspace!=='undefined'?workspace?.patient:null;return p&&typeof p==='object'?p.mrn:'';}
+function visitReceiptPatientName(){const p=typeof workspace!=='undefined'?workspace?.patient:null;return p&&typeof p==='object'&&p.given_name?`${p.given_name} ${p.family_name||''}`.trim():'';}
+function contextPatientName(){return visitReceiptPatientName()||'Patient';}
+// Every payment recorded for this encounter: earlier payments as one line each, and the payment
+// being receipted now as its own line. The encounter's billing summary (when it answers for this
+// encounter) closes the section with the patient's current balance.
+function visitReceiptPaymentsSection(receipts,currentKeys,summary,forEncounter){
+ const others=(summary?.receipts||[]).filter(r=>!r.voided&&!currentKeys.has(r.payment_group_id||r.id));
+ const currentTotal=(receipts||[]).filter(r=>!r.voided).reduce((sum,r)=>sum+Number(r.amount_cents||0)-Number(r.hosted_checkout?.refunded_cents||r.refunded_cents||0),0);
+ const rows=others.map(r=>`<div><dt>${typeof visitBillingDate==='function'?esc(visitBillingDate(r.occurred_on))||esc(r.occurred_on||''):esc(r.occurred_on||'')} · ${esc(typeof visitBillingMethod==='function'?human(visitBillingMethod(r.method)||r.method):human(r.method||'payment'))}</dt><dd>${money(Number(r.amount_cents||0)-Number(r.refunded_cents||0))}</dd></div>`).join('');
+ const current=currentTotal>0?`<div><dt>This payment</dt><dd>${money(currentTotal)}</dd></div>`:'';
+ const owes=summary&&forEncounter&&Number.isSafeInteger(Number(summary.patient?.owes_now_cents))?Number(summary.patient.owes_now_cents):null;
+ return `<h2>Payments on this encounter</h2><dl>${rows}${current}${owes===null?'':`<dt class="total-label">Patient balance for this encounter</dt><dd class="total-value">${money(Math.max(0,owes))}</dd>`}</dl>`;
+}
+function visitReceiptSummaryFor(visitId){
+ if(typeof encounterRevenueState==='undefined'||!encounterRevenueState?.data?.summary)return null;
+ return encounterRevenueState.visit===visitId&&encounterRevenueState.patient===selected?encounterRevenueState.data.summary:null;
+}
+// The encounter this receipt answers for, from the opened chart: the visit linked to the
+// payment's appointment. Nothing is searched for across patients or sign-ins.
+function visitReceiptEncounter(patientId,appointmentId){
+ if(typeof workspace==='undefined'||!workspace||workspace.patient_id!==patientId)return null;
+ return (workspace.visits||[]).find(v=>v.appointment_id===appointmentId)||null;
+}
 function paymentGroupReceiptDocument(receipts,context){
  const facts=paymentGroupReceiptFacts(receipts,context),patient=context.patient,branding=patientPrintBranding(context.practiceName),title='Payment receipt';
  return `${patientPrintHead(title,branding)}<body class="patient-receipt">${patientPrintHeader(title,branding)}<section class="document-meta"><div><span class="document-label">Received from</span><p class="patient-print-name">${esc(patient.given_name)} ${esc(patient.family_name)}</p>${patient.mrn?`<small>MRN ${esc(patient.mrn)}</small>`:''}</div><div class="document-reference"><span class="document-label">Receipt details</span><small>${facts.number?esc(facts.number)+'<br>':''}Payment received ${esc(facts.when)}</small></div></section><section class="document-total"><span>Total paid</span><strong>${money(facts.total)}</strong></section><h2>How it was paid</h2><dl>${paymentGroupTenderRows(facts)}<dt>Total paid</dt><dd>${money(facts.total)}</dd>${Number.isSafeInteger(facts.balance)?`<dt>Patient balance after this payment</dt><dd>${money(Math.max(0,facts.balance))}</dd>`:''}</dl><footer><p>This is a copy of the practice’s recorded payment receipt. It is not an invoice and does not determine final insurance or patient responsibility.</p><small>Copy prepared ${esc(date(context.printedAt||new Date().toISOString()))}.</small>${patientPrintFooter()}</footer></body></html>`;
