@@ -1089,7 +1089,6 @@ async function encounterCodesEditorSave(){
  const diagnosesForm=()=>$('visit-diagnoses-form'),diagnosesDirty=()=>!!diagnosesForm()?.querySelector?.('[data-diagnosis-discard],[data-action="discard-diagnosis-draft"]')||/have not saved yet/.test(diagnosesForm()?.textContent||'');
  const chargeForm=()=>$('billing-account-form');
  const waiting=()=>{const form=chargeForm();return form&&typeof chargeTableWaiting==='function'?chargeTableWaiting(form):'';};
- const blocked=waiting();if(blocked){say(blocked);return;}
  say('Saving…');
  if(diagnosesDirty())diagnosesForm()?.requestSubmit?.();
  const form=chargeForm();
@@ -1101,7 +1100,11 @@ async function encounterCodesEditorSave(){
   await new Promise(resolve=>setTimeout(resolve,150));
   const now=chargeForm(),failed=now?.querySelector?.('[data-charge-status] [data-retry-charge-save]');
   if(failed){say('The procedures could not be saved. The reason is shown under the table.');return;}
-  if(!now?.dataset.chargeSaving&&!diagnosesDirty()){say('Saved.');encounterCodesEditorClose();return;}
+  if(!now?.dataset.chargeSaving&&!diagnosesDirty()){
+   // Everything complete is saved. A line still missing something would be lost on closing, so say so and stay.
+   const held=waiting();if(held){say(`Everything else is saved. ${held} Finish it or remove it to close.`);return;}
+   say('Saved.');encounterCodesEditorClose();return;
+  }
  }
  say(diagnosesDirty()?'The diagnoses are not saved yet. Check the list above, then try again.':'Still saving. Try again in a moment.');
 }

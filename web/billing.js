@@ -842,9 +842,11 @@ function chargeRowUnsavable(row){
  if(!code&&!description&&amount==null)return '';
  return !code?'add the procedure code':!description?'add what this service was':amount==null?'add the amount':'';
 }
+// The lines that are complete enough to keep are saved straight away; a line still missing
+// something waits on the screen and says what it needs, without holding the others back.
+function chargeRowsToSend(form){return chargeLiveRows(form).filter(row=>(row.querySelector('[name="code"]')?.value||'').trim()&&!chargeRowUnsavable(row));}
 function chargeTableWaiting(form){
- for(const row of chargeLiveRows(form)){const missing=chargeRowUnsavable(row);if(missing)return `Not saved yet. Line ${chargeRowLabel(row)}: ${missing}.`;}
- return '';
+ return chargeLiveRows(form).map(row=>({row,missing:chargeRowUnsavable(row)})).filter(item=>item.missing).map(item=>`Line ${chargeRowLabel(item.row)} is not saved yet: ${item.missing}.`).join(' ');
 }
 function chargeRowLabel(row){const code=(row.querySelector('[name="code"]')?.value||'').trim();return code||'without a code';}
 // One quiet line beside the table: saving, saved, or what went wrong with one way to retry.
@@ -872,8 +874,10 @@ function scheduleChargeAutosave(form,delay=700){
  if(!form?.isConnected||form.dataset.patient!==selected||!chargeLineCount(form))return;
  if(form.dataset.chargeSaving||form.dataset.chargeConflict||form.dataset.draftReadOnly||form.dataset.draftStale)return;
  const identity=me,patient=selected,editing=!!form.dataset.id;
- const waiting=chargeTableWaiting(form);if(waiting){renderChargeRowProblems(form);setChargeStatus(form,'waiting',waiting);return;}
+ const sending=chargeRowsToSend(form),held=chargeTableWaiting(form);
+ if(!sending.length){renderChargeRowProblems(form);if(held)setChargeStatus(form,'waiting',held);return;}
  const version=Number(form.dataset.version),body=chargeDraftBody(form);
+ body.content.lines=sending.map(chargeRowValue);
  form.dataset.chargeSaving='true';delete form.dataset.chargeSavedAt;
  renderChargeRowProblems(form);setChargeStatus(form,'saving');
  let saved;
@@ -898,13 +902,16 @@ function scheduleChargeAutosave(form,delay=700){
  const signature=chargeTableSignature(saved.content);
  if(html!==null)billingChargeBaselines.set(form,signature);
  const lines=Array.isArray(saved.content?.lines)?saved.content.lines:[];
- const rows=chargeLiveRows(form);
+ // Only the rows that were sent are matched against what came back; a row still waiting stays as typed.
+ const rows=sending.filter(row=>row.isConnected!==false&&!chargeRowRemoved(row));
  if(lines.length===rows.length)lines.forEach((line,index)=>{if(chargeRowSignature(rows[index])!==chargeLineSignature(line))renderChargeRowReplacement(form,rows[index],line);});
- else renderChargeTableRows(form,lines.length?lines:body.content.lines);
+ else if(!held&&lines.length)renderChargeTableRows(form,lines);
  chargeTableTotals(form);
  renderChargeRowProblems(form);
- setChargeStatus(form,'saved');
- clearTimeout(form.chargeSavedTimer);form.chargeSavedTimer=setTimeout(()=>setChargeStatus(form,'quiet'),4000);
+ const stillHeld=chargeTableWaiting(form);
+ clearTimeout(form.chargeSavedTimer);
+ if(stillHeld)setChargeStatus(form,'waiting',`Saved. ${stillHeld}`);
+ else{setChargeStatus(form,'saved');form.chargeSavedTimer=setTimeout(()=>setChargeStatus(form,'quiet'),4000);}
  closeChargeRemovals();
  if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();
  chargeSavedFollowUp(form,saved,identity,patient);
@@ -914,8 +921,10 @@ async function saveChargeTable(form){
  if(form.dataset.chargeSaving||form.dataset.chargeConflict||form.dataset.draftReadOnly||form.dataset.draftStale)return;
  if(form.dataset.mode==='correction')return correctChargeTable(form);
  const identity=me,patient=selected,editing=!!form.dataset.id;
- const waiting=chargeTableWaiting(form);if(waiting){renderChargeRowProblems(form);setChargeStatus(form,'waiting',waiting);return;}
+ const sending=chargeRowsToSend(form),held=chargeTableWaiting(form);
+ if(!sending.length){renderChargeRowProblems(form);if(held)setChargeStatus(form,'waiting',held);return;}
  const version=Number(form.dataset.version),body=chargeDraftBody(form);
+ body.content.lines=sending.map(chargeRowValue);
  form.dataset.chargeSaving='true';delete form.dataset.chargeSavedAt;
  renderChargeRowProblems(form);setChargeStatus(form,'saving');
  let saved;
@@ -944,13 +953,16 @@ async function saveChargeTable(form){
  // resolved against a code list. Only a row that differs from what was sent is re-rendered,
  // so a cell staff are still typing in is never replaced under them.
  const lines=Array.isArray(saved.content?.lines)?saved.content.lines:[];
- const rows=chargeLiveRows(form);
+ // Only the rows that were sent are matched against what came back; a row still waiting stays as typed.
+ const rows=sending.filter(row=>row.isConnected!==false&&!chargeRowRemoved(row));
  if(lines.length===rows.length)lines.forEach((line,index)=>{if(chargeRowSignature(rows[index])!==chargeLineSignature(line))renderChargeRowReplacement(form,rows[index],line);});
- else renderChargeTableRows(form,lines.length?lines:body.content.lines);
+ else if(!held&&lines.length)renderChargeTableRows(form,lines);
  chargeTableTotals(form);
  renderChargeRowProblems(form);
- setChargeStatus(form,'saved');
- clearTimeout(form.chargeSavedTimer);form.chargeSavedTimer=setTimeout(()=>setChargeStatus(form,'quiet'),4000);
+ const stillHeld=chargeTableWaiting(form);
+ clearTimeout(form.chargeSavedTimer);
+ if(stillHeld)setChargeStatus(form,'waiting',`Saved. ${stillHeld}`);
+ else{setChargeStatus(form,'saved');form.chargeSavedTimer=setTimeout(()=>setChargeStatus(form,'quiet'),4000);}
  closeChargeRemovals();
  if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();
  chargeSavedFollowUp(form,saved,identity,patient);
