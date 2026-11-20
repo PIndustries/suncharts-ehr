@@ -333,7 +333,7 @@ const advance=async()=>{
  // Totals live, and kept to one place under the lines: what the lines come to, and the copay line.
  assert.ok(!second.querySelector('[data-charge-line-total]'),'a line carries no total of its own');
  assert.ok(!openForm().outerHTML.includes('Line total'),'the row holds no total column to make it wide');
- assert.equal(form.querySelector('[data-charge-total]').textContent,'$168.00','the total moves as lines move');
+ assert.equal(form.querySelector('[data-charge-total]').textContent,'$159.00','the total moves as lines move, and is what the claim carries: a line amount is its total, whatever the units');
  assert.match(form.querySelector('[data-charge-pays]').textContent,/Patient pays now \$25\.00/,'the copay is shown as what the patient pays now');
  // Row problems in plain words: an incomplete row says what is missing, nothing more.
  const problemLine=rowsNow()[1];

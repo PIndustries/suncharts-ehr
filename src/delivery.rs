@@ -281,6 +281,12 @@ async fn queue(
     let out = clearinghouse::submission(&mut tx, &a, id).await?;
     let c = claims::claim_row(&mut tx, &a, out.claim_id).await?;
     crate::claim_cob::require_outbound(&c)?;
+    // The encounter form marked this claim to be printed, not sent electronically.
+    if c.content["encounter"]["paper_only"] == true {
+        return Err(Error::Conflict(
+            "This claim is marked to be printed, not sent electronically. Print it, or clear Do not send electronically on the encounter.",
+        ));
+    }
     if out.version != version
         || out.status != "prepared"
         || c.status != "ready"

@@ -553,12 +553,41 @@ pub(crate) fn generate(
         "Y",
         "Y",
     ]));
+    // Claim details from the encounter form, each only when filled in, in the guide's order:
+    // dates (onset, admission, discharge), then prior authorization, then the payer's control
+    // number, then the box 19 note. A claim without them writes exactly what it always did.
+    let enc = &content.encounter;
+    let d8 = |date: &NaiveDate| date.format("%Y%m%d").to_string();
+    if let Some(onset) = &enc.current_illness_date {
+        st.push(seg(&["DTP", "431", "D8", &d8(onset)]));
+    }
+    if let Some(admitted) = &enc.hospitalization_from {
+        st.push(seg(&["DTP", "435", "D8", &d8(admitted)]));
+    }
+    if let Some(discharged) = &enc.hospitalization_to {
+        st.push(seg(&["DTP", "096", "D8", &d8(discharged)]));
+    }
+    if !enc.prior_authorization_number.is_empty() {
+        st.push(seg(&[
+            "REF",
+            "G1",
+            &element(
+                &enc.prior_authorization_number,
+                1,
+                50,
+                "prior_authorization",
+            )?,
+        ]));
+    }
     if frequency != "1" {
         st.push(seg(&[
             "REF",
             "F8",
             &element(parent_control.unwrap_or(""), 1, 50, "parent_control")?,
         ]));
+    }
+    if !enc.additional_claim_info.is_empty() {
+        st.push(seg(&["NTE", "ADD", &enc.additional_claim_info]));
     }
     let mut diagnoses = vec!["HI".to_string()];
     for (i, dx) in content.diagnosis_codes.iter().enumerate() {
@@ -569,6 +598,10 @@ pub(crate) fn generate(
         diagnoses.push(format!("{}:{code}", if i == 0 { "ABK" } else { "ABF" }));
     }
     st.push(format!("{}~", diagnoses.join("*")));
+    if !enc.referring_npi.is_empty() {
+        let (last, first) = crate::encounter_claim::name_parts(&enc.referring_provider_name);
+        nm(&mut st, "DN", "1", &last, &first, "XX", &enc.referring_npi)?;
+    }
     nm(
         &mut st,
         "82",
@@ -578,6 +611,18 @@ pub(crate) fn generate(
         "XX",
         &content.rendering_npi,
     )?;
+    if !enc.supervising_npi.is_empty() {
+        let (last, first) = crate::encounter_claim::name_parts(&enc.supervising_provider_name);
+        nm(
+            &mut st,
+            "DQ",
+            "1",
+            &last,
+            &first,
+            "XX",
+            &enc.supervising_npi,
+        )?;
+    }
     if let Some(evidence) = &coordination {
         secondary_header(&mut st, evidence, account)?;
     }
@@ -633,12 +678,25 @@ pub(crate) fn generate(
             "",
             &pointers,
         ]));
-        st.push(seg(&[
-            "DTP",
-            "472",
-            "D8",
-            &service.format("%Y%m%d").to_string(),
-        ]));
+        // A line's own dates, or the encounter's through date, make the service a range.
+        let line_date = |key: &str| {
+            l[key]
+                .as_str()
+                .and_then(|v| NaiveDate::parse_from_str(v, "%Y-%m-%d").ok())
+        };
+        let from = line_date("service_from").unwrap_or(service);
+        let through = line_date("service_to")
+            .or(enc.through_date)
+            .filter(|through| *through > from);
+        match through {
+            Some(through) => st.push(seg(&[
+                "DTP",
+                "472",
+                "RD8",
+                &format!("{}-{}", d8(&from), d8(&through)),
+            ])),
+            None => st.push(seg(&["DTP", "472", "D8", &d8(&from)])),
+        }
         st.push(seg(&["REF", "6R", &(i + 1).to_string()]));
         // Loop 2410: a charge carrying an injected drug's NDC identifies the
         // drug on its own service line. Lines without an NDC write nothing.
@@ -1186,6 +1244,79 @@ mod tests {
             count(&g.payload),
             count(&without) + 2,
             "SE must count the two drug segments"
+        );
+    }
+    #[test]
+    fn encounter_form_details_write_their_segments_in_guide_order() {
+        let partner = partner();
+        let details = details();
+        let now = "2026-10-23T12:34:00Z".parse().unwrap();
+        let plain = generate(&claim(), &partner, &details, None, 42, now)
+            .unwrap()
+            .payload;
+        let mut c = claim();
+        let service = c.snapshot["account"]["content"]["service_date"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let service: NaiveDate = service.parse().unwrap();
+        let through = service + chrono::Duration::days(2);
+        c.content["encounter"] = json!({
+            "prior_authorization_number":"PA-SYN-1","current_illness_date":"2026-09-01",
+            "hospitalization_from":"2026-09-02","hospitalization_to":"2026-09-04",
+            "additional_claim_info":"Synthetic box 19","through_date":through.to_string(),
+            "referring_provider_name":"Referrer, Synthetic","referring_npi":"1234567893",
+            "supervising_provider_name":"Synthetic Supervisor","supervising_npi":"1234567893"
+        });
+        let g = generate(&c, &partner, &details, None, 42, now)
+            .unwrap()
+            .payload;
+        let segs: Vec<&str> = g.split('~').filter(|s| !s.is_empty()).collect();
+        let at = |p: &str| {
+            segs.iter()
+                .position(|s| s.starts_with(p))
+                .unwrap_or_else(|| panic!("{p} missing"))
+        };
+        let clm = at("CLM*");
+        assert!(clm < at("DTP*431*D8*20260901") && at("DTP*431") < at("DTP*435*D8*20260902"));
+        assert!(at("DTP*435") < at("DTP*096*D8*20260904") && at("DTP*096") < at("REF*G1*PA-SYN-1"));
+        assert!(at("REF*G1") < at("NTE*ADD*Synthetic box 19") && at("NTE*ADD") < at("HI*"));
+        assert!(
+            at("HI*") < at("NM1*DN*1*REFERRER*SYNTHETIC****XX*1234567893")
+                && at("NM1*DN") < at("NM1*82*")
+        );
+        assert!(
+            at("NM1*82*") < at("NM1*DQ*1*SUPERVISOR*SYNTHETIC****XX*1234567893")
+                && at("NM1*DQ") < at("LX*1")
+        );
+        assert!(segs.contains(
+            &format!(
+                "DTP*472*RD8*{}-{}",
+                service.format("%Y%m%d"),
+                through.format("%Y%m%d")
+            )
+            .as_str()
+        ));
+        // Seven more segments (three dates, REF*G1, NTE, NM1*DN, NM1*DQ); the line date becomes a range in place.
+        let se = |p: &str| {
+            p.split('~')
+                .find(|s| s.starts_with("SE*"))
+                .unwrap()
+                .split('*')
+                .nth(1)
+                .unwrap()
+                .parse::<usize>()
+                .unwrap()
+        };
+        assert_eq!(se(&g), se(&plain) + 7);
+        // An empty encounter object changes nothing on the wire.
+        let mut empty = claim();
+        empty.content["encounter"] = json!({});
+        assert_eq!(
+            generate(&empty, &partner, &details, None, 42, now)
+                .unwrap()
+                .payload,
+            plain
         );
     }
     #[test]

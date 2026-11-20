@@ -19,7 +19,7 @@ vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/billing.js','utf8'),c
  ctx.openedForm={dataset:{},elements:{visit_id:{value:'visit-a'},service_date:{value:'2026-11-13'},coverage_id:{value:'cov-p'}},querySelector:()=>null,querySelectorAll:()=>[{dataset:{diagnosesDefault:'pending'},querySelector:selector=>selector==='[name="diagnoses"]'?diagnosisField:diagnosisHost}]};
  ctx.api=async()=>({version:3,diagnoses:[{code:'G24.3',display:'Synthetic diagnosis A'}]});
  ctx.accountEditor(null,null,true);
- const html=nodes['billing-editor'].innerHTML,details=html.slice(html.indexOf('<details data-visit-charge-options>')),feeHtml=details.slice(details.indexOf('data-fee-context'),details.indexOf('name="notes"'));
+ const html=nodes['billing-editor'].innerHTML,details=html.slice(html.indexOf('data-visit-charge-options')),feeHtml=details.slice(details.indexOf('data-fee-context'),details.indexOf('name="notes"'));
  await new Promise(setImmediate);
  assert.match(html,/<h3>Charges for this encounter<\/h3>/);assert.doesNotMatch(html,/Record encounter procedures/);
  assert.doesNotMatch(html,/>Save charges<|Save draft account/,'the charge table saves itself; nothing is pressed');

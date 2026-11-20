@@ -339,7 +339,7 @@ const settle=async()=>{for(let step=0;step<40;step++)await new Promise(resolve=>
  const editor=nodes['encounter-billing-editor'].innerHTML;
  assert.ok(editor.indexOf('id="billing-charge-lines"')<editor.indexOf('data-charge-next'),'the next step sits under the charge lines');
  assert.ok(editor.indexOf('data-add-charge')<editor.indexOf('data-charge-next'),'and under the add-a-line button that belongs to the table');
- assert.ok(editor.indexOf('data-charge-next')<editor.indexOf('<details data-visit-charge-options'),'ahead of the encounter and fee options');
+ assert.ok(editor.indexOf('data-charge-next')<editor.indexOf('<details class="charge-more-options"'),'ahead of the fee and notes options');
  // Pressing it opens the encounter note, through the hook the card's button uses. The step was opened
  // by pressing something first, and opening a step is the page's own business, so the record of
  // what the footer pressed is taken from here on, not from the trip to the charge table.

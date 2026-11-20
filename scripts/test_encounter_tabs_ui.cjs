@@ -33,5 +33,7 @@ nodes['encounter-claims']=el();ctx.encounterRevenueState={data:{summary:{insuran
 const css=fs.readFileSync(path.join(__dirname,'..','web','visit-billing.css'),'utf8');
 assert.match(css,/#visit-page-host\[data-encounter-tab\]:not\(\[data-encounter-tab="note"\]\)>#visit-editor\{display:none\}/);
 assert.match(css,/#visit-page-host\[data-encounter-tab\]:not\(\[data-encounter-tab="checkout"\]\)>#visit-checkout\{display:none\}/);
-assert.match(css,/:not\(\[data-invoice-tab="payments"\]\) #encounter-revenue-status :is\(\.visit-billing-breakdown,\.visit-billing-more\)\{display:none\}/);
+assert.match(css,/:not\(\[data-invoice-tab="payments"\]\):not\(\[data-invoice-tab="billing"\]\) #encounter-revenue-status \.visit-billing-breakdown\{display:none\}/,'what is owed shows on Billing and Payments');
+// Billing reads top to bottom like one encounter form: the next step and the claim come last.
+assert.match(css,/#encounter-revenue\[data-invoice-tab="billing"\]>#encounter-revenue-status\{order:4/);assert.match(css,/#encounter-revenue\[data-invoice-tab="billing"\]>#encounter-claims\{order:5\}/);
 console.log('PASS encounter tabs: note while writing, billing tab remembered, whole page follows the tab');

@@ -161,6 +161,11 @@ pub struct ChargeLine {
     pub ndc_quantity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ndc_unit: Option<String>,
+    /// A line's own dates of service, when they differ from the encounter's (box 24A).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_from: Option<NaiveDate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_to: Option<NaiveDate>,
 }
 impl ChargeLine {
     /// Validates this line's drug fields, rejecting a partial or malformed set,
@@ -254,6 +259,9 @@ pub struct AccountContent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fee_context: Option<crate::fees::FeeContext>,
     pub notes: String,
+    /// The claim details filled in on the encounter form beside the charges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_details: Option<crate::encounter_claim::EncounterClaimDetails>,
 }
 impl AccountContent {
     fn total(&self) -> Result<i64> {
@@ -267,8 +275,18 @@ impl AccountContent {
             ));
         }
         bounded(&self.notes, 2000)?;
+        if let Some(details) = &self.claim_details {
+            details.validate(Some(self.service_date))?;
+        }
         for l in &self.lines {
             validate_ndc(l)?;
+            if let (Some(from), Some(to)) = (l.service_from, l.service_to) {
+                if to < from {
+                    return Err(Error::Invalid(
+                        "A line's end date cannot be before its start date",
+                    ));
+                }
+            }
         }
         let mut total = 0i64;
         for l in &self.lines {
@@ -302,6 +320,12 @@ async fn resolve_charge_catalogs(
     a: &Actor,
     content: &mut AccountContent,
 ) -> Result<()> {
+    if let Some(details) = &mut content.claim_details {
+        details.normalize();
+        if details.is_empty() {
+            content.claim_details = None;
+        }
+    }
     for line in &mut content.lines {
         line.normalize_ndc()?;
         line.catalog_snapshot = None;
@@ -591,6 +615,7 @@ pub fn router() -> Router<State> {
         .merge(overview::router())
         .merge(payment_history::router())
         .route("/api/v1/billing/payers", get(payers).post(new_payer))
+        .route("/api/v1/billing/encounter-options", get(encounter_options))
         .route(
             "/api/v1/patients/{p}/billing/accounts/{id}/invoices",
             get(patient_invoices).post(new_patient_invoice),
@@ -650,6 +675,24 @@ pub fn router() -> Router<State> {
             "/api/v1/patients/{p}/history/{id}/billing-mapping",
             get(mapping),
         )
+}
+/// The practice's active providers (with NPIs) and facilities, for the pick lists on the
+/// encounter form. Names, NPIs and addresses only; anyone on staff can read them.
+async fn encounter_options(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json<Value>> {
+    a.staff()?;
+    let providers: Vec<Value> = sqlx::query_scalar(
+        "SELECT jsonb_build_object('id',id,'name',display_name,'npi',npi,'specialty',specialty) FROM practice_providers WHERE tenant_id=$1 AND active ORDER BY lower(display_name),id LIMIT 500",
+    )
+    .bind(a.tenant_id)
+    .fetch_all(db(&s)?)
+    .await?;
+    let facilities: Vec<Value> = sqlx::query_scalar(
+        "SELECT jsonb_build_object('id',id,'name',name,'address',address) FROM practice_facilities WHERE tenant_id=$1 AND active ORDER BY lower(name),id LIMIT 500",
+    )
+    .bind(a.tenant_id)
+    .fetch_all(db(&s)?)
+    .await?;
+    Ok(Json(json!({"providers":providers,"facilities":facilities})))
 }
 async fn payers(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json<Value>> {
     a.staff()?;
@@ -957,6 +1000,7 @@ async fn correct_account(
             lines: Vec::new(),
             fee_context: None,
             notes: String::new(),
+            claim_details: None,
         },
     );
     next.visit_id = content.visit_id;
@@ -1977,6 +2021,8 @@ mod tests {
             ndc_code: code.map(str::to_string),
             ndc_quantity: quantity.map(str::to_string),
             ndc_unit: unit.map(str::to_string),
+            service_from: None,
+            service_to: None,
         }
     }
     fn account(lines: Vec<ChargeLine>) -> AccountContent {
@@ -1988,6 +2034,7 @@ mod tests {
             lines,
             fee_context: None,
             notes: String::new(),
+            claim_details: None,
         }
     }
     const DRUG_ERROR: &str = "Enter the drug's 11-digit NDC code, the quantity given and its unit, or leave all three blank.";
