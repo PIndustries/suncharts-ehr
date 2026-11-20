@@ -981,7 +981,7 @@ function collectTakenCents(){return collectSession.taken.reduce((sum,part)=>sum+
 function collectLeftCents(){return collectSession.target==null?null:Math.max(0,collectSession.target-collectTakenCents());}
 function collectProgressMarkup(){
  const left=collectLeftCents(),taken=collectSession.taken;
- return `<div class="collect-target"><label>Amount to collect<input name="collect_target" inputmode="decimal" value="${collectSession.target==null?'':esc(dollars(collectSession.target))}" autocomplete="off" data-collect-target></label>${taken.length?`<ul class="collect-taken">${taken.map(part=>`<li>✓ ${money(part.amount)} ${esc(part.label)}</li>`).join('')}</ul>`:''}<p class="collect-left"><span>Left to pay</span><b>${left==null?'—':money(left)}</b></p></div>`;
+ return `<div class="collect-target"><label>Amount to collect<input name="collect_target" inputmode="decimal" value="${collectSession.target==null?'':esc(dollars(collectSession.target))}" autocomplete="off" data-collect-target></label>${taken.length?`<ul class="collect-taken">${taken.map(part=>`<li>✓ ${money(part.amount)} ${esc(part.label)}</li>`).join('')}</ul>`:''}<p class="collect-left"><span>Left to pay</span><b>${left==null?'—':money(Math.max(0,left))}</b></p></div>`;
 }
 function collectProgressPaint(){const node=collectDialog?.querySelector('[data-collect-progress]');if(node){node.innerHTML=collectProgressMarkup();if(typeof flashUpdated==='function')flashUpdated(node);}}
 // A part was taken: count it, and either ask for the rest or finish.
@@ -993,9 +993,18 @@ function collectPartTaken(amount,label,receipt,appointment,detail){
  const left=collectLeftCents(),slot=$('encounter-hosted-copay-reader');if(!slot)return;
  const receiptButton=receipt?.id&&collectSession.group?`<button type="button" data-collect-receipt="${esc(collectSession.group)}" data-appointment="${esc(appointment||'')}">Print receipt</button>`:'';
  if(left>0){slot.innerHTML=`<section class="collect-step-done" role="status"><p><b>✓ ${money(amount)} ${esc(label)} taken.</b> ${money(left)} left to pay. Choose how to take the rest above.</p></section>`;return;}
- slot.innerHTML=`<section class="collect-done" role="status"><div class="collect-done-mark" aria-hidden="true">✓</div><h3>${collectSession.taken.length>1?`${money(collectTakenCents())} paid in ${collectSession.taken.length} parts`:`${money(amount)} ${esc(label)} recorded`}</h3><p class="muted">The payment goes to this encounter's balance.</p><div class="actions">${receiptButton}<button type="button" class="primary" data-sheet-close>Done</button></div></section>`;
+ slot.innerHTML=collectDoneMarkup(amount,label,receiptButton);
 }
 function collectAppointmentId(){return $('encounter-hosted-copay')?.dataset.appointment||(typeof revenueAppointment==='function'?revenueAppointment()?.id:null)||null;}
+function collectDoneMarkup(amount,label,receiptButton,takenCents,owedCents,parts){
+ // What the extra does is what the server does with it: allocate_copays caps what a receipt
+ // applies at the posted balance, so anything beyond it stays unapplied credit on the
+ // patient's account. The encounter's balance is never driven negative.
+ const taken=takenCents==null?collectTakenCents():takenCents,partsTaken=parts==null?collectSession.taken.length:parts,over=taken-(owedCents==null?taken:owedCents);
+ const head=partsTaken>1?`${money(taken)} paid in ${partsTaken} parts`:`${money(amount)} ${esc(label)} recorded`;
+ const sentence=over>0?`${money(taken)} is more than this encounter owed and stays as credit on the patient's account. It is not owed money; refund it or keep it for a later visit.`:'The payment goes to this encounter\'s balance.';
+ return `<section class="collect-done" role="status"><div class="collect-done-mark" aria-hidden="true">✓</div><h3>${head}</h3><p class="muted">${sentence}</p><div class="actions">${receiptButton}<button type="button" class="primary" data-sheet-close>Done</button></div></section>`;
+}
 function collectOwedMarkup(){
  const summary=encounterRevenueState?.data?.summary,p=summary?.patient||{},owes=p.owes_now_cents;
  const visit=typeof activeVisit!=='undefined'?activeVisit:null,number=typeof encounterNumberText==='function'?encounterNumberText(visit):'';
