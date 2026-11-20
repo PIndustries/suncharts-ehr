@@ -211,3 +211,6 @@
 
 /* Statements sit under the payments; the Stripe invoice records are not part of this view. */
 .patient-billing-statements #patient-billing-stripe-invoices,.patient-billing-statements [data-stripe-invoices]{display:none}
+/* The procedure's code and its full description both stay readable. */
+.charge-table .charge-cell-code{min-width:300px}
+.charge-table .charge-cell-code input[name="description"]{width:100%;min-width:240px}
