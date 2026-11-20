@@ -80,7 +80,7 @@ assert.match(acceptedHtml,/<p>Nothing to do right now\. Waiting for the insuranc
 acceptedHtml=context.claimMdClaimLifecycle({status:'accepted',snapshot:claim.snapshot},{tracking:{reports:[{received_at:'2026-11-12',evidence:{senderid:'SYN-PAYER',sender_name:'Synthetic Payer',status:'A',message:{status:'A',message:'Accepted'}}}],remittance_posted:true}});
 assert.doesNotMatch(acceptedHtml,/Nothing to do right now\. Waiting for the insurance payment\./,'a posted payment is not still waited for');
 let pendingHtml=context.claimMdClaimLifecycle({status:'submitted',snapshot:claim.snapshot},{tracking:{submissions:[{status:'delivered'}],reports:[{received_at:'2026-11-12',evidence:{senderid:'CLMMD',status:'A',message:{status:'A',message:'Claim received'}}}]}});
-assert.equal(payerStage(pendingHtml),'Claim.MD received the claim. Waiting for the payer.');
+assert.equal(payerStage(pendingHtml),'The clearinghouse received the claim. Waiting for the payer.');
 assert.notEqual(payerStageClass(pendingHtml),'is-complete','a clearinghouse acknowledgement is not a payer response');
 pendingHtml=context.claimMdClaimLifecycle({status:'submitted',snapshot:claim.snapshot},{tracking:{submissions:[{status:'delivered'}],reports:[]}});
 assert.equal(payerStage(pendingHtml),'Waiting for a response to this claim.');

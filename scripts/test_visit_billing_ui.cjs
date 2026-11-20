@@ -44,7 +44,7 @@ const states=[
   // A claim the server has filled in and checked needs no review to press; it is ready to go out.
   [visitSummary({claim:{status:'ready'}}),'Claim ready to send to Synthetic Medicare PPO','Send claim to Synthetic Medicare PPO','data-visit-claim-direct-send="claim"',/Nothing has been sent yet\./],
   // A draft claim has not been checked yet, so the card still opens the review, which releases it.
-  [visitSummary({claim:{status:'draft'}}),'Claim ready to send to Synthetic Medicare PPO','Review and send to Claim.MD','data-visit-review-open="account"',/Nothing has been sent yet\./],
+  [visitSummary({claim:{status:'draft'}}),'Claim ready to send to Synthetic Medicare PPO','Review and send to the clearinghouse','data-visit-review-open="account"',/Nothing has been sent yet\./],
  [visitSummary({state:'waiting_insurer',waiting_on:'insurer',insurance:{status:'waiting',sent_on:'2026-11-12'},claim:{status:'submitted',sent_on:'2026-11-12'}}),'Waiting on Synthetic Medicare PPO','Check claim status','data-revenue-claim="claim"',/Claim sent Nov 12, 2026\. Nothing to do until they answer/],
  [visitSummary({state:'post_response',insurance:{status:'waiting'},claim:{status:'submitted',response_to_review:'era-1'}}),'Synthetic Medicare PPO answered','Review insurer payment','data-revenue-remittance="era-1"',/post it to this visit/],
  [visitSummary({state:'denied',insurance:{status:'denied'},claim:{status:'adjudicated'}}),'Denied by Synthetic Medicare PPO','Fix and resend claim','data-revenue-claim="claim"',/Fix the claim and send it again/],
@@ -234,12 +234,12 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
  let host=node('encounter-revenue').innerHTML,status=node('encounter-revenue-status').innerHTML;
  assert.deepEqual(sent.map(c=>[c[0],c[1]]),[['/api/v1/patients/patient/billing/visit-summary?visit_id=visit','GET'],['/api/v1/patients/patient/billing/accounts/account/claims/prepare','POST'],['/api/v1/patients/patient/billing/visit-summary?visit_id=visit','GET']]);
  assert.equal(JSON.stringify(sent[1][2]),'{}','preparing sends no amounts and no claim details');
- assert.match(status,/Claim ready to send to Synthetic Medicare PPO/);assert.deepEqual(primaries(status),['Review and send to Claim.MD']);
+ assert.match(status,/Claim ready to send to Synthetic Medicare PPO/);assert.deepEqual(primaries(status),['Review and send to the clearinghouse']);
  await ctx.loadEncounterRevenueStatus(account,true);assert.equal(prepared,1,'a refresh never prepares again');
  // Layout: one card, collect hidden until asked, charges and history collapsed, details not offered to staff.
  assert.match(host,/<h2>Invoice<\/h2><p class="muted">Nov 12, 2026 · Posted<\/p>/);
  assert.match(host,/<section id="visit-billing-collect" class="billing-section" hidden>/);assert.match(host,/data-record-copay="appointment">Cash or check<\/button>/);
- assert.match(host,/<div class="invoice-lines" id="encounter-billing-detail"><\/div>/);assert.match(host,/<details class="encounter-account-record" id="visit-billing-history"><summary>History<\/summary>/);assert.match(host,/id="visit-billing-ledger-details"><summary>Payments and adjustments<\/summary>/);
+ assert.match(host,/<div class="invoice-lines" id="encounter-billing-detail"><\/div>/);assert.match(host,/<details class="encounter-account-record" id="visit-billing-history"><summary>History<\/summary>/);assert.match(host,/<section class="billing-section" id="visit-billing-payments"><h3>Payments and adjustments<\/h3><div id="visit-billing-ledger"><\/div><\/section>/);assert.match(host,/<nav class="invoice-tabs"[^>]*>.*data-invoice-tab-key="invoice"[^>]*>Invoice<.*data-invoice-tab-key="claim"[^>]*>Claim<.*data-invoice-tab-key="payments"[^>]*>Payments<.*data-invoice-tab-key="history"[^>]*>History</);
  assert.doesNotMatch(host,/visit-billing-details|<h3>Copay<\/h3>|Insurance &amp; coverage details|Charges &amp; ledger details|Record a cash or check payment/);
  assert.equal((host.match(/id="encounter-claims"/g)||[]).length,1,'the claim view keeps its place');
  // The owner gets Details; the server decides what is in it.
@@ -453,7 +453,7 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
 
  // History filters and the payments shortcut.
  reply=()=>visitSummary({timeline});await ctx.loadEncounterRevenueStatus(account,true);
- click({visitHistory:'payments'});assert.equal(node('visit-billing-history').open,true);assert.equal(node('visit-billing-ledger-details').open,true);assert.equal((node('visit-billing-timeline').innerHTML.match(/<li /g)||[]).length,2);
+ click({visitHistory:'payments'});assert.equal(node('visit-billing-history').open,true);assert.equal((node('visit-billing-timeline').innerHTML.match(/<li /g)||[]).length,2);
  click({visitHistoryFilter:'all'});assert.equal((node('visit-billing-timeline').innerHTML.match(/<li /g)||[]).length,timeline.length);
 
  // A failed prepare says why and offers one way forward; asking again is explicit.

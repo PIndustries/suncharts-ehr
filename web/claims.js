@@ -80,7 +80,7 @@ function mountEncounterClaims(accountId){
  if(typeof workspaceResourceAllowed==='function'&&!workspaceResourceAllowed('claims'))throw new Error('Claim review requires access to insurance claims.');
  setEncounterSection('charges');
  const container=$('encounter-claims');if(!container)throw new Error('Open Billing & claim in this visit.');
- container.innerHTML='<div class="section-head"><h3>Insurance claim for this visit</h3><button type="button" data-close-encounter-claim>Close claim</button></div><div id="encounter-claims-detail"></div>';container.hidden=false;
+ container.innerHTML='<div class="section-head"><h3>Insurance claim for this visit</h3></div><div id="encounter-claims-detail"></div>';container.hidden=false;if(typeof invoiceTabSet==='function')invoiceTabSet('claim');
  claimViewContext={kind:'encounter',identity:me,patient:selected,visit:activeVisit.id,account:accountId,host:$('encounter-claims-detail')};
  return claimViewContext;
 }
@@ -242,14 +242,18 @@ async function saveClaimQuickFix(form){
   }
   for(const name of claimQuickFixInputs)if(name in data&&String(data[name]).trim()!==String(content[name]??'').trim())changed[name]=name==='subscriber_birth_date'?(data[name]||null):String(data[name]).trim();
   if(Object.keys(changed).length)await api(`${claimsBase}/${claim.id}`,'PUT',{content:{...content,...changed},reason:'Filled in on the claim page'},fresh.version);
+  if(form.claimSheet)await new Promise(resolve=>sheetClose(form.claimSheet,resolve));
   await refreshClaimInContext(claim.id,context);
+  if(typeof document!=='undefined'&&document.querySelector)flashUpdated(document.querySelector('[data-claim-primary]')||document.querySelector('[data-claim-missing]'));
   notice('Saved. The claim was checked again.');
  }finally{if(form.isConnected)controls.forEach(control=>{control.disabled=false;});}
 }
 // Staff wording for a list of problems on a screen this brief does not cover (remittances,
 // acknowledgments). The claim page has its own grouped list above.
 const claimIssues=items=>items.length?`<div class="mapping-notice"><b>What needs fixing</b><ul>${items.map(i=>`<li>${esc(claimMissingIssueText(i))}</li>`).join('')}</ul></div>`:'<p class="claim-clear">No problems found.</p>';
-const claimHistory=h=>h.items.map(r=>`<details class="amendment"><summary>v${r.version} · ${esc(r.reason)} · ${esc(date(r.created_at))}</summary><p>Recorded by ${esc(r.actor_id)}</p><pre class="billing-source">${esc(JSON.stringify(r.evidence||r.snapshot,null,2))}</pre></details>`).join('');
+const claimReasonWords={'claim.refilled':'Missing details filled in from the chart and practice settings','claim.created':'Claim prepared','claim.edited':'Claim details changed','claim.released':'Released to send','claim.voided':'Claim cancelled'};
+function claimHistoryReason(reason){const text=String(reason||'').trim();if(claimReasonWords[text])return claimReasonWords[text];return /^[a-z_]+\.[a-z_.]+$/.test(text)?text.split('.').pop().replace(/_/g,' ').replace(/^./,c=>c.toUpperCase()):text;}
+const claimHistory=h=>`<ol class="claim-history-list">${h.items.map(r=>`<li><b>${esc(claimHistoryReason(r.reason))}</b><small>${esc(date(r.created_at))} · version ${esc(r.version)}</small>${typeof me!=='undefined'&&me?.role==='owner'?`<details class="amendment"><summary>Technical record</summary><pre class="billing-source">${esc(JSON.stringify(r.evidence||r.snapshot,null,2))}</pre></details>`:''}</li>`).join('')}</ol>`;
 const claimTransport=t=>{
  if(!t||typeof t!=='object')return `${esc(t||'Clearinghouse status unavailable')}. Downloading a claim does not send it.`;
  const claimmd=t.claimmd_connected,artifact=t.artifact==='generated';
@@ -424,7 +428,7 @@ function claimMoreDetailsMarkup(claim,detail={},history={items:[]},sections={}){
  const rows=[
   ['What happened',sections.timeline],
   ['Claim progress',sections.lifecycle],
-  ['Claim.MD activity',sections.activity],
+  ['Clearinghouse activity',sections.activity],
   ['The insurer and clearinghouse wording',sections.responseWords],
   [claim.status==='draft'?'Other options for this claim':'Record something done outside SunCharts',sections.recordOutside],
   ['Provider, insurance and diagnosis details',sections.providerDetails],
@@ -763,6 +767,7 @@ async function showClaim(id){
   const action=$('claim-action');if(action){action.claimViewContext=context;action.claimRecord=claim;}
   if(typeof startClaimMdTracking==='function')startClaimMdTracking(claim.id);
   if(typeof showClaimMdClaimActivity==='function')await showClaimMdClaimActivity(claim);
+  if(claimContextCurrent(context))claimDetailTabs(claimWorkspaceHost(context));
   if(typeof registerAutoRefresh==='function'){if(['submitted','accepted','adjudicated'].includes(claim.status)&&claimContextCurrent(context)&&context.kind==='worklist')registerClaimDetailAutoRefresh();else unregisterAutoRefresh('claim-status');}
 }
 function claimChargeDiagnosisDefaults(account){
@@ -912,7 +917,7 @@ document.addEventListener('click',e=>{const chip=e.target.closest?.('#claims-too
  const b=e.target.closest('button');if(!b||b.hasAttribute('data-chain-select')||b.closest('.batch-panel')||b.closest('.settlement-panel')||b.closest('.era-automation-panel')||b.dataset.ediClaim||b.type==='submit'||(!b.closest('#claims-tool')&&!b.closest('#encounter-claims')&&!b.dataset.newClaim&&!b.dataset.mapClaim))return;const owned=['newClaim','mapClaim','sourceClaimAccount','claimAccount','claimOpen','claimRelease','claimExistingSubmission','eraOpen','eraSource','eraInspect'].some(key=>b.dataset[key]!==undefined)||['data-claims-next','data-era-next','data-edit-claim','data-secondary-claim','data-replacement-claim','data-new-era','data-close-encounter-claim','data-rebase-claim-draft','data-discard-claim-draft','data-claim-fix-resend'].some(name=>b.hasAttribute(name));if(!owned)return;run(async()=>{
  if(b.hasAttribute('data-rebase-claim-draft')){const form=$('claim-editor-form')||$('claimmd-submit-form');requireClaimContext(form.claimViewContext);form.claimDraftStale=false;form.querySelectorAll('button[type="submit"]').forEach(submit=>submit.disabled=false);form.querySelectorAll('[data-claim-draft-notice]').forEach(n=>n.remove());captureClaimDraft(form);return;}
  if(b.hasAttribute('data-discard-claim-draft')){const form=$('claim-editor-form')||$('claimmd-submit-form');requireClaimContext(form.claimViewContext);claimDrafts.delete(form.claimDraftKey);const account=form.claimAccount,record=form.claimRecord,source=form.claimSource,parent=form.claimParent;form.claimDraftKey=null;if(form.id==='claimmd-submit-form')claimMdSubmitEditor(form.claimMdDetail);else claimEditor(account,record,source,parent);return;}
- if(b.hasAttribute('data-close-encounter-claim')){const context=claimContextSnapshot();requireClaimContext(context);captureClaimDraft();$('encounter-claims').replaceChildren();$('encounter-claims').hidden=true;claimViewContext=null;return;}
+ if(b.hasAttribute('data-close-encounter-claim')){const context=claimContextSnapshot();requireClaimContext(context);captureClaimDraft();$('encounter-claims').replaceChildren();$('encounter-claims').hidden=true;claimViewContext=null;if(typeof invoiceTabSet==='function')invoiceTabSet('invoice');return;}
  if(b.dataset.newClaim){await beginClaim(b.dataset.newClaim);return;}
  if(b.dataset.mapClaim){const m=await api(`/api/v1/patients/${selected}/history/${b.dataset.mapClaim}/claim-mapping`);if(m.native_id){await showClaimsWorkspace();await showClaim(m.native_id);return;}const candidates=workspace.billing.accounts.filter(a=>a.status==='posted'&&a.coverage_snapshot),patient=selected;await showClaimsWorkspace();claimSource=m;claimPane(`<h2>Create a claim from an imported record</h2>${sourceNotice(m)}<p>Choose the posted charges this claim belongs to.</p>${candidates.map(a=>`<button type="button" data-source-claim-account="${a.id}" data-patient="${patient}">${esc(a.content.service_date)} · ${money(a.total_cents)} · ${a.id.slice(0,8)}</button>`).join('')||'<p>No posted charges with insurance for this patient. Post the charges in the patient chart first.</p>'}`);window.claimSourceAccounts=candidates;return;}
  if(b.dataset.sourceClaimAccount){claimEditor({...window.claimSourceAccounts.find(a=>a.id===b.dataset.sourceClaimAccount),patient_id:b.dataset.patient},null,claimSource);return;}
@@ -1017,15 +1022,63 @@ async function openClaimOnVisit(claimId){
  $('encounter-claims')?.scrollIntoView({block:'start'});
  return true;
 }
-// The claim's Fix here: the boxes open in place of the list, and Cancel puts the list back.
+// The claim's Fix here opens the boxes in a window over the page (a sheet), so nothing on the page
+// jumps. Cancel or Esc closes it and the boxes go back where they were; a save closes it and the
+// claim, checked again, is highlighted where it changed.
+function sheetOpen(title,node){
+ const dialog=document.createElement('dialog');dialog.className='sheet-dialog';
+ dialog.innerHTML=`<header class="sheet-head"><h3>${esc(title)}</h3><button type="button" class="sheet-close" data-sheet-close aria-label="Close">×</button></header><div class="sheet-body"></div>`;
+ dialog.querySelector('.sheet-body').append(node);document.body.append(dialog);
+ dialog.addEventListener('cancel',event=>{event.preventDefault();sheetClose(dialog);});
+ dialog.addEventListener('click',event=>{if(event.target===dialog||event.target.closest('[data-sheet-close]'))sheetClose(dialog);});
+ dialog.showModal();return dialog;
+}
+function sheetClose(dialog,after){
+ if(!dialog||dialog.dataset.closing)return;dialog.dataset.closing='1';dialog.classList.add('closing');
+ const done=()=>{dialog.close();after?.();dialog.remove();};
+ if(matchMedia('(prefers-reduced-motion: reduce)').matches)done();else setTimeout(done,180);
+}
+// Briefly marks what just changed so the eye finds it.
+function flashUpdated(node){if(!node?.classList)return;node.classList.remove('just-updated');void node.offsetWidth;node.classList.add('just-updated');setTimeout(()=>node.classList.remove('just-updated'),1600);}
 function openClaimQuickFix(){
  const form=$('claim-quick-fix');if(!form)return false;
- form.hidden=false;const view=form.closest('[data-claim-missing]')?.querySelector('[data-claim-quick-view]');if(view)view.hidden=true;
- form.scrollIntoView({block:'center'});form.querySelector('input:not([type=hidden])')?.focus({preventScroll:true});
+ const home=form.parentNode,marker=document.createComment('claim-quick-fix');home.insertBefore(marker,form);
+ form.hidden=false;
+ const dialog=sheetOpen('Fill in what the claim needs',form);form.claimSheet=dialog;
+ const putBack=()=>{if(marker.parentNode){form.hidden=true;form.reset();marker.parentNode.insertBefore(form,marker);marker.remove();}else form.remove();};
+ dialog.addEventListener('close',putBack,{once:true});
+ form.querySelector('input:not([type=hidden])')?.focus();
  return true;
 }
 document.addEventListener('click',event=>{
  const open=event.target.closest?.('[data-claim-quick-fix-open]'),cancel=event.target.closest?.('[data-claim-quick-fix-cancel]');
  if(open){event.preventDefault();openClaimQuickFix();return;}
- if(cancel){event.preventDefault();const form=$('claim-quick-fix');if(!form)return;form.reset();form.hidden=true;const view=form.closest('[data-claim-missing]')?.querySelector('[data-claim-quick-view]');if(view)view.hidden=false;}
+ if(cancel){event.preventDefault();const form=$('claim-quick-fix');sheetClose(form?.claimSheet||form?.closest('dialog'));}
 });
+// The claim's details as tabs rather than one long drop-down: Progress, Claim details, Insurance,
+// History and the rest, one shown at a time. The tab last used is remembered.
+const claimTabNames={'Claim progress':'Progress','Clearinghouse activity':'Clearinghouse','The insurer and clearinghouse wording':'Payer wording','Other options for this claim':'Other options','Record something done outside SunCharts':'Done outside SunCharts','Provider, insurance and diagnosis details':'Claim details','The insurance on this claim':'Insurance','Claim history':'History','What happened':'What happened'};
+function claimDetailTabs(host){
+ const detail=host?.querySelector?.('.billing-account-detail');if(!detail||typeof document==='undefined'||!document.createElement)return;
+ const items=[...detail.querySelectorAll('.claim-more-item')].filter(item=>!item.closest('.claim-tabs-panels'));
+ if(!items.length)return;
+ let box=detail.querySelector('.claim-tabs');
+ if(!box){box=document.createElement('section');box.className='claim-tabs';box.innerHTML='<nav class="invoice-tabs claim-tab-bar" role="tablist" aria-label="Claim details"></nav><div class="claim-tabs-panels"></div>';const more=detail.querySelector('[data-claim-more-details]');(more||items[0]).before(box);more?.remove();}
+ const bar=box.querySelector('.claim-tab-bar'),panels=box.querySelector('.claim-tabs-panels');
+ for(const item of items){
+  const heading=item.querySelector(':scope>h3'),label=(heading?.textContent||'').trim(),name=claimTabNames[label]||label;
+  heading?.remove();item.dataset.claimTab=name;item.setAttribute('role','tabpanel');
+  item.querySelectorAll('details.claim-advanced').forEach(d=>{d.open=true;d.classList.add('claim-advanced-open');});
+  panels.append(item);
+  bar.insertAdjacentHTML('beforeend',`<button type="button" role="tab" data-claim-tab-key="${esc(name)}">${esc(name)}</button>`);
+ }
+ let remembered='';try{remembered=localStorage.getItem('suncharts.claimTab')||'';}catch{}
+ const names=[...panels.children].map(item=>item.dataset.claimTab);
+ claimTabSet(box,names.includes(remembered)?remembered:names.includes('Progress')?'Progress':names[0],false);
+}
+function claimTabSet(box,name,remember=true){
+ for(const item of box.querySelectorAll('.claim-tabs-panels>[data-claim-tab]'))item.hidden=item.dataset.claimTab!==name;
+ for(const button of box.querySelectorAll('[data-claim-tab-key]')){const on=button.dataset.claimTabKey===name;button.classList.toggle('active',on);button.setAttribute('aria-selected',String(on));}
+ if(remember)try{localStorage.setItem('suncharts.claimTab',name);}catch{}
+}
+document.addEventListener('click',event=>{const tab=event.target?.closest?.('[data-claim-tab-key]');if(!tab)return;event.preventDefault();claimTabSet(tab.closest('.claim-tabs'),tab.dataset.claimTabKey);});

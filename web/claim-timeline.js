@@ -219,13 +219,13 @@ function buildClaimTimeline(input={}){
  for(const submission of tracking.submissions||[]){
   if(!submission||!['prepared','delivered'].includes(submission.status))continue;
   const delivered=submission.status==='delivered';
-  push({key:`submission-${submission.id||steps.length}`,label:delivered?'Sent to Claim.MD':'Claim file prepared for Claim.MD',at:submission.created_at,
+  push({key:`submission-${submission.id||steps.length}`,label:delivered?'Sent to the clearinghouse':'Claim file prepared for the clearinghouse',at:submission.created_at,
    detail:delivered?`File ${submission.interchange_control||'number not reported'}${submission.partner_name?` · ${submission.partner_name}`:''}`:'The claim file exists but Claim.MD has not confirmed receiving it.',
    rows:[timelineFieldRow('interchange_control',submission.interchange_control,'Claim file number'),timelineFieldRow('technical_status',timelineValueText(submission.technical_status),'Format check (999)',submission.technical_status),timelineFieldRow('payer_outcome',timelineValueText(submission.payer_outcome),'Payer response',submission.payer_outcome)].filter(Boolean),
    source:'suncharts'});
  }
  const externalSent=history.some(item=>item?.evidence?.action==='record_submission');
- if(externalSent)push({key:'external-sent',label:'Sent to Claim.MD',at:history.find(item=>item?.evidence?.action==='record_submission')?.evidence?.event_date||history.find(item=>item?.evidence?.action==='record_submission')?.created_at,detail:'Staff recorded that this claim was sent outside SunCharts.',source:'staff'});
+ if(externalSent)push({key:'external-sent',label:'Sent to the clearinghouse',at:history.find(item=>item?.evidence?.action==='record_submission')?.evidence?.event_date||history.find(item=>item?.evidence?.action==='record_submission')?.created_at,detail:'Staff recorded that this claim was sent outside SunCharts.',source:'staff'});
 
  for(const report of tracking.reports||[]){
   const evidence=report.evidence||{},status=timelineClaimMdStatusText(evidence);

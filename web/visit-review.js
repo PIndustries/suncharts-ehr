@@ -14,7 +14,7 @@ const visitReviewStages=[
   {key:'post',label:'Post the charges',doing:'Posting the charges…',done:'Charges posted',skip:'Already posted'},
   {key:'prepare',label:'Fill in the claim',doing:'Filling in the claim from this visit…',done:'Claim filled in',skip:'Already filled in'},
   {key:'ready',label:'Check the claim',doing:'Checking the claim…',done:'Checked',skip:'Already checked'},
-  {key:'send',label:'Send to Claim.MD',doing:'Sending to Claim.MD…',done:'Sent to Claim.MD',skip:''},
+  {key:'send',label:'Send to the clearinghouse',doing:'Sending to the clearinghouse…',done:'Sent to the clearinghouse',skip:''},
 ];
 const visitReviewStageTitle={check:'the current claim being read',post:'the charges being posted',prepare:'the claim being filled in',ready:'the claim being checked',send:'the claim being sent'};
 // The claims endpoint, read where it is used: web/claims.js owns `claimsBase`, and a screen may
@@ -165,7 +165,7 @@ function visitReviewChecks(s,ctx={}){
   const out=[];
   if(!ctx.claimsAllowed)out.push(visitReviewCheck('claims-not-allowed',{group:'claim',blocking:true,text:'This sign-in cannot see insurance claims, so nothing can be sent from here.',action:'',fix:'blocked'}));
   else if(s.claim?.secondary||s.claim?.crossover)out.push(visitReviewCheck('secondary-claim',{group:'claim',blocking:true,text:'This claim comes from another insurer’s answer. It is worked on from the primary claim.',action:'Open the primary claim',attribute:`data-revenue-claim="${esc(s.claim.id||'')}"`,fix:'blocked'}));
-  else if(!s.insurance.insured)out.push(visitReviewCheck('self-pay',{group:'claim',blocking:false,text:'There is no insurance on this visit, so nothing is sent to Claim.MD. The patient is billed instead.'}));
+  else if(!s.insurance.insured)out.push(visitReviewCheck('self-pay',{group:'claim',blocking:false,text:'There is no insurance on this visit, so nothing is sent to the clearinghouse. The patient is billed instead.'}));
   else if(!s.insurance.electronic)out.push(visitReviewCheck('no-payer-id',{group:'insurance',blocking:true,text:`${visitBillingInsurer(s)} has no insurer ID here, so no claim can be sent electronically. Add it, or record the visit as billed outside SunCharts.`,action:'Edit insurance',attribute:'data-chart-section="insurance"'}));
   else if(!s.account)out.push(visitReviewCheck('no-charges',{group:'charges',blocking:true,text:'No charges have been added to this visit yet.',action:'Add charges',attribute:'data-encounter-charges'}));
   else{
@@ -194,7 +194,7 @@ function visitReviewSummaryMarkup(s){
 // The claim form the practice would file, filled from what the claim will actually carry.
 function visitReviewFormMarkup(s){
   const claim=s?.claim;
-  if(!claim)return '<h4>The claim form</h4><p class="muted">The claim form appears here as soon as the claim is filled in from this visit. Nothing is sent before you choose Send to Claim.MD.</p>';
+  if(!claim)return '<h4>The claim form</h4><p class="muted">The claim form appears here as soon as the claim is filled in from this visit. Nothing is sent before you choose Send to the clearinghouse.</p>';
   const content=claim.content||{},account=claim.snapshot?.account||{},patient=claim.snapshot?.patient||{},coverage=account.coverage_snapshot?.coverage?.content||{},payer=account.coverage_snapshot?.payer?.content||{};
   const field=(number,label,value)=>`<div class="visit-billing-review-field"><span>${number} · ${esc(label)}</span><b>${esc(visitReviewFormValue(value))||'—'}</b></div>`;
   const reviewLine=(charge,pointers)=>`<tr><td>${esc(visitReviewFormValue(`${charge.code_system||''} ${charge.code||''}`.trim(),13))}</td><td>${esc(visitReviewFormValue(charge.description,28))}</td><td class="money-cell">${Number(charge.units||0)||0}</td><td class="money-cell">${money(charge.amount_cents||0)}</td><td>${(pointers||[]).map(n=>esc(visitReviewFormValue((content.diagnosis_codes||[])[n-1]||'',8))).filter(Boolean).join(' ')||'—'}</td></tr>`;
@@ -217,7 +217,7 @@ function visitReviewBlockMarkup(s,ctx,checks){
   if(ctx.sent)return visitReviewSentMarkup(s);
   if(blocked)return `<p role="status" data-review-blocked><b>${must.length===1?'One thing must be put right first.':`${must.length} things must be put right first.`}</b> Use the button beside each one. Until then the send button stays closed.</p>`;
   const post=s.account?.status==='draft';
-  return `<div class="actions">${visitReviewButton(ctx.askNote?'Send anyway — the note is not signed yet':post?'Post charges, then send to Claim.MD':'Send to Claim.MD','class="primary" data-visit-review-send')}${ctx.askNote?`<p class="muted" role="status">The visit note is still not signed. Sending does not need the signature, but the charges become final when they are posted.</p>`:post?'<p class="muted">This posts the charges — they become final — fills the claim in, then sends it. Nothing has been sent until you press it.</p>':'<p class="muted">Nothing has been sent yet. Sending tells Claim.MD to deliver this claim to the insurer.</p>'}</div>`;
+  return `<div class="actions">${visitReviewButton(ctx.askNote?'Send anyway — the note is not signed yet':post?'Post charges, then send to the clearinghouse':'Send to the clearinghouse','class="primary" data-visit-review-send')}${ctx.askNote?`<p class="muted" role="status">The visit note is still not signed. Sending does not need the signature, but the charges become final when they are posted.</p>`:post?'<p class="muted">This posts the charges — they become final — fills the claim in, then sends it. Nothing has been sent until you press it.</p>':'<p class="muted">Nothing has been sent yet. Sending tells Claim.MD to deliver this claim to the insurer.</p>'}</div>`;
 }
 function visitReviewPanelBody(s,ctx={}){
   const checks=visitReviewChecks(s,ctx),must=visitReviewMustFix(checks);
@@ -287,7 +287,7 @@ async function visitClaimDirectSend(claimId,button){
   if(!claimId)stop('The claim for this visit could not be found. Refresh the visit and try again.','refresh');
   if(typeof loadClaimMdConnection==='function')await loadClaimMdConnection();
   if(!current())return false;
-  if(!(typeof claimMdConnectionState!=='undefined'&&claimMdConnectionState?.connected))stop('Claim.MD is not connected, so nothing can be sent. Ask the practice owner to check the Claim.MD connection.','refresh');
+  if(!(typeof claimMdConnectionState!=='undefined'&&claimMdConnectionState?.connected))stop('No clearinghouse is connected, so nothing can be sent. Ask the practice owner to check the Claim.MD connection.','refresh');
   // The claim is read from the server before anything is released: a screen left open with edits
   // in it never sends on a stale copy. This is the same read the panel's chain makes.
   const base=visitReviewClaimsBase();
@@ -296,7 +296,7 @@ async function visitClaimDirectSend(claimId,button){
   if(detail?.claim?.id!==claimId)stop('The claim that loaded is not the one you opened. Refresh the visit and try again.','refresh');
   if(['submitted','accepted','adjudicated','void'].includes(detail.claim.status))stop('This claim is already with the insurer. Its status shows on the visit.','refresh');
   const already=(typeof claimHasRecordedSubmission==='function'&&claimHasRecordedSubmission(detail))||(typeof claimHasPreparedSubmission==='function'&&claimHasPreparedSubmission(detail));
-  if(already)stop('This claim already has a claim file with Claim.MD. Open the claim to check whether it was sent before sending again.','refresh');
+  if(already)stop('This claim already has a claim file with the clearinghouse. Open the claim to check whether it was sent before sending again.','refresh');
   // The server's own refusals stop the send here, before anything is released or sent.
   const refused=(Array.isArray(detail.preflight_issues)?detail.preflight_issues:[]).map(issue=>String(issue||'').trim()).filter(Boolean);
   if(refused.length)stop(`The claim is missing what the insurer needs: ${refused.join('; ')}.`,'refresh');
@@ -348,7 +348,7 @@ function visitBillingReviewButton(s,ctx={}){
   if(!['post_charges','prepare_claim','claim_cancelled','fix_claim','send_claim'].includes(s.state))return '';
   if(['submitted','accepted','adjudicated','void'].includes(s.claim?.status))return '';
   if(!visitBillingCardCurrent(s))return '';
-  return `<button type="button" class="primary" data-visit-review-open="account">Review and send to Claim.MD</button>`;
+  return `<button type="button" class="primary" data-visit-review-open="account">Review and send to the clearinghouse</button>`;
 }
 // After a claim is with the insurer the card says so and gives the one way to look at it.
 function visitBillingSentLine(s,ctx={}){
@@ -439,7 +439,7 @@ async function visitReviewRun(claimId,options={}){
   if(typeof loadClaimMdConnection==='function')await loadClaimMdConnection();
   if(!current()){review.busy=false;return false;}
   if(!options.allowUnsigned&&typeof encounterRevenueVisitUnsigned==='function'&&encounterRevenueVisitUnsigned(account)){review.busy=false;review.askNote=true;paint({askNote:true});return false;}
-  if(!(typeof claimMdConnectionState!=='undefined'&&claimMdConnectionState?.connected))throw new Error('Claim.MD is not connected, so nothing can be sent. Ask the practice owner to check the Claim.MD connection.');
+  if(!(typeof claimMdConnectionState!=='undefined'&&claimMdConnectionState?.connected))throw new Error('No clearinghouse is connected, so nothing can be sent. Ask the practice owner to check the Claim.MD connection.');
    const stopHere=(key,reason)=>{
     // The chain stops at this step: nothing further is sent, the step shows as stopped with
     // the reason, and the button comes back as Try again.
@@ -453,7 +453,7 @@ async function visitReviewRun(claimId,options={}){
    if(detail?.claim?.id!==claim.id)throw new Error('The claim that loaded is not the one you opened. Try again.');
    claim.version=detail.claim.version;
    const already=(typeof claimHasRecordedSubmission==='function'&&claimHasRecordedSubmission(detail))||(typeof claimHasPreparedSubmission==='function'&&claimHasPreparedSubmission(detail));
-   if(already)return stopHere('ready','This claim already has a claim file with Claim.MD. Open the claim to check whether it was sent before sending again.');
+   if(already)return stopHere('ready','This claim already has a claim file with the clearinghouse. Open the claim to check whether it was sent before sending again.');
    // The server's own refusals stop the chain here, before anything is released or sent.
    const refused=(Array.isArray(detail.preflight_issues)?detail.preflight_issues:[]).map(issue=>String(issue||'').trim()).filter(Boolean);
    if(refused.length)return stopHere('ready',`The claim is missing what the insurer needs: ${refused.join('; ')}.`);
