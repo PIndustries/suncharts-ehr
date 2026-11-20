@@ -344,7 +344,7 @@ function visitBillingCardCurrent(s){
  return true;
 }
 function visitBillingReviewButton(s,ctx={}){
-  if(!ctx.canWrite||!ctx.claimsAllowed||!s.insurance?.insured||!s.account||ctx.delegated||ctx.noReview)return '';
+  if(!ctx.canWrite||!ctx.claimsAllowed||!s.insurance?.insured||!s.account||ctx.noReview)return '';
   if(!['post_charges','prepare_claim','claim_cancelled','fix_claim','send_claim'].includes(s.state))return '';
   if(['submitted','accepted','adjudicated','void'].includes(s.claim?.status))return '';
   if(!visitBillingCardCurrent(s))return '';
@@ -426,7 +426,6 @@ async function visitReviewRun(claimId,options={}){
        claim={id:prepared.claim_id,version:null};
        return false;
       }
-      if(prepared?.outcome==='delegated')throw new Error('A support session does not prepare claims. A member of the practice sends this one.');
       if(prepared?.outcome==='cancelled')throw new Error('The claim filled in here was cancelled. Prepare a new claim from this encounter first.');
       if(prepared?.outcome==='not_needed')return true;
       throw new Error('The claim could not be filled in from this encounter. Refresh the encounter and try again.');

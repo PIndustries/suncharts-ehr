@@ -267,7 +267,7 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
  assert.match(out,/class="primary" data-visit-review-open="account">Review and send to the clearinghouse</);
  assert.equal((out.match(/class="primary"/g)||[]).length,1,'one primary button on the card');
   out=ctx.visitBillingCardMarkup(reviewSummary(),{...all,delegated:true});
-  assert.doesNotMatch(out,/Review and send to the clearinghouse/,'a support session is not offered the review-and-send panel');
+  assert.match(out,/Review and send to the clearinghouse/,'a support session gets the same review-and-send panel');
  showOnScreen(reviewSummary({claim:{id:'claim',status:'submitted',version:3}}));
  out=ctx.visitBillingCardMarkup(reviewSummary({claim:{id:'claim',status:'submitted',version:3}}),all);
  assert.doesNotMatch(out,/Review and send to the clearinghouse/,'a claim already with the insurer is not offered again');

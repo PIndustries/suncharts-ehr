@@ -34,14 +34,14 @@ assert.match(html,/Eligibility is checked separately/);
 assert.match(html,/Eligibility has not been checked/);
 assert.match(html,/No insurance payment posted yet/);
 assert.doesNotMatch(html,/From coverage to settled balance/);
-assert.match(html,/<li class="(?:is-upcoming|is-current)" tabindex="0" aria-label="Sent to clearinghouse:/,'free text and adjudication do not prove delivery');
-assert.match(html,/<li class="is-upcoming" tabindex="0" aria-label="Eligibility checked:/,'coverage alone does not complete eligibility');
+assert.match(html,/<li class="(?:is-upcoming|is-current)" tabindex="0" aria-label="(?:Later|Now): Sent to clearinghouse\./,'free text and adjudication do not prove delivery');
+assert.match(html,/<li class="is-missed" tabindex="0" aria-label="Not done: Eligibility checked\./,'coverage alone does not complete eligibility; a skipped step shows as not done');
 html=context.claimMdClaimLifecycle(claim,{tracking:{eligibility:{status:'completed',service_date:'2026-11-10'},submissions:[{status:'delivered'}],reports:[{received_at:'2026-11-10',evidence:{senderid:'CLMMD',status:'A',message:{message:'Acknowledged <unsafe>',status:'A'}}}],connections:[{paused:false,last_poll_at:'2026-11-10',last_success_at:'2026-11-09',last_result:'poll_failed_cursor_retained'}]}});
 assert.match(html,/Claim.MD received this claim/);assert.match(html,/Acknowledged &lt;unsafe>/);assert.match(html,/Last checked/);assert.match(html,/poll_failed_cursor_retained/);assert.doesNotMatch(html,/Status code/);
 assert.doesNotMatch(html,/The payer still has to accept it/,'an adjudicated claim is not still waiting for payer acceptance');assert.match(html,/No insurance payment posted yet/);
 assert.doesNotMatch(html,/Current payer state: Adjudicated/);
 html=context.claimMdClaimLifecycle({status:'ready',snapshot:claim.snapshot},{tracking:{submissions:[{status:'delivered'}],reports:[]}});
-assert.match(html,/<li class="is-current" tabindex="0" aria-label="Payer response:/,'delivery advances the displayed stage without assuming eligibility completed');
+assert.match(html,/<li class="is-current" tabindex="0" aria-label="(?:Done|Now|Not done|Later): Payer response\./,'delivery advances the displayed stage without assuming eligibility completed');
 assert.doesNotMatch(html,/class="claim-progress-now"><b>[^<]*<\/b> · Send this claim to Claim.MD.<\/p>/,'do not prompt duplicate submission after a recorded delivery');
 html=context.claimMdTrackingSummary({reports:[{evidence:{senderid:'SYN-PAYER',sender_name:'Synthetic Payer',message:{message:'Finalized/Payment'}},received_at:'2026-11-10'}]});
 assert.match(html,/Update from Synthetic Payer/);assert.match(html,/do not post insurance payments/);
@@ -70,7 +70,7 @@ assert.doesNotMatch(earlierBlock,/Coverage not in effect/,'the newest update is 
 console.log('PASS each payer response is named by who sent it and whether they accepted or rejected');
 
 const payerStage=lifecycle=>lifecycle.match(/<b>(?:✓ )?Payer response<\/b><small>([^<]*)</)[1];
-const payerStageClass=lifecycle=>lifecycle.match(/<li class="([^"]*)" tabindex="0" aria-label="Payer response:/)[1];
+const payerStageClass=lifecycle=>lifecycle.match(/<li class="([^"]*)" tabindex="0" aria-label="(?:Done|Now|Not done|Later): Payer response\./)[1];
 assert.equal(payerStage(context.claimMdClaimLifecycle({status:'rejected',snapshot:claim.snapshot},{tracking:{reports:[{received_at:'2026-11-12',evidence:{senderid:'SYN-PAYER',status:'R',message:{status:'R',message:'Coverage not in effect'}}}]}})),'Rejected. The reason is shown below.');
 assert.match(context.claimMdClaimLifecycle({status:'rejected',snapshot:claim.snapshot},{tracking:{reports:[{received_at:'2026-11-12',evidence:{senderid:'SYN-PAYER',status:'R',message:{status:'R',message:'Coverage not in effect'}}}]}}),/class="claim-progress-now"><b>[^<]*<\/b> · Read the reason below, then fix and resend the claim\.<\/p>/);
 let acceptedHtml=context.claimMdClaimLifecycle({status:'accepted',snapshot:claim.snapshot},{tracking:{reports:[{received_at:'2026-11-12',evidence:{senderid:'SYN-PAYER',sender_name:'Synthetic Payer',status:'A',sender_icn:'ICNSYN1',message:{status:'A',message:'Accepted'}}}]}});
@@ -88,6 +88,6 @@ let rejectedLifecycle=context.claimMdClaimLifecycle({status:'rejected',snapshot:
 assert.doesNotMatch(rejectedLifecycle,/class="is-current"/,'a rejected claim has no current step expecting a payment');
 assert.doesNotMatch(rejectedLifecycle,/The payer still has to accept it/,'an answered claim is not still waiting for payer acceptance');
 let submittedAnsweredHtml=context.claimMdClaimLifecycle({status:'submitted',snapshot:claim.snapshot},{tracking:{submissions:[{status:'delivered'}],reports:[{received_at:'2026-11-12',evidence:{senderid:'CLMMD',status:'A',message:{status:'A',message:'Claim received'}}}]}});
-assert.match(submittedAnsweredHtml,/<li class="is-current" tabindex="0" aria-label="Payer response:/,'a clearinghouse acknowledgement leaves the payer response step current');
+assert.match(submittedAnsweredHtml,/<li class="is-current" tabindex="0" aria-label="(?:Done|Now|Not done|Later): Payer response\./,'a clearinghouse acknowledgement leaves the payer response step current');
 console.log('PASS a rejected claim expects no payment and an acknowledged claim waits on the payer');
 console.log('PASS the payer response stage follows the claim status, not only the presence of a report');

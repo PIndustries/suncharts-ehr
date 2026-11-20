@@ -1346,13 +1346,10 @@ pub(crate) async fn prepare_claim(
     a.scheduling()?;
     let mut tx = pool.begin().await?;
     let account = claims::account(&mut tx, a, account_id, Some(p)).await?;
-    let support = delegated(&mut tx, a).await?;
     tx.commit().await?;
-    // A delegated support session acts with the owner's authority, but a claim is prepared
-    // by the practice: nothing is written for it, whether asked for or not.
-    if support {
-        return Ok(json!({"outcome":"delegated"}));
-    }
+    // A delegated support session acts with the owner's authority and may prepare the claim when
+    // it asks; the claim's revision records the session as the one who prepared it. The screen
+    // never prepares automatically on a support session's behalf.
     let skipped = |reason: &str| Ok(json!({"outcome":"not_needed","reason":reason}));
     if account.status != "posted" {
         return skipped("charges_not_posted");

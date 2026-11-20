@@ -266,6 +266,14 @@ function billingEffectiveCoverages(serviceDate){
 // The shortened visit form keeps one insurance line per plan and drops the long claims note.
 function billingCoverageOrderMarkup(serviceDate,selectedId,compact=false){
  const coverages=billingEffectiveCoverages(serviceDate);
+ // On the encounter the insurance is already in the patient banner: say once who this claim bills,
+ // and in what order, instead of repeating the plan list.
+ if(compact){
+  const ranked=[...coverages].sort((a,b)=>(a.id===selectedId?-1:0)-(b.id===selectedId?-1:0));
+  const plan=c=>`${esc(payerName(c.content.payer_id))} · member ${esc(c.content.member_id||'not recorded')}`;
+  const [first,...rest]=ranked;
+  return `<p class="encounter-coverage-line">${first?`<span><b>Bills</b> ${plan(first)}</span><span>${rest.length?`<b>Then</b> ${rest.map(plan).join(', ')}`:'No secondary insurance on file'}</span>`:'<span>No insurance on file for this date.</span>'}<button type="button" class="text-button" data-chart-section="insurance">Insurance and eligibility</button></p>`;
+ }
   return `<section class="mapping-notice"><h4>Insurance on ${esc(serviceDate?displayDate(serviceDate):'the service date')}</h4>${coverages.length?`<ol>${coverages.map(c=>`<li><b>${esc(human(c.content.priority))}: ${esc(payerName(c.content.payer_id))}</b> · ${esc(c.content.member_id)}${c.id===selectedId?' · Selected for this account':''}</li>`).join('')}</ol>${compact?'':'<p>Record each service once. Primary and secondary claims use the same visit charges; do not add another charge line or account for the second payer. Review the primary response and crossover status before preparing secondary billing.</p>'}`:'<p>No insurance on file for this encounter date.</p>'}<button type="button" data-chart-section="insurance">Review all insurance & eligibility</button></section>`;
 }
 function chargeDiagnosisCurrent(form,state){return !!form&&$('billing-account-form')===form&&form.dataset.patient===selected&&state.identity===me&&state.patient===selected&&state.visit===form.elements.visit_id?.value&&form.chargeDiagnosisState===state;}
@@ -974,7 +982,7 @@ const encounterDetailDates=['current_illness_date','through_date','hospitalizati
 function encounterClaimDetailsMarkup(d,part){
  d=d||{};const val=k=>esc(d[k]??''),field=(k,label,extra='')=>`<label>${label}<input name="cd_${k}" value="${val(k)}" ${extra}></label>`,dateField=(k,label)=>`<label>${label}<input type="date" name="cd_${k}" value="${val(k)}"></label>`;
  if(part==='head')return `<div class="form-grid">${field('prior_authorization_number','Prior authorization number (box 23)','maxlength="50"')}${dateField('current_illness_date','Date the illness or injury began (box 14)')}${dateField('through_date','Through date (if more than one day)')}${encounterSecondaryMarkup(d)}${field('batch_number','Batch number (for your reports)','maxlength="30"')}<label class="check-row"><input type="checkbox" name="cd_paper_only" ${d.paper_only?'checked':''}> Do not send this claim electronically (print it instead)</label></div>`;
- if(part==='provider')return `<section class="charge-encounter-head" data-encounter-provider><h4>Provider and place</h4><div class="form-grid"><label>Rendering provider<select name="cd_rendering_pick" data-encounter-pick="provider"><option value="">Practice default</option>${encounterOptionsMarkup('providers',d.rendering_npi)}</select></label><input type="hidden" name="cd_rendering_provider_name" value="${val('rendering_provider_name')}">${field('rendering_npi','Rendering provider NPI','inputmode="numeric" maxlength="10" placeholder="Practice default"')}<label>Location<select name="cd_location_pick" data-encounter-pick="facility"><option value="">Billing address</option>${encounterOptionsMarkup('facilities',d.service_location_name)}</select></label><input type="hidden" name="cd_service_location_name" value="${val('service_location_name')}"><input type="hidden" name="cd_service_location_address" value="${val('service_location_address')}"><label>Place of service<select name="cd_place_of_service">${encounterPlaceOptions.map(([code,label])=>`<option value="${code}" ${String(d.place_of_service||'')===code?'selected':''}>${label}</option>`).join('')}</select></label><label>Encounter mode<select name="cd_encounter_mode"><option value="" ${!d.encounter_mode?'selected':''}>In office</option><option value="telehealth" ${d.encounter_mode==='telehealth'?'selected':''}>Telehealth</option></select></label>${field('referring_provider_name','Referring provider','maxlength="120"')}${field('referring_npi','Referring provider NPI','inputmode="numeric" maxlength="10"')}${field('supervising_provider_name','Supervising provider','maxlength="120"')}${field('supervising_npi','Supervising provider NPI','inputmode="numeric" maxlength="10"')}</div></section>`;
+ if(part==='provider')return `<section class="charge-encounter-head" data-encounter-provider><div class="encounter-provider-top"><h4>Provider and place</h4><button type="button" class="text-button" data-encounter-provider-change aria-expanded="false">Change</button></div><dl class="encounter-provider-summary" data-encounter-provider-summary>${encounterProviderSummaryMarkup(d)}</dl><div class="form-grid" data-encounter-provider-fields hidden><label>Rendering provider<select name="cd_rendering_pick" data-encounter-pick="provider"><option value="">Practice default</option>${encounterOptionsMarkup('providers',d.rendering_npi)}</select></label><input type="hidden" name="cd_rendering_provider_name" value="${val('rendering_provider_name')}">${field('rendering_npi','Rendering provider NPI','inputmode="numeric" maxlength="10" placeholder="Practice default"')}<label>Location<select name="cd_location_pick" data-encounter-pick="facility"><option value="">Billing address</option>${encounterOptionsMarkup('facilities',d.service_location_name)}</select></label><input type="hidden" name="cd_service_location_name" value="${val('service_location_name')}"><input type="hidden" name="cd_service_location_address" value="${val('service_location_address')}"><label>Place of service<select name="cd_place_of_service">${encounterPlaceOptions.map(([code,label])=>`<option value="${code}" ${String(d.place_of_service||'')===code?'selected':''}>${label}</option>`).join('')}</select></label><label>Encounter mode<select name="cd_encounter_mode"><option value="" ${!d.encounter_mode?'selected':''}>In office</option><option value="telehealth" ${d.encounter_mode==='telehealth'?'selected':''}>Telehealth</option></select></label>${field('referring_provider_name','Referring provider','maxlength="120"')}${field('referring_npi','Referring provider NPI','inputmode="numeric" maxlength="10"')}${field('supervising_provider_name','Supervising provider','maxlength="120"')}${field('supervising_npi','Supervising provider NPI','inputmode="numeric" maxlength="10"')}</div></section>`;
  if(part==='actions')return `<div class="encounter-form-actions"><button type="button" data-check-codes>Check codes</button><label class="check-row"><input type="checkbox" name="cd_review_requested" ${d.review_requested?'checked':''}> Hold for review before posting</label><div class="encounter-code-check" data-code-check role="status" aria-live="polite"></div></div>`;
  if(part==='extras')return `<div class="form-grid">${dateField('hospitalization_from','Hospitalized from (box 18)')}${dateField('hospitalization_to','Hospitalized to')}${field('claim_codes','Claim codes (box 10d)','maxlength="19"')}${field('additional_claim_info','Additional claim information (box 19)','maxlength="71"')}</div>`;
  if(part==='notes')return `<label>Business office notes (staff only, never on the claim)<textarea name="cd_business_office_note" maxlength="2000">${val('business_office_note')}</textarea></label>`;
@@ -1001,9 +1009,43 @@ function encounterOptionsMarkup(kind,current){
  const items=encounterOptions?.[kind]||[];
  return items.map(item=>{const value=kind==='providers'?item.npi:item.name;return `<option value="${esc(item.id)}" ${current&&value===current?'selected':''}>${esc(item.name)}${kind==='providers'&&item.npi?' · NPI '+esc(item.npi):''}</option>`;}).join('');
 }
+// What the claim will carry, read from the encounter itself: the clinician the appointment was
+// booked with, the practice's location and place of service. Staff change it only when it differs.
+function encounterProviderSummaryMarkup(d){
+ d=d||{};
+ const visit=typeof activeVisit!=='undefined'?activeVisit:null,providers=encounterOptions?.providers||[],facilities=encounterOptions?.facilities||[];
+ const appointment=visit&&typeof workspace!=='undefined'?(workspace.appointments||[]).find(a=>a.id===visit.appointment_id):null;
+ const npi=n=>n?` · NPI ${esc(n)}`:'',from=t=>` <span class="muted">${t}</span>`;
+ let rendering;
+ if(d.rendering_npi)rendering=`${esc(d.rendering_provider_name||providers.find(p=>p.npi===d.rendering_npi)?.name||'Chosen provider')}${npi(d.rendering_npi)}`;
+ else{const mine=visit&&providers.find(p=>p.id===visit.clinician_id),only=providers.length===1?providers[0]:null,who=mine||only;
+  rendering=who?`${esc(who.name)}${npi(who.npi)}${from(mine?'from the schedule':'the practice’s provider')}`:encounterOptions?`The encounter’s clinician${from('from the schedule')}`:'Loading…';}
+ const location=d.service_location_name?esc(d.service_location_name):`${esc(facilities.length===1?facilities[0].name:'Practice billing address')}${from('billing address')}`;
+ const placeLabel=(encounterPlaceOptions.find(([code])=>code&&code===String(d.place_of_service||''))||[])[1];
+ const place=`${placeLabel?esc(placeLabel):'Practice default'} · ${d.encounter_mode==='telehealth'?'Telehealth':'In office'}`;
+ const room=appointment?.facility?`${esc(appointment.facility)}${appointment.room?`, ${esc(appointment.room)}`:''}`:'';
+ const row=(k,v)=>`<div><dt>${k}</dt><dd>${v}</dd></div>`;
+ return row('Rendering provider',rendering)+row('Location',location)+(room?row('Seen at',`${room}${from('from the schedule')}`):'')+row('Place of service',place)+row('Referring provider',d.referring_provider_name?`${esc(d.referring_provider_name)}${npi(d.referring_npi)}`:'None')+(d.supervising_provider_name?row('Supervising provider',`${esc(d.supervising_provider_name)}${npi(d.supervising_npi)}`):'');
+}
+function encounterProviderSummaryRefresh(form){
+ const host=form?.querySelector?.('[data-encounter-provider-summary]');if(!host)return;
+ const value=k=>String(form.elements?.[`cd_${k}`]?.value||'').trim();
+ host.innerHTML=encounterProviderSummaryMarkup({rendering_npi:value('rendering_npi'),rendering_provider_name:value('rendering_provider_name'),service_location_name:value('service_location_name'),place_of_service:value('place_of_service'),encounter_mode:value('encounter_mode'),referring_provider_name:value('referring_provider_name'),referring_npi:value('referring_npi'),supervising_provider_name:value('supervising_provider_name'),supervising_npi:value('supervising_npi')});
+}
+function encounterProviderFieldsOpen(section,open){
+ const fields=section?.querySelector?.('[data-encounter-provider-fields]'),button=section?.querySelector?.('[data-encounter-provider-change]');if(!fields)return;
+ fields.hidden=!open;if(button){button.setAttribute('aria-expanded',String(open));button.textContent=open?'Done':'Change';}
+ if(!open)encounterProviderSummaryRefresh(section.closest?.('form'));
+}
+if(typeof document!=='undefined'&&document.addEventListener){
+ document.addEventListener('click',event=>{const button=event.target?.closest?.('[data-encounter-provider-change]');if(!button)return;event.preventDefault();const section=button.closest('[data-encounter-provider]');encounterProviderFieldsOpen(section,section.querySelector('[data-encounter-provider-fields]')?.hidden);});
+ // A field the browser refuses on save must be visible to be fixed.
+ document.addEventListener('invalid',event=>{const section=event.target?.closest?.('[data-encounter-provider]');if(section)encounterProviderFieldsOpen(section,true);},true);
+}
 // The lists arrive after the form is drawn: fill them in where the form is still open.
 function encounterOptionsFill(){
  const form=typeof $==='function'?$('billing-account-form'):null;if(!form?.querySelector)return;
+ encounterProviderSummaryRefresh(form);
  for(const [name,kind,hidden] of [['cd_rendering_pick','providers','cd_rendering_npi'],['cd_location_pick','facilities','cd_service_location_name']]){
   const select=form.elements?.[name];if(!select||select.options.length>1)continue;
   select.insertAdjacentHTML('beforeend',encounterOptionsMarkup(kind,form.elements[hidden]?.value||''));

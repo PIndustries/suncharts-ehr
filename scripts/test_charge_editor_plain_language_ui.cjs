@@ -31,7 +31,7 @@ vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/billing.js','utf8'),c
  assert.match(html,/>Amount</);assert.match(html,/>Use practice price</);assert.match(html,/<summary>Code list this came from<\/summary>/);
  assert.doesNotMatch(html,/>Diagnoses for this service</,'the line is answered by the letters, not a box to type codes into');
  assert.doesNotMatch(html,/<h3>[^<]*Encounter|Saved visit diagnoses|Diagnosis pointers/,'no developer wording anywhere on the charge editor');
- assert.match(details,/Insurance on Nov 13, 2026/,'coverage heading uses the friendly date');assert.doesNotMatch(html,/Insurance for 2026-11-13|Insurance for 2026<\/h4>/);
+ assert.match(details,/class="encounter-coverage-line"/,'the encounter says in one line which insurance it bills');assert.doesNotMatch(html,/Insurance on Nov 13, 2026|Selected for this account|Insurance for 2026/,'no repeated plan list on the encounter');
  assert.match(feeHtml,/Choose where the encounter took place\./,'the encounter-place note is shown above the facility and setting choices');assert.doesNotMatch(feeHtml,/Provider comes from the selected encounter|owner-approved schedule can supply fees/);
  assert.doesNotMatch(html,/Fees require an approved schedule|Manual amounts remain available/,'no jargon fee wording is shown in the charge editor');
  // The fee-context status line is filled with the reason the server returns for the encounter.

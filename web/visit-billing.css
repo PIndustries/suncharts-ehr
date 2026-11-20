@@ -241,3 +241,8 @@
 .insurance-workflow-stages button .prep-check{background:var(--warning-bg);color:var(--warning-text)}
 .insurance-workflow-stages button .prep-todo{background:var(--error-bg);color:var(--error-text)}
 .insurance-workflow-stages{gap:28px}
+.encounter-provider-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.encounter-provider-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:6px 16px;margin:0}
+.encounter-provider-summary dt{font-size:var(--fs-sm);color:var(--muted)}
+.encounter-provider-summary dd{margin:0}
+.encounter-coverage-line{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 16px;margin:0}
