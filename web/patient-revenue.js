@@ -111,6 +111,35 @@ async function showPaymentGroupReceipt(group,appointmentId){
  card.copayPrint={receipt:receipts,context,identity:me,current:()=>opening===paymentGroupOpening&&me===view.identity&&selected===view.patient&&$('encounter-copay-receipt')===host,group:true};
  host.scrollIntoView({block:'start'});card.querySelector('h3')?.focus({preventScroll:true});
 }
+// 'Print receipt' inside the Collect payment window: load the same grouped receipt a moment after
+// the payment lands and send it straight to the browser print dialog. The window stays open and the
+// page does not move — no section switch, no scroll, nothing dropped into the encounter.
+async function printPaymentGroupReceiptFromCollect(group,button){
+ if(!group||!button||button.disabled||!collectDialog?.isConnected)return;
+ const view=hostedCopayView();
+ button.disabled=true;
+ try{
+  const data=await api(`/api/v1/patients/${encodeURIComponent(view.patient)}/billing/payment-groups/${encodeURIComponent(group)}`);
+  const receipts=(data.receipts||[]).filter(r=>r.payment_group_id===group);
+  if(!receipts.length)throw new Error('This receipt is unavailable for the current patient. Refresh the payment list.');
+  // The context (patient, practice) comes from the same receipt endpoint a single receipt uses.
+  const first=await api(`/api/v1/billing/copay-receipts/${encodeURIComponent(receipts[0].id)}`);
+  const p=encounterRevenueState?.data?.summary?.patient||{},balance=Number.isSafeInteger(p.owes_now_cents)?p.owes_now_cents:undefined;
+  const context={...first.context,balanceCents:balance,printedAt:new Date().toISOString()};
+  if(me!==view.identity||!collectDialog?.isConnected||!button.isConnected)return;
+  const host=button.closest('.collect-done')||collectDialog;
+  host.querySelector('.copay-print-source')?.remove();
+  const frame=document.createElement('iframe');
+  frame.className='copay-print-source';frame.title='Payment receipt print document';frame.setAttribute('aria-hidden','true');frame.setAttribute('sandbox','allow-same-origin allow-modals');
+  frame.addEventListener('load',()=>{button.disabled=false;if(me!==view.identity||frame.isConnected===false||!collectDialog?.contains(frame))return;frame.contentWindow.focus();frame.contentWindow.print();},{once:true});
+  host.append(frame);frame.srcdoc=paymentGroupReceiptDocument(receipts,context);
+ }catch(error){
+  if(button.isConnected)button.disabled=false;
+  const host=button.closest?.('.collect-done')||collectDialog;
+  if(host?.isConnected!==false)host?.querySelector?.('.collect-print-error')?.remove();
+  if(host){const message=document.createElement('p');message.className='muted collect-print-error';message.setAttribute('role','status');message.textContent='The receipt could not be loaded. Try again.';host.append(message);}
+ }
+}
 function copayReceiptDocument(receipt,context){
  const patient=context.patient,appointment=context.appointment,corrected=Number(receipt.reversed_cents||0)>0,hosted=receipt.hosted_checkout,refunded=Number(hosted?.refunded_cents||0),test=hosted?.livemode===false;
  const status=receipt.voided?'Voided receipt':corrected?'Receipt with corrected allocation':refunded?'Card copay receipt with verified refund':hosted?'Card copay receipt':'Copay receipt';
@@ -1078,7 +1107,7 @@ async function collectRefresh(){
 if(typeof document!=='undefined'){
  document.addEventListener('click',event=>{
   const tab=event.target?.closest?.('[data-collect-method]');if(tab?.dataset?.collectMethod){event.preventDefault();collectMethod(tab.dataset.collectMethod);return;}
-  const receipt=event.target?.closest?.('[data-collect-receipt]');if(receipt?.dataset?.collectReceipt){event.preventDefault();const group=receipt.dataset.collectReceipt,appointment=receipt.dataset.appointment;const dialog=collectDialog;if(dialog){delete dialog.dataset.refresh;sheetClose(dialog,()=>run(async()=>{await collectRefresh();await showPaymentGroupReceipt(group,appointment);}));}return;}
+  const receipt=event.target?.closest?.('[data-collect-receipt]');if(receipt?.dataset?.collectReceipt){event.preventDefault();void run(()=>printPaymentGroupReceiptFromCollect(receipt.dataset.collectReceipt,receipt));return;}
  });
  document.addEventListener('submit',event=>{if(event.target?.id!=='collect-cash-form')return;event.preventDefault();run(()=>submitCollectCash(event.target));});
  document.addEventListener('change',event=>{if(!event.target?.hasAttribute?.('data-collect-target'))return;let value=null;try{value=cents(String(event.target.value||'').replace(/[$\s,]/g,''));}catch{}collectSession.target=value&&value>0?value:null;collectProgressPaint();const active=collectDialog?.querySelector('[data-collect-method].active')?.dataset.collectMethod;if(active==='cash'||active==='check')collectMethod(active);});
