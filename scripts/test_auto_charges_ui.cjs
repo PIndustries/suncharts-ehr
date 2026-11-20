@@ -453,14 +453,14 @@ const pressCardCharges=async()=>{
  // the table shut, as it does for every visit that is not being filled in.
  reset([earlierAccount,emptyAccount,currentDraft]);
  await openStep();
- assert.ok(!$('billing-account-form'),'a visit with charges of its own is not given a table on being opened');
+ assert.equal(JSON.stringify(codes()),'["99213"]','the Billing tab shows a visit\u2019s own charges in place, never filled in again');
  form=await pressCardCharges();
  assert.equal(JSON.stringify(codes()),'["99213"]','the encounter\u2019s own draft charges are shown unchanged');
  assert.ok(!form.outerHTML.includes('Filled in from the encounter'),'a visit with charges of its own is offered nothing');
  // An encounter whose only other accounts have no lines has nothing to be filled in from.
  reset([emptyAccount]);
  form=await openStep();
- assert.ok(!form,'with no earlier charges the step still waits for its Add charges button');
+ assert.ok(!form||!codes().some(Boolean),'with no earlier charges the step still waits for its Add charges button');
  // The most recent earlier visit wins, not the oldest.
  reset([account('account-old','visit-old','2026-08-02',[{code_system:'CPT',code:'20610',description:'Older injection',units:1,amount_cents:9000,diagnosis_codes:[]}]),earlierAccount]);
  form=await openStep();
@@ -468,11 +468,11 @@ const pressCardCharges=async()=>{
  // An account already holding this encounter's charges is not a source, nor is a voided one.
  reset([account('account-current-2','visit-current','2026-11-13',[{...lineOffice}]),account('account-void','visit-void','2026-10-18',[{...lineDrug}],'void')]);
  form=await openStep();
- assert.ok(!form,'an account for this encounter and a voided one are nothing to fill in from');
+ assert.equal(JSON.stringify(codes()),'["99213"]','an account for this encounter shows its own lines; it and a voided one are nothing to fill in from');
  // A charge record from the previous system is not the practice's own charge history.
  reset([account('account-source','visit-source','2026-10-18',[{...lineOffice}],'posted',{source_history_id:'source-1'})]);
  form=await openStep();
- assert.ok(!form,'a record from the previous system is never filled in from');
+ assert.ok(!form||!codes().some(Boolean),'a record from the previous system is never filled in from');
  // Only this patient's chart is ever read.
  reset([earlierAccount]);
  ctx.workspace.billing.accounts=[...ctx.workspace.billing.accounts,{id:'account-other',version:2,status:'posted',content:{visit_id:'visit-other-patient',service_date:'2026-11-12',currency:'USD',notes:'',lines:[{code_system:'CPT',code:'99214',description:'Someone else\u2019s visit',units:1,amount_cents:30000,diagnosis_codes:[]}]}}];
@@ -493,7 +493,7 @@ const pressCardCharges=async()=>{
  // own can only ever produce the fill-in, so this is the honest check that it was refused.
  closeStep();
  await openStep();
- assert.ok(!$('billing-account-form'),'a visit staff emptied is not quietly given a table again');
+ assert.ok(!$('billing-account-form')||!codes().some(Boolean),'a visit staff emptied is not quietly filled in again');
  assert.ok(!($('encounter-revenue-status')?.innerHTML.includes('Filled in from the encounter')),'nor is the encounter still spoken of as filled in');
  assert.ok(!($('encounter-revenue-status')?.innerHTML.includes('Check the charges')),'and the card asks for charges in its usual words');
  // Emptying the table by hand is the same answer, and is kept the same way.
@@ -504,7 +504,7 @@ const pressCardCharges=async()=>{
  await advance();
  closeStep();
  await openStep();
- assert.ok(!$('billing-account-form'),'a table staff emptied themselves is never quietly refilled');
+ assert.ok(!$('billing-account-form')||!codes().some(Boolean),'a table staff emptied themselves is never quietly refilled');
  assert.ok(!($('encounter-revenue-status')?.innerHTML.includes('Filled in from the encounter')));
  // A browser that will not hand out its session still behaves: the memory lives in the page.
  reset([earlierAccount]);
@@ -514,7 +514,7 @@ const pressCardCharges=async()=>{
  click(form.querySelector('[data-charge-proposal-blank]'));
  closeStep();
  await openStep();
- assert.ok(!$('billing-account-form'),'and the choice is still remembered for this encounter without the session store');
+ assert.ok(!$('billing-account-form')||!codes().some(Boolean),'and the choice is still remembered for this encounter without the session store');
 
  // ---- 4. who is ever offered this ------------------------------------------------------
  // Read-only staff are not offered charges to change, and are not blocked from the encounter. The page
@@ -528,7 +528,7 @@ const pressCardCharges=async()=>{
  reset([earlierAccount]);
  ctx.workspace.billing.accounts=[];
  form=await openStep('visit-earlier','signed');
- assert.ok(!form,'a visit that is not in progress still waits for its own button');
+ assert.ok(!form||!codes().some(Boolean),'a visit that is not in progress is never filled in from an earlier one');
  // Once the encounter has an account the table is never refilled from an earlier visit: the charges on
  // screen are the encounter's own, opened the way staff open them.
  reset([earlierAccount,currentDraft]);
@@ -549,7 +549,7 @@ const pressCardCharges=async()=>{
  summaryFor(ctx.workspace.billing.accounts,'visit-current','in_progress');
  closeStep();
  await openStep();
- assert.ok(!$('billing-account-form'),'the encounter was already filled in once; it is not offered a second time');
+ assert.ok(!$('billing-account-form')||!codes().some(Boolean),'the encounter was already filled in once; it is not offered a second time');
 
  // ---- 5. the encounter billing card stops asking for charges by hand ------------------------
  // The card is drawn straight from an encounter summary at 'add_charges' — an encounter with no charges yet —

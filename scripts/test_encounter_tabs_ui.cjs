@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
-// The encounter page is in tabs: Note, Codes, Claim, Payments, Invoices, Checkout, History. Which tab
-// opens, what is remembered, and that the whole page follows the tab. Synthetic data only.
+// The encounter page is in tabs: Note, Billing, Payments, Checkout, History. Which tab opens, what is
+// remembered, the claim under the codes on Billing, and that the whole page follows the tab. Synthetic data only.
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const source=fs.readFileSync(path.join(__dirname,'..','web','patient-revenue.js'),'utf8');
 const start=source.indexOf('const invoiceTabs='),end=source.indexOf("document.addEventListener('click',event=>{const tab=event.target?.closest?.('[data-invoice-tab-key]')");
@@ -9,14 +9,15 @@ assert.ok(start>0&&end>start,'the tab code is where this test expects it');
 const store={},el=()=>({dataset:{},hidden:true,querySelectorAll:()=>[]});
 const nodes={'encounter-revenue':el(),'visit-page-host':el(),'encounter-claims':el()};
 const ctx={$:id=>nodes[id]||null,localStorage:{getItem:k=>store[k]??null,setItem:(k,v)=>{store[k]=String(v);}},activeVisit:{id:'visit-1'},encounterSection:'visit',
- encounterRevenueState:{data:{summary:{}}},encounterChargeAccount:()=>({status:'draft'}),renderEncounterInvoices(){},run(){}};
+ encounterRevenueState:{data:{summary:{}}},encounterChargeAccount:()=>({status:'draft'}),renderEncounterInvoices(){},run(){},billingCan:()=>false};
 vm.createContext(ctx);vm.runInContext(source.slice(start,end)+';this.tabs=invoiceTabs;this.remembered=invoiceTabRemembered;this.set=invoiceTabSet;this.forget=encounterTabForget;',ctx);
-assert.deepEqual(JSON.parse(JSON.stringify(ctx.tabs.map(([,label])=>label))),['Note','Codes','Claim','Payments','Invoices','Checkout','History']);
+assert.deepEqual(JSON.parse(JSON.stringify(ctx.tabs.map(([,label])=>label))),['Note','Billing','Payments','Checkout','History']);
 // An encounter being written opens on its note; asked for checkout, on checkout.
 assert.equal(ctx.remembered(),'note');ctx.encounterSection='checkout';assert.equal(ctx.remembered(),'checkout');
 // Billing opens on the billing tab used last; the old name of the codes tab still works.
-ctx.encounterSection='charges';assert.equal(ctx.remembered(),'codes');
-store['suncharts.invoiceTab']='encounter';assert.equal(ctx.remembered(),'codes');
+ctx.encounterSection='charges';assert.equal(ctx.remembered(),'billing');
+for(const old of ['encounter','codes','claim']){store['suncharts.invoiceTab']=old;assert.equal(ctx.remembered(),'billing',old);}
+store['suncharts.invoiceTab']='invoices';assert.equal(ctx.remembered(),'payments','statements are on Payments');
 ctx.set('payments');assert.equal(store['suncharts.invoiceTab'],'payments');
 // The page follows the tab, and the same encounter keeps its tab while it is re-drawn.
 assert.equal(nodes['visit-page-host'].dataset.encounterTab,'payments');assert.equal(nodes['encounter-revenue'].dataset.invoiceTab,'payments');
@@ -24,8 +25,10 @@ ctx.set('note');assert.equal(ctx.remembered(),'note','re-drawing keeps the open 
 // Another encounter opens fresh: billing comes back on the billing tab used last.
 ctx.activeVisit={id:'visit-2'};assert.equal(ctx.remembered(),'payments');
 ctx.activeVisit={id:'visit-1'};ctx.forget();assert.equal(ctx.remembered(),'payments','opening billing again forgets the note tab');
-// No claim yet: the Claim tab says where the claim comes from.
-ctx.set('claim');assert.match(nodes['encounter-claims'].innerHTML,/made when the charges are posted on the Codes tab/);
+// No claim yet: Billing says, under the codes, where the claim comes from.
+ctx.set('billing');assert.match(nodes['encounter-claims'].innerHTML,/made from these codes when the charges are posted/);
+// A patient without insurance has no claim at all.
+nodes['encounter-claims']=el();ctx.encounterRevenueState={data:{summary:{insurance:{insured:false}}}};ctx.set('billing');assert.equal(nodes['encounter-claims'].innerHTML,undefined);
 // The page follows the tab in CSS: the note and checkout only on their tabs, money on Payments.
 const css=fs.readFileSync(path.join(__dirname,'..','web','visit-billing.css'),'utf8');
 assert.match(css,/#visit-page-host\[data-encounter-tab\]:not\(\[data-encounter-tab="note"\]\)>#visit-editor\{display:none\}/);
