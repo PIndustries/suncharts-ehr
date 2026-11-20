@@ -974,7 +974,7 @@ const collectMethods=[['cash','Cash'],['check','Check'],['reader','Card reader']
 let collectDialog=null;
 // One payment can be taken in parts — card, then cash, then a check — against one amount to
 // collect. Each method starts at what is left; the window lists what was taken.
-let collectSession={target:null,taken:[],group:null};
+let collectSession={target:null,owedAtOpen:null,taken:[],group:null};
 // Every part taken while the window is open carries the same id, so the parts read as one payment.
 function collectGroupField(){return collectDialog&&collectSession.group?{payment_group_id:collectSession.group}:{};}
 function collectTakenCents(){return collectSession.taken.reduce((sum,part)=>sum+part.amount,0);}
@@ -996,13 +996,13 @@ function collectPartTaken(amount,label,receipt,appointment,detail){
  slot.innerHTML=collectDoneMarkup(amount,label,receiptButton);
 }
 function collectAppointmentId(){return $('encounter-hosted-copay')?.dataset.appointment||(typeof revenueAppointment==='function'?revenueAppointment()?.id:null)||null;}
-function collectDoneMarkup(amount,label,receiptButton,takenCents,owedCents,parts){
+function collectDoneMarkup(amount,label,receiptButton){
  // What the extra does is what the server does with it: allocate_copays caps what a receipt
  // applies at the posted balance, so anything beyond it stays unapplied credit on the
  // patient's account. The encounter's balance is never driven negative.
- const taken=takenCents==null?collectTakenCents():takenCents,partsTaken=parts==null?collectSession.taken.length:parts,over=taken-(owedCents==null?taken:owedCents);
- const head=partsTaken>1?`${money(taken)} paid in ${partsTaken} parts`:`${money(amount)} ${esc(label)} recorded`;
- const sentence=over>0?`${money(taken)} is more than this encounter owed and stays as credit on the patient's account. It is not owed money; refund it or keep it for a later visit.`:'The payment goes to this encounter\'s balance.';
+ const taken=collectTakenCents(),parts=collectSession.taken.length,over=Math.max(0,taken-(Number.isSafeInteger(collectSession.owedAtOpen)?collectSession.owedAtOpen:0));
+ const head=parts>1?`${money(taken)} paid in ${parts} parts`:`${money(amount)} ${esc(label)} recorded`;
+ const sentence=over>0?(over<taken?`${money(over)} more than this encounter owed stays as credit on the patient's account.`:`${money(taken)} stays as credit on the patient's account. This encounter owed nothing.`):'The payment goes to this encounter\'s balance.';
  return `<section class="collect-done" role="status"><div class="collect-done-mark" aria-hidden="true">✓</div><h3>${head}</h3><p class="muted">${sentence}</p><div class="actions">${receiptButton}<button type="button" class="primary" data-sheet-close>Done</button></div></section>`;
 }
 function collectOwedMarkup(){
@@ -1025,7 +1025,10 @@ function openCollectModal(){
  if(collectDialog?.isConnected){collectDialog.querySelector('[data-collect-method].active')?.focus?.();return true;}
  const home=panel.parentNode,marker=document.createComment('visit-billing-collect');home.insertBefore(marker,panel);
  let head=panel.querySelector('[data-collect-head]');if(!head){head=document.createElement('div');head.dataset.collectHead='';panel.prepend(head);}
- const pm=encounterRevenueState?.data?.summary?.patient||{},owes=pm.owes_now_cents,due=Number.isSafeInteger(owes)&&owes>0?owes:Number.isSafeInteger(pm.copay_due_cents)&&pm.copay_due_cents>0?pm.copay_due_cents:null;collectSession={target:due,taken:[],group:crypto.randomUUID()};
+ const pm=encounterRevenueState?.data?.summary?.patient||{},owes=pm.owes_now_cents,due=Number.isSafeInteger(owes)&&owes>0?owes:Number.isSafeInteger(pm.copay_due_cents)&&pm.copay_due_cents>0?pm.copay_due_cents:null;
+ // What this encounter owed when the window opened, frozen for the success panel: the same
+ // 'Patient owes now' figure staff read on the window itself, in cents.
+ collectSession={target:due,owedAtOpen:Number.isSafeInteger(owes)&&owes>0?owes:0,taken:[],group:crypto.randomUUID()};
  head.innerHTML=`<div data-collect-owed>${collectOwedMarkup()}</div><div data-collect-progress>${collectProgressMarkup()}</div><nav class="invoice-tabs collect-methods" role="tablist" aria-label="How the patient is paying">${collectMethods.map(([key,label])=>`<button type="button" role="tab" data-collect-method="${key}" aria-selected="false">${label}</button>`).join('')}</nav>`;
  panel.hidden=false;
  const dialog=sheetOpen('Collect payment',panel);dialog.classList.add('sheet-wide','collect-sheet');collectDialog=dialog;
