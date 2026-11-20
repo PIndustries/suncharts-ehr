@@ -14,7 +14,8 @@ function fixture(options={}){
  const hosts={},timers=[],calls=[],listeners={};
  const host={innerHTML:'',style:{setProperty(name,value){host.style[name]=value;}},contains:()=>false,querySelector:()=>null,querySelectorAll:()=>[]};
  hosts['patient-banner']=host;
- const c={console,Date,Intl,Map,Set,Number,String,JSON,Math,Promise,Array,Object,RegExp,Error,esc,
+ const pinned=options.now||NOW,Clock=class extends Date{constructor(...a){super(...(a.length?a:[pinned.getTime()]));}static now(){return pinned.getTime();}};
+ const c={console,Date:Clock,Intl,Map,Set,Number,String,JSON,Math,Promise,Array,Object,RegExp,Error,esc,
   selected:'p1',me:{user_id:'owner1',tenant_id:'t1',role:'owner'},activeVisit:undefined,billingPayers:[{id:'payer-a',content:{name:'Synthetic Health Plan'}},{id:'payer-b',content:{name:'Synthetic Silver HMO'}}],
   workspace:{patient:{id:'p1',mrn:'SYN-1001',given_name:'Maria',family_name:'Synthetic',birth_date:'1990-01-01',archived:false},appointments:[],visits:[],clinical:{items:[],reviews:[]},billing:{coverages:[]},demographics:{content:{}}},
   $:id=>hosts[id]||null,date:String,human:String,billingWrite:()=>true,billingCan:()=>true,
