@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
-// The visit charge table lives on its own: lines as rows, edits that save themselves, undo for
+// The encounter charge table lives on its own: lines as rows, edits that save themselves, undo for
 // removals, live totals, and plain-worded row problems. No npm packages: the rows billing.js
 // renders are markup strings (chargeLinesMarkup -> chargeRow), so this test parses that markup
 // into small hand-written element stubs — the style the other charge UI scripts use — loads
@@ -242,8 +242,8 @@ const openForm=()=>$('billing-account-form');
 const statusText=()=>openForm().querySelector('[data-charge-status]').textContent.trim();
 const lineTexts=()=>openForm().querySelectorAll('#billing-charge-lines .billing-charge-row').map(row=>row.querySelector('[name="code"]').value);
 const rowsNow=()=>$('billing-charge-lines').querySelectorAll('.billing-charge-row');
-// A draft account opened into the visit editor; an empty list gives the one blank row the page
-// gives a visit that has no charges yet.
+// A draft account opened into the encounter editor; an empty list gives the one blank row the page
+// gives an encounter that has no charges yet.
 const openTable=async lines=>{
  ctx.workspace.billing.accounts=lines.length?[{id:'account',version:7,status:'draft',content:{visit_id:'visit-a',service_date:'2026-11-13',currency:'USD',lines,notes:''}}]:[];
  sent.length=0;
@@ -272,7 +272,7 @@ const advance=async()=>{
  ctx.revenueServiceDate=()=>'2026-11-13';
  ctx.billingCoverageOrderMarkup=()=>'';
  ctx.visitPlanCopayCents=()=>2500;
- // A brand-new table for a visit: one blank row, totals at zero, nothing typed yet.
+ // A brand-new table for an encounter: one blank row, totals at zero, nothing typed yet.
  let form=await openTable([]);
  assert.ok(form,'the editor opened');
  assert.equal(form.dataset.autosave,'on','a visit charge editor saves itself');
@@ -385,7 +385,7 @@ const advance=async()=>{
  ctx.workspace.billing.accounts=[{id:'account',version:9,status:'posted',content:{visit_id:'visit-a',service_date:'2026-11-13',currency:'USD',lines:[{code_system:'CPT',code:'99213',description:'Office visit',units:1,amount_cents:15000,diagnosis_codes:['Z00.00']}]}}];
  await vm.runInContext('accountEditor(workspace.billing.accounts[0],null,true)',ctx);
  const finished=nodes['encounter-billing-editor'].innerHTML;
- assert.match(finished,/Charges for this visit/,'a posted account is shown as finished charges');
+ assert.match(finished,/Charges for this encounter/,'a posted account is shown as finished charges');
  assert.ok(!finished.includes('data-add-charge')&&!finished.includes('data-remove-charge'),'a finished table has nothing to press');
  console.log('PASS charge table: add and focus, debounced POST then PUT with the server version, live totals and copay, plain-worded row problems, remove with undo, 409 refresh, and a read-only finished table');
 })().catch(error=>{console.error(error);process.exit(1);});

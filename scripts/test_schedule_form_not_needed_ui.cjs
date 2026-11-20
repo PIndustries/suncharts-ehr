@@ -44,7 +44,7 @@ async function main(){
  f.load([notNeeded]);
  const chips=markerLabels(f.run("scheduleMarkersHtml(scheduleState.appointments[0],'day')")).filter(m=>m.kind==='forms');
  assert.deepEqual(chips.map(m=>[m.label,m.tone]),[['No form needed','grey']]);
- assert.equal(chips[0].tip,'No intake form is needed for this visit.');
+ assert.equal(chips[0].tip,'No intake form is needed for this encounter.');
 
  // With a mark on file the card never offers to send a form…
  assert.doesNotMatch(f.run("scheduleMarkersHtml(scheduleState.appointments[0],'day')"),/send-intake/,'a marked card does not offer to send a form');
@@ -52,10 +52,10 @@ async function main(){
  f.load([{...base}]);
  assert.match(f.run("scheduleMarkersHtml(scheduleState.appointments[0],'day')"),/data-board-action="send-intake"[^>]*>.*Send intake form/);
 
- // The panel says the visit needs no form, and offers no send button there either.
+ // The panel says the encounter needs no form, and offers no send button there either.
  f.load([notNeeded]);
  let panel=f.run("schedulePanelHtml(scheduleState.appointments[0],'Example, a',[])");
- assert.match(panel,/No intake form is needed for this visit\./);
+ assert.match(panel,/No intake form is needed for this encounter\./);
  assert.doesNotMatch(panel,/No intake form has been sent\./,'a marked visit is not described as missing a form');
  assert.doesNotMatch(panel,/send-intake/);
  // With no mark and no form the panel keeps its old wording and its button.
@@ -67,7 +67,7 @@ async function main(){
  f.load([{...base,forms:{status:'sent',packet_id:'k'}}]);
  panel=f.run("schedulePanelHtml(scheduleState.appointments[0],'Example, a',[])");
  assert.match(panel,/Intake form sent\. The patient has not started it yet\./);
- assert.doesNotMatch(panel,/No intake form is needed for this visit\./);
+ assert.doesNotMatch(panel,/No intake form is needed for this encounter\./);
 
  console.log('PASS schedule no-form-needed marker: chip says "No form needed", no send offer, and the panel says no form is needed');
 }

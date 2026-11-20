@@ -24,8 +24,8 @@ function result(text,final=true){const item=[{transcript:text}];item.isFinal=fin
 (async()=>{
  let h=harness();
  for(const [command,target] of [['open schedule','nav-schedule'],['Sun, please open the patients!','nav-clinical'],['go to sun review','nav-ai-review']])assert.equal(h.run(`sunNavigationTarget(${JSON.stringify(command)})`),target);
- for(const command of ['sign the visit','send a prescription','pay the invoice','open schedule; submit claim','constructor','__proto__','toString','open javascript:alert(1)'])assert.equal(h.run(`sunNavigationTarget(${JSON.stringify(command)})`),null,command);
- await h.run("sunNavigate('sign the visit')");assert.equal(h.navigation.length,0);
+ for(const command of ['sign the encounter','send a prescription','pay the invoice','open schedule; submit claim','constructor','__proto__','toString','open javascript:alert(1)'])assert.equal(h.run(`sunNavigationTarget(${JSON.stringify(command)})`),null,command);
+ await h.run("sunNavigate('sign the encounter')");assert.equal(h.navigation.length,0);
  h.nodes['nav-schedule'].hidden=true;await h.run("sunNavigate('open schedule')");assert.equal(h.navigation.length,0);h.nodes['nav-schedule'].hidden=false;h.nodes['nav-schedule'].dataset.workspaceHidden='true';await h.run("sunNavigate('open schedule')");assert.equal(h.navigation.length,0);
  h.nodes['sun-mode'].value='dictate';h.nodes['sun-text'].value='Open schedule, send a prescription, and pay this invoice.';await h.run('sunSend()');assert.equal(h.calls.length,0);assert.equal(h.navigation.length,0);assert.match(h.nodes['sun-status'].textContent,/not been saved/);
  await h.run('sunStartListening()');const dictation=h.recognizers.find(item=>item.started);assert.ok(dictation);assert.equal(dictation.processLocally,true);assert.equal(h.voiceRequests.at(-1).processLocally,true);dictation.onresult(result('open patients'));assert.match(h.nodes['sun-text'].value,/open patients/);assert.equal(h.navigation.length,0);assert.equal(h.calls.length,0,'dictation never sends a provider request');

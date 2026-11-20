@@ -74,7 +74,7 @@ async function testEncounterStates() {
   assert.doesNotMatch(f.evaluate('encounterDateLabel(activeVisit)'), /Invalid Date/);
   assert.equal(f.evaluate("encounterDateLabel({appointment_id:'missing'})"),'Visit date not recorded');
   f.evaluate('renderVisit(false)');
-  assert.match(f.node('encounter-progress').innerHTML, /encounter-visit-actions/, 'the visit heading offers its actions on one page');assert.doesNotMatch(f.node('encounter-progress').innerHTML, /encounter-step-tabs|Notes &amp; diagnoses|Charges &amp; billing/, 'no numbered step bar remains');
+  assert.match(f.node('encounter-progress').innerHTML, /encounter-visit-actions/, 'the encounter heading offers its actions on one page');assert.doesNotMatch(f.node('encounter-progress').innerHTML, /encounter-step-tabs|Notes &amp; diagnoses|Charges &amp; billing/, 'no numbered step bar remains');
   assert.match(f.node('visit-editor').innerHTML, /data-action="sign"/);
   assert.doesNotMatch(f.node('visit-editor').innerHTML, /id="amendment-form"/);
   f.evaluate(`activeVisit.note={subjective:'S',objective:'O',assessment:'A',plan:'P'}; activeVisit.vitals={heart_rate_bpm:70}; renderVisit(false)`);
@@ -101,7 +101,7 @@ async function testEncounterStates() {
     f.evaluate(`me.role=${JSON.stringify(role)};activeVisit.status='in_progress';renderVisit(false)`);
     assert.match(f.node('visit-editor').innerHTML, />Save note</, role);
     assert.match(f.node('visit-editor').innerHTML, /data-action="sign"/, role);
-    // A covering clinician or the owner also records vitals for the visit.
+    // A covering clinician or the owner also records vitals for the encounter.
     assert.match(f.node('visit-editor').innerHTML, />Save vitals</, role);
     assert.doesNotMatch(f.node('visit-editor').innerHTML, /You can read this note/, role);
   }

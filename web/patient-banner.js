@@ -65,21 +65,21 @@ function patientBannerFlags(insurance){
  const flags=[],data=patientBannerCurrent()?patientBanner.data:null,f=data?.flags||{},portal=['owner','clinician','front_desk'].includes(me?.role);
  const add=(key,text,tone,attrs,title)=>flags.push({key,text,tone,attrs,title});
  if(patientBanner.stale&&patientBannerCurrent())add('stale','Updated — refresh','info','data-action="reload" aria-label="This chart was updated elsewhere. Refresh"','Someone changed this chart after you opened it. Refresh to see the latest.');
- if(workspace.patient.archived)add('archived','Archived','muted','','This chart is archived. Restore it to book or start a visit.');
+ if(workspace.patient.archived)add('archived','Archived','muted','','This chart is archived. Restore it to book or start an encounter.');
  if(insurance?.eligibility?.differs?.length)add('differs','Insurer has different details','warning','data-chart-section="insurance"',`The insurer's answer shows a different ${insurance.eligibility.differs.join(', ')}. Open Insurance to compare.`);
  if(f.intake_to_review>0)add('intake-review','Intake form to review','warning',patientBannerArea('documents')?'data-patient-intakes-open':'',f.intake_to_review===1?'The patient sent in an intake form that nobody has reviewed yet.':`${displayCount(f.intake_to_review,'intake form')} are waiting for review.`);
  if(f.intake_sent>0)add('intake-sent','Intake form sent','muted',patientBannerArea('documents')?'data-patient-intakes-open':'','An intake form was sent and the patient has not finished it yet.');
- if((workspace.visits||[]).some(v=>v.status==='in_progress'))add('unsigned','Unsigned note','warning','data-chart-section="visits"','A visit note is still open and has not been signed.');
+ if((workspace.visits||[]).some(v=>v.status==='in_progress'))add('unsigned','Unsigned note','warning','data-chart-section="visits"','An encounter note is still open and has not been signed.');
  if(f.portal_status==='active')add('portal','Portal active','success',portal?`data-portal-access="${esc(selected)}"`:'','The patient has an active portal account.');
  return flags;
 }
 // One primary button for what usually comes next, using the same actions the chart already has.
 function patientBannerPrimary(now=new Date()){
  const v=typeof activeVisit==='undefined'?null:activeVisit,archived=workspace.patient.archived,rooming=typeof isRoomingStaff==='function'&&isRoomingStaff(),clinician=['owner','clinician'].includes(me?.role);
- if(v)return `<button type="button" class="primary" data-chart-section="visits">${v.status==='signed'?'Review visit':'Continue visit'}</button>`;
+ if(v)return `<button type="button" class="primary" data-chart-section="visits">${v.status==='signed'?'Review encounter':'Continue encounter'}</button>`;
  // A note left open is picked up again before anything new is started.
  const open=(workspace.visits||[]).filter(visit=>visit.status==='in_progress'),mine=open.find(visit=>visit.clinician_id===me?.user_id)||open[0];
- if(mine)return `<button type="button" class="primary" data-visit="${esc(mine.id)}">Continue visit</button>`;
+ if(mine)return `<button type="button" class="primary" data-visit="${esc(mine.id)}">Continue encounter</button>`;
  if(archived)return '';
  const today=(workspace.appointments||[]).filter(a=>patientBannerSameDay(new Date(a.starts_at),now)).sort((a,b)=>String(a.starts_at).localeCompare(String(b.starts_at)));
  const ready=today.find(a=>a.status==='checked_in'&&(rooming||(clinician&&a.clinician_id===me.user_id)));

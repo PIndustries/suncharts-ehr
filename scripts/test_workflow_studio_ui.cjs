@@ -40,7 +40,7 @@ vm.runInContext(source,context);
  vm.runInContext("studioDraft.status='active';studioDirty=false;studioRender()",context);assert.match(host.innerHTML,/Live workflow/);assert.match(host.innerHTML,/Open visual editor/);assert.match(host.innerHTML,/View live work/);assert.doesNotMatch(host.innerHTML,/Finish this draft|setup rail/i);
  vm.runInContext("studioDraft.status='draft';studioRender()",context);
  vm.runInContext("studioView='builder';studioDraft._selectedStep='intake';studioRender()",context);
- assert.match(host.innerHTML,/Inquiry &amp; intake|Inquiry & intake/);assert.match(host.innerHTML,/Before the visit/);assert.match(host.innerHTML,/Day of visit/);assert.match(host.innerHTML,/After the visit/);
+ assert.match(host.innerHTML,/Inquiry &amp; intake|Inquiry & intake/);assert.match(host.innerHTML,/Before the encounter/);assert.match(host.innerHTML,/Day of visit/);assert.match(host.innerHTML,/After the encounter/);
  assert.match(host.innerHTML,/Scroll sideways to see every stage/);assert.match(host.innerHTML,/Selected: Collect patient information/);assert.match(host.innerHTML,/SELECTED NODE · SETTINGS/);assert.match(host.innerHTML,/A referral status changes/);
  for(const section of ['What is this step?','Form setup','When should it run?','What happens next?'])assert.match(host.innerHTML,new RegExp(section));
  assert.match(host.innerHTML,/Edit form fields/);assert.match(host.innerHTML,/Runs after/);assert.match(host.innerHTML,/Workflow start/);assert.match(host.innerHTML,/Change prerequisites/);assert.match(host.innerHTML,/Continues to/);assert.match(host.innerHTML,/Verify benefits/);assert.match(host.innerHTML,/Multiple next steps run in parallel/);assert.match(host.innerHTML,/skipped prerequisite as resolved/);

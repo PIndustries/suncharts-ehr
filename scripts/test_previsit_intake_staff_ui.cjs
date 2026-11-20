@@ -97,7 +97,7 @@ const row=(extra={})=>({packet_id:'form-open',packet_version:1,status:'sent',def
  html=f.panel.innerHTML;
  assert.match(html,/2026-11-13<small>New patient visit · booked<\/small>/,'a patient booked today is not shown as having no appointment');
  assert.doesNotMatch(html,/No appointment/);
- // Only a patient with nothing booked is shown without a visit, in plain words.
+ // Only a patient with nothing booked is shown without an encounter, in plain words.
  c.reply=()=>({patient_id:'patient-one',items:[row()],summary:{total:1,submitted:0,reviewed:0,cancelled:0}});await c.renderPatientIntakePackets();
  assert.match(f.panel.innerHTML,/<span class="muted">No appointment<\/span>/);
  // Another patient or another signed-in person never sees the link.

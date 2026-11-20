@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 // The schedule board: one appointment card shared by the day, week, month and list
-// views, the markers that say what each visit still needs, and the appointment panel.
+// views, the markers that say what each encounter still needs, and the appointment panel.
 // Appointments are drawn first; markers arrive from one read per visible range.
 
 const scheduleStatusLabels={booked:'Booked',checked_in:'Checked in',in_progress:'In progress',completed:'Completed',cancelled:'Cancelled',no_show:'No-show'};
@@ -71,9 +71,9 @@ function scheduleMarkerList(a){
  // A cancelled or missed visit needs nothing done before it; only money matters still.
  if(!closed){
  if(m.new_patient)add('new','New patient','info','This is the patient’s first appointment here.',9);
-  const forms={sent:['Forms sent','grey','Intake form sent. The patient has not started it yet.',8],in_progress:['Forms started','grey','The patient started the intake form but has not sent it in.',8],submitted:['Forms in','amber','The patient filled in the intake form. It needs review.',3],reviewed:['Forms done','green','The intake form was reviewed.',20],not_needed:['No form needed','grey','No intake form is needed for this visit.',20]}[m.forms?.status];
+  const forms={sent:['Forms sent','grey','Intake form sent. The patient has not started it yet.',8],in_progress:['Forms started','grey','The patient started the intake form but has not sent it in.',8],submitted:['Forms in','amber','The patient filled in the intake form. It needs review.',3],reviewed:['Forms done','green','The intake form was reviewed.',20],not_needed:['No form needed','grey','No intake form is needed for this encounter.',20]}[m.forms?.status];
  if(forms)add('forms',...forms);
- const insurance={active:['Active','green','Insurance is active.',20],not_active:['Not active','red','The insurer says this coverage is not active.',1],not_checked:['Not checked','grey','Insurance has not been checked for this visit.',7],check_failed:['Check failed','amber','The last insurance check could not confirm coverage.',4],self_pay:['Self-pay','grey','No active insurance is on file for this visit date.',21]}[m.insurance?.status];
+ const insurance={active:['Active','green','Insurance is active.',20],not_active:['Not active','red','The insurer says this coverage is not active.',1],not_checked:['Not checked','grey','Insurance has not been checked for this encounter.',7],check_failed:['Check failed','amber','The last insurance check could not confirm coverage.',4],self_pay:['Self-pay','grey','No active insurance is on file for this encounter date.',21]}[m.insurance?.status];
  if(insurance)add('insurance',...insurance);
  }
  if(m.copay){
@@ -84,15 +84,15 @@ function scheduleMarkerList(a){
  }
  if(Number(m.balance_cents)>0)add('balance',`Owes ${scheduleMoney(Number(m.balance_cents))}`,'amber','The patient owes this from earlier visits. Money still with insurance is not counted.',6);
  if(started&&'note' in m){
-  const note={signed:['Note signed','green','The visit note is signed.',20],in_progress:['Note in progress',done?'amber':'grey',done?'The visit is finished but its note is not signed.':'The visit note has been started.',done?5:11]}[m.note]||['Note not started',done?'amber':'grey',done?'The visit is finished but no note was written.':'The visit note has not been started.',done?5:11];
+  const note={signed:['Note signed','green','The encounter note is signed.',20],in_progress:['Note in progress',done?'amber':'grey',done?'The encounter is finished but its note is not signed.':'The encounter note has been started.',done?5:11]}[m.note]||['Note not started',done?'amber':'grey',done?'The encounter is finished but no note was written.':'The encounter note has not been started.',done?5:11];
   add('note',...note);
  }
  if(started&&'charges' in m){
-   if(m.charges==='posted')add('charges','Charges posted','green','Charges for this visit are posted.',20);
+   if(m.charges==='posted')add('charges','Charges posted','green','Charges for this encounter are posted.',20);
    else if(m.charges==='draft')add('charges','Charges draft',done?'amber':'grey','Charges were entered but are not posted yet.',done?5:11);
-   else if(done)add('charges','No charges','amber','The visit is finished but no charges were entered.',5);
+   else if(done)add('charges','No charges','amber','The encounter is finished but no charges were entered.',5);
   }
-  // Where the visit's claim stands. Month and week cards show only two chips, so the claim
+  // Where the encounter's claim stands. Month and week cards show only two chips, so the claim
   // ranks ahead of everything except an urgent problem: staff asked to see it at a glance.
   if(m.claim){
    const claim={not_sent:['Claim not sent','amber','Charges are posted but the claim has not been sent.',2],sent:['Claim sent','grey','The claim was sent. No answer yet.',2],accepted:['Claim accepted','green','The insurer accepted the claim for processing.',2],rejected:['Claim rejected','red','The insurer rejected the claim. It needs fixing and resending.',1],answered:['Insurer answered','green','The insurer has answered. Check the payment.',2]}[m.claim.status];
@@ -358,14 +358,14 @@ function schedulePanelFacts(a){
  if(!m)return scheduleMarkerState.failed?'<p class="muted">Forms, insurance and payment details could not be loaded.</p>':scheduleMarkerState.loaded?'':'<p class="muted" role="status">Loading forms, insurance and payment details…</p>';
  const markers=new Map(scheduleMarkerList(a).map(marker=>[marker.kind,marker])),closed=scheduleClosed(a),open=['booked','checked_in'].includes(a.status),rows=[];
  const forms=markers.get('forms'),canSend=open&&scheduleCanSendForms();
- if(!closed)rows.push(schedulePanelRow('Intake form',forms?forms.tip:m.forms?.status==='not_needed'?'No intake form is needed for this visit.':'No intake form has been sent.',forms?.tone,m.forms?.status==='submitted'?schedulePanelButton('review-intake',a,'Review answers'):m.forms?.status==='reviewed'?schedulePanelButton('review-intake',a,'View answers'):m.forms?.status==='not_needed'?'':canSend?schedulePanelButton('send-intake',a,m.forms?'Send a new link':'Send intake form'):''));
+ if(!closed)rows.push(schedulePanelRow('Intake form',forms?forms.tip:m.forms?.status==='not_needed'?'No intake form is needed for this encounter.':'No intake form has been sent.',forms?.tone,m.forms?.status==='submitted'?schedulePanelButton('review-intake',a,'Review answers'):m.forms?.status==='reviewed'?schedulePanelButton('review-intake',a,'View answers'):m.forms?.status==='not_needed'?'':canSend?schedulePanelButton('send-intake',a,m.forms?'Send a new link':'Send intake form'):''));
  if(m.insurance&&!closed){
   const insurance=markers.get('insurance'),checked=m.insurance.checked_at?` Checked ${scheduleWhen(m.insurance.checked_at)}.`:'';
   rows.push(schedulePanelRow('Insurance',insurance.tip+checked,insurance.tone,(m.insurance.coverage_id&&!closed&&scheduleCanCheckInsurance()?schedulePanelButton('check-eligibility',a,m.insurance.status==='not_checked'?'Check eligibility':'Check again'):'')+schedulePanelButton('insurance',a,m.insurance.status==='self_pay'?'Add insurance':'Open insurance')));
  }
  if('copay' in m&&(!closed||markers.has('copay'))){
   const copay=markers.get('copay'),paid=Number(m.copay?.paid_cents)>0||Number(m.copay?.test_paid_cents)>0;
-  rows.push(schedulePanelRow('Copay',copay?copay.tip:'No copay is recorded for this visit.',copay?.tone,(!closed&&scheduleCanBill()&&copay?.tone!=='green'?schedulePanelButton('collect-copay',a,'Collect copay'):'')+(paid?schedulePanelButton('collect-copay',a,'View receipt'):'')));
+  rows.push(schedulePanelRow('Copay',copay?copay.tip:'No copay is recorded for this encounter.',copay?.tone,(!closed&&scheduleCanBill()&&copay?.tone!=='green'?schedulePanelButton('collect-copay',a,'Collect copay'):'')+(paid?schedulePanelButton('collect-copay',a,'View receipt'):'')));
  }
  if('balance_cents' in m){const balance=markers.get('balance');rows.push(schedulePanelRow('Balance',balance?`${balance.label}. ${balance.tip}`:'Nothing owed from earlier visits.',balance?.tone,balance?schedulePanelButton('billing',a,'Open billing'):''));}
  if(markers.has('note')){const note=markers.get('note');rows.push(schedulePanelRow('Visit note',note.tip,note.tone,m.visit_id?schedulePanelButton('visit',a,'Open note'):''));}
@@ -382,7 +382,7 @@ function schedulePanelNext(a){
  const m=scheduleMarker(a.id);
  if(a.status==='booked'&&canSchedule())return schedulePanelButton('check-in',a,'Check in',true);
  if(a.status==='checked_in'&&scheduleCanStartVisit(a))return `<button type="button" class="primary" data-schedule-start="${esc(a.id)}" data-patient="${esc(a.patient_id)}">Start visit</button>`;
- if(['in_progress','completed'].includes(a.status)&&m?.visit_id&&scheduleAllowed('clinical'))return schedulePanelButton('visit',a,a.status==='completed'?'Open visit':'Continue visit',a.status==='in_progress');
+ if(['in_progress','completed'].includes(a.status)&&m?.visit_id&&scheduleAllowed('clinical'))return schedulePanelButton('visit',a,a.status==='completed'?'Open encounter':'Continue encounter',a.status==='in_progress');
  return '';
 }
 function schedulePanelLink(a){
@@ -433,7 +433,7 @@ async function scheduleOpenVisit(a,section){
 }
 async function scheduleRefreshAfter(a){await showSchedule();if(a)await appointmentDetail(a.id);}
 // The claims screen's own address opens a claim from anywhere else in the product, so
-// Back, Forward and a reload land on the same claim. With no claim yet the visit's own
+// Back, Forward and a reload land on the same claim. With no claim yet the encounter's own
 // Charges & billing step is where the claim work starts.
 const scheduleClaimUuid=value=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 function scheduleOpenClaimAddress(id){
@@ -455,7 +455,7 @@ async function scheduleSendIntake(a){
 }
 async function scheduleCheckEligibility(a){
  const coverage=scheduleMarker(a.id)?.insurance?.coverage_id;
- if(!coverage||!scheduleCanCheckInsurance())throw new Error('There is no active insurance to check for this visit.');
+ if(!coverage||!scheduleCanCheckInsurance())throw new Error('There is no active insurance to check for this encounter.');
  const reply=await api(`/api/v1/patients/${encodeURIComponent(a.patient_id)}/coverages/${encodeURIComponent(coverage)}/claimmd-eligibility/check`,'POST',{request_id:crypto.randomUUID(),automatic:false,appointment_id:a.id});
  if(reply?.outcome==='needs'){await scheduleOpenChartStep(a,'insurance','insurance-review-title');notice('The insurer needs a little more information before this check can run. Finish it here.');return;}
  await scheduleRefreshAfter(a);await scheduleMarkersReady;

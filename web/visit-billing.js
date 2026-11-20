@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 // One billing card per visit. Every amount comes from the server's visit billing summary;
-// this file only words and lays it out. One vocabulary names a visit's billing state here,
+// this file only words and lays it out. One vocabulary names an encounter's billing state here,
 // in the insurance claims list and on the patient billing page.
-const visitBillingStateNames={add_charges:'Add charges',sign_visit:'Sign the visit',post_charges:'Post charges',self_pay_collect:'Self-pay: collect payment',prepare_claim:'Preparing claim',claim_cancelled:'Claim cancelled',fix_claim:'Claim needs details',send_claim:'Send claim',correct_claim:'Charges changed after the claim was sent',waiting_insurer:'Waiting on insurer',claimmd_correction:'Needs correcting',claimmd_received:'Received by the clearinghouse',post_response:'Insurer answered: review payment',denied:'Denied: fix and resend',review_response:'Review insurer answer',patient_owes:'Patient owes',review_balance:'Balance not on the statement',patient_credit:'Patient credit',paid_in_full:'Paid in full',insurance_outside:'Insurance billed outside SunCharts',claim_restricted:'Posted'};
+const visitBillingStateNames={add_charges:'Add charges',sign_visit:'Sign the encounter',post_charges:'Post charges',self_pay_collect:'Self-pay: collect payment',prepare_claim:'Preparing claim',claim_cancelled:'Claim cancelled',fix_claim:'Claim needs details',send_claim:'Send claim',correct_claim:'Charges changed after the claim was sent',waiting_insurer:'Waiting on insurer',claimmd_correction:'Needs correcting',claimmd_received:'Received by the clearinghouse',post_response:'Insurer answered: review payment',denied:'Denied: fix and resend',review_response:'Review insurer answer',patient_owes:'Patient owes',review_balance:'Balance not on the statement',patient_credit:'Patient credit',paid_in_full:'Paid in full',insurance_outside:'Insurance billed outside SunCharts',claim_restricted:'Posted'};
 function visitBillingStateName(state){return visitBillingStateNames[state]||'Billing status unavailable';}
-// A claim row carries only its own status; name it with the same words the visit card uses.
+// A claim row carries only its own status; name it with the same words the encounter card uses.
 function visitBillingClaimState(claim){
  if(!claim)return '';
  if((claim.crossover_tracking_only||claim.crossover)&&claim.status==='submitted')return 'Secondary insurer answered';
@@ -24,7 +24,7 @@ function visitBillingInsurer(s){return s.claim?.payer_name||s.insurance?.insurer
 // The card's own one-click send. It does the work the review panel's final button does today
 // (see visitClaimDirectSend in web/visit-review.js, which loads before the click handlers run);
 // the panel stays one small link away for anyone who wants to look at the claim first.
-// It is offered only on the card of the visit the screen is actually on, where the send can read
+// It is offered only on the card of the encounter the screen is actually on, where the send can read
 // the live account: a card drawn from a copy elsewhere keeps opening the claim instead.
 function visitBillingDirectSend(s,ctx){
  if(s.state!=='send_claim'||!s.claim?.id||s.claim.status!=='ready')return '';
@@ -35,7 +35,7 @@ function visitBillingDirectSend(s,ctx){
 // beside the charge table holds the checks, the form and the send itself; until it is loaded
 // the card's own buttons do the same jobs.
 function reviewButton(s,ctx){return typeof visitBillingReviewButton==='function'?visitBillingReviewButton(s,ctx):'';}
-// The charges step fills a visit's table in from the patient's last visit on its own. When that
+// The charges step fills an encounter's table in from the patient's last visit on its own. When that
 // is on the way the card stops telling staff to type charges by hand; with nothing to fill in
 // from it says what it always said. encounterChargesProposed is the charge table's own answer.
 function visitBillingChargesFilled(){return typeof encounterChargesProposed==='function'&&encounterChargesProposed();}
@@ -44,11 +44,11 @@ function visitBillingStatus(s,ctx={}){
  const insurer=visitBillingInsurer(s),owes=money(s.patient.owes_now_cents),paid=money(s.insurance.paid_cents),account=s.account?.id||'',claim=s.claim?.id||'',write=ctx.canWrite,create=ctx.canCreate;
  const button=(label,attribute)=>`<button type="button" class="primary" ${attribute}>${esc(label)}</button>`;
  switch(s.state){
-   case 'add_charges':return visitBillingChargesFilled()?{headline:'Check the charges',detail:'Filled in from the last visit.',action:create?button('Check the charges','data-encounter-charges'):''}:{headline:'Add charges',detail:'Add the procedures done at this visit.',action:create?button('Add charges','data-encounter-charges'):''};
-   case 'sign_visit':return {headline:'Charges can still be changed',detail:'The visit note must be signed before the charges are posted.',action:reviewButton(s,ctx)||button('Continue the visit note','data-revenue-documentation')};
+   case 'add_charges':return visitBillingChargesFilled()?{headline:'Check the charges',detail:'Filled in from the last visit.',action:create?button('Check the charges','data-encounter-charges'):''}:{headline:'Add charges',detail:'Add the procedures done at this encounter.',action:create?button('Add charges','data-encounter-charges'):''};
+   case 'sign_visit':return {headline:'Charges can still be changed',detail:'The encounter note must be signed before the charges are posted.',action:reviewButton(s,ctx)||button('Continue the encounter note','data-revenue-documentation')};
    case 'post_charges':return {headline:'Post charges',detail:`Check the charges, then post them. ${s.insurance.insured?`The claim to ${insurer} is prepared for you next.`:'The patient is billed next.'}`,action:button(write?'Post charges':'Review charges',`data-visit-post-charges="${esc(account)}"`)};
    case 'self_pay_collect':return {headline:'Self-pay: collect payment',detail:`Patient owes ${owes}. Waiting for the patient.`,action:create?button('Collect payment','data-visit-collect'):''};
-  case 'prepare_claim':return ctx.delegated?{headline:'Claim not prepared yet',detail:`A member of the practice prepares the claim to ${insurer} by opening this visit. A support session does not prepare claims.`,action:''}:ctx.prepareError?{headline:`The claim to ${insurer} could not be prepared`,detail:ctx.prepareError,action:create?button('Try again','data-visit-claim-prepare'):''}:create?{headline:`Preparing the claim to ${insurer}`,detail:'The claim is filled in from this visit. Nothing is sent until you send it.',action:ctx.preparing?'':button('Prepare claim','data-visit-claim-prepare')}:{headline:'Posted',detail:`Billing staff prepare the claim to ${insurer}.`,action:''};
+  case 'prepare_claim':return ctx.delegated?{headline:'Claim not prepared yet',detail:`A member of the practice prepares the claim to ${insurer} by opening this encounter. A support session does not prepare claims.`,action:''}:ctx.prepareError?{headline:`The claim to ${insurer} could not be prepared`,detail:ctx.prepareError,action:create?button('Try again','data-visit-claim-prepare'):''}:create?{headline:`Preparing the claim to ${insurer}`,detail:'The claim is filled in from this encounter. Nothing is sent until you send it.',action:ctx.preparing?'':button('Prepare claim','data-visit-claim-prepare')}:{headline:'Posted',detail:`Billing staff prepare the claim to ${insurer}.`,action:''};
    case 'claim_cancelled':return {headline:`The claim to ${insurer} was cancelled`,detail:'Nothing is with the insurer.',action:create?button('Prepare a new claim','data-visit-claim-prepare="again"'):''};
    case 'fix_claim':return {headline:`Claim to ${insurer} needs details`,detail:'Nothing has been sent yet. Fill in what is missing right on the claim below.',issues:s.claim?.issues||[],action:write?button('Fix claim details',`data-visit-claim-fix="${esc(claim)}"`):''};
     case 'send_claim':return {headline:`Claim ready to send to ${insurer}`,detail:'Nothing has been sent yet.',action:visitBillingDirectSend(s,ctx)||reviewButton(s,ctx)||(write?button('Review and send claim',`data-visit-claim-send="${esc(claim)}"`):'')};
@@ -56,20 +56,20 @@ function visitBillingStatus(s,ctx={}){
    case 'claimmd_correction':return {headline:'The clearinghouse found a problem with this claim',detail:`${s.claimmd?.message?`The clearinghouse says: “${s.claimmd.message}” `:''}Nothing has reached ${insurer} yet. Fix it in Edit charges (for example, add the modifier it asks for) and resend, or if nothing needs to change, approve the claim in your clearinghouse account.`,action:button('Open claim',`data-revenue-claim="${esc(claim)}"`)};
    case 'claimmd_received':return {headline:'Received by the clearinghouse',detail:`${insurer} has not answered yet. If the clearinghouse is holding it for approval, approve it in your clearinghouse account (in Claim.MD: Manage Claims → Pending Approval).`,action:button('Check claim status',`data-revenue-claim="${esc(claim)}"`)};
    case 'waiting_insurer':return {headline:`Waiting on ${insurer}`,detail:`${s.insurance.sent_on?`Claim sent ${visitBillingDate(s.insurance.sent_on)}. `:''}Nothing to do until they answer.`,action:button('Check claim status',`data-revenue-claim="${esc(claim)}"`)};
-   case 'post_response':return {headline:`${insurer} answered`,detail:'Review their payment and post it to this visit.',action:button('Review insurer payment',`data-revenue-remittance="${esc(s.claim?.response_to_review||'')}"`)};
+   case 'post_response':return {headline:`${insurer} answered`,detail:'Review their payment and post it to this encounter.',action:button('Review insurer payment',`data-revenue-remittance="${esc(s.claim?.response_to_review||'')}"`)};
    case 'denied':return {headline:`Denied by ${insurer}`,detail:'Fix the claim and send it again.',action:button('Fix and resend claim',`data-revenue-claim="${esc(claim)}"`)};
    case 'review_response':return {headline:`Insurance paid ${paid}`,detail:`${money(s.insurance.unassigned_cents)} is not paid, written off or assigned to the patient yet. Review the insurer’s answer.`,action:button('Review insurer answer',`data-revenue-claim="${esc(claim)}"`)};
-   case 'review_balance':return {headline:`${money(s.insurance.unassigned_cents)} is not on the patient’s statement`,detail:'The latest statement is paid, but the visit still has a balance. Write the rest off or adjust it; a new statement then shows what is left.',action:create?button('Write off or adjust','data-new-ledger'):''};
+   case 'review_balance':return {headline:`${money(s.insurance.unassigned_cents)} is not on the patient’s statement`,detail:'The latest statement is paid, but the encounter still has a balance. Write the rest off or adjust it; a new statement then shows what is left.',action:create?button('Write off or adjust','data-new-ledger'):''};
    case 'patient_owes':return {headline:`Patient owes ${owes}`,detail:`Insurance paid ${paid}. Waiting for the patient.`,action:create?button('Collect payment','data-visit-collect'):''};
-  case 'patient_credit':return {headline:`Patient has a ${money(s.patient.credit_cents)} credit`,detail:'Nothing more is owed for this visit. Refund the credit or keep it for another visit.',action:button('Review payments','data-visit-history="payments"')};
-  case 'paid_in_full':return {headline:'Paid in full',detail:'Nothing is owed for this visit.',action:''};
+  case 'patient_credit':return {headline:`Patient has a ${money(s.patient.credit_cents)} credit`,detail:'Nothing more is owed for this encounter. Refund the credit or keep it for another visit.',action:button('Review payments','data-visit-history="payments"')};
+  case 'paid_in_full':return {headline:'Paid in full',detail:'Nothing is owed for this encounter.',action:''};
   case 'insurance_outside':return {headline:`${insurer} is billed outside SunCharts`,detail:'This insurer has no payer ID here, so no claim is sent from SunCharts. Record their payment when it arrives.',action:create?button('Record insurer payment','data-new-ledger'):''};
    case 'claim_restricted':return {headline:'Posted',detail:`Billing staff handle the claim to ${insurer}.`,action:''};
   default:return {headline:'Billing status unavailable',detail:'Refresh before relying on these amounts.',action:''};
  }
 }
-// The one place a visit says it can go straight from posting to a sent claim. The right to write
-// and to see claims, insurance that can be billed electronically, and the card of the visit the
+// The one place an encounter says it can go straight from posting to a sent claim. The right to write
+// and to see claims, insurance that can be billed electronically, and the card of the encounter the
 // screen is actually on: on the post_charges state a draft in hand, on the send_claim state the
 // claim the server has already filled in and checked.
 function visitBillingDirectFlow(s,ctx,claim){
@@ -83,7 +83,7 @@ function visitBillingDirectFlow(s,ctx,claim){
 // ready or needs details is the server's answer after the post: a claim that lands in fix_claim
 // stops there and shows its issues. A self-pay visit keeps "Post charges".
 function directFlowPostSend(s,ctx){
- // Only a visit with no claim yet: one already prepared, released or sent has its own next step,
+ // Only an encounter with no claim yet: one already prepared, released or sent has its own next step,
  // and the one press has nothing to prepare there.
  if(s.state!=='post_charges'||s.claim?.id)return false;
  return visitBillingDirectFlow(s,ctx,s.claim);
@@ -96,7 +96,7 @@ function visitBillingChargeStep(s,ctx={}){
  if(!s)return null;
  const write=ctx.canWrite===true;
  switch(s.state){
-   case 'sign_visit':return {text:'Sign the visit note to send these charges.',label:'Open the visit note',attribute:'data-revenue-documentation'};
+   case 'sign_visit':return {text:'Sign the encounter note to send these charges.',label:'Open the encounter note',attribute:'data-revenue-documentation'};
    case 'post_charges':{
     const flow=write&&directFlowPostSend(s,ctx);
     return {text:write?flow?'Check the charges, then post them — the claim is sent as soon as it is ready.':'Check the charges, then post them.':'Check the charges; someone who can change them posts them.',label:flow?'Post charges and send claim':write?'Post charges':'Review charges',attribute:flow?`data-visit-review-open="account" data-post-and-send="account"`:`data-visit-post-charges="${esc(s.account?.id||'')}"`};
@@ -190,11 +190,11 @@ function visitBillingBreakdown(s,ctx={}){
  if(p.other_patient_payments_cents)rows+=row(copay!=null?'Other patient payments':'Patient payments','',money(p.other_patient_payments_cents));
  if(links)rows+=`<tr class="visit-billing-receipts"><th scope="row">Receipts</th><td colspan="2">${links}</td></tr>`;
  if(p.adjustment_cents)rows+=row('Patient adjustments',p.adjustment_cents>0?'Taken off what the patient owes':'Added to what the patient owes',money(Math.abs(p.adjustment_cents)));
- if(p.unapplied_cents>0)rows+=row('Paid but not applied yet',posted&&s.balance_cents>0&&ctx.canWrite?'<button type="button" class="text-button" data-apply-copays>Apply to this visit</button>':'Credit on the patient’s account',money(p.unapplied_cents));
+ if(p.unapplied_cents>0)rows+=row('Paid but not applied yet',posted&&s.balance_cents>0&&ctx.canWrite?'<button type="button" class="text-button" data-apply-copays>Apply to this encounter</button>':'Credit on the patient’s account',money(p.unapplied_cents));
  if(p.overpaid_cents>0)rows+=row('Paid more than owed','Refund it or keep it as a credit',money(p.overpaid_cents));
- const basis=p.copay_from_insurer_check?`Based on the insurer check on ${esc(visitBillingDate(p.copay_source_date))}`:({self_pay:'No insurance on this visit',plan_copay:'The plan copay, until the insurer answers',reviewed_statement:'What the latest statement says, less what they paid',copay_not_recorded:posted?'Nothing until the insurer answers':'',insurer_response:'What the insurer says the patient owes, less what they paid',not_final:'Set when the charges are posted'}[p.responsibility_source]||'');
+ const basis=p.copay_from_insurer_check?`Based on the insurer check on ${esc(visitBillingDate(p.copay_source_date))}`:({self_pay:'No insurance on this encounter',plan_copay:'The plan copay, until the insurer answers',reviewed_statement:'What the latest statement says, less what they paid',copay_not_recorded:posted?'Nothing until the insurer answers':'',insurer_response:'What the insurer says the patient owes, less what they paid',not_final:'Set when the charges are posted'}[p.responsibility_source]||'');
  rows+=row('Patient owes now',basis,money(p.owes_now_cents),'visit-billing-total');
- return `<table class="visit-billing-breakdown"><caption class="sr-only">Money for this visit</caption><tbody>${rows}</tbody></table>${p.receipt_needs_review?'<p role="status">A payment for this visit needs review. Open History before collecting again.</p>':''}`;
+ return `<table class="visit-billing-breakdown"><caption class="sr-only">Money for this encounter</caption><tbody>${rows}</tbody></table>${p.receipt_needs_review?'<p role="status">A payment for this encounter needs review. Open History before collecting again.</p>':''}`;
 }
 function visitBillingMore(s,ctx={}){
  const posted=s.account?.status==='posted',claim=s.claim,items=[];
@@ -233,7 +233,7 @@ function visitBillingEventText(event){
   case 'charges_removed':return 'Charges removed';
   case 'payment_received':return `Payment taken: ${amount}${by}`;
   case 'receipt_voided':return `Receipt cancelled: ${amount}${by}`;
-  case 'receipt_applied':return `${amount} of a payment applied to this visit`;
+  case 'receipt_applied':return `${amount} of a payment applied to this encounter`;
   case 'patient_payment':return `Patient payment: ${amount}${by}`;
   case 'other_payment':return `Other payment: ${amount}${by}`;
   case 'adjustment_credit':return `Adjustment: ${amount} taken off`;
@@ -242,7 +242,7 @@ function visitBillingEventText(event){
   case 'reversal':return `Entry undone: ${amount}`;
   case 'insurer_payment':return `Insurance paid ${amount}`;
   case 'insurer_adjustment':return `Insurance adjustment: ${amount} written off`;
-  case 'claim_prepared_auto':return `Claim to ${insurer} prepared from this visit`;
+  case 'claim_prepared_auto':return `Claim to ${insurer} prepared from this encounter`;
   case 'claim_prepared':return `${event.frequency==='replacement'?'Corrected claim':event.frequency==='void_request'?'Request to void the claim':event.secondary?'Secondary claim':'Claim'} to ${insurer} prepared`;
   case 'claim_crossover':return `${insurer} answered a claim forwarded by the primary insurer`;
   case 'claim_changed':return 'Claim details changed';
@@ -264,7 +264,7 @@ function visitBillingEventActions(event,ctx={}){
 }
 function visitBillingTimeline(s,ctx={},filter='all'){
  const events=(s.timeline||[]).filter(event=>filter==='all'||event.group===filter);
- return `<div class="actions visit-billing-filters" role="group" aria-label="Show">${visitBillingFilters.map(([key,label])=>`<button type="button" data-visit-history-filter="${key}" aria-pressed="${key===filter}">${label}</button>`).join('')}</div>${events.length?`<ol class="visit-billing-timeline">${events.map(event=>`<li data-group="${esc(event.group)}"><time>${esc(visitBillingDate(event.at))}</time><span>${esc(visitBillingEventText(event))}${event.test&&typeof testPaymentTag==='function'&&testPaymentTag()?' · '+esc(testPaymentTag()):''}</span>${visitBillingEventActions(event,ctx)}</li>`).join('')}</ol>`:`<p class="muted">${filter==='statements'?'No statement has been prepared for this visit.':'Nothing here yet.'}</p>`}`;
+ return `<div class="actions visit-billing-filters" role="group" aria-label="Show">${visitBillingFilters.map(([key,label])=>`<button type="button" data-visit-history-filter="${key}" aria-pressed="${key===filter}">${label}</button>`).join('')}</div>${events.length?`<ol class="visit-billing-timeline">${events.map(event=>`<li data-group="${esc(event.group)}"><time>${esc(visitBillingDate(event.at))}</time><span>${esc(visitBillingEventText(event))}${event.test&&typeof testPaymentTag==='function'&&testPaymentTag()?' · '+esc(testPaymentTag()):''}</span>${visitBillingEventActions(event,ctx)}</li>`).join('')}</ol>`:`<p class="muted">${filter==='statements'?'No statement has been prepared for this encounter.':'Nothing here yet.'}</p>`}`;
 }
 // Identifiers and versions are for the practice owner only; the server leaves them out for everyone else.
 function visitBillingTechnical(s){
@@ -274,7 +274,7 @@ function visitBillingTechnical(s){
 }
 function visitBillingPrepareMessage(error){
  const text=String(error?.message||'');
- if(/forbidden|not allowed|permission/i.test(text))return 'Your sign-in cannot prepare claims. Ask billing staff to open this visit.';
+ if(/forbidden|not allowed|permission/i.test(text))return 'Your sign-in cannot prepare claims. Ask billing staff to open this encounter.';
  return text?`${text}. Try again, or open Insurance and eligibility to check the coverage.`:'Try again in a moment.';
 }
 // A blank message addressed to the patient; staff attach the saved PDF. No amount or

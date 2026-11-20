@@ -37,7 +37,7 @@ function harness(){
  assert.equal(h.bookings.size,1);assert.equal(h.visits.length,1);assert.equal(h.ctx.selectedVisit,'visit-1');assert.equal(h.ctx.step,'intake');
  const posts=h.calls.filter(c=>c.path==='/api/v1/appointments');assert.equal(posts.length,2);assert.deepEqual(posts[0].body,posts[1].body);assert.equal(posts[0].body.starts_at,'2026-11-10T09:30:00.000Z');assert.equal(posts[0].body.ends_at,'2026-11-10T10:15:00.000Z');
  assert.equal(h.calls.filter(c=>c.path==='/api/v1/visits').length,1,'recover committed visit without creating another');
- await h.ctx.openEncounterStartFlow();assert.match(h.node('encounter-start-editor').innerHTML,/appointment-1/);assert.match(h.node('encounter-start-editor').innerHTML,/Continue visit/);
+ await h.ctx.openEncounterStartFlow();assert.match(h.node('encounter-start-editor').innerHTML,/appointment-1/);assert.match(h.node('encounter-start-editor').innerHTML,/Continue encounter/);
  h.form.values.appointment_id='appointment-1';const existing=h.ctx.encounterStartInput(h.form);await h.ctx.continueEncounterStart(existing);assert.equal(h.bookings.size,1);assert.equal(h.visits.length,1);
 
  const cross=harness(),crossOp=cross.ctx.encounterStartInput(cross.form),original=cross.ctx.api;
@@ -51,7 +51,7 @@ function harness(){
  denied.ctx.api=async()=>({items:[{id:'wrong-date',status:'completed',created_at:'2026-11-11T00:00:00Z',request_snapshot:{request:{service_date:'2026-11-09'}}},{id:'correct-date',status:'completed',created_at:'2026-11-10T00:00:00Z',request_snapshot:{request:{service_date:'2026-11-10'}}}]});
  await denied.ctx.renderEncounterStartBenefits('encounter-benefits','2026-11-10');assert.match(denied.node('encounter-benefits').innerHTML,/BENEFITS:correct-date/);assert.match(denied.node('encounter-benefits').innerHTML,/\$25\.00/);assert.doesNotMatch(denied.node('encounter-benefits').innerHTML,/BENEFITS:wrong-date/);
  let resolve;denied.ctx.api=()=>new Promise(r=>resolve=r);const pending=denied.ctx.renderEncounterStartBenefits('encounter-benefits','2026-11-10');denied.ctx.selected='other';denied.node('encounter-benefits').innerHTML='OTHER CHART';resolve({items:[]});await pending;assert.equal(denied.node('encounter-benefits').innerHTML,'OTHER CHART');
- const absent=harness();await absent.ctx.renderEncounterStartBenefits('encounter-benefits','2026-11-10');assert.match(absent.node('encounter-benefits').innerHTML,/No insurance on file for this visit date/);
+ const absent=harness();await absent.ctx.renderEncounterStartBenefits('encounter-benefits','2026-11-10');assert.match(absent.node('encounter-benefits').innerHTML,/No insurance on file for this encounter date/);
  const rejected=harness(),rejectedForm=Object.assign(rejected.node('encounter-start-form'),rejected.form),field={disabled:false},submit={textContent:''};
  rejectedForm.querySelectorAll=()=>[field];rejectedForm.querySelector=()=>submit;
  rejected.ctx.api=async()=>{const error=new Error('Synthetic schedule conflict');error.status=409;throw error;};

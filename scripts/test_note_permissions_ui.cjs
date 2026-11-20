@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Who may write, sign and correct a visit note, as the editor shows it to each role.
+// Who may write, sign and correct an encounter note, as the editor shows it to each role.
 // Synthetic DOM fixtures exercise the real handlers; no browser or network.
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
@@ -141,10 +141,10 @@ async function main(){
  assert.equal(f.asked.length,1);
  assert.equal(f.asked[0].options.title,'Sign as yourself for Dr. Avery Assigned’s visit?');
  assert.equal(f.asked[0].options.confirmLabel,'Sign');assert.equal(f.asked[0].options.cancelLabel,'Cancel');
- assert.equal(f.asked[0].message,'Signing locks the note and records you as the signer. The visit stays assigned to Dr. Avery Assigned. Check the rendering provider on the claim if you saw the patient.');
+ assert.equal(f.asked[0].message,'Signing locks the note and records you as the signer. The encounter stays assigned to Dr. Avery Assigned. Check the rendering provider on the claim if you saw the patient.');
  assert.equal(count(f,'POST','/sign'),0,'Cancel signs nothing');
  await f.click({action:'sign'},[true]);
- const signRequest=f.requests.find(r=>r.path.endsWith('/sign'));assert.equal(signRequest.version,4);assert.equal(signRequest.body,undefined,'signing never reassigns the visit');
+ const signRequest=f.requests.find(r=>r.path.endsWith('/sign'));assert.equal(signRequest.version,4);assert.equal(signRequest.body,undefined,'signing never reassigns the encounter');
  f=fixture({user:'covering',role:'clinician',note:draft});await f.settle();f.type({plan:'Unsaved plan'});
  await f.click({action:'sign'});assert.equal(f.notice(),'Save your current note before signing.');assert.equal(f.asked.length,0);
  console.log('PASS a covering clinician is asked once, by name, and Cancel signs nothing');
@@ -214,7 +214,7 @@ async function main(){
  for(const name of fs.readdirSync(web).filter(file=>/\.(js|html)$/.test(file)))assert.doesNotMatch(read(name),oldRule,name+' no longer states the old rule');
  assert.match(checkout,/canAuthor=\['owner','clinician'\]\.includes\(me\.role\)&&!me\.delegated,/,'whoever may sign releases the patient summary');
  assert.match(portal,/<p>A clinician must publish or withdraw this summary\.<\/p>/);
- assert.match(checkout,/avs\.snapshot\.visit\?\.signed_by_label\?`Seen by \$\{avs\.snapshot\.visit\.signed_by_label\}`:avs\.snapshot\.visit\?\.clinician_label/,'a summary for a visit someone else signed says who saw the patient');
+ assert.match(checkout,/avs\.snapshot\.visit\?\.signed_by_label\?`Seen by \$\{avs\.snapshot\.visit\.signed_by_label\}`:avs\.snapshot\.visit\?\.clinician_label/,'a summary for an encounter someone else signed says who saw the patient');
  assert.match(app,/function canRecordVisitVitals\(v\)\{[^}]*\(v\.clinician_id===me\.user_id\|\|!me\?\.delegated\)/,'a covering clinician records vitals; a support session does not');
  console.log('PASS no screen still says only the assigned clinician may write, sign or amend');
 }

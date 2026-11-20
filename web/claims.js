@@ -21,7 +21,7 @@ function claimStatusChipsHtml(){return `<nav class="practice-status-strip claims
 function claimRowMarkup(claim){return `<tr><td><b>${esc(claim.patient_name)}</b><small class="claim-control">Claim ${esc(claim.control_number)}</small></td><td>${esc(claim.payer_name)}<small>${esc(displayStatus(claim.frequency))}</small></td><td><span class="pill">${esc(claimStatusLabel(claim))}</span></td><td class="money-cell">${money(claim.total_cents)}</td><td><button type="button" data-claim-open="${claim.id}" data-claim-visit>Open claim</button></td></tr>`;}
 function claimRowsMarkup(claims){return claims.map(claimRowMarkup).join('');}
 
-function claimEmptyRow(claims){return `<tr><td colspan="5" class="table-empty">${claims.length?'No claims here with this status. Choose All to see every claim.':'No claims yet. A claim is prepared for you when a visit’s charges are posted.'}</td></tr>`;}
+function claimEmptyRow(claims){return `<tr><td colspan="5" class="table-empty">${claims.length?'No claims here with this status. Choose All to see every claim.':'No claims yet. A claim is prepared for you when an encounter’s charges are posted.'}</td></tr>`;}
 function claimFinalStatus(claim,detail={}){return ['void','rejected'].includes(claim?.status)||detail?.tracking?.remittance_posted===true;}
 function claimWorkspaceMarkup(){
  const rows=$('claims-tool')?.querySelector('[data-claim-rows]');if(!rows)return;
@@ -76,11 +76,11 @@ function requireClaimContext(context,claim){
 function mountEncounterClaims(accountId){
  captureClaimDraft();
  const account=(workspace.billing?.accounts||[]).find(a=>a.id===accountId&&a.content.visit_id===activeVisit?.id);
- if(!account||!selected||!activeVisit)throw new Error('Open the visit for these charges first.');
+ if(!account||!selected||!activeVisit)throw new Error('Open the encounter for these charges first.');
  if(typeof workspaceResourceAllowed==='function'&&!workspaceResourceAllowed('claims'))throw new Error('Claim review requires access to insurance claims.');
  setEncounterSection('charges');
- const container=$('encounter-claims');if(!container)throw new Error('Open Billing & claim in this visit.');
- container.innerHTML='<div class="section-head"><h3>Insurance claim for this visit</h3></div><div id="encounter-claims-detail"></div>';container.hidden=false;if(typeof invoiceTabSet==='function')invoiceTabSet('claim');
+ const container=$('encounter-claims');if(!container)throw new Error('Open Billing & claim in this encounter.');
+ container.innerHTML='<div class="section-head"><h3>Insurance claim for this encounter</h3></div><div id="encounter-claims-detail"></div>';container.hidden=false;if(typeof invoiceTabSet==='function')invoiceTabSet('claim');
  claimViewContext={kind:'encounter',identity:me,patient:selected,visit:activeVisit.id,account:accountId,host:$('encounter-claims-detail')};
  return claimViewContext;
 }
@@ -309,7 +309,7 @@ async function showClaimsWorkspace(afterClaim,afterEra){
 function claimPane(html,{quiet=false}={}){const context=claimContextSnapshot();requireClaimContext(context);const host=claimWorkspaceHost(context);if(!host)return;host.innerHTML=html;if(!quiet)host.scrollIntoView({block:'start'});}
 function claimHasRecordedSubmission(detail={}){return detail.tracking?.external_submission_recorded===true||(detail.tracking?.submissions||[]).some(item=>item.status==='delivered');}
 function claimHasPreparedSubmission(detail={}){return (detail.tracking?.submissions||[]).some(item=>item.status==='prepared');}
-// Claim rows use the same state names as the visit billing card.
+// Claim rows use the same state names as the encounter billing card.
 // Claim rows carry the Claim.MD position the list endpoint read for them, so a claim the
 // clearinghouse holds for correction is named as such in the list and not only once opened.
 function claimStatusLabel(claim){return typeof visitBillingClaimState==='function'?visitBillingClaimState(claim):claim?.claimmd_position?.needs_correction===true?claimMdCorrectionWord:claimIsCrossover(claim)&&claim.status==='submitted'?'Crossover response received':displayStatus(claim.status);}
@@ -749,7 +749,7 @@ function claimScreenMarkup(claim,detail,history){
  ${inVisit?'':`<div class="claim-lines" data-claim-lines>${lines}</div>`}
  ${withdraw}
  ${claimMoreDetailsMarkup(claim,detail,history,sections)}
- ${inVisit?(editClaim?`<div class="actions">${editClaim}</div>`:''):`<div class="actions"><button type="button" data-claim-account="${esc(claim.account_id)}" data-patient="${esc(claim.patient_id)}">Open visit</button>${editClaim}</div>`}
+ ${inVisit?(editClaim?`<div class="actions">${editClaim}</div>`:''):`<div class="actions"><button type="button" data-claim-account="${esc(claim.account_id)}" data-patient="${esc(claim.patient_id)}">Open encounter</button>${editClaim}</div>`}
  <div id="claim-editor"></div></section>`;
 }
 async function showClaim(id){
@@ -822,7 +822,7 @@ async function reviewSecondaryClaim(){
  const data=await api(`${claimsBase}/${primary.id}/secondary-review`);if(!claimContextCurrent(context)||claimCurrent?.id!==primary.id)return;requireClaimContext(context,data.primary_claim);
  const existing=data.existing_secondary_claims||[],choices=(data.coverages||[]).filter(item=>!existing.some(c=>c.payer_id===item.payer.id)),adjudication=data.primary_adjudication,row=adjudication?.claim;
  const crossover=crossoverReviewMarkup(data,choices);
- const html=`<section><h3>Bill secondary insurance</h3><p>This bills the same ${money(data.account.total_cents)} in visit charges. Check the primary EOB/ERA first to see whether the primary payer already forwarded the claim.</p>${existing.map(c=>`<p>Existing secondary claim ${esc(c.control_number)} · ${esc(c.status)} <button type="button" data-claim-open="${esc(c.id)}">Review existing secondary claim</button></p>`).join('')}${claimIssues(data.blockers||[])}${row?`<p>Primary paid ${money(row.paid_cents)} · Patient responsibility reported ${money(row.patient_responsibility_cents)} · ${esc(adjudication.payment_date)} · Trace ${esc(adjudication.trace)}</p><details><summary>Review primary services and adjustments</summary><pre class="billing-source">${esc(JSON.stringify(row,null,2))}</pre></details>`:''}${crossover}${!(data.blockers||[]).length&&choices.length&&row?`<form id="secondary-claim-review">${coveragePickerMarkup(choices)}<p class="muted">Enter the units the primary payer paid for each service, from the EOB.</p>${row.services.map((line,i)=>`<label>Primary line ${i+1}: ${esc(line.code)} · Paid ${money(line.paid_cents)} · Paid units<input name="paid_units_${i}" type="number" required min="1" max="1000" step="1"></label>`).join('')}<label class="review-ack"><input name="not_forwarded" type="checkbox" required> I reviewed the EOB/ERA and the primary payer has not forwarded this claim to the secondary payer.</label><label class="review-ack"><input name="timing_reviewed" type="checkbox" required> I confirmed when the secondary payer accepts this claim, including any waiting period (Medicare and Blue plan crossover may have one).</label><label>How you confirmed this (EOB date, call reference or portal)<input name="crossover_reference" required maxlength="1000"></label><button type="submit" class="primary">Continue</button></form>`:!choices.length?'<p>No other active secondary insurance is on file for this visit date. Add it under Insurance, or open the existing secondary claim above.</p>':''}</section>`;
+ const html=`<section><h3>Bill secondary insurance</h3><p>This bills the same ${money(data.account.total_cents)} in visit charges. Check the primary EOB/ERA first to see whether the primary payer already forwarded the claim.</p>${existing.map(c=>`<p>Existing secondary claim ${esc(c.control_number)} · ${esc(c.status)} <button type="button" data-claim-open="${esc(c.id)}">Review existing secondary claim</button></p>`).join('')}${claimIssues(data.blockers||[])}${row?`<p>Primary paid ${money(row.paid_cents)} · Patient responsibility reported ${money(row.patient_responsibility_cents)} · ${esc(adjudication.payment_date)} · Trace ${esc(adjudication.trace)}</p><details><summary>Review primary services and adjustments</summary><pre class="billing-source">${esc(JSON.stringify(row,null,2))}</pre></details>`:''}${crossover}${!(data.blockers||[]).length&&choices.length&&row?`<form id="secondary-claim-review">${coveragePickerMarkup(choices)}<p class="muted">Enter the units the primary payer paid for each service, from the EOB.</p>${row.services.map((line,i)=>`<label>Primary line ${i+1}: ${esc(line.code)} · Paid ${money(line.paid_cents)} · Paid units<input name="paid_units_${i}" type="number" required min="1" max="1000" step="1"></label>`).join('')}<label class="review-ack"><input name="not_forwarded" type="checkbox" required> I reviewed the EOB/ERA and the primary payer has not forwarded this claim to the secondary payer.</label><label class="review-ack"><input name="timing_reviewed" type="checkbox" required> I confirmed when the secondary payer accepts this claim, including any waiting period (Medicare and Blue plan crossover may have one).</label><label>How you confirmed this (EOB date, call reference or portal)<input name="crossover_reference" required maxlength="1000"></label><button type="submit" class="primary">Continue</button></form>`:!choices.length?'<p>No other active secondary insurance is on file for this encounter date. Add it under Insurance, or open the existing secondary claim above.</p>':''}</section>`;
  const host=$('claim-editor');if(!host)return;host.innerHTML=html;
  typeaheadInit(host);
  const form=$('secondary-claim-review');if(form){form.claimViewContext=context;form.secondaryReview=data;form.secondaryChoices=choices;form.primaryClaimId=primary.id;}
@@ -1007,7 +1007,7 @@ async function createCrossoverTracking(form,values){
 document.addEventListener('submit',event=>{const form=event.target;if(form.id!=='crossover-claim-review')return;event.preventDefault();run(()=>createCrossoverTracking(form,Object.fromEntries(new FormData(form))));});
 // The claim page's "Fix it here" form (registered last so the claim editor's own submit handler stays first).
 document.addEventListener('submit',event=>{if(event.target.id!=='claim-quick-fix')return;event.preventDefault();run(()=>saveClaimQuickFix(event.target));});
-// A claim is part of its visit: the visit page is the invoice, and the claim is shown on it. Opens
+// A claim is part of its visit: the encounter page is the invoice, and the claim is shown on it. Opens
 // the patient's visit with the claim below the invoice. A claim with no visit (an imported record)
 // answers false and stays on the claims page.
 async function openClaimOnVisit(claimId){

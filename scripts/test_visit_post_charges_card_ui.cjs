@@ -50,7 +50,7 @@ const useAccount=coverageId=>{ctx.workspace.billing={...ctx.workspace.billing,ac
  assert.deepEqual(posts().map(call=>[call[0],call[1],JSON.stringify(call[2]),call[3]]),[['/api/v1/patients/patient/billing/accounts/account/actions','POST','{"action":"post","reason":"Charges posted","local_only":false}',4]],'the lower form\'s endpoint, action, a default reason and version');
  const postedReason=posts()[0][2].reason;
  assert.equal(typeof postedReason,'string');assert.ok(postedReason.trim().length>0&&postedReason.length<=1000,'the post carries a non-empty reason of at most 1000 characters');
- assert.ok(sent.some(call=>call[0]==='rerender'),'the visit is reopened the way the lower form reopens it');
+ assert.ok(sent.some(call=>call[0]==='rerender'),'the encounter is reopened the way the lower form reopens it');
  assert.deepEqual(sent.at(-1),['/api/v1/patients/patient/billing/visit-summary?visit_id=visit'],'then the card reads what the server now says');
   assert.equal(ctx.revealed,'charges','the billing step is shown again after posting');
   assert.equal(ctx.noticed,'Charges posted.','the card says the charges were posted, not something else');

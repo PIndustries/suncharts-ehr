@@ -26,7 +26,7 @@ function encounterChargeAccount(){return typeof activeVisit!=='undefined'&&activ
 // above the part of the block this file rewrites. Its markup is never thrown away by a charge
 // re-render, so the ICD list always reads above the CPT lines and survives every post and close.
 // The note gives up its own #visit-diagnoses while billing is on screen (visitNoteOwnsDiagnoses),
-// so this host holds the one editor the visit has.
+// so this host holds the one editor the encounter has.
 const ENCOUNTER_DIAGNOSES_ID='encounter-diagnoses';
 function encounterDiagnosesHost(){
  const block=$('encounter-revenue');if(!block)return null;
@@ -42,12 +42,12 @@ function encounterDiagnosesHost(){
   host.id=ENCOUNTER_DIAGNOSES_ID;
   host.className='billing-section encounter-diagnoses';
   const only=(block.children||[]).length===1?String(block.children[0].textContent||''):'';
-  if((block.children||[]).length<=1&&(!only.trim()||/^Select a visit/.test(only)))block.replaceChildren();
+  if((block.children||[]).length<=1&&(!only.trim()||/^Select an encounter/.test(only)))block.replaceChildren();
   block.insertBefore(host,block.firstChild||null);
  }
  return host;
 }
-// What an empty host is filled with: a placeholder until the visit's diagnoses load.
+// What an empty host is filled with: a placeholder until the encounter's diagnoses load.
 function encounterDiagnosesPlaceholderMarkup(){return '<div id="visit-diagnoses"><p class="muted">Loading…</p></div>';}
 function renderEncounterDiagnoses(){
  const host=encounterDiagnosesHost();if(!host)return;
@@ -153,18 +153,18 @@ async function loadInsuranceEligibility(coverageId,force=false){
  entry.pending=(async()=>{try{const history=await api(`/api/v1/patients/${state.patient}/coverages/${coverageId}/claimmd-eligibility`);if(insuranceEligibilityState!==state||selected!==state.patient||me!==state.identity||state.items.get(coverageId)!==entry)return;entry.history={...history,items:[...(history.items||[])].sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at)))};}catch{entry.error=true;}finally{entry.loading=false;if(insuranceEligibilityState===state&&selected===state.patient&&me===state.identity&&state.items.get(coverageId)===entry){const current=$('insurance-eligibility-'+coverageId);if(current)current.innerHTML=insuranceEligibilityMarkup(entry,coverageId,revenueServiceDate());}}})();
  return entry.pending;
 }
-// The visit's billing card. Every amount and the next step come from the server's summary
-// for this visit; nothing here adds or subtracts money.
+// The encounter's billing card. Every amount and the next step come from the server's summary
+// for this encounter; nothing here adds or subtracts money.
 function visitBillingStateContext(extra={}){return {delegated:typeof me!=='undefined'&&me?.delegated===true||encounterRevenueState.data?.summary?.viewer?.delegated===true,canCreate:billingCan('create'),canWrite:billingCan(),claimsAllowed:typeof workspaceResourceAllowed!=='function'?true:workspaceResourceAllowed('claims','view'),...extra};}
 function visitBillingContext(extra={}){return visitBillingStateContext(extra);}
-// Whether this visit's charges are on their way onto the table filled in from the patient's last
+// Whether this encounter's charges are on their way onto the table filled in from the patient's last
 // visit, or already sit there untouched. The billing card asks the charge table's own code (see
 // visitBillingChargesFilled in web/visit-billing.js, which loads first) so the wording the card
 // offers and the table the step builds are always the same answer. With nothing to fill in from
 // the card says what it always said.
 function encounterChargesFilledIn(){return typeof visitBillingChargesFilled==='function'&&visitBillingChargesFilled();}
-// Whether the staff member is looking at this visit's charges. On the one-page visit the charges
-// block sits on the visit itself, so the page helper answers; where app.js is not loaded the
+// Whether the staff member is looking at this encounter's charges. On the one-page visit the charges
+// block sits on the encounter itself, so the page helper answers; where app.js is not loaded the
 // page works as before and the encounter's own charges state decides.
 function encounterOnBillingStep(){
  if(typeof encounterShows==='function')return encounterShows('charges');
@@ -174,7 +174,7 @@ function encounterRevenueStatusMarkup(account,data={}){
  // A card with something wrong to answer for keeps its own button: while a claim could not be
  // prepared, or is preparing, the review panel has nothing to offer yet.
  if(data.summary)return visitBillingCardMarkup(data.summary,visitBillingContext({prepareError:data.prepareError,preparing:data.preparing,noReview:!!data.prepareError||!!data.preparing}))+(data.stale?'<p role="status">These amounts could not be refreshed just now. Refresh before relying on them.</p>':'');
- return `<section class="visit-billing-card"><div class="section-head"><h3>Next step</h3>${data.error?'<button type="button" class="text-button" data-refresh-revenue>Refresh</button>':''}</div><p ${data.error?'role="status"':'class="muted"'}>${data.error?'Billing for this visit could not be loaded. Refresh before relying on any amount.':'Loading billing for this visit…'}</p></section>`;
+ return `<section class="visit-billing-card"><div class="section-head"><h3>Next step</h3>${data.error?'<button type="button" class="text-button" data-refresh-revenue>Refresh</button>':''}</div><p ${data.error?'role="status"':'class="muted"'}>${data.error?'Billing for this encounter could not be loaded. Refresh before relying on any amount.':'Loading billing for this encounter…'}</p></section>`;
 }
 function paintEncounterRevenue(state,current){
  if(!current())return;const node=$('encounter-revenue-status');if(!node)return;
@@ -227,7 +227,7 @@ async function loadEncounterRevenueStatus(account,force=false){
     try{await api(`/api/v1/patients/${encodeURIComponent(state.patient)}/billing/accounts/${encodeURIComponent(summary.account.id)}/claims/prepare`,'POST',{});prepareError=null;}catch(error){prepareError=visitBillingPrepareMessage(error);}
     if(!current())return;summary=await read();if(!current())return;
    }
-   // The read finished: the card answers for the visit as the server now describes it, so the
+   // The read finished: the card answers for the encounter as the server now describes it, so the
    // version it was opened at is replaced with the one that produced this summary.
    if(encounterRevenueState===state&&summary?.account)state.version=summary.account.version??state.version;
    state.data={summary,prepareError:summary.state==='prepare_claim'?prepareError:null};state.loadedAt=Date.now();
@@ -237,15 +237,15 @@ async function loadEncounterRevenueStatus(account,force=false){
  return state.pending;
 }
 async function prepareVisitClaim(again){
- const account=encounterChargeAccount(),state=encounterRevenueState,patient=selected,identity=me;if(!account)throw new Error('Post the charges for this visit first.');
+ const account=encounterChargeAccount(),state=encounterRevenueState,patient=selected,identity=me;if(!account)throw new Error('Post the charges for this encounter first.');
  state.prepared=true;
  const result=await api(`/api/v1/patients/${encodeURIComponent(patient)}/billing/accounts/${encodeURIComponent(account.id)}/claims/prepare`,'POST',again?{again:true}:{});
  if(selected!==patient||me!==identity)return;
  if(encounterRevenueState===state&&state.data)state.data.prepareError=null;
  await loadEncounterRevenueStatus(encounterChargeAccount(),true);
- if(result.outcome==='prepared')notice('Claim prepared from this visit. Nothing was sent.');
+ if(result.outcome==='prepared')notice('Claim prepared from this encounter. Nothing was sent.');
 }
-// The statement is the patient's side of this visit. Its record is saved the first time it
+// The statement is the patient's side of this encounter. Its record is saved the first time it
 // is opened to print or send, and reused while the amount is unchanged.
 async function openVisitStatement(){
  const account=encounterChargeAccount();if(!account||account.status!=='posted')throw new Error('Post the charges before preparing a statement.');
@@ -288,13 +288,13 @@ function insuranceCoverageCard(coverage){
 }
 function insuranceContinueMarkup(appointment){
  if(!appointment)return '<p>Select an appointment above to continue its visit.</p>';
- if((typeof chartAreaEnabled==='function'&&!chartAreaEnabled('visits'))||(typeof workspaceResourceAllowed==='function'&&!workspaceResourceAllowed('clinical')))return '<p>Continuing this visit needs clinical access. The appointment selection above remains the scope for billing.</p>';
+ if((typeof chartAreaEnabled==='function'&&!chartAreaEnabled('visits'))||(typeof workspaceResourceAllowed==='function'&&!workspaceResourceAllowed('clinical')))return '<p>Continuing this encounter needs clinical access. The appointment selection above remains the scope for billing.</p>';
  const visit=(workspace.visits||[]).find(v=>v.appointment_id===appointment.id);
  const context=`${esc(appointment.title||'Appointment')} · ${esc(date(appointment.starts_at))}`;
- if(visit)return `<p>${context}</p><button type="button" data-visit="${esc(visit.id)}">${visit.status==='signed'?'Review signed visit':'Continue visit'}</button><p class="muted">${visit.status==='signed'?'The signed note stays unchanged. Corrections use its existing amendment workflow.':'Open this appointment’s existing visit.'}</p>`;
- if(workspace.patient?.archived)return `<p>${context}</p><p class="muted">This patient chart is archived. Restore it before checking in or starting a new visit. Existing visits remain available.</p>`;
+ if(visit)return `<p>${context}</p><button type="button" data-visit="${esc(visit.id)}">${visit.status==='signed'?'Review signed visit':'Continue encounter'}</button><p class="muted">${visit.status==='signed'?'The signed note stays unchanged. Corrections use its existing amendment workflow.':'Open this appointment’s existing visit.'}</p>`;
+ if(workspace.patient?.archived)return `<p>${context}</p><p class="muted">This patient chart is archived. Restore it before checking in or starting a new encounter. Existing visits remain available.</p>`;
  if(appointment.status==='booked'&&typeof canSchedule==='function'&&canSchedule())return `<p>${context} · Not checked in</p><button type="button" data-insurance-check-in="${esc(appointment.id)}">Check in this appointment</button>`;
- if(appointment.status==='checked_in'&&((typeof isRoomingStaff==='function'&&isRoomingStaff())||(['owner','clinician'].includes(me?.role)&&appointment.clinician_id===me.user_id)))return `<p>${context} · Checked in</p><button type="button" data-start="${esc(appointment.id)}">Start this visit</button>`;
+ if(appointment.status==='checked_in'&&((typeof isRoomingStaff==='function'&&isRoomingStaff())||(['owner','clinician'].includes(me?.role)&&appointment.clinician_id===me.user_id)))return `<p>${context} · Checked in</p><button type="button" data-start="${esc(appointment.id)}">Start this encounter</button>`;
  return `<p>${context} · ${esc(human(appointment.status))}</p><p class="muted">No visit is linked to this appointment. Its status and assigned clinician determine the next clinical action.</p>`;
 }
 async function checkInInsuranceAppointment(id){
@@ -315,7 +315,7 @@ function renderPatientInsurance(){
  if(typeof refreshPatientChartContext==='function')refreshPatientChartContext();
  const key=JSON.stringify([selected,appointment?.id,appointment?.status,serviceDate,coverages.map(c=>[c.id,c.version]),workspace.billing.copays,(workspace.visits||[]).map(v=>[v.id,v.status])]);if(host.dataset.insuranceKey===key){for(const coverage of coverages)loadInsuranceEligibility(coverage.id);insuranceAutoEligibility(current,appointment,serviceDate);if(appointment&&billingCan('create'))void loadHostedCopays(appointment.id);return;}host.dataset.insuranceKey=key;
  const options=(workspace.appointments||[]).filter(a=>!['cancelled','canceled','no_show'].includes(a.status)||a.id===appointment?.id);
- host.innerHTML=`<div class="section-head"><div><h2>Prepare this appointment</h2><p class="muted">Review insurance, handle the copay, then continue the same appointment.</p></div></div><div class="insurance-appointment-context"><label>Appointment being prepared<select id="insurance-appointment" ${options.length?'':'disabled'}>${options.map(a=>`<option value="${esc(a.id)}" ${appointment?.id===a.id?'selected':''}>${esc(a.title||'Visit')} · ${esc(date(a.starts_at))} · ${esc(displayStatus(a.status))}</option>`).join('')||'<option>No appointment available</option>'}</select></label><p class="muted">Insurance and every copay action below use this appointment${appointment?' and service date '+esc(displayDate(serviceDate)):''}.</p></div><ol class="insurance-workflow-stages" aria-label="Appointment preparation"><li><button type="button" data-insurance-stage="insurance-review-title"><span>1</span> Review insurance</button></li><li><button type="button" data-insurance-stage="insurance-copay-title"><span>2</span> Collect copay</button></li><li><button type="button" data-insurance-stage="insurance-continue-title"><span>3</span> Start the visit</button></li></ol><section class="insurance-workflow-stage" aria-labelledby="insurance-review-title"><div class="section-head"><h3 id="insurance-review-title" tabindex="-1">1. Review insurance</h3><div class="actions"><button type="button" data-chart-section="documents">Insurance documents</button>${billingCan('create')?'<button type="button" data-new-coverage>Add insurance</button>':''}</div></div>${current.length?`<div class="insurance-coverage-list">${current.map(insuranceCoverageCard).join('')}</div>`:'<p>No insurance on file for this visit date.</p>'}${history.length?`<details class="insurance-supporting-records"><summary>Inactive &amp; prior coverage (${history.length})</summary><div class="insurance-coverage-list">${history.map(insuranceCoverageCard).join('')}</div></details>`:''}</section><section class="insurance-workflow-stage" aria-labelledby="insurance-copay-title"><h3 id="insurance-copay-title" tabindex="-1">2. Collect copay</h3>${appointment?hostedCopayPanel(appointment,'insurance-hosted-copay')||copayReceiptMarkup(appointmentCopays(appointment)):'<p>Select or book an appointment before collecting its copay.</p>'}${billingCan('create')&&appointment?`<details class="insurance-supporting-records"><summary>Record cash, check or an external receipt</summary><p>This records money already received; it does not charge a card.</p><button type="button" data-record-copay="${esc(appointment.id)}">Record received payment</button></details>`:''}</section><section class="insurance-workflow-stage" aria-labelledby="insurance-continue-title"><h3 id="insurance-continue-title" tabindex="-1">3. Start the visit</h3>${insuranceContinueMarkup(appointment)}</section><div id="insurance-editor"></div>`;
+ host.innerHTML=`<div class="section-head"><div><h2>Prepare this appointment</h2><p class="muted">Review insurance, handle the copay, then continue the same appointment.</p></div></div><div class="insurance-appointment-context"><label>Appointment being prepared<select id="insurance-appointment" ${options.length?'':'disabled'}>${options.map(a=>`<option value="${esc(a.id)}" ${appointment?.id===a.id?'selected':''}>${esc(a.title||'Visit')} · ${esc(date(a.starts_at))} · ${esc(displayStatus(a.status))}</option>`).join('')||'<option>No appointment available</option>'}</select></label><p class="muted">Insurance and every copay action below use this appointment${appointment?' and service date '+esc(displayDate(serviceDate)):''}.</p></div><ol class="insurance-workflow-stages" aria-label="Appointment preparation"><li><button type="button" data-insurance-stage="insurance-review-title"><span>1</span> Review insurance</button></li><li><button type="button" data-insurance-stage="insurance-copay-title"><span>2</span> Collect copay</button></li><li><button type="button" data-insurance-stage="insurance-continue-title"><span>3</span> Start the encounter</button></li></ol><section class="insurance-workflow-stage" aria-labelledby="insurance-review-title"><div class="section-head"><h3 id="insurance-review-title" tabindex="-1">1. Review insurance</h3><div class="actions"><button type="button" data-chart-section="documents">Insurance documents</button>${billingCan('create')?'<button type="button" data-new-coverage>Add insurance</button>':''}</div></div>${current.length?`<div class="insurance-coverage-list">${current.map(insuranceCoverageCard).join('')}</div>`:'<p>No insurance on file for this encounter date.</p>'}${history.length?`<details class="insurance-supporting-records"><summary>Inactive &amp; prior coverage (${history.length})</summary><div class="insurance-coverage-list">${history.map(insuranceCoverageCard).join('')}</div></details>`:''}</section><section class="insurance-workflow-stage" aria-labelledby="insurance-copay-title"><h3 id="insurance-copay-title" tabindex="-1">2. Collect copay</h3>${appointment?hostedCopayPanel(appointment,'insurance-hosted-copay')||copayReceiptMarkup(appointmentCopays(appointment)):'<p>Select or book an appointment before collecting its copay.</p>'}${billingCan('create')&&appointment?`<details class="insurance-supporting-records"><summary>Record cash, check or an external receipt</summary><p>This records money already received; it does not charge a card.</p><button type="button" data-record-copay="${esc(appointment.id)}">Record received payment</button></details>`:''}</section><section class="insurance-workflow-stage" aria-labelledby="insurance-continue-title"><h3 id="insurance-continue-title" tabindex="-1">3. Start the encounter</h3>${insuranceContinueMarkup(appointment)}</section><div id="insurance-editor"></div>`;
  for(const coverage of coverages)loadInsuranceEligibility(coverage.id);
  insuranceAutoEligibility(current,appointment,serviceDate);
  if(appointment&&billingCan('create'))void loadHostedCopays(appointment.id);
@@ -324,7 +324,7 @@ function renderPatientInsurance(){
 function renderEncounterRevenue(){
  const host=$('encounter-revenue');if(!host)return;
  const visit=typeof activeVisit!=='undefined'?activeVisit:null,account=encounterChargeAccount(),appointment=(workspace.appointments||[]).find(a=>a.id===visit?.appointment_id),serviceDate=revenueServiceDate(appointment),coverage=revenueCoverage(serviceDate);
- if(!visit){host.innerHTML='<p>Select a visit to record its procedures and charges.</p>';return;}
+ if(!visit){host.innerHTML='<p>Select an encounter to record its procedures and charges.</p>';return;}
  const key=JSON.stringify([selected,visit.id,visit.version,appointment?.id,account?.id,account?.version,(workspace.billing?.coverages||[]).map(c=>[c.id,c.version]),workspace.billing?.copays]);if(host.dataset.revenueKey===key){if(account&&chartSection==='visits'&&!$('encounter-billing-detail')?.innerHTML)showBillingAccount(account.id,false);loadEncounterRevenueStatus(account);if(appointment&&billingCan('create'))void loadHostedCopays(appointment.id);if(typeof resumeEncounterChargeDraft==='function')resumeEncounterChargeDraft();return;}if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();host.dataset.revenueKey=key;
  const owner=typeof me!=='undefined'&&me?.role==='owner';
   // Whether this role sees codes & charges at all. A person without billing keeps the note's own
@@ -360,15 +360,15 @@ function renderEncounterRevenue(){
  // A chart opened on another page keeps its panel empty; the billing step re-opens it.
  if(chartSection!=='visits'&&typeof visitReviewClose==='function')visitReviewClose();
  if(account&&typeof chartSection!=='undefined'&&chartSection==='visits')showBillingAccount(account.id,false);
- // Whether this visit's charges are on their way onto the table filled in from the patient's
- // last visit. A visit opened on its billing step with no charges yet is asked first, because
+ // Whether this encounter's charges are on their way onto the table filled in from the patient's
+ // last visit. An encounter opened on its billing step with no charges yet is asked first, because
  // that is the one case where charges are about to appear without anyone pressing anything.
- // A visit whose charges already exist is a table staff have dealt with, so it is never offered
+ // An encounter whose charges already exist is a table staff have dealt with, so it is never offered
  // charges filled in from an earlier visit. That is decided outside the billing step: on the
  // step itself, charges the practice is about to fill in are already sitting on the table, and
  // this same visit would otherwise be written off as finished before its own table is opened.
  if(account&&!encounterOnBillingStep()&&typeof chargeProposalTouched==='function')chargeProposalTouched(visit);
- // A visit that is still being worked on and has no charges yet has its table built when the
+ // An encounter that is still being worked on and has no charges yet has its table built when the
  // step is opened, so the filled-in charges are on it before anyone presses anything. A visit
  // with nothing to fill in from keeps waiting for its Add charges button.
  if(!account&&typeof chartSection!=='undefined'&&chartSection==='visits'&&encounterOnBillingStep()&&encounterChargesFilledIn())openEncounterCharges();
@@ -382,7 +382,7 @@ function renderEncounterRevenue(){
 // The card's "Post charges" asks first, then sends exactly what the lower form would send
 // with its reason box left as rendered. A payer with no electronic ID still needs the
 // acknowledgement in that form, so the button only scrolls down to it.
-// With the one-press flow asked for (the line under the charge table, or the card on a visit
+// With the one-press flow asked for (the line under the charge table, or the card on an encounter
 // whose claim is already prepared), the ask names the send that follows the post.
 // What the last press found: whether anything was posted, and whether the ask was cancelled
 // before anything was sent. The one-press flow answers for both.
@@ -407,7 +407,7 @@ const insured=state.data?.summary?.insurance?.insured===true&&account.content.co
  const patient=selected,identity=me;
  await api(`${billingBase()}/${account.id}/actions`,'POST',{action:'post',reason:'Charges posted',local_only:false},account.version);
  if(selected!==patient||me!==identity)return;
- // The same refresh the lower form does: this visit reopened on its billing step. Then the
+ // The same refresh the lower form does: this encounter reopened on its billing step. Then the
  // card's own state is dropped so it reads what the server now says. A chart opened on
  // another page stays on that page.
  const returnSection=typeof chartSection!=='undefined'?chartSection:'billing';
@@ -426,7 +426,7 @@ function visitBillingRefreshButton(){
  const form=$('billing-account-form'),slot=form?.querySelector?.('[data-charge-next]'),footer=slot?.querySelector?.('[data-visit-review-open][data-post-and-send]');
  return footer||$('encounter-revenue-status')?.querySelector?.('[data-visit-post-and-send],[data-visit-claim-direct-send]')||null;
 }
-// The server's own words stay beside the button that failed; nothing else on the visit changes.
+// The server's own words stay beside the button that failed; nothing else on the encounter changes.
 // A button the refresh already redrew (a claim that moved on anyway) is left as the card now says.
 function visitClaimSendFailure(error,button){
  // The press may have been on the card or on the line under the charge table; the message goes
@@ -450,7 +450,7 @@ async function postVisitChargesAndSend(){
  const state=encounterRevenueState,patient=selected,identity=me;
 const insured=state.data?.summary?.insurance?.insured===true&&account.content.coverage_id!=null;
  if(insured&&typeof encounterRevenueVisitUnsigned==='function'&&encounterRevenueVisitUnsigned(account)){
-  notice('The visit note is not signed yet. Post the charges from the review, which asks about the signature first.',true);
+  notice('The encounter note is not signed yet. Post the charges from the review, which asks about the signature first.',true);
   if(typeof visitReviewOpen==='function')visitReviewOpen();
   return;
  }
@@ -464,25 +464,25 @@ const insured=state.data?.summary?.insurance?.insured===true&&account.content.co
  }
  if(selected!==patient||me!==identity)return;
  const summary=encounterRevenueState.data?.summary;
- if(summary?.state==='fix_claim'){notice('The claim needs details before it can be sent. They are listed on the visit.',true);return;}
+ if(summary?.state==='fix_claim'){notice('The claim needs details before it can be sent. They are listed on the encounter.',true);return;}
  if(summary?.state!=='send_claim')return;
- // The claim the server just prepared, answering for the visit this screen is on.
+ // The claim the server just prepared, answering for the encounter this screen is on.
  let claim=summary.claim?.id?summary.claim:null;
  if(!claim){
   const fresh=await api(`/api/v1/patients/${encodeURIComponent(patient)}/billing/visit-summary?visit_id=${encodeURIComponent(summary?.visit?.id||'')}`);
   if(selected!==patient||me!==identity)return;
   claim=fresh?.claim?.id?fresh.claim:null;
-  if(fresh?.state==='fix_claim'){encounterRevenueState.data={summary:fresh};paintEncounterRevenue(encounterRevenueState,()=>true);notice('The claim needs details before it can be sent. They are listed on the visit.',true);return;}
+  if(fresh?.state==='fix_claim'){encounterRevenueState.data={summary:fresh};paintEncounterRevenue(encounterRevenueState,()=>true);notice('The claim needs details before it can be sent. They are listed on the encounter.',true);return;}
  }
- if(!claim){notice('The claim for this visit could not be found. Open the visit again.',true);return;}
+ if(!claim){notice('The claim for this encounter could not be found. Open the encounter again.',true);return;}
  try{await visitClaimDirectSend(claim.id,button);}
  catch(error){visitClaimSendFailure(error,button);}
 }
 // A card's button answers for the live visit's summary, read back from the server first: a screen
 // left open while the claim moved on sends nothing on the copy it remembers.
 async function sendVisitClaimNow(claimId,button){
- // The visit's own card decides what a press means: charges still a draft go through the combined
- // post-and-send, anything else is the send itself. The card is the server's word on this visit,
+ // The encounter's own card decides what a press means: charges still a draft go through the combined
+ // post-and-send, anything else is the send itself. The card is the server's word on this encounter,
  // and the send re-reads the claim from the server before it releases or sends anything.
  const summary=encounterRevenueState.data?.summary;
  if(summary?.state==='post_charges'&&summary.insurance?.insured&&summary.account?.status==='draft')return postVisitChargesAndSend();
@@ -490,14 +490,14 @@ async function sendVisitClaimNow(claimId,button){
  catch(error){visitClaimSendFailure(error,button);}
 }
 function openEncounterCharges(){
- if(typeof activeVisit==='undefined'||!activeVisit){showChartSection('visits');notice('Select or start the visit before entering its procedures.',true);return;}
+ if(typeof activeVisit==='undefined'||!activeVisit){showChartSection('visits');notice('Select or start the encounter before entering its procedures.',true);return;}
  if(typeof setEncounterSection==='function')setEncounterSection('charges');else showChartSection('visits');
  if(!$('encounter-billing-editor'))renderEncounterRevenue();
  const account=encounterChargeAccount();
- // Charges for a visit are worked on in one live table: rows, not a form with a save button.
+ // Charges for an encounter are worked on in one live table: rows, not a form with a save button.
  if(typeof chargeTableAllowed==='function'&&!(account&&account.status==='draft'&&chargeTableAllowed(account))){
   if(account){billingSelected=account.id;showBillingAccount(account.id,false);if(account.status==='draft'&&typeof chargeTableFinishedMarkup==='function')openBillingEditor(chargeTableFinishedMarkup(account));return;}
-  if(typeof chargeTableAllowed==='function'&&!chargeTableAllowed(null)){notice('This visit cannot take charges here yet.',true);return;}
+  if(typeof chargeTableAllowed==='function'&&!chargeTableAllowed(null)){notice('This encounter cannot take charges here yet.',true);return;}
   accountEditor(null,null,true);return;
  }
  if(account){billingSelected=account.id;showBillingAccount(account.id,false);if(account.status==='draft')accountEditor(account,null,true);}else accountEditor(null,null,true);
@@ -508,7 +508,7 @@ function openCopayReceiptEditor(appointmentId){
  if(inEncounter)setEncounterSection('charges');else showChartSection('insurance');
  const appointment=revenueAppointment();if(!appointment){notice('Book or select an appointment before recording its copay.',true);return;}
  const coverage=revenueCoverage(revenueServiceDate(appointment)),plan=coverage?.content.copay_cents,amount=inEncounter?visitCollectAmount(appointment.id,plan):plan;
- openBillingEditor(`<form id="copay-receipt-form" data-patient="${esc(selected)}" data-visit="${esc(inEncounter?activeVisit.id:'')}" data-request="${crypto.randomUUID()}" data-appointment="${esc(appointment.id)}" data-coverage="${esc(coverage?.id||'')}"><h3>Record a cash or check copay</h3><p>${esc(appointment.title||'Appointment')} · ${esc(date(appointment.starts_at))}</p><p class="muted">${plan!=null?'Recorded plan copay: '+money(plan)+'. Confirm the amount received for this visit.':'Confirm the patient’s responsibility and the amount already received.'} Charges can be prepared later; the receipt remains linked to this appointment.</p><div class="form-grid"><label>Amount received (USD)<input name="amount" inputmode="decimal" required value="${amount==null?'':esc(dollars(amount))}"></label><label>Received by<select name="method"><option value="cash">Cash</option><option value="check">Check</option><option value="external">External payment receipt</option></select></label><label>Receipt / check reference<input name="reference" maxlength="200"></label><label>Receipt date<input name="occurred_on" type="date" required value="${esc(revenueServiceDate(null))}"></label></div><label>Receipt evidence / reason<input name="reason" required maxlength="1000" placeholder="Reviewed copay and payment receipt"></label><label class="review-ack"><input type="checkbox" name="received_confirmed" required> I confirm this payment has already been received. No card or bank transaction will be initiated.</label><button type="submit" class="primary">Save copay receipt</button></form>`);
+ openBillingEditor(`<form id="copay-receipt-form" data-patient="${esc(selected)}" data-visit="${esc(inEncounter?activeVisit.id:'')}" data-request="${crypto.randomUUID()}" data-appointment="${esc(appointment.id)}" data-coverage="${esc(coverage?.id||'')}"><h3>Record a cash or check copay</h3><p>${esc(appointment.title||'Appointment')} · ${esc(date(appointment.starts_at))}</p><p class="muted">${plan!=null?'Recorded plan copay: '+money(plan)+'. Confirm the amount received for this encounter.':'Confirm the patient’s responsibility and the amount already received.'} Charges can be prepared later; the receipt remains linked to this appointment.</p><div class="form-grid"><label>Amount received (USD)<input name="amount" inputmode="decimal" required value="${amount==null?'':esc(dollars(amount))}"></label><label>Received by<select name="method"><option value="cash">Cash</option><option value="check">Check</option><option value="external">External payment receipt</option></select></label><label>Receipt / check reference<input name="reference" maxlength="200"></label><label>Receipt date<input name="occurred_on" type="date" required value="${esc(revenueServiceDate(null))}"></label></div><label>Receipt evidence / reason<input name="reason" required maxlength="1000" placeholder="Reviewed copay and payment receipt"></label><label class="review-ack"><input type="checkbox" name="received_confirmed" required> I confirm this payment has already been received. No card or bank transaction will be initiated.</label><button type="submit" class="primary">Save copay receipt</button></form>`);
  const form=$('copay-receipt-form');if(form)form.revenueIdentity=me;
 }
 document.addEventListener('click',event=>{
@@ -522,7 +522,7 @@ document.addEventListener('click',event=>{
  if(button.dataset.visitClaimPrepare!==undefined){event.preventDefault();button.disabled=true;run(()=>prepareVisitClaim(button.dataset.visitClaimPrepare==='again'));return;}
  if(button.dataset.visitClaimDirectSend){event.preventDefault();run(()=>sendVisitClaimNow(button.dataset.visitClaimDirectSend,button));return;}
  if(button.dataset.visitPostAndSend){event.preventDefault();run(()=>postVisitChargesAndSend());return;}
- if(button.dataset.visitClaimSend||button.dataset.visitClaimFix){event.preventDefault();run(async()=>{const account=encounterChargeAccount();if(!account)throw new Error('Open the visit for these charges first.');const id=button.dataset.visitClaimSend||button.dataset.visitClaimFix;await showEncounterClaim(id,account.id);if(button.dataset.visitClaimFix&&typeof claimCurrent!=='undefined'&&claimCurrent?.id===id&&claimCurrent.status==='draft'){if(typeof openClaimQuickFix==='function'&&openClaimQuickFix())return;claimEditor(claimCurrent.snapshot.account,claimCurrent);}else $('encounter-claims')?.scrollIntoView({block:'start'});});return;}
+ if(button.dataset.visitClaimSend||button.dataset.visitClaimFix){event.preventDefault();run(async()=>{const account=encounterChargeAccount();if(!account)throw new Error('Open the encounter for these charges first.');const id=button.dataset.visitClaimSend||button.dataset.visitClaimFix;await showEncounterClaim(id,account.id);if(button.dataset.visitClaimFix&&typeof claimCurrent!=='undefined'&&claimCurrent?.id===id&&claimCurrent.status==='draft'){if(typeof openClaimQuickFix==='function'&&openClaimQuickFix())return;claimEditor(claimCurrent.snapshot.account,claimCurrent);}else $('encounter-claims')?.scrollIntoView({block:'start'});});return;}
  if(button.hasAttribute('data-visit-statement')){event.preventDefault();run(()=>openVisitStatement());return;}
  if(button.dataset.visitStatementOpen){event.preventDefault();run(async()=>{const view=hostedCopayView(),invoice=await api(`/api/v1/billing/invoices/${encodeURIComponent(button.dataset.visitStatementOpen)}`);if(!currentHostedCopayView(view,false))return;if(invoice.patient_id!==view.patient||invoice.account_id!==encounterChargeAccount()?.id)throw new Error('This statement does not belong to the open visit.');showVisitStatement(invoice);});return;}
  if(button.hasAttribute('data-visit-statement-close')){event.preventDefault();const sheet=button.closest?.('dialog.sheet-dialog');if(sheet&&typeof sheetClose==='function')sheetClose(sheet);$('encounter-billing-editor')?.replaceChildren();return;}
@@ -531,7 +531,7 @@ document.addEventListener('click',event=>{
  if(button.hasAttribute('data-revenue-documentation')){event.preventDefault();setEncounterSection('documentation');return;}
  if(button.dataset.visitPostCharges){event.preventDefault();run(()=>postVisitChargesFromCard());return;}
  if(button.dataset.revenueAccount){event.preventDefault();if(billingSelected!==button.dataset.revenueAccount||!$('encounter-billing-detail')?.innerHTML)showBillingAccount(button.dataset.revenueAccount,false);const details=$('encounter-charge-details');if(details)details.open=true;$('encounter-billing-detail')?.scrollIntoView({behavior:'smooth',block:'start'});return;}
- if(button.dataset.revenueClaim||button.dataset.revenueRemittance){event.preventDefault();run(async()=>{if(button.dataset.revenueClaim){const account=encounterChargeAccount();if(!account)throw new Error('Select the visit charge account.');await showEncounterClaim(button.dataset.revenueClaim,account.id);}else{await showClaimsWorkspace();await showEra(button.dataset.revenueRemittance);}});return;}
+ if(button.dataset.revenueClaim||button.dataset.revenueRemittance){event.preventDefault();run(async()=>{if(button.dataset.revenueClaim){const account=encounterChargeAccount();if(!account)throw new Error('Select the encounter charge account.');await showEncounterClaim(button.dataset.revenueClaim,account.id);}else{await showClaimsWorkspace();await showEra(button.dataset.revenueRemittance);}});return;}
  if(button.dataset.revenueInvoice||button.dataset.revenueInvoices){event.preventDefault();billingSelected=button.dataset.revenueInvoice||button.dataset.revenueInvoices;run(async()=>{if(button.dataset.revenueInvoice)patientInvoiceEditor();else await showPatientInvoices();});return;}
  if(button.dataset.copayReceipt){event.preventDefault();run(()=>showCopayReceipt(button.dataset.copayReceipt,button.dataset.appointment));return;}
  if(button.hasAttribute('data-print-copay-card')){event.preventDefault();printCopayReceiptCard(button.closest('[data-copay-receipt-view]'),button);return;}
@@ -540,7 +540,7 @@ document.addEventListener('click',event=>{
  if(button.hasAttribute('data-encounter-charges')){event.preventDefault();openEncounterCharges();return;}
  if(button.hasAttribute('data-encounter-charges-correct')){event.preventDefault();const account=encounterChargeAccount();if(account?.status==='posted'){billingSelected=account.id;showBillingAccount(account.id,false);accountEditor(account,null,true,{correction:true});}return;}
  if(button.dataset.copayVoid){event.preventDefault();openBillingEditor(`<form id="copay-void-form" data-receipt="${esc(button.dataset.copayVoid)}"><h3>Correct an unapplied receipt</h3><p>This voids the recorded receipt. It does not refund cash, a check or an external card payment.</p><label>Correction reason<input name="reason" required maxlength="1000"></label><button type="submit">Void recorded receipt</button></form>`);return;}
- if(button.hasAttribute('data-apply-copays')){event.preventDefault();run(async()=>{const account=workspace.billing.accounts.find(a=>a.id===billingSelected),patient=selected,identity=me,visit=activeVisit?.id,section=chartSection;if(!account)throw new Error('Open the visit account before applying its copay.');const result=await api(`${billingBase()}/${account.id}/copays/apply`,'POST',{},account.version);if(selected!==patient||me!==identity||activeVisit?.id!==visit)return;await selectPatient(patient,visit);if(selected!==patient||me!==identity||activeVisit?.id!==visit)return;showChartSection(section);if(section==='visits'&&typeof setEncounterSection==='function')setEncounterSection('charges');notice(`${money(result.applied_cents)} of recorded copay credit applied.`);});}
+ if(button.hasAttribute('data-apply-copays')){event.preventDefault();run(async()=>{const account=workspace.billing.accounts.find(a=>a.id===billingSelected),patient=selected,identity=me,visit=activeVisit?.id,section=chartSection;if(!account)throw new Error('Open the encounter account before applying its copay.');const result=await api(`${billingBase()}/${account.id}/copays/apply`,'POST',{},account.version);if(selected!==patient||me!==identity||activeVisit?.id!==visit)return;await selectPatient(patient,visit);if(selected!==patient||me!==identity||activeVisit?.id!==visit)return;showChartSection(section);if(section==='visits'&&typeof setEncounterSection==='function')setEncounterSection('charges');notice(`${money(result.applied_cents)} of recorded copay credit applied.`);});}
 });
 document.addEventListener('submit',event=>{
  const form=event.target;if(!['copay-receipt-form','copay-void-form'].includes(form.id))return;event.preventDefault();
@@ -637,11 +637,11 @@ function hostedCopayMarkup(state,encounter=false){
  const refresh=active[0]||state.items.find(item=>item.status!=='expired');
  const setup=!state.availability?.available?(me?.role==='owner'?'<p><button type="button" data-payment-settings>Stripe setup & card readiness</button></p>':'<p class="muted">A practice administrator must review Stripe setup and card readiness.</p>'):'';
  const historyContent=`${received&&!pending&&!state.uncertain?collect:''}${historyReceipts.length?copayReceiptMarkup(historyReceipts,{modeShown:test,encounter}):''}${history.map(item=>hostedCopayOperationMarkup(item,{modeShown:test,hideRefresh:true})).join('')}${state.uncertain&&state.retry?`<button type="button" data-retry-hosted-copay="${esc(state.appointment)}">${state.retry.reader_id?`Send the same ${money(state.retry.amount_cents)} payment to the reader`:state.retry.saved_card_setup_id?`Check the ${money(state.retry.amount_cents)} card charge`:`Retry the same ${money(state.retry.amount_cents)} checkout request`}</button>`:''}`;
- // On the visit's billing card these are the ways to collect; cash or check sits beside them.
+ // On the encounter's billing card these are the ways to collect; cash or check sits beside them.
  if(encounter){
   const options=state.availability?.available?`<div class="actions visit-billing-collect-options"><button type="button" data-reader-copay="${esc(state.appointment)}" ${available?'':'disabled'}>Card on reader</button><button type="button" data-saved-card-copay="${esc(state.appointment)}" ${available?'':'disabled'}>Card on file</button><button type="button" data-collect-card-copay="${esc(state.appointment)}" ${available?'':'disabled'}>Online payment link</button></div>`:'';
   const earlier=`${receipts.length?copayReceiptMarkup(receipts,{modeShown:test,encounter}):''}${history.map(item=>hostedCopayOperationMarkup(item,{modeShown:test,hideRefresh:true})).join('')}${state.uncertain&&state.retry?`<button type="button" data-retry-hosted-copay="${esc(state.appointment)}">${state.retry.reader_id?`Send the same ${money(state.retry.amount_cents)} payment to the reader`:state.retry.saved_card_setup_id?`Check the ${money(state.retry.amount_cents)} card charge`:`Retry the same ${money(state.retry.amount_cents)} checkout request`}</button>`:''}`;
-  return `${test&&typeof testPaymentLabel==='function'&&testPaymentLabel()?`<p class="copay-mode-label">${testPaymentLabel()}</p>`:''}${state.uncertain?'<p role="status">The previous request has an uncertain result. Check its status before collecting again.</p>':''}${state.error?'<p role="status">Card payment status is unavailable. Check its status before collecting.</p>':!state.availability?'<p class="muted">Loading card payment options…</p>':!state.availability.available?`<p class="muted">${esc(state.availability.reason||'Card payments are not set up for this practice.')}</p>`:''}${setup}${active.map(item=>hostedCopayOperationMarkup(item,{modeShown:test,hideRefresh:true,receiptShown:receiptIds.has(item.receipt_id)})).join('')}${options}${state.items.length||state.uncertain||state.error?`<button type="button" class="text-button" ${refresh?`data-refresh-hosted-copay="${esc(refresh.id)}" data-appointment="${esc(state.appointment)}"`:`data-refresh-hosted-copay-list="${esc(state.appointment)}"`}>Check card payment status</button>`:''}${earlier?`<details class="encounter-account-record" data-hosted-disclosure="history"><summary>Payments taken for this visit</summary>${earlier}</details>`:''}`;
+  return `${test&&typeof testPaymentLabel==='function'&&testPaymentLabel()?`<p class="copay-mode-label">${testPaymentLabel()}</p>`:''}${state.uncertain?'<p role="status">The previous request has an uncertain result. Check its status before collecting again.</p>':''}${state.error?'<p role="status">Card payment status is unavailable. Check its status before collecting.</p>':!state.availability?'<p class="muted">Loading card payment options…</p>':!state.availability.available?`<p class="muted">${esc(state.availability.reason||'Card payments are not set up for this practice.')}</p>`:''}${setup}${active.map(item=>hostedCopayOperationMarkup(item,{modeShown:test,hideRefresh:true,receiptShown:receiptIds.has(item.receipt_id)})).join('')}${options}${state.items.length||state.uncertain||state.error?`<button type="button" class="text-button" ${refresh?`data-refresh-hosted-copay="${esc(refresh.id)}" data-appointment="${esc(state.appointment)}"`:`data-refresh-hosted-copay-list="${esc(state.appointment)}"`}>Check card payment status</button>`:''}${earlier?`<details class="encounter-account-record" data-hosted-disclosure="history"><summary>Payments taken for this encounter</summary>${earlier}</details>`:''}`;
  }
  return `${test&&typeof testPaymentLabel==='function'&&testPaymentLabel()?`<p class="copay-mode-label">${testPaymentLabel()}</p>`:''}${state.uncertain?'<p role="status">The previous request has an uncertain result. Check its status before collecting again.</p>':''}${state.error?'<p role="status">Card payment status is unavailable. Check its status before collecting.</p>':!state.availability?'<p class="muted">Loading card payment availability…</p>':!state.availability.available?`<p class="muted">${esc(state.availability.reason||'Card collection is unavailable for this practice.')}</p>`:''}${setup}${active.map(item=>hostedCopayOperationMarkup(item,{modeShown:test,primary:!encounter,hideRefresh:true,receiptShown:receiptIds.has(item.receipt_id)})).join('')}${currentReceipts.length?copayReceiptMarkup(currentReceipts.slice(0,1),{modeShown:test,primary:!encounter&&!pending,encounter}):''}${!received&&!pending&&!state.uncertain?collect:''}<button type="button" class="text-button" ${refresh?`data-refresh-hosted-copay="${esc(refresh.id)}" data-appointment="${esc(state.appointment)}"`:`data-refresh-hosted-copay-list="${esc(state.appointment)}"`}>Check payment status</button>${historyContent?`<details class="${encounter?'encounter-account-record':'insurance-supporting-records'}" data-hosted-disclosure="history"><summary>${encounter?'Card payment details':'Payment history'}${received?' &amp; additional collection':''}</summary>${historyContent}</details>`:''}`;
 }
@@ -649,7 +649,7 @@ function encounterHostedCopayMarkup(state){return hostedCopayMarkup(state,true);
 function paintHostedCopayState(state){
  if(!currentHostedCopayState(state))return;
  for(const id of ['insurance-hosted-copay','encounter-hosted-copay','hosted-copay-operation']){const node=$(id);if(node?.dataset.appointment===state.appointment){const expanded=node.querySelector?.('[data-hosted-disclosure]')?.open;node.innerHTML=hostedCopayMarkup(state,id==='encounter-hosted-copay');const details=node.querySelector?.('[data-hosted-disclosure]');if(details)details.open=!!expanded;}}
- // A card payment that is waiting or uncertain must stay in view on the visit's billing card.
+ // A card payment that is waiting or uncertain must stay in view on the encounter's billing card.
  const collect=$('visit-billing-collect');if(collect&&$('encounter-hosted-copay')?.dataset.appointment===state.appointment&&(state.uncertain||state.items.some(item=>['creating','open','needs_review'].includes(item.status))))collect.hidden=false;
 }
 async function loadHostedCopays(appointment,force=false){
@@ -668,7 +668,7 @@ async function openHostedCopayEditor(appointmentId,panelId){
  if(!state.availability?.available||typeof state.availability.livemode!=='boolean'||state.uncertain||state.items.some(item=>['creating','open','needs_review'].includes(item.status))){paintHostedCopayState(state);notice('Review the current card payment status before collecting another copay.',true);return;}
  const appointment=(workspace.appointments||[]).find(item=>item.id===appointmentId);if(!appointment||['cancelled','canceled','no_show'].includes(appointment.status))throw new Error('Choose an active appointment for card collection.');
  const coverage=revenueCoverage(revenueServiceDate(appointment)),plan=coverage?.content.copay_cents,amount=visitCollectAmount(appointmentId,plan);
- drawReaderCopay(panelId,`<form id="hosted-copay-form" class="billing-section" data-panel="${esc(panelId||'')}" data-patient="${esc(state.patient)}" data-appointment="${esc(appointmentId)}" data-coverage="${esc(coverage?.id||'')}" data-livemode="${state.availability.livemode===true}" data-request="${crypto.randomUUID()}"><h3>Collect card copay${state.availability.livemode?'':testPaymentTag()&&' · '+testPaymentTag()}</h3><p>${esc(appointment.title||'Appointment')} · ${esc(date(appointment.starts_at))}</p><p>${plan==null?'No plan copay has been recorded. Confirm the amount for this visit.':'Recorded plan copay: '+money(plan)+'. Confirm the benefit and amount before collection.'}</p><label>Reviewed copay amount (USD)<input name="amount" required inputmode="decimal" value="${amount==null?'':esc(dollars(amount))}"></label><p class="muted">Card details are entered on Stripe’s secure checkout page. A receipt appears only after SunCharts verifies payment. Returning from checkout alone does not record a payment.</p><button type="submit" class="primary">Prepare secure card checkout</button><button type="button" data-close-reader-copay="${esc(panelId||'')}">Cancel</button></form>`);
+ drawReaderCopay(panelId,`<form id="hosted-copay-form" class="billing-section" data-panel="${esc(panelId||'')}" data-patient="${esc(state.patient)}" data-appointment="${esc(appointmentId)}" data-coverage="${esc(coverage?.id||'')}" data-livemode="${state.availability.livemode===true}" data-request="${crypto.randomUUID()}"><h3>Collect card copay${state.availability.livemode?'':testPaymentTag()&&' · '+testPaymentTag()}</h3><p>${esc(appointment.title||'Appointment')} · ${esc(date(appointment.starts_at))}</p><p>${plan==null?'No plan copay has been recorded. Confirm the amount for this encounter.':'Recorded plan copay: '+money(plan)+'. Confirm the benefit and amount before collection.'}</p><label>Reviewed copay amount (USD)<input name="amount" required inputmode="decimal" value="${amount==null?'':esc(dollars(amount))}"></label><p class="muted">Card details are entered on Stripe’s secure checkout page. A receipt appears only after SunCharts verifies payment. Returning from checkout alone does not record a payment.</p><button type="submit" class="primary">Prepare secure card checkout</button><button type="button" data-close-reader-copay="${esc(panelId||'')}">Cancel</button></form>`);
 }
 // The reader form and its live status are drawn directly under the copay controls that were
 // pressed, on the screen staff are already on. Nothing here changes the page or the tab.
@@ -818,7 +818,7 @@ async function createHostedCopay(state,body,panelId){
  // The checkout link and its status now show in the copay panel just above; close the form.
  const slot=readerCopaySlot(panelId);if(slot){slot.innerHTML='';$(slot.id.replace(/-reader$/,''))?.scrollIntoView?.({block:'nearest'});}
 }
-// The visit's invoice is one record shown in tabs: Invoice (diagnoses, line items, totals and the
+// The encounter's invoice is one record shown in tabs: Invoice (diagnoses, line items, totals and the
 // next step), Claim, Payments and History. The tab last used is remembered, so moving between
 // visits and patients comes back to the same place instead of a long scroll.
 const invoiceTabs=[['encounter','Encounter'],['claim','Claim'],['invoices','Invoices'],['payments','Payments'],['history','History']];
@@ -836,7 +836,7 @@ function invoiceTabSet(key,remember=true){
   const claims=$('encounter-claims');if(!claims||!claims.hidden)return;
   const claimId=encounterRevenueState?.data?.summary?.claim?.id,account=encounterChargeAccount();
   if(claimId&&account&&typeof showEncounterClaim==='function'){run(()=>showEncounterClaim(claimId,account.id));return;}
-  claims.hidden=false;claims.innerHTML='<p class="muted">No insurance claim for this visit yet. It is prepared from the invoice once the charges are posted.</p>';
+  claims.hidden=false;claims.innerHTML='<p class="muted">No insurance claim for this encounter yet. It is prepared from the invoice once the charges are posted.</p>';
  }
 }
 document.addEventListener('click',event=>{const tab=event.target?.closest?.('[data-invoice-tab-key]');if(!tab?.dataset?.invoiceTabKey)return;event.preventDefault();invoiceTabSet(tab.dataset.invoiceTabKey);});

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
-// One place for the codes a visit is billed on: the visit's own diagnoses sit directly above its
-// charge lines, entered by the very editor the visit's Diagnoses screen uses (web/visit-diagnoses.js
+// One place for the codes an encounter is billed on: the encounter's own diagnoses sit directly above its
+// charge lines, entered by the very editor the encounter's Diagnoses screen uses (web/visit-diagnoses.js
 // is loaded here unmodified and draws the section itself), and the charge rows below follow it.
 //
 // No npm packages. The markup billing.js renders is parsed into small hand-written element stubs,
@@ -218,8 +218,8 @@ const catalogCodes=[
  {code:'G80.02',display:'Synthetic congenital asthma with status asthmaticus',system:'ICD-10-CM',edition:'2026',release_id:'release-synthetic',effective_start:'2026-01-01',effective_end:'2026-12-31',billable:true,active:true,source_name:'Synthetic public source'},
  {code:'G80.09',display:'Synthetic congenital asthma other',system:'ICD-10-CM',edition:'2026',release_id:'release-synthetic',effective_start:'2026-01-01',effective_end:'2026-12-31',billable:true,active:true,source_name:'Synthetic public source'},
 ];
-// The visit's saved diagnoses, and the version a save answers with. A test moves these the way the
-// server would: put the diagnoses, the visit comes back a version ahead, and reading them again
+// The encounter's saved diagnoses, and the version a save answers with. A test moves these the way the
+// server would: put the diagnoses, the encounter comes back a version ahead, and reading them again
 // gives what was put.
 let visitVersion=3,accountVersion=7,savedAccount=null,diagnoses=[{id:'d1',code:'R51.9',display:'Headache'}];
 const visitResponse=()=>({version:visitVersion,visit:{id:'visit-a',version:visitVersion,status:'in_progress'},can_edit:true,diagnoses,history:[],history_truncated:false,code_system:'http://hl7.org/fhir/sid/icd-10-cm'});
@@ -245,7 +245,7 @@ const ctx={console,setTimeout:vmSetTimeout,clearTimeout:vmClearTimeout,Date,Intl
  api:async(url,method='GET',body,version)=>{
   sent.push({url,method,body,version});
   if(process.env.ERB_SLOW&&url.includes('/diagnoses'))await new Promise(resolve=>setTimeout(resolve,80));
-  // A save answers the way the server does: the diagnoses carry the new version, and the visit
+  // A save answers the way the server does: the diagnoses carry the new version, and the encounter
   // inside the record moves with it. The screen then pins the editor to that version — a form
   // still showing an older one would be told to reload.
   if(url.includes('/diagnoses')&&method==='PUT'){
@@ -300,7 +300,7 @@ const codesOnRow=row=>row.querySelector('[name="diagnoses"]').value;
 // comes off the markup the page wrote for it, not off a checkbox that is no longer there.
 const ticksOnRow=row=>row.querySelectorAll('[data-charge-diagnosis]').filter(node=>String(node.getAttribute('aria-pressed'))==='true'||node.attrs['data-chip-on']!==undefined).map(node=>node.dataset.chargeDiagnosis);
 // What the page's own rule sees, read through the page's own function: a line that still holds
-// exactly what the visit last gave it is allowed to keep following the visit.
+// exactly what the encounter last gave it is allowed to keep following the encounter.
 const autoFilled=row=>vm.runInContext('chargeDiagnosisAutoFilled',context)(row);
 // A diagnosis put in from the section above the table, saved the way that editor saves: type the
 // code, type the description, give the reason, and drain the autosave the typing starts.
@@ -345,13 +345,13 @@ const addDiagnosis=async(code,display)=>{
 };
 
 (async()=>{
- // ---- 1. the diagnoses sit above the charge lines, entered by the visit's own editor ------
+ // ---- 1. the diagnoses sit above the charge lines, entered by the encounter's own editor ------
  await openTable([{code_system:'CPT',code:'99213',description:'Synthetic office visit',modifiers:'',units:1,amount_cents:15000,diagnosis_codes:[]}]);
  const editorHtml=encounterEditor.innerHTML;
  const sectionAt=editorHtml.indexOf('data-charge-diagnosis-editor'),tableAt=editorHtml.indexOf('id="billing-charge-lines"');
  assert.ok(sectionAt>=0,'the charges step carries a diagnoses section');
  assert.ok(sectionAt<tableAt,'and it sits directly above the charge lines');
- assert.ok($('visit-diagnoses'),'the section holds the diagnoses host the visit Diagnoses screen uses');
+ assert.ok($('visit-diagnoses'),'the section holds the diagnoses host the encounter Diagnoses screen uses');
  assert.ok(openForm()&&!openForm().contains($('visit-diagnoses')),'the diagnoses editor is the charge form\u2019s neighbour, not nested inside it');
  // The section was drawn by web/visit-diagnoses.js itself, so it is that editor and not a copy:
  // its own add/remove markup, its own save form, its own wording.
@@ -368,43 +368,43 @@ const addDiagnosis=async(code,display)=>{
  assert.match(editorHtml.slice(tableAt,editorHtml.indexOf('</thead>',tableAt)),/<th>Procedure<\/th><th>Modifiers<\/th><th>Units<\/th><th>Diagnoses<\/th><th>Amount<\/th>/,'the lines are headed Procedure, not Code / Description');
  assert.doesNotMatch(editorHtml.slice(sectionAt,tableAt),/>Refresh<|>Find |<h3>[^<]*(Encounter|Diagnosis Pointer|Diagnosis Link)/,'no new Refresh or Find button, and no developer wording in any heading');
  assert.doesNotMatch(editorHtml,/<h3>[^<]*(Encounter|Procedure Codes|Charge Lines)/,'the charge table is not headlined with a developer term either');
- // The visit's diagnoses are lettered, in the visit's order, so a charge line can name one with a
+ // The encounter's diagnoses are lettered, in the encounter's order, so a charge line can name one with a
  // letter instead of making anyone read a code back.
  const lettersAt=diagnosesHtml.indexOf('charge-dx-letter');
  assert.ok(lettersAt>=0,'the first diagnosis carries its letter');
- assert.match(diagnosesHtml.slice(lettersAt,lettersAt+60),/>A<\/span>/,'and it is A, the first the visit lists');
+ assert.match(diagnosesHtml.slice(lettersAt,lettersAt+60),/>A<\/span>/,'and it is A, the first the encounter lists');
  assert.ok(diagnosesHtml.indexOf('charge-dx-letter')<diagnosesHtml.indexOf('data-diagnosis-remove'),'the letter is on the row it belongs to, beside its buttons');
  // A second diagnosis drawn above is lettered B in front of its own words: the editor writes the
  // letter into each row as it writes the row, so the letters cannot fall behind the list.
  const secondRow=$('visit-diagnoses').innerHTML.slice($('visit-diagnoses').innerHTML.indexOf('data-diagnosis-row'));
- assert.ok(!/data-diagnosis-remove="1"/.test(secondRow),'the visit holds one diagnosis so far');
+ assert.ok(!/data-diagnosis-remove="1"/.test(secondRow),'the encounter holds one diagnosis so far');
  assert.match(vm.runInContext('diagnosisLetterBadge(1)',ctx),/>B</,'the editor asks for B at the second row');
  assert.match(vm.runInContext('diagnosisLetterBadge(0)',ctx),/>A</,'and A at the first');
  assert.doesNotMatch(diagnosesHtml,/data-link-account-diagnoses/,'no Link visit diagnoses button anywhere near it');
- console.log('PASS one place: the visit\u2019s own diagnoses editor, drawn by its own code, directly above the charge lines');
+ console.log('PASS one place: the encounter\u2019s own diagnoses editor, drawn by its own code, directly above the charge lines');
 
  // ---- 2. a saved diagnosis reaches every charge row at once, without a reload ------------
- // The table opens with the visit's saved charge line, and the blank line an empty draft always
+ // The table opens with the encounter's saved charge line, and the blank line an empty draft always
  // starts with: the coded line is an answer already given, the blank one is waiting for an answer.
  click(openForm().querySelector('[data-add-charge]'));await settle();
  assert.equal(chargeRows().length,2,'the table holds the saved line and a blank line below it');
  const before=openForm();
  await addDiagnosis('M79.3','Synthetic back pain');
  assert.equal(openForm(),before,'the table is the same table: nothing was reloaded or rebuilt');
- assert.equal(diagnoses.length,2,'the diagnosis is saved to the visit');
+ assert.equal(diagnoses.length,2,'the diagnosis is saved to the encounter');
  // An autosave that found nothing left to submit leaves the rows as typed, with a Saved line; the
  // code the clinician typed is on the screen either way.
  assert.match($('visit-diagnoses').innerHTML,/M79\.3/,'and it shows in the section above');
  assert.match($('visit-diagnoses').innerHTML,/data-diagnosis-saved|Diagnosis 2/,'the editor says it saved, or shows the row');
- // The blank line is filled by the save — both codes, in the visit's order. The line that arrived
+ // The blank line is filled by the save — both codes, in the encounter's order. The line that arrived
  // with codes already on it is left exactly where the saved draft put it.
- assert.equal(codesOnRow(chargeRows()[1]),'R51.9, M79.3','the blank line took the visit\u2019s diagnoses the moment they saved');
+ assert.equal(codesOnRow(chargeRows()[1]),'R51.9, M79.3','the blank line took the encounter\u2019s diagnoses the moment they saved');
  assert.deepEqual(ticksOnRow(chargeRows()[1]),['R51.9','M79.3'],'and its chips say what it carries');
  assert.match(chargeRows()[1].innerHTML,/A \(R51\.9\), B \(M79\.3\)/,'the line says it in the letters the section above shows');
- // The saved line arrived with no codes on it, so the visit filled it in and it keeps following.
+ // The saved line arrived with no codes on it, so the encounter filled it in and it keeps following.
  // What the table had before the save is unchanged, and the save itself stays in step.
  assert.equal(sent.filter(call=>call.url.includes('/billing/accounts')&&call.method==='PUT').length,0,'no charge was saved behind anyone\u2019s back');
- assert.equal(codesOnRow(chargeRows()[0]),'R51.9, M79.3','a saved line with nothing on it is answered by the visit too');
+ assert.equal(codesOnRow(chargeRows()[0]),'R51.9, M79.3','a saved line with nothing on it is answered by the encounter too');
  assert.match(chargeRows()[0].innerHTML,/data-charge-diagnosis="M79\.3"/,'and the new diagnosis is offered to it as a chip');
  assert.deepEqual(ticksOnRow(chargeRows()[0]),['R51.9','M79.3'],'offered and taken, in step with the line');
  // A second letter appears on every line the moment the second diagnosis saves above: the two
@@ -412,25 +412,25 @@ const addDiagnosis=async(code,display)=>{
  assert.match(chargeRows()[0].querySelector('[data-charge-diagnoses]').innerHTML,/>A<\/span>[\s\S]*>B<\/span>/,'and the chips are lettered the same way as the list above');
  console.log('PASS a diagnosis saved above reaches every charge row at once, with no page reload and the table left open');
 
- // ---- 3. a line the visit filled in follows the visit; a line staff answered does not ----
- // The blank line from section 2 holds exactly what the visit last gave it, so nothing on it was
+ // ---- 3. a line the encounter filled in follows the encounter; a line staff answered does not ----
+ // The blank line from section 2 holds exactly what the encounter last gave it, so nothing on it was
  // chosen by anyone and it keeps following.
  await addDiagnosis('G89.2','Synthetic severe pain');
- assert.equal(codesOnRow(chargeRows()[1]),'R51.9, M79.3, G89.2','a line holding only what the visit gave it takes the new diagnosis too');
- // A code typed by hand is an answer already given, and a visit edit does not go over it.
+ assert.equal(codesOnRow(chargeRows()[1]),'R51.9, M79.3, G89.2','a line holding only what the encounter gave it takes the new diagnosis too');
+ // A code typed by hand is an answer already given, and an encounter edit does not go over it.
  const blank=chargeRows()[1].querySelector('[name="diagnoses"]');
  assert.equal(blank.getAttribute('type'),'hidden','the line keeps the same field it always submitted, now filled by the chips');
  assert.ok(!/<label>Diagnoses for this service/.test(chargeRows()[1].innerHTML),'and no free-text box is offered for it');
  type(blank,'Z00.00');change(blank);await settle();
  await addDiagnosis('R07.9','Synthetic chest pain');
  assert.equal(codesOnRow(chargeRows()[1]),'Z00.00','a code entered by hand is left exactly as it was entered');
- console.log('PASS the visit fills in a line it filled in before, and never overwrites an answer staff gave');
+ console.log('PASS the encounter fills in a line it filled in before, and never overwrites an answer staff gave');
 
  // ---- 3b. a fifth diagnosis saved above is on offer to every line -----------------------
- // The visit now lists five diagnoses while a claim line carries four: the fifth is offered as a
+ // The encounter now lists five diagnoses while a claim line carries four: the fifth is offered as a
  // chip on every line, so the person deciding can take it on the line that needs it.
  await addDiagnosis('Z00.00','Synthetic annual exam');
- assert.ok(diagnoses.length>4,'the visit lists more diagnoses than one line can carry');
+ assert.ok(diagnoses.length>4,'the encounter lists more diagnoses than one line can carry');
  assert.ok(chargeRows().every(row=>row.querySelectorAll('[data-charge-diagnosis]').length===diagnoses.length),'every line offers all five as chips the moment they save');
  console.log('PASS a diagnosis saved above is offered on every line at once, as one chip per letter');
 
@@ -443,7 +443,7 @@ const addDiagnosis=async(code,display)=>{
   return dispatch('click',chip);
  };
  const chosen=(row,code)=>row.querySelectorAll('[data-charge-diagnosis]').some(node=>node.dataset.chargeDiagnosis===code&&String(node.getAttribute('aria-pressed'))==='true');
-// Letters the visit lists that this line has not taken, read off the chips the page drew.
+// Letters the encounter lists that this line has not taken, read off the chips the page drew.
 const chargeDiagnosisFree=row=>row.querySelectorAll('[data-charge-diagnosis]').map(node=>node.dataset.chargeDiagnosis).filter(code=>!ticksOnRow(row).includes(code));
  const line=chargeRows().at(-1);
  const held=chargeDiagnosisFree(line);
@@ -463,30 +463,30 @@ const chargeDiagnosisFree=row=>row.querySelectorAll('[data-charge-diagnosis]').m
  assert.ok(chargeDiagnosisFree(line).includes('G80.01'),'while its letter is still offered, unpressed, for anyone who wants it');
  console.log('PASS a chip press writes the codes the line submits, comes back off, and makes the line the person\u2019s own answer');
 
- // ---- 4. a new charge row points at the visit's diagnoses, in order, up to four ---------
+ // ---- 4. a new charge row points at the encounter's diagnoses, in order, up to four ---------
  click(openForm().querySelector('[data-add-charge]'));await settle();
  const fresh=codesOnRow(chargeRows()[2]);
  assert.equal(fresh.split(', ').length,4,'a new line takes at most the four diagnoses a claim line can carry');
- assert.equal(fresh,diagnoses.slice(0,4).map(d=>d.code).join(', '),'and takes them in the order the visit lists them');
- // Removing one off the visit moves the new line, because nothing on it was chosen by hand.
+ assert.equal(fresh,diagnoses.slice(0,4).map(d=>d.code).join(', '),'and takes them in the order the encounter lists them');
+ // Removing one off the encounter moves the new line, because nothing on it was chosen by hand.
  click($('visit-diagnoses').querySelector('[data-diagnosis-remove="1"]'));await settle();
  for(const timer of [...liveTimers.keys()]){vmClearTimeout(timer);liveTimers.delete(timer);}
  await vm.runInContext('submitVisitDiagnoses(document.getElementById("visit-diagnoses-form"),{autosave:true})',ctx);
  await settle();
- assert.equal(codesOnRow(chargeRows()[2]),diagnoses.slice(0,4).map(d=>d.code).join(', '),'and a diagnosis removed from the visit is taken off a line still following it');
+ assert.equal(codesOnRow(chargeRows()[2]),diagnoses.slice(0,4).map(d=>d.code).join(', '),'and a diagnosis removed from the encounter is taken off a line still following it');
  assert.equal(codesOnRow(chargeRows()[1]),'Z00.00','the hand-entered line is still untouched');
- // The four letters a new line took are shown as taken, in the visit's order.
+ // The four letters a new line took are shown as taken, in the encounter's order.
  assert.deepEqual(ticksOnRow(chargeRows()[2]),diagnoses.slice(0,4).map(d=>d.code),'and the chips show exactly those four as taken');
  // A fifth letter is refused: a claim line carries four. The words are the claim rule, not a code.
  const following=chargeRows()[2],offered=following.querySelectorAll('[data-charge-diagnosis]').length;
- assert.ok(offered>4,'the visit now lists more diagnoses than one line can carry: '+offered);
+ assert.ok(offered>4,'the encounter now lists more diagnoses than one line can carry: '+offered);
  const fifth=following.querySelectorAll('[data-charge-diagnosis]').find(node=>!ticksOnRow(following).includes(node.dataset.chargeDiagnosis));
  ctx.noticed=undefined;
  pressed(following,fifth.dataset.chargeDiagnosis);
  assert.equal(codesOnRow(following),diagnoses.slice(0,4).map(d=>d.code).join(', '),'the fifth is not written onto the line');
  assert.equal(ctx.noticed,'A line can point to 4 diagnoses.','and the reason is said in clinic words: '+ctx.noticed);
  assert.ok(ticksOnRow(following).length<=4,'the line never ends up holding more than four');
- console.log('PASS a new charge row points at the visit\u2019s diagnoses in order up to four, follows a removal, and refuses a fifth in words');
+ console.log('PASS a new charge row points at the encounter\u2019s diagnoses in order up to four, follows a removal, and refuses a fifth in words');
 
  // ---- 5. no Link visit diagnoses button on this screen ----------------------------------
  assert.doesNotMatch(encounterEditor.innerHTML,/data-link-account-diagnoses/,'the charges step never offers Link visit diagnoses');
@@ -494,24 +494,24 @@ const chargeDiagnosisFree=row=>row.querySelectorAll('[data-charge-diagnosis]').m
  const billingSource=fs.readFileSync('web/billing.js','utf8');
  assert.match(billingSource,/data-link-account-diagnoses/,'the button is hidden here, not deleted from the application');
  assert.match(billingSource,/accounts\/\$\{id\}\/diagnoses|\/diagnoses`,'PUT'/,'the link save it made is still there');
- assert.match(billingSource,/chargeDiagnosisDraftFollow|followVisitDiagnoses/,'and the table\u2019s following of the visit is recorded in the code');
- // A finished table for a visit is never offered a link button either.
+ assert.match(billingSource,/chargeDiagnosisDraftFollow|followVisitDiagnoses/,'and the table\u2019s following of the encounter is recorded in the code');
+ // A finished table for an encounter is never offered a link button either.
  ctx.workspace.billing.accounts=[{id:'account',version:7,status:'posted',patient_id:'patient',content:{visit_id:'visit-a',service_date:'2026-11-13',currency:'USD',lines:[],notes:''}}];
  vm.runInContext('showEncounterBillingAccount(workspace.billing.accounts[0],[],null,false,false)',ctx);
  await settle();
- assert.doesNotMatch($('encounter-billing-detail').innerHTML,/data-link-account-diagnoses/,'nor is it offered on the visit\u2019s read-only charges');
+ assert.doesNotMatch($('encounter-billing-detail').innerHTML,/data-link-account-diagnoses/,'nor is it offered on the encounter\u2019s read-only charges');
  console.log('PASS Link visit diagnoses is gone from the charges step, while the account record keeps what it still needs');
 
- // ---- 6. the visit Diagnoses screen itself still works ---------------------------------
+ // ---- 6. the encounter Diagnoses screen itself still works ---------------------------------
  const diagnosesSource=fs.readFileSync('web/visit-diagnoses.js','utf8');
  assert.match(diagnosesSource,/function showVisitDiagnoses\(host,data,id,patient\)/,'the diagnoses screen is still drawn by the same one function');
  assert.match(diagnosesSource,/function renderVisitDiagnoses\(\)/);
- // And it is still the same editor on the charges step: a save there is a save to the visit.
+ // And it is still the same editor on the charges step: a save there is a save to the encounter.
  const put=sent.filter(call=>call.method==='PUT'&&call.url.includes('/diagnoses'));
- assert.ok(put.length>=2,'the section saves to the visit, not to the charge account');
- assert.ok(put.every(call=>call.url.includes('/visits/visit-a/diagnoses')),'every diagnosis save went to this visit');
+ assert.ok(put.length>=2,'the section saves to the encounter, not to the charge account');
+ assert.ok(put.every(call=>call.url.includes('/visits/visit-a/diagnoses')),'every diagnosis save went to this encounter');
  assert.ok(put.every(call=>call.version!==undefined),'each save carried the version it read, so a concurrent edit is refused');
  assert.equal(put.filter(call=>call.url.includes('/billing/')).length,0,'no diagnosis save went through the billing account');
- console.log('PASS the section saves straight to the visit with its version, exactly as the Diagnoses screen does');
- console.log('PASS one encounter form: the visit\u2019s diagnoses lettered A, B, C above the lines, one chip per letter on every line writing the codes the line submits, four to a line with the limit said in words, one row per procedure with the totals under the lines, and no Link visit diagnoses button on this screen');
+ console.log('PASS the section saves straight to the encounter with its version, exactly as the Diagnoses screen does');
+ console.log('PASS one encounter form: the encounter\u2019s diagnoses lettered A, B, C above the lines, one chip per letter on every line writing the codes the line submits, four to a line with the limit said in words, one row per procedure with the totals under the lines, and no Link visit diagnoses button on this screen');
 })().catch(error=>{console.error(error);process.exitCode=1;});

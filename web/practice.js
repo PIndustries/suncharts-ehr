@@ -82,7 +82,7 @@ function practiceDashboardMarkup(d){
  const gaps=p?[['Missing address',p.missing_address],['Missing phone',p.missing_phone],['Insured, no member ID',p.missing_member_id]].filter(([,n])=>Number(n)>0):[];
  const needs=[
   attention?`<li><span>Claims needing correction</span><b>${esc(attention)}</b><button type="button" data-practice-action="claims">Open claims</button></li>`:'',
-  unfinished?.total?`<li><span>Unfinished visits</span><b>${esc(unfinished.total)}</b><button type="button" data-practice-action="patients">Open visits</button></li>`:'',
+  unfinished?.total?`<li><span>Unfinished visits</span><b>${esc(unfinished.total)}</b><button type="button" data-practice-action="patients">Open encounters</button></li>`:'',
   ...gaps.map(([label,n])=>`<li><span>Patients: ${esc(label.toLowerCase())}</span><b>${esc(n)}</b><button type="button" data-practice-action="patients">Find patients</button></li>`)
  ].filter(Boolean).join('');
  return `<section class="practice-dashboard" aria-label="Practice at a glance"><div class="practice-tiles">${tiles}</div>

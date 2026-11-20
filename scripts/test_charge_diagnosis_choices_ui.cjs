@@ -14,11 +14,11 @@ const chipOn=code=>new RegExp(`data-charge-diagnosis="${code}"[^>]*aria-pressed=
 const press=(code,at=false,atRow=row)=>{const target={dataset:{chargeDiagnosis:code},hasAttribute:name=>name==='data-charge-diagnosis',getAttribute:name=>name==='aria-pressed'?String(at):null,closest:selector=>selector==='#billing-account-form'?form:selector==='.billing-charge-row'?atRow:null};handlers.click.forEach(fn=>fn({target,preventDefault(){}}));};
 (async()=>{
  ctx.api=async()=>({version:4,diagnoses});await ctx.loadChargeEncounterDiagnoses(form);
- // The letters of the visit's diagnoses, one chip each, and nothing chosen until someone chooses it.
+ // The letters of the encounter's diagnoses, one chip each, and nothing chosen until someone chooses it.
  assert.match(host.innerHTML,/G24\.3/);assert.match(host.innerHTML,/Synthetic diagnosis B/,'the chip still says which diagnosis it is');
- assert.match(host.innerHTML,/<span class="charge-dx-chip-letter">A<\/span>/,'the first diagnosis the visit lists is A');
+ assert.match(host.innerHTML,/<span class="charge-dx-chip-letter">A<\/span>/,'the first diagnosis the encounter lists is A');
  assert.match(host.innerHTML,/<span class="charge-dx-chip-letter">B<\/span>/,'and the next is B');
- assert.equal((host.innerHTML.match(/class="charge-dx-chip"/g)||[]).length,2,'one chip per diagnosis on the visit');
+ assert.equal((host.innerHTML.match(/class="charge-dx-chip"/g)||[]).length,2,'one chip per diagnosis on the encounter');
  assert.doesNotMatch(host.innerHTML,/data-chip-on|aria-pressed="true"/,'a new procedure starts with no diagnosis chosen');
  assert.doesNotMatch(host.innerHTML,/scope-options|type="checkbox"/,'the old free-text pointer and tick list are gone');
  assert.equal(field.value,'MANUAL','and whatever the line already carried is left alone');
@@ -54,30 +54,30 @@ const press=(code,at=false,atRow=row)=>{const target={dataset:{chargeDiagnosis:c
  ctx.workspace.billing.coverages=[{id:'s',content:{priority:'secondary',payer_id:'s',member_id:'SYN-S',status:'active',effective_date:'2026-01-01'}},{id:'expired',content:{priority:'primary',payer_id:'old',status:'active',effective_date:'2025-01-01',end_date:'2025-12-31'}},{id:'p',content:{priority:'primary',payer_id:'p',member_id:'SYN-P',status:'active',effective_date:'2026-01-01'}}];vm.runInContext("billingPayers=[{id:'s',content:{name:'Synthetic secondary'}},{id:'p',content:{name:'Synthetic primary'}}]",ctx);
  const coverage=ctx.billingCoverageOrderMarkup('2026-10-25','p');assert.ok(coverage.indexOf('Synthetic primary')<coverage.indexOf('Synthetic secondary'));assert.doesNotMatch(coverage,/expired/);assert.match(coverage,/do not add another charge line or account/);assert.match(coverage,/crossover/);
  let linkedMarkup;ctx.openBillingEditor=html=>linkedMarkup=html;ctx.accountEditor({id:'linked',status:'draft',content:{visit_id:'visit-a',lines:[]},diagnosis_snapshot:{visit_version:3,lines:[]}});assert.match(linkedMarkup,/Review \/ clear diagnosis links/);assert.doesNotMatch(linkedMarkup,/<form/);
- // Charges that are final are read as a table here; the work happens on the visit's billing card.
+ // Charges that are final are read as a table here; the work happens on the encounter's billing card.
  ctx.accountEditor({id:'posted',status:'posted',version:2,content:{visit_id:'visit-a',service_date:'2026-10-25',lines:[],notes:''}});
- assert.match(linkedMarkup,/Charges for this visit/);assert.match(linkedMarkup,/These charges are final/);assert.doesNotMatch(linkedMarkup,/<form|data-add-charge/,'a posted account is never opened as an editable table');
+ assert.match(linkedMarkup,/Charges for this encounter/);assert.match(linkedMarkup,/These charges are final/);assert.doesNotMatch(linkedMarkup,/<form|data-add-charge/,'a posted account is never opened as an editable table');
  {
-  // A brand-new line starts with the visit's diagnoses selected, once; nothing already entered is touched.
+  // A brand-new line starts with the encounter's diagnoses selected, once; nothing already entered is touched.
   const mk=(value,pending=true)=>{const f={value},h={innerHTML:''};const row2={dataset:pending?{diagnosesDefault:'pending'}:{},querySelector:selector=>selector==='[name="diagnoses"]'?f:h};row2.closest=sel=>sel==='.billing-charge-row'?row2:sel.includes('billing-account-form')?form2:null;return {f,h,row:row2};};
   const fresh=mk(''),typed=mk('M62.838'),saved=mk('',false),many=Array.from({length:14},(_,i)=>({id:'m'+i,code:'G80.'+String(i).padStart(2,'0'),display:'Synthetic '+i}));
   const form2={dataset:{patient:'patient'},elements:{visit_id:{value:'visit-a'}},querySelectorAll:()=>[fresh.row,typed.row,saved.row]};
   nodes['billing-account-form']=form2;  ctx.selected='patient';ctx.api=async()=>({version:5,diagnoses});const before=captured;await ctx.loadChargeEncounterDiagnoses(form2);
   assert.equal(fresh.f.value,'G24.3, G25.9');
-  assert.match(fresh.h.innerHTML,/aria-pressed="true"/,'a new line starts with the visit\u2019s letters pressed');
-  assert.match(fresh.h.innerHTML,/A \(G24\.3\), B \(G25\.9\)/,'and the line says which letters it took, in the visit\u2019s order');
+  assert.match(fresh.h.innerHTML,/aria-pressed="true"/,'a new line starts with the encounter\u2019s letters pressed');
+  assert.match(fresh.h.innerHTML,/A \(G24\.3\), B \(G25\.9\)/,'and the line says which letters it took, in the encounter\u2019s order');
   assert.doesNotMatch(fresh.h.innerHTML,/type="checkbox"|scope-options/,'nothing is ticked: the letters are pressed');
   assert.equal(typed.f.value,'M62.838','codes already entered are kept');assert.equal(saved.f.value,'','a saved line with no codes is not filled in');assert.ok(captured>before);
   fresh.f.value='';ctx.renderChargeEncounterDiagnoses(form2);assert.equal(fresh.f.value,'','taking every letter off is respected');
   assert.doesNotMatch(fresh.h.innerHTML,/aria-pressed="true"/,'and the letters all come back off to match');
-  // A new line is pointed at the visit's diagnoses in order, and stops where a claim line stops:
-  // four, oldest-first as the visit lists them.
+  // A new line is pointed at the encounter's diagnoses in order, and stops where a claim line stops:
+  // four, oldest-first as the encounter lists them.
   const capped=mk('');form2.querySelectorAll=()=>[capped.row];ctx.api=async()=>({version:6,diagnoses:many});await ctx.loadChargeEncounterDiagnoses(form2);
   assert.equal(capped.f.value.split(', ').length,4,'a new line takes at most the four diagnoses a claim line can carry');
-  assert.equal(capped.f.value,'G80.00, G80.01, G80.02, G80.03','and it takes them in the order the visit lists them');
-  assert.equal(capped.row.dataset.diagnosesAuto,'G80.00, G80.01, G80.02, G80.03','and the line remembers the visit put those there');
+  assert.equal(capped.f.value,'G80.00, G80.01, G80.02, G80.03','and it takes them in the order the encounter lists them');
+  assert.equal(capped.row.dataset.diagnosesAuto,'G80.00, G80.01, G80.02, G80.03','and the line remembers the encounter put those there');
   const locked=mk('');form2.querySelectorAll=()=>[locked.row];form2.dataset.draftReadOnly='true';await ctx.loadChargeEncounterDiagnoses(form2);assert.equal(locked.f.value,'','a read-only draft is not changed');
   assert.match(ctx.chargeRow(),/data-diagnoses-default="pending"/);assert.doesNotMatch(ctx.chargeRow({code:'99214',amount_cents:16981,diagnosis_codes:[]}),/data-diagnoses-default/);assert.doesNotMatch(ctx.chargeRow({diagnosis_codes:['G81.14']}),/data-diagnoses-default/);
  }
- console.log('PASS lettered chips per line: one chip per visit diagnosis writing the codes the line submits, four to a line with the limit said in words, a new line taking the visit\u2019s first four in order, hand-entered codes kept, stale visit/session isolation, and ordered multiple coverage without duplicated charges');
+ console.log('PASS lettered chips per line: one chip per visit diagnosis writing the codes the line submits, four to a line with the limit said in words, a new line taking the encounter\u2019s first four in order, hand-entered codes kept, stale visit/session isolation, and ordered multiple coverage without duplicated charges');
 })().catch(error=>{console.error(error);process.exitCode=1;});

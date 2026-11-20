@@ -11,7 +11,7 @@ const assert = require('node:assert/strict');
 const ROOT = path.resolve(__dirname, '..');
 const WEB_DIR = path.join(ROOT, 'web');
 const BASELINE_PATH = path.join(__dirname, 'staff_wording_baseline.json');
-// 'encounter' is the clinic's own word for the visit record (owner, 2026-11-19), so it is allowed.
+// 'encounter' is the clinic's own word for the encounter record (owner, 2026-11-19), so it is allowed.
 const BANNED_WORDS = [
   'catalog',
   'snapshot',

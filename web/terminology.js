@@ -298,7 +298,7 @@ function renderTerminologyResults(state){
 }
 async function searchTerminology(state,more=false){
  const system=state.host.querySelector('[data-terminology-system]').value,serviceDate=terminologyPickerCurrentDate(state),query=state.host.querySelector('[data-terminology-query]').value.trim(),release=state.host.querySelector('[data-terminology-release]').value;
-  if(!/^\d{4}-\d{2}-\d{2}$/.test(serviceDate)){terminologyPickerStatus(state,'Choose the visit or charge service date before searching.',true);return;}
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(serviceDate)){terminologyPickerStatus(state,'Choose the encounter or charge service date before searching.',true);return;}
  if(query.length<2){terminologyPickerStatus(state,'Enter at least two characters from a code or description.',true);return;}
  const append=more&&state.search?.system===system&&state.search?.serviceDate===serviceDate&&state.search?.query===query&&state.search?.release===release,request=++state.request,params=new URLSearchParams({system,q:query,service_date:serviceDate,billable:'true',limit:'20'});
  if(release)params.set('release_id',release);if(append&&state.nextCursor)params.set('after',state.nextCursor);

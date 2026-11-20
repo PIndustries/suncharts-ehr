@@ -98,7 +98,7 @@ const ledgerKind=k=>({payment:'Payment recorded',adjustment_credit:'Credit adjus
 const billingField=(name,label,value='',type='text',max=200,required=false)=>`<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${type==='text'?`maxlength="${max}"`:''} ${required?'required':''}></label>`;
 function sourceNotice(m){return m?`<div class="mapping-notice"><b>Source reconciliation</b><p>${esc(m.policy)}</p><details><summary>Review original source fields</summary><pre class="billing-source">${esc(JSON.stringify(m.source_data,null,2))}</pre></details></div>`:'';}
 // One button per thing staff can do to a draft account, so no option has to be picked
-// before the button makes sense. Posting needs the visit note signed first.
+// before the button makes sense. Posting needs the encounter note signed first.
 function encounterRevenueVisitUnsigned(a){
  // Outside an encounter the note's signing state is not shown here, so posting stays available.
  if(typeof activeVisit==='undefined'||!activeVisit||(a?.content?.visit_id&&a.content.visit_id!==activeVisit.id))return false;
@@ -116,9 +116,9 @@ function renderBilling(){
  if(!workspace.billing)return;
  const b=workspace.billing,panel=document.createElement('section');panel.id='billing-workspace';panel.className='panel';
  if(typeof preparePatientBillingChart==='function'){preparePatientBillingChart(panel);$('chart').insertBefore(panel,$('appointments-panel'));return;}
- panel.innerHTML=`<div class="section-head"><h2>Account summary</h2><span class="pill">USD · Across visits</span></div><p class="muted">Review this patient's visit charges and balances. Open a visit below to work on its copay, invoice or insurance claim.</p>
- <p class="muted">Coverage, eligibility and recorded copays are in <button type="button" class="text-button" data-chart-section="insurance">Insurance</button>. Choose the visit charges below to review its invoice or claim.</p>
- <section class="billing-section"><div class="section-head"><h3>Visit charges</h3></div><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Service date / account</th><th>Status</th><th class="money-cell">Charges</th><th class="money-cell">Open balance</th><th></th></tr></thead><tbody>${b.accounts.map(a=>`<tr><td>${esc(displayDate(a.content.service_date))}<small>${a.id.slice(0,8)}${a.source_history_id?' · Reconciled source':''}</small></td><td><span class="pill">${esc(displayStatus(a.status))}</span></td><td class="money-cell">${money(a.total_cents)}</td><td class="money-cell">${a.status==='posted'?money(billBalance(a)):'—'}</td><td><button type="button" data-bill-open="${a.id}">${a.content.visit_id?'Open visit':'Review source account'}</button></td></tr>`).join('')||'<tr><td colspan="5" class="table-empty">No native billing accounts. Create one from a visit or reconcile a source billing record.</td></tr>'}</tbody></table></div></section><div id="billing-detail"></div><div id="billing-editor"></div>`;
+ panel.innerHTML=`<div class="section-head"><h2>Account summary</h2><span class="pill">USD · Across visits</span></div><p class="muted">Review this patient's visit charges and balances. Open an encounter below to work on its copay, invoice or insurance claim.</p>
+ <p class="muted">Coverage, eligibility and recorded copays are in <button type="button" class="text-button" data-chart-section="insurance">Insurance</button>. Choose the encounter charges below to review its invoice or claim.</p>
+ <section class="billing-section"><div class="section-head"><h3>Visit charges</h3></div><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Service date / account</th><th>Status</th><th class="money-cell">Charges</th><th class="money-cell">Open balance</th><th></th></tr></thead><tbody>${b.accounts.map(a=>`<tr><td>${esc(displayDate(a.content.service_date))}<small>${a.id.slice(0,8)}${a.source_history_id?' · Reconciled source':''}</small></td><td><span class="pill">${esc(displayStatus(a.status))}</span></td><td class="money-cell">${money(a.total_cents)}</td><td class="money-cell">${a.status==='posted'?money(billBalance(a)):'—'}</td><td><button type="button" data-bill-open="${a.id}">${a.content.visit_id?'Open encounter':'Review source account'}</button></td></tr>`).join('')||'<tr><td colspan="5" class="table-empty">No native billing accounts. Create one from an encounter or reconcile a source billing record.</td></tr>'}</tbody></table></div></section><div id="billing-detail"></div><div id="billing-editor"></div>`;
  $('chart').insertBefore(panel,$('appointments-panel'));if(billingSelected&&b.accounts.some(a=>a.id===billingSelected))showBillingAccount(billingSelected,false);
 }
 async function openEncounterBillingAccount(id){
@@ -157,17 +157,17 @@ function diagnosisCodeList(parts){
  return out;
 }
 function chargeTable(lines){return `<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Code / description</th><th>Modifiers / diagnoses</th><th class="money-cell">Units</th><th class="money-cell">Line total</th></tr></thead><tbody>${lines.map(l=>`<tr><td><b>${esc(l.code_system)} ${esc(l.code)}</b><small>${esc(l.description)}</small>${typeof terminologySnapshotMarkup==='function'?terminologySnapshotMarkup(l.catalog_snapshot):''}</td><td>${esc(l.modifiers||'—')}<small>${l.diagnosis_codes.map(esc).join(', ')||'No diagnosis pointers'}</small></td><td class="money-cell">${l.units}</td><td class="money-cell">${money(l.amount_cents)}</td></tr>`).join('')}</tbody></table></div>`;}
-// The same charges, payments and adjustments inside the visit's billing card: charges under
+// The same charges, payments and adjustments inside the encounter's billing card: charges under
 // Charges, the ledger table under History. Wording is for clinic staff; identifiers are left out.
 function showEncounterBillingAccount(a,entries,frozen,missingElectronicPayer,frozenElectronicPayer){
  const host=$('encounter-billing-detail');for(const id of ['billing-detail'])if($(id))$(id).replaceChildren();
  const state=a.status==='posted'?'Posted · can still be corrected':a.status==='void'?'Charges were removed':'Charges can still be changed';
  host.innerHTML=`<section class="billing-account-detail"><div class="section-head"><div><h3>Line items</h3><p class="muted">${esc(visitBillingDate(a.content.service_date))} · ${state}</p></div></div>
- <p>${frozen?`Insurance: <b>${esc(frozen.payer.content.name)}</b>`:a.content.coverage_id?'Insurance is chosen. It is fixed when the charges are posted.':'Self-pay. No insurance on this visit.'}</p>${chargeTable(a.content.lines)}${billingChargeDraftRecovery(a)}${accountDiagnosisSummary(a.diagnosis_snapshot)}${accountDiagnosisDraftRecovery(a)}<p class="note-text">${esc(a.content.notes)}</p>
- <div class="actions">${billingCan()&&a.status==='draft'?'<button type="button" data-edit-bill>Edit draft</button>'+(a.content.visit_id?'<button type="button" data-link-account-diagnoses>Link visit diagnoses</button>':''):''}</div>${a.status==='posted'&&frozen&&!frozenElectronicPayer?'<div class="mapping-notice"><b>This insurer is billed outside SunCharts</b><p>The insurer had no payer ID when the charges were posted, so no electronic claim can be made for this visit.</p></div>':''}
- ${billingAccountActionForm(a,missingElectronicPayer,'Reason (saved in the history)','Posting makes the charges final'+(a.content.coverage_id?' and prepares the insurance claim for you to review':'')+'. The visit note must be signed first.','Post charges','Remove these charges','Post without an electronic claim. I understand this visit cannot be billed to the insurer from SunCharts.')}</section>`;
+ <p>${frozen?`Insurance: <b>${esc(frozen.payer.content.name)}</b>`:a.content.coverage_id?'Insurance is chosen. It is fixed when the charges are posted.':'Self-pay. No insurance on this encounter.'}</p>${chargeTable(a.content.lines)}${billingChargeDraftRecovery(a)}${accountDiagnosisSummary(a.diagnosis_snapshot)}${accountDiagnosisDraftRecovery(a)}<p class="note-text">${esc(a.content.notes)}</p>
+ <div class="actions">${billingCan()&&a.status==='draft'?'<button type="button" data-edit-bill>Edit draft</button>'+(a.content.visit_id?'<button type="button" data-link-account-diagnoses>Link visit diagnoses</button>':''):''}</div>${a.status==='posted'&&frozen&&!frozenElectronicPayer?'<div class="mapping-notice"><b>This insurer is billed outside SunCharts</b><p>The insurer had no payer ID when the charges were posted, so no electronic claim can be made for this encounter.</p></div>':''}
+ ${billingAccountActionForm(a,missingElectronicPayer,'Reason (saved in the history)','Posting makes the charges final'+(a.content.coverage_id?' and prepares the insurance claim for you to review':'')+'. The encounter note must be signed first.','Post charges','Remove these charges','Post without an electronic claim. I understand this encounter cannot be billed to the insurer from SunCharts.')}</section>`;
  const ledger=$('visit-billing-ledger');if(!ledger)return;
- ledger.innerHTML=`<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>What was recorded</th><th>Reference / reason</th><th class="money-cell">Change to balance</th><th></th></tr></thead><tbody>${entries.map(e=>`<tr><td>${esc(ledgerKind(e.kind))}<small>${esc(visitBillingDate(e.content.occurred_on))} · ${esc(e.content.party==='insurer'?'insurance':e.content.party)}</small></td><td>${esc(e.content.reference||'No reference')}<small>${esc(e.content.reason)}</small>${e.content.remittance_id?'<small>From the insurer’s payment. Change it from the claim.</small>':''}${e.content.managed_payment_id?'<small>Card payment. Refund it from the card payment below.</small>':''}${e.content.hosted_copay_operation_id?'<small>'+(e.content.test_mode?'Test card':'Card')+' payment taken for this visit</small>':''}${e.reverses_id?'<small>Undoes an earlier entry</small>':''}</td><td class="money-cell">${money(e.effect_cents)}</td><td>${billingCan()&&!e.content.remittance_id&&!e.content.managed_payment_id&&!e.content.hosted_copay_operation_id&&e.kind!=='reversal'&&!entries.some(r=>r.reverses_id===e.id)?`<button type="button" data-reverse-entry="${e.id}">Reverse</button>`:''}</td></tr>`).join('')||'<tr><td colspan="4">No payments or adjustments yet.</td></tr>'}</tbody></table></div>${billingCan('create')&&a.status==='posted'?'<div class="actions"><button type="button" data-new-ledger>Record a payment, write-off or adjustment</button></div>':''}`;
+ ledger.innerHTML=`<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>What was recorded</th><th>Reference / reason</th><th class="money-cell">Change to balance</th><th></th></tr></thead><tbody>${entries.map(e=>`<tr><td>${esc(ledgerKind(e.kind))}<small>${esc(visitBillingDate(e.content.occurred_on))} · ${esc(e.content.party==='insurer'?'insurance':e.content.party)}</small></td><td>${esc(e.content.reference||'No reference')}<small>${esc(e.content.reason)}</small>${e.content.remittance_id?'<small>From the insurer’s payment. Change it from the claim.</small>':''}${e.content.managed_payment_id?'<small>Card payment. Refund it from the card payment below.</small>':''}${e.content.hosted_copay_operation_id?'<small>'+(e.content.test_mode?'Test card':'Card')+' payment taken for this encounter</small>':''}${e.reverses_id?'<small>Undoes an earlier entry</small>':''}</td><td class="money-cell">${money(e.effect_cents)}</td><td>${billingCan()&&!e.content.remittance_id&&!e.content.managed_payment_id&&!e.content.hosted_copay_operation_id&&e.kind!=='reversal'&&!entries.some(r=>r.reverses_id===e.id)?`<button type="button" data-reverse-entry="${e.id}">Reverse</button>`:''}</td></tr>`).join('')||'<tr><td colspan="4">No payments or adjustments yet.</td></tr>'}</tbody></table></div>${billingCan('create')&&a.status==='posted'?'<div class="actions"><button type="button" data-new-ledger>Record a payment, write-off or adjustment</button></div>':''}`;
  
 }
 function showBillingAccount(id,activate=true,reveal=false){
@@ -179,7 +179,7 @@ function showBillingAccount(id,activate=true,reveal=false){
  ${!encounter?`<div class="billing-totals"><span>Charges <b>${money(a.total_cents)}</b></span><span>Payments and adjustments <b>${money(entrySum(a.id))}</b></span><span>Balance <b>${a.status==='posted'?money(billBalance(a)):'Not posted'}</b></span></div>`:''}
  <p>${frozen?`Payer on file: <b>${esc(frozen.payer.content.name)}</b> · Member ${esc(frozen.coverage.content.member_id)} · ${esc(frozen.coverage.content.verification)}`:a.content.coverage_id?'Insurance selected; coverage is captured when posted.':'Self-pay. No insurance selected.'}</p>${chargeTable(a.content.lines)}${billingChargeDraftRecovery(a)}${accountDiagnosisSummary(a.diagnosis_snapshot)}${accountDiagnosisDraftRecovery(a)}<p class="note-text">${esc(a.content.notes)}</p>
  <div class="actions">${billingCan()&&a.status==='draft'?'<button type="button" data-edit-bill>Edit draft</button>':''}${!encounter&&billingCan()&&a.status==='posted'&&frozenElectronicPayer?`<button type="button" class="primary" data-new-claim="${a.id}">Create insurance claim</button>`:''}<button type="button" data-bill-history>History</button></div>${a.status==='posted'&&frozen&&!frozenElectronicPayer?'<div class="mapping-notice"><b>Local-only insurance account</b><p>This frozen payer mapping has no Claim.MD payer ID, so it cannot create an electronic claim.</p></div>':''}<div id="bill-history"></div>
- ${billingAccountActionForm(a,missingElectronicPayer,'Review / action reason','Posting locks the charges. The visit note must be signed first.','Post charges','Void draft','Post as local-only insurance activity. I understand this account cannot create an electronic claim.')}
+ ${billingAccountActionForm(a,missingElectronicPayer,'Review / action reason','Posting locks the charges. The encounter note must be signed first.','Post charges','Void draft','Post as local-only insurance activity. I understand this account cannot create an electronic claim.')}
  ${a.status==='posted'?`<section class="billing-section"><div class="actions">${!encounter&&billingCan('create')?'<button type="button" data-build-patient-invoice>Send the patient a statement</button>':''}${!encounter?'<button type="button" data-patient-invoices>Statements sent</button>':''}${billingCan()&&typeof availableCopayCreditForAccount==='function'&&availableCopayCreditForAccount(a)>0?'<button type="button" data-apply-copays>Apply recorded copay credit</button>':''}</div></section>`:''}${encounter?'<details class="encounter-account-record"><summary>Payments, adjustments &amp; processor history</summary>':''}<h3>Payments and adjustments</h3><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Recorded activity</th><th>Evidence / reason</th><th class="money-cell">Balance effect</th><th></th></tr></thead><tbody>${entries.map(e=>`<tr><td>${esc(ledgerKind(e.kind))}<small>${esc(e.content.occurred_on)} · ${esc(e.content.party)}</small></td><td>${esc(e.content.reference||'No reference')}<small>${esc(e.content.reason)}</small>${e.content.remittance_id?'<small>ERA posting · review in Claims & remittances</small>':''}${e.content.managed_payment_id?'<small>Verified test processor payment · reconcile or refund in Payments</small>':''}${e.content.hosted_copay_operation_id?'<small>Verified '+(e.content.test_mode?'test ':'')+'card copay · review hosted payment status in Insurance</small>':''}${e.reverses_id?`<small>Reverses ${esc(e.reverses_id.slice(0,8))}</small>`:''}</td><td class="money-cell">${money(e.effect_cents)}</td><td>${billingCan()&&!e.content.remittance_id&&!e.content.managed_payment_id&&!e.content.hosted_copay_operation_id&&e.kind!=='reversal'&&!entries.some(r=>r.reverses_id===e.id)?`<button type="button" data-reverse-entry="${e.id}">Reverse</button>`:''}</td></tr>`).join('')||'<tr><td colspan="4">No recorded payments or adjustments.</td></tr>'}</tbody></table></div>
  ${billingCan('create')&&a.status==='posted'?'<div class="actions"><button type="button" data-new-ledger>Record a payment or adjustment</button></div>':''}${encounter?'</details>':''}</section>`;
  
@@ -226,7 +226,7 @@ function billingEffectiveCoverages(serviceDate){
 // The shortened visit form keeps one insurance line per plan and drops the long claims note.
 function billingCoverageOrderMarkup(serviceDate,selectedId,compact=false){
  const coverages=billingEffectiveCoverages(serviceDate);
-  return `<section class="mapping-notice"><h4>Insurance on ${esc(serviceDate?displayDate(serviceDate):'the service date')}</h4>${coverages.length?`<ol>${coverages.map(c=>`<li><b>${esc(human(c.content.priority))}: ${esc(payerName(c.content.payer_id))}</b> · ${esc(c.content.member_id)}${c.id===selectedId?' · Selected for this account':''}</li>`).join('')}</ol>${compact?'':'<p>Record each service once. Primary and secondary claims use the same visit charges; do not add another charge line or account for the second payer. Review the primary response and crossover status before preparing secondary billing.</p>'}`:'<p>No insurance on file for this visit date.</p>'}<button type="button" data-chart-section="insurance">Review all insurance & eligibility</button></section>`;
+  return `<section class="mapping-notice"><h4>Insurance on ${esc(serviceDate?displayDate(serviceDate):'the service date')}</h4>${coverages.length?`<ol>${coverages.map(c=>`<li><b>${esc(human(c.content.priority))}: ${esc(payerName(c.content.payer_id))}</b> · ${esc(c.content.member_id)}${c.id===selectedId?' · Selected for this account':''}</li>`).join('')}</ol>${compact?'':'<p>Record each service once. Primary and secondary claims use the same visit charges; do not add another charge line or account for the second payer. Review the primary response and crossover status before preparing secondary billing.</p>'}`:'<p>No insurance on file for this encounter date.</p>'}<button type="button" data-chart-section="insurance">Review all insurance & eligibility</button></section>`;
 }
 function chargeDiagnosisCurrent(form,state){return !!form&&$('billing-account-form')===form&&form.dataset.patient===selected&&state.identity===me&&state.patient===selected&&state.visit===form.elements.visit_id?.value&&form.chargeDiagnosisState===state;}
 function renderChargeEncounterDiagnoses(form){
@@ -236,7 +236,7 @@ function renderChargeEncounterDiagnoses(form){
   if(!state||!chargeDiagnosisCurrent(form,state)){host.innerHTML='';continue;}
   if(state.loading){host.innerHTML='<p class="muted">Loading the diagnoses above…</p>';continue;}
   if(state.error){host.innerHTML='<p>The diagnoses above could not be loaded. Your chosen codes are unchanged.</p><button type="button" data-reload-charge-diagnoses>Try again</button>';continue;}
-  // A brand-new line starts with the visit's diagnoses selected, once. A line that already
+  // A brand-new line starts with the encounter's diagnoses selected, once. A line that already
   // has codes, or that staff have changed, is never filled in again.
   const field=row.querySelector('[name="diagnoses"]');
   // The one-time default is consumed here, whether or not anything arrives to fill it in, so a
@@ -253,8 +253,8 @@ function renderChargeEncounterDiagnoses(form){
   host.innerHTML=chargeDiagnosisChargesMarkup(state.diagnoses,field.value,disabled);
  }
 }
-// The letters the visit's diagnoses are known by on this screen: A for the one the visit lists
-// first, B for the next, and so on in the visit's order. The same letters head the diagnoses above
+// The letters the encounter's diagnoses are known by on this screen: A for the one the encounter lists
+// first, B for the next, and so on in the encounter's order. The same letters head the diagnoses above
 // the charge lines and the chips on every line, so the two read as one form rather than a list and
 // a set of boxes. Past Z the letters start again; a claim line carries four diagnoses at most.
 function visitDiagnosisLetter(index){return String.fromCharCode(65+(index%26));}
@@ -265,7 +265,7 @@ function chargeDiagnosisChosen(value){return String(value||'').split(',').map(co
 // visit's own editor, in its own words; this is the only piece of its markup this screen adds, and
 // it changes nothing about how a diagnosis is entered or saved.
 function diagnosisLetterBadge(index){return Number.isInteger(index)&&index>=0?`<span class="charge-dx-letter">${visitDiagnosisLetter(index)}</span>`:'';}
-// One compact chip per letter. Pressing a chip is how a line says which of the visit's diagnoses it
+// One compact chip per letter. Pressing a chip is how a line says which of the encounter's diagnoses it
 // was for, and the letters stop where a claim line stops: a fifth is refused, in words.
 function chargeDiagnosisChipsMarkup(lettered,codes,disabled){
  if(!lettered.length)return '<p class="muted">Nothing here yet. Add the diagnoses above and they appear on every line as soon as they save.</p>';
@@ -278,32 +278,32 @@ function chargeDiagnosisChargesMarkup(diagnoses,value,disabled){
  return `<fieldset><legend>Diagnoses</legend>${chargeDiagnosisChipsMarkup(chargeDiagnosisLetters(diagnoses),chargeDiagnosisChosen(value),disabled)}</fieldset>`;
 }
 // How many diagnoses a charge line can carry on the claim it goes out on. A new line is pointed at
-// the visit's diagnoses in order, up to this many.
+// the encounter's diagnoses in order, up to this many.
 const chargeDiagnosisLineLimit=4;
-// A line whose codes were filled in from the visit by the last refresh, and nothing since. Only
-// such a line is moved when the visit's diagnoses change: a code typed by hand, a tick unticked,
+// A line whose codes were filled in from the encounter by the last refresh, and nothing since. Only
+// such a line is moved when the encounter's diagnoses change: a code typed by hand, a tick unticked,
 // or anything saved is the person's own answer and is left alone.
 function chargeDiagnosisAutoFilled(row){return (row.dataset.diagnosesAuto||row.getAttribute?.('data-diagnoses-auto')||'')===(row.querySelector('[name="diagnoses"]')?.value||'').trim();}
 // The marker has to be read back after a re-render, and a re-render builds rows from markup: like
 // the code and the amount, what a line was filled with is written into the row's own markup, so it
 // is still there when the table is drawn again.
 function markChargeDiagnosisAuto(row,values){row.dataset.diagnosesAuto=values;if(row.setAttribute)row.setAttribute('data-diagnoses-auto',values);}
-// An empty line — no code, no codes yet — was answered by nobody, so the visit may still fill it
+// An empty line — no code, no codes yet — was answered by nobody, so the encounter may still fill it
 // in: at the first refresh, after a save on either screen, or the moment it is added. A line that
 // came in carrying codes is a different thing; those are an answer already given.
 function chargeDiagnosisLineUnanswered(row){return !String(row.querySelector?.('[name="code"]')?.value||'').trim()&&String(row.querySelector?.('[name="diagnoses"]')?.value||'').trim()==='';}
 function chargeDiagnosisDefaultCodes(diagnoses){return diagnoses.slice(0,chargeDiagnosisLineLimit).map(d=>d.code).join(', ');}
-// The visit's diagnoses were just saved — from the section above the table, or from the visit's
+// The encounter's diagnoses were just saved — from the section above the table, or from the encounter's
 // Diagnoses screen. Every line's choices follow at once, with nothing reloaded and nothing the
-// person typed disturbed: a line still holding what the visit last gave it is re-pointed at the
+// person typed disturbed: a line still holding what the encounter last gave it is re-pointed at the
 // visit as it now stands, and any other line keeps exactly what it holds.
 function chargeDiagnosesVisitUpdated(visitId){
  const form=$('billing-account-form');if(!form||form.elements.visit_id?.value!==visitId)return;
  if(!form.chargeDiagnosisState||!chargeDiagnosisCurrent(form,form.chargeDiagnosisState))return;
- // The visit's own record is what a line must be pointed at — not the copy this screen last
+ // The encounter's own record is what a line must be pointed at — not the copy this screen last
  // loaded. The diagnoses save happens somewhere else on the page, so the list here is re-read
- // from the server before any line moves; a line whose codes were filled in by the visit is
- // re-pointed at the visit as it now stands, and any other line keeps exactly what it holds.
+ // from the server before any line moves; a line whose codes were filled in by the encounter is
+ // re-pointed at the encounter as it now stands, and any other line keeps exactly what it holds.
  void refreshChargeEncounterDiagnoses(form);
 }
 async function refreshChargeEncounterDiagnoses(form){
@@ -336,12 +336,12 @@ async function loadChargeEncounterDiagnoses(form){
  finally{
   if(chargeDiagnosisCurrent(form,state)){
    state.loading=false;
-   // A line that arrived with the visit's codes on it, or with nothing at all, keeps following the
+   // A line that arrived with the encounter's codes on it, or with nothing at all, keeps following the
    // visit from here on. One that came from the previous system, or that staff have changed, does
    // not — its codes are an answer already given.
    if(!form.dataset.draftReadOnly&&!form.dataset.draftStale)for(const row of chargeLiveRows(form)){const field=row.querySelector('[name="diagnoses"]');if(field&&chargeDiagnosisAutoFilled(row))markChargeDiagnosisAuto(row,(field.value||'').trim());}
    followVisitDiagnoses();
-   // An empty line still gets its first answer from the visit here, not from a render pass that
+   // An empty line still gets its first answer from the encounter here, not from a render pass that
    // may have already run while the list was loading.
    if(!form.dataset.draftReadOnly&&!form.dataset.draftStale)for(const row of chargeLiveRows(form)){
     const field=row.querySelector('[name="diagnoses"]');if(!field||!chargeDiagnosisLineUnanswered(row))continue;
@@ -374,7 +374,7 @@ document.addEventListener('click',event=>{
  chargeDiagnosisChipToggle(row,field,chip.dataset.chargeDiagnosis);
 });
 // Pressing a chip is the line's own answer from that moment on, so the line stops being re-pointed
-// at the visit's list. A fifth letter is refused with the claim rule that sets the limit, in words a
+// at the encounter's list. A fifth letter is refused with the claim rule that sets the limit, in words a
 // front desk person can act on.
 function chargeDiagnosisChipToggle(row,field,code){
  const codes=chargeDiagnosisChosen(field.value),upper=code.toUpperCase();
@@ -460,18 +460,18 @@ function chargeLineDescription(row){
 function chargeDiagnosisCodesField(l){return `<input type="hidden" name="diagnoses" value="${esc((l.diagnosis_codes||[]).join(', '))}" maxlength="1200">`;}
 // A line's diagnoses are chosen from the letters above the table: the chips fill this field, and
 // the field stays the one the line submits, saves and sends.
-// The letters of the visit’s diagnoses, chosen here and nowhere else, the sentence saying what
+// The letters of the encounter’s diagnoses, chosen here and nowhere else, the sentence saying what
 // the line still needs, and the field the line submits: the chips fill it, so a line can never
-// carry a code this visit never recorded.
+// carry a code this encounter never recorded.
 function chargeDiagnosisCell(l){return chargeDiagnosisCodesField(l)+'<div class="charge-dx-chips-slot" data-charge-diagnoses></div>'+chargeNoteCell()+chargeProblemCell();}
-// The visit's diagnoses, entered and saved in the same words and the same boxes as the visit's
+// The encounter's diagnoses, entered and saved in the same words and the same boxes as the encounter's
 // Diagnoses screen: this holds that screen's own host and lets its own code draw it, so there is
 // one diagnosis editor in this application rather than two that could drift. It sits directly
 // above the charge lines, because every charge line answers to one of these.
 // It is the charge form's neighbour, not part of the form: an editor inside an editor cannot be
 // submitted, and the diagnoses save finds its own form by id.
 // Named for what it holds and nothing else: the letters on the charge lines below are these
-// diagnoses, so one plain word says where each belongs without repeating the visit in both.
+// diagnoses, so one plain word says where each belongs without repeating the encounter in both.
 // On the one-page visit the codes & charges block carries its own stable diagnoses host
 // (#encounter-diagnoses, drawn and kept by the revenue block), so the table lays down nothing and
 // there is never a second #visit-diagnoses; elsewhere the table still brings its own.
@@ -481,7 +481,7 @@ function chargeDiagnosisSectionMarkup(){
  return `<section class="charge-visit-diagnoses" data-charge-diagnosis-editor><h3>Diagnoses</h3><div id="visit-diagnoses"><p class="muted">Loading…</p></div></section>`;
 }
 // Placing the section is not drawing it. The diagnoses code fills its own host and saves on its
-// own, exactly as it does on the visit's Diagnoses screen; this only asks it to — into the stable
+// own, exactly as it does on the encounter's Diagnoses screen; this only asks it to — into the stable
 // block host when the page carries one, otherwise into the host laid down with this charge table.
 function openChargeDiagnosisSection(){
  if(typeof renderVisitDiagnoses!=='function'||typeof activeVisit==='undefined'||!activeVisit)return;
@@ -511,29 +511,29 @@ function chargeRowData(row){return {
  ...(chargeRowMemory(row).feeScheduleId?{fee_schedule_id:chargeRowMemory(row).feeScheduleId}:{}),
  ...(chargeRowMemory(row).feeEntryKey?{fee_entry_key:chargeRowMemory(row).feeEntryKey}:{})};}
 // Charges that are final or removed are read as a table here too, with the one step that fits.
-// The charge editor can be reached without the visit billing card loaded, so the service date
+// The charge editor can be reached without the encounter billing card loaded, so the service date
 // is worded here the same plain way staff see it elsewhere in billing.
 function chargeServiceDate(value){return typeof visitBillingDate==='function'?visitBillingDate(value):typeof displayDate==='function'?displayDate(value):String(value||'');}
 function chargeTableFinishedMarkup(a){
  const state=a.status==='posted'?'These charges are final':'These charges were removed';
  const correction=billingCan()&&a.status==='posted'&&!a.source_history_id&&a.content.visit_id?'<button type="button" data-edit-charges>Edit charges</button>':'';
- return `<section class="charge-table-finished"><div class="section-head"><div><h3>Charges for this visit</h3><p class="muted">${esc(chargeServiceDate(a.content.service_date))} · ${state}</p></div></div>${chargeTable(a.content.lines)}<div class="actions"><button type="button" data-visit-charges-overview>Go to visit billing</button>${correction}</div></section>`;
+ return `<section class="charge-table-finished"><div class="section-head"><div><h3>Charges for this encounter</h3><p class="muted">${esc(chargeServiceDate(a.content.service_date))} · ${state}</p></div></div>${chargeTable(a.content.lines)}<div class="actions"><button type="button" data-visit-charges-overview>Go to visit billing</button>${correction}</div></section>`;
 }
 function chargeTableAllowed(a){
- // The table is the place charges are worked on: a visit's draft account, entered by hand.
+ // The table is the place charges are worked on: an encounter's draft account, entered by hand.
  if(!a&&(typeof activeVisit==='undefined'||!activeVisit))return false;
  if(a){if(a.status!=='draft'||a.source_history_id||a.diagnosis_snapshot||!a.content.visit_id)return false;}
  return billingCan();
 }
-// The visit's billing state, read from the one place that holds it: the visit billing step's own
-// summary. A chart with no billing step loaded, or a table opened for anything but the visit in
+// The encounter's billing state, read from the one place that holds it: the encounter billing step's own
+// summary. A chart with no billing step loaded, or a table opened for anything but the encounter in
 // hand, has no state to speak of and is given no next step.
 function chargeTableVisitSummary(visitId){
  if(!visitId||typeof encounterRevenueState==='undefined'||typeof selected==='undefined')return null;
  if(encounterRevenueState.patient!==selected||encounterRevenueState.visit!==visitId)return null;
  return encounterRevenueState.data?.summary||null;
 }
-// The one line under the charge table, asking the visit billing card's own code what the next
+// The one line under the charge table, asking the encounter billing card's own code what the next
 // step is (see visitBillingChargeStepMarkup in web/visit-billing.js, which loads first).
 function chargeTableNextMarkup(visitId,remember){
  if(typeof visitBillingChargeStepMarkup!=='function')return '';
@@ -558,10 +558,10 @@ function chargeTableNextLine(slot,markup){
  chargeTableNextLines.set(slot,markup);
 }
 // The next step under the table follows the card: put the line in, change it, or take it away
-// when the visit has no charge step left to offer. The table and anything typed into it are not
+// when the encounter has no charge step left to offer. The table and anything typed into it are not
 // touched, so the line never disturbs the person working in the charges. The card's answer is
-// worked out from the visit the table is on, not from a summary handed over, so the footer and the
-// card can never be given two different versions of the visit.
+// worked out from the encounter the table is on, not from a summary handed over, so the footer and the
+// card can never be given two different versions of the encounter.
 function chargeTableNextRefresh(){
  // The card's answer is asked for first: it works out the next step and remembers it, and only
  // then does it look for the place the line goes, so a table that has nowhere to show it cannot be
@@ -602,7 +602,7 @@ function chargeTableNextPaint(button,label='Nothing has been sent yet.'){
 // Each box is headed with its column, which doubles as the row's only label on a narrow screen;
 // the description a code carries rides on the line unseen, and
 // what the lines come to is totalled once in the row underneath them.
-function chargeLinesMarkup(lines,compact){return `<div class="billing-table-wrap charge-table-wrap"><table class="billing-table charge-table" id="billing-charge-lines"><caption class="sr-only">Procedures on this visit</caption><thead><tr><th>Procedure</th><th>Modifiers</th><th>Units</th><th>Diagnoses</th><th>Amount</th><th></th></tr></thead><tbody>${lines.map((l,index)=>chargeRow(l,compact,chargeLineKey(l,index))).join('')}</tbody></table><div class="charge-lines-totals" data-charge-line-totals><span>Total charges <b data-charge-total>${money(0)}</b></span><span data-charge-copay>Copay</span><span class="charge-table-hint" data-charge-pays></span></div></div>`;}
+function chargeLinesMarkup(lines,compact){return `<div class="billing-table-wrap charge-table-wrap"><table class="billing-table charge-table" id="billing-charge-lines"><caption class="sr-only">Procedures on this encounter</caption><thead><tr><th>Procedure</th><th>Modifiers</th><th>Units</th><th>Diagnoses</th><th>Amount</th><th></th></tr></thead><tbody>${lines.map((l,index)=>chargeRow(l,compact,chargeLineKey(l,index))).join('')}</tbody></table><div class="charge-lines-totals" data-charge-line-totals><span>Total charges <b data-charge-total>${money(0)}</b></span><span data-charge-copay>Copay</span><span class="charge-table-hint" data-charge-pays></span></div></div>`;}
 // Each line keeps one identity for as long as it is on screen, so what it remembers — the amount
 // last typed, the code list chosen, a line waiting to be removed, and whether the practice
 // filled it in from an earlier visit — is found again after that row is drawn again.
@@ -615,7 +615,7 @@ function chargeNoteCell(){return '<div class="charge-cell-note" data-charge-note
 // never grows a column of its own.
 function chargeProblemCell(){return '<p class="charge-cell-problem" data-charge-problem role="status"></p>';}
 // What each line comes to, and what the two totals mean, all recomputed from what is on
-// the screen. The patient's share uses the copay already recorded on the visit's coverage.
+// the screen. The patient's share uses the copay already recorded on the encounter's coverage.
 function chargeLineTotalCents(row){const units=Math.trunc(Number(row.querySelector('[name="units"]')?.value))||0;const amount=chargeRowAmount(row);return amount==null?0:amount*units;}
 function chargeRowRemoved(row){return typeof row.hasAttribute==='function'&&row.hasAttribute('data-charge-removed');}
 // What a row remembers between saves. The amount and the drug detail are read straight back out
@@ -926,8 +926,8 @@ async function reloadChargeTable(form,patient,identity){
   const data=await api(`${billingBase()}`);
   if(!form.isConnected||me!==identity||selected!==patient)return;
   const account=(data.accounts||data.items||[]).find(a=>a.id===form.dataset.id);
-  if(!account){form.dataset.chargeConflict='true';setChargeStatus(form,'error','These charges are no longer open here. Close this table and open them again from the visit.');return;}
-  if(account.status!=='draft'){form.dataset.chargeConflict='true';setChargeStatus(form,'error','These charges are no longer a draft, so they cannot be changed here. Open them from the visit to review them.');return;}
+  if(!account){form.dataset.chargeConflict='true';setChargeStatus(form,'error','These charges are no longer open here. Close this table and open them again from the encounter.');return;}
+  if(account.status!=='draft'){form.dataset.chargeConflict='true';setChargeStatus(form,'error','These charges are no longer a draft, so they cannot be changed here. Open them from the encounter to review them.');return;}
   form.dataset.version=String(account.version);
   const typing=chargeTyping(form);
   renderChargeTableRows(form,account.content?.lines||[]);
@@ -959,15 +959,15 @@ function chargeRow(l={},compact=false,key=''){
 // insurance and fee fields are opened before validation runs whenever one of them fails.
 document.addEventListener('submit',event=>{if(event.target?.id==='billing-account-form')openInvalidChargeOptions(event.target);},true);
 // Charges filled in from the last visit. Nobody should have to press a button and retype what
-// the practice already did: opening the charges step of a visit that has no charge account yet
+// the practice already did: opening the charges step of an encounter that has no charge account yet
 // puts the same services from the patient's most recent earlier visit onto the table, at this
-// visit's practice prices, with this visit's diagnoses. The existing autosave makes the draft,
+// visit's practice prices, with this encounter's diagnoses. The existing autosave makes the draft,
 // so nothing has to be pressed. Amounts are never copied from the old visit, and a line the
 // price list does not cover is left with an empty amount and a plain note instead of a guess.
 const chargeProposalStore='suncharts.chargeProposals';
-// What the practice already decided about this visit: 'blank' means staff asked for an empty
+// What the practice already decided about this encounter: 'blank' means staff asked for an empty
 // table, 'lines' means lines were offered here — by hand or from an earlier session. Both mean
-// the proposal has been dealt with and is never offered again for this visit.
+// the proposal has been dealt with and is never offered again for this encounter.
 const chargeProposalChoices=new Map();
 // Both reads and writes are guarded: a browser in private mode still gets the in-memory memory.
 function chargeProposalsLoad(){try{const raw=typeof sessionStorage==='undefined'?null:sessionStorage.getItem(chargeProposalStore);return raw?JSON.parse(raw)||{}:{};}catch{return {};}}
@@ -985,8 +985,8 @@ function chargeProposalRemember(visitId,choice){
  chargeProposalChoices.set(visitId,choice);
  const store=chargeProposalsLoad();store[`${selected}:${visitId}`]=choice;chargeProposalsSave(store);
 }
-// Opening a visit that already has charges of its own is staff working on those charges, so the
-// visit is never offered a proposal again. A record from the previous system is not a visit's own
+// Opening an encounter that already has charges of its own is staff working on those charges, so the
+// visit is never offered a proposal again. A record from the previous system is not an encounter's own
 // charges and decides nothing about a proposal.
 function chargeProposalTouched(visit){
  if(!visit||visit.status==='signed')return;
@@ -994,15 +994,15 @@ function chargeProposalTouched(visit){
  if(!chargeAccountIsWorkedCharges(encounterChargeAccountFor(visit.id)))return;
  chargeProposalRemember(visit.id,'lines');
 }
-// A visit whose charges are already final or already recorded from the previous system is not a
+// An encounter whose charges are already final or already recorded from the previous system is not a
 // table staff are working on, and decides nothing about a proposal.
 function chargeAccountIsWorkedCharges(a){return !!a&&a.status==='draft'&&!a.source_history_id&&!!a.content.visit_id;}
-// The visit's own charge account, read straight from the chart rather than through whatever the
+// The encounter's own charge account, read straight from the chart rather than through whatever the
 // billing card happens to be showing, so a step opened for one visit is never judged by another's.
 function encounterChargeAccountFor(visitId){return (workspace.billing?.accounts||[]).find(a=>a.status!=='void'&&a.content.visit_id===visitId)||null;}
-// Whether charges are on their way onto this visit's table on their own: true while they are
+// Whether charges are on their way onto this encounter's table on their own: true while they are
 // being put on it, and while they sit there on a table no one has changed yet. Read-only staff
-// and a visit whose charges exist are answered 'no', so the card never promises a fill-in that
+// and an encounter whose charges exist are answered 'no', so the card never promises a fill-in that
 // is not happening.
 function encounterChargesProposed(){
  if(typeof chargeProposeCard!=='function')return false;
@@ -1013,16 +1013,16 @@ function encounterChargesProposed(){
 }
 // Staff emptied the table or asked for a blank one: never bring the lines back.
 function forgetChargeProposal(visitId){if(visitId)chargeProposalRemember(visitId,'blank');}
-// Charges for a visit are dated by their own service date, so the earlier visit is found on the
-// account rather than on the visit record.
+// Charges for an encounter are dated by their own service date, so the earlier visit is found on the
+// account rather than on the encounter record.
 function chargeAccountDay(a){return String(a?.content?.service_date||a?.created_at||'').slice(0,10);}
 function chargeSourceVisitId(a){return a?.content?.visit_id||(workspace.visits||[]).find(v=>v.id===a?.content?.visit_id)?a.content.visit_id:null;}
-// The patient's most recent earlier visit that has charge lines, posted or draft. The visit
+// The patient's most recent earlier visit that has charge lines, posted or draft. The encounter
 // being worked on, its own account, records from the previous system and voided accounts are all
 // left out, as is any account with nothing on it.
-// Only this patient's chart is ever read. A charge account is the patient's own when the visit it
-// belongs to is a visit of theirs; a record whose visit cannot be found is not evidence of
-// anything, and a visit belonging to somebody else is never a source for these charges.
+// Only this patient's chart is ever read. A charge account is the patient's own when the encounter it
+// belongs to is an encounter of theirs; a record whose visit cannot be found is not evidence of
+// anything, and an encounter belonging to somebody else is never a source for these charges.
 function chargeAccountOfPatient(a){
  const visitId=chargeSourceVisitId(a);if(!visitId)return false;
  const visit=(workspace.visits||[]).find(v=>v.id===visitId);
@@ -1047,7 +1047,7 @@ function chargeProposeContext(visit){
  if(!visit||visit.status==='signed')return null;
  if(!billingCan('create'))return null;
  if(typeof chargeTableAllowed==='function'&&!chargeTableAllowed(null))return null;
- // The visit's own charges, read from the chart rather than through whatever the billing card
+ // The encounter's own charges, read from the chart rather than through whatever the billing card
  // happens to be showing. Staff already working a table decide the proposal once, by emptying it
  // or asking for a blank one; that decision is the only one counted, in either direction.
  if(encounterChargeAccountFor(visit.id))return null;
@@ -1055,7 +1055,7 @@ function chargeProposeContext(visit){
  return {visitId:visit.id};
 }
 function chargeProposeMarkup(context){
- return `<section class="charge-table-proposal" role="status"><p>Filled in from the visit on ${esc(chargeProposalDate(context.date))}. Change anything you like.</p><button type="button" data-charge-proposal-blank>Start blank</button></section>`;
+ return `<section class="charge-table-proposal" role="status"><p>Filled in from the encounter on ${esc(chargeProposalDate(context.date))}. Change anything you like.</p><button type="button" data-charge-proposal-blank>Start blank</button></section>`;
 }
 // A line the practice filled in carries its mark in the same slot the table keeps a row's
 // identity in, so it survives a redraw of that row and nothing about it is ever sent anywhere.
@@ -1092,7 +1092,7 @@ function chargeProposeCard(){
 // list for its amount before anything else is said about it.
 function chargeProposeAfterRender(form,context){
  if(!form||!context||!chargeProposeCurrent(form,context))return;
- // The lines are only a real offer once they are on screen: that is the moment the visit is
+ // The lines are only a real offer once they are on screen: that is the moment the encounter is
  // marked as having been offered lines, so a table never reached decides nothing about them.
  chargeProposalRemember(context.visitId,'lines');
  renderChargeProposedRows(form,context);
@@ -1110,7 +1110,7 @@ function renderChargeProposedRows(form,context){
  // The services come from the earlier visit; the diagnoses always come from this one, through
  // the same one-time default the table already gives a fresh line.
  void loadChargeEncounterDiagnoses(form);
- // The amounts come from this visit's practice prices. Where the practice's place of service is
+ // The amounts come from this encounter's practice prices. Where the practice's place of service is
  // already settled the lookup runs now; where it still has to be chosen the price fills itself in
  // the moment the fee details are read, the same way an empty line is priced today.
  // The rows are asked what they need first, so none of them is told to type an amount while its
@@ -1200,24 +1200,24 @@ function accountEditor(a,m,encounterContext=false,options={}){
  const correcting=!!options.correction;
  if(a&&a.status!=='draft'&&a.content.visit_id&&!a.source_history_id&&!correcting){openBillingEditor(chargeTableFinishedMarkup(a));return;}
  if(a?.diagnosis_snapshot){billingSelected=a.id;openBillingEditor(`<section><h3>Review the linked visit diagnoses before changing charges</h3>${accountDiagnosisSummary(a.diagnosis_snapshot)}<p>This draft contains versioned diagnosis links. Use the link editor to update them, or explicitly clear its selections before changing the service lines. Clearing links retains the codes for manual review.</p><button type="button" data-link-account-diagnoses>Review / clear diagnosis links</button></section>`);return;}
- // The visit's own charges count as staff having worked on the table; a record from the previous
- // system is not a visit's charges and decides nothing about a proposal.
+ // The encounter's own charges count as staff having worked on the table; a record from the previous
+ // system is not an encounter's charges and decides nothing about a proposal.
  if(a&&!a.source_history_id)chargeProposalTouched(typeof activeVisit!=='undefined'?activeVisit:null);
  if(!encounterContext&&!(typeof chartSection!=='undefined'&&chartSection==='visits'))showChartSection('billing');const source=m?.source_data||{},rows=Array.isArray(source.charge_lines)?source.charge_lines.filter(r=>r&&typeof r==='object'&&!Array.isArray(r)):[source],proposed=m?rows.map(r=>({code_system:r.code_type||'',code:r.code||'',description:r.code_text||'',modifiers:r.modifier||'',units:/^[1-9]\d*$/.test(String(r.units))?Number(r.units):'',source_fee:r.fee,diagnosis_codes:[]})):[{}];
  const sourceBacked=!!(m||a?.source_history_id),encounter=typeof activeVisit!=='undefined'?activeVisit:null,serviceDate=typeof revenueServiceDate==='function'?revenueServiceDate():new Date().toISOString().slice(0,10),coverage=typeof revenueCoverage==='function'?revenueCoverage(serviceDate):null,v=a?.content||{visit_id:encounter?.id||'',coverage_id:coverage?.id||'',service_date:encounter?serviceDate:'',lines:proposed,notes:''};
- // A charge editor opened for a visit is a live table: the lines, then one box with the visit,
+ // A charge editor opened for an encounter is a live table: the lines, then one box with the encounter,
  // insurance and fee details. Nothing a line needs sits behind a closed box, and every edit
  // saves itself. Reconciling a record from the previous system keeps its one review step.
  const compact=!!v.visit_id,sourceLines=m?' data-charge-lines-source=""':'',chargeVisitBlock=`<div class="form-grid"><label>Visit<select name="visit_id" ${sourceBacked?'':'required'}><option value="">${sourceBacked?'Source kept — no visit found for it':'Choose a patient visit'}</option>${workspace.visits.map(vis=>`<option value="${vis.id}" ${v.visit_id===vis.id?'selected':''}>${esc((workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.title||'Visit')+' · '+date(workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.starts_at||vis.created_at))} · ${esc(human(vis.status))}</option>`).join('')}</select></label>${billingField('service_date','Service date',v.service_date,'date',0,true)}<label>Billing coverage<select name="coverage_id"><option value="">Self-pay / no selected coverage</option>${workspace.billing.coverages.map(c=>`<option value="${c.id}" ${v.coverage_id===c.id?'selected':''}>${esc(human(c.content.priority))} · ${esc(payerName(c.content.payer_id))} · ${esc(c.content.member_id)}</option>`).join('')}</select></label><label>Currency<input value="USD" readonly></label></div>`,chargeNotesBlock=`<label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>`,chargeLinesBlock=`${chargeLinesMarkup(v.lines,compact)}<div class="charge-table-foot"><button type="button" data-add-charge>${compact?'+ Add another charge':'+ Charge line'}</button><p class="charge-table-status" data-charge-status role="status" aria-live="polite"></p></div><div class="charge-table-next-slot" data-charge-next>${chargeTableNextMarkup(v.visit_id,chargeTableNextWritten)}</div>`,chargeOptionsBlock=`${chargeVisitBlock}<div data-charge-coverage-order>${billingCoverageOrderMarkup(v.service_date,v.coverage_id,compact)}</div>${typeof feeContextMarkup==='function'?feeContextMarkup(v.fee_context):''}${chargeNotesBlock}`,  chargeFormBody=compact?`${chargeLinesBlock}<details data-visit-charge-options><summary>Visit, insurance and fee options</summary>${chargeOptionsBlock}</details>`:`${chargeOptionsBlock}<p class="muted">Enter the amount for the whole line, not for one unit.</p>${chargeLinesBlock}`;
- // Charges for the visit in hand come from that visit alone; a reconciliation of a record from
+ // Charges for the encounter in hand come from that visit alone; a reconciliation of a record from
  // the previous system, or a chart opened elsewhere, is never filled in from another visit.
- // Charges are only ever filled in for the visit this table is being opened for, and only from
+ // Charges are only ever filled in for the encounter this table is being opened for, and only from
  // that patient's own chart: a reconciliation of a record from the previous system, or a chart
  // opened elsewhere, is never filled in from another visit.
  const proposalVisit=v.visit_id?(workspace.visits||[]).find(vis=>vis.id===v.visit_id&&vis.patient_id===selected)||null:null;
  const proposal=chargeProposeBeforeRender(!a&&!m?proposalVisit:null);
  if(restoreBillingChargeDraft(a,m?.source_history_id,v.visit_id)){const restored=$('billing-account-form');seedChargeRowAmounts(restored);chargeTableTotals(restored);renderChargeRowProblems(restored);openChargeDiagnosisSection();void loadChargeEncounterDiagnoses(restored);return;}
-  openBillingEditor(`${compact&&typeof renderVisitDiagnoses==='function'?chargeDiagnosisSectionMarkup():''}<form id="billing-account-form"${sourceLines} data-compact="${compact}" data-id="${a?.id||''}" data-version="${a?.version||''}" data-request="${crypto.randomUUID()}" data-source="${m?.source_history_id||''}" data-mode="${correcting?'correction':'draft'}"><h3>${a?(correcting?'Correct posted charges':'Edit draft charges'):m?'Reconcile source billing to draft':'Charges for this visit'}</h3>${sourceNotice(m)}${chargeFormBody}${m?`<label class="review-ack"><input type="checkbox" name="verified" required> I verified the source visit, charges, fee basis, diagnoses and prior payment history. This creates a draft only.</label>${billingField('reason','Reason for this reconciliation','','text',1000,true)}<div class="actions"><button class="primary" type="submit">Create draft charges</button><button type="button" data-cancel-billing>Cancel</button></div>`:correcting?`<div class="actions"><button type="button" class="primary" data-save-charge-correction>Save changes</button><button type="button" data-cancel-billing>Cancel</button></div>`:''}</form>`);
+  openBillingEditor(`${compact&&typeof renderVisitDiagnoses==='function'?chargeDiagnosisSectionMarkup():''}<form id="billing-account-form"${sourceLines} data-compact="${compact}" data-id="${a?.id||''}" data-version="${a?.version||''}" data-request="${crypto.randomUUID()}" data-source="${m?.source_history_id||''}" data-mode="${correcting?'correction':'draft'}"><h3>${a?(correcting?'Correct posted charges':'Edit draft charges'):m?'Reconcile source billing to draft':'Charges for this encounter'}</h3>${sourceNotice(m)}${chargeFormBody}${m?`<label class="review-ack"><input type="checkbox" name="verified" required> I verified the source visit, charges, fee basis, diagnoses and prior payment history. This creates a draft only.</label>${billingField('reason','Reason for this reconciliation','','text',1000,true)}<div class="actions"><button class="primary" type="submit">Create draft charges</button><button type="button" data-cancel-billing>Cancel</button></div>`:correcting?`<div class="actions"><button type="button" class="primary" data-save-charge-correction>Save changes</button><button type="button" data-cancel-billing>Cancel</button></div>`:''}</form>`);
   const form=$('billing-account-form');if(form){form.dataset.patient=selected;form.dataset.draftKey=billingChargeKey(a?.id,m?.source_history_id,v.visit_id);form.dataset.autosave=m||correcting?'off':'on';
   // Filled in from the earlier visit, or the blank line the table always starts with: the rows
   // are decided here, once, after this screen was opened and after any retained edits came back.
@@ -1313,7 +1313,7 @@ function accountDiagnosisDraftRecovery(a){
 }
 function accountDiagnosisEditorMarkup(a,data,patient){
  const draft=accountDiagnosisLinkDrafts.get(patient+':'+a.id),stale=!!draft&&(draft.version!==a.version||draft.values.visit_version!==data.version);
- return `<form id="account-diagnoses-form" data-patient="${esc(patient)}" data-account="${esc(a.id)}" data-version="${draft?.version??a.version}" data-visit-version="${draft?.values.visit_version??data.version}"><h3>Link visit diagnoses to charge lines</h3><p>The visit codes you select are added to each line you select. Existing manual and previously added codes are retained. Review the charge table before posting.</p>${draft?'<p role="status">Unsaved selections retained in this tab.</p>':''}${stale?'<p role="status">The saved account or visit changed. Compare the saved links and current charge/diagnosis choices before saving. Unavailable diagnoses and removed lines cannot be linked.</p><button type="button" data-rebase-account-diagnoses>Keep available selections against current versions</button>':''}${accountDiagnosisSummary(a.diagnosis_snapshot)}${a.content.lines.map((line,index)=>{const ids=new Set((draft?.values.lines.find(item=>item.line_index===index)?.diagnosis_ids)||(a.diagnosis_snapshot?.lines.find(item=>item.line_index===index)?.diagnoses||[]).map(d=>d.id));return `<fieldset data-diagnosis-line="${index}"><legend>Charge ${index+1}: ${esc(line.code)} · ${esc(line.description)}</legend><p>Existing codes: ${line.diagnosis_codes.map(esc).join(', ')||'None'}</p><div class="scope-options">${data.diagnoses.map(d=>`<label><input type="checkbox" name="diagnosis_id" value="${esc(d.id)}" ${ids.has(d.id)?'checked':''}>${esc(d.code)} · ${esc(d.display)}</label>`).join('')||'<p>No saved visit diagnoses. Record diagnoses first, then reopen this editor.</p>'}</div></fieldset>`;}).join('')}<p class="muted">No selections clears provenance links only; diagnosis codes remain on charges for explicit manual review. Clear links before changing charge lines or the linked visit. Posted accounts cannot change diagnosis links.</p><label>Reason for this selection<input name="reason" required maxlength="1000" value="${esc(draft?.values.reason||'')}"></label><div class="actions"><button type="submit" ${stale?'disabled':''}>Save charge diagnosis links</button><button type="button" data-link-account-diagnoses>Reload saved versions</button><button type="button" data-cancel-billing>Cancel</button></div></form>`;
+ return `<form id="account-diagnoses-form" data-patient="${esc(patient)}" data-account="${esc(a.id)}" data-version="${draft?.version??a.version}" data-visit-version="${draft?.values.visit_version??data.version}"><h3>Link visit diagnoses to charge lines</h3><p>The encounter codes you select are added to each line you select. Existing manual and previously added codes are retained. Review the charge table before posting.</p>${draft?'<p role="status">Unsaved selections retained in this tab.</p>':''}${stale?'<p role="status">The saved account or visit changed. Compare the saved links and current charge/diagnosis choices before saving. Unavailable diagnoses and removed lines cannot be linked.</p><button type="button" data-rebase-account-diagnoses>Keep available selections against current versions</button>':''}${accountDiagnosisSummary(a.diagnosis_snapshot)}${a.content.lines.map((line,index)=>{const ids=new Set((draft?.values.lines.find(item=>item.line_index===index)?.diagnosis_ids)||(a.diagnosis_snapshot?.lines.find(item=>item.line_index===index)?.diagnoses||[]).map(d=>d.id));return `<fieldset data-diagnosis-line="${index}"><legend>Charge ${index+1}: ${esc(line.code)} · ${esc(line.description)}</legend><p>Existing codes: ${line.diagnosis_codes.map(esc).join(', ')||'None'}</p><div class="scope-options">${data.diagnoses.map(d=>`<label><input type="checkbox" name="diagnosis_id" value="${esc(d.id)}" ${ids.has(d.id)?'checked':''}>${esc(d.code)} · ${esc(d.display)}</label>`).join('')||'<p>No saved visit diagnoses. Record diagnoses first, then reopen this editor.</p>'}</div></fieldset>`;}).join('')}<p class="muted">No selections clears provenance links only; diagnosis codes remain on charges for explicit manual review. Clear links before changing charge lines or the linked visit. Posted accounts cannot change diagnosis links.</p><label>Reason for this selection<input name="reason" required maxlength="1000" value="${esc(draft?.values.reason||'')}"></label><div class="actions"><button type="submit" ${stale?'disabled':''}>Save charge diagnosis links</button><button type="button" data-link-account-diagnoses>Reload saved versions</button><button type="button" data-cancel-billing>Cancel</button></div></form>`;
 }
 let accountDiagnosisLinkReview;
 async function editAccountDiagnosisLinks(){

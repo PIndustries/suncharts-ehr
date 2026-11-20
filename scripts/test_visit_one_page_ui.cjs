@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// The visit is one scrolling page: heading + actions, vitals, note, codes & charges, finish. These
+// The encounter is one scrolling page: heading + actions, vitals, note, codes & charges, finish. These
 // checks run the real encounterWorkflow / setEncounterSection / applyChartSection /
 // patientSectionVisible / renderVisit code from web/app.js, the real chart-host placement from
 // web/app.js, and the real renderEncounterRevenue (web/patient-revenue.js) with the real charge
@@ -180,7 +180,7 @@ function orderOf(root,ids){
 }
 
 // renderChart's chart markup: the real template literal from web/app.js with the renderers that
-// need a back end stubbed to empty strings. The visit hosts themselves come from
+// need a back end stubbed to empty strings. The encounter hosts themselves come from
 // ensureVisitPageHost, so the page order under test is the shipped one.
 function chartMarkup(){
  const start=app.indexOf('function renderChart() {');
@@ -342,7 +342,7 @@ function fixture({billing:billingVisible=true,checkout=true,role='owner',account
   ensureVisitPageHost();
   node('encounter-progress').innerHTML=encounterWorkflow();
   // The intake and documentation sections live inside #visit-editor, where renderVisit parses
-  // them. The fixture's view of them is taken after the visit block is on screen (see settle),
+  // them. The fixture's view of them is taken after the encounter block is on screen (see settle),
   // exactly as the page's getElementById would find them then.
  })();`);
  // Let queued renders land, then hand the checks the intake and documentation hosts renderVisit
@@ -355,14 +355,14 @@ function fixture({billing:billingVisible=true,checkout=true,role='owner',account
 }
 
 async function main(){
- // 1. The visit page has one scrolling page, not a numbered step bar.
+ // 1. The encounter page has one scrolling page, not a numbered step bar.
  let f=fixture();
  let heading=f.evaluate('encounterWorkflow()');
- assert.match(heading,/encounter-visit-actions/,'the heading carries the visit action row');
+ assert.match(heading,/encounter-visit-actions/,'the heading carries the encounter action row');
  assert.doesNotMatch(heading,/encounter-step-tabs|Step 1|1\. Vitals/,'no numbered step bar is rendered');
  for(const label of ['Vitals','Note','Finish'])assert.ok(!new RegExp(`>(?:\\d+\\.\\s*)?${label}<`).test(heading),`"${label}" is not a step tab`);
  f.evaluate('renderVisit(false)');
- assert.equal(f.live('visit-editor').hidden,false,'the visit block is open');
+ assert.equal(f.live('visit-editor').hidden,false,'the encounter block is open');
  assert.equal(f.live('encounter-intake').hidden,false,'vitals sit on the same page');
  assert.equal(f.live('encounter-documentation').hidden,false,'the note sits on the same page');
  assert.equal(f.live('encounter-revenue').hidden,false,'codes & charges sit on the same page');
@@ -374,7 +374,7 @@ async function main(){
   const g=fixture();
   g.evaluate('renderVisit(false)');await g.settle();
   const PAGE=['encounter-progress','visit-editor','encounter-revenue','visit-checkout'];
-  assert.deepEqual(g.order(PAGE),PAGE,'the hosts are in the visit page order after the first render');
+  assert.deepEqual(g.order(PAGE),PAGE,'the hosts are in the encounter page order after the first render');
   g.evaluate('renderEncounterRevenue()');await g.settle();
   assert.deepEqual(g.order(PAGE),PAGE,'a revenue re-render cannot move the blocks');
   g.evaluate("activeVisit={...activeVisit,id:'visit-2',version:1};workspace.visits=[activeVisit];renderVisit(false);renderEncounterRevenue();");await g.settle();
@@ -382,12 +382,12 @@ async function main(){
   assert.equal(g.order(['encounter-diagnoses','encounter-billing-editor','encounter-claims']).slice(0,1).join(), 'encounter-diagnoses','diagnoses sit above the part of the block that re-renders');
  }
 
- // 3. The old step keys stay accepted and land on the visit page itself.
+ // 3. The old step keys stay accepted and land on the encounter page itself.
  for(const [key,expectedScroll] of [['intake','encounter-intake'],['documentation','note-form'],['charges','encounter-revenue'],['checkout','visit-checkout']]){
   const g=fixture();
   g.evaluate('renderVisit(false)');g.scrolls.length=0;g.evaluate(`setEncounterSection('${key}')`);await g.settle();
   assert.equal(g.evaluate('encounterSection'),key,`"${key}" stays addressable for saved routes`);
-  assert.equal(g.evaluate('encounterShows("charges")'),true,`"${key}" still answers as the visit page`);
+  assert.equal(g.evaluate('encounterShows("charges")'),true,`"${key}" still answers as the encounter page`);
   assert.equal(g.evaluate('chartSection'),'visits',`"${key}" stays inside the encounter`);
   assert.equal(g.live('visit-editor').hidden,false,`"${key}" keeps the whole page open`);
   assert.equal(g.live('encounter-intake').hidden,false,`"${key}" keeps vitals on the same page`);
@@ -464,7 +464,7 @@ async function main(){
   assert.doesNotMatch(g.evaluate('String($("visit-editor").innerHTML)'),/id="visit-diagnoses"/,'with charges on screen the note does not draw its own diagnoses editor');
   assert.equal(g.evaluate('visitNoteOwnsDiagnoses()'),false);
   // A re-render keeps the one editor in its stable host. A re-render of the same visit at the same
-  // revision is served from the block's cache key, so each re-render below moves the visit's
+  // revision is served from the block's cache key, so each re-render below moves the encounter's
   // revision first: that is the case where the block rewrites its own markup.
   g.evaluate('activeVisit={...activeVisit,version:activeVisit.version+1};');
   g.evaluate('renderEncounterRevenue()');await g.settle();
@@ -491,7 +491,7 @@ async function main(){
   const g=fixture();
   g.evaluate('renderVisit(false)');g.evaluate("setEncounterSection('orders')");await g.settle();
   assert.equal(g.evaluate('encounterSection'),'orders','the Orders area is its own state');
-  assert.equal(g.live('visit-editor').hidden,true,'the visit page steps away while Orders is open');
+  assert.equal(g.live('visit-editor').hidden,true,'the encounter page steps away while Orders is open');
   assert.equal(g.live('encounter-revenue').hidden,true);
   assert.equal(g.live('visit-checkout').hidden,true,'checkout stays away while another area is open');
   assert.equal(g.live('encounter-orders-actions').hidden,false,'the orders action panel opens');
@@ -516,6 +516,6 @@ async function main(){
   assert.equal(g.live('visit-editor').hidden,false,'Back to visit leaves Files');
  }
 
- console.log('PASS the visit is one scrolling page in host order through re-renders and visit switches; vitals stay compact; one diagnoses editor above the charge lines; old step keys land on it; record areas take the screen until Back to visit');
+ console.log('PASS the encounter is one scrolling page in host order through re-renders and visit switches; vitals stay compact; one diagnoses editor above the charge lines; old step keys land on it; record areas take the screen until Back to visit');
 }
 main().catch(error=>{console.error(error.message);process.exit(1);});
