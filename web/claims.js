@@ -1039,6 +1039,28 @@ function sheetClose(dialog,after){
  const done=()=>{dialog.close();after?.();dialog.remove();};
  if(matchMedia('(prefers-reduced-motion: reduce)').matches)done();else setTimeout(done,180);
 }
+// Extra detail on an encounter (history, how this works, claim boxes, status checks) opens over the
+// page in a sheet instead of unfolding in place, so the page under it never moves and staff keep
+// their place. The detail's own nodes move into the sheet and back on close, so fields inside still
+// belong to their form and keep what was typed. A <details data-inline> stays inline.
+function detailsSheetOpen(details){
+ const summary=details.querySelector(':scope>summary');
+ const dialog=document.createElement('dialog');dialog.className='sheet-dialog';
+ dialog.innerHTML='<header class="sheet-head"><h3></h3><button type="button" class="sheet-close" data-sheet-close aria-label="Close">×</button></header><div class="sheet-body"></div>';
+ dialog.querySelector('h3').textContent=(summary?.textContent||'Details').replace(/\s+/g,' ').trim();
+ const body=dialog.querySelector('.sheet-body'),moved=[...details.childNodes].filter(node=>node!==summary);
+ for(const node of moved)body.append(node);
+ details.after(dialog);
+ const restore=()=>{for(const node of moved)details.append(node);summary?.focus?.({preventScroll:true});};
+ dialog.addEventListener('cancel',event=>{event.preventDefault();sheetClose(dialog,restore);});
+ dialog.addEventListener('click',event=>{if(event.target===dialog||event.target.closest('[data-sheet-close]'))sheetClose(dialog,restore);});
+ dialog.showModal();return dialog;
+}
+if(typeof document!=='undefined'&&document.addEventListener)document.addEventListener('click',event=>{
+ const summary=event.target?.closest?.('summary');const details=summary?.parentElement;
+ if(!details||details.tagName!=='DETAILS'||details.open||details.hasAttribute('data-inline')||!details.closest?.('#visit-page-host'))return;
+ event.preventDefault();detailsSheetOpen(details);
+});
 // Briefly marks what just changed so the eye finds it.
 function flashUpdated(node){if(!node?.classList)return;node.classList.remove('just-updated');void node.offsetWidth;node.classList.add('just-updated');setTimeout(()=>node.classList.remove('just-updated'),1600);}
 function openClaimQuickFix(){
