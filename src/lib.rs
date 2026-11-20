@@ -38,6 +38,7 @@ pub mod document_store;
 #[cfg(test)]
 mod document_store_tests;
 pub mod documents;
+pub mod encounter_claim;
 pub mod era835;
 pub mod era_batches;
 pub mod era_chains;

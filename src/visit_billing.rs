@@ -1277,6 +1277,9 @@ pub(crate) async fn claim_defaults(
             .unwrap_or(&[]),
     );
     let today = chrono::Utc::now().date_naive();
+    // What the front desk filled in on the encounter form beside the charges.
+    let details: crate::encounter_claim::EncounterClaimDetails =
+        serde_json::from_value(b.content["claim_details"].clone()).unwrap_or_default();
     Ok(ClaimContent {
         billing_provider_name: facility
             .map(|row| row.0.clone())
@@ -1292,7 +1295,11 @@ pub(crate) async fn claim_defaults(
         tax_id,
         tax_id_type,
         billing_address: facility.map(|row| row.1.clone()).unwrap_or_default(),
-        rendering_npi: provider.map(|row| row.2.clone()).unwrap_or_default(),
+        rendering_npi: if details.rendering_npi.is_empty() {
+            provider.map(|row| row.2.clone()).unwrap_or_default()
+        } else {
+            details.rendering_npi.clone()
+        },
         subscriber_address: if own_policy {
             patient_address.clone()
         } else {
@@ -1304,12 +1311,13 @@ pub(crate) async fn claim_defaults(
             .and_then(|v| NaiveDate::parse_from_str(v, "%Y-%m-%d").ok())
             .or(birth_date.filter(|_| own_policy))
             .filter(|date| *date <= today),
-        place_of_service: place.unwrap_or_else(|| "11".into()),
+        place_of_service: details.place_of_service_or(&place.unwrap_or_else(|| "11".into())),
         diagnosis_codes,
         line_diagnosis_pointers,
         external_control_number: String::new(),
         notes: String::new(),
         synthetic_test: false,
+        encounter: details.for_claim(),
     })
 }
 
@@ -1384,6 +1392,7 @@ pub(crate) async fn prepare_claim(
                 external_control_number: String::new(),
                 diagnosis_codes: content.diagnosis_codes.clone(),
                 line_diagnosis_pointers: content.line_diagnosis_pointers.clone(),
+                encounter: content.encounter.clone(),
                 ..previous
             };
         }

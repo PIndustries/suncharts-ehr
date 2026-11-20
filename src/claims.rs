@@ -63,9 +63,18 @@ pub struct ClaimContent {
     #[serde(default)]
     #[serde(skip_serializing_if = "String::is_empty")]
     pub tax_id_type: String,
+    /// The claim details filled in on the encounter form (prior authorization, dates, referring
+    /// and supervising providers, hospital stay, boxes 10d and 19). Empty on claims made before
+    /// they existed, which therefore read and serialize exactly as before.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::encounter_claim::EncounterClaimDetails::is_empty"
+    )]
+    pub encounter: crate::encounter_claim::EncounterClaimDetails,
 }
 impl ClaimContent {
     pub(crate) fn validate(&self) -> Result<()> {
+        self.encounter.validate(None)?;
         for (s, n) in [
             (&self.billing_provider_name, 200),
             (&self.billing_npi, 10),
@@ -1674,10 +1683,16 @@ fn render_cms1500_review(c: &Claim) -> Result<String> {
             let procedure = if modifiers.is_empty() { html_escape(json_text(line, "code")) }
                 else { format!("{} · {}", html_escape(json_text(line, "code")), html_escape(modifiers)) };
             let cents = line.get("amount_cents").and_then(Value::as_i64).unwrap_or(0);
-            format!("<tr><td>{0}</td><td>{0}</td><td>{1}</td><td></td><td class=procedure>{9}<br>{2}<small>{3}</small></td><td>{4}</td><td class=charge>${5}.{6:02}</td><td>{8}</td><td></td><td>{7}</td></tr>",
-                html_escape(json_text(&account["content"], "service_date")), html_escape(&content.place_of_service),
+            let from = Some(json_text(line, "service_from")).filter(|v| !v.is_empty())
+                .unwrap_or_else(|| json_text(&account["content"], "service_date")).to_string();
+            let through = Some(json_text(line, "service_to").to_string()).filter(|v| !v.is_empty())
+                .or_else(|| content.encounter.through_date.map(|d| d.to_string()))
+                .filter(|v| v.as_str() > from.as_str())
+                .unwrap_or_else(|| from.clone());
+            format!("<tr><td>{0}</td><td>{10}</td><td>{1}</td><td></td><td class=procedure>{9}<br>{2}<small>{3}</small></td><td>{4}</td><td class=charge>${5}.{6:02}</td><td>{8}</td><td></td><td>{7}</td></tr>",
+                html_escape(&from), html_escape(&content.place_of_service),
                 procedure, html_escape(json_text(line, "description")), review_text(&pointers),
-                cents / 100, cents.abs() % 100, html_escape(&content.rendering_npi), units, drug)
+                cents / 100, cents.abs() % 100, html_escape(&content.rendering_npi), units, drug, html_escape(&through))
         }).collect::<String>();
     for _ in account["content"]["lines"].as_array().map_or(0, Vec::len)..6 {
         line_rows.push_str("<tr><td>&nbsp;</td><td></td><td></td><td></td><td><small></small></td><td></td><td></td><td></td><td></td><td></td></tr>");
@@ -1748,17 +1763,17 @@ fn render_cms1500_review(c: &Claim) -> Result<String> {
 <div class="row r1"><div class=cell><label>1. TYPE OF HEALTH INSURANCE</label>Not recorded</div><div class=cell><label>1a. INSURED'S I.D. NUMBER</label>{member}</div><div class=cell><label>2. PATIENT'S NAME (Last, First, Middle)</label>{patient_name}</div><div class=cell><label>3. PATIENT'S BIRTH DATE &nbsp; SEX</label>{patient_dob} · Sex not recorded</div><div class=cell><label>4. INSURED'S NAME</label>{subscriber_name}</div></div>
 <div class="row r2"><div class=cell><label>5. PATIENT'S ADDRESS (No., Street)</label>{patient_address}</div><div class=cell><label>6. PATIENT RELATIONSHIP TO INSURED</label>{relationship}</div><div class=cell><label>7. INSURED'S ADDRESS (No., Street)</label>{subscriber_address}</div><div class=cell><label>8. RESERVED FOR NUCC USE</label></div><div class=cell><label>9. OTHER INSURED'S NAME</label>Not recorded</div></div>
 <div class="row r3"><div class=cell><label>9a. OTHER INSURED'S POLICY OR GROUP NUMBER</label>Not recorded</div><div class=cell><label>9b–9c. RESERVED FOR NUCC USE</label></div><div class=cell><label>9d. INSURANCE PLAN NAME OR PROGRAM NAME</label>Not recorded</div></div>
-<div class="row r4"><div class=cell><label>10a. CONDITION RELATED TO EMPLOYMENT?</label>Not recorded</div><div class=cell><label>10b. AUTO ACCIDENT? &nbsp; PLACE</label>Not recorded</div><div class=cell><label>10c. OTHER ACCIDENT?</label>Not recorded</div><div class=cell><label>10d. CLAIM CODES</label></div><div class=cell><label>11. INSURED'S POLICY GROUP OR FECA NUMBER</label>{group_number}</div></div>
+<div class="row r4"><div class=cell><label>10a. CONDITION RELATED TO EMPLOYMENT?</label>Not recorded</div><div class=cell><label>10b. AUTO ACCIDENT? &nbsp; PLACE</label>Not recorded</div><div class=cell><label>10c. OTHER ACCIDENT?</label>Not recorded</div><div class=cell><label>10d. CLAIM CODES</label>{claim_codes}</div><div class=cell><label>11. INSURED'S POLICY GROUP OR FECA NUMBER</label>{group_number}</div></div>
 <div class="row r2"><div class=cell><label>11a. INSURED'S DATE OF BIRTH &nbsp; SEX</label>{subscriber_dob} · Sex not recorded</div><div class=cell><label>11b. OTHER CLAIM ID</label>{payer_control}</div><div class=cell><label>11c. INSURANCE PLAN NAME</label>{plan_name}</div><div class=cell><label>11d. ANOTHER HEALTH BENEFIT PLAN?</label>Not recorded</div><div class=cell><label>CLAIM FREQUENCY</label>{frequency}</div></div>
 <div class="row r5"><div class=cell><label>12. PATIENT'S OR AUTHORIZED PERSON'S SIGNATURE</label>Not recorded</div><div class=cell><label>13. INSURED'S OR AUTHORIZED PERSON'S SIGNATURE</label>Not recorded</div><div class=cell><label>PATIENT ACCOUNT NO.</label>{control}</div></div>
-<div class="row r3"><div class=cell><label>14. DATE OF CURRENT ILLNESS, INJURY, OR PREGNANCY</label></div><div class=cell><label>15. OTHER DATE</label></div><div class=cell><label>16. DATES PATIENT UNABLE TO WORK</label></div></div>
-<div class="row r5"><div class=cell><label>17. NAME OF REFERRING PROVIDER OR OTHER SOURCE</label></div><div class=cell><label>17b. NPI</label></div><div class=cell><label>18. HOSPITALIZATION DATES</label></div></div>
+<div class="row r3"><div class=cell><label>14. DATE OF CURRENT ILLNESS, INJURY, OR PREGNANCY</label>{onset}</div><div class=cell><label>15. OTHER DATE</label></div><div class=cell><label>16. DATES PATIENT UNABLE TO WORK</label></div></div>
+<div class="row r5"><div class=cell><label>17. NAME OF REFERRING PROVIDER OR OTHER SOURCE</label>{referring_name}</div><div class=cell><label>17b. NPI</label>{referring_npi}</div><div class=cell><label>18. HOSPITALIZATION DATES</label>{hospital}</div></div>
 <div class="row r3"><div class=cell><label>19. ADDITIONAL CLAIM INFORMATION</label>{notes}</div><div class=cell><label>20. OUTSIDE LAB? &nbsp; $ CHARGES</label>Not recorded</div><div class="cell diagnosis"><label>21. DIAGNOSIS OR NATURE OF ILLNESS OR INJURY</label><div class=codes>{diagnoses}</div></div></div>
-<div class="row r5"><div class=cell><label>22. RESUBMISSION CODE &nbsp; ORIGINAL REF. NO.</label>{frequency}</div><div class=cell><label>23. PRIOR AUTHORIZATION NUMBER</label>Not recorded</div><div class=cell><label>INTERNAL MRN — REVIEW ONLY</label>{mrn}</div></div>
+<div class="row r5"><div class=cell><label>22. RESUBMISSION CODE &nbsp; ORIGINAL REF. NO.</label>{frequency}</div><div class=cell><label>23. PRIOR AUTHORIZATION NUMBER</label>{prior_auth}</div><div class=cell><label>INTERNAL MRN — REVIEW ONLY</label>{mrn}</div></div>
 </section>
 <table aria-label="CMS-1500 service lines"><thead><tr><th>24A. DATE(S) OF SERVICE<br>FROM</th><th>TO</th><th>24B.<br>POS</th><th>24C.<br>EMG</th><th>24D. PROCEDURES, SERVICES, OR SUPPLIES<br>CPT/HCPCS · MODIFIER</th><th>24E.<br>DIAGNOSIS POINTER</th><th>24F.<br>$ CHARGES</th><th>24G.<br>DAYS/UNITS</th><th>24H.<br>EPSDT</th><th>24J. RENDERING<br>PROVIDER ID. #</th></tr></thead><tbody>{line_rows}</tbody></table>
-<section class=bottom><div class=cell><label>25. FEDERAL TAX I.D. NUMBER</label>{tax_id}</div><div class=cell><label>26. PATIENT'S ACCOUNT NO.</label>{control}</div><div class=cell><label>27. ACCEPT ASSIGNMENT?</label>Not recorded</div><div class=cell><label>28. TOTAL CHARGE</label>${total_dollars}.{total_pennies:02}</div><div class=cell><label>29. AMOUNT PAID — PATIENT</label>{patient_paid}</div><div class=cell><label>30. RESERVED FOR NUCC USE</label></div><div class="cell sig" style="grid-column:span 4"><label>31. SIGNATURE OF PHYSICIAN OR SUPPLIER</label>Not recorded</div><div class=cell><label>32. SERVICE FACILITY LOCATION</label>Not recorded</div><div class=cell><label>32a. NPI</label>Not recorded</div><div class=cell style="grid-column:span 4"><label>33. BILLING PROVIDER INFO &amp; PH #</label>{provider}<br>{billing_address}</div><div class=cell><label>33a. NPI</label>{billing_npi}</div><div class=cell><label>33b. OTHER ID #</label></div></section>
-<div class=footer><span>Generated from frozen SunCharts claim version {version}. Gross claim ${total_dollars}.{total_pennies:02}; recorded paid {paid_summary}; local open balance {open_balance}. Viewing or printing does not submit or alter the claim. This is not an official paper-submission form. The reviewed electronic 837P is submitted separately through Claim.MD.</span><span class=version>{review_label} · CMS-1500 field references</span></div>
+<section class=bottom><div class=cell><label>25. FEDERAL TAX I.D. NUMBER</label>{tax_id}</div><div class=cell><label>26. PATIENT'S ACCOUNT NO.</label>{control}</div><div class=cell><label>27. ACCEPT ASSIGNMENT?</label>Not recorded</div><div class=cell><label>28. TOTAL CHARGE</label>${total_dollars}.{total_pennies:02}</div><div class=cell><label>29. AMOUNT PAID — PATIENT</label>{patient_paid}</div><div class=cell><label>30. RESERVED FOR NUCC USE</label></div><div class="cell sig" style="grid-column:span 4"><label>31. SIGNATURE OF PHYSICIAN OR SUPPLIER</label>Not recorded</div><div class=cell><label>32. SERVICE FACILITY LOCATION</label>{service_location}</div><div class=cell><label>32a. NPI</label>Not recorded</div><div class=cell style="grid-column:span 4"><label>33. BILLING PROVIDER INFO &amp; PH #</label>{provider}<br>{billing_address}</div><div class=cell><label>33a. NPI</label>{billing_npi}</div><div class=cell><label>33b. OTHER ID #</label></div></section>
+<div class=footer><span>Generated from frozen SunCharts claim version {version}. Gross claim ${total_dollars}.{total_pennies:02}; recorded paid {paid_summary}; local open balance {open_balance}. Viewing or printing does not submit or alter the claim. This is not an official paper-submission form. {submission_note}</span><span class=version>{review_label} · CMS-1500 field references</span></div>
 </div></main></body></html>"#,
         control = html_escape(&c.control_number),
         member = html_escape(json_text(policy, "member_id")),
@@ -1783,7 +1798,44 @@ fn render_cms1500_review(c: &Claim) -> Result<String> {
         tax_id = html_escape(&content.tax_id),
         diagnoses = diagnoses,
         line_rows = line_rows,
-        notes = html_escape(&content.notes),
+        notes = html_escape(if content.encounter.additional_claim_info.is_empty() {
+            &content.notes
+        } else {
+            &content.encounter.additional_claim_info
+        }),
+        claim_codes = html_escape(&content.encounter.claim_codes),
+        onset = content
+            .encounter
+            .current_illness_date
+            .map(|d| d.to_string())
+            .unwrap_or_default(),
+        referring_name = html_escape(&content.encounter.referring_provider_name),
+        referring_npi = html_escape(&content.encounter.referring_npi),
+        hospital = match (
+            content.encounter.hospitalization_from,
+            content.encounter.hospitalization_to
+        ) {
+            (Some(from), Some(to)) => format!("{from} to {to}"),
+            (Some(from), None) => format!("From {from}"),
+            _ => String::new(),
+        },
+        prior_auth = review_text(&content.encounter.prior_authorization_number),
+        service_location = review_text(
+            &[
+                content.encounter.service_location_name.as_str(),
+                content.encounter.service_location_address.as_str()
+            ]
+            .iter()
+            .filter(|v| !v.is_empty())
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ")
+        ),
+        submission_note = if content.encounter.paper_only {
+            "This claim is marked to be printed and mailed, not sent electronically."
+        } else {
+            "The reviewed electronic 837P is sent separately through the clearinghouse."
+        },
         total_dollars = total_cents / 100,
         total_pennies = total_cents.abs() % 100,
         paid_summary = paid_summary,
@@ -2864,7 +2916,7 @@ mod claim_review_tests {
         assert_eq!(cell(&html, "29. AMOUNT PAID — PATIENT"), "$25.00");
         assert!(html.contains("recorded paid $85.00; local open balance $65.00"));
         assert!(html.contains("not an official paper-submission form"));
-        assert!(html.contains("electronic 837P is submitted separately through Claim.MD"));
+        assert!(html.contains("electronic 837P is sent separately through the clearinghouse"));
         assert_eq!((claim.content, claim.snapshot), before);
     }
 

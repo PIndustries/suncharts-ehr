@@ -529,6 +529,8 @@ async fn quote(
         ndc_code: None,
         ndc_quantity: None,
         ndc_unit: None,
+        service_from: None,
+        service_to: None,
     };
     let quote = lookup(&mut tx, &a, provider, q.service_date, &ctx, &line).await?;
     Ok(Json(

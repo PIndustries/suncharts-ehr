@@ -232,7 +232,10 @@ async function loadEncounterRevenueStatus(account,force=false){
    if(encounterRevenueState===state&&summary?.account)state.version=summary.account.version??state.version;
    state.data={summary,prepareError:summary.state==='prepare_claim'?prepareError:null};state.loadedAt=Date.now();
   }catch{state.data=state.data?.summary?{...state.data,stale:true,preparing:false}:{error:true};}
-  finally{state.pending=null;render();if(current()&&typeof setTimeout==='function'&&state.data?.summary?.account?.status==='posted'){clearTimeout(state.timer);state.timer=setTimeout(()=>{const node=$('encounter-revenue-status');if(current()&&node&&(!node.getClientRects||node.getClientRects().length))void loadEncounterRevenueStatus(encounterChargeAccount(),true);},20000);}}
+  finally{state.pending=null;render();
+   // The claim made from these codes shows under them as soon as the summary names it.
+   if(current()&&$('encounter-revenue')?.dataset?.invoiceTab==='billing'&&typeof encounterClaimMount==='function')encounterClaimMount();
+  if(current()&&typeof setTimeout==='function'&&state.data?.summary?.account?.status==='posted'){clearTimeout(state.timer);state.timer=setTimeout(()=>{const node=$('encounter-revenue-status');if(current()&&node&&(!node.getClientRects||node.getClientRects().length))void loadEncounterRevenueStatus(encounterChargeAccount(),true);},20000);}}
  })();
  return state.pending;
 }

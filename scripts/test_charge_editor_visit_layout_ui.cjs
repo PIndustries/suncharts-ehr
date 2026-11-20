@@ -19,9 +19,19 @@ const chargeLine=html=>{const start=html.indexOf('<tr class="billing-charge-row"
  // Opened from inside the encounter: the charge lines come first, everything else is tucked away.
  ctx.chartSection='visits';ctx.activeVisit={id:'visit-a',appointment_id:'appt-a',status:'in_progress'};
  ctx.accountEditor(null,null,true);
- const visit=nodes['encounter-billing-editor'].innerHTML,box='<details data-visit-charge-options>';
- assert.match(visit,/<details data-visit-charge-options><summary>Visit, insurance and fee options<\/summary>/,'the encounter details sit in one collapsed box');
- assert.ok(!/<details[^>]*\bopen/.test(visit),'the box starts closed');
+ const visit=nodes['encounter-billing-editor'].innerHTML,box='<details class="charge-more-options">';
+ assert.match(visit,/<section class="charge-encounter-head" data-visit-charge-options><h4>Insurance and dates<\/h4>/,'insurance and the date of service open the form, as on a paper encounter form');
+ assert.ok(visit.indexOf('data-visit-charge-options')<visit.indexOf('id="billing-charge-lines"'),'above the procedures');
+ assert.match(visit,/<details class="charge-more-options"><summary>Fees and notes<\/summary>/,'fees and notes are tucked under the procedures');
+ // The encounter form carries the claim details a paper encounter form has: prior authorization,
+ // dates, the providers and place of service, the hospital stay and claim boxes, and staff notes.
+ for(const name of ['prior_authorization_number','current_illness_date','through_date','paper_only','rendering_npi','place_of_service','encounter_mode','referring_provider_name','referring_npi','supervising_provider_name','supervising_npi','hospitalization_from','hospitalization_to','claim_codes','additional_claim_info','business_office_note'])assert.match(visit,new RegExp(`name="cd_${name}"`),name);
+ assert.ok(visit.indexOf('data-encounter-provider')<visit.indexOf('id="billing-charge-lines"'),'provider and place sit above the procedures');
+ // Only what was filled in is sent; an untouched form sends no claim details at all.
+ const els=(values,checked=false)=>({elements:new Proxy({},{get:(_,key)=>key==='cd_paper_only'?{checked}:String(key).startsWith('cd_')?{value:values[String(key).slice(3)]||''}:undefined})});
+ assert.equal(ctx.encounterClaimDetailsValue(els({})),null,'nothing filled in, nothing sent');
+ assert.deepEqual(JSON.parse(JSON.stringify(ctx.encounterClaimDetailsValue(els({prior_authorization_number:' PA-SYN-1 ',place_of_service:'10',through_date:'2026-11-14'},true)))),{prior_authorization_number:'PA-SYN-1',place_of_service:'10',through_date:'2026-11-14',paper_only:true});
+ assert.ok(!/<details[^>]*\bopen/.test(visit),'and start closed');
  const row=chargeLine(visit);
  assert.match(visit,/<table class="billing-table charge-table" id="billing-charge-lines"><caption class="sr-only">/,  'the lines are one table');
  // One row per procedure, in the order the form is filled in: the procedure, its modifiers, how
@@ -33,9 +43,9 @@ const chargeLine=html=>{const start=html.indexOf('<tr class="billing-charge-row"
  assert.match(row,/data-charge-diagnoses/,'the diagnosis chips stay on the line');
  assert.match(row,/name="diagnoses"/,'and the line still submits the same diagnoses field');
  assert.match(row,/class="charge-drug"/,'the drug fields sit inside the row, not behind a closed box');
- assert.ok(visit.indexOf(box)>visit.indexOf('data-add-charge'),'the options box comes after the charge lines');
- const tucked=visit.slice(visit.indexOf(box));
- assert.ok(['visit_id','service_date','coverage_id','notes','fee_facility','fee_setting'].every(name=>tucked.includes(`name="${name}"`)),'the tucked fields are still inside the form and still submitted');
+ assert.ok(visit.indexOf(box)>visit.indexOf('data-add-charge'),'fees and notes come after the charge lines');
+ const tucked=visit.slice(visit.indexOf('data-visit-charge-options'));
+ assert.ok(['visit_id','service_date','coverage_id','notes','fee_facility','fee_setting'].every(name=>tucked.includes(`name="${name}"`)),'the encounter fields are still inside the form and still submitted');
  assert.match(visit,/<button type="button" data-add-charge>\+ Add another charge<\/button>/);
  assert.doesNotMatch(visit,/>Save charges<|>Cancel<|name="reason"/,'the table saves itself: no save button, no cancel, no reason box');
  assert.doesNotMatch(visit,/name="code_system"/,'no code system field anywhere on a charge line');

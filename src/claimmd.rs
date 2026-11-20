@@ -224,6 +224,44 @@ fn professional_json(out: &Submission) -> Result<Value> {
         .as_array()
         .ok_or(Error::Invalid("Claim.MD diagnosis pointers missing"))?;
     let service_date = required(&account["content"], "service_date")?;
+    // Claim details from the encounter form, each only when filled in, under the field names
+    // Claim.MD documents for its professional claim form (docs.claim.md, Professional Claim Form
+    // Overview). Box 19 has no claim-level field there; it travels in the 837P and on paper.
+    let enc = &content["encounter"];
+    let enc_text = |key: &str| enc[key].as_str().map(str::trim).filter(|v| !v.is_empty());
+    for (source, target) in [
+        ("prior_authorization_number", "prior_auth"),
+        ("current_illness_date", "cond_date"),
+        ("hospitalization_from", "hosp_from_date"),
+        ("hospitalization_to", "hosp_thru_date"),
+        ("referring_npi", "ref_npi"),
+    ] {
+        if let Some(value) = enc_text(source) {
+            native.insert(target.into(), json!(value));
+        }
+    }
+    if enc_text("referring_npi").is_some() {
+        let (last, first) =
+            crate::encounter_claim::name_parts(enc_text("referring_provider_name").unwrap_or(""));
+        native.insert("ref_name_l".into(), json!(last));
+        native.insert("ref_name_f".into(), json!(first));
+    }
+    if let Some(codes) = enc_text("claim_codes") {
+        for (index, code) in codes
+            .split([',', ' '])
+            .filter(|v| !v.is_empty())
+            .take(3)
+            .enumerate()
+        {
+            native.insert(format!("cond_code_{}", index + 1), json!(code));
+        }
+    }
+    let supervising = enc_text("supervising_npi").map(|npi| {
+        let (last, first) =
+            crate::encounter_claim::name_parts(enc_text("supervising_provider_name").unwrap_or(""));
+        (last, first, npi.to_string())
+    });
+    let through_date = enc_text("through_date");
     let mut charges = Vec::with_capacity(lines.len());
     for (index, line) in lines.iter().enumerate() {
         let amount = line["amount_cents"]
@@ -241,12 +279,23 @@ fn professional_json(out: &Submission) -> Result<Value> {
                 .ok_or(Error::Invalid("Claim.MD diagnosis pointer invalid"))?;
             diag_ref.push((b'A' + (n as u8 - 1)) as char);
         }
+        // A line's own dates, or the encounter's through date, make the service a range.
+        let line_from = line["service_from"]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .unwrap_or(service_date);
+        let line_thru = line["service_to"]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .or(through_date)
+            .filter(|v| *v > line_from)
+            .unwrap_or(line_from);
         let mut charge = json!({
             "charge":money(amount)?,
             "charge_record_type":"UN",
             "diag_ref":diag_ref,
-            "from_date":service_date,
-            "thru_date":service_date,
+            "from_date":line_from,
+            "thru_date":line_thru,
             "place_of_service":required(content,"place_of_service")?,
             "proc_code":required(line,"code")?,
             "remote_chgid":format!("{}-{}", required(claim,"control_number")?, index+1),
@@ -283,6 +332,11 @@ fn professional_json(out: &Submission) -> Result<Value> {
             charge["ndc_code"] = json!(ndc[0]);
             charge["ndc_dosage"] = json!(ndc[1]);
             charge["ndc_measure"] = json!(ndc[2]);
+        }
+        if let Some((last, first, npi)) = &supervising {
+            charge["chg_supv_prov_name_l"] = json!(last);
+            charge["chg_supv_prov_name_f"] = json!(first);
+            charge["chg_supv_prov_npi"] = json!(npi);
         }
         charges.push(charge);
     }
@@ -712,6 +766,53 @@ mod tests {
         assert_eq!(claim["charge"][0]["mod1"], "25");
         assert_eq!(claim["charge"][0]["mod2"], "95");
         assert!(value.get("AccountKey").is_none());
+    }
+
+    #[test]
+    fn encounter_form_details_use_claimmd_documented_fields_and_are_absent_when_empty() {
+        let plain = professional_json(&submission()).unwrap();
+        let mut out = submission();
+        let service = out.claim_snapshot["snapshot"]["account"]["content"]["service_date"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        out.claim_snapshot["content"]["encounter"] = json!({
+            "prior_authorization_number":"PA-SYN-1","current_illness_date":"2026-09-01",
+            "hospitalization_from":"2026-09-02","hospitalization_to":"2026-09-04",
+            "referring_provider_name":"Referrer, Synthetic","referring_npi":"1234567893",
+            "supervising_provider_name":"Synthetic Supervisor","supervising_npi":"1234567893",
+            "claim_codes":"AA BB","additional_claim_info":"Synthetic box 19","through_date":"2099-01-01"
+        });
+        out.claim_snapshot["snapshot"]["account"]["content"]["lines"][0]["service_to"] =
+            json!("2099-01-02");
+        let claim = &professional_json(&out).unwrap()["claim"][0];
+        for (field, value) in [
+            ("prior_auth", "PA-SYN-1"),
+            ("cond_date", "2026-09-01"),
+            ("hosp_from_date", "2026-09-02"),
+            ("hosp_thru_date", "2026-09-04"),
+            ("ref_npi", "1234567893"),
+            ("ref_name_l", "Referrer"),
+            ("ref_name_f", "Synthetic"),
+            ("cond_code_1", "AA"),
+            ("cond_code_2", "BB"),
+        ] {
+            assert_eq!(claim[field], value, "{field}");
+        }
+        let charge = &claim["charge"][0];
+        assert_eq!(charge["from_date"], json!(service));
+        assert_eq!(
+            charge["thru_date"], "2099-01-02",
+            "the line's own end date wins over the encounter's"
+        );
+        assert_eq!(charge["chg_supv_prov_npi"], "1234567893");
+        assert_eq!(charge["chg_supv_prov_name_l"], "Supervisor");
+        // Box 19 has no documented claim-level Claim.MD field, so nothing is invented for it.
+        assert!(!claim.to_string().contains("Synthetic box 19"));
+        // An empty encounter object sends exactly what a claim without one sends.
+        let mut empty = submission();
+        empty.claim_snapshot["content"]["encounter"] = json!({});
+        assert_eq!(professional_json(&empty).unwrap()["claim"], plain["claim"]);
     }
 
     #[test]

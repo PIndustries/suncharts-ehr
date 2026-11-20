@@ -73,7 +73,7 @@ function practiceDashboardMarkup(d){
  ].join('');
  const claimRows=o?.claims?[
   {label:'Ready to send',value:practiceClaimCount(o,'draft')+practiceClaimCount(o,'ready')},
-  {label:'With Claim.MD',value:Number(o.claims.received_by_clearinghouse||0)},
+  {label:'With the clearinghouse',value:Number(o.claims.received_by_clearinghouse||0)},
   {label:'Waiting on payer',value:Math.max(0,practiceClaimCount(o,'submitted')+practiceClaimCount(o,'accepted')-Number(o.claims.received_by_clearinghouse||0)-Number(o.claims.needs_correction||0))},
   {label:'Needs correcting',value:Number(o.claims.needs_correction||0)+practiceClaimCount(o,'rejected'),tone:'attention'},
   {label:'Paid / answered',value:practiceClaimCount(o,'adjudicated'),tone:'good'}]:null;
