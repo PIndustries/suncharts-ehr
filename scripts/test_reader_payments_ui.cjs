@@ -74,7 +74,7 @@ test('the status area follows the payment from waiting to approved and shows the
  const f=fixture(),c=f.ctx;await f.click({readerCopay:'appt'});c.next=op;await f.submit(f.form());
  assert.equal(f.slot(),'<div id="reader-payment-live"></div>');
  let html=f.live();
- assert.match(html,/<h3>Card payment on reader<\/h3><p>\$25\.00 · Test payment<\/p><p role="status" aria-live="polite"><b>Waiting for card on Front desk<\/b><\/p>/);
+ assert.match(html,/<h3>Card payment on reader<\/h3><p class="reader-amount">\$25\.00 · Test payment<\/p><ol class="reader-steps"[^]*?<li class="is-done"><span><\/span>Sent to the reader<\/li><li class="is-current"><span><\/span>Tap, insert or swipe<\/li>[^]*?<\/ol><p role="status" aria-live="polite" class="reader-state"><b>Waiting for card on Front desk<\/b><\/p>/);
  assert.match(html,/<button type="button" data-reader-payment-cancel>Cancel<\/button>/);assert.doesNotMatch(html,/Try again|receipt/);
  assert.equal(f.waiting(),1,'the next status read is two seconds away');
  await f.tick({...op,last_result:'reader_offline'});html=f.live();

@@ -150,3 +150,64 @@
 .modifier-chip.is-on{border-color:var(--accent);background:var(--accent-soft,var(--surface));box-shadow:inset 0 0 0 1px var(--accent)}
 .modifier-options select{font-size:var(--fs-sm);max-width:100%}
 .charge-table .charge-cell-modifiers{min-width:240px}
+
+/* Collect payment window: what is owed, how they are paying, then that method's own steps. */
+.collect-sheet .sheet-body #visit-billing-collect{border:0;padding:0;margin:0}
+.collect-sheet #visit-billing-collect>.section-head,.collect-sheet #visit-billing-collect>#visit-billing-collect-note,.collect-sheet #visit-billing-collect .visit-billing-collect-options,.collect-sheet #visit-billing-collect>.actions{display:none}
+.collect-owed{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin:0 0 12px}
+.collect-owed span{color:var(--muted)}
+.collect-owed b{font-size:1.9rem;line-height:1.1}
+.collect-owed small{color:var(--muted)}
+.collect-methods{margin-bottom:16px}
+#encounter-hosted-copay-reader:not(:empty){animation:invoice-tab-in .22s ease}
+.collect-cash{display:grid;gap:12px;max-width:420px}
+.collect-amount input{font-size:1.5rem;padding:10px 12px;height:auto}
+.collect-submit{justify-self:start;padding:10px 18px}
+.collect-done{display:grid;justify-items:center;text-align:center;gap:6px;padding:18px 0}
+.collect-done-mark{width:56px;height:56px;border-radius:50%;display:grid;place-items:center;font-size:28px;color:var(--success-text);background:var(--success-bg);border:2px solid var(--success-line);animation:collect-pop .35s cubic-bezier(.2,1.4,.4,1)}
+@keyframes collect-pop{from{transform:scale(.4);opacity:0}to{transform:none;opacity:1}}
+/* The reader's live steps. */
+.reader-payment .reader-amount{font-size:1.6rem;font-weight:700;margin:4px 0 10px}
+.reader-steps{list-style:none;display:grid;gap:10px;margin:0 0 12px;padding:0}
+.reader-steps li{display:flex;align-items:center;gap:10px;color:var(--muted)}
+.reader-steps li span{width:14px;height:14px;border-radius:50%;border:2px solid var(--line);flex:none;transition:background .25s ease,border-color .25s ease}
+.reader-steps li.is-done{color:var(--ink)}
+.reader-steps li.is-done span{background:var(--success-line);border-color:var(--success-line)}
+.reader-steps li.is-current{color:var(--ink);font-weight:600}
+.reader-steps li.is-current span{border-color:var(--accent);background:var(--accent);animation:reader-pulse 1.2s ease-in-out infinite}
+.reader-steps li.is-stopped{color:var(--warning-text);font-weight:600}
+.reader-steps li.is-stopped span{background:var(--warning-line);border-color:var(--warning-line)}
+@keyframes reader-pulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 45%,transparent)}50%{box-shadow:0 0 0 8px transparent}}
+.reader-payment[data-reader-payment="approved"] .reader-state b{color:var(--success-text)}
+@media(prefers-reduced-motion:reduce){.reader-steps li.is-current span,.collect-done-mark,#encounter-hosted-copay-reader:not(:empty){animation:none}}
+.collect-sheet:is([data-method="cash"],[data-method="check"]) #encounter-hosted-copay{display:none}
+
+.code-check-fix{border-left:3px solid var(--danger-line,var(--warning-line));padding:4px 10px;margin:6px 0}
+.code-check-review{border-left:3px solid var(--warning-line);padding:4px 10px;margin:6px 0}
+.code-check-fix ul,.code-check-review ul{margin:4px 0 0;padding-left:18px}
+.code-check-ok{color:var(--success-text)}
+
+.collect-target{display:grid;grid-template-columns:minmax(0,220px) 1fr auto;gap:12px;align-items:end;margin:0 0 12px}
+.collect-target input{font-size:1.2rem}
+.collect-taken{list-style:none;margin:0;padding:0;display:grid;gap:2px;color:var(--success-text);align-self:center}
+.collect-left{display:grid;justify-items:end;margin:0}
+.collect-left span{color:var(--muted);font-size:var(--fs-sm)}
+.collect-left b{font-size:1.4rem}
+.collect-step-done{padding:10px 12px;border-left:3px solid var(--success-line);background:var(--success-bg);border-radius:0}
+@media(max-width:700px){.collect-target{grid-template-columns:1fr}}
+
+.collect-paid-so-far{list-style:none;margin:0 0 12px;padding:8px 12px;display:grid;gap:4px;border:1px solid var(--line);border-radius:8px}
+.collect-paid-so-far li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;align-items:center}
+.collect-paid-so-far li span{color:var(--muted)}
+.collect-paid-so-far li em{grid-column:1/-1;font-style:normal;font-size:var(--fs-sm);color:var(--muted)}
+.collect-paid-so-far li em.is-paid{color:var(--success-text)}
+.collect-paid-so-far li.has-credit button{grid-column:1/-1;justify-self:start}
+
+.collect-lines{margin:0 0 10px}
+.collect-lines summary{cursor:pointer;color:var(--muted)}
+.collect-lines ul{list-style:none;margin:6px 0 0;padding:0;display:grid;gap:4px}
+.collect-lines li{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding:3px 0}
+.collect-lines li span:last-child{white-space:nowrap}
+
+/* Statements sit under the payments; the Stripe invoice records are not part of this view. */
+.patient-billing-statements #patient-billing-stripe-invoices,.patient-billing-statements [data-stripe-invoices]{display:none}

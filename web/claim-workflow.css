@@ -104,3 +104,50 @@
 @keyframes invoice-tab-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 .sheet-dialog.sheet-wide{width:min(900px,calc(100vw - 32px))}
 .invoice-sheet .avs-print-frame{width:100%;min-height:60vh;border:1px solid var(--line);border-radius:8px}
+
+/* Claim progress: a thin bar of six steps under the claim's name, details on hover or focus. */
+.claim-progress-compact{margin:6px 0 12px;padding:0;border:0;background:none}
+.claim-progress-bar{list-style:none;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px;margin:0;padding:0}
+.claim-progress-bar li{position:relative;padding:6px 0;cursor:default;outline:none}
+.claim-progress-fill{display:block;height:6px;border-radius:3px;background:var(--line);transition:background .3s ease}
+.claim-progress-bar li.is-complete .claim-progress-fill{background:var(--success-line)}
+.claim-progress-bar li.is-current .claim-progress-fill{background:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent)}
+.claim-progress-tip{position:absolute;z-index:6;top:calc(100% + 4px);left:50%;transform:translate(-50%,4px);min-width:180px;max-width:240px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);box-shadow:0 8px 24px rgb(0 0 0 / .18);opacity:0;pointer-events:none;transition:opacity .15s ease,transform .15s ease;display:grid;gap:2px}
+.claim-progress-bar li:first-child .claim-progress-tip{left:0;transform:translate(0,4px)}
+.claim-progress-bar li:last-child .claim-progress-tip{left:auto;right:0;transform:translate(0,4px)}
+.claim-progress-bar li:hover .claim-progress-tip,.claim-progress-bar li:focus .claim-progress-tip{opacity:1;transform:translate(-50%,0)}
+.claim-progress-bar li:first-child:hover .claim-progress-tip,.claim-progress-bar li:first-child:focus .claim-progress-tip,.claim-progress-bar li:last-child:hover .claim-progress-tip,.claim-progress-bar li:last-child:focus .claim-progress-tip{transform:none}
+.claim-progress-tip small{color:var(--muted)}
+.claim-progress-now{margin:6px 0 0}
+.claim-progress-more{margin-top:6px}
+.claim-progress-more summary{color:var(--muted);cursor:pointer}
+@media(prefers-reduced-motion:reduce){.claim-progress-tip,.claim-progress-fill{transition:none}}
+/* The compact bar replaces the old step boxes: undo their borders, padding and circles. */
+.claim-lifecycle.claim-progress-compact{margin:6px 0 12px;padding:0;border:0;border-radius:0;background:none}
+.claim-lifecycle.claim-progress-compact ol.claim-progress-bar{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px;border:0;border-radius:0;overflow:visible;margin:0;padding:0}
+.claim-lifecycle.claim-progress-compact ol.claim-progress-bar>li{display:block;border:0;background:none;padding:6px 0;margin:0;min-height:0;opacity:1}
+.claim-lifecycle.claim-progress-compact ol.claim-progress-bar>li>span.claim-progress-fill{display:block;width:auto;height:6px;border:0;border-radius:3px;margin:0}
+.claim-lifecycle.claim-progress-compact ol.claim-progress-bar>li.is-complete>span.claim-progress-fill{background:var(--success-line)}
+.claim-lifecycle.claim-progress-compact ol.claim-progress-bar>li.is-current>span.claim-progress-fill{background:var(--accent)}
+.claim-lifecycle.claim-progress-compact ol.claim-progress-bar>li.is-upcoming>span.claim-progress-fill{background:var(--line)}
+.claim-lifecycle.claim-progress-compact ol.claim-progress-bar>li>span.claim-progress-tip{width:auto;height:auto;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink)}
+.claim-lifecycle.claim-progress-compact li b,.claim-lifecycle.claim-progress-compact li small{display:block}
+
+/* The claim bar in the patient banner: always in view, details on hover, click to open. */
+.patient-banner-claim{display:grid;grid-template-columns:auto minmax(160px,1fr) auto;align-items:center;gap:10px;padding-top:6px;border-top:1px solid var(--line);margin-top:6px}
+.patient-banner-claim-name{border:0;background:none;padding:0;color:var(--muted);font-size:var(--fs-sm);cursor:pointer;white-space:nowrap}
+.patient-banner-claim-name:hover{color:var(--ink);text-decoration:underline}
+.patient-banner-claim .claim-progress-bar{list-style:none;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:3px;margin:0;padding:0}
+.patient-banner-claim .claim-progress-bar>li{position:relative;padding:4px 0;outline:none}
+.patient-banner-claim .claim-progress-fill{display:block;height:4px;border-radius:2px;background:var(--line)}
+.patient-banner-claim li.is-complete .claim-progress-fill{background:var(--success-line)}
+.patient-banner-claim li.is-current .claim-progress-fill{background:var(--accent)}
+.patient-banner-claim .claim-progress-tip{position:absolute;z-index:30;top:calc(100% + 4px);left:50%;transform:translate(-50%,4px);min-width:180px;max-width:240px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);box-shadow:0 8px 24px rgb(0 0 0 / .18);opacity:0;pointer-events:none;transition:opacity .15s ease,transform .15s ease;display:grid;gap:2px}
+.patient-banner-claim li:hover .claim-progress-tip,.patient-banner-claim li:focus .claim-progress-tip{opacity:1;transform:translate(-50%,0)}
+.patient-banner-claim li:first-child .claim-progress-tip{left:0;transform:none}
+.patient-banner-claim li:last-child .claim-progress-tip{left:auto;right:0;transform:none}
+.patient-banner-claim-now{font-size:var(--fs-sm);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}
+@media(max-width:700px){.patient-banner-claim{grid-template-columns:1fr}.patient-banner-claim-now{max-width:none}}
+.patient-banner .patient-banner-row.patient-banner-claim{display:grid;grid-template-columns:auto minmax(160px,1fr) auto;align-items:center;gap:10px;width:100%}
+.patient-banner .patient-banner-claim .claim-progress-bar{width:100%;min-width:160px}
+@media(max-width:700px){.patient-banner .patient-banner-row.patient-banner-claim{grid-template-columns:1fr}}

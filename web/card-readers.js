@@ -404,10 +404,18 @@ function readerPaymentState(operation,readerName){
 }
 function readerPaymentLabel(operation){return readerPaymentState(operation).text;}
 let readerPaymentLive=null;
+// The steps a reader payment goes through, shown as it moves: sent, waiting for the card,
+// finishing, then the answer. A step that went wrong is shown as stopped, in its own words.
+const readerPaymentSteps=['Sent to the reader','Tap, insert or swipe','Processing','Approved'];
+function readerPaymentStepsMarkup(state){
+ const at={offline:0,busy:0,waiting:1,finishing:2,approved:3,declined:2,failed:2,cancelled:1,review:2}[state.key]??1;
+ const stopped=['offline','busy','declined','failed','cancelled','review'].includes(state.key);
+ return `<ol class="reader-steps" aria-hidden="true">${readerPaymentSteps.map((label,index)=>`<li class="${index<at||state.key==='approved'&&index===at?'is-done':index===at?(stopped?'is-stopped':'is-current'):''}"><span></span>${esc(index===at&&stopped?state.text:label)}</li>`).join('')}</ol>`;
+}
 function readerPaymentMarkup(live){
  const state=readerPaymentState(live.operation,live.readerName),operation=live.operation;
  const actions=state.final?(state.key==='approved'?live.approved?.(operation)||'':state.key==='review'?'':'<button type="button" class="primary" data-reader-payment-again>Try again</button>')+'<button type="button" data-reader-payment-close>Close</button>':state.locked?'':'<button type="button" data-reader-payment-cancel>Cancel</button>';
- return `<section class="billing-section reader-payment" data-reader-payment="${esc(state.key)}"><h3>Card payment on reader</h3><p>${money(operation.amount_cents)}${operation.livemode===false&&testPaymentLabel()?' · '+testPaymentLabel():''}</p><p role="status" aria-live="polite"><b>${esc(state.text)}</b></p>${state.help?`<p class="muted">${esc(state.help)}</p>`:''}${live.unreachable?'<p class="muted">Checking again…</p>':''}<div class="actions">${actions}</div></section>`;
+ return `<section class="billing-section reader-payment" data-reader-payment="${esc(state.key)}"><h3>Card payment on reader</h3><p class="reader-amount">${money(operation.amount_cents)}${operation.livemode===false&&testPaymentLabel()?' · '+testPaymentLabel():''}</p>${readerPaymentStepsMarkup(state)}<p role="status" aria-live="polite" class="reader-state"><b>${esc(state.text)}</b></p>${state.help?`<p class="muted">${esc(state.help)}</p>`:''}${live.unreachable?'<p class="muted">Checking again…</p>':''}<div class="actions">${actions}</div></section>`;
 }
 function paintReaderPayment(){const host=$('reader-payment-live'),live=readerPaymentLive;if(host&&live)host.innerHTML=readerPaymentMarkup(live);return !!host;}
 function stopReaderPayment(){if(readerPaymentLive)clearTimeout(readerPaymentLive.timer);readerPaymentLive=null;}

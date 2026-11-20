@@ -152,7 +152,7 @@ function patientBannerMarkup(now=new Date()){
  // The same facts again inside More, shown there only when the row has no room for them.
  const menuFacts=[flagHtml&&`<div data-banner-collapsed="flags">${flagHtml}</div>`,visitHtml&&`<div data-banner-collapsed="visit">${visitHtml}</div>`,balanceHtml&&`<div data-banner-collapsed="balance">${balanceHtml}</div>`,insuranceHtml&&`<div data-banner-collapsed="insurance">${insuranceHtml}</div>`].filter(Boolean).join('');
  const loading=!patientBannerCurrent()||(!patientBanner.data&&!patientBanner.failed)?'<span class="patient-banner-loading" role="status">Loading…</span>':patientBanner.failed&&!patientBanner.data?'<span class="patient-banner-loading" role="status">Some details could not be loaded. Use Refresh in More.</span>':'';
- return `<div class="patient-banner-row patient-banner-top">${who}${flagHtml}<div class="patient-banner-actions">${patientBannerPrimary(now)}${patientBannerDetails(allergies,coverages,visits,flags)}${patientBannerMenu(menuFacts)}</div></div><div class="patient-banner-row patient-banner-bottom">${allergy}${insuranceHtml}${balanceHtml}${visitHtml}${loading}</div>`;
+ return `<div class="patient-banner-row patient-banner-top">${who}${flagHtml}<div class="patient-banner-actions">${patientBannerPrimary(now)}${patientBannerDetails(allergies,coverages,visits,flags)}${patientBannerMenu(menuFacts)}</div></div><div class="patient-banner-row patient-banner-bottom">${allergy}${insuranceHtml}${balanceHtml}${visitHtml}${loading}</div>${patientBannerClaimMarkup()}`;
 }
 function patientBannerStickyOffset(host){
  const header=document.querySelector?.('.workspace-header'),style=header&&typeof getComputedStyle==='function'?getComputedStyle(header):null;
@@ -236,4 +236,21 @@ if(typeof document!=='undefined'&&document.addEventListener){
  // Coming back to the tab is the cheap moment to notice a change made somewhere else.
  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&patientBannerCurrent()&&$('patient-banner')&&!patientBanner.request)void loadPatientBanner();});
  if(typeof window!=='undefined'&&window.addEventListener)window.addEventListener('resize',()=>{const host=$('patient-banner');if(host)patientBannerStickyOffset(host);});
+}
+
+// The claim being worked on for this patient, as a thin progress bar under the banner: always in
+// view whichever tab or page staff are on. Hovering a step shows its words; clicking opens the claim.
+let patientBannerClaim={patient:null,claim:null,bar:'',now:''};
+function patientBannerClaimMarkup(){
+ const c=patientBannerClaim;if(!c.claim||c.patient!==selected||!c.bar)return '';
+ const service=c.claim.snapshot?.account?.content?.service_date;
+ return `<div class="patient-banner-row patient-banner-claim" id="patient-banner-claim"><button type="button" class="patient-banner-claim-name" data-claim-open="${esc(c.claim.id)}" data-claim-visit title="Open this claim">Claim${(()=>{const visit=(workspace?.visits||[]).find(v=>v.id===c.claim.snapshot?.account?.content?.visit_id);const n=typeof encounterNumberText==='function'?encounterNumberText(visit):'';return n?' · '+esc(n):service?' · '+esc(typeof visitBillingDate==='function'?visitBillingDate(service):service):'';})()}</button>${c.bar}<span class="patient-banner-claim-now">${esc(c.now)}</span></div>`;
+}
+function patientBannerClaimSet(claim,bar,now){
+ if(!claim||claim.patient_id!==selected)return;
+ patientBannerClaim={patient:selected,claim,bar,now};
+ const node=typeof document!=='undefined'?document.getElementById?.('patient-banner-claim'):null,html=patientBannerClaimMarkup();
+ if(node){node.outerHTML=html;return;}
+ const banner=typeof document!=='undefined'?document.getElementById?.('patient-banner'):null;
+ if(banner?.insertAdjacentHTML)banner.insertAdjacentHTML('beforeend',html);
 }
