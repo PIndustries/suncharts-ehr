@@ -74,3 +74,7 @@
 
 /* The invoice shows its charge lines once: while Edit charges is open the editable table replaces the read-only lines. */
 #encounter-billing-editor:not(:empty)~#encounter-billing-detail{display:none}
+.visit-billing-card{container-type:inline-size}
+@container (max-width:620px){.visit-billing-status{flex-direction:column;align-items:stretch}.visit-billing-status .actions{justify-content:flex-start}}
+.visit-billing-missing-list{list-style:none;margin:8px 0 0;padding:8px 10px;display:grid;gap:4px;color:var(--warning-text);background:var(--warning-bg);border:1px solid var(--warning-line);border-radius:6px;font-size:var(--fs-sm)}
+.visit-billing-missing-list b{margin-right:6px}

@@ -50,7 +50,7 @@ function visitBillingStatus(s,ctx={}){
    case 'self_pay_collect':return {headline:'Self-pay: collect payment',detail:`Patient owes ${owes}. Waiting for the patient.`,action:create?button('Collect payment','data-visit-collect'):''};
   case 'prepare_claim':return ctx.delegated?{headline:'Claim not prepared yet',detail:`A member of the practice prepares the claim to ${insurer} by opening this visit. A support session does not prepare claims.`,action:''}:ctx.prepareError?{headline:`The claim to ${insurer} could not be prepared`,detail:ctx.prepareError,action:create?button('Try again','data-visit-claim-prepare'):''}:create?{headline:`Preparing the claim to ${insurer}`,detail:'The claim is filled in from this visit. Nothing is sent until you send it.',action:ctx.preparing?'':button('Prepare claim','data-visit-claim-prepare')}:{headline:'Posted',detail:`Billing staff prepare the claim to ${insurer}.`,action:''};
    case 'claim_cancelled':return {headline:`The claim to ${insurer} was cancelled`,detail:'Nothing is with the insurer.',action:create?button('Prepare a new claim','data-visit-claim-prepare="again"'):''};
-   case 'fix_claim':return {headline:`Claim to ${insurer} needs details`,detail:'Nothing has been sent yet.',issues:s.claim?.issues||[],action:reviewButton(s,ctx)||(write?button('Fix claim details',`data-visit-claim-fix="${esc(claim)}"`):'')};
+   case 'fix_claim':return {headline:`Claim to ${insurer} needs details`,detail:'Nothing has been sent yet. Fill in what is missing right on the claim below.',issues:s.claim?.issues||[],action:write?button('Fix claim details',`data-visit-claim-fix="${esc(claim)}"`):''};
     case 'send_claim':return {headline:`Claim ready to send to ${insurer}`,detail:'Nothing has been sent yet.',action:visitBillingDirectSend(s,ctx)||reviewButton(s,ctx)||(write?button('Review and send claim',`data-visit-claim-send="${esc(claim)}"`):'')};
     case 'correct_claim':return {headline:'Charges changed after the claim was sent',detail:`Send a corrected claim to ${insurer}.`,action:button('Open claim',`data-revenue-claim="${esc(claim)}"`)};
    case 'claimmd_correction':return {headline:'Claim.MD found a problem with this claim',detail:`${s.claimmd?.message?`Claim.MD says: “${s.claimmd.message}” `:''}Nothing has reached ${insurer} yet. Fix it in Edit charges (for example, add the modifier it asks for) and resend, or if nothing needs to change, approve the claim in Claim.MD.`,action:button('Open claim',`data-revenue-claim="${esc(claim)}"`)};
@@ -155,6 +155,13 @@ function visitBillingMissingGroupsFor(issues){
 // Lines in order: practice, patient, insurance, then the claim. The claim line lists its items as
 // text only; the card's main action button is the one "Fix claim details", never a second one here.
 function visitBillingMissingMarkup(issues,claimId,ctx){
+ // The claim page's own plain wording, one short line per place, with no buttons that leave the
+ // visit: the card's one Fix claim details opens the boxes right here.
+ if(typeof claimMissingGroupsFor==='function'&&typeof claimMissingGroups!=='undefined'){
+  const listed=claimMissingGroupsFor(issues||[]);
+  const rows=claimMissingGroups.map(group=>listed[group.key]?.words?.length?`<li data-missing-group="${group.key}"><b>${esc(group.label)}</b> ${listed[group.key].words.map(esc).join(' · ')}</li>`:'').join('');
+  return rows?`<ul class="visit-billing-missing-list">${rows}</ul>`:'';
+ }
  const buckets=visitBillingMissingGroupsFor(issues||[]);
  const line=(group,items,button)=>items.length?`<p class="visit-billing-missing" data-missing-group="${group.key}"><b>${esc(group.label)}:</b> ${items.map(esc).join(', ')}${button?' '+button:''}</p>`:'';
  return visitBillingMissingGroups.map(group=>line(group,buckets[group.key],`<button type="button" ${group.attribute}>${esc(group.action)}</button>`)).join('')+line({key:'claim',label:'Claim'},buckets.claim,'');

@@ -40,7 +40,7 @@ const states=[
   [visitSummary({state:'post_charges',account:{status:'draft'},balance_cents:null,claim:null,insurance:{status:'not_billed',pending_cents:0}}),'Post charges','Post charges','data-visit-post-charges="account"',/claim to Synthetic Medicare PPO is prepared for you next/],
  [selfPay(),'Self-pay: collect payment','Collect payment','data-visit-collect',/Patient owes \$280\.00\. Waiting for the patient/],
  [visitSummary({state:'claim_cancelled',claim:null}),'The claim to Synthetic Medicare PPO was cancelled','Prepare a new claim','data-visit-claim-prepare="again"',/Nothing is with the insurer/],
-  [visitSummary({state:'fix_claim',claim:{issues:[{code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'},{code:'npi',missing:'provider NPI',detail:'x'}]}}),'Claim to Synthetic Medicare PPO needs details','Review and send to Claim.MD','data-visit-review-open="account"',/Practice billing setup:<\/b> billing organization tax ID, provider NPI/],
+  [visitSummary({state:'fix_claim',claim:{issues:[{code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'},{code:'npi',missing:'provider NPI',detail:'x'}]}}),'Claim to Synthetic Medicare PPO needs details','Fix claim details',`data-visit-claim-fix="${esc(visitSummary().claim.id)}"`,/Practice billing setup:<\/b> billing organization tax ID, provider NPI/],
   // A claim the server has filled in and checked needs no review to press; it is ready to go out.
   [visitSummary({claim:{status:'ready'}}),'Claim ready to send to Synthetic Medicare PPO','Send claim to Synthetic Medicare PPO','data-visit-claim-direct-send="claim"',/Nothing has been sent yet\./],
   // A draft claim has not been checked yet, so the card still opens the review, which releases it.
@@ -184,12 +184,14 @@ for(const line of missingLines.filter(line=>line.action))assert.equal(line.attrs
 assert.equal(missingLines.find(line=>line.group==='claim').action,'','the Claim line lists its items as text only');
 // The three setup buttons appear once each, and the card has exactly one "Fix claim details": its main action.
 for(const [action] of Object.entries(buttonWiring))assert.equal((grouped.match(new RegExp(`>${action}<\\/button>`,'g'))||[]).length,1,`${action} appears once`);
-assert.equal((grouped.match(/data-visit-review-open/g)||[]).length,1,'exactly one Review and send button opens the panel, where the claim itself is fixed');
-assert.equal((grouped.match(/data-visit-claim-fix/g)||[]).length,0,'the card hands claim fixes to the review panel');
+// Nothing can be sent while details are missing, so there is no Review and send; the one main
+// action opens the claim's own Fix here boxes on this visit.
+assert.equal((grouped.match(/data-visit-review-open/g)||[]).length,0,'no Review and send while the claim cannot be sent');
+assert.equal((grouped.match(/data-visit-claim-fix/g)||[]).length,1,'one Fix claim details');
 // Only practice/patient/insurance items missing: the main action is still the one Fix claim details.
 const nonClaimOnly=card(visitSummary({state:'fix_claim',claim:{id:'claim',issues:[{code:'tax_id',missing:'billing organization tax ID'},{code:'patient_address',missing:'patient address'},{code:'subscriber_name',missing:'subscriber name'}]}}));
-assert.equal((nonClaimOnly.match(/data-visit-review-open/g)||[]).length,1,'the review panel is the one main action');
-assert.equal((nonClaimOnly.match(/data-visit-claim-fix/g)||[]).length,0,'the card hands claim fixes to the review panel');
+assert.equal((nonClaimOnly.match(/data-visit-review-open/g)||[]).length,0,'no Review and send while the claim cannot be sent');
+assert.equal((nonClaimOnly.match(/data-visit-claim-fix/g)||[]).length,1,'Fix claim details is the one main action');
 // Dates and vocabulary.
 assert.equal(ctx.visitBillingDate('2026-11-12'),'Nov 12, 2026');assert.equal(ctx.visitBillingDate(''),'');assert.equal(ctx.visitBillingDate('not a date'),'');
 assert.equal(ctx.visitBillingClaimState({status:'ready'}),'Send claim');assert.equal(ctx.visitBillingClaimState({status:'accepted'}),'Waiting on insurer');assert.equal(ctx.visitBillingClaimState({status:'rejected'}),'Denied: fix and resend');assert.equal(ctx.visitBillingClaimState({status:'submitted',crossover_tracking_only:true}),'Secondary insurer answered');

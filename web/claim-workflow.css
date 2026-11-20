@@ -64,3 +64,7 @@
 .claim-line-diagnosis-row{padding:.5rem 0;border-top:1px solid var(--line,#e6ecef)}
 .claim-line-diagnosis-row:first-of-type{border-top:0}
 .claim-line-diagnosis-row .scope-options{margin:.3rem 0 0}
+.claim-quick-view{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:.5rem 1rem;margin:.3rem 0 .6rem}
+.claim-quick-view ul{display:flex!important;flex-wrap:wrap;gap:.1rem .9rem}
+.claim-quick-view li::after{content:';'}
+.claim-quick-view li:last-child::after{content:''}
