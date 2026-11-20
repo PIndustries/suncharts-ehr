@@ -1020,7 +1020,7 @@ function encounterCodesStripMarkup(evidence){
  const total=lines.reduce((sum,line)=>sum+(Number(line.amount_cents)||0),0);
  const procedures=lines.length?`<ol>${lines.map(line=>`<li><span class="codes-strip-code">${esc(line.code||'')}${line.modifiers?'-'+esc(String(line.modifiers).trim().replace(/[,\s]+/g,'-')):''}</span> <span>${esc(line.description||'')}${Number(line.units)>1?` × ${esc(line.units)}`:''}</span><span class="codes-strip-amount">${line.amount_cents==null?'':money(line.amount_cents)}</span></li>`).join('')}</ol><p class="codes-strip-total"><span>Total charges</span><b>${money(total)}</b></p>`:'<p class="muted">No procedures yet.</p>';
  const any=(list&&list.length)||lines.length;
- return `<div class="codes-strip-col"><h4>Diagnoses (ICD-10)</h4>${diagnoses}</div><div class="codes-strip-col"><h4>Procedures (CPT)</h4>${procedures}</div><div class="codes-strip-actions"><button type="button" class="text-button" data-codes-strip-edit>${any?'Edit codes':'Add codes'}</button><button type="button" class="text-button" data-codes-strip-cms hidden>Preview CMS-1500</button></div>`;
+ return `<div class="codes-strip-col"><h4>Diagnoses (ICD-10)</h4>${diagnoses}</div><div class="codes-strip-col"><h4>Procedures (CPT)</h4>${procedures}</div><div class="codes-strip-actions"><button type="button" class="${any?'text-button':'primary'}" data-codes-strip-edit>${any?'Edit codes':'Add codes'}</button><button type="button" class="text-button" data-codes-strip-cms hidden>Preview CMS-1500</button></div>`;
 }
 // The claim form is offered beside the codes once this encounter has a claim to show.
 function encounterCodesStripClaimSync(){
@@ -1066,9 +1066,14 @@ function encounterBillingChrome(host){
 // Editing the codes happens over the page: the diagnoses and the procedure lines open as a panel on
 // top of whatever tab is showing, and the page under it does not move. Nothing is taken out of the
 // page to do it, so saving and refreshing work as they always did.
-function encounterCodesEditorOpen(tries=0){
+function encounterCodesEditorOpen(tries=0,create=false){
  const host=typeof $==='function'?$('encounter-revenue'):null;if(!host?.dataset)return;
- if(!host.querySelector?.('#billing-account-form')){if(tries<20){setTimeout(()=>encounterCodesEditorOpen(tries+1),100);return;}invoiceTabSet('billing');return;}
+ if(!host.querySelector?.('#billing-account-form')){
+  // No charges yet: open the encounter's charge table first, without leaving the tab that is showing.
+  if(create&&tries===0&&typeof openEncounterCharges==='function'){const tab=host.dataset.invoiceTab;openEncounterCharges();if(tab&&$('encounter-revenue')?.dataset.invoiceTab!==tab)invoiceTabSet(tab,false);}
+  if(tries<20){setTimeout(()=>encounterCodesEditorOpen(tries+1,create),100);return;}
+  invoiceTabSet('billing');return;
+ }
  if(host.dataset.codesEditing!==undefined)return;
  host.dataset.partBeforeEditing=host.dataset.billingPart||billingPartRemembered();
  billingPartSet('codes',false);host.dataset.codesEditing='';
@@ -1085,9 +1090,9 @@ if(typeof document!=='undefined'&&document.addEventListener){
  document.addEventListener('click',event=>{
   const part=event.target?.closest?.('[data-billing-part-key]');
   if(part?.dataset?.billingPartKey){event.preventDefault();billingPartSet(part.dataset.billingPartKey);return;}
-  if(event.target?.closest?.('[data-codes-strip-edit]')){event.preventDefault();encounterCodesEditorOpen();return;}
-  const cms=event.target?.closest?.('[data-codes-strip-cms]');if(cms){event.preventDefault();if(cms.dataset.codesStripCms)run(()=>openClaimFormPreview(cms.dataset.codesStripCms));return;}
-  if(event.target?.closest?.('[data-codes-editor-close]')){event.preventDefault();encounterCodesEditorClose();return;}
+  if(event.target?.closest?.('[data-codes-strip-edit]')?.hasAttribute?.('data-codes-strip-edit')){event.preventDefault();encounterCodesEditorOpen(0,true);return;}
+  const cms=event.target?.closest?.('[data-codes-strip-cms]');if(cms?.hasAttribute?.('data-codes-strip-cms')){event.preventDefault();if(cms.dataset?.codesStripCms)run(()=>openClaimFormPreview(cms.dataset.codesStripCms));return;}
+  if(event.target?.closest?.('[data-codes-editor-close]')?.hasAttribute?.('data-codes-editor-close')){event.preventDefault();encounterCodesEditorClose();return;}
  });
  // A button whose work lands in another area opens that area first, so nothing happens out of sight.
  document.addEventListener('click',event=>{

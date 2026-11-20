@@ -296,3 +296,5 @@
 #encounter-revenue .invoice-tabs button[aria-selected="true"]{color:var(--ink);background:color-mix(in srgb,var(--blue) 24%,transparent);border-bottom-color:var(--blue)}
 /* Codes read in full: long names wrap instead of being cut off. */
 .encounter-codes-strip li>span:not(.codes-strip-code):not(.codes-strip-amount):not(.muted){white-space:normal;overflow:visible}
+/* With no charges yet, Add codes beside the codes is the next step; the card would only repeat it. */
+#encounter-revenue-status:has([data-visit-billing-state="add_charges"]){display:none}
