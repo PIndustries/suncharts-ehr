@@ -68,3 +68,11 @@
 .claim-quick-view ul{display:flex!important;flex-wrap:wrap;gap:.1rem .9rem}
 .claim-quick-view li::after{content:';'}
 .claim-quick-view li:last-child::after{content:''}
+/* A claim shown inside a visit sits in the visit's narrow right-hand column: everything stacks. */
+#encounter-claims{container-type:inline-size}
+@container (max-width:680px){
+ .claim-primary{grid-template-columns:1fr}
+ .claim-missing>ul>li{grid-template-columns:1fr;justify-items:start;gap:.25rem}
+ .claim-lifecycle ol{grid-template-columns:1fr!important}
+ #encounter-claims .section-head{flex-wrap:wrap}
+}
