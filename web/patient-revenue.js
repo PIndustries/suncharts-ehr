@@ -889,12 +889,13 @@ async function createHostedCopay(state,body,panelId){
 // The encounter's invoice is one record shown in tabs: Invoice (diagnoses, line items, totals and the
 // next step), Claim, Payments and History. The tab last used is remembered, so moving between
 // visits and patients comes back to the same place instead of a long scroll.
-const invoiceTabs=[['note','Note'],['billing','Billing'],['payments','Payments'],['checkout','Checkout'],['history','History']];
+const invoiceTabs=[['note','Note'],['billing','Billing'],['history','History']];
 // The tabs that belong to billing; only these are remembered from one encounter to the next.
-const encounterBillingTabs=['billing','payments','history'];
+const encounterBillingTabs=['billing','history'];
 // Older names of the tabs, kept so saved places and links still land: codes and the claim are on
 // Billing, invoices are statements on Payments.
-const encounterTabAliases={encounter:'billing',invoice:'billing',codes:'billing',claim:'billing',invoices:'payments'};
+// Payments are a section of Billing; the visit summary and follow-up close the Note.
+const encounterTabAliases={encounter:'billing',invoice:'billing',codes:'billing',claim:'billing',invoices:'billing',payments:'billing',checkout:'note'};
 // The tab open on the encounter on the screen, kept while that encounter is re-drawn after a save.
 let encounterTabFor={visit:null,key:null};
 function invoiceTabsMarkup(){return `<nav class="invoice-tabs encounter-tabs" role="tablist" aria-label="This encounter">${invoiceTabs.map(([key,label])=>`<button type="button" role="tab" data-invoice-tab-key="${key}" aria-selected="false">${label}</button>`).join('')}</nav>`;}
@@ -904,7 +905,7 @@ function invoiceTabRemembered(){
  const visit=typeof activeVisit!=='undefined'&&activeVisit?activeVisit.id:null;
  if(visit&&encounterTabFor.visit===visit&&encounterTabFor.key)return encounterTabFor.key;
  const step=typeof encounterSection==='undefined'?'charges':encounterSection;
- if(step==='checkout')return 'checkout';
+ if(step==='checkout')return 'note';
  if(['visit','intake','documentation'].includes(step))return 'note';
  try{let key=localStorage.getItem('suncharts.invoiceTab');key=encounterTabAliases[key]||key;return encounterBillingTabs.includes(key)?key:'billing';}catch{return 'billing';}
 }
@@ -921,7 +922,7 @@ function invoiceTabSet(key,remember=true){
  for(const button of buttons){if(!button?.dataset)continue;const on=button.dataset.invoiceTabKey===key;button.setAttribute?.('aria-selected',String(on));button.classList?.toggle('active',on);}
  if(remember&&encounterBillingTabs.includes(key))try{localStorage.setItem('suncharts.invoiceTab',key);}catch{}
  if(key==='history'){const history=$('visit-billing-history');if(history)history.open=true;}
- if(key==='payments')renderEncounterInvoices();
+ if(key==='billing')renderEncounterInvoices();
  // Billing: the codes are edited right there, and the insurance claim made from them sits below.
  if(key==='billing'){encounterChargeTableInline();encounterClaimMount();}
 }
@@ -1002,7 +1003,8 @@ function collectOwedMarkup(){
  // can be used before taking more money.
  const receipts=(summary?.receipts||[]).filter(r=>!r.voided);
  const copay=p.copay_cents!=null?`<li><span>Plan copay</span><b>${money(p.copay_cents)}</b>${p.copay_due_cents===0?'<em class="is-paid">Paid</em>':p.copay_paid_cents?`<em>${money(p.copay_paid_cents)} paid · ${money(p.copay_due_cents)} due</em>`:'<em>Due</em>'}</li>`:'';
- const paid=receipts.length?`<li><span>Paid on this encounter</span><b>${money(receipts.reduce((sum,r)=>sum+Number(r.amount_cents||0)-Number(r.refunded_cents||0),0))}</b><em>${receipts.map(r=>`${money(r.amount_cents)} ${esc(r.method==='card'?'card':r.method||'')}${r.occurred_on?' · '+esc(visitBillingDate(r.occurred_on)):''}`).join(', ')}</em></li>`:'';
+ const paidTotal=receipts.reduce((sum,r)=>sum+Number(r.amount_cents||0)-Number(r.refunded_cents||0),0),payments=new Set(receipts.map(r=>r.payment_group_id||r.id)).size;
+ const paid=receipts.length?`<li><span>Paid on this encounter</span><b>${money(paidTotal)}</b><em title="${esc(receipts.map(r=>`${money(r.amount_cents)} ${r.method==='card'?'card':r.method||''}`).join(', '))}">${payments===1?'1 payment':payments+' payments'}</em></li>`:'';
  const credit=Number(p.unapplied_cents||0)>0?`<li class="has-credit"><span>Credit on account</span><b>${money(p.unapplied_cents)}</b><button type="button" data-apply-copays>Use ${money(p.unapplied_cents)} credit</button></li>`:'';
  const account=typeof encounterChargeAccount==='function'?encounterChargeAccount():null,lines=account?.content?.lines||[];
  const items=lines.length?`<details class="collect-lines"${lines.length<=4?' open':''}><summary>${lines.length} ${lines.length===1?'charge':'charges'} · ${money(account.total_cents??lines.reduce((sum,l)=>sum+Number(l.amount_cents||0),0))}</summary><ul>${lines.map(l=>`<li><span><b>${esc(l.code)}</b>${l.modifiers?' · '+esc(l.modifiers):''} ${esc(l.description||'')}</span><span>${Number(l.units)>1?esc(String(l.units))+' × ':''}${money(l.amount_cents)}</span></li>`).join('')}</ul>${summary?.insurance?.insured&&p.owes_now_cents!=null&&summary.charges_cents!=null?`<p class="muted">Insurance is billed for the rest; the patient pays their share now.</p>`:''}</details>`:'';

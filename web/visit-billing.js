@@ -205,7 +205,9 @@ function visitBillingBreakdown(s,ctx={}){
   rows+=row(`Copay ${money(copay)}`,note,money(paidTowards));
  }else if(i.insured)rows+=row('Copay','No copay recorded for this plan','');
  if(p.other_patient_payments_cents)rows+=row(copay!=null?'Other patient payments':'Patient payments','',money(p.other_patient_payments_cents));
- if(links)rows+=`<tr class="visit-billing-receipts"><th scope="row">Receipts</th><td colspan="2">${links}</td></tr>`;
+ // One line for what the patient paid; each payment and its receipt are in the Payments list.
+ const paidEntries=visitBillingReceiptEntries(receipts),paidTotal=paidEntries.reduce((sum,entry)=>sum+(entry.group?entry.total:Number(entry.receipt.amount_cents||0)-Number(entry.receipt.refunded_cents||0)),0);
+ if(paidEntries.length)rows+=`<tr class="visit-billing-receipts"><th scope="row">Patient paid</th><td>${paidEntries.length===1?'1 payment':paidEntries.length+' payments'} · ${links.split('</button>')[0]?'<button type="button" class="text-button" data-invoice-tab-key="payments">See payments</button>':''}</td><td class="money-cell">${money(paidTotal)}</td></tr>`;
  if(p.adjustment_cents)rows+=row('Patient adjustments',p.adjustment_cents>0?'Taken off what the patient owes':'Added to what the patient owes',money(Math.abs(p.adjustment_cents)));
  if(p.unapplied_cents>0)rows+=row('Paid but not applied yet',posted&&s.balance_cents>0&&ctx.canWrite?'<button type="button" class="text-button" data-apply-copays>Apply to this encounter</button>':'Credit on the patient’s account',money(p.unapplied_cents));
  if(p.overpaid_cents>0)rows+=row('Paid more than owed','Refund it or keep it as a credit',money(p.overpaid_cents));

@@ -89,13 +89,15 @@
 #visit-page-host[data-encounter-tab]>#encounter-progress{order:0}
 #visit-page-host[data-encounter-tab]>#encounter-revenue{order:1}
 #visit-page-host[data-encounter-tab]:not([data-encounter-tab="note"])>#visit-editor{display:none}
-#visit-page-host[data-encounter-tab]:not([data-encounter-tab="checkout"])>#visit-checkout{display:none}
+#visit-page-host[data-encounter-tab]:not([data-encounter-tab="note"])>#visit-checkout{display:none}
 #chart:has(>#visit-page-host[data-encounter-tab]:not([data-encounter-tab="history"])) #appointments-panel{display:none}
 #encounter-revenue[data-invoice-tab="note"]>:not(.invoice-tabs){display:none}
 #encounter-revenue[data-invoice-tab="note"]{padding-bottom:0}
 #encounter-revenue[data-invoice-tab="note"]>.invoice-tabs,#encounter-revenue[data-invoice-tab="checkout"]>.invoice-tabs{margin-bottom:0}
 /* Billing: the next step, the diagnoses, the procedures table (edited in place) and the claim made from them. */
-#encounter-revenue[data-invoice-tab="billing"]>:is(#visit-billing-invoices,#visit-billing-payments,#visit-billing-history){display:none}
+#encounter-revenue[data-invoice-tab="billing"]>#visit-billing-history{display:none}
+/* Payments are a section of Billing, after what is owed and before the claim. */
+#encounter-revenue[data-invoice-tab="billing"]>:is(#visit-billing-payments,#visit-billing-invoices){order:4}
 #encounter-revenue[data-invoice-tab="billing"]>#encounter-billing-editor:has(form)~#encounter-billing-detail{display:none}
 #encounter-revenue[data-invoice-tab="billing"] #encounter-billing-editor form>h3{display:none}
 #encounter-revenue[data-invoice-tab="billing"]>#encounter-claims{margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
@@ -214,3 +216,6 @@
 /* The procedure's code and its full description both stay readable. */
 .charge-table .charge-cell-code{min-width:300px}
 .charge-table .charge-cell-code input[name="description"]{width:100%;min-width:240px}
+
+.payment-tag{display:inline-block;padding:2px 8px;border-radius:999px;border:1px solid var(--line);font-size:var(--fs-sm);cursor:default}
+.payment-row small{display:block;color:var(--muted)}
