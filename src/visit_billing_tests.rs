@@ -2511,3 +2511,70 @@ async fn a_draft_claim_is_voided_so_a_fresh_one_follows_the_corrected_charges() 
         .unwrap();
     assert_eq!(total, 7500, "the fresh claim bills the corrected charges");
 }
+
+#[tokio::test]
+async fn parts_of_one_payment_share_a_group_that_the_summary_and_group_endpoint_return() {
+    let f = setup().await;
+    let (p, appointment, visit) = f.visit(false).await;
+    let group = Uuid::new_v4();
+    let part = |cents: i64, method: &str, reference: &str, group: Option<Uuid>| {
+        let mut body = json!({"request_id":Uuid::new_v4(),"appointment_id":appointment,"coverage_id":null,"amount_cents":cents,"method":method,"reference":reference,"occurred_on":"2026-10-25","reason":"Synthetic copay at the desk","received_confirmed":true});
+        if let Some(group) = group {
+            body["payment_group_id"] = json!(group);
+        }
+        body
+    };
+    let path = format!("/api/v1/patients/{p}/billing/copays");
+    let cash = f
+        .ok("POST", &path, part(2500, "cash", "", Some(group)), None)
+        .await;
+    assert_eq!(cash["payment_group_id"], json!(group));
+    let check_body = part(2500, "check", "1042", Some(group));
+    let check = f.ok("POST", &path, check_body.clone(), None).await;
+    // Repeating the same request returns the same receipt with its group.
+    let again = f.ok("POST", &path, check_body, None).await;
+    assert_eq!(again["id"], check["id"]);
+    assert_eq!(again["payment_group_id"], json!(group));
+    let alone = f
+        .ok("POST", &path, part(1000, "cash", "", None), None)
+        .await;
+    assert!(alone["payment_group_id"].is_null());
+
+    let s = f.summary(&f.owner, p, visit).await;
+    let receipts = s["patient"]["receipts"]
+        .as_array()
+        .or_else(|| s["receipts"].as_array())
+        .unwrap();
+    assert_eq!(receipts.len(), 3);
+    assert_eq!(
+        receipts
+            .iter()
+            .filter(|r| r["payment_group_id"] == json!(group))
+            .count(),
+        2
+    );
+
+    let out = f
+        .ok(
+            "GET",
+            &format!("/api/v1/patients/{p}/billing/payment-groups/{group}"),
+            json!(null),
+            None,
+        )
+        .await;
+    let got = out["receipts"].as_array().unwrap();
+    assert_eq!(got.len(), 2);
+    assert!(got.iter().all(|r| r["payment_group_id"] == json!(group)));
+    let other = f
+        .ok(
+            "GET",
+            &format!(
+                "/api/v1/patients/{p}/billing/payment-groups/{}",
+                Uuid::new_v4()
+            ),
+            json!(null),
+            None,
+        )
+        .await;
+    assert!(other["receipts"].as_array().unwrap().is_empty());
+}

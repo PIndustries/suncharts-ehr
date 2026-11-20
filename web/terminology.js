@@ -25,10 +25,10 @@ function terminologyComboboxMarkup(scope,prefix,name,label,max,placeholder,value
 // a single type-ahead answers for both: a choice fills them, a code typed by hand fills them on
 // leaving the box, and the box itself always shows the picked line as 'CODE: description'.
 function terminologyHiddenField(name,value,max){return `<input type="hidden" name="${name}" value="${esc(value||'')}" maxlength="${max}">`;}
-function terminologyProcedureDisplay(line={}){return line.code&&line.description?`${line.code}: ${line.description}`:line.code||line.description||'';}
+function terminologyProcedureDisplay(line={}){return line.code||'';}
 function terminologyProcedureFields(line={}){
  const prefix=`terminology-field-${++terminologyFieldId}`;
- return terminologyComboboxMarkup('procedure',prefix,'procedure','Procedure',10000,'Type a CPT/HCPCS code or procedure name',terminologyProcedureDisplay(line),'',{required:false})+terminologyHiddenField('code',line.code,100)+terminologyHiddenField('description',line.description,10000);
+ return terminologyComboboxMarkup('procedure',prefix,'procedure','Code',100,'CPT/HCPCS code or name',terminologyProcedureDisplay(line),'',{required:false})+terminologyHiddenField('code',line.code,100)+`<label class="charge-description-field">Description<input name="description" type="text" value="${esc(line.description||'')}" maxlength="10000" autocomplete="off" placeholder="What this service was"></label>`;
 }
 function terminologyDiagnosisFields(row={}){
  const prefix=`terminology-field-${++terminologyFieldId}`;
@@ -49,7 +49,7 @@ function terminologyFieldPair(scope){return scope==='diagnosis'?{code:'code',tex
 // A procedure row carries one visible box; its query is what is typed there, and the code and
 // description the row submits are read straight out of the row's own hidden fields.
 function terminologyVisibleField(scope,row){return scope==='diagnosis'?row.querySelector('[name="display"]'):row.querySelector('[data-terminology-combobox]');}
-function terminologyDisplayText(scope,code,description){return scope==='procedure'&&description?`${code}: ${description}`:code||description||'';}
+function terminologyDisplayText(scope,code,description){return scope==='procedure'?code||'':code||description||'';}
 function terminologyFillFields(scope,row,code,description){
  const visible=terminologyVisibleField(scope,row);
  if(visible&&scope==='procedure')visible.value=terminologyDisplayText(scope,code,description);
@@ -214,7 +214,9 @@ function terminologyManualCode(state){
  if(!state||state.scope!=='procedure')return;
  const pair=terminologyFieldPair(state.scope),code=state.row.querySelector(`[name="${pair.code}"]`),description=state.row.querySelector(`[name="${pair.text}"]`);
  if(!code)return;
- const {code:typed,description:detail}=terminologyBoxParts(state.input.value);
+ const parts=terminologyBoxParts(state.input.value),typed=parts.code;
+ // A code typed alone keeps whatever description the line already has.
+ const detail=state.input.value.includes(':')?parts.description:description?.value===state.row.dataset.catalogDisplay&&code.value!==typed?'':(description?.value||'');
  if(!typed||code.value===typed&&(description?.value||'')===detail)return;
  terminologyApplying.add(state.row);
  try{terminologyFillFields(state.scope,state.row,typed,detail);}finally{terminologyApplying.delete(state.row);}

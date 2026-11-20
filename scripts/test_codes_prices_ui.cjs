@@ -453,7 +453,7 @@ const addButton=f.addResults().querySelector('[data-code-add-code="99213"]');
  assert.match(f.list.innerHTML,/data-terminology-price>\$120\.00</,'the practice price is shown on the right of the item');
  assert.ok(f.list.innerHTML.indexOf('99213')<f.list.innerHTML.indexOf('G0001'),'the practice’s codes come before the code lists');
  await pick(f,0);
- assert.deepEqual(f.line(),{shown:'99213: Synthetic office visit',code:'99213',description:'Synthetic office visit'});
+ assert.deepEqual(f.line(),{shown:'99213',code:'99213',description:'Synthetic office visit'});
  assert.equal(f.fields.units.value,'2','the practice’s default units go on the line');
  assert.equal(f.fields.modifiers.value,'25','and its modifiers');
  assert.equal(f.fields.amount.value,'240.00','the amount is the price times those units, formatted as the amount field is read');
@@ -483,7 +483,7 @@ const addButton=f.addResults().querySelector('[data-code-add-code="99213"]');
  // A code typed by hand leaves the amount alone too.
  f=chargeFixture({practice:[],amount:'88.88',catalog:false});
  f.box.value='99213: Typed by hand';f.send('input',f.box);await f.flush();f.send('focusout',f.box,{relatedTarget:null});
- assert.deepEqual(f.line(),{shown:'99213: Typed by hand',code:'99213',description:'Typed by hand'});
+ assert.deepEqual(f.line(),{shown:'99213',code:'99213',description:'Typed by hand'});
  assert.equal(f.fields.amount.value,'88.88');
  assert.ok(!f.announced().includes('amount'),'a code typed by hand leaves the amount alone');
  // 4. A code set turned off is answered disabled, and said in clinic words.

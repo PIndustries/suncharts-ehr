@@ -124,6 +124,23 @@ function visitBillingChargeStepMarkup(s,ctx={}){
  const step=visitBillingChargeStep(s,ctx);if(!step)return '';
  return `<p class="charge-table-next"><span>${esc(step.text)}</span> <button type="button" class="primary" ${step.attribute}>${esc(step.label)}</button>${step.reviewMarkup?` ${step.reviewMarkup}`:''}</p>`;
 }
+// Parts of one payment (card, cash, check) share a payment_group_id and read as one transaction.
+function visitBillingReceiptEntries(receipts){
+ const entries=[],groups=new Map();
+ for(const r of receipts||[]){
+  if(!r.payment_group_id){entries.push({receipt:r});continue;}
+  let entry=groups.get(r.payment_group_id);
+  if(!entry){entry={group:r.payment_group_id,appointment:r.appointment_id,total:0,parts:[]};groups.set(r.payment_group_id,entry);entries.push(entry);}
+  entry.total+=Number(r.amount_cents||0)-Number(r.refunded_cents||0);entry.parts.push(r);
+ }
+ for(const entry of entries){
+  if(!entry.group)continue;
+  const byMethod=new Map();
+  for(const r of entry.parts){const key=r.method==='card'?'card':r.method||'other';byMethod.set(key,(byMethod.get(key)||0)+Number(r.amount_cents||0)-Number(r.refunded_cents||0));}
+  entry.tenders=[...byMethod].map(([key,cents])=>[visitBillingMethod(key)||key,cents]).sort((a,b)=>a[0]<b[0]?-1:a[0]>b[0]?1:0).map(([label,cents])=>`${label} ${money(cents)}`).join(', ');
+ }
+ return entries;
+}
 function visitBillingReceiptNote(receipt){const how=visitBillingMethod(receipt.method),when=visitBillingDate(receipt.occurred_on);return [how,when].filter(Boolean).join(', ');}
 // What the claim is missing, grouped by where it is fixed. Each group is its own short line
 // with one button that opens the right place; everything else stays with the claim editor.
@@ -181,7 +198,7 @@ function visitBillingBreakdown(s,ctx={}){
  }else if(posted&&i.unassigned_cents>0)rows+=row('Not on the statement','Write it off, adjust it or send a new statement',money(i.unassigned_cents));
  if(!i.insured&&posted&&i.adjusted_cents)rows+=row('Adjustments',i.adjusted_cents>0?'Taken off the charges':'Added to the charges',money(Math.abs(i.adjusted_cents)));
  rows+=group(i.insured?'Patient':'Patient (self-pay)');
- const copay=p.copay_cents,links=receipts.map(r=>`<button type="button" class="text-button" data-copay-receipt="${esc(r.id)}" data-appointment="${esc(r.appointment_id)}">Receipt: ${money(r.amount_cents)}${visitBillingReceiptNote(r)?' '+esc(visitBillingReceiptNote(r)):''}</button>`).join(' ');
+ const copay=p.copay_cents,links=visitBillingReceiptEntries(receipts).map(entry=>entry.group?`<button type="button" class="text-button" data-payment-group="${esc(entry.group)}" data-appointment="${esc(entry.appointment)}">Receipt: Payment ${money(entry.total)} · ${esc(entry.tenders)}</button>`:`<button type="button" class="text-button" data-copay-receipt="${esc(entry.receipt.id)}" data-appointment="${esc(entry.receipt.appointment_id)}">Receipt: ${money(entry.receipt.amount_cents)}${visitBillingReceiptNote(entry.receipt)?' '+esc(visitBillingReceiptNote(entry.receipt)):''}</button>`).join(' ');
  if(copay!=null){
   const fromCheck=p.copay_from_insurer_check,due=p.copay_due_cents,paidTowards=p.copay_paid_cents;
   const note=fromCheck?`from the insurer check on ${esc(visitBillingDate(p.copay_source_date))}`:due===0?'Paid':paidTowards>0?`${money(paidTowards)} paid, ${money(due)} due ${collect}`:`Due ${collect}`;

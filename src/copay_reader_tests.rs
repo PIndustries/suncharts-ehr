@@ -362,3 +362,35 @@ async fn reader_copay_that_cannot_reach_a_reader_is_closed_without_a_payment() {
         Err(Error::Invalid(_))
     ));
 }
+
+#[tokio::test]
+async fn reader_payment_carries_its_payment_group_to_the_receipt() {
+    let (pool, a, patient, appointment, _state) = setup().await;
+    let broker = FakeReaders::with_reader(false);
+    let group = Uuid::new_v4();
+    let op = create_with(
+        &pool,
+        &a,
+        patient,
+        appointment,
+        Create {
+            payment_group_id: Some(group),
+            ..reader_input(false)
+        },
+        "http://127.0.0.1:8099",
+        &broker,
+        policy(false),
+    )
+    .await
+    .unwrap();
+    broker.approve(op.id);
+    let paid = advance(&pool, &a, op.id, &broker).await;
+    assert_eq!(paid.status, "paid");
+    let receipt_group: Option<Uuid> =
+        sqlx::query_scalar("SELECT payment_group_id FROM billing_copay_receipts WHERE id=$1")
+            .bind(paid.receipt_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(receipt_group, Some(group));
+}

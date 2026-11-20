@@ -60,6 +60,57 @@ function appointmentCopays(appointment=revenueAppointment()){return (workspace.b
 function copayReceiptMarkup(receipts,options={}){
  return receipts.map(r=>{const hosted=r.hosted_checkout,refunded=Number(hosted?.refunded_cents||0),reversed=Number(r.reversed_cents||0),allocated=Number(r.allocated_cents||0),unapplied=copayUnapplied(r),held=hosted?.status==='needs_review',status=r.voided?'Voided receipt':held?'Card payment requires reconciliation':refunded===r.amount_cents?'Card payment refunded':refunded?'Card payment partially refunded':reversed?'Corrected on ledger':unapplied?(hosted?'Card payment captured · not yet applied to charges':'Recorded · not yet applied to charges'):(hosted?'Card payment captured · applied to visit charges':'Applied to visit charges');return `<div class="timeline-row"><div><b>${hosted?.livemode===false&&!options.modeShown?testPaymentTag(' · '):hosted?.livemode===true&&options.modeShown?'LIVE · ':''}${money(r.amount_cents)} · ${esc(status)}</b><small>${hosted?'Card · Confirmed by Stripe':esc(human(r.method))} · ${esc(r.occurred_on)}${r.reference?' · '+esc(r.reference):''}</small>${refunded?`<small>Verified refunds ${money(refunded)} · Net received ${money(r.amount_cents-refunded)}</small>`:''}${!r.voided&&!reversed&&!held&&unapplied?`<small>${money(unapplied)} credit not yet applied</small>`:''}${reversed?`<small>${money(reversed)} reversed. Review the account ledger before recording any replacement receipt.</small>`:''}</div><div class="actions"><button type="button" ${options.primary?'class="primary"':''} data-copay-receipt="${esc(r.id)}" data-appointment="${esc(r.appointment_id)}">View / print receipt</button>${(options.encounter?[]:r.account_ids||[]).map(id=>`<button type="button" data-copay-account="${esc(id)}">Review ledger</button>`).join('')}${billingCan()&&!hosted&&!r.voided&&!allocated?`<button type="button" data-copay-void="${esc(r.id)}">Correct receipt</button>`:''}</div></div>`;}).join('')||'<p class="muted">No copay receipt recorded for this appointment.</p>';
 }
+// One payment taken in parts prints as one receipt: each tender, the total and what is still owed.
+function paymentTenderLines(receipts){
+ return (receipts||[]).filter(r=>!r.voided).map(r=>{
+  const net=Number(r.amount_cents||0)-Number(r.hosted_checkout?.refunded_cents||0),hosted=r.hosted_checkout||r.method==='card';
+  const brand=String(r.card_brand||r.hosted_checkout?.card_brand||'').trim(),last4=String(r.card_last4||r.hosted_checkout?.card_last4||'').trim();
+  let label;
+  if(hosted)label=brand&&last4?`${brand.charAt(0).toUpperCase()+brand.slice(1)} ending ${last4}`:'Card';
+  else if(r.method==='check')label=r.reference?`Check #${String(r.reference).replace(/^#/,'')}`:'Check';
+  else if(r.method==='cash')label='Cash';
+  else label=typeof invoicePaymentMethod==='function'?invoicePaymentMethod(r.method):human(r.method);
+  return {label,amount:net};
+ });
+}
+function paymentGroupReceiptFacts(receipts,context){
+ const lines=paymentTenderLines(receipts),total=lines.reduce((sum,line)=>sum+line.amount,0);
+ const dates=(receipts||[]).map(r=>r.occurred_on).filter(Boolean).sort(),when=dates.length?dates[dates.length-1]:'';
+ const appointmentId=receipts?.[0]?.appointment_id,number=context?.encounterNumber||(typeof encounterNumberForAppointment==='function'?encounterNumberForAppointment(appointmentId):'');
+ return {lines,total,when,number,balance:context?.balanceCents};
+}
+function paymentGroupTenderRows(facts){
+ return facts.lines.map(line=>`<div><dt>${esc(line.label)}</dt><dd>${money(line.amount)}</dd></div>`).join('');
+}
+function paymentGroupReceiptDocument(receipts,context){
+ const facts=paymentGroupReceiptFacts(receipts,context),patient=context.patient,branding=patientPrintBranding(context.practiceName),title='Payment receipt';
+ return `${patientPrintHead(title,branding)}<body class="patient-receipt">${patientPrintHeader(title,branding)}<section class="document-meta"><div><span class="document-label">Received from</span><p class="patient-print-name">${esc(patient.given_name)} ${esc(patient.family_name)}</p>${patient.mrn?`<small>MRN ${esc(patient.mrn)}</small>`:''}</div><div class="document-reference"><span class="document-label">Receipt details</span><small>${facts.number?esc(facts.number)+'<br>':''}Payment received ${esc(facts.when)}</small></div></section><section class="document-total"><span>Total paid</span><strong>${money(facts.total)}</strong></section><h2>How it was paid</h2><dl>${paymentGroupTenderRows(facts)}<dt>Total paid</dt><dd>${money(facts.total)}</dd>${Number.isSafeInteger(facts.balance)?`<dt>Patient balance after this payment</dt><dd>${money(Math.max(0,facts.balance))}</dd>`:''}</dl><footer><p>This is a copy of the practice’s recorded payment receipt. It is not an invoice and does not determine final insurance or patient responsibility.</p><small>Copy prepared ${esc(date(context.printedAt||new Date().toISOString()))}.</small>${patientPrintFooter()}</footer></body></html>`;
+}
+function paymentGroupReceiptCardMarkup(receipts,context){
+ const facts=paymentGroupReceiptFacts(receipts,context),patient=context.patient,branding=patientPrintBranding(context.practiceName);
+ return `<article class="copay-receipt-card" data-copay-receipt-view data-payment-group-receipt><header>${branding.logo?`<img src="${esc(branding.logo)}" alt="Current practice logo" referrerpolicy="no-referrer">`:''}<div><p>${esc(branding.name||'Practice payment record')}</p><h3 tabindex="-1">Payment receipt</h3></div><button type="button" data-print-copay-card>Print / save PDF</button></header><div class="copay-receipt-amount"><div><span>Total paid</span><strong>${money(facts.total)}</strong></div><span class="copay-receipt-status">Payment recorded</span></div><dl><div><dt>Patient</dt><dd>${esc(patient.given_name)} ${esc(patient.family_name)}</dd></div>${facts.number?`<div><dt>Encounter</dt><dd>${esc(facts.number)}</dd></div>`:''}<div><dt>Payment date</dt><dd>${esc(facts.when)}</dd></div>${paymentGroupTenderRows(facts)}${Number.isSafeInteger(facts.balance)?`<div><dt>Balance after payment</dt><dd>${money(Math.max(0,facts.balance))}</dd></div>`:''}</dl><footer><p>Recorded payment evidence, not an invoice or a determination of insurance responsibility.</p>${patientPrintFooter()}</footer></article>`;
+}
+let paymentGroupOpening=0;
+async function showPaymentGroupReceipt(group,appointmentId){
+ const view=hostedCopayView(),opening=++paymentGroupOpening;
+ if(!selected||!workspace.patient)throw new Error('This receipt is unavailable for the current patient. Refresh the payment list.');
+ const data=await api(`/api/v1/patients/${encodeURIComponent(view.patient)}/billing/payment-groups/${encodeURIComponent(group)}`);
+ const receipts=(data.receipts||[]).filter(r=>r.payment_group_id===group);
+ if(opening!==paymentGroupOpening||!currentHostedCopayView(view)||!receipts.length)return;
+ // The context (patient, practice) comes from the same receipt endpoint a single receipt uses.
+ const first=await api(`/api/v1/billing/copay-receipts/${encodeURIComponent(receipts[0].id)}`);
+ if(opening!==paymentGroupOpening||!currentHostedCopayView(view))return;
+ const p=encounterRevenueState?.data?.summary?.patient||{},balance=Number.isSafeInteger(p.owes_now_cents)?p.owes_now_cents:undefined;
+ const context={...first.context,balanceCents:balance};
+ const visit=(workspace.visits||[]).find(v=>v.appointment_id===(appointmentId||receipts[0].appointment_id));
+ if(visit&&activeVisit?.id!==visit.id)await selectPatient(view.patient,visit.id,()=>opening===paymentGroupOpening);
+ if(typeof setEncounterSection==='function')setEncounterSection('charges');
+ const host=$('encounter-copay-receipt');if(!host)return;
+ host.hidden=false;host.innerHTML=paymentGroupReceiptCardMarkup(receipts,context);
+ const card=host.querySelector('[data-copay-receipt-view]');
+ card.copayPrint={receipt:receipts,context,identity:me,current:()=>opening===paymentGroupOpening&&me===view.identity&&selected===view.patient&&$('encounter-copay-receipt')===host,group:true};
+ host.scrollIntoView({block:'start'});card.querySelector('h3')?.focus({preventScroll:true});
+}
 function copayReceiptDocument(receipt,context){
  const patient=context.patient,appointment=context.appointment,corrected=Number(receipt.reversed_cents||0)>0,hosted=receipt.hosted_checkout,refunded=Number(hosted?.refunded_cents||0),test=hosted?.livemode===false;
  const status=receipt.voided?'Voided receipt':corrected?'Receipt with corrected allocation':refunded?'Card copay receipt with verified refund':hosted?'Card copay receipt':'Copay receipt';
@@ -84,7 +135,7 @@ function printCopayReceiptCard(card,button){
  card.querySelector('.copay-print-source')?.remove();button.disabled=true;
  const frame=document.createElement('iframe');frame.className='copay-print-source';frame.title='Payment receipt print document';frame.setAttribute('aria-hidden','true');frame.setAttribute('sandbox','allow-same-origin allow-modals');
  frame.addEventListener('load',()=>{button.disabled=false;if(state.identity!==me||card.isConnected===false||!state.current())return;frame.contentWindow.focus();frame.contentWindow.print();},{once:true});
- frame.srcdoc=copayReceiptDocument(state.receipt,{...state.context,printedAt:new Date().toISOString()});card.append(frame);
+ frame.srcdoc=(state.group?paymentGroupReceiptDocument:copayReceiptDocument)(state.receipt,{...state.context,printedAt:new Date().toISOString()});card.append(frame);
 }
 let copayReceiptOpening=0;
 async function showCopayReceipt(id,appointmentId){
@@ -547,6 +598,7 @@ document.addEventListener('click',event=>{
  if(button.dataset.revenueAccount){event.preventDefault();if(billingSelected!==button.dataset.revenueAccount||!$('encounter-billing-detail')?.innerHTML)showBillingAccount(button.dataset.revenueAccount,false);const details=$('encounter-charge-details');if(details)details.open=true;$('encounter-billing-detail')?.scrollIntoView({behavior:'smooth',block:'start'});return;}
  if(button.dataset.revenueClaim||button.dataset.revenueRemittance){event.preventDefault();run(async()=>{if(button.dataset.revenueClaim){const account=encounterChargeAccount();if(!account)throw new Error('Select the encounter charge account.');await showEncounterClaim(button.dataset.revenueClaim,account.id);}else{await showClaimsWorkspace();await showEra(button.dataset.revenueRemittance);}});return;}
  if(button.dataset.revenueInvoice||button.dataset.revenueInvoices){event.preventDefault();billingSelected=button.dataset.revenueInvoice||button.dataset.revenueInvoices;run(async()=>{if(button.dataset.revenueInvoice)patientInvoiceEditor();else await showPatientInvoices();});return;}
+ if(button.dataset.paymentGroup){event.preventDefault();run(()=>showPaymentGroupReceipt(button.dataset.paymentGroup,button.dataset.appointment));return;}
  if(button.dataset.copayReceipt){event.preventDefault();run(()=>showCopayReceipt(button.dataset.copayReceipt,button.dataset.appointment));return;}
  if(button.hasAttribute('data-print-copay-card')){event.preventDefault();printCopayReceiptCard(button.closest('[data-copay-receipt-view]'),button);return;}
  if(button.dataset.copayAccount){event.preventDefault();run(()=>openEncounterBillingAccount(button.dataset.copayAccount));return;}
@@ -727,10 +779,10 @@ function showSavedCardCopay(state,operation,panelId){
  if(!drawReaderCopay(panelId,'<div id="saved-card-payment-live"></div>'))return;
  watchSavedCardPayment({operation,refreshUrl:`${base}/refresh`,
   accept:next=>{if(currentHostedCopayState(state))acceptHostedCopayOperation(state,next);},
-  finished:done=>{if(collectDialog&&['paid','refunded'].includes(done.status))collectPartTaken(done.amount_cents,'card on file',done.receipt_id?{id:done.receipt_id}:null,done.appointment_id);},
-  approved:paid=>paid.receipt_id?`<button type="button" class="primary" data-hosted-copay-receipt="${esc(paid.receipt_id)}" data-appointment="${esc(paid.appointment_id)}">View / print receipt</button>`:'',
+  finished:done=>{if(collectDialog&&['paid','refunded'].includes(done.status))collectPartTaken(done.amount_cents,'card on file',done.receipt_id?{id:done.receipt_id}:null,done.appointment_id,{kind:'card'});},
+  approved:paid=>paid.receipt_id&&!collectDialog?`<button type="button" class="primary" data-hosted-copay-receipt="${esc(paid.receipt_id)}" data-appointment="${esc(paid.appointment_id)}">View / print receipt</button>`:'',
   // One press makes the card link for the same amount; it appears in the copay list above.
-  link:async declined=>{if(!currentHostedCopayState(state))return;const made=await api(hostedCopayBase(state),'POST',{request_id:crypto.randomUUID(),amount_cents:declined.amount_cents,coverage_id:state.savedCardCoverage||null,livemode:declined.livemode===true,reason:'Card link sent after the bank asked the patient to confirm'});if(!currentHostedCopayState(state))return;acceptHostedCopayOperation(state,made.operation);stopSavedCardPayment();const slot=readerCopaySlot(panelId);if(slot)slot.innerHTML='<p role="status">Card link created. Open it or send it from the copay list.</p>';}});
+  link:async declined=>{if(!currentHostedCopayState(state))return;const made=await api(hostedCopayBase(state),'POST',{request_id:crypto.randomUUID(),amount_cents:declined.amount_cents,coverage_id:state.savedCardCoverage||null,livemode:declined.livemode===true,reason:'Card link sent after the bank asked the patient to confirm',...collectGroupField()});if(!currentHostedCopayState(state))return;acceptHostedCopayOperation(state,made.operation);stopSavedCardPayment();const slot=readerCopaySlot(panelId);if(slot)slot.innerHTML='<p role="status">Card link created. Open it or send it from the copay list.</p>';}});
 }
 async function createSavedCardCopay(state,body,panelId){
  if(!currentHostedCopayState(state))return;
@@ -751,9 +803,9 @@ function showReaderCopay(state,operation,panelId){
  watchReaderPayment({operation,readerName:reader?.name,statusUrl:base,cancelUrl:`${base}/reader-cancel`,
   // Try again keeps the amount that was just attempted.
   again:()=>openReaderCopayEditor(state.appointment,panelId,operation.amount_cents),
-  finished:done=>{if(collectDialog&&['paid','refunded'].includes(done.status))collectPartTaken(done.amount_cents,'card on the reader',done.receipt_id?{id:done.receipt_id}:null,done.appointment_id);},
+  finished:done=>{if(collectDialog&&['paid','refunded'].includes(done.status))collectPartTaken(done.amount_cents,'card on the reader',done.receipt_id?{id:done.receipt_id}:null,done.appointment_id,{kind:'card'});},
   accept:next=>{if(currentHostedCopayState(state))acceptHostedCopayOperation(state,next);},
-  approved:paid=>paid.receipt_id?`<button type="button" class="primary" data-hosted-copay-receipt="${esc(paid.receipt_id)}" data-appointment="${esc(paid.appointment_id)}">View / print receipt</button>`:''});
+  approved:paid=>paid.receipt_id&&!collectDialog?`<button type="button" class="primary" data-hosted-copay-receipt="${esc(paid.receipt_id)}" data-appointment="${esc(paid.appointment_id)}">View / print receipt</button>`:''});
 }
 async function createReaderCopay(state,body,panelId){
  if(!currentHostedCopayState(state))return;
@@ -804,7 +856,7 @@ document.addEventListener('submit',event=>{
  run(async()=>{const patient=form.dataset.patient,state=hostedCopayStateFor(form.dataset.appointment),data=Object.fromEntries(new FormData(form));
  if(patient!==selected||state.patient!==patient)throw new Error('Patient changed. Reopen card collection from the correct chart.');
  if(!data.reader)throw new Error('Choose a card reader.');
- await createReaderCopay(state,{request_id:form.dataset.request,amount_cents:cents(data.amount),coverage_id:form.dataset.coverage||null,livemode:form.dataset.livemode==='true',reason:'Appointment copay taken on card reader',reader_id:data.reader},form.dataset.panel||undefined);
+ await createReaderCopay(state,{request_id:form.dataset.request,amount_cents:cents(data.amount),coverage_id:form.dataset.coverage||null,livemode:form.dataset.livemode==='true',reason:'Appointment copay taken on card reader',reader_id:data.reader,...collectGroupField()},form.dataset.panel||undefined);
  });
 });
 document.addEventListener('submit',event=>{
@@ -813,14 +865,14 @@ document.addEventListener('submit',event=>{
  if(patient!==selected||state.patient!==patient)throw new Error('Patient changed. Reopen card collection from the correct chart.');
  if(!data.card)throw new Error('Choose a card on file.');
  const amount=cents(data.amount);if(!Number.isSafeInteger(amount)||amount<50)throw new Error('Enter the copay amount.');
- confirmSavedCardCopay(state,{request_id:form.dataset.request,amount_cents:amount,coverage_id:form.dataset.coverage||null,livemode:form.dataset.livemode==='true',reason:'Copay charged to card on file',saved_card_setup_id:data.card},form.dataset.panel||undefined);
+ confirmSavedCardCopay(state,{request_id:form.dataset.request,amount_cents:amount,coverage_id:form.dataset.coverage||null,livemode:form.dataset.livemode==='true',reason:'Copay charged to card on file',saved_card_setup_id:data.card,...collectGroupField()},form.dataset.panel||undefined);
  });
 });
 document.addEventListener('submit',event=>{
  const form=event.target;if(form.id!=='hosted-copay-form')return;event.preventDefault();
  run(async()=>{const patient=form.dataset.patient,state=hostedCopayStateFor(form.dataset.appointment),data=Object.fromEntries(new FormData(form));
  if(patient!==selected||state.patient!==patient)throw new Error('Patient changed. Reopen card collection from the correct chart.');
- const body={request_id:form.dataset.request,amount_cents:cents(data.amount),coverage_id:form.dataset.coverage||null,livemode:form.dataset.livemode==='true',reason:'Reviewed appointment copay before hosted card collection'};
+ const body={request_id:form.dataset.request,amount_cents:cents(data.amount),coverage_id:form.dataset.coverage||null,livemode:form.dataset.livemode==='true',reason:'Reviewed appointment copay before hosted card collection',...collectGroupField()};
  await createHostedCopay(state,body,form.dataset.panel||undefined);
  });
 });
@@ -921,7 +973,9 @@ const collectMethods=[['cash','Cash'],['check','Check'],['reader','Card reader']
 let collectDialog=null;
 // One payment can be taken in parts — card, then cash, then a check — against one amount to
 // collect. Each method starts at what is left; the window lists what was taken.
-let collectSession={target:null,taken:[]};
+let collectSession={target:null,taken:[],group:null};
+// Every part taken while the window is open carries the same id, so the parts read as one payment.
+function collectGroupField(){return collectDialog&&collectSession.group?{payment_group_id:collectSession.group}:{};}
 function collectTakenCents(){return collectSession.taken.reduce((sum,part)=>sum+part.amount,0);}
 function collectLeftCents(){return collectSession.target==null?null:Math.max(0,collectSession.target-collectTakenCents());}
 function collectProgressMarkup(){
@@ -930,12 +984,14 @@ function collectProgressMarkup(){
 }
 function collectProgressPaint(){const node=collectDialog?.querySelector('[data-collect-progress]');if(node){node.innerHTML=collectProgressMarkup();if(typeof flashUpdated==='function')flashUpdated(node);}}
 // A part was taken: count it, and either ask for the rest or finish.
-function collectPartTaken(amount,label,receipt,appointment){
+function collectPartTaken(amount,label,receipt,appointment,detail){
  if(!collectDialog)return;
- collectSession.taken.push({amount,label});collectDialog.dataset.refresh='1';collectProgressPaint();
+ collectSession.taken.push({amount,label,...(detail||{})});collectDialog.dataset.refresh='1';collectProgressPaint();
+ // What the patient has paid is read again, so the copay shows Paid right away.
+ const dialog=collectDialog;if(typeof loadEncounterRevenueStatus==='function')void Promise.resolve(loadEncounterRevenueStatus(encounterChargeAccount(),true)).then(()=>{const node=dialog?.querySelector('[data-collect-owed]');if(node&&dialog.isConnected){node.innerHTML=collectOwedMarkup();if(typeof flashUpdated==='function')flashUpdated(node);}}).catch(()=>{});
  const left=collectLeftCents(),slot=$('encounter-hosted-copay-reader');if(!slot)return;
- const receiptButton=receipt?.id?`<button type="button" data-collect-receipt="${esc(receipt.id)}" data-appointment="${esc(appointment||'')}">Print receipt</button>`:'';
- if(left>0){slot.innerHTML=`<section class="collect-step-done" role="status"><p><b>✓ ${money(amount)} ${esc(label)} taken.</b> ${money(left)} left to pay. Choose how to take the rest above.</p><div class="actions">${receiptButton}</div></section>`;return;}
+ const receiptButton=receipt?.id&&collectSession.group?`<button type="button" data-collect-receipt="${esc(collectSession.group)}" data-appointment="${esc(appointment||'')}">Print receipt</button>`:'';
+ if(left>0){slot.innerHTML=`<section class="collect-step-done" role="status"><p><b>✓ ${money(amount)} ${esc(label)} taken.</b> ${money(left)} left to pay. Choose how to take the rest above.</p></section>`;return;}
  slot.innerHTML=`<section class="collect-done" role="status"><div class="collect-done-mark" aria-hidden="true">✓</div><h3>${collectSession.taken.length>1?`${money(collectTakenCents())} paid in ${collectSession.taken.length} parts`:`${money(amount)} ${esc(label)} recorded`}</h3><p class="muted">The payment goes to this encounter's balance.</p><div class="actions">${receiptButton}<button type="button" class="primary" data-sheet-close>Done</button></div></section>`;
 }
 function collectAppointmentId(){return $('encounter-hosted-copay')?.dataset.appointment||(typeof revenueAppointment==='function'?revenueAppointment()?.id:null)||null;}
@@ -950,15 +1006,16 @@ function collectOwedMarkup(){
  const credit=Number(p.unapplied_cents||0)>0?`<li class="has-credit"><span>Credit on account</span><b>${money(p.unapplied_cents)}</b><button type="button" data-apply-copays>Use ${money(p.unapplied_cents)} credit</button></li>`:'';
  const account=typeof encounterChargeAccount==='function'?encounterChargeAccount():null,lines=account?.content?.lines||[];
  const items=lines.length?`<details class="collect-lines"${lines.length<=4?' open':''}><summary>${lines.length} ${lines.length===1?'charge':'charges'} · ${money(account.total_cents??lines.reduce((sum,l)=>sum+Number(l.amount_cents||0),0))}</summary><ul>${lines.map(l=>`<li><span><b>${esc(l.code)}</b>${l.modifiers?' · '+esc(l.modifiers):''} ${esc(l.description||'')}</span><span>${Number(l.units)>1?esc(String(l.units))+' × ':''}${money(l.amount_cents)}</span></li>`).join('')}</ul>${summary?.insurance?.insured&&p.owes_now_cents!=null&&summary.charges_cents!=null?`<p class="muted">Insurance is billed for the rest; the patient pays their share now.</p>`:''}</details>`:'';
- return `${items}<div class="collect-owed"><span>${number?esc(number)+' · ':''}Patient owes now</span><b>${owes==null?'—':money(owes)}</b></div>${copay||paid||credit?`<ul class="collect-paid-so-far">${copay}${paid}${credit}</ul>`:''}`;
+ const posted=account?.status==='posted',dueBefore=!posted&&p.copay_due_cents!=null?p.copay_due_cents:null;
+ return `${items}<div class="collect-owed"><span>${number?esc(number)+' · ':''}${dueBefore!=null?'Copay due now':'Patient owes now'}</span><b>${dueBefore!=null?money(dueBefore):owes==null?'—':money(owes)}</b>${dueBefore!=null?'<small>The rest is set when the charges are posted.</small>':''}</div>${copay||paid||credit?`<ul class="collect-paid-so-far">${copay}${paid}${credit}</ul>`:''}`;
 }
 function openCollectModal(){
  const panel=$('visit-billing-collect');if(!panel)return false;
  if(collectDialog?.isConnected){collectDialog.querySelector('[data-collect-method].active')?.focus?.();return true;}
  const home=panel.parentNode,marker=document.createComment('visit-billing-collect');home.insertBefore(marker,panel);
  let head=panel.querySelector('[data-collect-head]');if(!head){head=document.createElement('div');head.dataset.collectHead='';panel.prepend(head);}
- const pm=encounterRevenueState?.data?.summary?.patient||{},owes=pm.owes_now_cents,due=Number.isSafeInteger(owes)&&owes>0?owes:Number.isSafeInteger(pm.copay_due_cents)&&pm.copay_due_cents>0?pm.copay_due_cents:null;collectSession={target:due,taken:[]};
- head.innerHTML=`${collectOwedMarkup()}<div data-collect-progress>${collectProgressMarkup()}</div><nav class="invoice-tabs collect-methods" role="tablist" aria-label="How the patient is paying">${collectMethods.map(([key,label])=>`<button type="button" role="tab" data-collect-method="${key}" aria-selected="false">${label}</button>`).join('')}</nav>`;
+ const pm=encounterRevenueState?.data?.summary?.patient||{},owes=pm.owes_now_cents,due=Number.isSafeInteger(owes)&&owes>0?owes:Number.isSafeInteger(pm.copay_due_cents)&&pm.copay_due_cents>0?pm.copay_due_cents:null;collectSession={target:due,taken:[],group:crypto.randomUUID()};
+ head.innerHTML=`<div data-collect-owed>${collectOwedMarkup()}</div><div data-collect-progress>${collectProgressMarkup()}</div><nav class="invoice-tabs collect-methods" role="tablist" aria-label="How the patient is paying">${collectMethods.map(([key,label])=>`<button type="button" role="tab" data-collect-method="${key}" aria-selected="false">${label}</button>`).join('')}</nav>`;
  panel.hidden=false;
  const dialog=sheetOpen('Collect payment',panel);dialog.classList.add('sheet-wide','collect-sheet');collectDialog=dialog;
  dialog.addEventListener('close',()=>{collectDialog=null;if(marker.parentNode){panel.hidden=true;head.remove();const slot=$('encounter-hosted-copay-reader');if(slot&&!slot.querySelector('[data-reader-payment="waiting"],[data-reader-payment="finishing"]'))slot.replaceChildren();marker.parentNode.insertBefore(panel,marker);marker.remove();}else panel.remove();if(dialog.dataset.refresh)void collectRefresh();},{once:true});
@@ -994,7 +1051,7 @@ async function submitCollectCash(form){
  if(patient!==selected)throw new Error('This payment window belongs to another patient. Close it and open it again.');
  button.disabled=true;button.textContent='Recording…';
  let receipt;
- try{receipt=await api(`/api/v1/patients/${encodeURIComponent(patient)}/billing/copays`,'POST',{request_id:form.dataset.request,appointment_id:form.dataset.appointment,coverage_id:form.dataset.coverage||null,amount_cents:amount,method,reference:String(form.elements.reference?.value||'').trim(),occurred_on:collectToday(),reason:method==='check'?'Check received at the desk':'Cash received at the desk',received_confirmed:true});}
+ try{receipt=await api(`/api/v1/patients/${encodeURIComponent(patient)}/billing/copays`,'POST',{request_id:form.dataset.request,appointment_id:form.dataset.appointment,coverage_id:form.dataset.coverage||null,amount_cents:amount,method,reference:String(form.elements.reference?.value||'').trim(),occurred_on:collectToday(),reason:method==='check'?'Check received at the desk':'Cash received at the desk',received_confirmed:true,...collectGroupField()});}
  catch(error){button.disabled=false;button.textContent=`Record ${money(amount)} ${method}`;throw error;}
  collectPartTaken(amount,method==='check'?'check':'cash',receipt,form.dataset.appointment);
 }
@@ -1007,7 +1064,7 @@ async function collectRefresh(){
 if(typeof document!=='undefined'){
  document.addEventListener('click',event=>{
   const tab=event.target?.closest?.('[data-collect-method]');if(tab?.dataset?.collectMethod){event.preventDefault();collectMethod(tab.dataset.collectMethod);return;}
-  const receipt=event.target?.closest?.('[data-collect-receipt]');if(receipt?.dataset?.collectReceipt){event.preventDefault();const id=receipt.dataset.collectReceipt,appointment=receipt.dataset.appointment;const dialog=collectDialog;if(dialog){delete dialog.dataset.refresh;sheetClose(dialog,()=>run(()=>showCopayReceipt(id,appointment)));}return;}
+  const receipt=event.target?.closest?.('[data-collect-receipt]');if(receipt?.dataset?.collectReceipt){event.preventDefault();const group=receipt.dataset.collectReceipt,appointment=receipt.dataset.appointment;const dialog=collectDialog;if(dialog){delete dialog.dataset.refresh;sheetClose(dialog,()=>run(async()=>{await collectRefresh();await showPaymentGroupReceipt(group,appointment);}));}return;}
  });
  document.addEventListener('submit',event=>{if(event.target?.id!=='collect-cash-form')return;event.preventDefault();run(()=>submitCollectCash(event.target));});
  document.addEventListener('change',event=>{if(!event.target?.hasAttribute?.('data-collect-target'))return;let value=null;try{value=cents(String(event.target.value||'').replace(/[$\s,]/g,''));}catch{}collectSession.target=value&&value>0?value:null;collectProgressPaint();const active=collectDialog?.querySelector('[data-collect-method].active')?.dataset.collectMethod;if(active==='cash'||active==='check')collectMethod(active);});

@@ -936,7 +936,7 @@ pub(crate) async fn summarize(
         "balance_cents": posted.then_some(balance),
         "claim": claim_json,
         "claim_count": live.len(),
-        "receipts": paid_at_desk.items.iter().map(|row| json!({"id":row["id"],"appointment_id":row["appointment_id"],"amount_cents":row["amount_cents"],"method":if row["hosted_checkout"].is_object() { json!("card") } else { row["method"].clone() },"occurred_on":row["occurred_on"],"voided":row["voided"],"refunded_cents":row["hosted_checkout"]["refunded_cents"],"needs_review":row["hosted_checkout"]["status"]=="needs_review" || cents(&row["reversed_cents"])>0,"test":row["hosted_checkout"]["livemode"]==false})).collect::<Vec<_>>(),
+        "receipts": paid_at_desk.items.iter().map(|row| json!({"id":row["id"],"appointment_id":row["appointment_id"],"amount_cents":row["amount_cents"],"method":if row["hosted_checkout"].is_object() { json!("card") } else { row["method"].clone() },"occurred_on":row["occurred_on"],"payment_group_id":row["payment_group_id"],"reference":row["reference"],"voided":row["voided"],"refunded_cents":row["hosted_checkout"]["refunded_cents"],"needs_review":row["hosted_checkout"]["status"]=="needs_review" || cents(&row["reversed_cents"])>0,"test":row["hosted_checkout"]["livemode"]==false})).collect::<Vec<_>>(),
     });
 
     if let Some(b) = account.as_ref().filter(|_| opt.history) {
