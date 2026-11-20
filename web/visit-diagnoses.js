@@ -64,6 +64,8 @@ document.addEventListener('click',event=>{
   else if(button.hasAttribute('data-diagnosis-add')){if(draft.values.diagnoses.length>=20)return;draft.values.diagnoses.push({code:'',display:''});}
   else{const index=Number(button.dataset.diagnosisRemove??button.dataset.diagnosisUp);if(!Number.isInteger(index)||index<0||index>=draft.values.diagnoses.length)return;if(button.hasAttribute('data-diagnosis-remove'))draft.values.diagnoses.splice(index,1);else if(index>0)[draft.values.diagnoses[index-1],draft.values.diagnoses[index]]=[draft.values.diagnoses[index],draft.values.diagnoses[index-1]];}
   visitDiagnosisDrafts.set(id,draft);showVisitDiagnoses(host,data,id,patient);
+  // Removing or moving a diagnosis saves at once, like typing one does: there is no separate save step.
+  if(button.hasAttribute('data-diagnosis-remove')||button.hasAttribute('data-diagnosis-up'))queueVisitDiagnosisAutosave($('visit-diagnoses-form'));
  });
 },true);
 function visitDiagnosisReady(form){
