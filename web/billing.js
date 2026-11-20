@@ -177,8 +177,16 @@ function showEncounterBillingAccount(a,entries,frozen,missingElectronicPayer,fro
 function billingEncounterReceiptRows(a){
  const visit=(workspace.visits||[]).find(v=>v.id===a?.content?.visit_id);if(!visit)return '';
  const receipts=(workspace.billing?.copays||[]).filter(r=>r.appointment_id===visit.appointment_id&&!r.voided);
- return receipts.map(r=>{const card=!!r.hosted_checkout,refunded=Number(r.hosted_checkout?.refunded_cents||0),how=card?(r.hosted_checkout?.livemode===false?'Test card':'Card'):r.method==='check'?'Check':r.method==='cash'?'Cash':'Payment';
-  return `<tr><td>Patient payment<small>${esc(visitBillingDate(r.occurred_on))} · ${esc(how)}</small></td><td>${esc(r.method==='check'&&r.reference?'Check #'+r.reference:r.reference||'Paid at the desk')}${refunded?`<small>${money(refunded)} refunded</small>`:''}</td><td class="money-cell">−${money(r.amount_cents-refunded)}</td><td><button type="button" data-copay-receipt="${esc(r.id)}" data-appointment="${esc(r.appointment_id)}">Receipt</button></td></tr>`;}).join('');
+ const how=r=>r.hosted_checkout?(r.hosted_checkout?.livemode===false?'test card':'card'):r.method==='check'?'check':r.method==='cash'?'cash':'payment';
+ const net=r=>r.amount_cents-Number(r.hosted_checkout?.refunded_cents||0);
+ // Parts taken together in one payment window are one payment: one row, one receipt.
+ const groups=[],seen=new Map();
+ for(const r of receipts){const key=r.payment_group_id||r.id;if(!seen.has(key)){seen.set(key,[]);groups.push(seen.get(key));}seen.get(key).push(r);}
+ return groups.map(parts=>{const first=parts[0],total=parts.reduce((sum,r)=>sum+net(r),0),refunded=parts.reduce((sum,r)=>sum+Number(r.hosted_checkout?.refunded_cents||0),0);
+  const detail=parts.length>1?parts.map(r=>`${how(r)} ${money(net(r))}${r.method==='check'&&r.reference?' (#'+r.reference+')':''}`).join(', '):first.method==='check'&&first.reference?'Check #'+first.reference:first.hosted_checkout?'Paid by card':first.reference||'Paid at the desk';
+  const button=parts.length>1&&first.payment_group_id?`<button type="button" data-payment-group="${esc(first.payment_group_id)}" data-appointment="${esc(first.appointment_id)}">Receipt</button>`:`<button type="button" data-copay-receipt="${esc(first.id)}" data-appointment="${esc(first.appointment_id)}">Receipt</button>`;
+  const label=parts.length>1?'Patient payment':`Patient payment`;const kind=parts.length>1?`${parts.length} parts`:how(first)[0].toUpperCase()+how(first).slice(1);
+  return `<tr><td>${label}<small>${esc(visitBillingDate(first.occurred_on))} · ${esc(kind)}</small></td><td>${esc(detail)}${refunded?`<small>${money(refunded)} refunded</small>`:''}</td><td class="money-cell">−${money(total)}</td><td>${button}</td></tr>`;}).join('');
 }
 function showBillingAccount(id,activate=true,reveal=false){
  if(activate)showChartSection('billing');billingSelected=id;const a=workspace.billing.accounts.find(v=>v.id===id),entries=workspace.billing.entries.filter(e=>e.account_id===id),frozen=a.coverage_snapshot,coverage=workspace.billing.coverages.find(c=>c.id===a.content.coverage_id),payer=billingPayers.find(p=>p.id===coverage?.content.payer_id),missingElectronicPayer=!!a.content.coverage_id&&!String(payer?.content.payer_code||'').trim(),frozenElectronicPayer=String(frozen?.payer?.content?.payer_code||'').trim();
