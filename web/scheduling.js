@@ -288,15 +288,17 @@ function calendarSyncMarkup(state,path){
   const links=calendarSyncLinks(path);
   return `<p><b>Your calendar link is ready.</b> Add it to the calendar you use:</p><div class="calendar-sync-actions"><a href="${esc(links.google)}" target="_blank" rel="noopener noreferrer">Add to Google Calendar</a><a href="${esc(links.microsoft)}" target="_blank" rel="noopener noreferrer">Add to Microsoft 365 (work or school)</a><a href="${esc(links.outlook)}" target="_blank" rel="noopener noreferrer">Add to Outlook.com (personal)</a><a href="${esc(links.apple)}">Add to Apple Calendar</a></div><p class="muted">Apple Calendar opens on this device and asks to subscribe. On an iPhone, open this page on the phone, or copy the link below.</p><label>Or copy the link into any other calendar that can subscribe to one<input type="text" readonly data-calendar-link value="${esc(links.web)}"></label><div class="actions"><button type="button" data-calendar-copy>Copy link</button></div>${privacy}<p class="muted">Keep this link to yourself: anyone who has it can see when you are busy. It is shown only this once. If you lose it, make a new one and the old one stops.</p><p class="muted">Google and Microsoft check the link on their own timetable. A new appointment usually shows within a few hours in Microsoft 365, and can take up to a day in Google Calendar.</p><p class="muted" data-calendar-status role="status"></p>`;
  }
+ if(state.allowed===false&&!path)return `<p><b>Calendar links are turned off for this practice.</b> ${state.active?'Your link is paused and works again if the practice owner turns them back on.':'The practice owner can turn them on in Practice administration.'}</p><p class="muted" data-calendar-status role="status"></p>`;
  if(state.active){
   return `<p><b>Your calendar link is on.</b> ${state.last_read_at?`Your calendar last checked it ${esc(date(state.last_read_at))}.`:'No calendar has checked it yet.'}</p>${privacy}<div class="actions"><button type="button" class="primary" data-calendar-make>Make a new link</button><button type="button" data-calendar-off>Turn off</button></div><p class="muted">Making a new link stops the old one, so you would add the new one to your calendar again.</p><p class="muted" data-calendar-status role="status"></p>`;
  }
- return `<p>See your busy times from this schedule in your own Google or Microsoft 365 calendar.</p>${privacy}<div class="actions"><button type="button" class="primary" data-calendar-make>Turn on</button></div><p class="muted" data-calendar-status role="status"></p>`;
+ return `<p>See your busy times from this schedule in your own Google, Microsoft or Apple calendar.</p>${privacy}<div class="actions"><button type="button" class="primary" data-calendar-make>Turn on</button></div><p class="muted" data-calendar-status role="status"></p>`;
 }
 async function calendarSyncSheet(){
  const state=await api('/api/v1/schedule/calendar-link'),panel=document.createElement('div');panel.className='calendar-sync-sheet';
  panel.innerHTML=calendarSyncMarkup(state,null);
- sheetOpen('Sync to my calendar',panel);
+ const dialog=sheetOpen('Sync to my calendar',panel);
+ if(me?.role==='owner'){const manage=document.createElement('p');manage.className='calendar-sync-manage';manage.innerHTML='<button type="button" class="text-button" data-calendar-links-admin>See everyone’s calendar links</button>';panel.after(manage);manage.addEventListener('click',()=>sheetClose(dialog));}
  panel.addEventListener('click',event=>{
   const button=event.target.closest?.('button');if(!button)return;
   const status=()=>panel.querySelector('[data-calendar-status]');
@@ -306,3 +308,18 @@ async function calendarSyncSheet(){
  });
 }
 document.addEventListener('click',event=>{const button=event.target?.closest?.('[data-calendar-sync]');if(!button?.hasAttribute?.('data-calendar-sync'))return;event.preventDefault();run(calendarSyncSheet);},true);
+
+// The owner's view of calendar links: the practice switch, who has a link on, and a way to turn
+// one off. The links themselves are never shown here.
+function calendarLinksAdminMarkup(data){
+ const rows=(data.items||[]).map(item=>`<tr><td>${esc(item.name)}</td><td>${esc(date(item.created_at))}</td><td>${item.last_read_at?esc(date(item.last_read_at)):'Not read yet'}</td><td><button type="button" data-calendar-admin-off="${esc(item.user_id)}" data-name="${esc(item.name)}">Turn off</button></td></tr>`).join('');
+ return `<p>Staff can show their own busy times in their personal calendar. Only times are shared: no patient, reason or room.</p><label class="calendar-links-switch"><input type="checkbox" data-calendar-admin-switch ${data.enabled?'checked':''}> Allow calendar links in this practice</label><p class="muted">${data.enabled?'Turning this off stops every link at once and nobody can make a new one.':'Links are off. Existing links are paused and work again if you turn this back on.'}</p>${rows?`<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Person</th><th>Turned on</th><th>Last read by their calendar</th><th></th></tr></thead><tbody>${rows}</tbody></table></div><p class="muted">Turning off one person’s link stops it at once. They can make a new one while links are allowed.</p>`:'<p class="muted">Nobody has a calendar link on.</p>'}<p class="muted" data-calendar-status role="status"></p>`;
+}
+async function calendarLinksAdminSheet(){
+ const panel=document.createElement('div');panel.className='calendar-sync-sheet calendar-links-admin';
+ const paint=async message=>{panel.innerHTML=calendarLinksAdminMarkup(await api('/api/v1/practice/calendar-links'));if(message)panel.querySelector('[data-calendar-status]').textContent=message;};
+ await paint();sheetOpen('Calendar links',panel);
+ panel.addEventListener('change',event=>{const box=event.target;if(!box?.hasAttribute?.('data-calendar-admin-switch'))return;const on=box.checked;run(async()=>{await api('/api/v1/practice/calendar-links','PUT',{enabled:on});await paint(on?'Calendar links are allowed.':'Calendar links are off. Every link has stopped.');});});
+ panel.addEventListener('click',event=>{const button=event.target.closest?.('[data-calendar-admin-off]');if(!button)return;run(async()=>{await api(`/api/v1/practice/calendar-links/${button.dataset.calendarAdminOff}`,'DELETE');await paint(`Turned off the calendar link for ${button.dataset.name}.`);});});
+}
+document.addEventListener('click',event=>{const button=event.target?.closest?.('[data-calendar-links-admin]');if(!button?.hasAttribute?.('data-calendar-links-admin'))return;event.preventDefault();run(calendarLinksAdminSheet);},true);

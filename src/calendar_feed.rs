@@ -4,7 +4,7 @@
 //! it and show the person's busy times from the practice schedule. The feed carries times only:
 //! no patient, no appointment title, no reason, no room, and no block label.
 use crate::{
-    auth::Actor,
+    auth::{Actor, Role},
     error::{Error, Result},
     State,
 };
@@ -12,12 +12,13 @@ use axum::{
     extract::{Path, State as ExtractState},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{delete, get},
     Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::{DateTime, Duration, Utc};
 use rand::RngCore;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -30,6 +31,14 @@ pub fn router() -> Router<State> {
             "/api/v1/schedule/calendar-link",
             get(status).post(create).delete(remove),
         )
+        .route(
+            "/api/v1/practice/calendar-links",
+            get(practice_links).put(practice_switch),
+        )
+        .route(
+            "/api/v1/practice/calendar-links/{user}",
+            delete(practice_remove),
+        )
         .route("/calendar/{file}", get(feed))
 }
 async fn status(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json<Value>> {
@@ -41,14 +50,22 @@ async fn status(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json<V
     .bind(a.sub)
     .fetch_optional(db(&s)?)
     .await?;
+    let allowed = allowed(db(&s)?, a.tenant_id).await?;
     Ok(Json(match row {
-        Some((created, read)) => json!({"active":true,"created_at":created,"last_read_at":read}),
-        None => json!({"active":false}),
+        Some((created, read)) => {
+            json!({"active":true,"allowed":allowed,"created_at":created,"last_read_at":read})
+        }
+        None => json!({"active":false,"allowed":allowed}),
     }))
 }
 /// Makes the person's link, replacing any earlier one. The secret is shown once, here.
 async fn create(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json<Value>> {
     a.staff()?;
+    if !allowed(db(&s)?, a.tenant_id).await? {
+        return Err(Error::Invalid(
+            "Calendar links are turned off for this practice.",
+        ));
+    }
     let mut raw = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut raw);
     let token = URL_SAFE_NO_PAD.encode(raw);
@@ -76,6 +93,82 @@ async fn remove(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json<V
     crate::postgres::audit(&mut tx, &a, "schedule.calendar_link.removed", a.sub).await?;
     tx.commit().await?;
     Ok(Json(json!({"active":false})))
+}
+/// A practice allows calendar links until its owner turns them off.
+async fn allowed(db: &sqlx::PgPool, tenant: Uuid) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, bool>(
+        "SELECT links_enabled FROM practice_calendar_settings WHERE tenant_id=$1",
+    )
+    .bind(tenant)
+    .fetch_optional(db)
+    .await?
+    .unwrap_or(true))
+}
+fn owner(a: &Actor) -> Result<()> {
+    if matches!(a.role, Role::Owner) {
+        Ok(())
+    } else {
+        Err(Error::Forbidden)
+    }
+}
+/// The owner's view: whether links are allowed, and who has one on. Never the link itself.
+async fn practice_links(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json<Value>> {
+    owner(&a)?;
+    let items: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('user_id',f.user_id,'name',coalesce(nullif(p.display_name,''),nullif(u.display_name,''),u.email),'role',u.role,'created_at',f.created_at,'last_read_at',f.last_read_at) FROM calendar_feeds f JOIN browser_users u ON u.tenant_id=f.tenant_id AND u.id=f.user_id LEFT JOIN practice_providers p ON p.tenant_id=u.tenant_id AND p.id=u.id WHERE f.tenant_id=$1 AND NOT u.disabled ORDER BY 1")
+        .bind(a.tenant_id)
+        .fetch_all(db(&s)?)
+        .await?;
+    Ok(Json(
+        json!({"enabled":allowed(db(&s)?, a.tenant_id).await?,"items":items}),
+    ))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Switch {
+    enabled: bool,
+}
+async fn practice_switch(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Json(p): Json<Switch>,
+) -> Result<Json<Value>> {
+    owner(&a)?;
+    let mut tx = db(&s)?.begin().await?;
+    sqlx::query("INSERT INTO practice_calendar_settings(tenant_id,links_enabled,updated_by) VALUES($1,$2,$3) ON CONFLICT(tenant_id) DO UPDATE SET links_enabled=excluded.links_enabled,updated_by=excluded.updated_by,updated_at=now()")
+        .bind(a.tenant_id)
+        .bind(p.enabled)
+        .bind(a.sub)
+        .execute(&mut *tx)
+        .await?;
+    let action = if p.enabled {
+        "practice.calendar_links.allowed"
+    } else {
+        "practice.calendar_links.stopped"
+    };
+    crate::postgres::audit(&mut tx, &a, action, a.tenant_id).await?;
+    tx.commit().await?;
+    Ok(Json(json!({"enabled":p.enabled})))
+}
+/// The owner turns off one person's link. That person can make a new one if links are allowed.
+async fn practice_remove(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(user): Path<Uuid>,
+) -> Result<Json<Value>> {
+    owner(&a)?;
+    let mut tx = db(&s)?.begin().await?;
+    let gone = sqlx::query("DELETE FROM calendar_feeds WHERE tenant_id=$1 AND user_id=$2")
+        .bind(a.tenant_id)
+        .bind(user)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    if gone == 0 {
+        return Err(Error::NotFound);
+    }
+    crate::postgres::audit(&mut tx, &a, "schedule.calendar_link.removed", user).await?;
+    tx.commit().await?;
+    Ok(Json(json!({"removed":true})))
 }
 fn stamp(t: DateTime<Utc>) -> String {
     t.format("%Y%m%dT%H%M%SZ").to_string()
@@ -106,7 +199,7 @@ async fn feed(ExtractState(s): ExtractState<State>, Path(file): Path<String>) ->
         return Err(Error::NotFound);
     }
     let db = db(&s)?;
-    let owner: Option<(Uuid, Uuid)> = sqlx::query_as("UPDATE calendar_feeds f SET last_read_at=now() FROM browser_users u WHERE f.token_hash=$1 AND u.tenant_id=f.tenant_id AND u.id=f.user_id AND NOT u.disabled RETURNING f.tenant_id,f.user_id")
+    let owner: Option<(Uuid, Uuid)> = sqlx::query_as("UPDATE calendar_feeds f SET last_read_at=now() FROM browser_users u WHERE f.token_hash=$1 AND u.tenant_id=f.tenant_id AND u.id=f.user_id AND NOT u.disabled AND NOT EXISTS(SELECT 1 FROM practice_calendar_settings c WHERE c.tenant_id=f.tenant_id AND NOT c.links_enabled) RETURNING f.tenant_id,f.user_id")
         .bind(crate::oauth::hash(token))
         .fetch_optional(db)
         .await?;

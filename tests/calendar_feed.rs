@@ -197,6 +197,101 @@ async fn the_calendar_link_shows_busy_times_only_and_an_old_link_stops() {
         StatusCode::NOT_FOUND
     );
 
+    // The owner sees who has a link on, never the link, and can turn one off.
+    let admin = "/api/v1/practice/calendar-links";
+    let (_, mine) = call(&f.app, &cookie, "POST", link, Value::Null, None).await;
+    let mine = mine["path"].as_str().unwrap().to_string();
+    assert_eq!(
+        call(&f.app, &cookie, "GET", admin, Value::Null, None)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, list) = call(&f.app, &f.cookie, "GET", admin, Value::Null, None).await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    assert_eq!(list["enabled"], json!(true));
+    assert_eq!(list["items"].as_array().unwrap().len(), 2);
+    assert!(!list.to_string().contains(".ics") && !list.to_string().contains("token"));
+    let (status, _) = call(
+        &f.app,
+        &f.cookie,
+        "DELETE",
+        &format!("{admin}/{clinician}"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(feed(&f.app, &mine).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(
+        call(
+            &f.app,
+            &f.cookie,
+            "DELETE",
+            &format!("{admin}/{clinician}"),
+            Value::Null,
+            None
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &f.app,
+            &cookie,
+            "DELETE",
+            &format!("{admin}/{other}"),
+            Value::Null,
+            None
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+
+    // The practice switch: off stops every link and refuses new ones; on brings them back.
+    let theirs = theirs["path"].as_str().unwrap().to_string();
+    assert_eq!(feed(&f.app, &theirs).await.0, StatusCode::OK);
+    assert_eq!(
+        call(
+            &f.app,
+            &cookie,
+            "PUT",
+            admin,
+            json!({"enabled":false}),
+            None
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, value) = call(
+        &f.app,
+        &f.cookie,
+        "PUT",
+        admin,
+        json!({"enabled":false}),
+        None,
+    )
+    .await;
+    assert_eq!((status, &value["enabled"]), (StatusCode::OK, &json!(false)));
+    assert_eq!(feed(&f.app, &theirs).await.0, StatusCode::NOT_FOUND);
+    let (status, refused) = call(&f.app, &cookie, "POST", link, Value::Null, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    let (_, value) = call(&f.app, &cookie, "GET", link, Value::Null, None).await;
+    assert_eq!(value["allowed"], json!(false));
+    call(
+        &f.app,
+        &f.cookie,
+        "PUT",
+        admin,
+        json!({"enabled":true}),
+        None,
+    )
+    .await;
+    assert_eq!(feed(&f.app, &theirs).await.0, StatusCode::OK);
+
     // A person who can no longer sign in has no calendar either.
     let (_, live) = call(&f.app, &other_cookie, "POST", link, Value::Null, None).await;
     sqlx::query("UPDATE browser_users SET disabled=true WHERE id=$1")
