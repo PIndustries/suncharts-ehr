@@ -65,7 +65,7 @@ function practiceDashboardMarkup(d){
  const attention=o?.claims?Number(o.claims.needs_correction||0)+practiceClaimCount(o,'rejected'):null;
  const tiles=[
   practiceTile('schedule','Today’s patients',String(appointments.length),`${arrived} arrived`),
-  practiceTile('patients','Unfinished visits',unfinished?String(unfinished.total):'—','Notes or charges to finish',unfinished?.total?'attention':''),
+  practiceTile('followup','Unfinished encounters',unfinished?String(unfinished.total):'—','Notes to finish',unfinished?.total?'attention':''),
   o?.claims?practiceTile('claims','Claims needing attention',String(attention),`${practiceClaimCount(o,'draft')+practiceClaimCount(o,'ready')} ready to send`,attention?'attention':''):'',
   o?.money?practiceTile('claims','Waiting on insurers',practiceMoney(o.money.waiting_on_insurers_cents),`${practiceClaimCount(o,'submitted')+practiceClaimCount(o,'accepted')} claims sent`):'',
   o?.money?practiceTile('billing','Collected today',practiceMoney(o.money.collected_today_cents),`${practiceMoney(o.money.collected_month_cents)} this month`,'good'):'',

@@ -908,7 +908,7 @@ function patientWorkflowActions(){
  if(v){action=`<button type="button" class="primary" data-chart-section="visits">${v.status==='signed'?'Review encounter':'Continue encounter'}</button>`;detail=`${encounterDateLabel(v)} · ${v.status==='signed'?'Review procedures, checkout and billing for this encounter.':'Continue the selected visit, diagnoses and procedures.'}`;}
  else if(appointment?.status==='checked_in'&&(isRoomingStaff()||(['owner','clinician'].includes(me?.role)&&appointment.clinician_id===me.user_id))){action=`<button type="button" class="primary" data-start="${esc(appointment.id)}">Start visit</button>`;detail='The patient is checked in and ready for their visit.';}
  else if(appointment?.status==='booked'&&['owner','clinician','front_desk'].includes(me?.role)){action=`<button type="button" class="primary" data-check-in="${esc(appointment.id)}">Check in patient</button>`;detail='Review insurance and copay before starting the encounter.';}
- return `<section id="patient-next-action" class="patient-next-action"><div><b>${v?'Current visit':'Visit preparation'}</b><p>${esc(detail)}</p></div><div class="actions">${!v&&chartAreaEnabled('insurance')?'<button type="button" data-chart-section="insurance">Insurance & copay</button>':''}${action}</div></section>`;
+ return `<section id="patient-next-action" class="patient-next-action"><div><b>${v?'Current encounter':'Before the encounter'}</b><p>${esc(detail)}</p></div><div class="actions">${!v&&chartAreaEnabled('insurance')?'<button type="button" data-chart-section="insurance">Insurance & copay</button>':''}${action}</div></section>`;
 }
 function showChartSection(key){
  if(!['overview','profile','clinical','care_pathways','prescribing','immunizations','functional_status','specialty_care','history','documents','referrals','orders','visits','checkout','insurance','billing','source'].includes(key))return;
@@ -980,7 +980,7 @@ function setPage(title) {
  const revenue=['Billing & insurance','Payment settings','Payment review','Claims & remittances','Clearinghouse','Claim connections'];
  const manage=['Sun','Workflow Studio','Automation Center','AI review','Sun review','Practice administration','Codes & prices','Partners','Integrations','Connect services','Support tickets','Data import'];
  // One name per screen: the heading says what the menu item that opened it says.
- const shown={'Practice home':'Home','Practice overview':'Home','Patients & encounters':'Patients','Labs & results':'Orders & results','Billing & insurance':'Patient billing','Claims & remittances':'Insurance claims','Follow-up tasks':'Work queue'};
+ const shown={'Practice home':'Home','Practice overview':'Home','Patients & encounters':'Patients','Labs & results':'Orders & results','Billing & insurance':'Patient billing','Claims & remittances':'Insurance claims','Follow-up tasks':'Work queue','Claim lifecycle':'Claim connections','Clearinghouse':'Claim connections'};
  $('page-title').textContent=shown[title]||title;
  // A screen that has just been opened fades in briefly; staying on the same screen does not replay it.
  if(setPage.last!==title){setPage.last=title;for(const id of ['tools','clinical-workspace']){const node=$(id);if(!node?.classList?.add)continue;node.classList.remove('screen-in');void node.offsetWidth;node.classList.add('screen-in');}}

@@ -85,7 +85,7 @@ function automationReconciliation(){
 function automationRender(){
  const views={overview:automationOverview,connectors:automationConnectors,triggers:automationTriggers,runs:automationRuns,approvals:automationApprovals,reconciliation:automationReconciliation};
  const errors=automationState.errors.length?`<div class="notice error" role="alert"><b>Some automation data could not be loaded.</b><span>${automationState.errors.map(esc).join(' · ')}</span></div>`:'';
- $('tools').innerHTML=`<div class="automation-center"><div class="automation-hero"><div><p class="eyebrow">OPERATIONS</p><h2>Automation Center</h2><p>Connect reviewed systems, react to exact EHR events and keep every sensitive action under human control.</p></div><span class="automation-safety">No scripts · No stored secrets · Audited</span></div>${automationTabs()}${errors}${views[automationView]()}</div>`;
+ $('tools').innerHTML=`<div class="automation-center"><div class="automation-hero"><div><p class="eyebrow">OPERATIONS</p><h2>Automation Center</h2><p>Have SunCharts do routine steps when something happens in the practice, such as telling another system that an appointment was booked. Anything sensitive waits for a person to approve it.</p></div><span class="automation-safety">Every action is recorded</span></div>${automationTabs()}${errors}${views[automationView]()}</div>`;
 }
 
 async function automationLoad(){

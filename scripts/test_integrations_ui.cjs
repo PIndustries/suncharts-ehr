@@ -24,7 +24,7 @@ context.FormData=FixtureFormData;
  assert.match(html,/Setup incomplete/);
  assert.match(html,/never asks for a Stripe secret key/);
  assert.match(html,/HealthClinics.*reads availability and writes appointments|External partners use this instance.*authorized API/s);
- assert.match(html,/Credentials, tokens, workflow settings and audit history remain inside this EHR instance/);
+ assert.match(html,/Sign-in details for each service are kept with this practice only/);
  assert.match(html,/clinic supplies and governs its own provider account/i);
  assert.match(html,/Open booking page/);
  assert.match(html,/Enabled · awaiting provider/);

@@ -173,7 +173,7 @@ function pathwayTemplateLibrary(){
 function renderCarePathwayPanel(){
  const panel=$('care-pathways-panel');if(!panel)return;
  const active=patientPathways.find(p=>p.id===selectedPathwayId)||patientPathways.find(p=>p.status==='active')||patientPathways[0]||null;if(active)selectedPathwayId=active.id;
- panel.innerHTML=`<div class="section-head"><div><h2>Care pathways</h2><p class="muted">Coordinate required work, approvals and escalation without hiding each record's own status.</p></div><button type="button" data-pathway-refresh>Refresh</button></div>${pathwayStartForm()}${pathwayTemplateLibrary()}<div class="pathway-layout"><aside class="pathway-list"><h3>Patient pathways <span class="pill">${patientPathways.length}</span></h3>${patientPathways.map(pathwayInstanceCard).join('')||'<p class="muted">No pathways started.</p>'}</aside>${pathwayBoard(active)}</div>`;
+ panel.innerHTML=`<div class="section-head"><div><h2>Care pathways</h2><p class="muted">Step-by-step plans for this patient, such as a treatment series: what has to happen, who signs off, and what is overdue.</p></div><button type="button" data-pathway-refresh>Refresh</button></div>${pathwayStartForm()}${pathwayTemplateLibrary()}<div class="pathway-layout"><aside class="pathway-list"><h3>Patient pathways <span class="pill">${patientPathways.length}</span></h3>${patientPathways.map(pathwayInstanceCard).join('')||'<p class="muted">No pathways started.</p>'}</aside>${pathwayBoard(active)}</div>`;
  applyChartSection();
  if(typeof refreshEncounterProgress==='function')refreshEncounterProgress();
 }

@@ -1,5 +1,4 @@
 {
-  "app.js": {},
   "claims.js": {
     "JSON": 2
   },
@@ -8,9 +7,6 @@
   },
   "fees.js": {
     "JSON": 1
-  },
-  "immunizations.js": {
-    "catalog": 1
   },
   "patient-payment-plans.js": {
     "catalog": 1
@@ -40,6 +36,5 @@
     "JSON": 1,
     "payload": 15,
     "snapshot": 2
-  },
-  "patient-revenue.js": {}
+  }
 }
