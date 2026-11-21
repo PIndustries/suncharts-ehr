@@ -196,3 +196,11 @@
 .calendar-links-admin{max-width:720px}.calendar-sync-sheet label.calendar-links-switch{display:flex;flex-direction:row;justify-content:flex-start;gap:8px;align-items:center;font-weight:650;text-transform:none;letter-spacing:0}.calendar-sync-sheet label.calendar-links-switch input{width:auto;margin:0;flex:none}.calendar-sync-manage{margin:12px 0 0}
 .sheet-body>.calendar-sync-manage:first-child{margin:0 0 10px}
 .block-repeat{display:grid;gap:8px}.block-weekdays{display:flex;flex-wrap:wrap;gap:6px 12px;border:0;padding:0;margin:0}.block-weekdays legend{font-size:var(--fs-xs);font-weight:650;padding:0;margin-bottom:4px}.block-weekdays label{display:inline-flex;flex-direction:row;align-items:center;gap:4px;text-transform:none;letter-spacing:0;font-weight:400}.block-weekdays input{width:auto;margin:0}.block-conflicts{border:1px solid var(--line);border-left:3px solid var(--warning-text,#8b672c);border-radius:5px;padding:10px 12px;display:grid;gap:6px}.block-conflicts[hidden],.block-repeat[hidden],.block-weekdays[hidden]{display:none}.block-conflicts p,.block-conflicts ul{margin:0}
+/* Claim details read first; Edit opens the same fields over the page. */
+#encounter-revenue[data-codes-editing="details"]>#encounter-diagnoses{display:none !important}
+#encounter-revenue[data-invoice-tab="billing"][data-billing-part="details"]:not([data-codes-editing])>#encounter-billing-editor:has(#billing-account-form){display:none}
+#encounter-revenue>#encounter-details-summary{display:none}
+#encounter-revenue[data-invoice-tab="billing"][data-billing-part="details"]:not([data-codes-editing])>#encounter-details-summary:not([hidden]){display:block;order:3}
+.encounter-details-summary .section-head{margin-bottom:8px}.encounter-details-summary .section-head h3{margin:0}
+.encounter-details-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px 18px;margin:10px 0 0}
+.encounter-details-list div{min-width:0}.encounter-details-list dt{font-size:var(--fs-xs);color:var(--muted);text-transform:uppercase;letter-spacing:.04em}.encounter-details-list dd{margin:2px 0 0;overflow-wrap:anywhere}

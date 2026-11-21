@@ -298,3 +298,28 @@
 .encounter-codes-strip li>span:not(.codes-strip-code):not(.codes-strip-amount):not(.muted){white-space:normal;overflow:visible}
 /* With no charges yet, Add codes beside the codes is the next step; the card would only repeat it. */
 #encounter-revenue-status:has([data-visit-billing-state="add_charges"]){display:none}
+
+/* The encounter bar: where this encounter stands, its money and the one next step, in one line that
+   stays under the patient banner on every tab of the encounter. */
+#visit-page-host[data-encounter-tab]>#encounter-bar{order:0}
+.encounter-bar{position:sticky;top:var(--encounter-bar-top,108px);z-index:6;display:flex;flex-wrap:wrap;align-items:center;gap:6px 16px;margin:0 0 8px;padding:8px 12px;border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:8px;background:var(--surface);box-shadow:0 2px 0 var(--line)}
+.encounter-bar[data-visit-billing-state="paid_in_full"]{border-left-color:var(--success-line)}
+.encounter-bar:is([data-visit-billing-state="denied"],[data-visit-billing-state="fix_claim"]){border-left-color:var(--warning-line)}
+.encounter-bar .visit-billing-status{display:contents}
+.encounter-bar .visit-billing-status>div:first-child{flex:1 1 280px;min-width:0;display:grid;grid-template-columns:auto 1fr;column-gap:8px;align-items:baseline}
+.encounter-bar .eyebrow{margin:0;white-space:nowrap}
+.encounter-bar .visit-billing-headline{margin:0;font-weight:700}
+.encounter-bar .visit-billing-status>div:first-child>p.muted{grid-column:1/-1;margin:0;font-size:var(--fs-sm);line-height:1.35}
+.encounter-bar .visit-billing-status>div:first-child>:not(.eyebrow):not(.visit-billing-headline):not(p.muted){grid-column:1/-1}
+.encounter-bar .visit-billing-status .actions{order:3;margin:0;flex:0 0 auto}
+.encounter-bar .visit-billing-totals{order:2;display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0}
+.encounter-bar .visit-billing-totals span{padding:4px 10px;min-width:0;gap:0}
+.encounter-bar .visit-billing-totals small{font-size:var(--fs-xs)}
+.encounter-bar .visit-billing-sent{order:4;flex:1 1 100%;margin:0;font-size:var(--fs-sm)}
+/* With the bar carrying the next step and the totals, the card under the tabs keeps only what the bar
+   does not: the money table and More actions, in Payments. */
+#visit-page-host:has(>#encounter-bar) #encounter-revenue[data-invoice-tab]>#encounter-revenue-status :is(.visit-billing-status,.visit-billing-totals,.visit-billing-sent){display:none}
+#visit-page-host:has(>#encounter-bar) #encounter-revenue[data-invoice-tab]:not([data-invoice-tab="payments"]):not([data-billing-part="payments"])>#encounter-revenue-status{display:none}
+#visit-page-host:has(>#encounter-bar) #encounter-revenue[data-invoice-tab]>#encounter-revenue-status .visit-billing-card{margin:0}
+.money-details-sheet{min-width:min(640px,80vw)}.money-details-sheet .visit-billing-breakdown{display:table;margin:0}
+@media print{.encounter-bar{position:static}}
