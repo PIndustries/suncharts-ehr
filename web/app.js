@@ -936,6 +936,14 @@ function showChartSection(key){
 
 const formData=f=>Object.fromEntries(new FormData(f));
 function closeNavigation() {const wasOpen=$('sidebar').classList.contains('menu-open');$('sidebar').classList.remove('menu-open');$('nav-toggle').setAttribute('aria-expanded','false');$('nav-toggle').setAttribute('aria-label','Open navigation');if(wasOpen)$('page-title').focus({preventScroll:true});}
+// A screen's first heading often repeats the page title right above it. The repeat is kept for
+// screen-reader structure and taken out of sight, so each screen says its name once.
+function hideRepeatedPageTitle(){
+ const host=typeof $==='function'?$('tools'):null,title=($('page-title')?.textContent||'').trim().toLowerCase();if(!host?.querySelector||!title)return;
+ const first=host.querySelector('h2');if(!first?.classList)return;
+ first.classList.toggle('page-title-repeat',(first.textContent||'').trim().toLowerCase()===title);
+}
+if(typeof MutationObserver==='function'&&typeof document!=='undefined'&&document.addEventListener)document.addEventListener('DOMContentLoaded',()=>{const host=document.getElementById('tools');if(host)new MutationObserver(()=>hideRepeatedPageTitle()).observe(host,{childList:true});});
 function setPage(title) {
  if(title!=='Sun'&&$('tools')?.classList.contains('sun-page'))$('tools').className='panel';
  if(title!=='Sun'&&typeof sunPanelView!=='undefined'&&sunPanelView==='page'){sunPanelView='chat';if(typeof mountSunWorkspace==='function')mountSunWorkspace();}
@@ -982,6 +990,9 @@ function setPage(title) {
  // One name per screen: the heading says what the menu item that opened it says.
  const shown={'Practice home':'Home','Practice overview':'Home','Patients & encounters':'Patients','Labs & results':'Orders & results','Billing & insurance':'Patient billing','Claims & remittances':'Insurance claims','Follow-up tasks':'Work queue','Claim lifecycle':'Claim connections','Clearinghouse':'Claim connections'};
  $('page-title').textContent=shown[title]||title;
+ // The browser tab and the screen reader's page name follow the screen (WCAG 2.4.2).
+ if(typeof document!=='undefined'&&'title' in document)document.title=`${shown[title]||title} · SunCharts EHR`;
+ if(typeof hideRepeatedPageTitle==='function')hideRepeatedPageTitle();
  // A screen that has just been opened fades in briefly; staying on the same screen does not replay it.
  if(setPage.last!==title){setPage.last=title;for(const id of ['tools','clinical-workspace']){const node=$(id);if(!node?.classList?.add)continue;node.classList.remove('screen-in');void node.offsetWidth;node.classList.add('screen-in');}}
  $('page-description').textContent=descriptions[title]||'Practice workspace';

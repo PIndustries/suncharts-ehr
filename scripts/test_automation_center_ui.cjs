@@ -14,11 +14,11 @@ const context=vm.createContext({console,Promise,URL,JSON,Date,FormData:class{},c
 vm.runInContext(source,context);
 (async()=>{
  await vm.runInContext('showAutomationCenter()',context);
- for(const label of ['Automation Center','Enabled connectors','Active triggers','Needs attention','Operational flow'])assert.match(host.innerHTML,new RegExp(label));
- vm.runInContext("automationView='connectors';automationRender()",context);assert.match(host.innerHTML,/Synthetic messaging/);assert.match(host.innerHTML,/Built into this EHR/);assert.match(host.innerHTML,/SunCharts native workflows/);assert.match(host.innerHTML,/Install reviewed connector manifest/);assert.doesNotMatch(host.innerHTML,/API key|Password|Secret/);
- vm.runInContext("automationView='triggers';automationRender()",context);assert.match(host.innerHTML,/Events are limited to this practice/);assert.match(host.innerHTML,/derived by the server/);assert.doesNotMatch(host.innerHTML,/name="event_type"|name="transport"|configuration/);
- vm.runInContext("automationView='approvals';automationRender()",context);assert.match(host.innerHTML,/Human review|human review/i);assert.match(host.innerHTML,/Approve/);assert.match(host.innerHTML,/Reject/);
- vm.runInContext("automationView='reconciliation';automationRender()",context);assert.match(host.innerHTML,/Ambiguous external effects stop here/);assert.match(host.innerHTML,/Replay event/);assert.match(host.innerHTML,/Cancel/);
+ for(const label of ['Automation Center','Connections turned on','Rules turned on','Needs attention','How it works'])assert.match(host.innerHTML,new RegExp(label));
+ vm.runInContext("automationView='connectors';automationRender()",context);assert.match(host.innerHTML,/Synthetic messaging/);assert.match(host.innerHTML,/Built into SunCharts/);assert.match(host.innerHTML,/SunCharts native workflows/);assert.match(host.innerHTML,/Install reviewed connector manifest/);assert.doesNotMatch(host.innerHTML,/API key|Password|Secret/);
+ vm.runInContext("automationView='triggers';automationRender()",context);assert.match(host.innerHTML,/watches for one kind of event in this practice only/);assert.match(host.innerHTML,/derived by the server/);assert.doesNotMatch(host.innerHTML,/name="event_type"|name="transport"|configuration/);
+ vm.runInContext("automationView='approvals';automationRender()",context);assert.match(host.innerHTML,/waits here for a person to approve it/);assert.match(host.innerHTML,/Approve/);assert.match(host.innerHTML,/Reject/);
+ vm.runInContext("automationView='reconciliation';automationRender()",context);assert.match(host.innerHTML,/cannot tell whether the other system received them/);assert.match(host.innerHTML,/Replay event/);assert.match(host.innerHTML,/Cancel/);
  assert.match(index,/id="nav-automation"/);assert.match(index,/src="\/automation-center.js"/);assert.match(app,/showAutomationCenter/);assert.match(style,/Automation Center/);assert.match(lib,/"\/automation-center.js"/);
  for(const path of ['/api/v1/connector-catalog/builtins','/api/v1/connector-catalog/installations','/api/v1/automation/subscriptions','/api/v1/automation/deliveries','/api/v1/automation/action-invocations'])assert.ok(source.includes(path),path);
  console.log('PASS Automation Center navigation, safe manifest setup, derived triggers, approvals and reconciliation');

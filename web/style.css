@@ -644,3 +644,34 @@ td.money-cell,th.money-cell{text-align:right;font-variant-numeric:tabular-nums}
 .work-queue-list button{flex:none}
 .work-queue-empty{margin:18px 0;padding:22px;text-align:center;border:1px dashed var(--line);border-radius:6px;color:var(--muted)}
 @media(max-width:760px){.work-queue-list>li{flex-direction:column;align-items:stretch}}
+
+/* ---- Standards pass (WCAG 2.2 AA) ------------------------------------------------------ */
+/* 1.4.3 Count badges on the claim filters stay readable in the dark theme. */
+:root[data-theme=dark] .claims-status-strip>button span{background:var(--surface-soft);border-color:var(--line);color:var(--ink)}
+/* 2.5.8 Things to press are at least 24px tall; appointment markers grow on touch screens. */
+summary{min-height:24px}
+.patient-banner-flag{min-height:24px}
+@media(pointer:coarse){.appt-marker{min-height:24px}}
+/* 2.4.1 Keyboard users can jump past the menu. The link shows only when it has focus. */
+.skip-link{position:absolute;left:8px;top:-60px;z-index:10001;padding:8px 12px;background:var(--surface);color:var(--ink);border:2px solid var(--accent);border-radius:6px;font-weight:600;text-decoration:none;transition:top .12s ease}
+.skip-link:focus{top:8px}
+/* A first heading that only repeats the page title is kept for structure and not drawn. */
+.page-title-repeat{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+/* 1.4.10 Narrow screens: the page title and its buttons wrap instead of overlapping, and no
+   control is wider than the screen. */
+@media(max-width:760px){
+ .workspace-header{flex-wrap:wrap}
+ .workspace-header .header-actions{flex-wrap:wrap}
+ .page-heading{flex-wrap:wrap;gap:6px 10px}
+ main select,main input,main textarea{max-width:100%}
+ .section-head{flex-wrap:wrap}
+}
+/* Narrow screens: a charge line's code and description fit the card. */
+@media(max-width:760px){.charge-cell-code{min-width:0}.charge-cell-code .charge-description-field input{max-width:100%}}
+/* In the Edit codes sheet diagnoses save themselves and Save and close finishes the job, so the
+   list's own Save button is not shown there. */
+#encounter-revenue[data-codes-editing] #visit-diagnoses-form button[type=submit]{display:none}
+/* An empty list: one calm block that says so, with the next thing to do when there is one. */
+.empty-state{margin:14px 0;padding:22px;text-align:center;border:1px dashed var(--line);border-radius:6px;color:var(--muted)}
+.empty-state p{margin:0 0 10px}
+.empty-state>:last-child{margin-bottom:0}
