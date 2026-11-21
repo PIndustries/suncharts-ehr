@@ -195,3 +195,77 @@ if(typeof document!=='undefined'&&document.addEventListener)document.addEventLis
  if(button.hasAttribute?.('data-bundle-save')){event.preventDefault();run(async()=>chargeBundleSaveSheet());return;}
  if(button.hasAttribute?.('data-bundle-manage')){event.preventDefault();run(async()=>chargeBundleManageSheet());}
 });
+
+// Drug wastage. Medicare wants every single-dose drug line to say what happened to the rest of
+// the vial: JZ on the line when nothing was discarded, or a second line with JW for the discarded
+// amount. Staff type what was given and the vial size; the lines are written for them.
+const drugVialStore='suncharts.drugVialSize.';
+function drugWasteFacts(row){
+ const box=row?.querySelector?.('[data-drug-waste]');if(!box)return null;
+ // The vial size typed last time for this drug comes back by itself.
+ const vialField=box.querySelector('[data-waste-vial]'),drug=(row.querySelector('[name="code"]')?.value||'').trim().toUpperCase();
+ if(vialField&&!vialField.value&&drug){try{vialField.value=localStorage.getItem(drugVialStore+drug)||'';}catch{}}
+ const given=Math.trunc(Number(box.querySelector('[data-waste-given]')?.value)||0),vial=Math.trunc(Number(box.querySelector('[data-waste-vial]')?.value)||0);
+ if(given<1||vial<1)return {given,vial,ready:false};
+ const vials=Math.ceil(given/vial),discarded=vials*vial-given;
+ return {given,vial,vials,discarded,ready:true};
+}
+function drugWasteNote(row){
+ const note=row?.querySelector?.('[data-drug-waste-note]'),facts=drugWasteFacts(row);if(!note||!facts)return;
+ if(!facts.ready){note.textContent='Type the units given and the vial size. Nothing discarded adds JZ; anything discarded adds its own JW line.';return;}
+ note.textContent=facts.discarded?`${facts.vials} vial${facts.vials===1?'':'s'} opened: ${facts.given} given, ${facts.discarded} discarded. This line becomes ${facts.given} units and a JW line is added for ${facts.discarded}.`:`${facts.vials} vial${facts.vials===1?'':'s'} opened, nothing discarded. This line becomes ${facts.given} units with JZ.`;
+}
+function drugWasteModifiers(row,drop,add){
+ const input=row.querySelector('[name="modifiers"]');if(!input)return;
+ const list=String(input.value||'').toUpperCase().split(/[,\s]+/).filter(m=>m&&!drop.includes(m));
+ if(add&&!list.includes(add))list.push(add);
+ input.value=list.join(',');
+}
+function drugWasteField(row,name,value){const field=row.querySelector(`[name="${name}"]`);if(!field)return;field.value=String(value);field.dispatchEvent(new Event('input',{bubbles:true}));field.dispatchEvent(new Event('change',{bubbles:true}));}
+function drugWasteApply(row){
+ const form=row.closest('#billing-account-form'),body=row.closest('tbody'),facts=drugWasteFacts(row);
+ if(!form||!body||form.dataset.draftReadOnly||form.dataset.draftStale)return;
+ const note=row.querySelector('[data-drug-waste-note]');
+ if(!facts?.ready){if(note)note.textContent='Type the units given and the vial size first, as whole numbers.';return;}
+ const code=(row.querySelector('[name="code"]')?.value||'').trim().toUpperCase();if(!code)return;
+ try{localStorage.setItem(drugVialStore+code,String(facts.vial));}catch{}
+ // What one unit costs on this line now, so both lines keep the same price per unit.
+ const before=priceMemoryFacts(row).unit,line=chargeRowValue(row);
+ const oldQuantity=Number(line.ndc_quantity),perUnit=oldQuantity>0&&Number(line.units)>0?oldQuantity/Number(line.units):null;
+ const quantity=n=>perUnit==null?'':String(Math.round(perUnit*n*1000)/1000);
+ drugWasteModifiers(row,['JW','JZ'],facts.discarded?'':'JZ');
+ drugWasteField(row,'units',facts.given);
+ if(before!=null)drugWasteField(row,'amount',dollars(before*facts.given));
+ if(perUnit!=null)drugWasteField(row,'ndc_quantity',quantity(facts.given));
+ drugWasteField(row,'modifiers',row.querySelector('[name="modifiers"]')?.value||'');
+ // The discarded amount is its own line: one already there for this drug is updated, not doubled.
+ const wasteRows=chargeLiveRows(form).filter(other=>other!==row&&(other.querySelector('[name="code"]')?.value||'').trim().toUpperCase()===code&&String(other.querySelector('[name="modifiers"]')?.value||'').toUpperCase().split(/[,\s]+/).includes('JW'));
+ let waste=wasteRows[0]||null;
+ if(!facts.discarded){for(const other of wasteRows){chargeRowMemoryCache.delete(other);other.remove();}}
+ else if(waste){drugWasteField(waste,'units',facts.discarded);if(before!=null)drugWasteField(waste,'amount',dollars(before*facts.discarded));if(perUnit!=null)drugWasteField(waste,'ndc_quantity',quantity(facts.discarded));}
+ else{
+  const mods=String(row.querySelector('[name="modifiers"]')?.value||'').toUpperCase().split(/[,\s]+/).filter(Boolean).concat('JW').join(',');
+  const drug=line.ndc_code&&perUnit!=null?{ndc_code:line.ndc_code,ndc_quantity:quantity(facts.discarded),ndc_unit:line.ndc_unit}:{};
+  row.insertAdjacentHTML('afterend',chargeRow({code_system:line.code_system,code:line.code,description:line.description,modifiers:mods,units:facts.discarded,diagnosis_codes:line.diagnosis_codes||[],...(before!=null?{amount_cents:before*facts.discarded}:{}),...drug},form.dataset.compact==='true',chargeLineKey(null,chargeLiveRows(form).length)));
+  waste=row.nextElementSibling;chargeRowCapture(waste);waste.dataset.priceMemorySeen='1';void priceMemoryCheck(waste);
+ }
+ chargeTableTotals(form);renderChargeRowProblems(form);captureBillingChargeDraft();scheduleChargeAutosave(form);
+ if(note)note.textContent=facts.discarded?`Done. ${facts.given} units on this line, and a JW line for the ${facts.discarded} discarded.`:`Done. ${facts.given} units on this line with JZ: nothing was discarded.`;
+}
+if(typeof document!=='undefined'&&document.addEventListener){
+ document.addEventListener('input',event=>{
+  const field=event.target;if(!field?.hasAttribute?.('data-waste-given')&&!field?.hasAttribute?.('data-waste-vial'))return;
+  const clean=String(field.value).replace(/[^0-9]/g,'');if(clean!==field.value)field.value=clean;
+  drugWasteNote(field.closest('.billing-charge-row'));
+ },true);
+ // The vial size typed last time for this drug comes back by itself.
+ document.addEventListener('focusin',event=>{
+  const field=event.target;if(!field?.hasAttribute?.('data-waste-given')&&!field?.hasAttribute?.('data-waste-vial'))return;
+  const row=field.closest('.billing-charge-row'),vial=row?.querySelector('[data-waste-vial]'),code=(row?.querySelector('[name="code"]')?.value||'').trim().toUpperCase();
+  if(vial&&!vial.value&&code){try{vial.value=localStorage.getItem(drugVialStore+code)||'';}catch{}drugWasteNote(row);}
+ });
+ document.addEventListener('click',event=>{
+  const button=event.target?.closest?.('[data-drug-waste-apply]');if(!button?.hasAttribute?.('data-drug-waste-apply'))return;
+  event.preventDefault();drugWasteApply(button.closest('.billing-charge-row'));
+ });
+}

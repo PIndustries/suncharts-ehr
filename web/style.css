@@ -509,6 +509,9 @@ td.money-cell,th.money-cell{text-align:right;font-variant-numeric:tabular-nums}
 .charge-drug-title{margin:0 0 4px;font-size:var(--fs-xs);font-weight:650;color:var(--ink)}
 .charge-drug-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
 .charge-drug .muted{font-size:var(--fs-xs);margin:4px 0 0}
+.charge-waste{margin-top:8px;padding-top:8px;border-top:1px solid var(--line)}
+.charge-waste-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:6px;align-items:end}
+@media(max-width:700px){.charge-waste-grid{grid-template-columns:1fr}}
 .charge-more{margin-top:4px}
 .charge-more summary{font-size:var(--fs-xs);color:var(--muted)}
 .charge-more button,.charge-more p{font-size:var(--fs-xs)}
