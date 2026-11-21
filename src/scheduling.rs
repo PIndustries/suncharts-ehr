@@ -180,6 +180,11 @@ pub fn router() -> Router<State> {
         .route("/api/v1/schedule/providers", get(providers))
         .route("/api/v1/schedule/blocks", post(block))
         .route("/api/v1/schedule/blocks/{id}/cancel", post(cancel_block))
+        .route("/api/v1/schedule/block-series", post(block_series))
+        .route(
+            "/api/v1/schedule/block-series/{id}/cancel",
+            post(cancel_block_series),
+        )
         .route("/api/v1/appointments/{id}", get(detail).put(edit))
         .route("/api/v1/appointments/{id}/actions", post(action))
         .route("/api/v1/appointments/{id}/history", get(history))
@@ -465,6 +470,141 @@ async fn cancel_block(
     crate::postgres::audit(&mut tx, &a, "schedule.block_cancel", id).await?;
     tx.commit().await?;
     Ok(Json(json!({"cancelled":true})))
+}
+#[derive(Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct Span {
+    starts_at: DateTime<Utc>,
+    ends_at: DateTime<Utc>,
+}
+#[derive(Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct BlockSeries {
+    request_id: Uuid,
+    clinician_id: Uuid,
+    label: String,
+    /// How it repeats, in the words shown to staff ("Every weekday until Mar 1").
+    repeat: String,
+    occurrences: Vec<Span>,
+    /// False: nothing is written if any date is taken, and the taken dates are returned.
+    /// True: the free dates are blocked and the taken ones are reported as skipped.
+    #[serde(default)]
+    skip_conflicts: bool,
+}
+/// Repeating block time: every occurrence becomes an ordinary block that remembers its series.
+async fn block_series(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Json(p): Json<BlockSeries>,
+) -> Result<Json<Value>> {
+    provider(db(&s)?, &a, p.clinician_id).await?;
+    text(&p.label, 200)?;
+    text(&p.repeat, 200)?;
+    if p.occurrences.len() < 2 || p.occurrences.len() > 260 {
+        return Err(Error::Invalid(
+            "A repeating block needs between 2 and 260 dates. Shorten the end date.",
+        ));
+    }
+    for o in &p.occurrences {
+        interval(o.starts_at, o.ends_at)?;
+    }
+    if p.occurrences
+        .windows(2)
+        .any(|w| w[1].starts_at < w[0].ends_at)
+    {
+        return Err(Error::Invalid(
+            "The dates of a repeating block must be in order and must not overlap.",
+        ));
+    }
+    let digest = crate::oauth::hash(
+        &serde_json::to_string(&p).map_err(|_| Error::Invalid("invalid block"))?,
+    );
+    let mut tx = db(&s)?.begin().await?;
+    tenant_lock(&mut tx, &a).await?;
+    provider_locked(&mut tx, &a, p.clinician_id, false).await?;
+    let old: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT id,request_digest FROM schedule_block_series WHERE tenant_id=$1 AND request_id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(p.request_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some((id, old)) = old {
+        if old != digest {
+            return Err(Error::Conflict(
+                "request ID reused for a different repeating block",
+            ));
+        }
+        let made: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM schedule_blocks WHERE tenant_id=$1 AND series_id=$2",
+        )
+        .bind(a.tenant_id)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return Ok(Json(
+            json!({"created":true,"series_id":id,"blocks":made,"skipped":[]}),
+        ));
+    }
+    let mut free = Vec::new();
+    let mut taken = Vec::new();
+    for o in &p.occurrences {
+        let conflict:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM appointments WHERE tenant_id=$1 AND clinician_id=$2 AND status NOT IN ('cancelled','no_show') AND starts_at<$4 AND ends_at>$3) OR EXISTS(SELECT 1 FROM schedule_blocks WHERE tenant_id=$1 AND clinician_id=$2 AND active AND starts_at<$4 AND ends_at>$3)").bind(a.tenant_id).bind(p.clinician_id).bind(o.starts_at).bind(o.ends_at).fetch_one(&mut *tx).await?;
+        if conflict {
+            taken.push(json!({"starts_at":o.starts_at,"ends_at":o.ends_at}));
+        } else {
+            free.push(o);
+        }
+    }
+    if !taken.is_empty() && !p.skip_conflicts {
+        return Ok(Json(json!({"created":false,"conflicts":taken})));
+    }
+    if free.is_empty() {
+        return Err(Error::Conflict(
+            "Every one of these dates already has an appointment or a block.",
+        ));
+    }
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO schedule_block_series (tenant_id,id,clinician_id,label,repeat,created_by,request_id,request_digest) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)").bind(a.tenant_id).bind(id).bind(p.clinician_id).bind(&p.label).bind(&p.repeat).bind(a.sub).bind(p.request_id).bind(&digest).execute(&mut *tx).await?;
+    for o in &free {
+        sqlx::query("INSERT INTO schedule_blocks (tenant_id,id,clinician_id,starts_at,ends_at,label,request_id,request_digest,series_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)").bind(a.tenant_id).bind(Uuid::new_v4()).bind(p.clinician_id).bind(o.starts_at).bind(o.ends_at).bind(&p.label).bind(Uuid::new_v4()).bind(&digest).bind(id).execute(&mut *tx).await?;
+    }
+    crate::postgres::audit(&mut tx, &a, "schedule.block_series", id).await?;
+    tx.commit().await?;
+    Ok(Json(
+        json!({"created":true,"series_id":id,"blocks":free.len(),"skipped":taken}),
+    ))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeriesCancel {
+    reason: String,
+    /// Remove the blocks that start at or after this time; none removes every block still there.
+    from: Option<DateTime<Utc>>,
+}
+async fn cancel_block_series(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(id): Path<Uuid>,
+    Json(p): Json<SeriesCancel>,
+) -> Result<Json<Value>> {
+    a.scheduling()?;
+    text(&p.reason, 1000)?;
+    let mut tx = db(&s)?.begin().await?;
+    tenant_lock(&mut tx, &a).await?;
+    let removed: Vec<Uuid> = sqlx::query_scalar("UPDATE schedule_blocks SET active=false,version=version+1 WHERE tenant_id=$1 AND series_id=$2 AND active AND ($3::timestamptz IS NULL OR starts_at>=$3) RETURNING id").bind(a.tenant_id).bind(id).bind(p.from).fetch_all(&mut *tx).await?;
+    if removed.is_empty() {
+        return Err(Error::Conflict(
+            "No blocks of this repeating block are left to remove; reload schedule",
+        ));
+    }
+    for block in &removed {
+        sqlx::query("INSERT INTO schedule_block_cancellations (tenant_id,block_id,actor_id,reason) VALUES ($1,$2,$3,$4)").bind(a.tenant_id).bind(block).bind(a.sub).bind(&p.reason).execute(&mut *tx).await?;
+    }
+    crate::postgres::audit(&mut tx, &a, "schedule.block_series_cancel", id).await?;
+    tx.commit().await?;
+    Ok(Json(json!({"cancelled":removed.len()})))
 }
 async fn mapping(
     a: Actor,

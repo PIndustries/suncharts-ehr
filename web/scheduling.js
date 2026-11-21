@@ -227,7 +227,7 @@ function mountScheduleBookingPatientPicker(){
   if(patient)patientPickerChoose(picker,patient);
 }
 function blockEditor(){
- schedulePanel(`<h2>Block provider time</h2><p class="muted">Use for breaks, leave, or administrative time. Existing appointments must be moved before blocking their time.</p><form id="schedule-block-form" data-request="${crypto.randomUUID()}"><label>Provider<select name="clinician_id" required>${scheduleProviders.map(p=>`<option value="${p.id}" ${p.id===(scheduleProvider||me.user_id)?'selected':''}>${esc(p.label)}</option>`).join('')}</select></label><label>Label<input name="label" required maxlength="200" placeholder="Lunch / administrative time"></label><label>Start<input name="starts_at" type="datetime-local" value="${scheduleDate}T12:00" required></label><label>End<input name="ends_at" type="datetime-local" value="${scheduleDate}T13:00" required></label><div class="actions"><button class="primary" type="submit">Block time</button><button type="button" data-schedule-close>Close</button></div></form>`);
+ schedulePanel(`<h2>Block provider time</h2><p class="muted">Use for breaks, leave, or administrative time. Existing appointments must be moved before blocking their time.</p><form id="schedule-block-form" data-request="${crypto.randomUUID()}"><label>Provider<select name="clinician_id" required>${scheduleProviders.map(p=>`<option value="${p.id}" ${p.id===(scheduleProvider||me.user_id)?'selected':''}>${esc(p.label)}</option>`).join('')}</select></label><label>Label<input name="label" required maxlength="200" placeholder="Lunch / administrative time"></label><label>Start<input name="starts_at" type="datetime-local" value="${scheduleDate}T12:00" required></label><label>End<input name="ends_at" type="datetime-local" value="${scheduleDate}T13:00" required></label><label>Repeat<select name="repeat"><option value="none">Does not repeat</option><option value="daily">Every day</option><option value="weekdays">Every weekday (Mon to Fri)</option><option value="weekly">Every week</option><option value="biweekly">Every 2 weeks</option><option value="monthly">Every month on this date</option></select></label><div class="block-repeat" data-block-repeat hidden><fieldset class="block-weekdays" data-block-weekdays hidden><legend>On</legend>${blockWeekdayNames.map((name,day)=>`<label><input type="checkbox" name="weekday" value="${day}"> ${name}</label>`).join('')}</fieldset><label>Until<input name="until" type="date"></label><p class="muted" data-block-repeat-summary role="status"></p></div><div class="block-conflicts" data-block-conflicts hidden></div><div class="actions"><button class="primary" type="submit">Block time</button><button type="button" data-schedule-close>Close</button></div></form>`);
 }
 document.addEventListener('click',e=>{
  const b=e.target.closest('button');if(!b||(!b.hasAttribute('data-chart-book')&&!b.hasAttribute('data-chart-book-close')))return;
@@ -253,7 +253,7 @@ document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||
   if(b.hasAttribute('data-schedule-more')){const page=await api(`/api/v1/patients?after=${encodeURIComponent(scheduleCursor)}`);schedulePatients.push(...page.items);scheduleCursor=page.next_cursor;if(!scheduleCursor)b.remove();return;}
  if(b.dataset.scheduleChart){await showClinical();await selectPatient(b.dataset.scheduleChart);return;}
  if(b.dataset.scheduleStart){const v=await api('/api/v1/visits','POST',{appointment_id:b.dataset.scheduleStart});await showClinical();await selectPatient(b.dataset.patient,v.id);return;}
- if(b.dataset.scheduleBlock){scheduleSelected=b.dataset.scheduleBlock;const block=scheduleState.blocks.find(x=>x.id===b.dataset.scheduleBlock);schedulePanel(`<h2>${esc(block.label)}</h2><p>${esc(date(block.starts_at))} – ${esc(date(block.ends_at))}</p>${canSchedule()?`<form id="schedule-block-cancel" data-id="${block.id}" data-version="${block.version}"><label>Reason for removing block<input name="reason" required maxlength="1000"></label><button type="submit">Remove time block</button></form>`:''}`);}
+ if(b.dataset.scheduleBlock){scheduleSelected=b.dataset.scheduleBlock;const block=scheduleState.blocks.find(x=>x.id===b.dataset.scheduleBlock);schedulePanel(`<h2>${esc(block.label)}</h2><p>${esc(date(block.starts_at))} – ${esc(date(block.ends_at))}</p>${canSchedule()?`${block.series_id?'<p class="muted">Part of a repeating block.</p>':''}<form id="schedule-block-cancel" data-id="${block.id}" data-version="${block.version}" data-series="${esc(block.series_id||'')}" data-starts="${esc(block.starts_at)}"><label>Reason for removing block<input name="reason" required maxlength="1000"></label><div class="actions"><button type="submit">${block.series_id?'Remove only this one':'Remove time block'}</button>${block.series_id?'<button type="submit" data-block-series="following">Remove this and all later ones</button><button type="submit" data-block-series="all">Remove every one</button>':''}</div></form>`:''}`);}
  });});
 document.addEventListener('change',e=>{const f=e.target.closest?.('#schedule-filter');if(!f||!['date','view','provider'].includes(e.target.name))return;const d=Object.fromEntries(new FormData(f));if(!d.date||!scheduleModes.has(d.view))return;scheduleDate=d.date;scheduleMode=d.view;scheduleProvider=d.provider||'';if(e.target.name==='provider')saveSchedulePreference('provider');run(()=>showSchedule());});
 document.addEventListener('submit',e=>{const f=e.target;if(!['schedule-filter','schedule-booking','schedule-action','schedule-block-form','schedule-block-cancel','schedule-move-form'].includes(f.id))return;e.preventDefault();run(async()=>{const d=Object.fromEntries(new FormData(f));delete d.repeat_frequency;delete d.repeat_interval;delete d.repeat_count;
@@ -269,7 +269,10 @@ document.addEventListener('submit',e=>{const f=e.target;if(!['schedule-filter','
  if(f.dataset.chartPatient){if(selected===f.dataset.chartPatient){await selectPatient(f.dataset.chartPatient,f.dataset.chartVisit||undefined);showChartSection('visits');notice('Appointment booked. Review its arrival before starting the encounter.');}return;}
  scheduleDate=localTime(saved.starts_at).slice(0,10);await showSchedule();await appointmentDetail(saved.id);notice(f.dataset.id?'Appointment updated.':'Appointment booked.');return;}
  if(f.id==='schedule-action'){const a=await api(`/api/v1/appointments/${f.dataset.id}/actions`,'POST',d,Number(f.dataset.version));await showSchedule();await appointmentDetail(a.id);notice('Appointment action recorded.');return;}
- if(f.id==='schedule-block-form'){d.request_id=f.dataset.request;d.starts_at=scheduleInstant(d.starts_at);d.ends_at=scheduleInstant(d.ends_at);await api('/api/v1/schedule/blocks','POST',d);await showSchedule();notice('Provider time blocked.');return;}
+ if(f.id==='schedule-block-form'){
+  if(d.repeat&&d.repeat!=='none'){await blockRepeatSave(f,e.submitter?.hasAttribute?.('data-block-skip'));return;}
+  await api('/api/v1/schedule/blocks','POST',{request_id:f.dataset.request,clinician_id:d.clinician_id,label:d.label,starts_at:scheduleInstant(d.starts_at),ends_at:scheduleInstant(d.ends_at)});await showSchedule();notice('Provider time blocked.');return;}
+ if(f.id==='schedule-block-cancel'&&e.submitter?.dataset?.blockSeries){const from=e.submitter.dataset.blockSeries==='following'?f.dataset.starts:null,data=await api(`/api/v1/schedule/block-series/${f.dataset.series}/cancel`,'POST',{reason:d.reason,from});await showSchedule();notice(`Removed ${data.cancelled} time block${data.cancelled===1?'':'s'}.`);return;}
  if(f.id==='schedule-block-cancel'){await api(`/api/v1/schedule/blocks/${f.dataset.id}/cancel`,'POST',d,Number(f.dataset.version));await showSchedule();notice('Time block removed.');}
  });});
 
@@ -326,3 +329,57 @@ async function calendarLinksAdminSheet(){
  panel.addEventListener('click',event=>{const button=event.target.closest?.('[data-calendar-admin-off]');if(!button)return;run(async()=>{await api(`/api/v1/practice/calendar-links/${button.dataset.calendarAdminOff}`,'DELETE');await paint(`Turned off the calendar link for ${button.dataset.name}.`);});});
 }
 document.addEventListener('click',event=>{const button=event.target?.closest?.('[data-calendar-links-admin]');if(!button?.hasAttribute?.('data-calendar-links-admin'))return;event.preventDefault();run(calendarLinksAdminSheet);},true);
+
+// Repeating block time. Staff choose how it repeats and the last day; the dates are worked out
+// here in local time, so "noon every weekday" stays at noon across a clock change. Every date
+// becomes an ordinary block, so one can be removed alone later.
+const blockWeekdayNames=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+function blockRepeatPlan(d,weekdays){
+ const [startDay,startTime]=String(d.starts_at||'').split('T'),[endDay,endTime]=String(d.ends_at||'').split('T');
+ if(!startDay||!startTime||!endDay||!endTime)throw new Error('Choose the start and end first.');
+ if(!d.until)throw new Error('Choose the last day this repeats.');
+ const day=86400000,parse=text=>{const [y,m,n]=text.split('-').map(Number);return new Date(Date.UTC(y,m-1,n));},text=t=>t.toISOString().slice(0,10);
+ const first=parse(startDay),span=Math.round((parse(endDay)-first)/day),last=parse(d.until);
+ if(!(last>first))throw new Error('The last day must be after the first block.');
+ if(last-first>366*day)throw new Error('A repeating block can run for up to a year. Choose an earlier last day.');
+ const on=new Set(weekdays.length?weekdays:[first.getUTCDay()]),dates=[];
+ for(let t=first,i=0;t<=last;t=new Date(t.getTime()+day),i++){
+  const weekday=t.getUTCDay(),week=Math.floor((i+first.getUTCDay())/7);
+  const wanted=d.repeat==='daily'||(d.repeat==='weekdays'&&weekday>=1&&weekday<=5)||(d.repeat==='weekly'&&on.has(weekday))||(d.repeat==='biweekly'&&on.has(weekday)&&week%2===0)||(d.repeat==='monthly'&&t.getUTCDate()===first.getUTCDate());
+  if(wanted)dates.push({starts:`${text(t)}T${startTime}`,ends:`${text(new Date(t.getTime()+span*day))}T${endTime}`});
+ }
+ const pretty=new Date(`${d.until}T12:00`).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
+ const days=[...on].sort().map(n=>blockWeekdayNames[n]).join(', ');
+ const words={daily:'Every day',weekdays:'Every weekday',weekly:`Every week on ${days}`,biweekly:`Every 2 weeks on ${days}`,monthly:`Every month on day ${first.getUTCDate()}`}[d.repeat];
+ return {dates,repeat:`${words} until ${pretty}`};
+}
+function blockRepeatRead(form){const d=Object.fromEntries(new FormData(form));return [d,[...form.querySelectorAll('[name="weekday"]')].filter(box=>box.checked).map(box=>Number(box.value))];}
+function blockRepeatPaint(form){
+ const [d,weekdays]=blockRepeatRead(form),box=form.querySelector('[data-block-repeat]'),days=form.querySelector('[data-block-weekdays]'),summary=form.querySelector('[data-block-repeat-summary]');
+ const repeating=d.repeat&&d.repeat!=='none';box.hidden=!repeating;days.hidden=!['weekly','biweekly'].includes(d.repeat);
+ form.querySelector('[name="until"]').required=!!repeating;
+ const conflicts=form.querySelector('[data-block-conflicts]');if(conflicts){conflicts.hidden=true;conflicts.replaceChildren();}
+ if(!repeating){summary.textContent='';return;}
+ if(!days.hidden&&!weekdays.length&&d.starts_at){const start=new Date(d.starts_at);if(Number.isFinite(start.getTime())){const own=form.querySelector(`[name="weekday"][value="${start.getDay()}"]`);if(own)own.checked=true;}}
+ if(!d.until){summary.textContent='Choose the last day this repeats.';return;}
+ try{const plan=blockRepeatPlan(...blockRepeatRead(form));summary.textContent=plan.dates.length<2?'That makes fewer than two blocks. Choose a later last day.':plan.dates.length>260?'That is more than 260 blocks. Choose an earlier last day.':`${plan.repeat}: ${plan.dates.length} blocks.`;}
+ catch(error){summary.textContent=error.message;}
+}
+async function blockRepeatSave(form,skip){
+ const [d,weekdays]=blockRepeatRead(form),plan=blockRepeatPlan(d,weekdays);
+ if(plan.dates.length<2)throw new Error('That makes fewer than two blocks. Choose a later last day.');
+ if(plan.dates.length>260)throw new Error('That is more than 260 blocks. Choose an earlier last day.');
+ const occurrences=plan.dates.map(o=>({starts_at:scheduleInstant(o.starts),ends_at:scheduleInstant(o.ends)}));
+ // A second press after the taken dates were shown is a new request: the first wrote nothing.
+ if(skip)form.dataset.request=crypto.randomUUID();
+ const data=await api('/api/v1/schedule/block-series','POST',{request_id:form.dataset.request,clinician_id:d.clinician_id,label:d.label,repeat:plan.repeat,occurrences,skip_conflicts:!!skip});
+ if(!data.created){
+  const host=form.querySelector('[data-block-conflicts]'),free=occurrences.length-data.conflicts.length;
+  host.hidden=false;
+  host.innerHTML=`<p><b>${data.conflicts.length} of the ${occurrences.length} dates already ${data.conflicts.length===1?'has':'have'} an appointment or a block.</b> Nothing has been blocked yet.</p><ul>${data.conflicts.slice(0,12).map(o=>`<li>${esc(date(o.starts_at))}</li>`).join('')}${data.conflicts.length>12?`<li>and ${data.conflicts.length-12} more</li>`:''}</ul>${free?`<button type="submit" data-block-skip>Block the other ${free} date${free===1?'':'s'}</button>`:'<p>Every date is taken. Change the time or the dates.</p>'}`;
+  return;
+ }
+ await showSchedule();
+ notice(`Blocked ${data.blocks} date${data.blocks===1?'':'s'}${data.skipped?.length?`. Skipped ${data.skipped.length} that ${data.skipped.length===1?'was':'were'} already taken`:''}.`);
+}
+for(const kind of ['change','input'])document.addEventListener(kind,event=>{const form=event.target?.closest?.('#schedule-block-form');if(form?.id==='schedule-block-form'&&typeof form.querySelector==='function'&&form.querySelector('[data-block-repeat]'))blockRepeatPaint(form);},true);
