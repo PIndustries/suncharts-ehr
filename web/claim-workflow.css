@@ -153,10 +153,43 @@
 @media(max-width:700px){.patient-banner .patient-banner-row.patient-banner-claim{grid-template-columns:1fr}}
 /* Where a claim is, at a glance: done steps green, a step skipped on the way amber, the step it is on
    now glowing, later steps quiet. The selectors match the compact and banner bars above. */
-:is(.claim-progress-bar,.claim-lifecycle.claim-progress-compact ol.claim-progress-bar,.patient-banner-claim .claim-progress-bar)>li.is-complete>.claim-progress-fill{background:var(--success-line)}
-:is(.claim-progress-bar,.claim-lifecycle.claim-progress-compact ol.claim-progress-bar,.patient-banner-claim .claim-progress-bar)>li.is-missed>.claim-progress-fill{background:var(--warning-line)}
-:is(.claim-progress-bar,.claim-lifecycle.claim-progress-compact ol.claim-progress-bar,.patient-banner-claim .claim-progress-bar)>li.is-current>.claim-progress-fill{background:var(--accent);animation:claim-step-glow 1.8s ease-in-out infinite}
+:is(.claim-progress-bar,.claim-lifecycle.claim-progress-compact ol.claim-progress-bar,.patient-banner-claim .claim-progress-bar)>li.is-complete>.claim-progress-fill{background:var(--success-text)}
+:is(.claim-progress-bar,.claim-lifecycle.claim-progress-compact ol.claim-progress-bar,.patient-banner-claim .claim-progress-bar)>li.is-missed>.claim-progress-fill{background:var(--warning-text)}
+:is(.claim-progress-bar,.claim-lifecycle.claim-progress-compact ol.claim-progress-bar,.patient-banner-claim .claim-progress-bar)>li.is-current>.claim-progress-fill{background:var(--blue);animation:claim-step-glow 1.8s ease-in-out infinite}
 :is(.claim-progress-bar,.claim-lifecycle.claim-progress-compact ol.claim-progress-bar,.patient-banner-claim .claim-progress-bar)>li.is-upcoming>.claim-progress-fill{background:var(--line);opacity:.6}
-@keyframes claim-step-glow{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 0%,transparent);filter:brightness(1)}50%{box-shadow:0 0 10px 2px color-mix(in srgb,var(--accent) 75%,transparent);filter:brightness(1.4)}}
+@keyframes claim-step-glow{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--blue) 0%,transparent);filter:brightness(1)}50%{box-shadow:0 0 10px 2px color-mix(in srgb,var(--blue) 75%,transparent);filter:brightness(1.4)}}
 .patient-banner-claim-now{font-weight:500}
 @media(prefers-reduced-motion:reduce){:is(.claim-progress-bar,.patient-banner-claim .claim-progress-bar)>li.is-current>.claim-progress-fill{animation:none}}
+/* Editing the codes: the encounter's own diagnoses and procedure lines shown as a panel over the page. */
+.codes-editor-bar{display:none}
+#encounter-revenue[data-codes-editing]{position:fixed;z-index:200;top:4vh;left:50%;transform:translateX(-50%);width:min(1240px,calc(100vw - 32px));max-height:92vh;overflow:auto;overscroll-behavior:contain;display:flex;flex-direction:column;margin:0;padding:0 20px 18px;border:0;border-radius:14px;background:var(--surface);box-shadow:0 0 0 100vmax rgb(8 18 28 / .55),0 24px 60px rgb(0 0 0 / .28);animation:sheet-in .28s cubic-bezier(.2,.8,.2,1)}
+#encounter-revenue[data-codes-editing]>*{display:none !important}
+#encounter-revenue[data-codes-editing]>:is(#encounter-diagnoses,#encounter-billing-editor){display:block !important;order:1}
+.codes-editor-foot{display:none}
+#encounter-revenue[data-codes-editing]{padding-bottom:0}
+#encounter-revenue[data-codes-editing]>.codes-editor-foot{display:flex !important;order:3;position:sticky;bottom:0;z-index:2;align-items:center;justify-content:space-between;gap:12px;margin:14px -20px 0;padding:12px 20px;background:var(--surface);border-top:1px solid var(--line)}
+.codes-editor-foot p{margin:0}
+#encounter-revenue[data-codes-editing] .charge-table-wrap{overflow-x:auto}
+.charge-price-memory{margin:6px 0 0}
+#encounter-revenue[data-codes-editing]>.codes-editor-bar{display:flex !important;order:0;position:sticky;top:0;z-index:2;align-items:center;justify-content:space-between;gap:12px;margin:0 -20px 10px;padding:14px 20px 10px;background:var(--surface);border-bottom:1px solid var(--line)}
+.codes-editor-bar h3{margin:0}
+@media(prefers-reduced-motion:reduce){#encounter-revenue[data-codes-editing]{animation:none}}
+.note-signed-line{margin:0 0 8px}
+#amendment-form.in-sheet>h3{display:none}
+#amendment-form:not(.in-sheet){display:none}
+/* The amount explains itself: the practice price fills in, a change says so, and nothing is pressed. */
+.billing-charge-row [data-fee-line]>[data-fee-check]{display:none}
+.billing-charge-row [data-fee-line][data-fee-schedule=""]>[data-fee-status]{display:none}
+/* Bundles: one pick adds a named set of procedure lines. */
+.charge-bundles{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin:0 0 10px}
+.charge-bundles:empty{display:none}
+.charge-bundles-label{font-size:var(--fs-sm);font-weight:600;color:var(--muted)}
+.charge-bundles button[data-bundle-add]{border-radius:999px;padding:5px 12px}
+.bundle-sheet{display:grid;gap:10px}
+.bundle-lines{margin:0;padding-left:18px;display:grid;gap:2px}
+.bundle-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;border-top:1px solid var(--line)}
+.bundle-row p{margin:0}
+#encounter-revenue[data-billing-part="details"] .charge-bundles{display:none}
+
+.calendar-sync-sheet{display:grid;gap:10px;max-width:560px}.calendar-sync-sheet p{margin:0}.calendar-sync-actions{display:flex;gap:8px;flex-wrap:wrap}.calendar-sync-sheet input[readonly]{width:100%;font-family:ui-monospace,monospace;font-size:var(--fs-xs)}
+.calendar-sync-actions a{display:inline-block;padding:8px 14px;border-radius:5px;background:var(--blue);color:#fff;font-weight:650;text-decoration:none}:root[data-theme=dark] .calendar-sync-actions a{color:#10282d}.calendar-sync-actions a:hover{filter:brightness(1.08)}

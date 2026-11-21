@@ -56,6 +56,22 @@ async fn owner(s: &State, h: &HeaderMap, write: bool) -> Result<Actor> {
     }
     Ok(a)
 }
+/// Who may add a code to the practice list or set its price: the owner, and the staff who enter
+/// charges. Staff other than the owner may add a code and change a price, and nothing else: turning
+/// a code off, renaming it, and switching a whole code set stay with the owner.
+async fn price_editor(s: &State, h: &HeaderMap) -> Result<Actor> {
+    let a = s
+        .browser
+        .as_ref()
+        .ok_or(Error::Unauthorized)?
+        .authenticate(h, true)
+        .await?;
+    a.scheduling()?;
+    if !matches!(a.role, Role::Owner) {
+        crate::access_policies::require_native(s, &a, "billing", "edit").await?;
+    }
+    Ok(a)
+}
 async fn locked<'a>(s: &'a State, a: &Actor) -> Result<Transaction<'a, Postgres>> {
     let mut tx = db(s)?.begin().await?;
     crate::billing::tenant_lock(&mut tx, a).await?;
@@ -348,7 +364,11 @@ async fn create(
     h: HeaderMap,
     Json(body): Json<NewCode>,
 ) -> Result<Response> {
-    let a = owner(&s, &h, true).await?;
+    let a = price_editor(&s, &h).await?;
+    let is_owner = matches!(a.role, Role::Owner);
+    if !is_owner && !body.enabled {
+        return Err(Error::Forbidden);
+    }
     let selected = system(&body.system)?;
     let code = crate::terminology::canonical_code(selected, &body.code)
         .map_err(|_| Error::Invalid("code is not valid for its system"))?;
@@ -360,7 +380,9 @@ async fn create(
         &body.modifiers,
     )?;
     let mut tx = locked(&s, &a).await?;
-    crate::partner_support::verify_owner_in_tx(&mut tx, &a, &h).await?;
+    if is_owner {
+        crate::partner_support::verify_owner_in_tx(&mut tx, &a, &h).await?;
+    }
     if let Some((id, existing)) = sqlx::query_as::<_, (Uuid, String)>(
         "SELECT id,system||':'||code FROM practice_codes WHERE tenant_id=$1 AND request_id=$2",
     )
@@ -427,7 +449,8 @@ async fn update(
     h: HeaderMap,
     Json(body): Json<CodeUpdate>,
 ) -> Result<Response> {
-    let a = owner(&s, &h, true).await?;
+    let a = price_editor(&s, &h).await?;
+    let is_owner = matches!(a.role, Role::Owner);
     let expected = version(&h)?;
     let display = body.display.trim().to_owned();
     let mods = fields(
@@ -437,7 +460,9 @@ async fn update(
         &body.modifiers,
     )?;
     let mut tx = locked(&s, &a).await?;
-    crate::partner_support::verify_owner_in_tx(&mut tx, &a, &h).await?;
+    if is_owner {
+        crate::partner_support::verify_owner_in_tx(&mut tx, &a, &h).await?;
+    }
     let current: Option<i64> = sqlx::query_scalar(
         "SELECT version FROM practice_codes WHERE tenant_id=$1 AND id=$2 FOR UPDATE",
     )
@@ -448,6 +473,23 @@ async fn update(
     let current = current.ok_or(Error::NotFound)?;
     if current != expected {
         return Err(Error::Conflict("code changed; reload before saving"));
+    }
+    if !is_owner {
+        // Staff change the price only; everything else about the code must be sent back unchanged.
+        let kept: (String, bool, i32, String) = sqlx::query_as(
+            "SELECT display,enabled,default_units,modifiers FROM practice_codes WHERE tenant_id=$1 AND id=$2",
+        )
+        .bind(a.tenant_id)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if kept.0 != display
+            || kept.1 != body.enabled
+            || kept.2 != body.default_units
+            || kept.3 != mods
+        {
+            return Err(Error::Forbidden);
+        }
     }
     sqlx::query("UPDATE practice_codes SET display=$3,enabled=$4,price_cents=$5,default_units=$6,modifiers=$7,version=version+1,updated_by=$8,updated_at=now() WHERE tenant_id=$1 AND id=$2")
         .bind(a.tenant_id)
@@ -466,10 +508,194 @@ async fn update(
     Ok(reply(item))
 }
 
+// ---- Bundles: named sets of procedure lines added to an encounter in one pick.
+
+const BUNDLE_VIEW: &str = "jsonb_build_object('id',b.id,'name',b.name,'lines',b.lines,'enabled',b.enabled,'version',b.version)";
+const DUPLICATE_BUNDLE: &str = "A bundle with this name already exists.";
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BundleLine {
+    code_system: String,
+    code: String,
+    description: String,
+    #[serde(default)]
+    modifiers: String,
+    units: i32,
+    #[serde(default)]
+    ndc_code: Option<String>,
+    #[serde(default)]
+    ndc_quantity: Option<String>,
+    #[serde(default)]
+    ndc_unit: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BundleBody {
+    name: String,
+    lines: Vec<BundleLine>,
+    #[serde(default = "yes")]
+    enabled: bool,
+}
+fn yes() -> bool {
+    true
+}
+/// The bundle as it is stored: a trimmed name and lines whose codes are in their canonical form.
+fn bundle_fields(body: &BundleBody) -> Result<(String, Value)> {
+    let name = body.name.trim();
+    if name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control) {
+        return Err(Error::Invalid(
+            "Give the bundle a name of up to 80 characters.",
+        ));
+    }
+    if body.lines.is_empty() || body.lines.len() > 20 {
+        return Err(Error::Invalid("A bundle has 1 to 20 procedure lines."));
+    }
+    let mut lines = Vec::with_capacity(body.lines.len());
+    for line in &body.lines {
+        let selected = system(&line.code_system)?;
+        if !matches!(selected, "CPT" | "HCPCS") {
+            return Err(Error::Invalid("A bundle holds procedure codes only."));
+        }
+        let code = crate::terminology::canonical_code(selected, &line.code)
+            .map_err(|_| Error::Invalid("A code in this bundle is not a valid procedure code."))?;
+        let mods = fields(&line.description, None, line.units, &line.modifiers)?;
+        let mut stored = json!({"code_system":selected,"code":code,"description":line.description.trim(),"modifiers":mods,"units":line.units});
+        let ndc = [&line.ndc_code, &line.ndc_quantity, &line.ndc_unit]
+            .map(|v| v.as_deref().map(str::trim).filter(|v| !v.is_empty()));
+        match ndc {
+            [None, None, None] => {}
+            [Some(code), Some(quantity), Some(unit)]
+                if code.len() <= 20 && quantity.len() <= 20 && unit.len() <= 4 =>
+            {
+                stored["ndc_code"] = json!(code);
+                stored["ndc_quantity"] = json!(quantity);
+                stored["ndc_unit"] = json!(unit);
+            }
+            _ => {
+                return Err(Error::Invalid(
+                    "For a drug line, give its NDC code, quantity and unit together.",
+                ))
+            }
+        }
+        lines.push(stored);
+    }
+    Ok((name.to_owned(), Value::Array(lines)))
+}
+async fn bundle_row(tx: &mut Transaction<'_, Postgres>, a: &Actor, id: Uuid) -> Result<Value> {
+    sqlx::query_scalar(&format!(
+        "SELECT {BUNDLE_VIEW} FROM practice_charge_bundles b WHERE b.tenant_id=$1 AND b.id=$2"
+    ))
+    .bind(a.tenant_id)
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or(Error::NotFound)
+}
+async fn bundle_name_taken(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    name: &str,
+    except: Option<Uuid>,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM practice_charge_bundles WHERE tenant_id=$1 AND enabled AND lower(name)=lower($2) AND ($3::uuid IS NULL OR id<>$3))",
+    )
+    .bind(a.tenant_id)
+    .bind(name)
+    .bind(except)
+    .fetch_one(&mut **tx)
+    .await?)
+}
+async fn list_bundles(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Response> {
+    a.staff()?;
+    crate::access_policies::require_native(&s, &a, "billing", "view").await?;
+    let items: Vec<Value> = sqlx::query_scalar(&format!(
+        "SELECT {BUNDLE_VIEW} FROM practice_charge_bundles b WHERE b.tenant_id=$1 AND b.enabled ORDER BY lower(b.name),b.id LIMIT 200"
+    ))
+    .bind(a.tenant_id)
+    .fetch_all(db(&s)?)
+    .await?;
+    Ok(reply(json!({"items":items})))
+}
+async fn create_bundle(
+    ExtractState(s): ExtractState<State>,
+    h: HeaderMap,
+    Json(body): Json<BundleBody>,
+) -> Result<Response> {
+    let a = price_editor(&s, &h).await?;
+    let (name, lines) = bundle_fields(&body)?;
+    let mut tx = locked(&s, &a).await?;
+    if bundle_name_taken(&mut tx, &a, &name, None).await? {
+        return Err(Error::CodedConflict {
+            code: "charge_bundle_exists",
+            message: DUPLICATE_BUNDLE,
+        });
+    }
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO practice_charge_bundles(tenant_id,id,name,lines,enabled,version,created_by,updated_by) VALUES($1,$2,$3,$4,true,1,$5,$5)")
+        .bind(a.tenant_id)
+        .bind(id)
+        .bind(&name)
+        .bind(&lines)
+        .bind(a.sub)
+        .execute(&mut *tx)
+        .await?;
+    let item = bundle_row(&mut tx, &a, id).await?;
+    crate::postgres::audit(&mut tx, &a, "practice.charge_bundle.created", id).await?;
+    tx.commit().await?;
+    Ok(reply(item))
+}
+async fn update_bundle(
+    ExtractState(s): ExtractState<State>,
+    Path(id): Path<Uuid>,
+    h: HeaderMap,
+    Json(body): Json<BundleBody>,
+) -> Result<Response> {
+    let a = price_editor(&s, &h).await?;
+    let expected = version(&h)?;
+    let (name, lines) = bundle_fields(&body)?;
+    let mut tx = locked(&s, &a).await?;
+    let current: Option<i64> = sqlx::query_scalar(
+        "SELECT version FROM practice_charge_bundles WHERE tenant_id=$1 AND id=$2 FOR UPDATE",
+    )
+    .bind(a.tenant_id)
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if current.ok_or(Error::NotFound)? != expected {
+        return Err(Error::Conflict("bundle changed; reload before saving"));
+    }
+    if body.enabled && bundle_name_taken(&mut tx, &a, &name, Some(id)).await? {
+        return Err(Error::CodedConflict {
+            code: "charge_bundle_exists",
+            message: DUPLICATE_BUNDLE,
+        });
+    }
+    sqlx::query("UPDATE practice_charge_bundles SET name=$3,lines=$4,enabled=$5,version=version+1,updated_by=$6,updated_at=now() WHERE tenant_id=$1 AND id=$2")
+        .bind(a.tenant_id)
+        .bind(id)
+        .bind(&name)
+        .bind(&lines)
+        .bind(body.enabled)
+        .bind(a.sub)
+        .execute(&mut *tx)
+        .await?;
+    let item = bundle_row(&mut tx, &a, id).await?;
+    crate::postgres::audit(&mut tx, &a, "practice.charge_bundle.updated", id).await?;
+    tx.commit().await?;
+    Ok(reply(item))
+}
+
 pub fn router() -> Router<State> {
     Router::new()
         .route("/api/v1/practice/code-sets", get(list_code_sets))
         .route("/api/v1/practice/code-sets/{system}", put(update_code_set))
         .route("/api/v1/practice/codes", get(list_codes).post(create))
         .route("/api/v1/practice/codes/{id}", put(update))
+        .route(
+            "/api/v1/practice/charge-bundles",
+            get(list_bundles).post(create_bundle),
+        )
+        .route("/api/v1/practice/charge-bundles/{id}", put(update_bundle))
 }

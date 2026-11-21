@@ -49,6 +49,9 @@ function restoreBillingChargeDraft(account,source,visit){
  const replaced=!!account&&draft.account!==account.id,readOnly=!!account&&(account.status!=='draft'||replaced),stale=!!account&&Number(form.dataset.version)!==account.version;
  if(readOnly){form.dataset.draftReadOnly='true';form.querySelectorAll('input,textarea').forEach(field=>field.readOnly=true);form.querySelectorAll('select,button,input[type="checkbox"],input[type="radio"]').forEach(field=>field.disabled=true);}
  else if(stale){form.dataset.draftStale='true';form.querySelector('button[type="submit"]').disabled=true;}
+ // Edits brought back into a draft that can still take them carry on saving by themselves;
+ // only a draft that cannot be saved as it stands stops and says why.
+ if(!readOnly&&!stale)return true;
  if(form.querySelector?.('#billing-charge-lines'))form.dataset.autosave='off';
  form.insertAdjacentHTML('afterbegin',`<section data-charge-draft-notice role="status"><p>${readOnly?'These retained edits are not part of the current saved account. Review or copy them; this account cannot accept this draft.':stale?'Saved charges changed since you started. Review the current charges above before keeping your edits.':'Unsaved charge edits have been restored in this tab.'}</p>${stale&&!readOnly?'<button type="button" data-rebase-charge-draft>Keep my edits after reviewing saved charges</button>':''}<button type="button" data-discard-charge-draft="${esc(draft.key)}">Discard retained charge edits</button></section>`);
  return true;
@@ -478,7 +481,7 @@ function chargeMiniField(name,label,value='',max=200,required=false){return `<la
 function chargeProcedureFallback(l){return `<label>Code<input name="code" type="text" value="${esc(l.code||'')}" maxlength="100" required></label><label class="charge-description-field">Description<input name="description" type="text" value="${esc(l.description||'')}" maxlength="10000" autocomplete="off" placeholder="What this service was"></label>`;}
 function chargeCodeCell(l){
  const extra=chargeIsDrugCode(l.code)||l.ndc_code||l.ndc_quantity||l.ndc_unit?'':' hidden';
- return `${typeof terminologyProcedureFields==='function'?terminologyProcedureFields(l):chargeProcedureFallback(l)}<div class="charge-drug"${extra}><p class="charge-drug-title">Drug given</p><div class="charge-drug-grid"><label>NDC code<input name="ndc_code" type="text" maxlength="13" value="${esc(l.ndc_code||'')}" placeholder="11 digits"></label><label>Quantity<input name="ndc_quantity" type="text" maxlength="7" value="${esc(l.ndc_quantity||'')}" placeholder="Amount given"></label><label>Unit<select name="ndc_unit">${ndcUnits.map(([v,name])=>`<option value="${v}" ${v===(l.ndc_unit||'')?'selected':''}>${v?`${v} — ${name}`:''}</option>`).join('')}</select></label></div><p class="muted">For an injected drug fill all three; leave them blank for any other service.</p></div>`;
+ return `${typeof terminologyProcedureFields==='function'?terminologyProcedureFields(l):chargeProcedureFallback(l)}<div class="charge-drug"${extra}><p class="charge-drug-title">Drug given</p><div class="charge-drug-grid"><label>NDC code<input name="ndc_code" type="text" maxlength="13" value="${esc(l.ndc_code||'')}" placeholder="11 digits"></label><label>Quantity<input name="ndc_quantity" type="text" maxlength="7" value="${esc(l.ndc_quantity||'')}" placeholder="Amount given"></label><label>Unit<select name="ndc_unit">${ndcUnits.map(([v,name])=>`<option value="${v}" ${v===(l.ndc_unit||'')?'selected':''}>${v?`${v} — ${name}`:''}</option>`).join('')}</select></label></div><p class="muted">For an injected drug fill all three; leave them blank for any other service.</p><div class="charge-waste" data-drug-waste><p class="charge-drug-title">Given and discarded</p><div class="charge-waste-grid"><label>Units given<input type="text" inputmode="numeric" maxlength="6" data-waste-given placeholder="155"></label><label>Vial size<input type="text" inputmode="numeric" maxlength="6" data-waste-vial placeholder="100"></label><button type="button" data-drug-waste-apply>Set units and wastage</button></div><p class="muted" data-drug-waste-note>Type the units given and the vial size. Nothing discarded adds JZ; anything discarded adds its own JW line.</p></div></div>`;
 }
 // What the code list the line came from, kept with the procedure box that chose it. The box the
 // person reads is the procedure box alone; the code list record and the lookup sit with it.
@@ -538,6 +541,8 @@ function openChargeDiagnosisSection(){
 // The amount an edit leaves behind, in cents, or nothing at all while it is not yet an amount.
 // The amount each line was saved at, remembered on the row, survives while it is edited.
 function seedChargeRowAmounts(form){for(const row of chargeLiveRows(form))chargeRowMemory(row).amountCents=chargeRowAmountCents(row);}
+// An amount changed on a line that was already saved is the line's amount from then on.
+if(typeof document!=='undefined'&&document.addEventListener)for(const kind of ['input','change'])document.addEventListener(kind,event=>{const field=event.target;if(field?.name!=='amount')return;const row=field.closest?.('.billing-charge-row');if(row&&chargeRowMemoryCache.has(row))chargeRowMemoryCache.get(row).amountCents=chargeRowAmountCents(row);},true);
 function chargeRowAmountCents(row){
  const text=String(row.querySelector?.('[name="amount"]')?.value||'').replace(/[$\s]/g,'');
  if(!text)return null;
@@ -835,6 +840,19 @@ function undoChargeRemoval(form){
  captureBillingChargeDraft();
  scheduleChargeAutosave(form);
 }
+// What stops a line from being saved at all (the rest can be filled in later). A row nobody has
+// typed in yet stops nothing.
+function chargeRowUnsavable(row){
+ const code=(row.querySelector('[name="code"]')?.value||'').trim(),description=chargeLineDescription(row).trim(),amount=chargeRowAmount(row);
+ if(!code&&!description&&amount==null)return '';
+ return !code?'add the procedure code':!description?'add what this service was':amount==null?'add the amount':'';
+}
+// The lines that are complete enough to keep are saved straight away; a line still missing
+// something waits on the screen and says what it needs, without holding the others back.
+function chargeRowsToSend(form){return chargeLiveRows(form).filter(row=>(row.querySelector('[name="code"]')?.value||'').trim()&&!chargeRowUnsavable(row));}
+function chargeTableWaiting(form){
+ return chargeLiveRows(form).map(row=>({row,missing:chargeRowUnsavable(row)})).filter(item=>item.missing).map(item=>`Line ${chargeRowLabel(item.row)} is not saved yet: ${item.missing}.`).join(' ');
+}
 function chargeRowLabel(row){const code=(row.querySelector('[name="code"]')?.value||'').trim();return code||'without a code';}
 // One quiet line beside the table: saving, saved, or what went wrong with one way to retry.
 function setChargeStatus(form,state,message){
@@ -861,7 +879,10 @@ function scheduleChargeAutosave(form,delay=700){
  if(!form?.isConnected||form.dataset.patient!==selected||!chargeLineCount(form))return;
  if(form.dataset.chargeSaving||form.dataset.chargeConflict||form.dataset.draftReadOnly||form.dataset.draftStale)return;
  const identity=me,patient=selected,editing=!!form.dataset.id;
+ const sending=chargeRowsToSend(form),held=chargeTableWaiting(form);
+ if(!sending.length){renderChargeRowProblems(form);if(held)setChargeStatus(form,'waiting',held);return;}
  const version=Number(form.dataset.version),body=chargeDraftBody(form);
+ body.content.lines=sending.map(chargeRowValue);
  form.dataset.chargeSaving='true';delete form.dataset.chargeSavedAt;
  renderChargeRowProblems(form);setChargeStatus(form,'saving');
  let saved;
@@ -886,13 +907,16 @@ function scheduleChargeAutosave(form,delay=700){
  const signature=chargeTableSignature(saved.content);
  if(html!==null)billingChargeBaselines.set(form,signature);
  const lines=Array.isArray(saved.content?.lines)?saved.content.lines:[];
- const rows=chargeLiveRows(form);
+ // Only the rows that were sent are matched against what came back; a row still waiting stays as typed.
+ const rows=sending.filter(row=>row.isConnected!==false&&!chargeRowRemoved(row));
  if(lines.length===rows.length)lines.forEach((line,index)=>{if(chargeRowSignature(rows[index])!==chargeLineSignature(line))renderChargeRowReplacement(form,rows[index],line);});
- else renderChargeTableRows(form,lines.length?lines:body.content.lines);
+ else if(!held&&lines.length)renderChargeTableRows(form,lines);
  chargeTableTotals(form);
  renderChargeRowProblems(form);
- setChargeStatus(form,'saved');
- clearTimeout(form.chargeSavedTimer);form.chargeSavedTimer=setTimeout(()=>setChargeStatus(form,'quiet'),4000);
+ const stillHeld=chargeTableWaiting(form);
+ clearTimeout(form.chargeSavedTimer);
+ if(stillHeld)setChargeStatus(form,'waiting',`Saved. ${stillHeld}`);
+ else{setChargeStatus(form,'saved');form.chargeSavedTimer=setTimeout(()=>setChargeStatus(form,'quiet'),4000);}
  closeChargeRemovals();
  if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();
  chargeSavedFollowUp(form,saved,identity,patient);
@@ -902,7 +926,10 @@ async function saveChargeTable(form){
  if(form.dataset.chargeSaving||form.dataset.chargeConflict||form.dataset.draftReadOnly||form.dataset.draftStale)return;
  if(form.dataset.mode==='correction')return correctChargeTable(form);
  const identity=me,patient=selected,editing=!!form.dataset.id;
+ const sending=chargeRowsToSend(form),held=chargeTableWaiting(form);
+ if(!sending.length){renderChargeRowProblems(form);if(held)setChargeStatus(form,'waiting',held);return;}
  const version=Number(form.dataset.version),body=chargeDraftBody(form);
+ body.content.lines=sending.map(chargeRowValue);
  form.dataset.chargeSaving='true';delete form.dataset.chargeSavedAt;
  renderChargeRowProblems(form);setChargeStatus(form,'saving');
  let saved;
@@ -931,13 +958,16 @@ async function saveChargeTable(form){
  // resolved against a code list. Only a row that differs from what was sent is re-rendered,
  // so a cell staff are still typing in is never replaced under them.
  const lines=Array.isArray(saved.content?.lines)?saved.content.lines:[];
- const rows=chargeLiveRows(form);
+ // Only the rows that were sent are matched against what came back; a row still waiting stays as typed.
+ const rows=sending.filter(row=>row.isConnected!==false&&!chargeRowRemoved(row));
  if(lines.length===rows.length)lines.forEach((line,index)=>{if(chargeRowSignature(rows[index])!==chargeLineSignature(line))renderChargeRowReplacement(form,rows[index],line);});
- else renderChargeTableRows(form,lines.length?lines:body.content.lines);
+ else if(!held&&lines.length)renderChargeTableRows(form,lines);
  chargeTableTotals(form);
  renderChargeRowProblems(form);
- setChargeStatus(form,'saved');
- clearTimeout(form.chargeSavedTimer);form.chargeSavedTimer=setTimeout(()=>setChargeStatus(form,'quiet'),4000);
+ const stillHeld=chargeTableWaiting(form);
+ clearTimeout(form.chargeSavedTimer);
+ if(stillHeld)setChargeStatus(form,'waiting',`Saved. ${stillHeld}`);
+ else{setChargeStatus(form,'saved');form.chargeSavedTimer=setTimeout(()=>setChargeStatus(form,'quiet'),4000);}
  closeChargeRemovals();
  if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();
  chargeSavedFollowUp(form,saved,identity,patient);
@@ -1452,7 +1482,7 @@ function accountEditor(a,m,encounterContext=false,options={}){
  // A charge editor opened for an encounter is a live table: the lines, then one box with the encounter,
  // insurance and fee details. Nothing a line needs sits behind a closed box, and every edit
  // saves itself. Reconciling a record from the previous system keeps its one review step.
- const compact=!!v.visit_id,sourceLines=m?' data-charge-lines-source=""':'',chargeVisitBlock=`<div class="form-grid"><label>Visit<select name="visit_id" ${sourceBacked?'':'required'}><option value="">${sourceBacked?'Source kept — no visit found for it':'Choose a patient visit'}</option>${workspace.visits.map(vis=>`<option value="${vis.id}" ${v.visit_id===vis.id?'selected':''}>${esc((workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.title||'Visit')+' · '+date(workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.starts_at||vis.created_at))} · ${esc(human(vis.status))}</option>`).join('')}</select></label>${billingField('service_date','Service date',v.service_date,'date',0,true)}<label>Billing coverage<select name="coverage_id"><option value="">Self-pay / no selected coverage</option>${workspace.billing.coverages.map(c=>`<option value="${c.id}" ${v.coverage_id===c.id?'selected':''}>${esc(human(c.content.priority))} · ${esc(payerName(c.content.payer_id))} · ${esc(c.content.member_id)}</option>`).join('')}</select></label><label>Currency<input value="USD" readonly></label></div>`,chargeNotesBlock=`<label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>`,chargeLinesBlock=`${chargeLinesMarkup(v.lines,compact)}<div class="charge-table-foot"><button type="button" data-add-charge>${compact?'+ Add another charge':'+ Charge line'}</button><p class="charge-table-status" data-charge-status role="status" aria-live="polite"></p></div>${correcting?'':`<div class="charge-table-next-slot" data-charge-next>${chargeTableNextMarkup(v.visit_id,chargeTableNextWritten)}</div>`}`,chargeOptionsBlock=`${chargeVisitBlock}<div data-charge-coverage-order>${billingCoverageOrderMarkup(v.service_date,v.coverage_id,compact)}</div>${typeof feeContextMarkup==='function'?feeContextMarkup(v.fee_context):''}${chargeNotesBlock}`,  chargeFormBody=compact?`<h4 class="charge-lines-title">Procedures</h4>${chargeLinesBlock}${encounterClaimDetailsMarkup(v.claim_details,'actions')}<section class="charge-encounter-head" data-visit-charge-options><h4>Insurance and dates</h4>${chargeVisitBlock}<div data-charge-coverage-order>${billingCoverageOrderMarkup(v.service_date,v.coverage_id,compact)}</div>${encounterClaimDetailsMarkup(v.claim_details,'head')}</section>${encounterClaimDetailsMarkup(v.claim_details,'provider')}<details class="charge-more-options"><summary>Hospital stay, claim codes and box 19</summary>${encounterClaimDetailsMarkup(v.claim_details,'extras')}</details><details class="charge-more-options"><summary>Fees and notes</summary>${typeof feeContextMarkup==='function'?feeContextMarkup(v.fee_context):''}${chargeNotesBlock}${encounterClaimDetailsMarkup(v.claim_details,'notes')}</details>`:`${chargeOptionsBlock}<p class="muted">Enter the amount for the whole line, not for one unit.</p>${chargeLinesBlock}`;
+ const compact=!!v.visit_id,sourceLines=m?' data-charge-lines-source=""':'',chargeVisitBlock=`<div class="form-grid"><label>Visit<select name="visit_id" ${sourceBacked?'':'required'}><option value="">${sourceBacked?'Source kept — no visit found for it':'Choose a patient visit'}</option>${workspace.visits.map(vis=>`<option value="${vis.id}" ${v.visit_id===vis.id?'selected':''}>${esc((workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.title||'Visit')+' · '+date(workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.starts_at||vis.created_at))} · ${esc(human(vis.status))}</option>`).join('')}</select></label>${billingField('service_date','Service date',v.service_date,'date',0,true)}<label>Billing coverage<select name="coverage_id"><option value="">Self-pay / no selected coverage</option>${workspace.billing.coverages.map(c=>`<option value="${c.id}" ${v.coverage_id===c.id?'selected':''}>${esc(human(c.content.priority))} · ${esc(payerName(c.content.payer_id))} · ${esc(c.content.member_id)}</option>`).join('')}</select></label><label>Currency<input value="USD" readonly></label></div>`,chargeNotesBlock=`<label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>`,chargeLinesBlock=`${chargeLinesMarkup(v.lines,compact)}<div class="charge-table-foot"><button type="button" data-add-charge>${compact?'+ Add another charge':'+ Charge line'}</button><p class="charge-table-status" data-charge-status role="status" aria-live="polite"></p></div>${correcting?'':`<div class="charge-table-next-slot" data-charge-next>${chargeTableNextMarkup(v.visit_id,chargeTableNextWritten)}</div>`}`,chargeOptionsBlock=`${chargeVisitBlock}<div data-charge-coverage-order>${billingCoverageOrderMarkup(v.service_date,v.coverage_id,compact)}</div>${typeof feeContextMarkup==='function'?feeContextMarkup(v.fee_context):''}${chargeNotesBlock}`,  chargeFormBody=compact?`<h4 class="charge-lines-title">Procedures</h4><div class="charge-bundles" data-charge-bundles></div>${chargeLinesBlock}${encounterClaimDetailsMarkup(v.claim_details,'actions')}<section class="charge-encounter-head" data-visit-charge-options><h4>Insurance and dates</h4>${chargeVisitBlock}<div data-charge-coverage-order>${billingCoverageOrderMarkup(v.service_date,v.coverage_id,compact)}</div>${encounterClaimDetailsMarkup(v.claim_details,'head')}</section>${encounterClaimDetailsMarkup(v.claim_details,'provider')}<details class="charge-more-options"><summary>Hospital stay, claim codes and box 19</summary>${encounterClaimDetailsMarkup(v.claim_details,'extras')}</details><details class="charge-more-options"><summary>Fees and notes</summary>${typeof feeContextMarkup==='function'?feeContextMarkup(v.fee_context):''}${chargeNotesBlock}${encounterClaimDetailsMarkup(v.claim_details,'notes')}</details>`:`${chargeOptionsBlock}<p class="muted">Enter the amount for the whole line, not for one unit.</p>${chargeLinesBlock}`;
  // Charges for the encounter in hand come from that visit alone; a reconciliation of a record from
  // the previous system, or a chart opened elsewhere, is never filled in from another visit.
  // Charges are only ever filled in for the encounter this table is being opened for, and only from
@@ -1460,7 +1490,7 @@ function accountEditor(a,m,encounterContext=false,options={}){
  // opened elsewhere, is never filled in from another visit.
  const proposalVisit=v.visit_id?(workspace.visits||[]).find(vis=>vis.id===v.visit_id&&vis.patient_id===selected)||null:null;
  const proposal=chargeProposeBeforeRender(!a&&!m?proposalVisit:null);
- if(restoreBillingChargeDraft(a,m?.source_history_id,v.visit_id)){const restored=$('billing-account-form');seedChargeRowAmounts(restored);chargeTableTotals(restored);renderChargeRowProblems(restored);openChargeDiagnosisSection();void loadChargeEncounterDiagnoses(restored);return;}
+ if(restoreBillingChargeDraft(a,m?.source_history_id,v.visit_id)){const restored=$('billing-account-form');seedChargeRowAmounts(restored);chargeTableTotals(restored);renderChargeRowProblems(restored);openChargeDiagnosisSection();void loadChargeEncounterDiagnoses(restored);if(compact&&typeof chargeBundlesLoad==='function')void chargeBundlesLoad().then(chargeBundlesPaint);scheduleChargeAutosave(restored);return;}
   openBillingEditor(`${compact&&typeof renderVisitDiagnoses==='function'?chargeDiagnosisSectionMarkup():''}<form id="billing-account-form"${sourceLines} data-compact="${compact}" data-id="${a?.id||''}" data-version="${a?.version||''}" data-request="${crypto.randomUUID()}" data-source="${m?.source_history_id||''}" data-mode="${correcting?'correction':'draft'}"><h3>${a?(correcting?'Correct posted charges':'Edit draft charges'):m?'Reconcile source billing to draft':'Charges for this encounter'}</h3>${sourceNotice(m)}${chargeFormBody}${m?`<label class="review-ack"><input type="checkbox" name="verified" required> I verified the source visit, charges, fee basis, diagnoses and prior payment history. This creates a draft only.</label>${billingField('reason','Reason for this reconciliation','','text',1000,true)}<div class="actions"><button class="primary" type="submit">Create draft charges</button><button type="button" data-cancel-billing>Cancel</button></div>`:correcting?`<div class="actions"><button type="button" class="primary" data-save-charge-correction>Save changes</button><button type="button" data-cancel-billing>Cancel</button></div>`:''}</form>`);
   const form=$('billing-account-form');if(form){form.dataset.patient=selected;form.dataset.draftKey=billingChargeKey(a?.id,m?.source_history_id,v.visit_id);form.dataset.autosave=m||correcting?'off':'on';
   // Filled in from the earlier visit, or the blank line the table always starts with: the rows
@@ -1468,7 +1498,7 @@ function accountEditor(a,m,encounterContext=false,options={}){
   chargeProposeAfterRender(form,proposal);
   if(m){const baseline=billingChargeMarkup(form);if(baseline)billingChargeBaselines.set(form,baseline);}
   else{billingChargeBaselines.set(form,chargeTableSignature(a?.content||{lines:chargeLiveRows(form).map(chargeRowValue)}));seedChargeRowAmounts(form);chargeTableTotals(form);renderChargeRowProblems(form);}
-  openChargeDiagnosisSection();void loadChargeEncounterDiagnoses(form);if(typeof loadFeeContext==='function')void loadFeeContext(form);if(compact)void encounterOptionsLoad();}
+  openChargeDiagnosisSection();void loadChargeEncounterDiagnoses(form);if(typeof loadFeeContext==='function')void loadFeeContext(form);if(compact)void encounterOptionsLoad();if(compact&&typeof chargeBundlesLoad==='function')void chargeBundlesLoad().then(chargeBundlesPaint);}
 }
 function ledgerEditor(original){
  openBillingEditor(`<form id="billing-ledger-form" data-request="${crypto.randomUUID()}" data-reverses="${original?.id||''}"><h3>${original?'Reverse recorded entry':'Record payment / adjustment'}</h3><p class="muted">This records accounting evidence only. No card, bank or payer transaction is executed.</p>${original?`<p>Reverse ${esc(ledgerKind(original.kind))}: ${money(original.effect_cents)}. The original entry is retained.</p>`:`<div class="form-grid">${selectField('kind','Entry kind',['payment','adjustment_credit','adjustment_debit'],'payment')}${billingField('amount','Amount (USD)','','text',30,true)}${selectField('party','Recorded party',['patient','insurer','other'],'patient')}${selectField('method','Evidence method',['cash','check','external','other','none'],'external')}${billingField('reference','Receipt / EOB reference','','text',200)}</div>`}${billingField('occurred_on','Activity date','','date',0,true)}${billingField('reason','Reason / evidence','','text',1000,true)}<p class="muted">Do not enter payment-card numbers, bank details or credentials. Reversals and credits cannot create an overpayment.</p><div class="actions"><button type="submit" class="primary">${original?'Record reversal':'Record ledger entry'}</button><button type="button" data-cancel-billing>Cancel</button></div></form>`);

@@ -543,6 +543,8 @@ const pressCardCharges=async()=>{
  reset([earlierAccount]);
  form=await openStep();
  type(form.querySelector('[name="diagnoses"]'),'J10.0');
+ // A line the price list did not cover is not sent until it has its amount.
+ for(const input of form.querySelectorAll('[name="amount"]'))if(!input.value)type(input,'9.00');
  await advance();
  assert.ok(sent.some(call=>call.method==='POST'),'the filled-in table was saved as this encounter\u2019s charges');
  ctx.workspace.billing.accounts=[earlierAccount];

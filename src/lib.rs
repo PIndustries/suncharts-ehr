@@ -13,6 +13,7 @@ pub mod browser;
 pub mod builtin_catalogs;
 pub mod builtin_connectors;
 pub mod ca277;
+pub mod calendar_feed;
 pub mod care_pathways;
 pub mod checkout;
 mod claim_cob;
@@ -417,6 +418,7 @@ pub fn app(state: State) -> Router {
         .merge(erx_setup::router())
         .merge(labs::router())
         .merge(scheduling::router())
+        .merge(calendar_feed::router())
         .merge(schedule_markers::router())
         .merge(recurrence::router())
         .merge(reminders::router())

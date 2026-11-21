@@ -94,7 +94,7 @@ async function testEncounterStates() {
   for (const role of ['front_desk', 'read_only']) {
     f.evaluate(`me.role=${JSON.stringify(role)}; activeVisit.clinician_id='another-clinician';renderVisit(false)`);
     assert.doesNotMatch(f.node('visit-editor').innerHTML, /data-action="sign"|id="amendment-form"|>Save note<|>Save vitals</, role);
-    assert.match(f.node('visit-editor').innerHTML, /A clinician can add a correction\./, role);
+    assert.doesNotMatch(f.node('visit-editor').innerHTML, /data-action="focus-amendment"/, role);
   }
   // An unsigned note of a colleague's visit: clinicians and the owner write and sign it; front desk and read-only staff read it.
   for (const role of ['owner', 'clinician']) {

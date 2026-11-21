@@ -1061,6 +1061,18 @@ if(typeof document!=='undefined'&&document.addEventListener)document.addEventLis
  if(!details||details.tagName!=='DETAILS'||details.open||details.hasAttribute('data-inline')||!details.closest?.('#visit-page-host'))return;
  event.preventDefault();detailsSheetOpen(details);
 });
+// Editing a signed note opens over the page. The form goes back where it was on close, and the
+// sheet closes by itself once the note is redrawn after a save.
+function noteEditSheetOpen(){
+ const form=$('amendment-form'),editor=$('visit-editor');if(!form||form.closest('dialog'))return;
+ const marker=document.createComment('amendment-form');form.before(marker);
+ const dialog=sheetOpen('Edit note',form);form.classList.add('in-sheet');
+ const back=()=>{form.classList.remove('in-sheet');if(marker.isConnected)marker.replaceWith(form);watch?.disconnect();};
+ const watch=editor&&typeof MutationObserver!=='undefined'?new MutationObserver(()=>{if(!marker.isConnected){watch.disconnect();if(dialog.open)dialog.close();dialog.remove();}}):null;
+ watch?.observe(editor,{childList:true,subtree:true});
+ dialog.addEventListener('close',back);
+ form.querySelector('[name="text"]')?.focus();
+}
 // Briefly marks what just changed so the eye finds it.
 function flashUpdated(node){if(!node?.classList)return;node.classList.remove('just-updated');void node.offsetWidth;node.classList.add('just-updated');setTimeout(()=>node.classList.remove('just-updated'),1600);}
 function openClaimQuickFix(){

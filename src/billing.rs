@@ -265,14 +265,22 @@ pub struct AccountContent {
 }
 impl AccountContent {
     fn total(&self) -> Result<i64> {
-        if self.currency != "USD"
-            || self.lines.is_empty()
-            || self.lines.len() > 100
-            || self.service_date > Utc::now().date_naive()
-        {
+        // Each refusal says the one thing that is wrong, in the words staff see on the screen.
+        if self.service_date > Utc::now().date_naive() {
             return Err(Error::Invalid(
-                "USD billing requires 1 to 100 charge lines and a nonfuture service date",
+                "The date of service is in the future. Charges can be saved on or after the day of the visit.",
             ));
+        }
+        if self.lines.is_empty() {
+            return Err(Error::Invalid("Add at least one procedure before saving."));
+        }
+        if self.lines.len() > 100 {
+            return Err(Error::Invalid(
+                "An encounter can have up to 100 procedure lines.",
+            ));
+        }
+        if self.currency != "USD" {
+            return Err(Error::Invalid("Charges are saved in US dollars."));
         }
         bounded(&self.notes, 2000)?;
         if let Some(details) = &self.claim_details {

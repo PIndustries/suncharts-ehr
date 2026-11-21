@@ -41,10 +41,10 @@ function applyFee(form,row,quote){const host=row.querySelector('[data-fee-line]'
 // Both outcomes of a price lookup — covered or not — say the same thing to a filled-in row, so
 // the note is asked for in one place and the row's note is never left behind the price list.
 function feeRowPriced(form,row){if(typeof chargePricedByFeeLookup==='function')chargePricedByFeeLookup(form,row);}
-async function checkFee(form,row,apply=false,context){const host=row.querySelector('[data-fee-line]'),query=feeQuery(form,row,context);if(!host)return;const unpriced=()=>{if(!query)host.querySelector('[data-fee-status]').textContent='Select the encounter, service date, facility, setting, code and units to check fees.';if(apply)feeRowPriced(form,row);};if(!query){unpriced();return;}const initialAmount=row.querySelector('[name="amount"]').value,identity=me,patient=selected,generation=(feeRequests.get(host)||0)+1;feeRequests.set(host,generation);host.querySelector('[data-fee-apply]').hidden=true;
+async function checkFee(form,row,apply=false,context){const host=row.querySelector('[data-fee-line]'),query=feeQuery(form,row,context);if(!host)return;const unpriced=()=>{if(!query)host.querySelector('[data-fee-status]').textContent='Type the amount for this line.';if(apply)feeRowPriced(form,row);};if(!query){unpriced();return;}const initialAmount=row.querySelector('[name="amount"]').value,identity=me,patient=selected,generation=(feeRequests.get(host)||0)+1;feeRequests.set(host,generation);host.querySelector('[data-fee-apply]').hidden=true;
  try{const data=await api(`/api/v1/patients/${patient}/fee-quote?${query}`);if(!feeFormCurrent(form,identity,patient)||!row.isConnected||feeRequests.get(host)!==generation||feeQuery(form,row)!==query)return;const q=data.quote;if(!q){host.querySelector('[data-fee-status]').textContent=data.reason;if(apply)feeRowPriced(form,row);return;}host.feeQuote=q;host.dataset.quoteQuery=query;host.querySelector('[data-fee-status]').textContent=`Approved ${q.schedule.name}: ${money(q.unit_amount_cents)} per unit × ${q.units} = ${money(q.expected_line_amount_cents)}. ${q.schedule.qp_basis}; ${q.schedule.locality}.`;host.querySelector('[data-fee-apply]').hidden=false;
  const amount=row.querySelector('[name="amount"]').value;let ownedAmount=false;try{ownedAmount=!!host.dataset.feeSchedule&&cents(amount)===Number(host.dataset.feeExpected);}catch{}if((apply&&amount===initialAmount)||(!host.dataset.feePreserved&&(!amount||ownedAmount)))applyFee(form,row,q);
- }catch(e){if(feeFormCurrent(form,identity,patient)&&row.isConnected&&feeRequests.get(host)===generation)host.querySelector('[data-fee-status]').textContent='Approved fee unavailable. Review or retain the manual amount.';}
+ }catch(e){if(feeFormCurrent(form,identity,patient)&&row.isConnected&&feeRequests.get(host)===generation)host.querySelector('[data-fee-status]').textContent='No saved price for this code yet. Type the amount.';}
 }
 function feeInputsChanged(form,row,field){const host=row?.querySelector('[data-fee-line]');if(!host)return;if(field==='amount'){host.dataset.feePreserved='true';feeOverrideState(row);if(typeof chargeRowsPriced==='function')chargeRowsPriced(form);return;}host.querySelector('[data-fee-apply]').hidden=true;host.feeQuote=null;void checkFee(form,row,false);}
 document.addEventListener('change',e=>{const form=e.target.closest?.('#billing-account-form');if(!form)return;const name=e.target.name;if(['visit_id','service_date'].includes(name)){void loadFeeContext(form,false);return;}if(['fee_facility','fee_setting'].includes(name)){feeContextChanged(form,e.target);return;}if(['code','code_system','modifiers','units','amount'].includes(name))feeInputsChanged(form,e.target.closest('.billing-charge-row'),name);});
@@ -66,3 +66,206 @@ document.addEventListener('submit',e=>{if(e.target.id!=='fee-action-form')return
 function renderFeeReviewEntries(){const r=feeAdminState?.review,host=$('fee-review')?.querySelector('[data-fee-entry-table]');if(!r||!host||feeAdminState.identity!==me)return;const query=$('fee-review').querySelector('[data-fee-entry-search]').value.trim().toUpperCase(),rows=r.content.entries.filter(e=>!query||e.code.includes(query)||e.modifiers.toUpperCase().includes(query)),page=Math.min(feeAdminState.reviewPage||0,Math.max(0,Math.ceil(rows.length/100)-1));feeAdminState.reviewPage=page;host.innerHTML=`<p>${rows.length} matching exact fees · ${rows.length?page*100+1:0}–${Math.min((page+1)*100,rows.length)}</p><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Code / modifiers</th><th>Source unit amount</th><th>Practice unit fee</th><th>Source qualification</th></tr></thead><tbody>${rows.slice(page*100,(page+1)*100).map(e=>`<tr><td>${esc(e.code_system)} ${esc(e.code)} / ${esc(e.modifiers||'blank')}</td><td>${money(e.reference_unit_cents)}</td><td>${money(Math.floor((e.reference_unit_cents*r.content.multiplier_basis_points+5000)/10000))}</td><td>${esc(e.source_id)} · row ${e.source_row}<small>${esc(e.qualification)}</small></td></tr>`).join('')||'<tr><td colspan="4">No matching fee entries.</td></tr>'}</tbody></table></div><div class="actions"><button type="button" data-fee-entry-page="-1" ${page===0?'disabled':''}>Previous fees</button><button type="button" data-fee-entry-page="1" ${(page+1)*100>=rows.length?'disabled':''}>Next fees</button></div>`;}
 document.addEventListener('input',e=>{if(e.target.matches?.('[data-fee-entry-search]')){feeAdminState.reviewPage=0;renderFeeReviewEntries();}});
 document.addEventListener('click',e=>{const b=e.target.closest?.('[data-fee-entry-page]');if(b&&feeAdminState?.identity===me){e.preventDefault();feeAdminState.reviewPage+=Number(b.dataset.feeEntryPage);renderFeeReviewEntries();}});
+
+// A price typed on a charge line can be kept for next time. It goes on the practice's own code list
+// (Codes & prices), so the next time the code is picked its name and price fill in by themselves.
+const priceMemoryTimers=new WeakMap();
+function priceMemoryNode(row){const host=row?.querySelector?.('[data-fee-line]');if(!host||typeof document.createElement!=='function')return null;let node=host.querySelector('[data-price-memory]');if(!node){node=document.createElement('p');node.className='charge-price-memory muted';node.dataset.priceMemory='';host.append(node);}return node;}
+function priceMemoryFacts(row){
+ const code=(row.querySelector('[name="code"]')?.value||'').trim().toUpperCase(),units=Math.max(1,Math.trunc(Number(row.querySelector('[name="units"]')?.value)||1));
+ let total=null;try{const raw=(row.querySelector('[name="amount"]')?.value||'').trim();total=raw?cents(raw):null;}catch{}
+ const system=/^[0-9]{4}[0-9A-TV-Z]$/.test(code)?'CPT':/^[A-Z][0-9]{4}$/.test(code)?'HCPCS':'';
+ return {code,system,unit:total!=null&&total>0&&total%units===0?total/units:null,display:(row.querySelector('[name="description"]')?.value||'').trim()};
+}
+async function priceMemoryCheck(row){
+ const node=priceMemoryNode(row);if(!node)return;
+ const facts=priceMemoryFacts(row),input=row.querySelector('[name="amount"]'),units=Math.max(1,Math.trunc(Number(row.querySelector('[name="units"]')?.value)||1));node.priceMemory=null;
+ if(!facts.system){node.replaceChildren();return;}
+ let known=null;
+ try{const data=await api(`/api/v1/practice/codes?${new URLSearchParams({system:facts.system,q:facts.code})}`);known=(data.items||[]).find(item=>item.code===facts.code)||null;}catch{node.replaceChildren();return;}
+ if(!row.isConnected||priceMemoryFacts(row).code!==facts.code)return;
+ const price=known?.price_cents??null,typed=(input?.value||'').trim();
+ // A code the practice already keeps brings its name with it when the line has none.
+ const describe=row.querySelector('[name="description"]');
+ if(known?.display&&describe&&!describe.value.trim()&&!describe.readOnly&&!describe.disabled){describe.value=known.display;describe.dispatchEvent(new Event('input',{bubbles:true}));describe.dispatchEvent(new Event('change',{bubbles:true}));}
+ // The practice price fills an empty amount by itself; nobody presses anything.
+ if(price!=null&&!typed&&input&&!input.readOnly&&!input.disabled){
+  input.value=dollars(price*units);
+  input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));
+  node.textContent=`Practice price ${money(price)}${units>1?` × ${units}`:''}.`;return;
+ }
+ const now=priceMemoryFacts(row);
+ if(price!=null){node.textContent=now.unit===price?`Practice price ${money(price)}${units>1?` × ${units}`:''}.`:`Changed for this encounter. The practice price is ${money(price)}${units>1?' per unit':''}.`;return;}
+ if(!typed){node.textContent=`No practice price for ${facts.code} yet. Type the amount: keep it for this encounter only, or save it as the practice price.`;return;}
+ node.replaceChildren('One-time amount for this encounter. ');
+ if(!(typeof billingCan==='function'?billingCan('edit'):me?.role==='owner')||now.unit==null)return;
+ const button=document.createElement('button');button.type='button';button.className='text-button';button.dataset.priceMemorySave='';
+ button.textContent=`Save ${money(now.unit)} as the practice price for ${facts.code}`;
+ node.append(button);node.priceMemory={facts:now,known};
+}
+function priceMemorySchedule(row){if(!row)return;clearTimeout(priceMemoryTimers.get(row));priceMemoryTimers.set(row,setTimeout(()=>{if(row.isConnected)void priceMemoryCheck(row);},500));}
+if(typeof document!=='undefined'&&document.addEventListener){
+ document.addEventListener('change',event=>{const row=event.target?.closest?.('.billing-charge-row');if(row&&['code','units','amount','description'].includes(event.target.name))priceMemorySchedule(row);});
+ document.addEventListener('input',event=>{const row=event.target?.closest?.('.billing-charge-row');if(row&&['code','amount','units'].includes(event.target.name))priceMemorySchedule(row);});
+ document.addEventListener('focusin',event=>{const row=event.target?.closest?.('.billing-charge-row');if(row&&!row.dataset.priceMemorySeen){row.dataset.priceMemorySeen='1';priceMemorySchedule(row);}});
+ document.addEventListener('click',event=>{
+  const button=event.target?.closest?.('[data-price-memory-save]');if(!button?.hasAttribute?.('data-price-memory-save'))return;
+  event.preventDefault();const node=button.closest('[data-price-memory]'),memory=node?.priceMemory;if(!memory)return;
+  const {facts,known}=memory;
+  run(async()=>{
+   if(!known&&!facts.display)throw new Error('Add what this service was first, so the code is saved with its name.');
+   if(known)await api(`/api/v1/practice/codes/${encodeURIComponent(known.id)}`,'PUT',{display:known.display,enabled:true,price_cents:facts.unit,default_units:known.default_units||1,modifiers:known.modifiers||''},known.version);
+   else await api('/api/v1/practice/codes','POST',{request_id:crypto.randomUUID(),system:facts.system,code:facts.code,display:facts.display,enabled:true,price_cents:facts.unit,default_units:1,modifiers:''});
+   node.priceMemory=null;node.textContent=`Saved. ${facts.code} now fills in ${money(facts.unit)} by itself.`;
+  });
+ });
+}
+// Money and counts take numbers only: an amount is digits with at most one point and two places,
+// units are whole numbers. Anything else is dropped as it is typed, before the line reads it.
+if(typeof document!=='undefined'&&document.addEventListener)document.addEventListener('input',event=>{
+ const field=event.target;if(!field?.closest?.('.billing-charge-row'))return;
+ if(field.name==='amount'){
+  const [whole,...rest]=String(field.value).replace(/[^0-9.]/g,'').split('.');
+  const clean=rest.length?`${whole}.${rest.join('').slice(0,2)}`:whole;
+  if(clean!==field.value)field.value=clean;
+  if(field.setAttribute&&field.getAttribute?.('inputmode')!=='decimal')field.setAttribute('inputmode','decimal');
+ }else if(field.name==='units'&&field.type!=='number'){
+  const clean=String(field.value).replace(/[^0-9]/g,'');if(clean!==field.value)field.value=clean;
+ }
+},true);
+
+// Bundles: a practice's named sets of procedure lines. One pick adds every line of the set to the
+// encounter with its modifiers, units and drug details; each line is then priced from the practice's
+// own code list and pointed at the encounter's diagnoses, exactly like a line added by hand.
+let chargeBundles=null,chargeBundlesLoading=null;
+function chargeBundlesLoad(force=false){
+ if(chargeBundles&&!force)return Promise.resolve(chargeBundles);
+ if(!chargeBundlesLoading)chargeBundlesLoading=api('/api/v1/practice/charge-bundles').then(data=>{chargeBundles=data.items||[];}).catch(()=>{chargeBundles=chargeBundles||[];}).finally(()=>{chargeBundlesLoading=null;});
+ return chargeBundlesLoading;
+}
+function chargeBundleSummary(bundle){return (bundle.lines||[]).map(line=>`${line.code}${line.modifiers?'-'+String(line.modifiers).replace(/\s+/g,'-'):''}${line.units>1?` × ${line.units}`:''}`).join(', ');}
+function chargeBundlesPaint(){
+ const form=typeof $==='function'?$('billing-account-form'):null,host=form?.querySelector?.('[data-charge-bundles]');if(!host)return;
+ const can=typeof billingCan==='function'&&billingCan('edit')&&!form.dataset.draftReadOnly,items=chargeBundles||[];
+ host.innerHTML=`<span class="charge-bundles-label">Bundles</span>${items.map(bundle=>`<button type="button" data-bundle-add="${esc(bundle.id)}" title="${esc(chargeBundleSummary(bundle))}">+ ${esc(bundle.name)}</button>`).join('')||'<span class="muted">None yet. Enter your usual lines once, then save them as a bundle.</span>'}${can?'<button type="button" class="text-button" data-bundle-save>Save these lines as a bundle</button>':''}${can&&items.length?'<button type="button" class="text-button" data-bundle-manage>Manage bundles</button>':''}`;
+}
+function chargeBundleApply(bundle){
+ const form=$('billing-account-form'),body=form?.querySelector('#billing-charge-lines tbody');if(!body||form.dataset.draftReadOnly||form.dataset.draftStale)return;
+ // A row nobody has typed in makes way for the bundle.
+ for(const row of chargeLiveRows(form)){const blank=!(row.querySelector('[name="code"]')?.value||'').trim()&&!chargeLineDescription(row).trim()&&chargeRowAmount(row)==null;if(blank){chargeRowMemoryCache.delete(row);row.remove();}}
+ const added=[];
+ for(const line of bundle.lines||[]){
+  body.insertAdjacentHTML('beforeend',chargeRow({code_system:line.code_system,code:line.code,description:line.description,modifiers:String(line.modifiers||'').split(/\s+/).filter(Boolean).join(','),units:line.units||1,diagnosis_codes:[],...(line.ndc_code?{ndc_code:line.ndc_code,ndc_quantity:line.ndc_quantity,ndc_unit:line.ndc_unit}:{})},form.dataset.compact==='true',chargeLineKey(null,chargeLiveRows(form).length)));
+  const row=body.lastElementChild;row.dataset.diagnosesDefault='pending';chargeRowCapture(row);added.push(row);
+ }
+ chargeTableTotals(form);renderChargeRowProblems(form);
+ for(const row of added){row.dataset.priceMemorySeen='1';void priceMemoryCheck(row);}
+ captureBillingChargeDraft();scheduleChargeAutosave(form);
+ added[0]?.scrollIntoView?.({block:'nearest'});
+ if(typeof notice==='function')notice(`Added ${bundle.name}: ${added.length} line${added.length===1?'':'s'}.`);
+}
+function chargeBundleLinesFromTable(form){
+ return chargeLiveRows(form).map(chargeRowValue).filter(line=>line.code&&String(line.description||'').trim()).map(line=>({code_system:line.code_system||(/^[A-Z]/.test(line.code)?'HCPCS':'CPT'),code:line.code,description:String(line.description).trim(),modifiers:String(line.modifiers||'').toUpperCase().split(/[\s,]+/).filter(Boolean).join(' '),units:Math.max(1,Math.trunc(Number(line.units)||1)),...(line.ndc_code&&line.ndc_quantity&&line.ndc_unit?{ndc_code:line.ndc_code,ndc_quantity:String(line.ndc_quantity),ndc_unit:line.ndc_unit}:{})}));
+}
+function chargeBundleSaveSheet(){
+ const form=$('billing-account-form'),lines=chargeBundleLinesFromTable(form);
+ if(!lines.length)throw new Error('Add at least one procedure with its code and name first.');
+ const panel=document.createElement('form');panel.className='bundle-sheet';
+ panel.innerHTML=`<p class="muted">These lines are saved as one bundle. Next time, one pick adds them all. Amounts are not kept: each line is priced from your practice prices when it is added.</p><ul class="bundle-lines">${lines.map(line=>`<li><b>${esc(line.code)}${line.modifiers?'-'+esc(line.modifiers.replace(/\s+/g,'-')):''}</b> ${esc(line.description)}${line.units>1?` × ${line.units}`:''}</li>`).join('')}</ul><label>Bundle name<input name="name" required maxlength="80" placeholder="For example: Neck injection visit"></label><p class="muted" data-bundle-status role="status"></p><div class="actions"><button type="submit" class="primary">Save bundle</button><button type="button" data-sheet-close>Cancel</button></div>`;
+ const dialog=sheetOpen('Save as a bundle',panel);
+ panel.addEventListener('submit',event=>{event.preventDefault();const name=panel.elements.name.value.trim();if(!name)return;
+  run(async()=>{
+   try{const saved=await api('/api/v1/practice/charge-bundles','POST',{name,lines});chargeBundles=[...(chargeBundles||[]).filter(item=>item.id!==saved.id),saved].sort((a,b)=>a.name.localeCompare(b.name));}
+   catch(error){panel.querySelector('[data-bundle-status]').textContent=error.message||'The bundle could not be saved.';return;}
+   sheetClose(dialog);chargeBundlesPaint();notice(`Saved the bundle ${name}.`);
+  });});
+ panel.elements.name.focus();
+}
+function chargeBundleManageSheet(){
+ const panel=document.createElement('div');panel.className='bundle-sheet';
+ const paint=()=>{panel.innerHTML=`${(chargeBundles||[]).map(bundle=>`<div class="bundle-row"><div><b>${esc(bundle.name)}</b><p class="muted">${esc(chargeBundleSummary(bundle))}</p></div><button type="button" data-bundle-remove="${esc(bundle.id)}">Remove</button></div>`).join('')||'<p class="muted">No bundles.</p>'}<div class="actions"><button type="button" data-sheet-close>Done</button></div>`;};
+ paint();const dialog=sheetOpen('Bundles',panel);
+ panel.addEventListener('click',event=>{const button=event.target.closest?.('[data-bundle-remove]');if(!button)return;const bundle=(chargeBundles||[]).find(item=>item.id===button.dataset.bundleRemove);if(!bundle)return;
+  run(async()=>{await api(`/api/v1/practice/charge-bundles/${encodeURIComponent(bundle.id)}`,'PUT',{name:bundle.name,lines:bundle.lines,enabled:false},bundle.version);chargeBundles=chargeBundles.filter(item=>item.id!==bundle.id);paint();chargeBundlesPaint();});});
+ return dialog;
+}
+if(typeof document!=='undefined'&&document.addEventListener)document.addEventListener('click',event=>{
+ const button=event.target?.closest?.('button');if(!button?.closest?.('[data-charge-bundles]'))return;
+ if(button.dataset?.bundleAdd){event.preventDefault();const bundle=(chargeBundles||[]).find(item=>item.id===button.dataset.bundleAdd);if(bundle)run(async()=>chargeBundleApply(bundle));return;}
+ if(button.hasAttribute?.('data-bundle-save')){event.preventDefault();run(async()=>chargeBundleSaveSheet());return;}
+ if(button.hasAttribute?.('data-bundle-manage')){event.preventDefault();run(async()=>chargeBundleManageSheet());}
+});
+
+// Drug wastage. Medicare wants every single-dose drug line to say what happened to the rest of
+// the vial: JZ on the line when nothing was discarded, or a second line with JW for the discarded
+// amount. Staff type what was given and the vial size; the lines are written for them.
+const drugVialStore='suncharts.drugVialSize.';
+function drugWasteFacts(row){
+ const box=row?.querySelector?.('[data-drug-waste]');if(!box)return null;
+ // The vial size typed last time for this drug comes back by itself.
+ const vialField=box.querySelector('[data-waste-vial]'),drug=(row.querySelector('[name="code"]')?.value||'').trim().toUpperCase();
+ if(vialField&&!vialField.value&&drug){try{vialField.value=localStorage.getItem(drugVialStore+drug)||'';}catch{}}
+ const given=Math.trunc(Number(box.querySelector('[data-waste-given]')?.value)||0),vial=Math.trunc(Number(box.querySelector('[data-waste-vial]')?.value)||0);
+ if(given<1||vial<1)return {given,vial,ready:false};
+ const vials=Math.ceil(given/vial),discarded=vials*vial-given;
+ return {given,vial,vials,discarded,ready:true};
+}
+function drugWasteNote(row){
+ const note=row?.querySelector?.('[data-drug-waste-note]'),facts=drugWasteFacts(row);if(!note||!facts)return;
+ if(!facts.ready){note.textContent='Type the units given and the vial size. Nothing discarded adds JZ; anything discarded adds its own JW line.';return;}
+ note.textContent=facts.discarded?`${facts.vials} vial${facts.vials===1?'':'s'} opened: ${facts.given} given, ${facts.discarded} discarded. This line becomes ${facts.given} units and a JW line is added for ${facts.discarded}.`:`${facts.vials} vial${facts.vials===1?'':'s'} opened, nothing discarded. This line becomes ${facts.given} units with JZ.`;
+}
+function drugWasteModifiers(row,drop,add){
+ const input=row.querySelector('[name="modifiers"]');if(!input)return;
+ const list=String(input.value||'').toUpperCase().split(/[,\s]+/).filter(m=>m&&!drop.includes(m));
+ if(add&&!list.includes(add))list.push(add);
+ input.value=list.join(',');
+}
+function drugWasteField(row,name,value){const field=row.querySelector(`[name="${name}"]`);if(!field)return;field.value=String(value);field.dispatchEvent(new Event('input',{bubbles:true}));field.dispatchEvent(new Event('change',{bubbles:true}));}
+function drugWasteApply(row){
+ const form=row.closest('#billing-account-form'),body=row.closest('tbody'),facts=drugWasteFacts(row);
+ if(!form||!body||form.dataset.draftReadOnly||form.dataset.draftStale)return;
+ const note=row.querySelector('[data-drug-waste-note]');
+ if(!facts?.ready){if(note)note.textContent='Type the units given and the vial size first, as whole numbers.';return;}
+ const code=(row.querySelector('[name="code"]')?.value||'').trim().toUpperCase();if(!code)return;
+ try{localStorage.setItem(drugVialStore+code,String(facts.vial));}catch{}
+ // What one unit costs on this line now, so both lines keep the same price per unit.
+ const before=priceMemoryFacts(row).unit,line=chargeRowValue(row);
+ const oldQuantity=Number(line.ndc_quantity),perUnit=oldQuantity>0&&Number(line.units)>0?oldQuantity/Number(line.units):null;
+ const quantity=n=>perUnit==null?'':String(Math.round(perUnit*n*1000)/1000);
+ drugWasteModifiers(row,['JW','JZ'],facts.discarded?'':'JZ');
+ drugWasteField(row,'units',facts.given);
+ if(before!=null)drugWasteField(row,'amount',dollars(before*facts.given));
+ if(perUnit!=null)drugWasteField(row,'ndc_quantity',quantity(facts.given));
+ drugWasteField(row,'modifiers',row.querySelector('[name="modifiers"]')?.value||'');
+ // The discarded amount is its own line: one already there for this drug is updated, not doubled.
+ const wasteRows=chargeLiveRows(form).filter(other=>other!==row&&(other.querySelector('[name="code"]')?.value||'').trim().toUpperCase()===code&&String(other.querySelector('[name="modifiers"]')?.value||'').toUpperCase().split(/[,\s]+/).includes('JW'));
+ let waste=wasteRows[0]||null;
+ if(!facts.discarded){for(const other of wasteRows){chargeRowMemoryCache.delete(other);other.remove();}}
+ else if(waste){drugWasteField(waste,'units',facts.discarded);if(before!=null)drugWasteField(waste,'amount',dollars(before*facts.discarded));if(perUnit!=null)drugWasteField(waste,'ndc_quantity',quantity(facts.discarded));}
+ else{
+  const mods=String(row.querySelector('[name="modifiers"]')?.value||'').toUpperCase().split(/[,\s]+/).filter(Boolean).concat('JW').join(',');
+  const drug=line.ndc_code&&perUnit!=null?{ndc_code:line.ndc_code,ndc_quantity:quantity(facts.discarded),ndc_unit:line.ndc_unit}:{};
+  row.insertAdjacentHTML('afterend',chargeRow({code_system:line.code_system,code:line.code,description:line.description,modifiers:mods,units:facts.discarded,diagnosis_codes:line.diagnosis_codes||[],...(before!=null?{amount_cents:before*facts.discarded}:{}),...drug},form.dataset.compact==='true',chargeLineKey(null,chargeLiveRows(form).length)));
+  waste=row.nextElementSibling;chargeRowCapture(waste);waste.dataset.priceMemorySeen='1';void priceMemoryCheck(waste);
+ }
+ chargeTableTotals(form);renderChargeRowProblems(form);captureBillingChargeDraft();scheduleChargeAutosave(form);
+ if(note)note.textContent=facts.discarded?`Done. ${facts.given} units on this line, and a JW line for the ${facts.discarded} discarded.`:`Done. ${facts.given} units on this line with JZ: nothing was discarded.`;
+}
+if(typeof document!=='undefined'&&document.addEventListener){
+ document.addEventListener('input',event=>{
+  const field=event.target;if(!field?.hasAttribute?.('data-waste-given')&&!field?.hasAttribute?.('data-waste-vial'))return;
+  const clean=String(field.value).replace(/[^0-9]/g,'');if(clean!==field.value)field.value=clean;
+  drugWasteNote(field.closest('.billing-charge-row'));
+ },true);
+ // The vial size typed last time for this drug comes back by itself.
+ document.addEventListener('focusin',event=>{
+  const field=event.target;if(!field?.hasAttribute?.('data-waste-given')&&!field?.hasAttribute?.('data-waste-vial'))return;
+  const row=field.closest('.billing-charge-row'),vial=row?.querySelector('[data-waste-vial]'),code=(row?.querySelector('[name="code"]')?.value||'').trim().toUpperCase();
+  if(vial&&!vial.value&&code){try{vial.value=localStorage.getItem(drugVialStore+code)||'';}catch{}drugWasteNote(row);}
+ });
+ document.addEventListener('click',event=>{
+  const button=event.target?.closest?.('[data-drug-waste-apply]');if(!button?.hasAttribute?.('data-drug-waste-apply'))return;
+  event.preventDefault();drugWasteApply(button.closest('.billing-charge-row'));
+ });
+}

@@ -69,7 +69,7 @@ assert.match(earlierBlock,/Claim\.MD received this claim/);assert.match(earlierB
 assert.doesNotMatch(earlierBlock,/Coverage not in effect/,'the newest update is not repeated under earlier updates');
 console.log('PASS each payer response is named by who sent it and whether they accepted or rejected');
 
-const payerStage=lifecycle=>lifecycle.match(/<b>(?:✓ )?Payer response<\/b><small>([^<]*)</)[1];
+const payerStage=lifecycle=>lifecycle.match(/<b>(?:✓ Done · Payer response|(?:Now|Not done|Later) · Waiting for the payer)<\/b><small>([^<]*)</)[1];
 const payerStageClass=lifecycle=>lifecycle.match(/<li class="([^"]*)" tabindex="0" aria-label="(?:Done|Now|Not done|Later): Payer response\./)[1];
 assert.equal(payerStage(context.claimMdClaimLifecycle({status:'rejected',snapshot:claim.snapshot},{tracking:{reports:[{received_at:'2026-11-12',evidence:{senderid:'SYN-PAYER',status:'R',message:{status:'R',message:'Coverage not in effect'}}}]}})),'Rejected. The reason is shown below.');
 assert.match(context.claimMdClaimLifecycle({status:'rejected',snapshot:claim.snapshot},{tracking:{reports:[{received_at:'2026-11-12',evidence:{senderid:'SYN-PAYER',status:'R',message:{status:'R',message:'Coverage not in effect'}}}]}}),/class="claim-progress-now"><b>[^<]*<\/b> · Read the reason below, then fix and resend the claim\.<\/p>/);
