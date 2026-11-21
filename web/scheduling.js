@@ -318,7 +318,10 @@ function calendarLinksAdminMarkup(data){
 async function calendarLinksAdminSheet(){
  const panel=document.createElement('div');panel.className='calendar-sync-sheet calendar-links-admin';
  const paint=async message=>{panel.innerHTML=calendarLinksAdminMarkup(await api('/api/v1/practice/calendar-links'));if(message)panel.querySelector('[data-calendar-status]').textContent=message;};
- await paint();sheetOpen('Calendar links',panel);
+ await paint();const dialog=sheetOpen('Calendar links',panel);
+ // A way back to the person's own link, so the two sheets lead to each other.
+ const back=document.createElement('p');back.className='calendar-sync-manage';back.innerHTML='<button type="button" class="text-button" data-calendar-back>← Back to my calendar link</button>';panel.before(back);
+ back.addEventListener('click',()=>{sheetClose(dialog);run(calendarSyncSheet);});
  panel.addEventListener('change',event=>{const box=event.target;if(!box?.hasAttribute?.('data-calendar-admin-switch'))return;const on=box.checked;run(async()=>{await api('/api/v1/practice/calendar-links','PUT',{enabled:on});await paint(on?'Calendar links are allowed.':'Calendar links are off. Every link has stopped.');});});
  panel.addEventListener('click',event=>{const button=event.target.closest?.('[data-calendar-admin-off]');if(!button)return;run(async()=>{await api(`/api/v1/practice/calendar-links/${button.dataset.calendarAdminOff}`,'DELETE');await paint(`Turned off the calendar link for ${button.dataset.name}.`);});});
 }
