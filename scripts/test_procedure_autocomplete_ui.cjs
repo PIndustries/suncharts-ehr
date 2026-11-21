@@ -60,6 +60,10 @@ function fixture(){
  assert.equal(f.send('keydown',f.box(),{key:'Enter'}).prevented,true);await tick();
  assert.deepEqual(f.line(),{shown:item.code,code:item.code,description:item.display});
  assert.equal(f.row.dataset.catalogReleaseId,item.release_id);assert.match(f.note.textContent,/Save the charge account/);assert.equal(f.box().getAttribute('aria-expanded'),'false');assert.ok(f.calls.every(c=>c.method==='GET'));
+ // Charges save themselves while the list is open, which moves the form's version on. The next
+ // pick from the list still fills the line.
+ {const g=fixture();await g.type('900');g.form.dataset.version='4';g.send('keydown',g.box(),{key:'ArrowDown'});g.send('keydown',g.box(),{key:'Enter'});await tick();
+  assert.deepEqual(g.line(),{shown:item.code,code:item.code,description:item.display},'a save between the search and the pick does not swallow the pick');}
  // A name typed into the same box searches the list too, and Escape leaves the typing alone.
  f=fixture();await f.type('Synthetic procedure');params=cptCall();assert.equal(params.get('q'),'Synthetic procedure');
  f.send('keydown',f.box(),{key:'ArrowUp'});assert.equal(f.box().getAttribute('aria-activedescendant'),'list-procedure-option-1');

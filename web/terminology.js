@@ -77,9 +77,11 @@ function terminologyComboboxContext(state){
  return state.generation===terminologyGeneration&&state.account===me&&state.patient===selected&&state.visit===(typeof activeVisit==='undefined'?null:activeVisit?.id||null)&&state.view===terminologyComboboxView()&&state.input.isConnected&&state.row.isConnected&&state.form.isConnected&&!state.input.closest('[hidden]')&&!state.input.disabled&&!state.input.readOnly&&(!state.form.dataset.patient||state.form.dataset.patient===selected);
 }
 function terminologyComboboxView(){return `${typeof chartSection==='undefined'?'':chartSection}:${typeof encounterSection==='undefined'?'':encounterSection}`;}
+// The form's saved version is deliberately not part of this: charges save themselves while a list
+// is open, and a save must not make the next click on the list do nothing.
 function terminologyComboboxValues(state){
  const pair=terminologyFieldPair(state.scope);
- return {query:state.input.value.trim(),system:state.system||(state.scope==='procedure'?terminologySystem(state.row.querySelector('[name="code_system"]')?.value):'')||'',serviceDate:terminologyServiceDate(state.scope,state.form),visit:state.form.elements.visit_id?.value||'',account:state.form.dataset.id||'',version:state.form.dataset.version||'',code:state.row.querySelector(`[name="${pair.code}"]`)?.value||'',description:state.row.querySelector(`[name="${pair.text}"]`)?.value||''};
+ return {query:state.input.value.trim(),system:state.system||(state.scope==='procedure'?terminologySystem(state.row.querySelector('[name="code_system"]')?.value):'')||'',serviceDate:terminologyServiceDate(state.scope,state.form),visit:state.form.elements.visit_id?.value||'',account:state.form.dataset.id||'',code:state.row.querySelector(`[name="${pair.code}"]`)?.value||'',description:state.row.querySelector(`[name="${pair.text}"]`)?.value||''};
 }
 function terminologyComboboxCurrent(state,request,values){
  return terminologyComboboxContext(state)&&request===state.request&&JSON.stringify(values)===JSON.stringify(terminologyComboboxValues(state));
