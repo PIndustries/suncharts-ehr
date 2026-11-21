@@ -323,6 +323,26 @@ pub(crate) async fn patients_owe(
 }
 /// The state name of a visit's billing, from its balance row. `draft_needs_details` says
 /// whether the open draft claim fails the readiness checks.
+/// What an insurance claim cannot go without, read from the draft charges: a diagnosis on the
+/// encounter, and one linked to every charge line. A self-pay encounter needs neither, and an
+/// empty draft has nothing to check yet.
+pub(crate) fn before_posting(insured: bool, lines: &Value, on_encounter: usize) -> Vec<Value> {
+    let lines = lines.as_array().map(Vec::as_slice).unwrap_or(&[]);
+    if !insured || lines.is_empty() {
+        return vec![];
+    }
+    let unlinked = lines
+        .iter()
+        .filter(|l| l["diagnosis_codes"].as_array().is_none_or(Vec::is_empty))
+        .count();
+    if unlinked == 0 {
+        vec![]
+    } else if on_encounter == 0 && unlinked == lines.len() {
+        vec![json!({"code":"diagnoses","missing":"a diagnosis"})]
+    } else {
+        vec![json!({"code":"line_diagnoses","missing":"a diagnosis for every charge","lines":unlinked})]
+    }
+}
 pub(crate) fn state_of(
     row: &Value,
     draft_needs_details: bool,
@@ -831,6 +851,23 @@ pub(crate) async fn summarize(
         Some(_) if charges_corrected_after_send => ("correct_claim", "staff"),
         Some(_) => state_of_with_claimmd(&money, !issues.is_empty(), opt.claims, &claimmd),
     };
+    // What would hold the claim up, named while the charges can still be changed in one place
+    // rather than after they post.
+    let before_posting = match (&account, visit_id) {
+        (Some(b), Some(v)) if b.status == "draft" && insured => {
+            let on_encounter = sqlx::query_scalar::<_, Value>(
+                "SELECT diagnoses FROM visit_diagnoses WHERE tenant_id=$1 AND visit_id=$2",
+            )
+            .bind(a.tenant_id)
+            .bind(v)
+            .fetch_optional(&mut **tx)
+            .await?
+            .and_then(|d| d.as_array().map(Vec::len))
+            .unwrap_or(0);
+            before_posting(insured, &b.content["lines"], on_encounter)
+        }
+        _ => vec![],
+    };
     // The day the clearinghouse said the claim needs correcting, for the sentence that names
     // where to release a claim Claim.MD is holding for approval.
     let claimmd_since = claimmd["correction"]["at"]
@@ -887,6 +924,7 @@ pub(crate) async fn summarize(
         "account": account.as_ref().map(|b| json!({"id":b.id,"status":b.status,"version":b.version,"total_cents":b.total_cents,"service_date":b.content["service_date"],"has_visit":b.content["visit_id"].is_string()})),
         "state": state,
         "waiting_on": waiting_on,
+        "before_posting": before_posting,
         "insurance": {
             "insured": insured,
             "insurer": insurer,
@@ -1743,6 +1781,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn what_a_claim_needs_is_named_before_the_charges_post() {
+        let bare = json!([{"code":"99213","diagnosis_codes":[]},{"code":"64616"}]);
+        let half = json!([{"code":"99213","diagnosis_codes":["I10"]},{"code":"64616","diagnosis_codes":[]}]);
+        let linked = json!([{"code":"99213","diagnosis_codes":["I10"]}]);
+        assert_eq!(before_posting(true, &bare, 0)[0]["code"], "diagnoses");
+        // Diagnoses are on the encounter but no line points at one yet.
+        assert_eq!(before_posting(true, &bare, 2)[0]["code"], "line_diagnoses");
+        assert_eq!(before_posting(true, &bare, 2)[0]["lines"], 2);
+        assert_eq!(before_posting(true, &half, 1)[0]["lines"], 1);
+        assert!(before_posting(true, &linked, 1).is_empty());
+        // Lines that carry their own codes are enough, whatever the encounter lists.
+        assert!(before_posting(true, &linked, 0).is_empty());
+        assert!(before_posting(false, &bare, 0).is_empty(), "self-pay needs no diagnosis");
+        assert!(before_posting(true, &json!([]), 0).is_empty(), "nothing to check yet");
+        assert!(before_posting(true, &Value::Null, 0).is_empty());
+    }
     #[test]
     fn readiness_problems_are_named_in_plain_words() {
         assert_eq!(

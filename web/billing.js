@@ -364,14 +364,21 @@ async function refreshChargeEncounterDiagnoses(form){
   if(!chargeDiagnosisCurrent(form,state))return;
   state.diagnoses=Array.isArray(data.diagnoses)?data.diagnoses:[];state.version=data.version;state.error=false;
  }catch{state.error=true;renderChargeEncounterDiagnoses(form);return;}
+ let followed=false;
  for(const row of chargeLiveRows(form)){
   const field=row.querySelector('[name="diagnoses"]');if(!field)continue;
   if(!chargeDiagnosisAutoFilled(row)&&!chargeDiagnosisLineUnanswered(row))continue;
   const next=chargeDiagnosisDefaultCodes(state.diagnoses);
   if(field.value===next)continue;
-  field.value=next;markChargeDiagnosisAuto(row,next);
+  field.value=next;markChargeDiagnosisAuto(row,next);followed=true;
  }
  renderChargeEncounterDiagnoses(form);captureBillingChargeDraft();
+ // Lines that took up the encounter's diagnoses are saved like any other change, and what each line
+ // still needs is said again: a line that has just been linked no longer asks for a diagnosis.
+ if(followed&&!form.dataset.draftReadOnly&&!form.dataset.draftStale){
+  if(typeof renderChargeRowProblems==='function')renderChargeRowProblems(form);
+  if(typeof scheduleChargeAutosave==='function'&&typeof chargeTableHost==='function'&&chargeTableHost(form))scheduleChargeAutosave(form);
+ }
 }
 function followVisitDiagnoses(){
  if(typeof visitDiagnosisListeners==='undefined'||typeof activeVisit==='undefined')return;
@@ -394,13 +401,20 @@ async function loadChargeEncounterDiagnoses(form){
    followVisitDiagnoses();
    // An empty line still gets its first answer from the encounter here, not from a render pass that
    // may have already run while the list was loading.
+   let followed=false;
    if(!form.dataset.draftReadOnly&&!form.dataset.draftStale)for(const row of chargeLiveRows(form)){
     const field=row.querySelector('[name="diagnoses"]');if(!field||!chargeDiagnosisLineUnanswered(row))continue;
     const next=chargeDiagnosisDefaultCodes(state.diagnoses);
     if(field.value===next)continue;
-    field.value=next;markChargeDiagnosisAuto(row,next);
+    field.value=next;markChargeDiagnosisAuto(row,next);followed=true;
    }
    renderChargeEncounterDiagnoses(form);
+   // What the lines show is what is saved: a line that took its diagnoses from the encounter here is
+   // saved with them, so the next step does not go on asking for a link the screen already shows.
+   if(followed){
+    if(typeof renderChargeRowProblems==='function')renderChargeRowProblems(form);
+    if(typeof scheduleChargeAutosave==='function'&&typeof chargeTableHost==='function'&&chargeTableHost(form))scheduleChargeAutosave(form);
+   }
   }
  }
 }

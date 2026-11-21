@@ -46,7 +46,12 @@ function visitBillingStatus(s,ctx={}){
  switch(s.state){
    case 'add_charges':return visitBillingChargesFilled()?{headline:'Check the charges',detail:'Filled in from the last visit.',action:create?button('Check the charges','data-encounter-charges'):''}:{headline:'Add charges',detail:'Add the procedures done at this encounter.',action:create?button('Add charges','data-encounter-charges'):''};
    case 'sign_visit':return {headline:'Charges can still be changed',detail:'The encounter note must be signed before the charges are posted.',action:reviewButton(s,ctx)||button('Continue the encounter note','data-revenue-documentation')};
-   case 'post_charges':return {headline:'Post charges',detail:`Check the charges, then post them. ${s.insurance.insured?`The claim to ${insurer} is prepared for you next.`:'The patient is billed next.'}`,action:button(write?'Post charges':'Review charges',`data-visit-post-charges="${esc(account)}"`)};
+   case 'post_charges':{
+    // Something the claim cannot go without is asked for first, with the button that opens the codes.
+    const need=visitBillingBeforePosting(s);
+    if(need&&write)return {headline:need.headline,detail:`${need.detail} The claim to ${insurer} cannot be sent without it.`,action:button(need.label,'data-encounter-charges')};
+    return {headline:'Post charges',detail:`Check the charges, then post them. ${s.insurance.insured?`The claim to ${insurer} is prepared for you next.`:'The patient is billed next.'}`,action:button(write?'Post charges':'Review charges',`data-visit-post-charges="${esc(account)}"`)};
+   }
    case 'self_pay_collect':return {headline:'Self-pay: collect payment',detail:`Patient owes ${owes}. Waiting for the patient.`,action:create?button('Collect payment','data-visit-collect'):''};
   case 'prepare_claim':return ctx.prepareError?{headline:`The claim to ${insurer} could not be prepared`,detail:ctx.prepareError,action:create?button('Try again','data-visit-claim-prepare'):''}:create?{headline:`Preparing the claim to ${insurer}`,detail:'The claim is filled in from this encounter. Nothing is sent until you send it.',action:ctx.preparing?'':button('Prepare claim','data-visit-claim-prepare')}:{headline:'Posted',detail:`Billing staff prepare the claim to ${insurer}.`,action:''};
    case 'claim_cancelled':return {headline:`The claim to ${insurer} was cancelled`,detail:'Nothing is with the insurer.',action:create?button('Prepare a new claim','data-visit-claim-prepare="again"'):''};
@@ -92,14 +97,22 @@ function directFlowPostSend(s,ctx){
 // The card above (visitBillingStatus) and the footer under the charge table are asked the same
 // question, so both are answered from this one line and can never drift apart. A state that is
 // not about charges at all has no next step here, and is given nothing to press.
+// What the server found missing before the charges post, in the words staff use. One item at a time:
+// the first is the one to fix.
+function visitBillingBeforePosting(s){
+ const item=(s?.before_posting||[])[0];if(!item)return null;
+ if(item.code==='diagnoses')return {headline:'Add a diagnosis',detail:'This encounter has no diagnosis yet.',label:'Add a diagnosis',note:'Add a diagnosis before you post: the claim cannot be sent without one.'};
+ if(item.code==='line_diagnoses'){const n=Number(item.lines)||0;return {headline:'Link a diagnosis to every charge',detail:n===1?'One charge has no diagnosis linked.':`${n} charges have no diagnosis linked.`,label:'Open the codes',note:n===1?'One charge has no diagnosis linked: the claim cannot be sent until it has one.':`${n} charges have no diagnosis linked: the claim cannot be sent until they do.`};}
+ return null;
+}
 function visitBillingChargeStep(s,ctx={}){
  if(!s)return null;
  const write=ctx.canWrite===true;
  switch(s.state){
    case 'sign_visit':return {text:'Sign the encounter note to send these charges.',label:'Open the encounter note',attribute:'data-revenue-documentation'};
    case 'post_charges':{
-    const flow=write&&directFlowPostSend(s,ctx);
-    return {text:write?flow?'Check the charges, then post them — the claim is sent as soon as it is ready.':'Check the charges, then post them.':'Check the charges; someone who can change them posts them.',label:flow?'Post charges and send claim':write?'Post charges':'Review charges',attribute:flow?`data-visit-review-open="account" data-post-and-send="account"`:`data-visit-post-charges="${esc(s.account?.id||'')}"`};
+    const flow=write&&directFlowPostSend(s,ctx),need=write?visitBillingBeforePosting(s):null;
+    return {text:need?need.note:write?flow?'Check the charges, then post them — the claim is sent as soon as it is ready.':'Check the charges, then post them.':'Check the charges; someone who can change them posts them.',label:flow?'Post charges and send claim':write?'Post charges':'Review charges',attribute:flow?`data-visit-review-open="account" data-post-and-send="account"`:`data-visit-post-charges="${esc(s.account?.id||'')}"`};
    }
     case 'send_claim':case 'fix_claim':{
      // The card's own one-click send is the button here too, with the same small review link
