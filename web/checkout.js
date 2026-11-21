@@ -129,7 +129,7 @@ if(typeof document!=='undefined'&&document.addEventListener)document.addEventLis
 function renderFollowupRows(){
  const status=$('followup-status').value,mine=$('followup-owner').value==='mine';
  const items=followupItems.filter(t=>(status==='all'||t.status===status)&&(!mine||t.assignee_id===me.user_id));
- $('followup-rows').innerHTML=items.map(t=>`<section class="panel"><p class="eyebrow">${esc(t.patient_name)} · MRN ${esc(t.mrn)}</p>${taskRows([t])}</section>`).join('')||'<p class="muted">No tasks match. Staff add a task from an encounter’s checkout when something needs following up.</p>';
+ $('followup-rows').innerHTML=items.map(t=>`<section class="panel"><p class="eyebrow">${esc(t.patient_name)} · MRN ${esc(t.mrn)}</p>${taskRows([t])}</section>`).join('')||'<div class="empty-state"><p>No tasks match. Staff add a task from an encounter’s checkout when something needs following up.</p></div>';
 }
 function showAvsPrint(version){
  const avs=checkoutState.releases.find(a=>a.version===version)||checkoutState.current_avs;if(!avs||avs.version!==version)throw new Error('Reload the summary before printing.');

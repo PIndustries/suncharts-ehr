@@ -381,7 +381,7 @@ function schedulePanelFacts(a){
 function schedulePanelNext(a){
  const m=scheduleMarker(a.id);
  if(a.status==='booked'&&canSchedule())return schedulePanelButton('check-in',a,'Check in',true);
- if(a.status==='checked_in'&&scheduleCanStartVisit(a))return `<button type="button" class="primary" data-schedule-start="${esc(a.id)}" data-patient="${esc(a.patient_id)}">Start visit</button>`;
+ if(a.status==='checked_in'&&scheduleCanStartVisit(a))return `<button type="button" class="primary" data-schedule-start="${esc(a.id)}" data-patient="${esc(a.patient_id)}">Start encounter</button>`;
  if(['in_progress','completed'].includes(a.status)&&m?.visit_id&&scheduleAllowed('clinical'))return schedulePanelButton('visit',a,a.status==='completed'?'Open encounter':'Continue encounter',a.status==='in_progress');
  return '';
 }

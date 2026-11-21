@@ -405,7 +405,7 @@ function insuranceCoverageCard(coverage){
  return `<article class="insurance-coverage-card"><div class="section-head"><div><h3>${esc(payerName(c.payer_id))}</h3><p>${esc(human(c.priority))} · ${esc(c.plan_name||'Plan name not recorded')}</p></div><span class="pill">${esc(human(c.status))}</span></div><dl class="billing-dl"><dt>Member / policy</dt><dd>${esc(c.member_id)}</dd><dt>Recorded plan copay</dt><dd>${c.copay_cents==null?'Not recorded':money(c.copay_cents)}</dd></dl><div class="insurance-eligibility-summary" id="insurance-eligibility-${esc(coverage.id)}"></div><div class="actions">${typeof claimmdEligibilityButton==='function'?claimmdEligibilityButton(coverage):''}<button type="button" data-coverage-open="${esc(coverage.id)}">Insurance details</button>${billingCan()?`<button type="button" data-edit-coverage="${esc(coverage.id)}">Edit insurance</button>`:''}</div></article>`;
 }
 function insuranceContinueMarkup(appointment){
- if(!appointment)return '<p>Select an appointment above to continue its visit.</p>';
+ if(!appointment)return '<p>Select an appointment above to continue its encounter.</p>';
  if((typeof chartAreaEnabled==='function'&&!chartAreaEnabled('visits'))||(typeof workspaceResourceAllowed==='function'&&!workspaceResourceAllowed('clinical')))return '<p>Continuing this encounter needs clinical access. The appointment selection above remains the scope for billing.</p>';
  const visit=(workspace.visits||[]).find(v=>v.appointment_id===appointment.id);
  const context=`${esc(appointment.title||'Appointment')} · ${esc(date(appointment.starts_at))}`;
