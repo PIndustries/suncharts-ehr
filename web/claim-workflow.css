@@ -193,3 +193,5 @@
 
 .calendar-sync-sheet{display:grid;gap:10px;max-width:560px}.calendar-sync-sheet p{margin:0}.calendar-sync-actions{display:flex;gap:8px;flex-wrap:wrap}.calendar-sync-sheet input[readonly]{width:100%;font-family:ui-monospace,monospace;font-size:var(--fs-xs)}
 .calendar-sync-actions a{display:inline-block;padding:8px 14px;border-radius:5px;background:var(--blue);color:#fff;font-weight:650;text-decoration:none}:root[data-theme=dark] .calendar-sync-actions a{color:#10282d}.calendar-sync-actions a:hover{filter:brightness(1.08)}
+.calendar-links-admin{max-width:720px}.calendar-sync-sheet label.calendar-links-switch{display:flex;flex-direction:row;justify-content:flex-start;gap:8px;align-items:center;font-weight:650;text-transform:none;letter-spacing:0}.calendar-sync-sheet label.calendar-links-switch input{width:auto;margin:0;flex:none}.calendar-sync-manage{margin:12px 0 0}
+.sheet-body>.calendar-sync-manage:first-child{margin:0 0 10px}
