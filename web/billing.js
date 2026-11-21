@@ -319,7 +319,7 @@ function diagnosisLetterBadge(index){return Number.isInteger(index)&&index>=0?`<
 // One compact chip per letter. Pressing a chip is how a line says which of the encounter's diagnoses it
 // was for, and the letters stop where a claim line stops: a fifth is refused, in words.
 function chargeDiagnosisChipsMarkup(lettered,codes,disabled){
- if(!lettered.length)return '<p class="muted">Nothing here yet. Add the diagnoses above and they appear on every line as soon as they save.</p>';
+ if(!lettered.length)return '<p class="muted">Add a diagnosis above. It is linked to this line as soon as it saves.</p>';
  const on=code=>codes.includes(code.toUpperCase());
  return `<div class="charge-dx-chips">${lettered.map(d=>`<button type="button" class="charge-dx-chip"${on(d.code)?' data-chip-on=""':''}${disabled?' disabled':''} data-charge-diagnosis="${esc(d.code)}" aria-pressed="${on(d.code)?'true':'false'}" title="${esc(d.code)} · ${esc(d.display)}"><span class="charge-dx-chip-letter">${esc(d.letter)}</span><span class="sr-only">${esc(d.code)} · ${esc(d.display)}</span></button>`).join('')}</div><p class="charge-dx-chip-codes" data-charge-diagnosis-codes>${codes.length?esc(codes.map(code=>{const letter=chargeDiagnosisLetterOf(code,lettered);return letter?`${letter} (${code})`:code;}).join(', ')):'Nothing chosen yet.'}</p>`;
 }
@@ -723,7 +723,11 @@ function chargeTableTotals(host){
  const total=rows.reduce((sum,row)=>sum+chargeLineTotalCents(row),0);
  const copay=typeof visitPlanCopayCents==='function'?visitPlanCopayCents():null;
  const pays=Math.min(total,copay??total);
- for(const node of host.querySelectorAll('[data-charge-total]'))node.textContent=money(total);
+ // A total that moved is tinted for a moment, so the eye finds what the last change did.
+ for(const node of host.querySelectorAll('[data-charge-total]')){
+  const text=money(total),moved=node.textContent&&node.textContent!==text;node.textContent=text;
+  if(moved&&node.classList){node.classList.remove('value-changed');void node.offsetWidth;node.classList.add('value-changed');}
+ }
  if(typeof document!=='undefined'&&document.createElement){chargeUnitCharges(host);for(const row of host.querySelectorAll?.('.billing-charge-row')||[])modifierOptionsRender(row);}
  const copayNode=host.querySelector('[data-charge-copay]'),owesNode=host.querySelector('[data-charge-pays]');
  if(copayNode)copayNode.textContent=copay==null?'No copay recorded for this plan':`Copay ${money(copay)}`;
@@ -784,7 +788,9 @@ function addChargeRow(){
  const form=$('billing-account-form'),body=form?.querySelector('#billing-charge-lines tbody');if(!body)return;
  body.insertAdjacentHTML('beforeend',chargeRow({},form.dataset.compact==='true',chargeLineKey(null,chargeLiveRows(form).length)));
  const row=body.lastElementChild;
- row?.querySelector('[name="code"]')?.focus();
+ row?.classList?.add('charge-row-new');
+ // The box staff type in is the code search; the plain code field behind it is hidden and cannot take focus.
+ (row?.querySelector('input[name="procedure"]')||row?.querySelector('[name="code"]'))?.focus();
  chargeTableTotals(form);renderChargeRowProblems(form);
  captureBillingChargeDraft();
  scheduleChargeAutosave(form);
@@ -857,6 +863,7 @@ function chargeRowLabel(row){const code=(row.querySelector('[name="code"]')?.val
 // One quiet line beside the table: saving, saved, or what went wrong with one way to retry.
 function setChargeStatus(form,state,message){
  const status=form?.querySelector('[data-charge-status]');if(!status)return;
+ chargeStatusInSheet(state,message);
  if(state==='saving'){status.textContent='Saving…';return;}
  if(state==='saved'){status.textContent='Saved';return;}
  if(state==='quiet'){status.replaceChildren();return;}
@@ -866,6 +873,15 @@ function setChargeStatus(form,state,message){
   const retry=document.createElement('button');retry.type='button';retry.dataset.retryChargeSave='1';retry.textContent='Try again';
   status.append(retry);
  }
+}
+// The same news in the foot of the Edit codes sheet, which stays in view however far the sheet has
+// been scrolled: saving, saved with the time, or that something did not save and where to look.
+function chargeStatusInSheet(state,message){
+ const node=typeof document!=='undefined'&&document.querySelector?document.querySelector('#encounter-revenue[data-codes-editing] [data-codes-editor-state]'):null;if(!node)return;
+ node.classList?.toggle('is-problem',state==='error'||(!!message&&state!=='saving'&&state!=='saved'&&state!=='quiet'));
+ if(state==='saving')node.textContent='Saving…';
+ else if(state==='saved')node.textContent=`Saved at ${new Date().toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}. Changes save as you go.`;
+ else if(state!=='quiet')node.textContent=`${message||'This change could not be saved. Nothing you typed has been lost.'} See the note under the charges.`;
 }
 function scheduleChargeAutosave(form,delay=700){
  if(!chargeTableHost(form)||form.dataset.autosave==='off'||form.dataset.draftReadOnly||form.dataset.draftStale)return;
@@ -1467,7 +1483,7 @@ function chargeProposalStartBlank(form){
  renderChargeEncounterDiagnoses(form);
  chargeTableTotals(form);renderChargeRowProblems(form);
  captureBillingChargeDraft();
- form.querySelector('[name="code"]')?.focus?.({preventScroll:true});
+ (form.querySelector('input[name="procedure"]')||form.querySelector('[name="code"]'))?.focus?.({preventScroll:true});
 }
 function accountEditor(a,m,encounterContext=false,options={}){
  captureBillingChargeDraft();

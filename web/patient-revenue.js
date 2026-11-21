@@ -1123,6 +1123,14 @@ async function encounterCodesEditorSave(){
 }
 function encounterCodesEditorClose(){
  const host=typeof $==='function'?$('encounter-revenue'):null;if(!host?.dataset||host.dataset.codesEditing===undefined)return;
+ // In a browser the sheet eases out first; the page behind it is put back when that has played.
+ if(typeof host.getAnimations==='function'&&!host.codesCloseNow){
+  if(host.dataset.codesClosing!==undefined)return;
+  host.dataset.codesClosing='';
+  const finish=()=>{if(host.dataset.codesClosing===undefined)return;host.codesCloseNow=true;encounterCodesEditorClose();};
+  host.addEventListener('animationend',event=>{if(event.target===host)finish();},{once:true});setTimeout(finish,260);return;
+ }
+ host.codesCloseNow=false;delete host.dataset.codesClosing;
  delete host.dataset.codesEditing;
  const back=host.dataset.partBeforeEditing;delete host.dataset.partBeforeEditing;
  billingPartSet(billingParts.some(([k])=>k===back)?back:billingPartRemembered(),false);encounterCodesStripRender();encounterDetailsSummaryRender();

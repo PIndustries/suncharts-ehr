@@ -149,6 +149,12 @@
 .modifier-options{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;max-width:260px}
 .modifier-chip{display:inline-grid;gap:0;padding:3px 7px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);font-weight:600;font-size:var(--fs-sm);text-align:left;cursor:pointer;line-height:1.2}
 .modifier-chip small{font-weight:400;color:var(--muted);font-size:var(--fs-xs,12px)}
+/* A row of short chips: the code alone until it is chosen, then its meaning beside it. The meaning
+   of the others is one hover away (title), so a charge line stays one or two rows tall. */
+.modifier-chip{transition:background-color .12s ease,border-color .12s ease,box-shadow .12s ease}
+.modifier-chip:not(.is-on) small{display:none}
+.modifier-chip.is-on{display:inline-flex;align-items:baseline;gap:6px}
+.modifier-options select{flex:1 1 9rem}
 .modifier-chip.is-on{border-color:var(--accent);background:var(--accent-soft,var(--surface));box-shadow:inset 0 0 0 1px var(--accent)}
 .modifier-options select{font-size:var(--fs-sm);max-width:100%}
 .charge-table .charge-cell-modifiers{min-width:240px}

@@ -564,6 +564,21 @@ td.money-cell,th.money-cell{text-align:right;font-variant-numeric:tabular-nums}
 .charge-table-next:empty{display:none}
 .charge-table-next-slot:empty{display:none}
 .charge-table-finished{margin-top:18px;padding-top:14px;border-top:2px solid var(--line)}
+/* On a wide screen the column headings already name these cells, so the label inside each cell is
+   kept for screen readers only. On a narrow one the headings are gone and the labels show. */
+@media(min-width:761px){
+ .charge-table :is(.charge-cell-modifiers,.charge-cell-units,.charge-cell-amount)>label{font-size:0;letter-spacing:0}
+ .charge-table .charge-cell-diagnoses legend{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+}
+/* A new line eases in; a total that changed is tinted for a moment. Both are short, and both become
+   a plain fade for anyone who has asked for less motion. */
+.billing-charge-row.charge-row-new>td{animation:charge-row-in .18s cubic-bezier(0,0,0,1)}
+@keyframes charge-row-in{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+.charge-lines-totals b.value-changed{animation:value-changed .9s ease-out}
+@keyframes value-changed{from{background:color-mix(in srgb,var(--accent) 35%,transparent)}to{background:transparent}}
+.charge-lines-totals b{border-radius:4px;padding:0 3px}
+@media(prefers-reduced-motion:reduce){.billing-charge-row.charge-row-new>td{animation:charge-fade-in .15s linear}.charge-lines-totals b.value-changed{animation:none}}
+@keyframes charge-fade-in{from{opacity:0}to{opacity:1}}
 @media(max-width:760px){
  .charge-table thead{display:none}
  .charge-table,.charge-table tbody,.charge-table .billing-charge-row,.charge-table .billing-charge-row>td{display:block;width:100%}
