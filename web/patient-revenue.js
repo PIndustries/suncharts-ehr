@@ -293,6 +293,7 @@ function paintEncounterRevenue(state,current){
   // card, and the person needs to still see why the send stopped once the card settles.
   const held=node.querySelector?.('[data-claim-send-error]')?.textContent||'';
 state.reviewCard=state.data?.summary||null;node.innerHTML=encounterRevenueStatusMarkup(encounterChargeAccount(),state.data||{});
+  if(typeof encounterBarSync==='function')encounterBarSync();
   if(held&&!node.querySelector?.('[data-claim-send-error]'))node.querySelector?.('.visit-billing-status .actions')?.insertAdjacentHTML?.('beforeend',`<p class="claim-send-error" data-claim-send-error role="alert">${esc(held)}</p>`);
   for(const d of node.querySelectorAll?.('details[data-revenue-disclosure]')||[])d.open=open.includes(d.dataset.revenueDisclosure);
   // The review panel beside the table is the person's own working space. A background refresh
@@ -552,7 +553,10 @@ const insured=state.data?.summary?.insurance?.insured===true&&account.content.co
  // stops the post and is shown on the table; what should be checked is asked about once.
  const form=$('billing-account-form'),findings=form&&typeof encounterCodeFindings==='function'?encounterCodeFindings(form):[];
  const fixes=findings.filter(f=>f.level==='fix'),reviews=findings.filter(f=>f.level==='review');
- if(fixes.length){const host=form.querySelector('[data-code-check]');if(host){host.innerHTML=encounterCodeFindingsMarkup(findings);host.scrollIntoView?.({block:'center',behavior:'smooth'});if(typeof flashUpdated==='function')flashUpdated(host);}notice(`${fixes.length===1?'1 thing needs':fixes.length+' things need'} fixing before these charges can be posted.`,true);visitChargePostResult.cancelled=true;return false;}
+ if(fixes.length){
+  // What has to be fixed is listed beside the codes, so the codes open over the page to show it.
+  if(typeof encounterCodesEditorOpen==='function'&&$('encounter-revenue')?.dataset?.codesEditing!=='')encounterCodesEditorOpen();
+  const host=form.querySelector('[data-code-check]');if(host){host.innerHTML=encounterCodeFindingsMarkup(findings);host.scrollIntoView?.({block:'center',behavior:'smooth'});if(typeof flashUpdated==='function')flashUpdated(host);}notice(`${fixes.length===1?'1 thing needs':fixes.length+' things need'} fixing before these charges can be posted.`,true);visitChargePostResult.cancelled=true;return false;}
  const held=account.content.claim_details?.review_requested===true;
  const checks=reviews.length?`\n\nCheck before posting:\n${reviews.map(f=>'• '+f.text).join('\n')}`:'';
  if(!await confirmAction(message+(held?' These charges were held for review; posting approves them.':'')+checks,{title:held?'Approve and post these charges?':'Post these charges?',confirmLabel:held?'Approve and post':options.send&&insured?'Post charges and send claim':'Post charges'})){visitChargePostResult.cancelled=true;return false;}
@@ -1011,6 +1015,7 @@ function billingPartSet(key,remember=true){
  for(const button of buttons){if(!button?.dataset)continue;const on=button.dataset.billingPartKey===key;button.setAttribute?.('aria-selected',String(on));button.classList?.toggle('active',on);}
  if(remember&&key!=='codes')try{localStorage.setItem('suncharts.billingPart',key);}catch{}
  if(key!=='codes')encounterCodesStripRender();
+ if(key==='details'&&typeof encounterDetailsSummaryRender==='function')encounterDetailsSummaryRender();
 }
 // The codes on this encounter, read-only, on every tab: diagnoses (ICD-10) then procedures (CPT).
 // The Codes area of Billing shows them in full, so the strip steps aside there.
@@ -1063,22 +1068,30 @@ function encounterBillingChrome(host){
  if(tabs&&!host.querySelector('.codes-editor-bar'))tabs.insertAdjacentHTML?.('beforebegin','<div class="codes-editor-bar"><h3>Edit codes</h3><button type="button" data-codes-editor-close aria-label="Close without checking">Close</button></div>');
  if(!host.querySelector('.codes-editor-foot'))host.insertAdjacentHTML?.('beforeend','<div class="codes-editor-foot"><p class="muted" data-codes-editor-state role="status">Diagnoses and procedures save as you go.</p><button type="button" class="primary" data-codes-editor-save>Save and close</button></div>');
  billingPartSet(host.dataset?.codesEditing!==undefined?'codes':billingPartRemembered(),false);
+ if(!host.querySelector('#encounter-details-summary')){const parts=host.querySelector('.billing-parts');parts?.insertAdjacentHTML?.('afterend','<section id="encounter-details-summary" class="encounter-details-summary" hidden></section>');}
+ encounterDetailsSummaryRender();
+ encounterBarWatch(host);encounterBarSync();
 }
 // Editing the codes happens over the page: the diagnoses and the procedure lines open as a panel on
 // top of whatever tab is showing, and the page under it does not move. Nothing is taken out of the
 // page to do it, so saving and refreshing work as they always did.
-function encounterCodesEditorOpen(tries=0,create=false){
+function encounterCodesEditorOpen(tries=0,create=false,what='codes'){
  const host=typeof $==='function'?$('encounter-revenue'):null;if(!host?.dataset)return;
  if(!host.querySelector?.('#billing-account-form')){
   // No charges yet: open the encounter's charge table first, without leaving the tab that is showing.
   if(create&&tries===0&&typeof openEncounterCharges==='function'){const tab=host.dataset.invoiceTab;openEncounterCharges();if(tab&&$('encounter-revenue')?.dataset.invoiceTab!==tab)invoiceTabSet(tab,false);}
-  if(tries<20){setTimeout(()=>encounterCodesEditorOpen(tries+1,create),100);return;}
+  if(tries<20){setTimeout(()=>encounterCodesEditorOpen(tries+1,create,what),100);return;}
   invoiceTabSet('billing');return;
  }
  if(host.dataset.codesEditing!==undefined)return;
  host.dataset.partBeforeEditing=host.dataset.billingPart||billingPartRemembered();
- billingPartSet('codes',false);host.dataset.codesEditing='';
- if(typeof renderEncounterDiagnoses==='function'&&!$('encounter-diagnoses')?.firstElementChild)renderEncounterDiagnoses();
+ // The same panel edits the codes or the claim details; it shows the one that was asked for.
+ const details=what==='details';
+ billingPartSet(details?'details':'codes',false);host.dataset.codesEditing=details?'details':'';
+ const title=host.querySelector('.codes-editor-bar h3'),state=host.querySelector('[data-codes-editor-state]');
+ if(title)title.textContent=details?'Edit claim details':'Edit codes';
+ if(state)state.textContent=details?'Claim details save as you go.':'Diagnoses and procedures save as you go.';
+ if(!details&&typeof renderEncounterDiagnoses==='function'&&!$('encounter-diagnoses')?.firstElementChild)renderEncounterDiagnoses();
  host.scrollTop=0;host.querySelector('[data-codes-editor-close]')?.focus?.({preventScroll:true});
 }
 // Save and close: save what is waiting (the diagnoses list, the procedure lines), and close only once
@@ -1112,20 +1125,61 @@ function encounterCodesEditorClose(){
  const host=typeof $==='function'?$('encounter-revenue'):null;if(!host?.dataset||host.dataset.codesEditing===undefined)return;
  delete host.dataset.codesEditing;
  const back=host.dataset.partBeforeEditing;delete host.dataset.partBeforeEditing;
- billingPartSet(billingParts.some(([k])=>k===back)?back:billingPartRemembered(),false);encounterCodesStripRender();
+ billingPartSet(billingParts.some(([k])=>k===back)?back:billingPartRemembered(),false);encounterCodesStripRender();encounterDetailsSummaryRender();
+}
+// Claim details, read first. What the claim will carry besides its codes (who is billed, the date,
+// the provider and place, and anything filled in beyond that) reads as a short list; Edit opens the
+// same fields over the page. Only what has a value is listed, so an ordinary encounter stays short.
+function encounterDetailsSummaryRows(form){
+ const rows=[],seen=new Set();
+ const scopes=form.querySelectorAll('[data-visit-charge-options],[data-encounter-provider],details.charge-more-options');
+ for(const scope of scopes){
+  for(const field of scope.querySelectorAll('input,select,textarea')){
+   if(!field.name||seen.has(field.name)||field.type==='hidden'||['visit_id','coverage_id','fee_facility','fee_setting'].includes(field.name)||field.closest('[data-encounter-provider-fields]'))continue;
+   const label=field.closest('label');if(!label)continue;
+   let value='';
+   if(field.type==='checkbox'||field.type==='radio'){if(!field.checked)continue;value='Yes';}
+   else if(field.tagName==='SELECT')value=field.value?(field.selectedOptions?.[0]?.textContent||'').trim():'';
+   else value=String(field.value||'').trim();
+   if(!value)continue;
+   if(field.type==='date'&&typeof visitBillingDate==='function')value=visitBillingDate(value);
+   const name=[...label.childNodes].filter(node=>node.nodeType===3).map(node=>node.textContent).join(' ').replace(/\s+/g,' ').trim()||field.name;
+   seen.add(field.name);rows.push([name,value]);
+  }
+ }
+ return rows;
+}
+function encounterDetailsSummaryRender(){
+ const host=typeof $==='function'?$('encounter-revenue'):null,node=typeof $==='function'?$('encounter-details-summary'):null;if(!host||!node)return;
+ const form=host.querySelector?.('#billing-account-form');
+ if(!form||typeof form.querySelectorAll!=='function'){if(!node.hidden){node.hidden=true;node.replaceChildren?.();node.summaryHtml='';}return;}
+ const coverage=form.querySelector('.encounter-coverage-line'),provider=form.querySelector('[data-encounter-provider-summary]'),rows=encounterDetailsSummaryRows(form),locked=!!form.dataset.draftReadOnly;
+ const html=`<div class="section-head"><h3>Claim details</h3>${locked?'':'<button type="button" data-details-edit>Edit claim details</button>'}</div>${coverage?`<p class="encounter-coverage-line">${coverage.innerHTML}</p>`:''}<dl class="encounter-details-list">${provider?provider.innerHTML:''}${rows.map(([name,value])=>`<div><dt>${esc(name)}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>`;
+ // Written only when it changed, so watching the page for changes never feeds itself.
+ if(node.hidden)node.hidden=false;
+ if(node.summaryHtml!==html){node.innerHTML=html;node.summaryHtml=html;}
 }
 if(typeof document!=='undefined'&&document.addEventListener){
  document.addEventListener('click',event=>{
   const part=event.target?.closest?.('[data-billing-part-key]');
-  if(part?.dataset?.billingPartKey){event.preventDefault();billingPartSet(part.dataset.billingPartKey);return;}
+  if(part?.dataset?.billingPartKey){
+   event.preventDefault();billingPartSet(part.dataset.billingPartKey);
+   // The Claim area opens this encounter's claim by itself; nobody has to find a button first.
+   if(part.dataset.billingPartKey==='claim'&&$('encounter-claims')?.hidden&&typeof showEncounterClaim==='function'){
+    const claim=encounterRevenueState?.data?.summary?.claim?.id,account=typeof encounterChargeAccount==='function'?encounterChargeAccount():null;
+    if(claim&&account)run(()=>showEncounterClaim(claim,account.id));
+   }
+   return;
+  }
   if(event.target?.closest?.('[data-codes-strip-edit]')?.hasAttribute?.('data-codes-strip-edit')){event.preventDefault();encounterCodesEditorOpen(0,true);return;}
   const cms=event.target?.closest?.('[data-codes-strip-cms]');if(cms?.hasAttribute?.('data-codes-strip-cms')){event.preventDefault();if(cms.dataset?.codesStripCms)run(()=>openClaimFormPreview(cms.dataset.codesStripCms));return;}
   if(event.target?.closest?.('[data-codes-editor-save]')?.hasAttribute?.('data-codes-editor-save')){event.preventDefault();run(()=>encounterCodesEditorSave());return;}
   if(event.target?.closest?.('[data-codes-editor-close]')?.hasAttribute?.('data-codes-editor-close')){event.preventDefault();encounterCodesEditorClose();return;}
+  if(event.target?.closest?.('[data-details-edit]')?.hasAttribute?.('data-details-edit')){event.preventDefault();encounterCodesEditorOpen(0,false,'details');return;}
  });
  // A button whose work lands in another area opens that area first, so nothing happens out of sight.
  document.addEventListener('click',event=>{
-  const button=event.target?.closest?.('button');if(!button?.closest?.('#encounter-revenue,#patient-banner'))return;
+  const button=event.target?.closest?.('button');if(!button?.closest?.('#encounter-revenue,#patient-banner,#encounter-bar'))return;
   const has=names=>names.some(name=>button.hasAttribute(name));
   if(has(['data-encounter-charges'])||button.dataset?.visitReviewFix==='line')setTimeout(()=>encounterCodesEditorOpen(),0);
   else if(has(['data-visit-claim-send','data-visit-claim-fix','data-visit-claim-prepare','data-revenue-claim','data-claim-open','data-revenue-remittance']))billingPartSet('claim',false);
@@ -1133,7 +1187,7 @@ if(typeof document!=='undefined'&&document.addEventListener){
  },true);
  document.addEventListener('keydown',event=>{if(event.key!=='Escape'||document.querySelector?.('dialog[open]'))return;if($('encounter-revenue')?.dataset?.codesEditing!==undefined){event.preventDefault();encounterCodesEditorClose();}});
  // A field the browser refuses on save has to be on screen to be fixed.
- document.addEventListener('invalid',event=>{const field=event.target;if(!field?.closest?.('#billing-account-form'))return;if(field.closest('[data-visit-charge-options],[data-encounter-provider],details.charge-more-options')){encounterCodesEditorClose();invoiceTabSet('billing');billingPartSet('details',false);}else encounterCodesEditorOpen();},true);
+ document.addEventListener('invalid',event=>{const field=event.target;if(!field?.closest?.('#billing-account-form'))return;if(field.closest('[data-visit-charge-options],[data-encounter-provider],details.charge-more-options')){if($('encounter-revenue')?.dataset?.codesEditing!=='details'){encounterCodesEditorClose();invoiceTabSet('billing');encounterCodesEditorOpen(0,false,'details');}}else if($('encounter-revenue')?.dataset?.codesEditing!==''){encounterCodesEditorClose();encounterCodesEditorOpen();}},true);
 }
 function invoiceTabsMarkup(){return `<nav class="invoice-tabs encounter-tabs" role="tablist" aria-label="This encounter">${invoiceTabs.map(([key,label])=>`<button type="button" role="tab" data-invoice-tab-key="${key}" aria-selected="false">${label}</button>`).join('')}</nav>`;}
 // Which tab an encounter opens on: the one already open on it; the note while it is being written
@@ -1345,3 +1399,47 @@ if(typeof document!=='undefined'){
 
 // Using credit from the payment window closes it first, so the encounter reloads with the credit applied.
 if(typeof document!=='undefined')document.addEventListener('click',event=>{const b=event.target?.closest?.('[data-apply-copays]');if(!b||!collectDialog||!collectDialog.contains(b))return;const account=encounterChargeAccount();if(account)billingSelected=account.id;delete collectDialog.dataset.refresh;sheetClose(collectDialog);},true);
+
+// The encounter bar. Where this encounter stands, its money and the one next step sit in a single
+// line that stays in view on every tab of the encounter. It is a live copy of the billing card's
+// own next step, so every button in it is the card's button; the full money table opens over the
+// page. An encounter with no charges yet has no bar: Add codes is already beside the codes.
+let encounterBarTimer=null;
+function encounterBarSync(){
+ const page=typeof $==='function'?$('visit-page-host'):null,node=typeof $==='function'?$('encounter-revenue-status'):null;
+ if(!page?.querySelector||typeof document==='undefined'||typeof document.createElement!=='function'||typeof page.insertBefore!=='function')return;
+ const card=node?.querySelector?.('.visit-billing-card'),state=card?.getAttribute?.('data-visit-billing-state')||'';
+ let bar=$('encounter-bar');
+ const status=card?.querySelector?.('.visit-billing-status');
+ if(!status||!state||state==='add_charges'){bar?.remove?.();return;}
+ const totals=card.querySelector('.visit-billing-totals'),sent=card.querySelector('.visit-billing-sent'),table=card.querySelector('.visit-billing-breakdown');
+ const html=`${status.outerHTML}${totals?totals.outerHTML.replace(/<\/p>$/,`${table?'<button type="button" class="text-button" data-money-details>Money details</button>':''}</p>`):''}${sent?sent.outerHTML:''}`;
+ if(!bar){
+  bar=document.createElement('section');bar.id='encounter-bar';bar.className='encounter-bar';bar.setAttribute('aria-label','Where this encounter stands');
+  const after=$('encounter-progress');page.insertBefore(bar,after?.parentNode===page?after.nextSibling:page.firstChild);
+ }
+ if(bar.barHtml!==html){bar.innerHTML=html;bar.barHtml=html;}
+ bar.dataset.visitBillingState=state;
+ // The bar sits right under the patient banner, whatever height that banner has today.
+ const banner=document.querySelector?.('.patient-banner');
+ if(banner?.getBoundingClientRect&&page.style?.setProperty){const top=parseFloat(getComputedStyle(banner).top)||0;page.style.setProperty('--encounter-bar-top',`${Math.round(top+banner.getBoundingClientRect().height)}px`);}
+}
+// Anything that changes the card (a refresh, a failed send's message, a button going busy) reaches
+// the bar by itself.
+function encounterBarWatch(host){
+ if(!host||host.encounterBarWatched||typeof MutationObserver!=='function')return;
+ host.encounterBarWatched=true;
+ new MutationObserver(()=>{clearTimeout(encounterBarTimer);encounterBarTimer=setTimeout(()=>{encounterBarSync();if($('encounter-revenue')?.dataset?.codesEditing===undefined)encounterDetailsSummaryRender();},30);}).observe(host,{childList:true,subtree:true,attributes:true,attributeFilter:['disabled','hidden','data-visit-billing-state']});
+}
+if(typeof document!=='undefined'&&document.addEventListener){
+ document.addEventListener('click',event=>{
+  const button=event.target?.closest?.('[data-money-details]');if(!button?.hasAttribute?.('data-money-details'))return;
+  event.preventDefault();
+  const table=$('encounter-revenue-status')?.querySelector('.visit-billing-breakdown');if(!table||typeof sheetOpen!=='function')return;
+  const panel=document.createElement('div');panel.className='money-details-sheet';panel.append(table.cloneNode(true));
+  const dialog=sheetOpen('Money for this encounter',panel);
+  // A button pressed in the sheet does its work on the page, so the sheet steps aside for it.
+  panel.addEventListener('click',inner=>{if(inner.target.closest?.('button'))setTimeout(()=>sheetClose(dialog),0);});
+ },true);
+ if(typeof window!=='undefined'&&window.addEventListener)window.addEventListener('resize',()=>encounterBarSync());
+}
