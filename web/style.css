@@ -376,6 +376,21 @@ body{font-size:var(--fs-body);line-height:1.45;letter-spacing:0}button,input,sel
 body{line-height:var(--lh-body)}
 button,input,select{min-height:var(--control-height)}
 input[type=checkbox],input[type=radio]{min-height:0}
+/* A tick box or radio button sits beside its words on every screen, never above them or adrift in the
+   middle of the row. Screens that lay theirs out differently say so after this. */
+label:has(>input[type=checkbox]),label:has(>input[type=radio]){display:flex;flex-direction:row;align-items:center;gap:8px}
+label>input[type=checkbox],label>input[type=radio]{width:auto;flex:none;margin:0}
+/* Filters apply as they change, so their Apply buttons are not shown. */
+:is(#followup-filter-form,#referral-filter-form) button[type=submit]{display:none}
+/* The page foot stays at the bottom of the window on a short screen. */
+main{display:flex;flex-direction:column;min-height:100vh}
+main>footer{margin-top:auto;padding-right:88px}
+/* A heading that takes focus only so a screen reader announces it is not drawn as if it were a text box. */
+:is(h1,h2,h3,h4)[tabindex="-1"]:focus{outline:none}
+/* A screen that has just been opened fades in; short, and a plain cut for reduced motion. */
+.screen-in{animation:screen-in .16s cubic-bezier(0,0,0,1)}
+@keyframes screen-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){.screen-in{animation:none}}
 button:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid var(--focus,#167e91);outline-offset:2px}
 .text-button{min-height:28px}
 .sidebar-subtitle{display:none}

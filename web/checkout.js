@@ -110,3 +110,6 @@ document.addEventListener('submit',e=>{
  notice(saved);
  });
 },true);
+
+// The work queue follows its filters as they change; there is no separate step to apply them.
+if(typeof document!=='undefined'&&document.addEventListener)document.addEventListener('change',event=>{const form=event.target?.closest?.('#followup-filter-form');if(form?.requestSubmit)form.requestSubmit();});
