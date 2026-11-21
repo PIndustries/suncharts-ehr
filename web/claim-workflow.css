@@ -180,3 +180,13 @@
 /* The amount explains itself: the practice price fills in, a change says so, and nothing is pressed. */
 .billing-charge-row [data-fee-line]>[data-fee-check]{display:none}
 .billing-charge-row [data-fee-line][data-fee-schedule=""]>[data-fee-status]{display:none}
+/* Bundles: one pick adds a named set of procedure lines. */
+.charge-bundles{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin:0 0 10px}
+.charge-bundles:empty{display:none}
+.charge-bundles-label{font-size:var(--fs-sm);font-weight:600;color:var(--muted)}
+.charge-bundles button[data-bundle-add]{border-radius:999px;padding:5px 12px}
+.bundle-sheet{display:grid;gap:10px}
+.bundle-lines{margin:0;padding-left:18px;display:grid;gap:2px}
+.bundle-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;border-top:1px solid var(--line)}
+.bundle-row p{margin:0}
+#encounter-revenue[data-billing-part="details"] .charge-bundles{display:none}

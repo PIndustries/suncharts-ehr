@@ -784,3 +784,153 @@ async fn procedure_codes_offer_practice_codes_first_and_hide_disabled_rows() {
     );
     cleanup(f).await;
 }
+
+#[tokio::test]
+async fn bundles_are_saved_listed_renamed_and_turned_off_by_charge_staff() {
+    let f = setup().await;
+    let (_, front_cookie) = user(&f, "front_desk").await;
+    let (_, reader_cookie) = user(&f, "read_only").await;
+    let lines = json!([
+        {"code_system":"CPT","code":"99213","description":"Office visit, established","modifiers":"25","units":1},
+        {"code_system":"CPT","code":"64616","description":"Chemodenervation of neck muscles","modifiers":"LT","units":1},
+        {"code_system":"HCPCS","code":"j0585","description":"OnabotulinumtoxinA 1 unit","modifiers":"JZ","units":200,
+         "ndc_code":"00023114501","ndc_quantity":"200","ndc_unit":"UN"}
+    ]);
+    // Staff who enter charges save a bundle; read-only staff may not.
+    let body = json!({"name":"  Synthetic injection visit ","lines":lines});
+    assert_eq!(
+        call(
+            &f.app,
+            &reader_cookie,
+            "POST",
+            "/api/v1/practice/charge-bundles",
+            body.clone(),
+            None
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, saved) = call(
+        &f.app,
+        &front_cookie,
+        "POST",
+        "/api/v1/practice/charge-bundles",
+        body.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["name"], "Synthetic injection visit");
+    assert_eq!(
+        saved["lines"][2]["code"], "J0585",
+        "codes are stored in their canonical form"
+    );
+    assert_eq!(saved["lines"][2]["ndc_unit"], "UN");
+    assert_eq!(
+        saved["lines"][0].get("amount_cents"),
+        None,
+        "a bundle carries no amounts"
+    );
+    let id = saved["id"].as_str().unwrap().to_owned();
+    // The same name again is refused, whatever its capitals.
+    let (status, again) = call(
+        &f.app,
+        &f.cookie,
+        "POST",
+        "/api/v1/practice/charge-bundles",
+        json!({"name":"synthetic INJECTION visit","lines":lines}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{again}");
+    // Half a drug line, a diagnosis code and an empty bundle are refused.
+    for bad in [
+        json!({"name":"Bad","lines":[{"code_system":"HCPCS","code":"J0585","description":"Drug","units":1,"ndc_code":"00023114501"}]}),
+        json!({"name":"Bad","lines":[{"code_system":"ICD-10-CM","code":"G24.3","description":"Diagnosis","units":1}]}),
+        json!({"name":"Bad","lines":[]}),
+        json!({"name":"","lines":lines}),
+    ] {
+        assert_eq!(
+            call(
+                &f.app,
+                &f.cookie,
+                "POST",
+                "/api/v1/practice/charge-bundles",
+                bad,
+                None
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    // Everyone who can see billing gets the list.
+    let (status, list) = call(
+        &f.app,
+        &front_cookie,
+        "GET",
+        "/api/v1/practice/charge-bundles",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    assert_eq!(list["items"].as_array().unwrap().len(), 1);
+    // Renaming needs the version; turning it off takes it out of the list and frees the name.
+    let (status, renamed) = call(
+        &f.app,
+        &front_cookie,
+        "PUT",
+        &format!("/api/v1/practice/charge-bundles/{id}"),
+        json!({"name":"Synthetic neck injection","lines":lines,"enabled":true}),
+        Some(1),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{renamed}");
+    assert_eq!(renamed["version"], 2);
+    assert_eq!(
+        call(
+            &f.app,
+            &front_cookie,
+            "PUT",
+            &format!("/api/v1/practice/charge-bundles/{id}"),
+            json!({"name":"Stale","lines":lines,"enabled":true}),
+            Some(1)
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let (status, off) = call(
+        &f.app,
+        &front_cookie,
+        "PUT",
+        &format!("/api/v1/practice/charge-bundles/{id}"),
+        json!({"name":"Synthetic neck injection","lines":lines,"enabled":false}),
+        Some(2),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{off}");
+    let (_, list) = call(
+        &f.app,
+        &f.cookie,
+        "GET",
+        "/api/v1/practice/charge-bundles",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(list["items"].as_array().unwrap().len(), 0);
+    let (status, reused) = call(
+        &f.app,
+        &f.cookie,
+        "POST",
+        "/api/v1/practice/charge-bundles",
+        json!({"name":"Synthetic neck injection","lines":lines}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reused}");
+    cleanup(f).await;
+}

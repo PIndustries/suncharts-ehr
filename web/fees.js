@@ -133,3 +133,65 @@ if(typeof document!=='undefined'&&document.addEventListener)document.addEventLis
   const clean=String(field.value).replace(/[^0-9]/g,'');if(clean!==field.value)field.value=clean;
  }
 },true);
+
+// Bundles: a practice's named sets of procedure lines. One pick adds every line of the set to the
+// encounter with its modifiers, units and drug details; each line is then priced from the practice's
+// own code list and pointed at the encounter's diagnoses, exactly like a line added by hand.
+let chargeBundles=null,chargeBundlesLoading=null;
+function chargeBundlesLoad(force=false){
+ if(chargeBundles&&!force)return Promise.resolve(chargeBundles);
+ if(!chargeBundlesLoading)chargeBundlesLoading=api('/api/v1/practice/charge-bundles').then(data=>{chargeBundles=data.items||[];}).catch(()=>{chargeBundles=chargeBundles||[];}).finally(()=>{chargeBundlesLoading=null;});
+ return chargeBundlesLoading;
+}
+function chargeBundleSummary(bundle){return (bundle.lines||[]).map(line=>`${line.code}${line.modifiers?'-'+String(line.modifiers).replace(/\s+/g,'-'):''}${line.units>1?` × ${line.units}`:''}`).join(', ');}
+function chargeBundlesPaint(){
+ const form=typeof $==='function'?$('billing-account-form'):null,host=form?.querySelector?.('[data-charge-bundles]');if(!host)return;
+ const can=typeof billingCan==='function'&&billingCan('edit')&&!form.dataset.draftReadOnly,items=chargeBundles||[];
+ host.innerHTML=`<span class="charge-bundles-label">Bundles</span>${items.map(bundle=>`<button type="button" data-bundle-add="${esc(bundle.id)}" title="${esc(chargeBundleSummary(bundle))}">+ ${esc(bundle.name)}</button>`).join('')||'<span class="muted">None yet. Enter your usual lines once, then save them as a bundle.</span>'}${can?'<button type="button" class="text-button" data-bundle-save>Save these lines as a bundle</button>':''}${can&&items.length?'<button type="button" class="text-button" data-bundle-manage>Manage bundles</button>':''}`;
+}
+function chargeBundleApply(bundle){
+ const form=$('billing-account-form'),body=form?.querySelector('#billing-charge-lines tbody');if(!body||form.dataset.draftReadOnly||form.dataset.draftStale)return;
+ // A row nobody has typed in makes way for the bundle.
+ for(const row of chargeLiveRows(form)){const blank=!(row.querySelector('[name="code"]')?.value||'').trim()&&!chargeLineDescription(row).trim()&&chargeRowAmount(row)==null;if(blank){chargeRowMemoryCache.delete(row);row.remove();}}
+ const added=[];
+ for(const line of bundle.lines||[]){
+  body.insertAdjacentHTML('beforeend',chargeRow({code_system:line.code_system,code:line.code,description:line.description,modifiers:String(line.modifiers||'').split(/\s+/).filter(Boolean).join(','),units:line.units||1,diagnosis_codes:[],...(line.ndc_code?{ndc_code:line.ndc_code,ndc_quantity:line.ndc_quantity,ndc_unit:line.ndc_unit}:{})},form.dataset.compact==='true',chargeLineKey(null,chargeLiveRows(form).length)));
+  const row=body.lastElementChild;row.dataset.diagnosesDefault='pending';chargeRowCapture(row);added.push(row);
+ }
+ chargeTableTotals(form);renderChargeRowProblems(form);
+ for(const row of added){row.dataset.priceMemorySeen='1';void priceMemoryCheck(row);}
+ captureBillingChargeDraft();scheduleChargeAutosave(form);
+ added[0]?.scrollIntoView?.({block:'nearest'});
+ if(typeof notice==='function')notice(`Added ${bundle.name}: ${added.length} line${added.length===1?'':'s'}.`);
+}
+function chargeBundleLinesFromTable(form){
+ return chargeLiveRows(form).map(chargeRowValue).filter(line=>line.code&&String(line.description||'').trim()).map(line=>({code_system:line.code_system||(/^[A-Z]/.test(line.code)?'HCPCS':'CPT'),code:line.code,description:String(line.description).trim(),modifiers:String(line.modifiers||'').toUpperCase().split(/[\s,]+/).filter(Boolean).join(' '),units:Math.max(1,Math.trunc(Number(line.units)||1)),...(line.ndc_code&&line.ndc_quantity&&line.ndc_unit?{ndc_code:line.ndc_code,ndc_quantity:String(line.ndc_quantity),ndc_unit:line.ndc_unit}:{})}));
+}
+function chargeBundleSaveSheet(){
+ const form=$('billing-account-form'),lines=chargeBundleLinesFromTable(form);
+ if(!lines.length)throw new Error('Add at least one procedure with its code and name first.');
+ const panel=document.createElement('form');panel.className='bundle-sheet';
+ panel.innerHTML=`<p class="muted">These lines are saved as one bundle. Next time, one pick adds them all. Amounts are not kept: each line is priced from your practice prices when it is added.</p><ul class="bundle-lines">${lines.map(line=>`<li><b>${esc(line.code)}${line.modifiers?'-'+esc(line.modifiers.replace(/\s+/g,'-')):''}</b> ${esc(line.description)}${line.units>1?` × ${line.units}`:''}</li>`).join('')}</ul><label>Bundle name<input name="name" required maxlength="80" placeholder="For example: Neck injection visit"></label><p class="muted" data-bundle-status role="status"></p><div class="actions"><button type="submit" class="primary">Save bundle</button><button type="button" data-sheet-close>Cancel</button></div>`;
+ const dialog=sheetOpen('Save as a bundle',panel);
+ panel.addEventListener('submit',event=>{event.preventDefault();const name=panel.elements.name.value.trim();if(!name)return;
+  run(async()=>{
+   try{const saved=await api('/api/v1/practice/charge-bundles','POST',{name,lines});chargeBundles=[...(chargeBundles||[]).filter(item=>item.id!==saved.id),saved].sort((a,b)=>a.name.localeCompare(b.name));}
+   catch(error){panel.querySelector('[data-bundle-status]').textContent=error.message||'The bundle could not be saved.';return;}
+   sheetClose(dialog);chargeBundlesPaint();notice(`Saved the bundle ${name}.`);
+  });});
+ panel.elements.name.focus();
+}
+function chargeBundleManageSheet(){
+ const panel=document.createElement('div');panel.className='bundle-sheet';
+ const paint=()=>{panel.innerHTML=`${(chargeBundles||[]).map(bundle=>`<div class="bundle-row"><div><b>${esc(bundle.name)}</b><p class="muted">${esc(chargeBundleSummary(bundle))}</p></div><button type="button" data-bundle-remove="${esc(bundle.id)}">Remove</button></div>`).join('')||'<p class="muted">No bundles.</p>'}<div class="actions"><button type="button" data-sheet-close>Done</button></div>`;};
+ paint();const dialog=sheetOpen('Bundles',panel);
+ panel.addEventListener('click',event=>{const button=event.target.closest?.('[data-bundle-remove]');if(!button)return;const bundle=(chargeBundles||[]).find(item=>item.id===button.dataset.bundleRemove);if(!bundle)return;
+  run(async()=>{await api(`/api/v1/practice/charge-bundles/${encodeURIComponent(bundle.id)}`,'PUT',{name:bundle.name,lines:bundle.lines,enabled:false},bundle.version);chargeBundles=chargeBundles.filter(item=>item.id!==bundle.id);paint();chargeBundlesPaint();});});
+ return dialog;
+}
+if(typeof document!=='undefined'&&document.addEventListener)document.addEventListener('click',event=>{
+ const button=event.target?.closest?.('button');if(!button?.closest?.('[data-charge-bundles]'))return;
+ if(button.dataset?.bundleAdd){event.preventDefault();const bundle=(chargeBundles||[]).find(item=>item.id===button.dataset.bundleAdd);if(bundle)run(async()=>chargeBundleApply(bundle));return;}
+ if(button.hasAttribute?.('data-bundle-save')){event.preventDefault();run(async()=>chargeBundleSaveSheet());return;}
+ if(button.hasAttribute?.('data-bundle-manage')){event.preventDefault();run(async()=>chargeBundleManageSheet());}
+});
