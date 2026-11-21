@@ -340,7 +340,9 @@ pub(crate) fn before_posting(insured: bool, lines: &Value, on_encounter: usize) 
     } else if on_encounter == 0 && unlinked == lines.len() {
         vec![json!({"code":"diagnoses","missing":"a diagnosis"})]
     } else {
-        vec![json!({"code":"line_diagnoses","missing":"a diagnosis for every charge","lines":unlinked})]
+        vec![
+            json!({"code":"line_diagnoses","missing":"a diagnosis for every charge","lines":unlinked}),
+        ]
     }
 }
 pub(crate) fn state_of(
@@ -1794,8 +1796,14 @@ mod tests {
         assert!(before_posting(true, &linked, 1).is_empty());
         // Lines that carry their own codes are enough, whatever the encounter lists.
         assert!(before_posting(true, &linked, 0).is_empty());
-        assert!(before_posting(false, &bare, 0).is_empty(), "self-pay needs no diagnosis");
-        assert!(before_posting(true, &json!([]), 0).is_empty(), "nothing to check yet");
+        assert!(
+            before_posting(false, &bare, 0).is_empty(),
+            "self-pay needs no diagnosis"
+        );
+        assert!(
+            before_posting(true, &json!([]), 0).is_empty(),
+            "nothing to check yet"
+        );
         assert!(before_posting(true, &Value::Null, 0).is_empty());
     }
     #[test]
