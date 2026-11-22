@@ -267,3 +267,8 @@
 .shell-find .patient-picker,.shell-find .patient-picker-field{min-width:0;max-width:100%}
 .shell-find .patient-picker-input{font-size:1.1rem}
 .patient-billing-back{margin:0 0 8px}
+
+/* Switch encounter is the way between encounters, so it reads as a button to press, not a label. */
+.encounter-switch-button{border:1.5px solid var(--blue);color:var(--blue);background:color-mix(in srgb,var(--blue) 12%,transparent);font-weight:700}
+.encounter-switch-button:hover,.encounter-switch-button:focus-visible{background:color-mix(in srgb,var(--blue) 24%,transparent)}
+.encounter-switch-button span{margin-right:4px}
