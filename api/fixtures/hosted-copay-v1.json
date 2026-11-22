@@ -6,7 +6,8 @@
     "currency": "usd",
     "return_url": "https://ehr.example.test/?copay_checkout=00000000-0000-4000-8000-000000000001",
     "account_id": "acct_synthetic",
-    "livemode": false
+    "livemode": false,
+    "description": "Payment for your visit"
   },
   "response": {
     "contract_version": 1,

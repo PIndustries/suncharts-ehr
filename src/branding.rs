@@ -157,6 +157,10 @@ impl InstanceBranding {
 
     fn policy(&self, stripe_connect: bool) -> String {
         const STRIPE: &str = " https://connect-js.stripe.com https://js.stripe.com";
+        // Stripe's card form inside the workspace is a frame served by Checkout; its own calls
+        // go to Stripe's API from the page's script.
+        const STRIPE_FRAMES: &str = " https://checkout.stripe.com https://hooks.stripe.com";
+        const STRIPE_CONNECT_SRC: &str = " https://api.stripe.com https://checkout.stripe.com";
         const STRIPE_STYLE: &str = " 'sha256-0hAheEzaMe6uXIKV4EehS9pu1am1lj/KnnzrOYqckXk='";
         const STRIPE_IMAGES: &str = " https://*.stripe.com";
         const SUFFIX: &str = "; worker-src 'self'; media-src 'self' blob:; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
@@ -173,17 +177,18 @@ impl InstanceBranding {
             })
             .map(|origin| format!(" {origin}"))
             .unwrap_or_default();
-        let (scripts, styles, images, frames) = if stripe_connect {
+        let (scripts, styles, images, frames, connect) = if stripe_connect {
             (
                 STRIPE,
                 STRIPE_STYLE,
                 STRIPE_IMAGES,
-                format!("; frame-src 'self'{STRIPE}"),
+                format!("; frame-src 'self'{STRIPE}{STRIPE_FRAMES}"),
+                STRIPE_CONNECT_SRC,
             )
         } else {
-            ("", "", "", String::new())
+            ("", "", "", String::new(), "")
         };
-        format!("default-src 'self'; script-src 'self'{scripts}; style-src 'self'{styles}; connect-src 'self'; img-src 'self' data:{logo}{images}{frames}{SUFFIX}")
+        format!("default-src 'self'; script-src 'self'{scripts}; style-src 'self'{styles}; connect-src 'self'{connect}; img-src 'self' data:{logo}{images}{frames}{SUFFIX}")
     }
 }
 
@@ -258,9 +263,9 @@ mod tests {
         for directive in [
             "script-src 'self' https://connect-js.stripe.com https://js.stripe.com;",
             "style-src 'self' 'sha256-0hAheEzaMe6uXIKV4EehS9pu1am1lj/KnnzrOYqckXk=';",
-            "connect-src 'self';",
+            "connect-src 'self' https://api.stripe.com https://checkout.stripe.com;",
             "img-src 'self' data: https://*.stripe.com;",
-            "frame-src 'self' https://connect-js.stripe.com https://js.stripe.com;",
+            "frame-src 'self' https://connect-js.stripe.com https://js.stripe.com https://checkout.stripe.com https://hooks.stripe.com;",
             "frame-ancestors 'none'",
             "base-uri 'none'",
         ] {
@@ -270,8 +275,8 @@ mod tests {
         assert_eq!(workspace.matches("frame-src").count(), 1);
         assert_eq!(
             workspace.matches("https://").count(),
-            5,
-            "no origin beyond the five documented entries"
+            9,
+            "no origin beyond the documented entries: five for Connect.js, four for the card form"
         );
         let approved = InstanceBranding {
             display_name: "Synthetic Clinic".into(),

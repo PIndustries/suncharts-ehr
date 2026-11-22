@@ -1009,7 +1009,22 @@ async fn process_id_mode(
     let value = if let Some(v) = value {
         v
     } else {
-        let body = json!({"request_id":attempt.id,"amount_cents":attempt.amount_cents,"currency":attempt.currency,"return_url":attempt.return_url,"account_id":attempt.provider_account_id,"livemode":attempt.livemode});
+        // What the payer reads on the card page. It is made only from facts that never change
+        // for this charge (how many encounters it pays for), so a retry sends the same words;
+        // it carries no name, date, code or diagnosis.
+        let visits: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM copay_checkout_splits WHERE tenant_id=$1 AND operation_id=$2",
+        )
+        .bind(a.tenant_id)
+        .bind(attempt.id)
+        .fetch_one(pool)
+        .await?;
+        let description = if visits > 1 {
+            format!("Payment for {visits} visits")
+        } else {
+            "Payment for your visit".to_string()
+        };
+        let body = json!({"request_id":attempt.id,"amount_cents":attempt.amount_cents,"currency":attempt.currency,"return_url":attempt.return_url,"account_id":attempt.provider_account_id,"livemode":attempt.livemode,"description":description});
         match broker
             .call(
                 pool,

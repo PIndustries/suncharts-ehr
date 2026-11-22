@@ -44,3 +44,7 @@
 .payment-card-exp{grid-column:1/-1;display:flex;gap:8px;align-items:baseline;font-variant-numeric:tabular-nums}
 .payment-card-exp small{font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
 .payment-card-use{color:var(--muted);line-height:1.35}
+
+/* Add a card: Stripe's form sits inside this sheet. */
+.card-form{display:grid;gap:10px}
+.card-form-mount{min-height:420px;border-radius:10px;overflow:hidden;background:var(--paper)}

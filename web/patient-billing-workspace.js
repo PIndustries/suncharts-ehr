@@ -265,7 +265,8 @@ function patientBillingSetupMarkup(s){
  const url=['open','pending'].includes(op.status)?patientBillingCheckoutUrl(op.session?.url):null;
  if(op.status==='expired'&&op.cancelled)labels.expired='Cancelled';
  const cancel=['creating','open','unknown'].includes(op.status)&&typeof billingCan==='function'&&billingCan('edit')?'<button type="button" data-hub-setup-cancel-link>Cancel link</button>':'';
- const waiting=!!url,finished=['succeeded','expired'].includes(op.status);
+ const waiting=!!url,finished=['succeeded','expired'].includes(op.status),inApp=op.session?.embedded===true&&op.status==='open';
+ if(inApp)return `<section class="mapping-notice card-setup" aria-live="polite"><h4>Finish adding the card</h4><p>Nothing is charged now. The card is typed into Stripe’s secure form here, and the patient agrees that the practice may charge it later.</p>${op.error?`<p role="status">${esc(op.error)}</p>`:''}<div class="card-setup-actions"><button type="button" class="primary" data-hub-setup-form>Enter the card</button>${cancel.replace('Cancel link','Cancel')}</div></section>`;
  const retry=op.retry_allowed&&Number.isFinite(Date.parse(op.retry_safe_until))&&Date.parse(op.retry_safe_until)>Date.now()&&typeof billingCan==='function'&&billingCan('create')?'<button type="button" data-hub-setup-retry>Try again</button>':'';
  const steps=waiting?`<ol class="card-setup-steps"><li><b>Enter the card</b><div class="card-setup-actions"><a class="button primary" href="${esc(url)}" rel="noreferrer" referrerpolicy="no-referrer">Enter it on this computer</a><a class="button" href="${esc(patientBillingSetupMailto(s,url))}">Email the link to the patient</a><button type="button" data-hub-setup-copy>Copy the link</button></div><label class="card-setup-link" hidden>Card link<input readonly value="${esc(url)}" data-hub-setup-link></label></li><li><b>After the card is entered</b><div class="card-setup-actions"><button type="button" data-hub-setup-refresh>Show the saved card</button></div></li></ol>`:'';
  return `<section class="mapping-notice card-setup" aria-live="polite"><h4>${esc(waiting?'Save a card for this patient':labels[op.status]||labels.unknown)}</h4><p>${op.status==='succeeded'?'The card is on file for this patient.':op.status==='expired'?'Start again to get a new link.':waiting?'Nothing is charged now. The patient agrees on the card page that the practice may charge the card later.':'Nothing is charged. The card shows here once Stripe confirms it.'}</p>${op.error?`<p role="status">${esc(op.error)}</p>`:''}${steps}<div class="card-setup-actions">${finished||waiting?'':'<button type="button" data-hub-setup-refresh>Check again</button>'}${retry}${cancel.replace('Cancel link','Cancel this link')}${finished?'<button type="button" data-hub-setup-dismiss>Done</button>':''}</div></section>`;
@@ -281,15 +282,61 @@ async function patientBillingCreateSetup(s,existing,openNow=false){
  const requestId=existing?.request_id||crypto.randomUUID(),op={...existing,request_id:requestId,patient_id:s.patientId,status:'creating',retry_safe_until:existing?.retry_safe_until||new Date(Date.now()+23*60*60*1000).toISOString()};
  patientBillingSetups.set(s.patientId,op);const target=patientBillingProfileTarget(s);target.innerHTML=patientBillingProfileMarkup(s.profile,'methods',s);
  try{
-  const result=await api(`/api/v1/billing/patients/${encodeURIComponent(s.patientId)}/payment-setups`,'POST',{request_id:requestId,consent:true});
+  const result=await api(`/api/v1/billing/patients/${encodeURIComponent(s.patientId)}/payment-setups`,'POST',{request_id:requestId,consent:true,...(openNow?{embedded:true}:{})});
   if(me!==s.identity)return;
   if(result.request_id!==requestId||result.patient_id!==s.patientId)throw new Error('The setup response did not match this patient and request.');
+  // What Stripe's form needs is used once and never kept with the request.
+  const form=result.form;delete result.form;
   patientBillingSetups.set(s.patientId,result);
+  // Add card opens the card form here, inside the app. Only when that form is not available
+  // does it go to Stripe's own page, as before.
+  if(openNow&&form&&result.status==='open'&&patientBillingCurrent(s)){if(patientBillingProfileTarget(s)===target)target.innerHTML=patientBillingProfileMarkup(s.profile,'methods',s);await patientBillingOpenCardForm(s,form);return;}
   // Add card goes straight to Stripe; the status box remains for when the patient returns.
   const stripe=openNow&&result.status==='open'?patientBillingCheckoutUrl(result.session?.url):null;
   if(stripe&&patientBillingCurrent(s)&&typeof location!=='undefined'&&typeof location.assign==='function'){location.assign(stripe);return;}
  }catch(error){if(me===s.identity)patientBillingSetups.set(s.patientId,{...op,status:'unknown',retry_allowed:false,error:error.message||'The setup response was not received. Check this request before starting another.'});}
  if(patientBillingCurrent(s)&&s.tab==='methods'&&patientBillingProfileTarget(s)===target)target.innerHTML=patientBillingProfileMarkup(s.profile,'methods',s);
+}
+// Stripe's card form, shown inside the app. The card number is typed into Stripe's own frame and
+// never reaches this page or the practice's server; the page only learns that the card was saved.
+let stripeScriptLoading=null;
+function loadStripeScript(){
+ if(typeof window!=='undefined'&&typeof window.Stripe==='function')return Promise.resolve(window.Stripe);
+ if(!stripeScriptLoading)stripeScriptLoading=new Promise((resolve,reject)=>{
+  const script=document.createElement('script');script.src='https://js.stripe.com/v3/';script.async=true;
+  script.onload=()=>typeof window.Stripe==='function'?resolve(window.Stripe):reject(new Error('The card form did not load.'));
+  script.onerror=()=>{stripeScriptLoading=null;script.remove();reject(new Error('The card form could not be loaded. Check the connection and try again.'));};
+  document.head.append(script);
+ });
+ return stripeScriptLoading;
+}
+let patientBillingCardForm=null;
+async function patientBillingOpenCardForm(s,form){
+ if(typeof sheetOpen!=='function'||!form?.client_secret||!form.publishable_key)return;
+ try{patientBillingCardForm?.destroy?.();}catch{}patientBillingCardForm=null;
+ const panel=document.createElement('div');panel.className='card-form';
+ panel.innerHTML='<p class="muted">Nothing is charged now. The card is typed into Stripe’s secure form; the practice never sees the full number.</p><p role="status" data-card-form-status>Loading the card form…</p><div class="card-form-mount" data-card-form-mount></div>';
+ const dialog=sheetOpen('Add a card',panel);dialog.classList.add('sheet-wide','card-form-sheet');
+ const status=panel.querySelector('[data-card-form-status]');let saved=false,checkout=null;
+ dialog.addEventListener('close',()=>{try{checkout?.destroy?.();}catch{}if(patientBillingCardForm===checkout)patientBillingCardForm=null;
+  // Closed with or without a card: read what Stripe has, so the list and the request are current.
+  if(me===s.identity&&patientBillingCurrent(s))run(()=>patientBillingRefreshSetup(s));},{once:true});
+ try{
+  const Stripe=await loadStripeScript();if(!dialog.isConnected)return;
+  const stripe=Stripe(form.publishable_key,{stripeAccount:form.account_id});
+  checkout=await stripe.initEmbeddedCheckout({fetchClientSecret:async()=>form.client_secret,onComplete:()=>{saved=true;if(status){status.hidden=false;status.textContent='Card saved.';}setTimeout(()=>{if(dialog.isConnected)(typeof sheetClose==='function'?sheetClose(dialog):dialog.close());},700);}});
+  if(!dialog.isConnected){checkout.destroy();return;}
+  patientBillingCardForm=checkout;checkout.mount(panel.querySelector('[data-card-form-mount]'));if(status&&!saved)status.hidden=true;
+ }catch(error){if(status){status.hidden=false;status.textContent=(error?.message||'The card form could not be loaded.')+' You can close this and use “Send the patient a link” instead.';}}
+}
+// An unfinished in-app request: read it again for a fresh form and open it.
+async function patientBillingReopenCardForm(s){
+ const op=patientBillingSetupFor(s);if(!op||!patientBillingCurrent(s))return;
+ const result=await api('/api/v1/billing/payment-setups/'+encodeURIComponent(op.request_id));
+ if(me!==s.identity||result.request_id!==op.request_id||result.patient_id!==s.patientId)return;
+ const form=result.form;delete result.form;patientBillingSetups.set(s.patientId,result);
+ if(form&&result.status==='open'){await patientBillingOpenCardForm(s,form);return;}
+ if(patientBillingCurrent(s)&&s.tab==='methods')await loadPatientBillingProfile(s,s.panelRequest);
 }
 async function patientBillingRefreshSetup(s){
  const op=patientBillingSetupFor(s);if(!op||!patientBillingCurrent(s))return;
@@ -444,6 +491,7 @@ document.addEventListener('click',event=>{
  else if(button.hasAttribute('data-hub-setup-copy')){const link=patientBillingCheckoutUrl(patientBillingSetupFor(s)?.session?.url);if(link){const showLink=()=>{const field=button.closest('section')?.querySelector('[data-hub-setup-link]');if(!field)return;field.closest('label').hidden=false;field.focus();field.select();button.textContent='Copy it from the box below';};Promise.resolve().then(()=>navigator.clipboard?.writeText?navigator.clipboard.writeText(link):Promise.reject(new Error('unavailable'))).then(()=>{button.textContent='Link copied';},showLink);}}
  else if(button.hasAttribute('data-hub-setup-cancel')){patientBillingProfileTarget(s).innerHTML=patientBillingProfileMarkup(s.profile,'methods',s);}
  else if(button.hasAttribute('data-hub-setup-refresh'))run(()=>patientBillingRefreshSetup(s));
+ else if(button.hasAttribute('data-hub-setup-form'))run(()=>patientBillingReopenCardForm(s));
  else if(button.hasAttribute('data-hub-setup-cancel-link'))run(()=>patientBillingCancelSetup(s));
  else if(d.balanceSavedCard)run(()=>openBalanceSavedCard(s,d.balanceSavedCard));
  else if(d.balanceClose){const slot=patientBillingBalanceSlot(s,d.balanceClose);if(slot)slot.replaceChildren();}
