@@ -40,13 +40,23 @@ function showVisitDiagnoses(host,data,id,patient){
  const form=$('visit-diagnoses-form');if(form){visitDiagnosisBaselines.set(form,diagnosisValues(data.diagnoses));if(!host.querySelector('[data-diagnosis-rebase]'))queueVisitDiagnosisAutosave(form);}
  refreshEncounterProgress();
 }
+// Opening an encounter asks for its diagnoses from several places at once; requests made within a
+// quarter second of each other share one read. Anything later reads again, so a save is never
+// followed by an old list.
+const visitDiagnosisLoads=new Map();
+function visitDiagnosisLoad(id){
+ const now=Date.now(),held=visitDiagnosisLoads.get(id);
+ if(held&&now-held.at<250)return held.read;
+ const read=api(`/api/v1/visits/${id}/diagnoses`);visitDiagnosisLoads.set(id,{at:now,read});
+ return read;
+}
 async function renderVisitDiagnoses(){
  const host=$('visit-diagnoses');if(!host||!activeVisit)return;
  captureVisitDiagnosisDraft();
  const id=activeVisit.id,patient=selected,generation=++visitDiagnosisGeneration;
  host.innerHTML='<h3>Diagnoses</h3><p class="muted">Loading…</p>';
  try{
-  const data=await api(`/api/v1/visits/${id}/diagnoses`);
+  const data=await visitDiagnosisLoad(id);
   if(generation!==visitDiagnosisGeneration||activeVisit?.id!==id||selected!==patient||$('visit-diagnoses')!==host)return;
   visitDiagnosisStates.set(id,{...data,patientId:patient});showVisitDiagnoses(host,data,id,patient);
  }catch(error){if(generation===visitDiagnosisGeneration&&$('visit-diagnoses')===host){host.textContent=`Diagnoses could not load: ${error.message}`;visitDiagnosisStates.delete(id);refreshEncounterProgress();}}
