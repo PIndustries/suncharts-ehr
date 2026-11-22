@@ -726,7 +726,7 @@ function encounterWorkflow(){
  if(!v)return typeof appointmentCopayCard==='function'?appointmentCopayCard():'';
  const runs=typeof patientPathways==='undefined'?[]:patientPathways.filter(item=>item.patient_id===selected&&item.status==='active'&&(!item.appointment_id||item.appointment_id===v.appointment_id));
  const visitPage=!inRecordArea();
- return `<section class="encounter-workspace-heading"><div class="section-head"><div><p class="eyebrow">SELECTED ENCOUNTER</p><h2>${esc(appointment?.title||'Office visit')}</h2><p class="muted">${typeof encounterNumberText==='function'&&encounterNumberText(v)?`<b class="encounter-number">${esc(encounterNumberText(v))}</b> · `:''}${esc(encounterDateLabel(v))} · ${v.status==='signed'?'Signed clinical record':'In progress'}</p></div><div class="encounter-selection"><button type="button" data-encounter-history>Encounter history</button>${typeof canStartEncounterFlow==='function'&&canStartEncounterFlow()?'<button type="button" data-start-encounter-flow>+ New encounter</button>':''}<label>Switch encounter<select id="encounter-picker">${workspace.visits.map(row=>`<option value="${esc(row.id)}" ${row.id===v.id?'selected':''}>${typeof encounterNumberText==='function'&&encounterNumberText(row)?esc(encounterNumberText(row))+' · ':''}${esc(encounterDateLabel(row))} · ${row.status==='signed'?'Signed':'In progress'}</option>`).join('')}</select></label>${runs.length&&chartAreaEnabled('care_pathways')?'<button type="button" data-chart-section="care_pathways">Practice workflow</button>':''}${typeof supportHelpButton==='function'?supportHelpButton('encounter'):''}</div></div><div class="encounter-visit-actions">${visitPage?`<div class="actions">${encounterVisitActions().join('')}</div>`:'<button type="button" data-encounter-back>← Back to encounter</button>'}</div></section>`;
+ return `<section class="encounter-workspace-heading"><div class="section-head"><div><p class="eyebrow">SELECTED ENCOUNTER</p><h2>${esc(appointment?.title||'Office visit')}</h2><p class="muted">${typeof encounterNumberText==='function'&&encounterNumberText(v)?`<b class="encounter-number">${esc(encounterNumberText(v))}</b> · `:''}${esc(encounterDateLabel(v))} · ${v.status==='signed'?'Signed clinical record':'In progress'}</p></div><div class="encounter-selection"><button type="button" data-encounter-history>Encounter history</button>${typeof canStartEncounterFlow==='function'&&canStartEncounterFlow()?'<button type="button" data-start-encounter-flow>+ New encounter</button>':''}<button type="button" data-encounter-switch aria-haspopup="dialog">Switch encounter</button>${runs.length&&chartAreaEnabled('care_pathways')?'<button type="button" data-chart-section="care_pathways">Practice workflow</button>':''}${typeof supportHelpButton==='function'?supportHelpButton('encounter'):''}</div></div><div class="encounter-visit-actions">${visitPage?`<div class="actions">${encounterVisitActions().join('')}</div>`:'<button type="button" data-encounter-back>← Back to encounter</button>'}</div></section>`;
 }
 // The encounter is one scrolling page: vitals, note, codes & charges, payment, finish. Everything
 // else hangs off it as a button, shown only where the practice shows that area and this person
@@ -797,6 +797,51 @@ function openEncounterStep(step){
 function encounterDateLabel(v){
  const timestamp=workspace.appointments.find(a=>a.id===v.appointment_id)?.starts_at||v.signed_at||v.created_at;
  return timestamp?date(timestamp):'Visit date not recorded';
+}
+// Switch encounter: a sheet with the patient's encounters listed on the left and a month calendar
+// on the right. Picking an encounter moves the calendar to its date and marks it; picking a date
+// marks the encounters of that day in the list. Either way, one button opens the chosen encounter.
+let encounterSwitch={month:null,selected:null,day:null,query:'',dialog:null};
+function encounterSwitchWhen(v){const t=workspace.appointments.find(a=>a.id===v.appointment_id)?.starts_at||v.signed_at||v.created_at;const d=t?new Date(t):null;return d&&!Number.isNaN(d.getTime())?d:null;}
+function encounterSwitchKey(d){return d?`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`:'';}
+function encounterSwitchRows(){return (workspace.visits||[]).map(v=>{const when=encounterSwitchWhen(v);return {visit:v,when,key:encounterSwitchKey(when),number:typeof encounterNumberText==='function'?encounterNumberText(v):'',label:encounterDateLabel(v),status:v.status==='signed'?'Signed':'In progress'};}).sort((a,b)=>(b.when?.getTime()||0)-(a.when?.getTime()||0));}
+function encounterSwitchListMarkup(){
+ const st=encounterSwitch,q=st.query.trim().toLowerCase(),rows=encounterSwitchRows().filter(r=>!q||`${r.number} ${r.label} ${r.status}`.toLowerCase().includes(q));
+ if(!rows.length)return '<p class="muted">No encounter matches.</p>';
+ return `<ul class="encounter-switch-list" role="listbox" aria-label="Encounters">${rows.map(r=>`<li><button type="button" role="option" data-encounter-switch-pick="${esc(r.visit.id)}" aria-selected="${r.visit.id===st.selected}" class="${r.visit.id===st.selected?'is-selected':''}${st.day&&r.key===st.day?' is-on-day':''}"><b>${esc(r.number||'Encounter')}</b><span>${esc(r.label)}</span><small>${esc(r.status)}${typeof activeVisit!=='undefined'&&activeVisit?.id===r.visit.id?' · Open now':''}</small></button></li>`).join('')}</ul>`;
+}
+function encounterSwitchCalendarMarkup(){
+ const st=encounterSwitch,first=st.month,year=first.getFullYear(),month=first.getMonth(),days=new Date(year,month+1,0).getDate(),lead=first.getDay(),today=encounterSwitchKey(new Date());
+ const counts=new Map();for(const r of encounterSwitchRows())if(r.key)counts.set(r.key,(counts.get(r.key)||0)+1);
+ let cells='';for(let i=0;i<lead;i++)cells+='<span class="encounter-switch-blank"></span>';
+ for(let d=1;d<=days;d++){const key=encounterSwitchKey(new Date(year,month,d)),n=counts.get(key)||0;
+  cells+=`<button type="button" data-encounter-switch-day="${key}" class="${n?'has-encounter':''}${key===st.day?' is-selected':''}${key===today?' is-today':''}" ${n?`title="${n} ${n===1?'encounter':'encounters'}"`:'disabled'} aria-pressed="${key===st.day}" aria-label="${esc(new Intl.DateTimeFormat('en-US',{month:'long',day:'numeric',year:'numeric'}).format(new Date(year,month,d)))}${n?`, ${n} ${n===1?'encounter':'encounters'}`:', no encounter'}">${d}${n?`<i aria-hidden="true"${n>1?' class="is-many"':''}></i>`:''}</button>`;}
+ return `<div class="encounter-switch-month"><button type="button" data-encounter-switch-move="-1" aria-label="Previous month">‹</button><b aria-live="polite">${esc(new Intl.DateTimeFormat('en-US',{month:'long',year:'numeric'}).format(first))}</b><button type="button" data-encounter-switch-move="1" aria-label="Next month">›</button></div><div class="encounter-switch-grid"><span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span>${cells}</div>`;
+}
+function encounterSwitchFootMarkup(){
+ const row=encounterSwitchRows().find(r=>r.visit.id===encounterSwitch.selected),current=typeof activeVisit!=='undefined'&&activeVisit?.id===row?.visit.id;
+ return `<button type="button" class="primary" data-encounter-switch-open ${row&&!current?'':'disabled'}>${row?(current?'This encounter is open':`Open ${esc(row.number||'encounter')} · ${esc(row.label)}`):'Choose an encounter'}</button><button type="button" data-sheet-close>Cancel</button>`;
+}
+function encounterSwitchPaint(scroll=false){
+ const dialog=encounterSwitch.dialog;if(!dialog?.isConnected)return;
+ dialog.querySelector('[data-encounter-switch-list]').innerHTML=encounterSwitchListMarkup();
+ dialog.querySelector('[data-encounter-switch-calendar]').innerHTML=encounterSwitchCalendarMarkup();
+ dialog.querySelector('[data-encounter-switch-foot]').innerHTML=encounterSwitchFootMarkup();
+ if(scroll)dialog.querySelector('.encounter-switch-list .is-selected,.encounter-switch-list .is-on-day')?.scrollIntoView?.({block:'nearest'});
+}
+function encounterSwitchChoose(id){
+ const row=encounterSwitchRows().find(r=>r.visit.id===id);if(!row)return;
+ encounterSwitch.selected=id;encounterSwitch.day=row.key||null;if(row.when)encounterSwitch.month=new Date(row.when.getFullYear(),row.when.getMonth(),1);
+ encounterSwitchPaint();
+}
+function openEncounterSwitch(){
+ if(typeof sheetOpen!=='function'||!workspace?.visits?.length)return;
+ const current=typeof activeVisit!=='undefined'&&activeVisit?activeVisit:workspace.visits[0],when=encounterSwitchWhen(current)||new Date();
+ const panel=document.createElement('div');panel.className='encounter-switch';
+ panel.innerHTML='<div class="encounter-switch-side"><label class="sr-only" for="encounter-switch-search">Find an encounter</label><input id="encounter-switch-search" type="search" placeholder="Find by number or date" autocomplete="off" data-encounter-switch-search><div data-encounter-switch-list></div></div><div class="encounter-switch-main"><div data-encounter-switch-calendar></div><p class="muted">Days with a dot have an encounter.</p></div><div class="actions encounter-switch-foot" data-encounter-switch-foot></div>';
+ const dialog=sheetOpen('Switch encounter',panel);dialog.classList.add('sheet-wide','encounter-switch-sheet');
+ encounterSwitch={month:new Date(when.getFullYear(),when.getMonth(),1),selected:current.id,day:encounterSwitchKey(encounterSwitchWhen(current)),query:'',dialog};
+ encounterSwitchPaint(true);
 }
 // The banner shows who the chart is for and what is under way; nothing else to refresh here.
 function refreshPatientChartContext(){if(typeof renderPatientBanner==='function')renderPatientBanner();}
@@ -1252,3 +1297,18 @@ function encounterNumberForAppointment(appointmentId){const visit=(typeof worksp
 
 // A button on an empty screen that leads to where the work starts: it opens that menu item.
 if(typeof document!=='undefined'&&document.addEventListener)document.addEventListener('click',event=>{const button=event.target?.closest?.('[data-go-nav]'),target=button?.dataset?.goNav;if(!target)return;const item=document.getElementById(target);if(item?.click){event.preventDefault();item.click();}});
+
+// Switch encounter sheet: its clicks, double-click to open, and the search box.
+if(typeof document!=='undefined'&&document.addEventListener){
+ document.addEventListener('click',event=>{
+  const target=event.target?.closest?.('[data-encounter-switch],[data-encounter-switch-pick],[data-encounter-switch-day],[data-encounter-switch-move],[data-encounter-switch-open]');if(!target?.dataset)return;
+  if('encounterSwitch' in target.dataset){event.preventDefault();openEncounterSwitch();return;}
+  if(!encounterSwitch.dialog?.isConnected)return;
+  if(target.dataset.encounterSwitchPick){event.preventDefault();encounterSwitchChoose(target.dataset.encounterSwitchPick);return;}
+  if(target.dataset.encounterSwitchDay){event.preventDefault();const key=target.dataset.encounterSwitchDay,onDay=encounterSwitchRows().filter(r=>r.key===key);encounterSwitch.day=key;if(onDay.length&&!onDay.some(r=>r.visit.id===encounterSwitch.selected))encounterSwitch.selected=onDay[0].visit.id;encounterSwitch.query='';const box=encounterSwitch.dialog.querySelector('[data-encounter-switch-search]');if(box)box.value='';encounterSwitchPaint(true);return;}
+  if(target.dataset.encounterSwitchMove){event.preventDefault();const m=encounterSwitch.month;encounterSwitch.month=new Date(m.getFullYear(),m.getMonth()+Number(target.dataset.encounterSwitchMove),1);encounterSwitchPaint();return;}
+  if('encounterSwitchOpen' in target.dataset){event.preventDefault();const id=encounterSwitch.selected,dialog=encounterSwitch.dialog;if(!id)return;if(typeof sheetClose==='function')sheetClose(dialog);else dialog.close?.();run(()=>openPatientEncounter(id));}
+ });
+ document.addEventListener('dblclick',event=>{const pick=event.target?.closest?.('[data-encounter-switch-pick]');if(!pick?.dataset?.encounterSwitchPick||!encounterSwitch.dialog?.isConnected)return;encounterSwitch.selected=pick.dataset.encounterSwitchPick;encounterSwitch.dialog.querySelector('[data-encounter-switch-open]:not([disabled])')?.click();});
+ document.addEventListener('input',event=>{if(!event.target?.hasAttribute?.('data-encounter-switch-search'))return;encounterSwitch.query=String(event.target.value||'');const node=encounterSwitch.dialog?.querySelector('[data-encounter-switch-list]');if(node)node.innerHTML=encounterSwitchListMarkup();});
+}

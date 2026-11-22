@@ -221,3 +221,28 @@
 #encounter-revenue[data-codes-editing] label.check-row{display:flex;flex-direction:row;align-items:center;gap:8px}
 #encounter-revenue[data-codes-editing] label.check-row>input{width:auto;flex:none;margin:0}
 #encounter-revenue[data-codes-editing] .charge-cell-code details.charge-more:not([open]){display:inline-block;margin-right:14px}
+
+/* Switch encounter: list on the left, month calendar on the right. */
+.encounter-switch{display:grid;grid-template-columns:minmax(220px,300px) minmax(0,1fr);gap:16px;align-items:start}
+.encounter-switch-side{display:grid;gap:8px;min-width:0}
+.encounter-switch-list{list-style:none;margin:0;padding:0;display:grid;gap:4px;max-height:360px;overflow:auto}
+.encounter-switch-list button{display:grid;grid-template-columns:auto minmax(0,1fr);gap:0 10px;width:100%;text-align:left;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;min-height:44px}
+.encounter-switch-list button small{grid-column:1/-1;color:var(--muted)}
+.encounter-switch-list button.is-on-day{border-color:var(--blue)}
+.encounter-switch-list button.is-selected{border-color:var(--blue);background:var(--accent);box-shadow:inset 3px 0 0 var(--blue)}
+.encounter-switch-month{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 8px}
+.encounter-switch-month button{min-width:36px;min-height:36px}
+.encounter-switch-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;text-align:center}
+.encounter-switch-grid>span{color:var(--muted);font-size:var(--fs-sm);padding:2px 0}
+.encounter-switch-grid button{position:relative;aspect-ratio:1;min-height:36px;padding:0;border:1px solid transparent;border-radius:8px;background:transparent;color:inherit}
+.encounter-switch-grid button:disabled{color:var(--muted);opacity:.55;cursor:default}
+.encounter-switch-grid button.has-encounter{border-color:var(--line);font-weight:700;cursor:pointer}
+.encounter-switch-grid button.has-encounter i{position:absolute;left:50%;bottom:3px;transform:translateX(-50%);width:6px;height:6px;border-radius:6px;background:var(--blue)}
+.encounter-switch-grid button.has-encounter i.is-many{width:14px}
+.encounter-switch-grid button.is-today{outline:1px dashed var(--muted);outline-offset:-3px}
+.encounter-switch-grid button.is-selected{background:var(--accent);border-color:var(--blue);box-shadow:0 0 0 2px var(--blue)}
+.encounter-switch-foot{grid-column:1/-1;justify-content:flex-end;border-top:1px solid var(--line);padding-top:12px}
+@media(max-width:700px){.encounter-switch{grid-template-columns:1fr}.encounter-switch-list{max-height:200px}}
+@media(prefers-reduced-motion:no-preference){.encounter-switch-grid button,.encounter-switch-list button{transition:background-color .15s ease,border-color .15s ease,box-shadow .15s ease}}
+.encounter-switch .encounter-switch-grid button:disabled{background:transparent;border-color:transparent;box-shadow:none}
+.encounter-switch .encounter-switch-list button.is-selected{border-color:var(--blue);box-shadow:0 0 0 1px var(--blue),inset 4px 0 0 var(--blue)}
