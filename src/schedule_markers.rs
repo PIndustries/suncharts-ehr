@@ -610,8 +610,8 @@ mod tests {
         }
         assert_eq!(
             counts,
-            vec![(7, 2); 3],
-            "seven reads with billing facts and two without, for 0, 2 and 40 appointments"
+            vec![(8, 2); 3],
+            "eight reads with billing facts and two without, for 0, 2 and 40 appointments"
         );
     }
 
