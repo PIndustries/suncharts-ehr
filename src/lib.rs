@@ -305,12 +305,14 @@ mod content_security_policy_tests {
         let workspace = with_office_origin(branding.workspace_content_security_policy(), office);
         assert_eq!(workspace.matches("frame-src").count(), 1);
         assert!(workspace.contains(
-            "frame-src 'self' https://office.example.test https://connect-js.stripe.com https://js.stripe.com;"
+            "frame-src 'self' https://office.example.test https://connect-js.stripe.com https://js.stripe.com https://checkout.stripe.com https://hooks.stripe.com;"
         ));
         assert!(workspace.contains(
             "script-src 'self' https://office.example.test https://connect-js.stripe.com https://js.stripe.com;"
         ));
-        assert!(workspace.contains("connect-src 'self' https://office.example.test;"));
+        assert!(workspace.contains(
+            "connect-src 'self' https://office.example.test https://api.stripe.com https://checkout.stripe.com;"
+        ));
         assert_eq!(
             with_office_origin(branding.workspace_content_security_policy(), None),
             branding.workspace_content_security_policy()
