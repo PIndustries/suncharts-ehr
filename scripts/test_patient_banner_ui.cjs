@@ -122,7 +122,7 @@ const flagsOf=html=>[...html.slice(0,html.indexOf('patient-banner-actions')).mat
  html=await flag(c=>{c.answer.flags.intake_sent=1;},['Intake form sent']);assert.match(html,/waiting|has not finished/);
  html=await flag(c=>{c.answer.flags.portal_status='active';},['Portal active']);assert.match(html,/data-banner-flag="portal" data-portal-access="p1"/);
  await flag(c=>{c.answer.flags.portal_status='invited';},[]);await flag(c=>{c.answer.flags.portal_status='revoked';},[]);
- html=await flag(c=>{c.workspace.visits=[{id:'v1',status:'in_progress',clinician_id:'owner1'}];},['Unsigned note']);assert.match(html,/data-banner-flag="unsigned" data-chart-section="visits"/);
+ html=await flag(c=>{c.workspace.visits=[{id:'v1',status:'in_progress',clinician_id:'owner1'}];},['Unsigned note']);assert.match(html,/data-banner-flag="unsigned" data-visit="v1"/);
  await flag(c=>{c.workspace.visits=[{id:'v1',status:'signed'}];},[]);
  html=await flag(c=>{c.workspace.patient.archived=true;},['Archived']);
  html=await flag(c=>{c.workspace.billing.coverages=[coverage('cov-a','primary','payer-a')];c.answer.eligibility=[check('cov-a','completed','1',{request_snapshot:{request:{insured_given_name:'Mary',insured_family_name:'Synthetic'}}})];},['Insurer has different details']);

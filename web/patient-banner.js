@@ -69,7 +69,11 @@ function patientBannerFlags(insurance){
  if(insurance?.eligibility?.differs?.length)add('differs','Insurer has different details','warning','data-chart-section="insurance"',`The insurer's answer shows a different ${insurance.eligibility.differs.join(', ')}. Open Insurance to compare.`);
  if(f.intake_to_review>0)add('intake-review','Intake form to review','warning',patientBannerArea('documents')?'data-patient-intakes-open':'',f.intake_to_review===1?'The patient sent in an intake form that nobody has reviewed yet.':`${displayCount(f.intake_to_review,'intake form')} are waiting for review.`);
  if(f.intake_sent>0)add('intake-sent','Intake form sent','muted',patientBannerArea('documents')?'data-patient-intakes-open':'','An intake form was sent and the patient has not finished it yet.');
- if((workspace.visits||[]).some(v=>v.status==='in_progress'))add('unsigned','Unsigned note','warning','data-chart-section="visits"','An encounter note is still open and has not been signed.');
+ // The badge names the encounter whose note is open and goes to it, so it never reads as being
+ // about the signed encounter on screen.
+ {const open=(workspace.visits||[]).filter(v=>v.status==='in_progress'),here=typeof activeVisit!=='undefined'&&activeVisit?activeVisit.id:null,number=v=>typeof encounterNumberText==='function'?encounterNumberText(v):'';
+  if(open.length===1){const v=open[0],n=number(v);add('unsigned',v.id===here||!n?'Unsigned note':`Unsigned note · ${n}`,'warning',v.id===here?'data-chart-section="visits"':`data-visit="${esc(v.id)}"`,v.id===here?'This encounter note is still open and has not been signed.':`The note for ${n||'another encounter'} is still open and has not been signed. Press to open it.`);}
+  else if(open.length>1)add('unsigned',`${open.length} unsigned notes`,'warning','data-chart-section="visits"',`${open.map(number).filter(Boolean).join(', ')||'Several encounters'}: notes still open and not signed.`);}
  if(f.portal_status==='active')add('portal','Portal active','success',portal?`data-portal-access="${esc(selected)}"`:'','The patient has an active portal account.');
  return flags;
 }
