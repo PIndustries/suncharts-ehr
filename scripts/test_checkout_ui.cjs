@@ -23,7 +23,7 @@ function fixture(){
  assert.match(html,/<button type="submit" class="primary">Release visit summary<\/button>/);
  assert.doesNotMatch(html,/I reviewed the patient instructions|name="reviewed"|Release after-visit summary/);
  assert.match(html,/data-checkout-discard>Discard instruction edits</);
- assert.match(html,/<h2>Finish encounter<\/h2>/);
+ assert.match(html,/<h2>Visit summary and follow-up<\/h2>/);
  assert.doesNotMatch(html,/id="avs-delivery-form"|id="checkout-complete-form"/);
  // Payment is collected in the encounter's payment block, never duplicated inside checkout.
  assert.doesNotMatch(html,/Account payment links|Separate from appointment copay|Create test payment link|Payment account|renderAccountPaymentPanel/);
@@ -37,7 +37,7 @@ function fixture(){
  console.log('PASS unsigned visits and role-protected AVS release');
  f=fixture();f.run(`checkoutState.current_avs={version:2,content:{instructions:'<script>unsafe()</script>',follow_up_instructions:'Call <clinic>'},snapshot:checkoutState.preview_snapshot,released_at:'2026-10-25T12:00:00Z'};checkoutState.releases=[checkoutState.current_avs];renderVisitCheckoutContent()`);
  html=f.node('visit-checkout').innerHTML;assert.match(html,/&lt;script&gt;unsafe\(\)&lt;\/script&gt;/);assert.doesNotMatch(html,/<script>/);assert.match(html,/data-avs-version="2"/);assert.match(html,/opening the print dialog does not record that the summary was given/);assert.match(html,/does not collect a payment or mark charges paid/);
- f.run(`checkoutState.checkout={completed:true,checked_out_at:'2026-10-25T13:00:00Z'};renderVisitCheckoutContent()`);assert.match(f.node('visit-checkout').innerHTML,/type="submit" disabled>Complete checkout/);
+ f.run(`checkoutState.checkout={completed:true,checked_out_at:'2026-10-25T13:00:00Z'};renderVisitCheckoutContent()`);assert.match(f.node('visit-checkout').innerHTML,/type="submit" disabled>Finish encounter/);
  console.log('PASS released summaries escaped and handoff/payment statuses independent');
  f=fixture();f.run(`checkoutDrafts.set(checkoutContext.key,{instructions:'Retained instruction edits',follow_up_instructions:'',version:1,digest:'old-digest'});checkoutState.version=2;renderVisitCheckoutContent()`);
  assert.match(f.node('visit-checkout').innerHTML,/Retained instruction edits/);assert.match(f.node('visit-checkout').innerHTML,/data-version="1" data-digest="old-digest"/);assert.match(f.node('visit-checkout').innerHTML,/data-checkout-rebase/);

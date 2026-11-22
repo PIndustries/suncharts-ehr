@@ -89,7 +89,7 @@
 #visit-page-host[data-encounter-tab]>#encounter-progress{order:0}
 #visit-page-host[data-encounter-tab]>#encounter-revenue{order:1}
 #visit-page-host[data-encounter-tab]:not([data-encounter-tab="note"])>#visit-editor{display:none}
-#visit-page-host[data-encounter-tab]:not([data-encounter-tab="checkout"])>#visit-checkout{display:none}
+#visit-page-host[data-encounter-tab]:not([data-encounter-tab="note"])>#visit-checkout{display:none}
 #chart:has(>#visit-page-host[data-encounter-tab]:not([data-encounter-tab="history"])) #appointments-panel{display:none}
 #encounter-revenue[data-invoice-tab="note"]>:not(.invoice-tabs):not(#encounter-codes-strip){display:none}
 #encounter-revenue[data-invoice-tab="note"]{padding-bottom:0}
@@ -348,3 +348,8 @@
 .saved-card-pick{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;align-items:center;cursor:pointer}
 .payment-card.payment-card-small{max-width:260px;padding:14px 16px}
 .payment-card.payment-card-small .payment-card-number{font-size:var(--fs-body)}
+
+/* Cash or check sits with the other ways to pay; the lone button below them shows only when card payments are not set up. */
+#visit-billing-collect:has(.visit-billing-collect-options) .visit-billing-collect-cash{display:none}
+.reader-payment .reader-paid{display:flex;align-items:center;gap:10px;font-size:1.25rem;margin:4px 0 6px}
+.reader-payment .reader-paid-mark{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--success-line);color:var(--surface);font-weight:700;flex:none}

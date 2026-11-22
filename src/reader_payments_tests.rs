@@ -25,6 +25,8 @@ pub(crate) struct World {
     pub(crate) posted: Vec<Value>,
     pub(crate) starts: usize,
     pub(crate) cancels: usize,
+    pub(crate) taps: usize,
+    pub(crate) tap_refusal: Option<&'static str>,
     pub(crate) reads: usize,
     /// Refusal for the next attempts to send a payment to a reader.
     pub(crate) start_refusal: Option<(u16, &'static str)>,
@@ -231,6 +233,28 @@ impl Broker for FakeReaders {
             return ok(self.envelope(binding, id, pay, &world));
         }
         let rest = path.strip_prefix("/terminal/payments/").unwrap();
+        if let Some(id) = rest.strip_suffix("/simulate-tap") {
+            let id = Uuid::parse_str(id).unwrap();
+            assert_eq!(method, Method::POST);
+            assert_eq!(body, Some(account));
+            assert!(!self.live, "a live payment is never tapped for the patient");
+            if let Some(code) = world.tap_refusal {
+                return Ok(refusal(
+                    if code == "reader_not_simulated" {
+                        400
+                    } else {
+                        409
+                    },
+                    code,
+                ));
+            }
+            world.taps += 1;
+            let pay = world.payments.get_mut(&id).unwrap();
+            pay.intent = Some("succeeded");
+            pay.action = Some("succeeded");
+            let pay = &world.payments[&id];
+            return ok(self.envelope(binding, id, pay, &world));
+        }
         if let Some(id) = rest.strip_suffix("/cancel") {
             let id = Uuid::parse_str(id).unwrap();
             assert_eq!(body, Some(account));
@@ -327,7 +351,7 @@ async fn staff_see_the_practice_readers_and_only_the_owner_changes_them() {
     assert_eq!(
         listed,
         json!({"status":"ready","can_manage":true,"payments_available":true,"practice_code":"simulated-wpe",
-            "readers":[{"id":"tmr_frontdesk","name":"Front desk","model":"BBPOS WisePOS E","online":true,"busy":false}]})
+            "readers":[{"id":"tmr_frontdesk","name":"Front desk","model":"BBPOS WisePOS E","online":true,"busy":false,"simulated":true}]})
     );
     let mut desk = owner.clone();
     desk.role = Role::FrontDesk;
@@ -377,7 +401,7 @@ async fn staff_see_the_practice_readers_and_only_the_owner_changes_them() {
         .unwrap();
     assert_eq!(
         added,
-        json!({"reader":{"id":"tmr_added2","name":"Back office","model":"BBPOS WisePOS E","online":true,"busy":false}})
+        json!({"reader":{"id":"tmr_added2","name":"Back office","model":"BBPOS WisePOS E","online":true,"busy":false,"simulated":true}})
     );
     {
         let world = broker.state.lock().unwrap();

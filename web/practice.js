@@ -59,7 +59,7 @@ function practiceTrend(trend){
  const total=key=>trend.reduce((sum,d)=>sum+Number(d[key]||0),0);
  return `<svg class="practice-chart" viewBox="0 0 ${w} ${h+4}" role="img" aria-label="Last 30 days: charges ${esc(money(total('charges_cents')))}, collected ${esc(money(total('collected_cents')))}"><polyline points="${line('charges_cents')}" class="practice-chart-line charges"></polyline><polyline points="${line('collected_cents')}" class="practice-chart-line collected"></polyline></svg><p class="practice-chart-key"><span class="charges">Charges ${esc(money(total('charges_cents')))}</span><span class="collected">Collected ${esc(money(total('collected_cents')))}</span></p>`;
 }
-function practiceDashboardMarkup(d){
+function practiceDashboardMarkup(d,journey=''){
  const o=d.overview,appointments=d.appointments||[],unfinished=d.unfinished;
  const arrived=appointments.filter(a=>['checked_in','in_progress','completed'].includes(a.status)).length;
  const attention=o?.claims?Number(o.claims.needs_correction||0)+practiceClaimCount(o,'rejected'):null;
@@ -85,7 +85,7 @@ function practiceDashboardMarkup(d){
   unfinished?.total?`<li><span>Unfinished encounters</span><b>${esc(unfinished.total)}</b><button type="button" data-practice-action="followup">Open work queue</button></li>`:'',
   ...gaps.map(([label,n])=>`<li><span>Patients: ${esc(label.toLowerCase())}</span><b>${esc(n)}</b><button type="button" data-practice-action="patients">Find patients</button></li>`)
  ].filter(Boolean).join('');
- return `<section class="practice-dashboard" aria-label="Practice at a glance"><div class="practice-tiles">${tiles}</div>
+ return `<section class="practice-dashboard" aria-label="Practice at a glance"><div class="practice-tiles">${tiles}</div>${journey}
  <div class="practice-charts">${claimRows?`<article class="practice-chart-card"><h3>Claims</h3>${practiceBars(claimRows)}</article>`:''}${o?.trend?`<article class="practice-chart-card"><h3>Last 30 days</h3>${practiceTrend(o.trend)}</article>`:''}${p?`<article class="practice-chart-card"><h3>Patients</h3>${mix}<p class="muted">${esc(p.active)} active patients</p></article>`:''}</div>
  ${needs?`<article class="practice-needs"><h3>Needs attention</h3><ul>${needs}</ul></article>`:''}</section>`;
 }
@@ -95,15 +95,14 @@ function renderPracticeWorkspace(){
  const tz=Intl.DateTimeFormat().resolvedOptions().timeZone;
  $('practice-home').outerHTML=`<section id="practice-home" class="practice-home">
  <div class="practice-commandbar"><div><h2>${esc(dateLabel)}</h2><p class="muted" title="Times shown in ${esc(tz)}">All providers · Updated ${esc(practiceTime(loadedAt))}</p></div><div class="actions">${practiceAction('refresh','Refresh')}${practiceAction('patients','Find patient')}${practiceAction('schedule','Open schedule',true)}</div></div>
- ${practiceDashboardMarkup(practiceData)}
- <section class="practice-journey-shell" aria-labelledby="practice-journey-heading"><div class="practice-journey-heading"><h3 id="practice-journey-heading">Where patients are today</h3></div><nav class="practice-journey" aria-label="Patient journey">
+ ${practiceDashboardMarkup(practiceData,`<section class="practice-journey-shell" aria-labelledby="practice-journey-heading"><div class="practice-journey-heading"><h3 id="practice-journey-heading">Where patients are today</h3></div><nav class="practice-journey" aria-label="Patient journey">
  ${practiceJourneyStep(1,'intake','Intake','New requests and forms',Array.isArray(previsit?.items)?previsit.items.filter(item=>['not_issued','submitted'].includes(item.status)).length:null)}
  ${practiceJourneyStep(2,'schedule','Ready','Scheduled and preparing',schedule?appointments.length:null,'active')}
  ${practiceJourneyStep(3,'patients','Visit','Arrivals and open encounters',unfinished?unfinished.total:null)}
- ${practiceJourneyStep(4,'patients',...(practiceCheckoutHidden()?['Charges','Charges for signed visits']:['Checkout','Instructions, charges and handoff']),unfinished?unfinished.items.filter(item=>item.note_saved).length:null)}
+ ${practiceJourneyStep(4,'patients',...(practiceCheckoutHidden()?['Charges','Charges for signed visits']:['Wrap-up','Instructions, charges and handoff']),unfinished?unfinished.items.filter(item=>item.note_saved).length:null)}
  ${practiceJourneyStep(5,'claims','Claim','Coding, submission and payer response',Array.isArray(claims?.items)?claims.items.length:null)}
  ${practiceJourneyStep(6,'followup','Follow-up','Tasks, referrals and recall',[followup?.items,referrals?.items].every(Array.isArray)?followup.items.length+referrals.items.length:null)}
- </nav></section>
+ </nav></section>`)}
  <div class="practice-board-layout"><section class="practice-board" aria-label="Patient and visit worklist"><header class="practice-board-header"><nav class="practice-board-tabs" aria-label="Clinical worklists">${practiceTab('agenda','Today’s patients',schedule?appointments.length:null)}${practiceTab('unfinished','Unfinished encounters',unfinished?unfinished.total:null)}</nav><span class="practice-board-scope">${practiceBoardMode==='agenda'?'Today · all providers':'All dates · oldest first'}</span></header>
  <div class="practice-board-toolbar"><label class="practice-search"><span class="sr-only">Find a patient by name, date of birth or record number</span><input id="practice-search" type="search" value="${esc(practiceQuery)}" placeholder="Find a patient by name, date of birth or record number" autocomplete="off" spellcheck="false" aria-controls="practice-patient-results" aria-describedby="practice-patient-status" aria-activedescendant="${practicePatientActive>=0?`practice-patient-option-${practicePatientActive}`:''}"></label><p id="practice-patient-status" class="muted practice-patient-status" role="status" ${practiceQuery.trim().length>=2?'':'hidden'}>${esc(practicePatientStatus())}</p><div class="practice-patient-search" id="practice-patient-results" role="listbox" aria-label="Matching patients" ${practiceQuery.trim().length>=2?'':'hidden'}>${practicePatientRows()}</div><div class="practice-status-strip" aria-label="Filter today’s appointments" ${practiceBoardMode==='agenda'?'':'hidden'}>${[['all','All'],['arrivals','Arrived'],['in_progress','In progress'],['completed','Completed']].map(([key,label])=>`<button type="button" data-practice-flow="${key}" aria-pressed="${practiceFlowFilter===key}">${label}<span>${schedule?appointments.filter(a=>practiceMatchesFlow(a,key)).length:'—'}</span></button>`).join('')}</div></div>
  <div id="practice-worklist" class="practice-worklist"></div><footer class="practice-board-footer"><span id="practice-row-summary" role="status" aria-live="polite"></span>${practiceAction('schedule','Manage schedule →')}</footer></section>

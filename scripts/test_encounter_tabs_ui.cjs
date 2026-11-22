@@ -11,9 +11,9 @@ const nodes={'encounter-revenue':el(),'visit-page-host':el(),'encounter-claims':
 const ctx={$:id=>nodes[id]||null,localStorage:{getItem:k=>store[k]??null,setItem:(k,v)=>{store[k]=String(v);}},activeVisit:{id:'visit-1'},encounterSection:'visit',
  encounterRevenueState:{data:{summary:{}}},encounterChargeAccount:()=>({status:'draft'}),renderEncounterInvoices(){},run(){},billingCan:()=>false};
 vm.createContext(ctx);vm.runInContext(source.slice(start,end)+';this.tabs=invoiceTabs;this.remembered=invoiceTabRemembered;this.set=invoiceTabSet;this.forget=encounterTabForget;',ctx);
-assert.deepEqual(JSON.parse(JSON.stringify(ctx.tabs.map(([,label])=>label))),['Note','Checkout','Billing','History']);
-// An encounter being written opens on its note; asked for checkout, on checkout.
-assert.equal(ctx.remembered(),'note');ctx.encounterSection='checkout';assert.equal(ctx.remembered(),'checkout','the visit summary and follow-up have their own tab');
+assert.deepEqual(JSON.parse(JSON.stringify(ctx.tabs.map(([,label])=>label))),['Note','Billing','History']);
+// An encounter being written opens on its note; the visit summary and follow-up close the note.
+assert.equal(ctx.remembered(),'note');ctx.encounterSection='checkout';assert.equal(ctx.remembered(),'note','the visit summary and follow-up sit at the end of the note');
 // Billing opens on the billing tab used last; the old name of the codes tab still works.
 ctx.encounterSection='charges';assert.equal(ctx.remembered(),'billing');
 for(const old of ['encounter','codes','claim']){store['suncharts.invoiceTab']=old;assert.equal(ctx.remembered(),'billing',old);}
@@ -32,7 +32,7 @@ nodes['encounter-claims']=el();ctx.encounterRevenueState={data:{summary:{insuran
 // The page follows the tab in CSS: the note and checkout only on their tabs, money on Payments.
 const css=fs.readFileSync(path.join(__dirname,'..','web','visit-billing.css'),'utf8');
 assert.match(css,/#visit-page-host\[data-encounter-tab\]:not\(\[data-encounter-tab="note"\]\)>#visit-editor\{display:none\}/);
-assert.match(css,/#visit-page-host\[data-encounter-tab\]:not\(\[data-encounter-tab="checkout"\]\)>#visit-checkout\{display:none\}/);
+assert.match(css,/#visit-page-host\[data-encounter-tab\]:not\(\[data-encounter-tab="note"\]\)>#visit-checkout\{display:none\}/);
 assert.match(css,/:not\(\[data-invoice-tab="payments"\]\):not\(\[data-invoice-tab="billing"\]\) #encounter-revenue-status \.visit-billing-breakdown\{display:none\}/,'what is owed shows on Billing and Payments');
 // Billing reads top to bottom like one encounter form: the next step and the claim come last.
 assert.match(css,/#encounter-revenue\[data-invoice-tab="billing"\]>#encounter-revenue-status\{order:4/);assert.match(css,/#encounter-revenue\[data-invoice-tab="billing"\]>#encounter-claims\{order:5\}/);

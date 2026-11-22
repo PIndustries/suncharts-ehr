@@ -1338,6 +1338,35 @@ async fn reader_cancel_with(
     .await?;
     operation_with(s, a, id).await
 }
+async fn reader_simulate_tap(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>> {
+    Ok(Json(
+        reader_simulate_tap_with(&s, &a, id, &HttpBroker, Policy::current()).await?,
+    ))
+}
+async fn reader_simulate_tap_with(
+    s: &State,
+    a: &Actor,
+    id: Uuid,
+    broker: &dyn Broker,
+    policy: Policy,
+) -> Result<Value> {
+    authorize(s, a, "edit").await?;
+    operation_with(s, a, id).await?;
+    crate::reader_payments::simulate_tap(
+        db(s)?,
+        a,
+        crate::reader_payments::Kind::Invoice,
+        id,
+        broker,
+        policy,
+    )
+    .await?;
+    operation_with(s, a, id).await
+}
 async fn authorize(s: &State, a: &Actor, action: &str) -> Result<()> {
     if action != "view" {
         a.scheduling()?
@@ -1537,6 +1566,7 @@ pub fn router() -> Router<State> {
  .route("/api/v1/billing/invoice-checkouts/{id}",get(operation))
  .route("/api/v1/billing/invoice-checkouts/{id}/refresh",post(refresh))
  .route("/api/v1/billing/invoice-checkouts/{id}/reader-cancel",post(reader_cancel))
+ .route("/api/v1/billing/invoice-checkouts/{id}/reader-simulate-tap",post(reader_simulate_tap))
  .route("/api/v1/billing/invoice-checkouts/{id}/cancel",post(link_cancel))
  .route("/api/v1/billing/patients/{patient}/invoices/{invoice}/saved-card-charge",post(balance_charge))
 }

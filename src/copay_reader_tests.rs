@@ -394,3 +394,37 @@ async fn reader_payment_carries_its_payment_group_to_the_receipt() {
             .unwrap();
     assert_eq!(receipt_group, Some(group));
 }
+
+#[tokio::test]
+async fn a_test_reader_copay_can_be_paid_by_a_simulated_card_tap() {
+    let (pool, a, patient, appointment, _state) = setup().await;
+    let broker = FakeReaders::with_reader(false);
+    let op = start_reader_copay(&pool, &a, patient, appointment, &broker).await;
+    let tap = |id: Uuid, policy: Policy| {
+        reader_simulate_tap_with(&pool, &a, patient, appointment, id, &broker, policy)
+    };
+    // A production practice never simulates a tap, and Connect is not asked.
+    let production = Policy {
+        production: true,
+        live_enabled: false,
+    };
+    assert!(matches!(tap(op.id, production).await, Err(Error::Invalid(_))));
+    assert_eq!(broker.state.lock().unwrap().taps, 0);
+    // A real reader: staff are told to tap a card on it, the payment stays open.
+    broker.state.lock().unwrap().tap_refusal = Some("reader_not_simulated");
+    let Err(Error::Invalid(message)) = tap(op.id, policy(false)).await else {
+        panic!("a real reader is refused");
+    };
+    assert!(message.contains("real reader"), "{message}");
+    assert_eq!(row(&pool, &a, op.id).await.status, "open");
+    broker.state.lock().unwrap().tap_refusal = None;
+    // The tap is approved and the copay posts by the same rule as a card presented by hand.
+    let value = tap(op.id, policy(false)).await.unwrap();
+    assert_eq!(value["operation"]["status"], "paid", "{value}");
+    assert!(value["operation"]["receipt_id"].is_string());
+    assert_eq!(broker.state.lock().unwrap().taps, 1);
+    // A finished payment cannot be tapped again.
+    assert!(matches!(tap(op.id, policy(false)).await, Err(Error::Invalid(_))));
+    assert_eq!(broker.state.lock().unwrap().taps, 1);
+    assert_eq!(unresolved(&pool).await, 0);
+}

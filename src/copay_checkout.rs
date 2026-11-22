@@ -1253,6 +1253,47 @@ async fn reader_cancel_with(
     let row = scoped(pool, a, patient, appointment, id).await?;
     Ok(json!({"operation":row.public(policy)}))
 }
+async fn reader_simulate_tap(
+    a: Actor,
+    ExtractState(state): ExtractState<State>,
+    Path((patient, appointment, id)): Path<(Uuid, Uuid, Uuid)>,
+) -> Result<Json<Value>> {
+    Ok(Json(
+        reader_simulate_tap_with(
+            db(&state)?,
+            &a,
+            patient,
+            appointment,
+            id,
+            &HttpBroker,
+            Policy::current(),
+        )
+        .await?,
+    ))
+}
+async fn reader_simulate_tap_with(
+    pool: &PgPool,
+    a: &Actor,
+    patient: Uuid,
+    appointment: Uuid,
+    id: Uuid,
+    broker: &dyn Broker,
+    policy: Policy,
+) -> Result<Value> {
+    a.scheduling()?;
+    scoped(pool, a, patient, appointment, id).await?;
+    crate::reader_payments::simulate_tap(
+        pool,
+        a,
+        crate::reader_payments::Kind::Copay,
+        id,
+        broker,
+        policy,
+    )
+    .await?;
+    let row = scoped(pool, a, patient, appointment, id).await?;
+    Ok(json!({"operation":row.public(policy)}))
+}
 pub fn router() -> Router<State> {
     Router::new()
         .route("/api/v1/billing/copay-checkouts/{id}", get(return_detail))
@@ -1275,6 +1316,10 @@ pub fn router() -> Router<State> {
         .route(
             "/api/v1/patients/{p}/appointments/{a}/copay-checkouts/{id}/reader-cancel",
             post(reader_cancel),
+        )
+        .route(
+            "/api/v1/patients/{p}/appointments/{a}/copay-checkouts/{id}/reader-simulate-tap",
+            post(reader_simulate_tap),
         )
         .route(
             "/api/v1/patients/{p}/appointments/{a}/copay-checkouts/{id}/cancel",

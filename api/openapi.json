@@ -38748,6 +38748,93 @@
         }
       }
     },
+    "/api/v1/patients/{p}/appointments/{a}/copay-checkouts/{id}/reader-simulate-tap": {
+      "parameters": [
+        {
+          "name": "p",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "a",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "simulateTapReaderAppointmentCopay",
+        "summary": "Simulate a card tap on a test reader (test payments only)",
+        "description": "Billing-write staff. Test payments only: presents a test card on a test reader so a reader payment can be tried from start to finish. Refused for live payments, real readers and production.",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "billing.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current durable operation state; financial effects require verified provider evidence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "operation": {
+                      "$ref": "#/components/schemas/HostedCopayOperation"
+                    }
+                  },
+                  "required": [
+                    "operation"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input or unavailable/mismatched payment mode"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Billing permission denied"
+          },
+          "404": {
+            "description": "Tenant/patient/appointment-scoped record not found"
+          },
+          "409": {
+            "description": "Conflicting retry, pending collection, unsafe balance or over-limit history"
+          },
+          "500": {
+            "description": "Database/audit failure; mutation rolled back"
+          }
+        }
+      }
+    },
     "/api/v1/billing/invoice-checkouts/{id}/reader-cancel": {
       "post": {
         "summary": "Cancel an invoice payment that is waiting on a card reader",
@@ -38784,6 +38871,44 @@
           }
         ],
         "description": "Billing edit. Records the cancel request, resets the reader and cancels the payment at the processor if no card was taken. If a card is being approved at that moment the payment is left alone and its real outcome is recorded. No refund is initiated here."
+      }
+    },
+    "/api/v1/billing/invoice-checkouts/{id}/reader-simulate-tap": {
+      "post": {
+        "summary": "Simulate a card tap on a test reader (test payments only)",
+        "tags": [
+          "Billing"
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated tenant-scoped result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvoiceCheckoutResult"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Billing permission required"
+          },
+          "409": {
+            "description": "Responsibility, version, reservation or idempotency conflict"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "description": "Billing edit. Test payments only: presents a test card on a test reader so a reader payment can be tried from start to finish. Refused for live payments, real readers and production."
       }
     },
     "/api/v1/patients/{p}/appointments/{a}/copay-checkouts/{id}/cancel": {
