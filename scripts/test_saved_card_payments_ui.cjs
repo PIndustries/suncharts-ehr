@@ -54,14 +54,14 @@ test('the copay controls offer Charge card on file, and its form opens in place 
  await f.click({savedCardCopay:'appt'},'encounter-hosted-copay');
  const html=f.slot('encounter-hosted-copay-reader');
  assert.match(html,/<h3>Charge card on file<\/h3>/);assert.match(html,/name="amount" required inputmode="decimal" value="25.00"/);
- assert.match(html,/Card: <b>visa ending 4242<\/b>/);assert.doesNotMatch(html,/4444/,'a card saved for in-person use is never offered');
+ assert.match(html,/aria-label="visa card ending 4242/);assert.doesNotMatch(html,/4444/,'a card saved for in-person use is never offered');
  assert.doesNotMatch(html,/type="checkbox"|name="reason"/,'no confirmation box and no reason field');
  assert.match(html,/· Test payment/);plain(html,'copay card form');
  assert.equal(f.slot(),'','the other panel is untouched');
  assert.equal(f.calls.some(call=>['openBillingEditor','showChartSection','selectPatient'].includes(call[0])),false,'staff stay where they pressed the button');
  // Several eligible cards become a choice.
  const many=copay([visa,amex,old]);many.ctx.hostedCopayStateFor('appt').availability=many.ctx.availability;await many.click({savedCardCopay:'appt'},'insurance-hosted-copay');
- assert.match(many.slot(),/<select name="card" required><option value="setup-later">visa ending 4242<\/option><option value="setup-second">amex ending 0005<\/option><\/select>/);
+ assert.match(many.slot(),/<input type="radio" name="card" value="setup-later" required checked>[^]*?card ending 4242[^]*?<input type="radio" name="card" value="setup-second" required>[^]*?card ending 0005/);
  // Only an in-person card on file: staff are told plainly and nothing can be charged.
  const none=copay([old]);none.ctx.hostedCopayStateFor('appt').availability=none.ctx.availability;await none.click({savedCardCopay:'appt'},'insurance-hosted-copay');
  assert.match(none.slot(),/The card on file was saved for in-person use\. Ask the patient to save it again to charge it later\./);assert.doesNotMatch(none.slot(),/type="submit"/);plain(none.slot(),'no eligible card');
@@ -162,7 +162,7 @@ test('an installment can be charged to a card on file from its own form, without
  assert.match(html,/<input name="patient_present" type="checkbox" required> The patient is present and agrees to this payment amount\./,'the card link keeps its patient-present box');
  assert.match(html,/data-installment-saved-card>Charge card on file</);assert.match(html,/· Test payment/);assert.doesNotMatch(html,/Stripe Sandbox/);
  const form=f.form();await c.chooseInstallmentSavedCard(f.s,form);
- assert.match(form.choice.innerHTML,/Card: <b>visa ending 4242<\/b>/);assert.match(form.choice.innerHTML,/\$2\.50 will be charged to the card\. The patient does not need to be here\./);assert.match(form.choice.innerHTML,/data-installment-saved-card-pay>Charge \$2\.50</);
+ assert.match(form.choice.innerHTML,/aria-label="visa card ending 4242/);assert.match(form.choice.innerHTML,/\$2\.50 will be charged to the card\. The patient does not need to be here\./);assert.match(form.choice.innerHTML,/data-installment-saved-card-pay>Charge \$2\.50</);
  assert.doesNotMatch(form.choice.innerHTML,/4444|type="checkbox"/);plain(form.choice.innerHTML,'installment card choice');
  c.next={plan:{...f.plan,attempts:[attempt]},operation:attempt};await c.chargeInstallmentSavedCard(f.s,form);
  same(f.calls.find(call=>call[1]==='POST'),[`/api/v1/billing/patients/${patient}/installment-plans/plan-one/installments/1/checkout`,'POST',{request_id:'stable-request',amount_cents:250,patient_present:false,reason:'Installment charged to card on file',saved_card_setup_id:'setup-later'},4]);
@@ -240,7 +240,7 @@ test('a patient balance is charged to a card on file directly under the balance'
  const list=f.nodes['patient-billing-balances'];assert.equal(list.hidden,false);
  assert.match(list.innerHTML,/<h3>Balance due<\/h3>/);assert.match(list.innerHTML,/<b>\$30\.00<\/b><small>Invoice issued 2026-11-11<\/small>/);assert.match(list.innerHTML,/data-balance-saved-card="invoice-one">Charge card on file</);assert.doesNotMatch(list.innerHTML,/planned/);plain(list.innerHTML,'balance list');
  await c.openBalanceSavedCard(f.s,'invoice-one');
- assert.match(f.slot.innerHTML,/Card: <b>visa ending 4242<\/b>/);assert.match(f.slot.innerHTML,/\$30\.00 will be charged to the card\./);assert.match(f.slot.innerHTML,/<button type="submit" class="primary">Charge \$30\.00<\/button>/);assert.doesNotMatch(f.slot.innerHTML,/type="checkbox"|name="reason"|4444/);
+ assert.match(f.slot.innerHTML,/aria-label="visa card ending 4242/);assert.match(f.slot.innerHTML,/\$30\.00 will be charged to the card\./);assert.match(f.slot.innerHTML,/<button type="submit" class="primary">Charge \$30\.00<\/button>/);assert.doesNotMatch(f.slot.innerHTML,/type="checkbox"|name="reason"|4444/);
  const operation={id:'balance-op',patient_id:patient,plan_id:'balance-plan',amount_cents:3000,livemode:false,status:'expired',channel:'saved_card',last_result:'saved_card_needs_patient'};
  c.next=()=>({plan:{id:'balance-plan',invoice_id:'invoice-one',version:3},operation});
  await c.chargeBalanceSavedCard(f.s,{dataset:{invoice:'invoice-one',amount:'3000',request:'stable-request'},elements:{card:{value:'setup-later'}}});

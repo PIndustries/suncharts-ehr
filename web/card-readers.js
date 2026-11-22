@@ -456,11 +456,16 @@ async function savedCardsForCharge(patientId){
  return {cards:cards.filter(card=>card.charge_later===true&&card.setup_id),inPerson:cards.filter(card=>card.charge_later!==true).length};
 }
 function savedCardName(card){return `${human(card.brand||'Card')} ending ${card.last4}`;}
+function savedCardVisual(card){
+ const brand=human(card.brand||'Card'),last4=card.last4||'••••',expires=card.exp_month&&card.exp_year?`${String(card.exp_month).padStart(2,'0')}/${card.exp_year}`:'';
+ return `<div class="payment-card payment-card-small" role="img" aria-label="${esc(brand)} card ending ${esc(last4)}${expires?', expires '+esc(expires):''}"><span class="payment-card-chip" aria-hidden="true"></span><span class="payment-card-brand">${esc(brand)}</span><strong class="payment-card-number"><span aria-hidden="true">•••• •••• ••••</span> ${esc(last4)}</strong>${expires?`<span class="payment-card-exp"><small>Expires</small>${esc(expires)}</span>`:''}</div>`;
+}
 const savedCardInPersonText='Saved for in-person use. Ask the patient to save it again to charge it later.';
 function savedCardChoiceMarkup(found){
  if(!found.cards.length)return `<p role="status">${found.inPerson?'The card on file was saved for in-person use. Ask the patient to save it again to charge it later.':'No card on file yet. Save a card under Payment methods first.'}</p>`;
- if(found.cards.length===1)return `<input type="hidden" name="card" value="${esc(found.cards[0].setup_id)}"><p>Card: <b>${esc(savedCardName(found.cards[0]))}</b></p>`;
- return `<label>Card<select name="card" required>${found.cards.map(card=>`<option value="${esc(card.setup_id)}">${esc(savedCardName(card))}</option>`).join('')}</select></label>`;
+ // The card being charged is shown as a card, the same way it looks under Payment methods.
+ if(found.cards.length===1)return `<input type="hidden" name="card" value="${esc(found.cards[0].setup_id)}"><div class="saved-card-choice">${savedCardVisual(found.cards[0])}</div>`;
+ return `<fieldset class="saved-card-choice"><legend>Card to charge</legend>${found.cards.map((card,index)=>`<label class="saved-card-pick"><input type="radio" name="card" value="${esc(card.setup_id)}" required${index===0?' checked':''}>${savedCardVisual(card)}</label>`).join('')}</fieldset>`;
 }
 // What staff read for a charge to a card on file, from its saved status.
 function savedCardPaymentState(operation){

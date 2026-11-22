@@ -340,3 +340,11 @@
 #visit-page-host:has(>#encounter-bar) #encounter-revenue[data-invoice-tab]>#encounter-revenue-status .visit-billing-card{margin:0}
 .money-details-sheet{min-width:min(640px,80vw)}.money-details-sheet .visit-billing-breakdown{display:table;margin:0}
 @media print{.encounter-bar{position:static}}
+
+/* Collect payment: once the payment is done, only the result is left on the sheet. */
+.collect-sheet:has(.collect-done) .collect-methods,.collect-sheet:has(.collect-done) #encounter-hosted-copay,.collect-sheet:has(.collect-done) #encounter-hosted-copay-reader{display:none}
+.collect-owed.is-paid b{color:var(--success-text)}
+.saved-card-choice{border:0;margin:8px 0 12px;padding:0;display:grid;gap:10px}
+.saved-card-pick{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;align-items:center;cursor:pointer}
+.payment-card.payment-card-small{max-width:260px;padding:14px 16px}
+.payment-card.payment-card-small .payment-card-number{font-size:var(--fs-body)}
