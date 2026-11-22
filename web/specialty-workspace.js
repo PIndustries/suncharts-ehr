@@ -32,6 +32,8 @@ function applyPracticeWorkspaceSettings(){
   const buttons=[...group.querySelectorAll(':scope > .nav-item')];
   buttons.sort((a,b)=>content.module_order.indexOf(Object.keys(workspaceModuleIds).find(k=>workspaceModuleIds[k]===a.id))-content.module_order.indexOf(Object.keys(workspaceModuleIds).find(k=>workspaceModuleIds[k]===b.id)));
   buttons.forEach(button=>group.append(button));
+  // The closed list of now-and-then tools always comes last in its group, under the everyday items.
+  const more=group.querySelector(':scope > .nav-more');if(more)group.append(more);
  }
  applyWorkspaceAccessVisibility();
 }

@@ -694,3 +694,10 @@ main .patient-billing-totals strong{font-size:1.5rem;line-height:1.2}
 main .billing-totals{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;padding:0;background:transparent !important}
 main .billing-totals>span{display:grid;gap:2px;align-content:start;padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--muted);font-size:var(--fs-sm)}
 main .billing-totals>span>b{display:block;margin:0;font-size:1.5rem;line-height:1.2;font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums}
+/* A screen that is not set up yet: one block that says what it is for and where to start. */
+.setup-state{max-width:640px;margin:24px auto;padding:28px;text-align:left}
+.setup-state h3{margin:0 0 8px;color:var(--ink);font-size:var(--fs-lg)}
+.setup-state p{color:var(--muted)}
+/* Where the menu is taller than the window it scrolls; its last visible item fades out instead of
+   being cut in half, and there is room to scroll the final item fully into view. */
+@media(min-width:761px){.sidebar-navigation{padding-bottom:18px;-webkit-mask-image:linear-gradient(to bottom,black calc(100% - 22px),transparent);mask-image:linear-gradient(to bottom,black calc(100% - 22px),transparent)}}
