@@ -592,7 +592,7 @@ td.money-cell,th.money-cell{text-align:right;font-variant-numeric:tabular-nums}
 .billing-charge-row.charge-row-new>td{animation:charge-row-in .18s cubic-bezier(0,0,0,1)}
 @keyframes charge-row-in{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
 .charge-lines-totals b.value-changed{animation:value-changed .9s ease-out}
-@keyframes value-changed{from{background:color-mix(in srgb,var(--accent) 35%,transparent)}to{background:transparent}}
+@keyframes value-changed{from{background:color-mix(in srgb,var(--blue) 35%,transparent)}to{background:transparent}}
 .charge-lines-totals b{border-radius:4px;padding:0 3px}
 @media(prefers-reduced-motion:reduce){.billing-charge-row.charge-row-new>td{animation:charge-fade-in .15s linear}.charge-lines-totals b.value-changed{animation:none}}
 @keyframes charge-fade-in{from{opacity:0}to{opacity:1}}
@@ -630,7 +630,7 @@ td.money-cell,th.money-cell{text-align:right;font-variant-numeric:tabular-nums}
 /* Work queue: one list of what is waiting on the practice, a row for each piece of work. */
 .work-queue-kinds{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 14px}
 .work-queue-kinds button{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:4px 12px;transition:background-color .12s ease,border-color .12s ease}
-.work-queue-kinds button[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft,var(--surface-soft));box-shadow:inset 0 0 0 1px var(--accent)}
+.work-queue-kinds button[aria-pressed="true"]{border-color:var(--blue);background:var(--accent);box-shadow:inset 0 0 0 1px var(--blue)}
 .work-queue-group{margin-top:16px}
 .work-queue-group>h3{display:flex;align-items:center;gap:8px;margin:0 0 6px}
 .work-queue-list{list-style:none;margin:0;padding:0;border:1px solid var(--line);border-radius:6px;overflow:hidden}
@@ -653,7 +653,7 @@ summary{min-height:24px}
 .patient-banner-flag{min-height:24px}
 @media(pointer:coarse){.appt-marker{min-height:24px}}
 /* 2.4.1 Keyboard users can jump past the menu. The link shows only when it has focus. */
-.skip-link{position:absolute;left:8px;top:-60px;z-index:10001;padding:8px 12px;background:var(--surface);color:var(--ink);border:2px solid var(--accent);border-radius:6px;font-weight:600;text-decoration:none;transition:top .12s ease}
+.skip-link{position:absolute;left:8px;top:-60px;z-index:10001;padding:8px 12px;background:var(--surface);color:var(--ink);border:2px solid var(--blue);border-radius:6px;font-weight:600;text-decoration:none;transition:top .12s ease}
 .skip-link:focus{top:8px}
 /* A first heading that only repeats the page title is kept for structure and not drawn. */
 .page-title-repeat{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
@@ -676,3 +676,21 @@ summary{min-height:24px}
 .empty-state p{margin:0 0 10px}
 .empty-state>:last-child{margin-bottom:0}
 .charge-cell-remove button+button{display:block;margin-top:4px}
+
+/* ---- One look for section tabs ---------------------------------------------------------
+   Inbox, Automation Center, Patient billing and the encounter's Note / Billing / History switch
+   parts of a screen the same way, so they are drawn the same way: a row of words on a rule, the
+   current one underlined in the accent colour. (Chips that filter a list stay chips.) */
+main :is(nav.workspace-tabs,nav.automation-tabs,nav.patient-billing-tabs,nav.invoice-tabs.encounter-tabs){display:flex;flex-wrap:wrap;gap:2px;margin:0 0 14px;padding:0;border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;box-shadow:none}
+main :is(nav.workspace-tabs,nav.automation-tabs,nav.patient-billing-tabs,nav.invoice-tabs.encounter-tabs)>:is(button,a){flex:none;min-height:40px;margin:0 0 -1px;padding:9px 14px;border:0;border-bottom:2px solid transparent;border-radius:4px 4px 0 0;background:transparent;box-shadow:none;color:var(--muted);font-size:var(--fs-body);font-weight:600;text-decoration:none;transition:color .12s ease,border-color .12s ease,background-color .12s ease}
+main :is(nav.workspace-tabs,nav.automation-tabs,nav.patient-billing-tabs,nav.invoice-tabs.encounter-tabs)>:is(button,a):hover{color:var(--ink);background:var(--surface-soft)}
+main :is(nav.workspace-tabs,nav.automation-tabs,nav.patient-billing-tabs,nav.invoice-tabs.encounter-tabs)>:is(button,a):is([aria-pressed=true],[aria-selected=true],[aria-current]){color:var(--ink);font-weight:650;border-bottom-color:var(--blue);background:var(--accent)}
+
+/* ---- One look for number cards ---------------------------------------------------------
+   Home's tiles set the pattern: a quiet label, the number, a short hint. Patient billing's totals
+   and the totals rows on the claim and billing screens are drawn the same way. */
+main .patient-billing-totals section{padding:12px 14px}
+main .patient-billing-totals strong{font-size:1.5rem;line-height:1.2}
+main .billing-totals{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;padding:0;background:transparent !important}
+main .billing-totals>span{display:grid;gap:2px;align-content:start;padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--muted);font-size:var(--fs-sm)}
+main .billing-totals>span>b{display:block;margin:0;font-size:1.5rem;line-height:1.2;font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums}

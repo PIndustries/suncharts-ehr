@@ -28,7 +28,7 @@
 #visit-billing-collect[hidden]{display:none}
 .visit-billing-collect-options{flex-wrap:wrap;margin:10px 0}
 .visit-billing-filters{flex-wrap:wrap;margin:12px 0}
-.visit-billing-filters button[aria-pressed="true"]{border-color:var(--accent);color:var(--ink);font-weight:650}
+.visit-billing-filters button[aria-pressed="true"]{border-color:var(--blue);color:var(--ink);font-weight:650}
 .visit-billing-timeline{list-style:none;margin:0 0 16px;padding:0}
 .visit-billing-timeline li{display:grid;grid-template-columns:110px minmax(0,1fr) auto;gap:14px;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--line)}
 .visit-billing-timeline time{color:var(--muted);font-variant-numeric:tabular-nums}
@@ -155,7 +155,7 @@
 .modifier-chip:not(.is-on) small{display:none}
 .modifier-chip.is-on{display:inline-flex;align-items:baseline;gap:6px}
 .modifier-options select{flex:1 1 9rem}
-.modifier-chip.is-on{border-color:var(--accent);background:var(--accent-soft,var(--surface));box-shadow:inset 0 0 0 1px var(--accent)}
+.modifier-chip.is-on{border-color:var(--blue);background:var(--accent);box-shadow:inset 0 0 0 1px var(--blue)}
 .modifier-options select{font-size:var(--fs-sm);max-width:100%}
 .charge-table .charge-cell-modifiers{min-width:240px}
 
