@@ -707,3 +707,4 @@ main .billing-totals>span>b{display:block;margin:0;font-size:1.5rem;line-height:
 .practice-journey button>em{grid-column:1;grid-row:1 / span 2;align-self:center;min-width:30px;font-size:var(--fs-lg);font-style:normal;font-weight:700;text-align:center}
 .practice-journey button>b{grid-column:2;grid-row:1}
 .practice-journey button>small{grid-column:2;grid-row:2}
+.followup-suggestions{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin:10px 0}.followup-suggestions button{border-style:dashed;font-weight:500}

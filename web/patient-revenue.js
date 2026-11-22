@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 const insuranceAppointmentSelection=new Map();
+// The appointment whose copay the schedule asked for, per patient, used while no encounter is open.
+const copayAppointmentSelection=new Map();
 function remittancePatientResponsibility(row){
  const explicit=(row?.adjustments||[]).some(adjustment=>adjustment.group==='PR')||row?.patient_responsibility_cents>0;
  return explicit?`Payer-reported patient responsibility ${money(row.patient_responsibility_cents||0)}`:'Patient responsibility not specified in PR evidence; review the response';
@@ -9,7 +11,8 @@ function revenueAppointment(){
  const selectedAppointment=typeof chartSection!=='undefined'&&chartSection==='insurance'?insuranceAppointmentSelection.get(selected):null;
  if(selectedAppointment){const appointment=(workspace.appointments||[]).find(a=>a.id===selectedAppointment);if(appointment)return appointment;}
  if(typeof activeVisit!=='undefined'&&activeVisit)return workspace.appointments.find(a=>a.id===activeVisit.appointment_id);
- return (workspace.appointments||[]).find(a=>['checked_in','in_progress','booked'].includes(a.status));
+ const open=(workspace.appointments||[]).filter(a=>['checked_in','in_progress','booked'].includes(a.status)),asked=copayAppointmentSelection.get(selected);
+ return open.find(a=>a.id===asked)||open[0];
 }
 function revenueServiceDate(appointment=revenueAppointment()){
  const value=appointment?.starts_at?new Date(appointment.starts_at):new Date();
@@ -1304,6 +1307,14 @@ function encounterChargeTableInline(){
   else if(account.status==='posted'&&account.content?.visit_id)accountEditor(account,null,true,{correction:true});
  }finally{if(quiet)billingEditorQuiet=false;}
 }
+// The bar's note-side steps: the Note tab, at the Sign button or at the summary and follow-up.
+if(typeof document!=='undefined')document.addEventListener('click',event=>{
+ const next=event.target?.closest?.('[data-encounter-next]')?.dataset?.encounterNext;if(!next)return;event.preventDefault();
+ if(next==='finish'){if(typeof setEncounterSection==='function')setEncounterSection('checkout');return;}
+ invoiceTabSet('note',false);
+ const target=document.querySelector?.('#visit-editor [data-action="sign"]')||$('note-form')||$('visit-editor');
+ target?.scrollIntoView?.({block:'center'});target?.focus?.({preventScroll:true});
+});
 document.addEventListener('click',event=>{const tab=event.target?.closest?.('[data-invoice-tab-key]');if(!tab?.dataset?.invoiceTabKey)return;event.preventDefault();invoiceTabSet(tab.dataset.invoiceTabKey);});
 // The statements on the Payments tab: each one the balance the patient owed on the day it was given.
 // The balance itself stays on the encounter.
@@ -1546,7 +1557,17 @@ function encounterBarSync(){
  const status=card?.querySelector?.('.visit-billing-status');
  // Before any charges exist the bar is only shown when a copay is due, so it can be taken at check-in.
  const standing=typeof visitBillingDue==='function'?visitBillingDue(encounterRevenueState?.data?.summary):{due:1};
- if(!status||!state||(state==='add_charges'&&!(typeof visitBillingDue==='function'&&standing.due>0))){bar?.remove?.();return;}
+ // The note comes before the money. With no charges and nothing due, an unsigned encounter's next
+ // step is its note; once signed it is the card's own Add charges. Without an open encounter to
+ // read there is no bar.
+ const visit=typeof activeVisit!=='undefined'?activeVisit:null,noCharges=state==='add_charges'&&!(typeof visitBillingDue==='function'&&standing.due>0);
+ if(!status||!state||(noCharges&&!visit)){bar?.remove?.();return;}
+ const noteFirst=noCharges&&visit.status!=='signed';
+ const step=noteFirst?`<div class="visit-billing-status"><div><span class="eyebrow">Next step</span><p class="visit-billing-headline">Finish and sign the note</p><p class="muted">Charges can be added before or after signing.</p></div><div class="actions"><button type="button" class="primary" data-encounter-next="note">Go to the note</button>${status.querySelector?.('[data-encounter-charges]')?'<button type="button" data-encounter-charges>Add charges</button>':''}</div></div>`:status.outerHTML;
+ // A signed encounter that is not finished keeps Finish encounter in reach; it is the main button
+ // only when billing has nothing left for staff to press.
+ const wrapUp=typeof checkoutProgress==='function'&&typeof checkoutStates!=='undefined'&&typeof checkoutKey==='function'&&visit?checkoutStates.get(checkoutKey(selected,visit.id)):null;
+ const finish=!noteFirst&&visit?.status==='signed'&&wrapUp&&!wrapUp.checkout?.completed?`<div class="actions encounter-bar-next"><button type="button"${/class="primary/.test(step)?'':' class="primary"'} data-encounter-next="finish">Finish encounter</button></div>`:'';
  const totals=card.querySelector('.visit-billing-totals'),sent=card.querySelector('.visit-billing-sent'),table=card.querySelector('.visit-billing-breakdown');
  // When the patient owes something on this encounter, taking the payment is one press away from
  // the bar, whatever the next billing step is. It opens the same payment sheet (card on file,
@@ -1554,8 +1575,9 @@ function encounterBarSync(){
  // next step is itself the payment.
  // Shown only while something is due: once the encounter is paid, the bar says so and offers nothing to take.
  const collectable=standing.due>0&&!!card.querySelector('[data-visit-collect]')&&!status.querySelector?.('[data-visit-collect]');
- const takePayment=collectable?'<button type="button" class="primary encounter-bar-pay" data-visit-collect>Take payment</button>':'';
- const html=`${status.outerHTML}${totals?totals.outerHTML.replace(/<\/p>$/,`${table?'<button type="button" class="text-button" data-money-details>Money details</button>':''}${takePayment}</p>`):takePayment?`<p class="visit-billing-totals"><span class="is-due"><small>${standing.copayOnly?'Copay due now':'Patient owes now'}</small><b>${money(standing.due)}</b></span>${takePayment}</p>`:''}${sent?sent.outerHTML:''}`;
+ // One main button at a time: Take payment is quiet beside another next step.
+ const takePayment=collectable?`<button type="button" class="${/class="primary/.test(step)?'':'primary '}encounter-bar-pay" data-visit-collect>Take payment</button>`:'';
+ const html=`${step}${finish}${totals?totals.outerHTML.replace(/<\/p>$/,`${table?'<button type="button" class="text-button" data-money-details>Money details</button>':''}${takePayment}</p>`):takePayment?`<p class="visit-billing-totals"><span class="is-due"><small>${standing.copayOnly?'Copay due now':'Patient owes now'}</small><b>${money(standing.due)}</b></span>${takePayment}</p>`:''}${sent?sent.outerHTML:''}`;
  if(!bar){
   bar=document.createElement('section');bar.id='encounter-bar';bar.className='encounter-bar';bar.setAttribute('aria-label','Where this encounter stands');
   const after=$('encounter-progress');page.insertBefore(bar,after?.parentNode===page?after.nextSibling:page.firstChild);

@@ -26,7 +26,7 @@ function fixture(options={}){
   run:work=>{c.pending=Promise.resolve().then(work);return c.pending;},
   showClinical:async()=>calls.push(['clinical']),selectPatient:async(id,visit)=>{calls.push(['select',id,visit]);c.selected=id;c.workspace={appointments:plain(vm.runInContext('scheduleState?scheduleState.appointments:[]',c))};if(visit)c.activeVisit={id:visit};},
   showChartSection:key=>calls.push(['section',key]),setEncounterSection:key=>calls.push(['encounter',key]),openWorkflowIntakePacket:async id=>calls.push(['intake',id]),
-  insuranceAppointmentSelection:new Map(),selected:undefined,workspace:undefined,activeVisit:undefined,
+  insuranceAppointmentSelection:new Map(),copayAppointmentSelection:new Map(),openVisitCollect:()=>calls.push(['collect']),selected:undefined,workspace:undefined,activeVisit:undefined,
   workspaceResourceAllowed:(resource,action)=>!(options.denied||[]).includes(resource),
   api:async(route,method='GET',body,version)=>{
    calls.push(['api',route,method,body,version]);
@@ -300,6 +300,9 @@ async function main(){
  g=await act('check-eligibility','booked',{insurance:{status:'self_pay'}});await assert.rejects(g.c.pending,/no active insurance/);assert.equal(g.calls.filter(call=>call[0]==='api').length,0);
  g=await act('collect-copay','checked_in');
  assert.deepEqual(plain(g.calls.filter(call=>call[0]!=='notice')),[['clinical'],['select','patient-a',null],['section','visits']],'the copay is taken on the appointment in the Encounters tab, not the Insurance tab');
+ assert.equal(g.c.copayAppointmentSelection.get('patient-a'),'a','the chart shows this appointment’s copay, not another one’s');
+ g=await act('collect-copay','in_progress',{visit_id:'visit-a'});
+ assert.deepEqual(plain(g.calls.filter(call=>call[0]!=='notice')),[['clinical'],['select','patient-a','visit-a'],['encounter','charges'],['collect']],'with the encounter started, its own Billing opens with the payment window');
  g=await act('billing','booked');assert.deepEqual(plain(g.calls.at(-1)),['section','billing']);
  g=await act('visit','in_progress',{visit_id:'visit-a'});assert.deepEqual(plain(g.calls),[['clinical'],['select','patient-a','visit-a']]);
  g=await act('charges','completed',{visit_id:'visit-a'});assert.deepEqual(plain(g.calls),[['clinical'],['select','patient-a','visit-a'],['encounter','charges']]);
