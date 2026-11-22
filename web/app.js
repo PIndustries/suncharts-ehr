@@ -8,16 +8,14 @@ function organizeWorkspaceNavigation(){
  const items={home:$('nav-practice'),schedule:$('nav-schedule'),queue:$('nav-followup'),messages:$('nav-portal'),communications:$('nav-communications'),patients:$('nav-clinical'),clinical:$('nav-labs'),specialty:$('nav-specialty'),referrals:$('nav-referrals'),billing:$('nav-billing'),claims:$('nav-claims'),clearinghouse:$('nav-edi'),workflows:$('nav-workflows'),automation:$('nav-automation'),aiReview:$('nav-ai-review'),admin:$('nav-admin'),apps:$('nav-apps'),migration:$('nav-migration')};
  const labels={home:'Home',schedule:'Schedule',queue:'Work queue',messages:'Inbox',communications:'Communications',patients:'Patients',clinical:'Orders & results',specialty:'Specialty care',referrals:'Referrals',billing:'Patient billing',claims:'Insurance claims',clearinghouse:'Claim lifecycle',workflows:'Workflow Studio',automation:'Automation Center',aiReview:'Sun review',admin:'Practice administration',apps:'Integrations',migration:'Data import'};
  for(const [key,item] of Object.entries(items)){const label=item?.querySelector('span');if(label)label.textContent=labels[key];}
- const groups=[['Today',['home','schedule','queue','messages']],['Care',['patients','clinical','specialty','referrals']],['Revenue',['billing','claims','clearinghouse']],['Manage',['admin','apps']]];
+ const groups=[['Today',['home','schedule','queue','messages']],['Care',['patients','clinical','specialty','referrals']],['Revenue',['billing','claims','clearinghouse']],['Manage',['admin','apps','workflows']]];
  navigation.replaceChildren();
  for(const [label,keys] of groups){const group=document.createElement('div');group.className=`nav-group${label==='Care'?' nav-group-primary':''}`;group.setAttribute('role','group');const id=`nav-${label.toLowerCase()}-label`;group.setAttribute('aria-labelledby',id);const heading=document.createElement('p');heading.className='nav-group-label';heading.id=id;heading.textContent=label;group.append(heading,...keys.map(key=>items[key]).filter(Boolean));if(label==='Manage'){
-   // The two everyday settings screens stay in view; everything used now and then sits in one
-   // closed list under them, drawn like every other menu item.
-   const more=navigationMoreTools(items),customize=document.createElement('button');customize.id='nav-customize';customize.className='nav-item';customize.type='button';customize.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10m4 0h2M4 17h2m4 0h10M14 4v6M6 14v6"/></svg><span>Customize menu</span>';more.lastElementChild?.append?.(customize);group.append(more);}navigation.append(group);}
+   // Manage is three places: Practice administration, Integrations and Workflow Studio. Data import
+   // and Customize menu are opened from inside Practice administration. Automation Center and Sun
+   // review are off the menu; their buttons are kept out of sight so their own links still open them.
+   const kept=document.createElement('div');kept.hidden=true;kept.dataset.navOffMenu='';const customize=document.createElement('button');customize.id='nav-customize';customize.className='nav-item';customize.type='button';customize.innerHTML='<span>Customize menu</span>';kept.append(...['automation','aiReview','migration'].map(key=>items[key]).filter(Boolean),customize);group.append(kept);}navigation.append(group);}
  navigation.dataset.organized='true';
-}
-function navigationMoreTools(items){
- const details=document.createElement('details');details.className='nav-more';const summary=document.createElement('summary');summary.textContent='More tools';const body=document.createElement('div');body.append(...['workflows','automation','aiReview','migration'].map(key=>items[key]).filter(Boolean));details.append(summary,body);return details;
 }
 
 // Only an opaque navigation ID may cross the explicit same-tab Connect sign-in.

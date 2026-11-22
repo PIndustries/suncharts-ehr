@@ -6,7 +6,8 @@ assert.match(app,/function organizeWorkspaceNavigation\(\)/);
 for(const group of ['Today','Care','Revenue','Manage'])assert.match(app,new RegExp(`\\['${group}'`));
 for(const label of ['Home','Schedule','Work queue','Inbox','Patients','Orders & results','Referrals','Patient billing','Insurance claims','Claim connections','Workflow Studio','Automation Center','Sun review','Practice administration','Integrations','Data import'])assert.ok(app.includes(label),`missing ${label}`);
 for(const id of ['nav-practice','nav-schedule','nav-followup','nav-portal','nav-communications','nav-clinical','nav-labs','nav-specialty','nav-referrals','nav-billing','nav-claims','nav-edi','nav-workflows','nav-automation','nav-ai-review','nav-admin','nav-apps','nav-migration'])assert.match(index,new RegExp(`id="${id}"`));
-assert.match(app,/function navigationMoreTools/);assert.match(app,/summary\.textContent='More tools'/);assert.match(style,/\.nav-more/);
+// Manage is three places; the tools that left the menu are kept out of sight, not deleted.
+assert.match(app,/\['Manage',\['admin','apps','workflows'\]\]/);assert.doesNotMatch(app,/function navigationMoreTools/);assert.match(app,/kept\.hidden=true/);assert.match(style,/\.nav-more/);
 assert.match(app,/\$\('nav-migration'\)\.hidden=me\.role!=='owner'/);assert.match(app,/\$\('nav-admin'\)\)\$\('nav-admin'\)\.hidden=me\.role!=='owner'/);
 assert.match(app,/navigation\.dataset\.organized='true'/);assert.match(style,/\.nav-group-primary/);
 const manage=app.match(/const manage=(\[[^\n]+\]);/)?.[1]||'';
