@@ -1421,7 +1421,13 @@ function encounterBarSync(){
  const status=card?.querySelector?.('.visit-billing-status');
  if(!status||!state||state==='add_charges'){bar?.remove?.();return;}
  const totals=card.querySelector('.visit-billing-totals'),sent=card.querySelector('.visit-billing-sent'),table=card.querySelector('.visit-billing-breakdown');
- const html=`${status.outerHTML}${totals?totals.outerHTML.replace(/<\/p>$/,`${table?'<button type="button" class="text-button" data-money-details>Money details</button>':''}</p>`):''}${sent?sent.outerHTML:''}`;
+ // When the patient owes something on this encounter, taking the payment is one press away from
+ // the bar, whatever the next billing step is. It opens the same payment sheet (card on file,
+ // card reader, payment link) as the Payments part of the Billing tab. Not repeated when the
+ // next step is itself the payment.
+ const collectable=!!card.querySelector('[data-visit-collect]')&&!status.querySelector?.('[data-visit-collect]');
+ const takePayment=collectable?'<button type="button" class="primary encounter-bar-pay" data-visit-collect>Take payment</button>':'';
+ const html=`${status.outerHTML}${totals?totals.outerHTML.replace(/<\/p>$/,`${table?'<button type="button" class="text-button" data-money-details>Money details</button>':''}${takePayment}</p>`):''}${sent?sent.outerHTML:''}`;
  if(!bar){
   bar=document.createElement('section');bar.id='encounter-bar';bar.className='encounter-bar';bar.setAttribute('aria-label','Where this encounter stands');
   const after=$('encounter-progress');page.insertBefore(bar,after?.parentNode===page?after.nextSibling:page.firstChild);
