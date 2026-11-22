@@ -351,7 +351,8 @@ async function loadEncounterRevenueStatus(account,force=false){
   finally{state.pending=null;render();
    // The claim made from these codes shows under them as soon as the summary names it.
    if(current()&&$('encounter-revenue')?.dataset?.invoiceTab==='billing'&&typeof encounterClaimMount==='function')encounterClaimMount();
-   // The banner's claim bar follows this encounter's claim, whichever tab is open.
+   // The banner's progress line follows this encounter: its claim, or its self-pay steps.
+   if(current()&&typeof patientBannerEncounterSync==='function')patientBannerEncounterSync(state.data?.summary,typeof activeVisit!=='undefined'?activeVisit:null);
    const claimId=state.data?.summary?.claim?.id;
    if(current()&&claimId&&typeof patientBannerClaim!=='undefined'&&patientBannerClaim.claim?.id!==claimId&&typeof claimMdClaimLifecycle==='function'&&typeof claimsBase!=='undefined')void api(`${claimsBase}/${encodeURIComponent(claimId)}`).then(detail=>{if(current()&&detail?.claim?.id===claimId)claimMdClaimLifecycle(detail.claim,detail);}).catch(()=>{});
   if(current()&&typeof setTimeout==='function'&&state.data?.summary?.account?.status==='posted'){clearTimeout(state.timer);state.timer=setTimeout(()=>{const node=$('encounter-revenue-status');if(current()&&node&&(!node.getClientRects||node.getClientRects().length))void loadEncounterRevenueStatus(encounterChargeAccount(),true);},20000);}}

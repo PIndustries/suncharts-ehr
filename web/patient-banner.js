@@ -242,9 +242,39 @@ if(typeof document!=='undefined'&&document.addEventListener){
 // view whichever tab or page staff are on. Hovering a step shows its words; clicking opens the claim.
 let patientBannerClaim={patient:null,claim:null,bar:'',now:''};
 function patientBannerClaimMarkup(){
- const c=patientBannerClaim;if(!c.claim||c.patient!==selected||!c.bar)return '';
+ const c=patientBannerClaim;
+ // A self-pay encounter has no claim: its own three steps show instead of the six claim steps.
+ if(c.selfPay&&c.patient===selected&&c.bar)return `<div class="patient-banner-row patient-banner-claim" id="patient-banner-claim"><span class="patient-banner-claim-name">Self-pay${c.number?' · '+esc(c.number):''}</span>${c.bar}<span class="patient-banner-claim-now">${esc(c.now)}</span></div>`;
+ if(!c.claim||c.patient!==selected||!c.bar)return '';
  const service=c.claim.snapshot?.account?.content?.service_date;
  return `<div class="patient-banner-row patient-banner-claim" id="patient-banner-claim"><button type="button" class="patient-banner-claim-name" data-claim-open="${esc(c.claim.id)}" data-claim-visit title="Open this claim">Claim${(()=>{const visit=(workspace?.visits||[]).find(v=>v.id===c.claim.snapshot?.account?.content?.visit_id);const n=typeof encounterNumberText==='function'?encounterNumberText(visit):'';return n?' · '+esc(n):service?' · '+esc(typeof visitBillingDate==='function'?visitBillingDate(service):service):'';})()}</button>${c.bar}<span class="patient-banner-claim-now">${esc(c.now)}</span></div>`;
+}
+// The steps of a self-pay encounter: charges, posting, payment. No insurance step is shown.
+function patientBannerSelfPaySteps(summary){
+ const posted=summary?.account?.status==='posted',charged=Number(summary?.charges_cents)>0,owes=Number(summary?.patient?.owes_now_cents)||0,balance=Number(summary?.balance_cents)||0;
+ const paid=posted&&owes===0&&balance<=0;
+ return [
+  {label:'Charges added',todo:'Add charges',done:charged,detail:charged?'The procedures for this encounter are listed.':'Add the procedures done at this encounter.'},
+  {label:'Charges posted',todo:'Post charges',done:posted,detail:posted?'The charges are final.':'Check the charges, then post them.'},
+  {label:'Paid',todo:'Collect payment',done:paid,detail:paid?'The patient has paid this encounter.':posted?`The patient owes ${typeof money==='function'?money(owes):owes}.`:'Payment is collected after the charges are posted.'}
+ ];
+}
+// Called whenever the open encounter's money is read: the banner line follows that encounter.
+// Self-pay shows its three steps; an insured encounter keeps the claim steps, and a claim line
+// left over from another encounter is taken down.
+function patientBannerEncounterSync(summary,visit){
+ if(!summary||!visit)return;
+ const node=typeof document!=='undefined'?document.getElementById?.('patient-banner-claim'):null,banner=typeof document!=='undefined'?document.getElementById?.('patient-banner'):null;
+ const put=html=>{if(node){if(html)node.outerHTML=html;else node.remove?.();}else if(html&&banner?.insertAdjacentHTML)banner.insertAdjacentHTML('beforeend',html);};
+ if(summary.insurance?.insured===false&&summary.charges_cents!=null){
+  const stages=patientBannerSelfPaySteps(summary),at=stages.findIndex(stage=>!stage.done);
+  const bar=`<ol class="claim-progress-bar claim-progress-short">${stages.map((stage,index)=>`<li class="${stage.done?'is-complete':index===at?'is-current':'is-upcoming'}" tabindex="0" aria-label="${esc(stage.done?'Done':index===at?'Now':'Later')}: ${esc(stage.label)}. ${esc(stage.detail)}"><span class="claim-progress-fill"></span><span class="claim-progress-tip"><b>${stage.done?`✓ Done · ${esc(stage.label)}`:`${index===at?'Now':'Later'} · ${esc(stage.todo)}`}</b><small>${esc(stage.detail)}</small></span></li>`).join('')}</ol>`;
+  const done=stages.filter(stage=>stage.done).length,now=at<0?'All done · Paid in full':`${done} of ${stages.length} done · Now: ${stages[at].todo}`;
+  patientBannerClaim={patient:selected,claim:null,bar,now,selfPay:true,visit:visit.id,number:typeof encounterNumberText==='function'?encounterNumberText(visit):''};
+  put(patientBannerClaimMarkup());return;
+ }
+ const shown=patientBannerClaim,claimVisit=shown.claim?.snapshot?.account?.content?.visit_id;
+ if(shown.selfPay||(shown.claim&&claimVisit&&claimVisit!==visit.id&&summary.claim?.id!==shown.claim.id)){patientBannerClaim={patient:null,claim:null,bar:'',now:''};put('');}
 }
 function patientBannerClaimSet(claim,bar,now){
  if(!claim||claim.patient_id!==selected)return;

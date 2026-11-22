@@ -108,6 +108,7 @@
 /* Claim progress: a thin bar of six steps under the claim's name, details on hover or focus. */
 .claim-progress-compact{margin:6px 0 12px;padding:0;border:0;background:none}
 .claim-progress-bar{list-style:none;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px;margin:0;padding:0}
+.claim-progress-bar.claim-progress-short{grid-template-columns:repeat(3,minmax(0,1fr))}
 .claim-progress-bar li{position:relative;padding:6px 0;cursor:default;outline:none}
 .claim-progress-fill{display:block;height:6px;border-radius:3px;background:var(--line);transition:background .3s ease}
 .claim-progress-bar li.is-complete .claim-progress-fill{background:var(--success-line)}
