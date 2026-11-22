@@ -1000,13 +1000,13 @@ async function createHostedCopay(state,body,panelId){
 // The encounter's invoice is one record shown in tabs: Invoice (diagnoses, line items, totals and the
 // next step), Claim, Payments and History. The tab last used is remembered, so moving between
 // visits and patients comes back to the same place instead of a long scroll.
-const invoiceTabs=[['note','Note'],['billing','Billing'],['history','History']];
+const invoiceTabs=[['note','Note'],['checkout','Checkout'],['billing','Billing'],['history','History']];
 // The tabs that belong to billing; only these are remembered from one encounter to the next.
 const encounterBillingTabs=['billing','history'];
 // Older names of the tabs, kept so saved places and links still land: codes and the claim are on
 // Billing, invoices are statements on Payments.
 // Payments are a section of Billing; the visit summary and follow-up close the Note.
-const encounterTabAliases={encounter:'billing',invoice:'billing',codes:'billing',claim:'billing',invoices:'billing',payments:'billing',checkout:'note'};
+const encounterTabAliases={encounter:'billing',invoice:'billing',codes:'billing',claim:'billing',invoices:'billing',payments:'billing'};
 // The tab open on the encounter on the screen, kept while that encounter is re-drawn after a save.
 let encounterTabFor={visit:null,key:null};
 // The Billing tab shows one area at a time: the codes, the claim details, the payments, the claim.
@@ -1210,7 +1210,7 @@ function invoiceTabRemembered(){
  const visit=typeof activeVisit!=='undefined'&&activeVisit?activeVisit.id:null;
  if(visit&&encounterTabFor.visit===visit&&encounterTabFor.key)return encounterTabFor.key;
  const step=typeof encounterSection==='undefined'?'charges':encounterSection;
- if(step==='checkout')return 'note';
+ if(step==='checkout')return 'checkout';
  if(['visit','intake','documentation'].includes(step))return 'note';
  try{let key=localStorage.getItem('suncharts.invoiceTab');key=encounterTabAliases[key]||key;return encounterBillingTabs.includes(key)?key:'billing';}catch{return 'billing';}
 }

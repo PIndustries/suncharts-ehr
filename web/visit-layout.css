@@ -28,3 +28,14 @@
 
 /* With the encounter in tabs, one tab shows at a time across the full width: no side columns. */
 #visit-page-host[data-encounter-tab]{display:flex;flex-direction:column;align-items:stretch}
+
+/* A signed note reads as a record: labels and text, no boxes. */
+.note-read{display:grid;grid-template-columns:minmax(120px,max-content) minmax(0,1fr);gap:6px 16px;margin:0 0 12px}
+.note-read dt{color:var(--muted)}
+.note-read dd{margin:0;white-space:pre-wrap}
+@media(max-width:700px){.note-read{grid-template-columns:1fr}.note-read dt{margin-top:6px}}
+/* Insurance on the note is one line that opens. */
+.encounter-benefits-line>summary{cursor:pointer;display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;min-height:36px}
+.encounter-benefits-line>summary b{font-weight:600}
+.encounter-benefits-line[open]>summary{margin-bottom:8px}
+.encounter-switch-history{margin-right:auto}

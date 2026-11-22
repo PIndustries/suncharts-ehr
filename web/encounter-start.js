@@ -14,18 +14,21 @@ async function renderEncounterStartBenefits(hostId,serviceDate){
  const patient=selected,identity=me,coverage=typeof revenueCoverage==='function'?revenueCoverage(serviceDate):null;
  const current=()=>selected===patient&&me===identity&&$(hostId)===host&&host.dataset.serviceDate===serviceDate;
  host.dataset.serviceDate=serviceDate;
+ // On the encounter's note this is one line that opens; when starting an encounter it is shown in full.
+ const compact=hostId==='encounter-benefits',line=(html,words,tone='')=>{host.innerHTML=compact?`<details class="encounter-benefits-line"><summary><b>Insurance</b> ${words}${tone?` <span class="pill ${tone}">${tone==='ok'?'Checked':'Not checked'}</span>`:''}</summary>${html}</details>`:html;};
  const heading=`<h3>Insurance & benefits · ${esc(displayDate(serviceDate))}</h3>`;
- if(!workspace.billing){host.innerHTML=heading+'<p class="muted">Insurance details are unavailable with the current access. Confirm benefits with authorized billing staff.</p>';return;}
- if(!coverage){host.innerHTML=heading+'<p>No insurance on file for this encounter date.</p><button type="button" data-chart-section="insurance">Review insurance</button>';return;}
+ if(!workspace.billing){line(heading+'<p class="muted">Insurance details are unavailable with the current access. Confirm benefits with authorized billing staff.</p>','· not available with your access');return;}
+ if(!coverage){line(heading+'<p>No insurance on file for this encounter date.</p><button type="button" data-chart-section="insurance">Review insurance</button>','· none on file for this date (self-pay)');return;}
  const summary=heading+`<p><b>${esc(payerName(coverage.content.payer_id))}</b> · ${esc(coverage.content.plan_name||'Plan name not recorded')}</p><p>Recorded plan copay: <b>${coverage.content.copay_cents==null?'Not recorded':money(coverage.content.copay_cents)}</b>. Review the payer benefits and visit type before collecting.</p><button type="button" data-chart-section="insurance">Review coverage & copay</button>`;
- host.innerHTML=summary+'<p class="muted">Loading eligibility…</p>';
+ const words=`· ${esc(payerName(coverage.content.payer_id))} · Copay ${coverage.content.copay_cents==null?'not recorded':money(coverage.content.copay_cents)}`;
+ line(summary+'<p class="muted">Loading eligibility…</p>',words);
  try{
   const history=await api(`/api/v1/patients/${patient}/coverages/${coverage.id}/claimmd-eligibility`);if(!current())return;
   const items=[...(history.items||[])].sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at))),check=items.find(c=>(c.request_snapshot?.request?.service_date||c.request_snapshot?.service_date)===serviceDate)||items[0];
-  if(!check){host.innerHTML=summary+'<p class="muted">Not checked with the insurer yet. Open Review insurance to check it.</p>';return;}
+  if(!check){line(summary+'<p class="muted">Not checked with the insurer yet. Open Review insurance to check it.</p>',words,'warn');return;}
   const checkedDate=check.request_snapshot?.request?.service_date||check.request_snapshot?.service_date,matching=checkedDate===serviceDate;
-  host.innerHTML=summary+`${matching?'':`<p class="mapping-notice">The last eligibility check was for ${esc(checkedDate||'another date')}, not this encounter date.</p>`}${check.status==='completed'?claimmdEligibilityRows(check):'<p>The last eligibility check did not get an answer from the insurer. Open Review insurance to see why.</p>'}<p class="muted">An insurer\'s answer is not a promise to pay. The recorded plan copay only changes when staff save it.</p>`;
- }catch{if(current())host.innerHTML=summary+'<p class="muted">The eligibility history could not be loaded.</p>';}
+  line(summary+`${matching?'':`<p class="mapping-notice">The last eligibility check was for ${esc(checkedDate||'another date')}, not this encounter date.</p>`}${check.status==='completed'?claimmdEligibilityRows(check):'<p>The last eligibility check did not get an answer from the insurer. Open Review insurance to see why.</p>'}<p class="muted">An insurer\'s answer is not a promise to pay. The recorded plan copay only changes when staff save it.</p>`,words,matching&&check.status==='completed'?'ok':'warn');
+ }catch{if(current())line(summary+'<p class="muted">The eligibility history could not be loaded.</p>',words);}
 }
 async function openEncounterStartFlow(){
  if(!canStartEncounterFlow()||!selected)throw new Error('Only the assigned clinician can start an encounter here.');
