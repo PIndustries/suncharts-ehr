@@ -8,13 +8,16 @@ function organizeWorkspaceNavigation(){
  const items={home:$('nav-practice'),schedule:$('nav-schedule'),queue:$('nav-followup'),messages:$('nav-portal'),communications:$('nav-communications'),patients:$('nav-clinical'),clinical:$('nav-labs'),specialty:$('nav-specialty'),referrals:$('nav-referrals'),billing:$('nav-billing'),claims:$('nav-claims'),clearinghouse:$('nav-edi'),workflows:$('nav-workflows'),automation:$('nav-automation'),aiReview:$('nav-ai-review'),admin:$('nav-admin'),apps:$('nav-apps'),migration:$('nav-migration')};
  const labels={home:'Home',schedule:'Schedule',queue:'Work queue',messages:'Inbox',communications:'Communications',patients:'Patients',clinical:'Orders & results',specialty:'Specialty care',referrals:'Referrals',billing:'Patient billing',claims:'Insurance claims',clearinghouse:'Claim lifecycle',workflows:'Workflow Studio',automation:'Automation Center',aiReview:'Sun review',admin:'Practice administration',apps:'Integrations',migration:'Data import'};
  for(const [key,item] of Object.entries(items)){const label=item?.querySelector('span');if(label)label.textContent=labels[key];}
- const groups=[['Today',['home','schedule','queue','messages']],['Care',['patients','clinical','specialty','referrals']],['Revenue',['billing','claims','clearinghouse']],['Manage',['workflows','admin','apps']]];
+ const groups=[['Today',['home','schedule','queue','messages']],['Care',['patients','clinical','specialty','referrals']],['Revenue',['billing','claims']],['Manage',['admin']]];
  navigation.replaceChildren();
- for(const [label,keys] of groups){const group=document.createElement('div');group.className=`nav-group${label==='Care'?' nav-group-primary':''}`;group.setAttribute('role','group');const id=`nav-${label.toLowerCase()}-label`;group.setAttribute('aria-labelledby',id);const heading=document.createElement('p');heading.className='nav-group-label';heading.id=id;heading.textContent=label;group.append(heading,...keys.map(key=>items[key]).filter(Boolean));if(label==='Manage'){group.append(navigationMoreTools(items));const customize=document.createElement('button');customize.id='nav-customize';customize.className='nav-customize';customize.type='button';customize.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10m4 0h2M4 17h2m4 0h10M14 4v6M6 14v6"/></svg><span>Customize navigation</span>';group.append(customize);}navigation.append(group);}
+ for(const [label,keys] of groups){const group=document.createElement('div');group.className=`nav-group${label==='Care'?' nav-group-primary':''}`;group.setAttribute('role','group');const id=`nav-${label.toLowerCase()}-label`;group.setAttribute('aria-labelledby',id);const heading=document.createElement('p');heading.className='nav-group-label';heading.id=id;heading.textContent=label;group.append(heading,...keys.map(key=>items[key]).filter(Boolean));if(label==='Manage'){
+   // Manage is one place: Practice administration. Integrations, Workflow Studio, Claim
+   // connections, Data import and Customize menu are opened from tabs inside Practice
+   // administration; their buttons stay in the page, out of sight, so those tabs and the links
+   // on other screens still open them. Automation Center and Sun review are not part of the menu
+   // at all.
+   const kept=document.createElement('div');kept.hidden=true;const customize=document.createElement('button');customize.id='nav-customize';customize.className='nav-item';customize.type='button';customize.innerHTML='<span>Customize menu</span>';kept.append(...['apps','workflows','clearinghouse','migration'].map(key=>items[key]).filter(Boolean),customize);for(const node of kept.children)node.dataset.offMenu='';group.append(kept);}navigation.append(group);}
  navigation.dataset.organized='true';
-}
-function navigationMoreTools(items){
- const details=document.createElement('details');details.className='nav-more';const summary=document.createElement('summary');summary.textContent='More tools';const body=document.createElement('div');body.append(...['automation','aiReview','migration'].map(key=>items[key]).filter(Boolean));details.append(summary,body);return details;
 }
 
 // Only an opaque navigation ID may cross the explicit same-tab Connect sign-in.
@@ -545,9 +548,6 @@ async function enter() {
   if(new URLSearchParams(location.search).get('open')==='workflow-studio'&&typeof showWorkflowStudio==='function'){
     await showWorkflowStudio();return;
   }
-  if(new URLSearchParams(location.search).get('open')==='automation-center'&&typeof showAutomationCenter==='function'){
-    await showAutomationCenter();return;
-  }
   const batchId=new URLSearchParams(location.search).get('era_batch');
   if (batchId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(batchId)) {
     await showClaimsWorkspace();
@@ -720,13 +720,13 @@ function renderHistory() {
 function encounterWorkflow(){
  const canView=resource=>typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed(resource);
  const v=activeVisit,appointment=v?workspace.appointments.find(a=>a.id===v.appointment_id):workspace.appointments.find(a=>['checked_in','booked'].includes(a.status));
- if(!v&&workspace.patient?.archived)return '<section class="panel encounter-empty"><h2>Archived patient chart</h2><p>Review the past visits here, or restore the patient before starting a new encounter.</p></section>';
+ if(!v&&workspace.patient?.archived)return '<section class="panel encounter-empty"><h2>Archived patient chart</h2><p>Review the past encounters here, or restore the patient before starting a new encounter.</p></section>';
  // No encounter open: the patient banner's Start visit button starts one, so nothing repeats it here.
  // A checked-in or booked appointment shows its insurance and copay, taken before the visit starts.
  if(!v)return typeof appointmentCopayCard==='function'?appointmentCopayCard():'';
  const runs=typeof patientPathways==='undefined'?[]:patientPathways.filter(item=>item.patient_id===selected&&item.status==='active'&&(!item.appointment_id||item.appointment_id===v.appointment_id));
  const visitPage=!inRecordArea();
- return `<section class="encounter-workspace-heading"><div class="section-head"><div><p class="eyebrow">SELECTED ENCOUNTER</p><h2>${esc(appointment?.title||'Office visit')}</h2><p class="muted">${typeof encounterNumberText==='function'&&encounterNumberText(v)?`<b class="encounter-number">${esc(encounterNumberText(v))}</b> · `:''}${esc(encounterDateLabel(v))} · ${v.status==='signed'?'Signed clinical record':'In progress'}</p></div><div class="encounter-selection"><button type="button" data-encounter-history>Encounter history</button>${typeof canStartEncounterFlow==='function'&&canStartEncounterFlow()?'<button type="button" data-start-encounter-flow>+ New encounter</button>':''}<label>Switch encounter<select id="encounter-picker">${workspace.visits.map(row=>`<option value="${esc(row.id)}" ${row.id===v.id?'selected':''}>${typeof encounterNumberText==='function'&&encounterNumberText(row)?esc(encounterNumberText(row))+' · ':''}${esc(encounterDateLabel(row))} · ${row.status==='signed'?'Signed':'In progress'}</option>`).join('')}</select></label>${runs.length&&chartAreaEnabled('care_pathways')?'<button type="button" data-chart-section="care_pathways">Practice workflow</button>':''}${typeof supportHelpButton==='function'?supportHelpButton('encounter'):''}</div></div><div class="encounter-visit-actions">${visitPage?`<div class="actions">${encounterVisitActions().join('')}</div>`:'<button type="button" data-encounter-back>← Back to visit</button>'}</div></section>`;
+ return `<section class="encounter-workspace-heading"><div class="section-head"><div><p class="eyebrow">SELECTED ENCOUNTER</p><h2>${esc(appointment?.title||'Office visit')}</h2><p class="muted">${typeof encounterNumberText==='function'&&encounterNumberText(v)?`<b class="encounter-number">${esc(encounterNumberText(v))}</b> · `:''}${esc(encounterDateLabel(v))} · ${v.status==='signed'?'Signed clinical record':'In progress'}</p></div><div class="encounter-selection"><button type="button" data-encounter-history>Encounter history</button>${typeof canStartEncounterFlow==='function'&&canStartEncounterFlow()?'<button type="button" data-start-encounter-flow>+ New encounter</button>':''}<label>Switch encounter<select id="encounter-picker">${workspace.visits.map(row=>`<option value="${esc(row.id)}" ${row.id===v.id?'selected':''}>${typeof encounterNumberText==='function'&&encounterNumberText(row)?esc(encounterNumberText(row))+' · ':''}${esc(encounterDateLabel(row))} · ${row.status==='signed'?'Signed':'In progress'}</option>`).join('')}</select></label>${runs.length&&chartAreaEnabled('care_pathways')?'<button type="button" data-chart-section="care_pathways">Practice workflow</button>':''}${typeof supportHelpButton==='function'?supportHelpButton('encounter'):''}</div></div><div class="encounter-visit-actions">${visitPage?`<div class="actions">${encounterVisitActions().join('')}</div>`:'<button type="button" data-encounter-back>← Back to encounter</button>'}</div></section>`;
 }
 // The encounter is one scrolling page: vitals, note, codes & charges, payment, finish. Everything
 // else hangs off it as a button, shown only where the practice shows that area and this person
@@ -890,7 +890,7 @@ function applyChartSection(){
  if(typeof documentFileNavigationChanged==='function')documentFileNavigationChanged();
  document.querySelectorAll('.chart-tabs button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.chartSection===chartSection)));
  const record=$('patient-record-navigation');if(record){record.classList.toggle('active',!primary.includes(chartSection));if(primary.includes(chartSection))record.open=false;}
- const context=$('record-context');if(context){context.hidden=!hasVisit||primary.includes(chartSection);context.innerHTML='<button type="button" data-chart-section="visits">← Return to the selected visit</button>';}
+ const context=$('record-context');if(context){context.hidden=!hasVisit||primary.includes(chartSection);context.innerHTML='<button type="button" data-chart-section="visits">← Return to the selected encounter</button>';}
  if(typeof refreshPatientChartContext==='function')refreshPatientChartContext();
  if(chartSection==='billing'&&typeof renderPatientBillingChart==='function')void renderPatientBillingChart();
 }
@@ -902,13 +902,13 @@ function chartNavigation(tabs){
  return `<nav class="chart-tabs patient-workspace-tabs" aria-label="Patient workspace"><div class="chart-tab-row chart-primary-tabs">${main.map(button).join('')}${records.length?`<details class="patient-record-navigation" id="patient-record-navigation"><summary>Patient record</summary><div>${records.map(([key,label])=>button([key,names[key]||label])).join('')}</div></details>`:''}</div></nav>`;
 }
 function patientWorkflowActions(){
- if(workspace.patient?.archived&&!activeVisit)return '<section class="patient-next-action"><div><b>Archived patient chart</b><p>Review past visits below. Restore the patient to book or start a new encounter.</p></div></section>';
+ if(workspace.patient?.archived&&!activeVisit)return '<section class="patient-next-action"><div><b>Archived patient chart</b><p>Review past encounters below. Restore the patient to book or start a new encounter.</p></div></section>';
  const v=activeVisit,appointment=v?workspace.appointments.find(a=>a.id===v.appointment_id):workspace.appointments.find(a=>['checked_in','booked'].includes(a.status));
- let action=typeof canStartEncounterFlow==='function'&&canStartEncounterFlow()?'<button type="button" class="primary" data-start-encounter-flow>Start visit</button>':'<button type="button" class="primary" data-chart-section="visits">Appointments & visits</button>',detail='Check insurance, then start the encounter.';
+ let action=typeof canStartEncounterFlow==='function'&&canStartEncounterFlow()?'<button type="button" class="primary" data-start-encounter-flow>Start encounter</button>':'<button type="button" class="primary" data-chart-section="visits">Appointments & visits</button>',detail='Check insurance, then start the encounter.';
  if(v){action=`<button type="button" class="primary" data-chart-section="visits">${v.status==='signed'?'Review encounter':'Continue encounter'}</button>`;detail=`${encounterDateLabel(v)} · ${v.status==='signed'?'Review procedures, checkout and billing for this encounter.':'Continue the selected visit, diagnoses and procedures.'}`;}
- else if(appointment?.status==='checked_in'&&(isRoomingStaff()||(['owner','clinician'].includes(me?.role)&&appointment.clinician_id===me.user_id))){action=`<button type="button" class="primary" data-start="${esc(appointment.id)}">Start visit</button>`;detail='The patient is checked in and ready for their visit.';}
+ else if(appointment?.status==='checked_in'&&(isRoomingStaff()||(['owner','clinician'].includes(me?.role)&&appointment.clinician_id===me.user_id))){action=`<button type="button" class="primary" data-start="${esc(appointment.id)}">Start encounter</button>`;detail='The patient is checked in and ready for their visit.';}
  else if(appointment?.status==='booked'&&['owner','clinician','front_desk'].includes(me?.role)){action=`<button type="button" class="primary" data-check-in="${esc(appointment.id)}">Check in patient</button>`;detail='Review insurance and copay before starting the encounter.';}
- return `<section id="patient-next-action" class="patient-next-action"><div><b>${v?'Current visit':'Visit preparation'}</b><p>${esc(detail)}</p></div><div class="actions">${!v&&chartAreaEnabled('insurance')?'<button type="button" data-chart-section="insurance">Insurance & copay</button>':''}${action}</div></section>`;
+ return `<section id="patient-next-action" class="patient-next-action"><div><b>${v?'Current encounter':'Before the encounter'}</b><p>${esc(detail)}</p></div><div class="actions">${!v&&chartAreaEnabled('insurance')?'<button type="button" data-chart-section="insurance">Insurance & copay</button>':''}${action}</div></section>`;
 }
 function showChartSection(key){
  if(!['overview','profile','clinical','care_pathways','prescribing','immunizations','functional_status','specialty_care','history','documents','referrals','orders','visits','checkout','insurance','billing','source'].includes(key))return;
@@ -936,6 +936,14 @@ function showChartSection(key){
 
 const formData=f=>Object.fromEntries(new FormData(f));
 function closeNavigation() {const wasOpen=$('sidebar').classList.contains('menu-open');$('sidebar').classList.remove('menu-open');$('nav-toggle').setAttribute('aria-expanded','false');$('nav-toggle').setAttribute('aria-label','Open navigation');if(wasOpen)$('page-title').focus({preventScroll:true});}
+// A screen's first heading often repeats the page title right above it. The repeat is kept for
+// screen-reader structure and taken out of sight, so each screen says its name once.
+function hideRepeatedPageTitle(){
+ const host=typeof $==='function'?$('tools'):null,title=($('page-title')?.textContent||'').trim().toLowerCase();if(!host?.querySelector||!title)return;
+ const first=host.querySelector('h2');if(!first?.classList)return;
+ first.classList.toggle('page-title-repeat',(first.textContent||'').trim().toLowerCase()===title);
+}
+if(typeof MutationObserver==='function'&&typeof document!=='undefined'&&document.addEventListener)document.addEventListener('DOMContentLoaded',()=>{const host=document.getElementById('tools');if(host)new MutationObserver(()=>hideRepeatedPageTitle()).observe(host,{childList:true});});
 function setPage(title) {
  if(title!=='Sun'&&$('tools')?.classList.contains('sun-page'))$('tools').className='panel';
  if(title!=='Sun'&&typeof sunPanelView!=='undefined'&&sunPanelView==='page'){sunPanelView='chat';if(typeof mountSunWorkspace==='function')mountSunWorkspace();}
@@ -979,11 +987,20 @@ function setPage(title) {
  const care=['Patients & encounters','Labs & results','Specialty care','Referrals','Referral delivery settings'];
  const revenue=['Billing & insurance','Payment settings','Payment review','Claims & remittances','Clearinghouse','Claim connections'];
  const manage=['Sun','Workflow Studio','Automation Center','AI review','Sun review','Practice administration','Codes & prices','Partners','Integrations','Connect services','Support tickets','Data import'];
- $('page-title').textContent=title;
+ // One name per screen: the heading says what the menu item that opened it says.
+ const shown={'Practice home':'Home','Practice overview':'Home','Patients & encounters':'Patients','Labs & results':'Orders & results','Billing & insurance':'Patient billing','Claims & remittances':'Insurance claims','Follow-up tasks':'Work queue','Claim lifecycle':'Claim connections','Clearinghouse':'Claim connections'};
+ $('page-title').textContent=shown[title]||title;
+ // The browser tab and the screen reader's page name follow the screen (WCAG 2.4.2).
+ if(typeof document!=='undefined'&&'title' in document)document.title=`${shown[title]||title} · SunCharts EHR`;
+ if(typeof hideRepeatedPageTitle==='function')hideRepeatedPageTitle();
+ // A screen that has just been opened fades in briefly; staying on the same screen does not replay it.
+ if(setPage.last!==title){setPage.last=title;for(const id of ['tools','clinical-workspace']){const node=$(id);if(!node?.classList?.add)continue;node.classList.remove('screen-in');void node.offsetWidth;node.classList.add('screen-in');}}
  $('page-description').textContent=descriptions[title]||'Practice workspace';
  $('workspace-section').textContent=(today.includes(title)||title.startsWith('Patient portal'))?'TODAY':care.includes(title)?'CARE':revenue.includes(title)?'REVENUE':manage.includes(title)?'MANAGE':'PRACTICE';
  const active=['Practice home','Practice overview'].includes(title)?'nav-practice':title==='Workflow Studio'?'nav-workflows':title==='Automation Center'?'nav-automation':['AI review','Sun review'].includes(title)?'nav-ai-review':['Inbox','Communications','Send & review'].includes(title)||title.startsWith('Patient portal')?'nav-portal':title==='Patients & encounters'?'nav-clinical':title==='Pre-visit readiness'?'nav-previsit':['Schedule','Appointment reminders','Reminder settings'].includes(title)?'nav-schedule':title==='Labs & results'?'nav-labs':title==='Specialty care'?'nav-specialty':['Billing & insurance','Payment settings','Payment review'].includes(title)?'nav-billing':['Clearinghouse','Claim connections','Claim lifecycle'].includes(title)?'nav-edi':title==='Claims & remittances'?'nav-claims':['Referrals','Referral delivery settings'].includes(title)?'nav-referrals':title==='Follow-up tasks'?'nav-followup':['Integrations','Connect services','Support tickets'].includes(title)?'nav-apps':title==='Data import'?'nav-migration':['Practice administration','Codes & prices'].includes(title)?'nav-admin':null;
- for(const id of ['nav-practice','nav-workflows','nav-automation','nav-ai-review','nav-communications','nav-clinical','nav-schedule','nav-previsit','nav-labs','nav-specialty','nav-referrals','nav-followup','nav-portal','nav-billing','nav-claims','nav-edi','nav-apps','nav-migration','nav-admin']){if(!$(id))continue;if(id===active)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}
+ // A screen opened from inside Practice administration lights that menu item.
+ const lit=active&&$(active)?.dataset?.offMenu!==undefined?'nav-admin':active;
+ for(const id of ['nav-practice','nav-workflows','nav-automation','nav-ai-review','nav-communications','nav-clinical','nav-schedule','nav-previsit','nav-labs','nav-specialty','nav-referrals','nav-followup','nav-portal','nav-billing','nav-claims','nav-edi','nav-apps','nav-migration','nav-admin']){if(!$(id))continue;if(id===lit)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}
  const activeItem=active?$(active):null,activeMore=activeItem?.closest?.('.nav-more');
  document.querySelectorAll?.('#workspace-navigation .nav-more').forEach(more=>{
   more.open=more===activeMore;
@@ -1232,3 +1249,6 @@ document.addEventListener('change',event=>{if(event.target.id!=='encounter-picke
 // An encounter's number in the practice, as staff and patients refer to it: ENC-0042.
 function encounterNumberText(visit){const n=Number(visit?.encounter_number);return Number.isSafeInteger(n)&&n>0?`ENC-${String(n).padStart(4,'0')}`:'';}
 function encounterNumberForAppointment(appointmentId){const visit=(typeof workspace!=='undefined'?workspace?.visits:null)?.find?.(v=>v.appointment_id===appointmentId);return encounterNumberText(visit);}
+
+// A button on an empty screen that leads to where the work starts: it opens that menu item.
+if(typeof document!=='undefined'&&document.addEventListener)document.addEventListener('click',event=>{const button=event.target?.closest?.('[data-go-nav]'),target=button?.dataset?.goNav;if(!target)return;const item=document.getElementById(target);if(item?.click){event.preventDefault();item.click();}});

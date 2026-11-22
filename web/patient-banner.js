@@ -83,10 +83,10 @@ function patientBannerPrimary(now=new Date()){
  if(archived)return '';
  const today=(workspace.appointments||[]).filter(a=>patientBannerSameDay(new Date(a.starts_at),now)).sort((a,b)=>String(a.starts_at).localeCompare(String(b.starts_at)));
  const ready=today.find(a=>a.status==='checked_in'&&(rooming||(clinician&&a.clinician_id===me.user_id)));
- if(ready)return `<button type="button" class="primary" data-start="${esc(ready.id)}">Start visit</button>`;
+ if(ready)return `<button type="button" class="primary" data-start="${esc(ready.id)}">Start encounter</button>`;
  const booked=today.find(a=>a.status==='booked');
  if(booked&&['owner','clinician','front_desk'].includes(me?.role))return `<button type="button" class="primary" data-check-in="${esc(booked.id)}">Check in</button>`;
- if(typeof canStartEncounterFlow==='function'&&canStartEncounterFlow())return '<button type="button" class="primary" data-start-encounter-flow>Start visit</button>';
+ if(typeof canStartEncounterFlow==='function'&&canStartEncounterFlow())return '<button type="button" class="primary" data-start-encounter-flow>Start encounter</button>';
  return '';
 }
 function patientBannerMenu(facts){

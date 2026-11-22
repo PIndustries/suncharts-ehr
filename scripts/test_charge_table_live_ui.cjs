@@ -283,6 +283,12 @@ const advance=async()=>{
  click(form.querySelector('[data-add-charge]'));
  assert.equal(JSON.stringify(lineTexts()),'["",""]','Add charge puts another blank row on the table');
  assert.equal(documentStub.activeElement,$('billing-charge-lines').querySelectorAll('.billing-charge-row [name="code"]')[1],'the new row is ready to type in');
+ // On the real page the box staff type in is the code search (name="procedure"); the plain code field
+ // behind it is hidden and cannot take focus, so the search box is asked first. This table has no
+ // search box, which is why the code field above took it.
+ {const source=fs.readFileSync(require('node:path').join(__dirname,'..','web','billing.js'),'utf8'),add=source.slice(source.indexOf('function addChargeRow()'),source.indexOf('function removeChargeRow('));
+  assert.ok(add.indexOf('input[name="procedure"]')>0&&add.indexOf('input[name="procedure"]')<add.indexOf('[name="code"]')&&/\)\?\.focus\(\)/.test(add),'a new line puts the cursor in the code search box when the line has one');
+  assert.ok(rowsNow()[1].classList?rowsNow()[1].classList.contains('charge-row-new'):true,'the new line is marked so it eases in');}
  // First line: the autosave POSTs (there is nothing to update yet) after its debounce.
  const row0=rowsNow()[0];
  type(row0.querySelector('[name="code"]'),'99213');

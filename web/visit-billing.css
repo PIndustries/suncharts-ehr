@@ -28,7 +28,7 @@
 #visit-billing-collect[hidden]{display:none}
 .visit-billing-collect-options{flex-wrap:wrap;margin:10px 0}
 .visit-billing-filters{flex-wrap:wrap;margin:12px 0}
-.visit-billing-filters button[aria-pressed="true"]{border-color:var(--accent);color:var(--ink);font-weight:650}
+.visit-billing-filters button[aria-pressed="true"]{border-color:var(--blue);color:var(--ink);font-weight:650}
 .visit-billing-timeline{list-style:none;margin:0 0 16px;padding:0}
 .visit-billing-timeline li{display:grid;grid-template-columns:110px minmax(0,1fr) auto;gap:14px;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--line)}
 .visit-billing-timeline time{color:var(--muted);font-variant-numeric:tabular-nums}
@@ -149,7 +149,13 @@
 .modifier-options{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;max-width:260px}
 .modifier-chip{display:inline-grid;gap:0;padding:3px 7px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);font-weight:600;font-size:var(--fs-sm);text-align:left;cursor:pointer;line-height:1.2}
 .modifier-chip small{font-weight:400;color:var(--muted);font-size:var(--fs-xs,12px)}
-.modifier-chip.is-on{border-color:var(--accent);background:var(--accent-soft,var(--surface));box-shadow:inset 0 0 0 1px var(--accent)}
+/* A row of short chips: the code alone until it is chosen, then its meaning beside it. The meaning
+   of the others is one hover away (title), so a charge line stays one or two rows tall. */
+.modifier-chip{transition:background-color .12s ease,border-color .12s ease,box-shadow .12s ease}
+.modifier-chip:not(.is-on) small{display:none}
+.modifier-chip.is-on{display:inline-flex;align-items:baseline;gap:6px}
+.modifier-options select{flex:1 1 9rem}
+.modifier-chip.is-on{border-color:var(--blue);background:var(--accent);box-shadow:inset 0 0 0 1px var(--blue)}
 .modifier-options select{font-size:var(--fs-sm);max-width:100%}
 .charge-table .charge-cell-modifiers{min-width:240px}
 
@@ -201,6 +207,14 @@
 .collect-step-done{padding:10px 12px;border-left:3px solid var(--success-line);background:var(--success-bg);border-radius:0}
 @media(max-width:700px){.collect-target{grid-template-columns:1fr}}
 
+.collect-encounters{margin:0 0 12px;padding:8px 12px;border:1px solid var(--line);border-radius:8px;display:grid;gap:2px;min-width:0}
+.collect-encounters legend{padding:0 4px;color:var(--muted);font-size:var(--fs-sm)}
+.collect-encounters .collect-encounter{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;min-height:36px;cursor:pointer;font-weight:inherit}
+.collect-encounters .collect-encounter span{font-weight:400}.collect-encounters .collect-encounter b{justify-self:end}
+.collect-encounter input{width:18px;height:18px;margin:0}
+.collect-encounter em{font-style:normal;color:var(--muted);font-size:var(--fs-sm);margin-left:6px}
+.collect-encounter.is-paid{cursor:default}.collect-encounter.is-paid b{color:var(--success-text)}
+.collect-encounters-foot{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin:4px 0 0;padding-top:6px;border-top:1px solid var(--line);color:var(--muted)}
 .collect-paid-so-far{list-style:none;margin:0 0 12px;padding:8px 12px;display:grid;gap:4px;border:1px solid var(--line);border-radius:8px}
 .collect-paid-so-far li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;align-items:center}
 .collect-paid-so-far li span{color:var(--muted)}

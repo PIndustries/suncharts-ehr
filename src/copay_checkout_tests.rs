@@ -208,6 +208,7 @@ fn input(live: bool) -> Create {
         reader_id: None,
         saved_card_setup_id: None,
         payment_group_id: None,
+        splits: None,
     }
 }
 fn policy(live: bool) -> Policy {
@@ -1611,3 +1612,172 @@ mod browser_fixture;
 
 include!("copay_reader_tests.rs");
 include!("copay_saved_card_tests.rs");
+async fn another_appointment(pool: &PgPool, a: &Actor, patient: Uuid, day: &str) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO appointments(tenant_id,id,patient_id,clinician_id,starts_at,ends_at,status) VALUES($1,$2,$3,$4,($5||'T14:00:00Z')::timestamptz,($5||'T14:30:00Z')::timestamptz,'checked_in')").bind(a.tenant_id).bind(id).bind(patient).bind(a.sub).bind(day).execute(pool).await.unwrap();
+    id
+}
+async fn account_net(pool: &PgPool, account: Uuid) -> i64 {
+    sqlx::query_scalar(
+        "SELECT coalesce(sum(effect_cents),0)::bigint FROM billing_entries WHERE account_id=$1",
+    )
+    .bind(account)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+fn split_input(parts: &[(Uuid, i64)]) -> Create {
+    Create {
+        amount_cents: parts.iter().map(|part| part.1).sum(),
+        splits: Some(
+            parts
+                .iter()
+                .map(|part| Split {
+                    appointment_id: part.0,
+                    amount_cents: part.1,
+                })
+                .collect(),
+        ),
+        ..input(false)
+    }
+}
+#[tokio::test]
+async fn one_card_charge_pays_several_encounters_each_by_its_own_part() {
+    let (pool, a, patient, first, state) = setup().await;
+    let second = another_appointment(&pool, &a, patient, "2026-10-26").await;
+    let third = another_appointment(&pool, &a, patient, "2026-10-27").await;
+    let account_one = posted_account(&pool, &a, patient, first, &state).await;
+    let account_two = posted_account(&pool, &a, patient, second, &state).await;
+    let broker = FakeBroker::new(false);
+    let make = |input: Create, on: Uuid| {
+        let (pool, a, broker) = (&pool, &a, &broker);
+        async move {
+            create_with(
+                pool,
+                a,
+                patient,
+                on,
+                input,
+                "http://127.0.0.1:8099",
+                broker,
+                policy(false),
+            )
+            .await
+        }
+    };
+    // The parts must add up and not repeat.
+    let mut short = split_input(&[(first, 2500), (second, 4000)]);
+    short.amount_cents = 7000;
+    assert!(make(short, first).await.is_err());
+    assert!(make(split_input(&[(first, 2500), (first, 4000)]), first)
+        .await
+        .is_err());
+    assert!(
+        make(split_input(&[(first, 2500), (Uuid::new_v4(), 4000)]), first)
+            .await
+            .is_err()
+    );
+    assert_eq!(count(&pool, "copay_checkout_attempts").await, 0);
+
+    let op = make(
+        split_input(&[(first, 2500), (second, 4000), (third, 2500)]),
+        first,
+    )
+    .await
+    .unwrap();
+    assert_eq!((op.status.as_str(), op.amount_cents), ("open", 9000));
+    assert_eq!(
+        broker.state.lock().unwrap().posted_bodies[0]["amount_cents"],
+        9000,
+        "the card is charged once, for the whole amount"
+    );
+    // While that charge is open, none of its encounters can start another card payment.
+    assert!(matches!(
+        make(input(false), second).await,
+        Err(Error::Conflict(_))
+    ));
+    broker.state.lock().unwrap().paid = true;
+    due(&pool).await;
+    poll(&pool, &broker, policy(false)).await.unwrap();
+    let paid = row(&pool, &a, op.id).await;
+    assert_eq!(paid.status, "paid");
+    assert_eq!(count(&pool, "billing_copay_receipts").await, 1);
+    assert_eq!(account_net(&pool, account_one).await, -2500);
+    assert_eq!(account_net(&pool, account_two).await, -4000);
+    // Each encounter reads only its own part.
+    let mut tx = pool.begin().await.unwrap();
+    let rows = billing::copay_rows(&mut tx, &a, patient, None)
+        .await
+        .unwrap();
+    drop(tx);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["amount_cents"], 9000);
+    let parts = rows[0]["hosted_checkout"]["splits"].as_array().unwrap();
+    assert_eq!(
+        parts
+            .iter()
+            .map(|part| (
+                part["amount_cents"].as_i64().unwrap(),
+                part["allocated_cents"].as_i64().unwrap()
+            ))
+            .collect::<Vec<_>>(),
+        vec![(2500, 2500), (4000, 4000), (2500, 0)]
+    );
+    let mut tx = pool.begin().await.unwrap();
+    let balances =
+        crate::visit_billing::balances(&mut tx, a.tenant_id, Some(&[patient]), None, None)
+            .await
+            .unwrap();
+    drop(tx);
+    let owed = |account: Uuid| {
+        balances
+            .iter()
+            .find(|row| row["id"] == account.to_string())
+            .map(|row| {
+                (
+                    row["balance_cents"].as_i64().unwrap(),
+                    row["unapplied_cents"].as_i64().unwrap(),
+                )
+            })
+            .unwrap()
+    };
+    assert_eq!(owed(account_one), (7500, 0));
+    assert_eq!(owed(account_two), (6000, 0));
+    // The third encounter's part waits for its charges, and goes nowhere else.
+    let account_three = posted_account(&pool, &a, patient, third, &state).await;
+    assert_eq!(account_net(&pool, account_three).await, -2500);
+    assert_eq!(account_net(&pool, account_one).await, -2500);
+    // A charge made from one encounter can pay only for another: nothing lands on its own.
+    let fourth = another_appointment(&pool, &a, patient, "2026-10-28").await;
+    let before = account_net(&pool, account_one).await + account_net(&pool, account_two).await;
+    let other = make(split_input(&[(second, 1000)]), fourth).await.unwrap();
+    due(&pool).await;
+    poll(&pool, &broker, policy(false)).await.unwrap();
+    assert_eq!(row(&pool, &a, other.id).await.status, "paid");
+    assert_eq!(
+        account_net(&pool, account_one).await + account_net(&pool, account_two).await,
+        before - 1000
+    );
+    let on_fourth: i64 = sqlx::query_scalar("SELECT count(*) FROM billing_copay_allocations x JOIN billing_copay_receipts r ON r.id=x.receipt_id WHERE r.appointment_id=$1").bind(fourth).fetch_one(&pool).await.unwrap();
+    assert_eq!(on_fourth, 1, "the one allocation is the other encounter's");
+    // A refund is taken from the newest part first; the payment stays one payment.
+    broker.state.lock().unwrap().refunded = 3000;
+    due(&pool).await;
+    poll(&pool, &broker, policy(false)).await.unwrap();
+    assert_eq!(row(&pool, &a, op.id).await.refunded_cents, 3000);
+    assert_eq!(account_net(&pool, account_three).await, 0);
+    // The two older parts were applied at the same instant, so either may give the rest back.
+    assert_eq!(
+        account_net(&pool, account_one).await + account_net(&pool, account_two).await,
+        -7000
+    );
+    assert_eq!(count(&pool, "billing_copay_receipts").await, 2);
+    // The parts cannot be changed afterwards.
+    assert!(
+        sqlx::query("UPDATE copay_checkout_splits SET amount_cents=1 WHERE operation_id=$1")
+            .bind(op.id)
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+}

@@ -1599,7 +1599,7 @@ pub(crate) async fn copay_rows(
     p: Uuid,
     receipt: Option<Uuid>,
 ) -> Result<Vec<Value>> {
-    Ok(sqlx::query_scalar("SELECT (to_jsonb(r)-'tenant_id'-'creation_hash'-'request_id') || jsonb_build_object('hosted_checkout',(SELECT jsonb_build_object('id',o.id,'livemode',o.livemode,'status',o.status,'refunded_cents',o.refunded_cents,'refunded_unapplied_cents',coalesce((SELECT sum(f.unapplied_cents) FROM copay_checkout_refund_events f WHERE f.tenant_id=o.tenant_id AND f.operation_id=o.id),0)) FROM copay_checkout_attempts o WHERE o.tenant_id=r.tenant_id AND o.receipt_id=r.id),'allocated_cents',coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),0),'reversed_cents',coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x JOIN billing_entries e ON e.tenant_id=x.tenant_id AND e.reverses_id=x.entry_id WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),0),'voided',EXISTS(SELECT 1 FROM billing_copay_voids v WHERE v.tenant_id=r.tenant_id AND v.receipt_id=r.id),'account_ids',coalesce((SELECT jsonb_agg(DISTINCT x.account_id) FROM billing_copay_allocations x WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),'[]'::jsonb)) FROM billing_copay_receipts r WHERE tenant_id=$1 AND patient_id=$2 AND ($3::uuid IS NULL OR id=$3) ORDER BY created_at,id LIMIT 1001")
+    Ok(sqlx::query_scalar("SELECT (to_jsonb(r)-'tenant_id'-'creation_hash'-'request_id') || jsonb_build_object('hosted_checkout',(SELECT jsonb_build_object('id',o.id,'livemode',o.livemode,'status',o.status,'refunded_cents',o.refunded_cents,'refunded_unapplied_cents',coalesce((SELECT sum(f.unapplied_cents) FROM copay_checkout_refund_events f WHERE f.tenant_id=o.tenant_id AND f.operation_id=o.id),0),'splits',(SELECT jsonb_agg(jsonb_build_object('appointment_id',s.appointment_id,'amount_cents',s.amount_cents,'refunded_cents',least(s.amount_cents,greatest(0,o.refunded_cents-(o.amount_cents-(SELECT sum(q.amount_cents) FROM copay_checkout_splits q WHERE q.tenant_id=s.tenant_id AND q.operation_id=s.operation_id AND q.position<=s.position)))),'allocated_cents',coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x JOIN billing_accounts b ON b.tenant_id=x.tenant_id AND b.id=x.account_id JOIN visits v ON v.tenant_id=b.tenant_id AND v.id=b.visit_id WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id AND v.appointment_id=s.appointment_id),0)) ORDER BY s.position) FROM copay_checkout_splits s WHERE s.tenant_id=o.tenant_id AND s.operation_id=o.id)) FROM copay_checkout_attempts o WHERE o.tenant_id=r.tenant_id AND o.receipt_id=r.id),'allocated_cents',coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),0),'reversed_cents',coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x JOIN billing_entries e ON e.tenant_id=x.tenant_id AND e.reverses_id=x.entry_id WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),0),'voided',EXISTS(SELECT 1 FROM billing_copay_voids v WHERE v.tenant_id=r.tenant_id AND v.receipt_id=r.id),'account_ids',coalesce((SELECT jsonb_agg(DISTINCT x.account_id) FROM billing_copay_allocations x WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),'[]'::jsonb)) FROM billing_copay_receipts r WHERE tenant_id=$1 AND patient_id=$2 AND ($3::uuid IS NULL OR id=$3) ORDER BY created_at,id LIMIT 1001")
         .bind(a.tenant_id).bind(p).bind(receipt).fetch_all(&mut **tx).await?)
 }
 #[derive(sqlx::FromRow)]
@@ -1611,6 +1611,8 @@ struct CopayAllocationCandidate {
     occurred_on: NaiveDate,
     hosted_operation: Option<Uuid>,
     livemode: Option<bool>,
+    /// For a card charge divided between encounters: what is left of this encounter's part.
+    part_remaining: Option<i64>,
 }
 // Call under the tenant billing lock. Immutable allocations remain consumed after
 // a ledger reversal, so a corrected receipt can never be silently posted again.
@@ -1628,7 +1630,7 @@ async fn allocate_copays(
     let effect:i64=sqlx::query_scalar("SELECT coalesce(sum(effect_cents),0)::bigint FROM billing_entries WHERE tenant_id=$1 AND account_id=$2").bind(a.tenant_id).bind(account).fetch_one(&mut **tx).await?;
     let reserved:i64=sqlx::query_scalar("SELECT coalesce(sum(amount_cents),0)::bigint FROM payment_attempts WHERE tenant_id=$1 AND account_id=$2 AND status IN ('creating','open','needs_review') AND paid_entry_id IS NULL").bind(a.tenant_id).bind(account).fetch_one(&mut **tx).await?;
     let mut available = (total + effect - reserved).max(0);
-    let receipts:Vec<CopayAllocationCandidate>=sqlx::query_as("SELECT r.id,r.amount_cents-coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),0)::bigint-coalesce((SELECT sum(f.unapplied_cents) FROM copay_checkout_refund_events f WHERE f.tenant_id=o.tenant_id AND f.operation_id=o.id),0)::bigint AS remaining,r.method,r.reference,r.occurred_on,o.id AS hosted_operation,o.livemode FROM billing_copay_receipts r LEFT JOIN copay_checkout_attempts o ON o.tenant_id=r.tenant_id AND o.receipt_id=r.id WHERE r.tenant_id=$1 AND r.patient_id=$2 AND r.appointment_id=$3 AND (o.id IS NULL OR o.status<>'needs_review') AND NOT EXISTS(SELECT 1 FROM billing_copay_voids v WHERE v.tenant_id=r.tenant_id AND v.receipt_id=r.id) AND NOT EXISTS(SELECT 1 FROM billing_copay_allocations x JOIN billing_entries reversal ON reversal.tenant_id=x.tenant_id AND reversal.reverses_id=x.entry_id WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id) ORDER BY r.created_at,r.id")
+    let receipts:Vec<CopayAllocationCandidate>=sqlx::query_as("SELECT r.id,r.amount_cents-coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),0)::bigint-coalesce((SELECT sum(f.unapplied_cents) FROM copay_checkout_refund_events f WHERE f.tenant_id=o.tenant_id AND f.operation_id=o.id),0)::bigint AS remaining,r.method,r.reference,r.occurred_on,o.id AS hosted_operation,o.livemode,(SELECT s.amount_cents-coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x JOIN billing_accounts b ON b.tenant_id=x.tenant_id AND b.id=x.account_id JOIN visits v ON v.tenant_id=b.tenant_id AND v.id=b.visit_id WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id AND v.appointment_id=s.appointment_id),0)::bigint FROM copay_checkout_splits s WHERE s.tenant_id=o.tenant_id AND s.operation_id=o.id AND s.appointment_id=$3) AS part_remaining FROM billing_copay_receipts r LEFT JOIN copay_checkout_attempts o ON o.tenant_id=r.tenant_id AND o.receipt_id=r.id WHERE r.tenant_id=$1 AND r.patient_id=$2 AND ((r.appointment_id=$3 AND NOT EXISTS(SELECT 1 FROM copay_checkout_splits s WHERE s.tenant_id=o.tenant_id AND s.operation_id=o.id)) OR EXISTS(SELECT 1 FROM copay_checkout_splits s WHERE s.tenant_id=o.tenant_id AND s.operation_id=o.id AND s.appointment_id=$3)) AND (o.id IS NULL OR o.status<>'needs_review') AND NOT EXISTS(SELECT 1 FROM billing_copay_voids v WHERE v.tenant_id=r.tenant_id AND v.receipt_id=r.id) AND NOT EXISTS(SELECT 1 FROM billing_copay_allocations x JOIN billing_entries reversal ON reversal.tenant_id=x.tenant_id AND reversal.reverses_id=x.entry_id WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id) ORDER BY r.created_at,r.id")
         .bind(a.tenant_id).bind(p).bind(appointment).fetch_all(&mut **tx).await?;
     let mut applied = 0;
     for row in receipts {
@@ -1640,13 +1642,16 @@ async fn allocate_copays(
             occurred_on,
             hosted_operation,
             livemode,
+            part_remaining,
         } = row;
         if livemode == Some(false)
             && std::env::var("ENGINE_ENVIRONMENT").as_deref() == Ok("production")
         {
             continue;
         }
-        let amount = available.min(remaining);
+        let amount = available
+            .min(remaining)
+            .min(part_remaining.unwrap_or(remaining));
         if amount <= 0 {
             continue;
         }
@@ -1762,8 +1767,9 @@ pub(crate) async fn allocate_verified_hosted_copay_credit(
     let Some((patient, appointment)) = scope else {
         return Ok(());
     };
-    let accounts: Vec<Uuid> = sqlx::query_scalar("SELECT b.id FROM billing_accounts b JOIN visits v ON v.tenant_id=b.tenant_id AND v.id=b.visit_id AND v.patient_id=b.patient_id WHERE b.tenant_id=$1 AND b.patient_id=$2 AND v.appointment_id=$3 AND b.status='posted' ORDER BY b.created_at,b.id")
-        .bind(a.tenant_id).bind(patient).bind(appointment).fetch_all(&mut **tx).await?;
+    // A charge divided between encounters is applied to each of them, in the order chosen.
+    let accounts: Vec<Uuid> = sqlx::query_scalar("SELECT b.id FROM billing_accounts b JOIN visits v ON v.tenant_id=b.tenant_id AND v.id=b.visit_id AND v.patient_id=b.patient_id LEFT JOIN copay_checkout_splits s ON s.tenant_id=b.tenant_id AND s.operation_id=$4 AND s.appointment_id=v.appointment_id WHERE b.tenant_id=$1 AND b.patient_id=$2 AND (s.operation_id IS NOT NULL OR (v.appointment_id=$3 AND NOT EXISTS(SELECT 1 FROM copay_checkout_splits z WHERE z.tenant_id=$1 AND z.operation_id=$4))) AND b.status='posted' ORDER BY coalesce(s.position,0),b.created_at,b.id")
+        .bind(a.tenant_id).bind(patient).bind(appointment).bind(operation).fetch_all(&mut **tx).await?;
     for account in accounts {
         if allocate_copays(tx, a, patient, account).await? > 0 {
             sqlx::query(

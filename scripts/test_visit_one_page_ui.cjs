@@ -6,7 +6,7 @@
 // section markup (web/billing.js) against a small DOM stub, and prove: no numbered step bar
 // remains, the old step keys still open the page and land on the block they name, the page stays
 // one page when billing or checkout is hidden, the Orders and Files areas take the whole screen
-// until Back to visit, the block hosts keep their visual order after the first render, after a
+// until Back to encounter, the block hosts keep their visual order after the first render, after a
 // revenue re-render and after switching visits, recorded vitals collapse to one summary line with
 // an Edit vitals button, and exactly one #visit-diagnoses sits at the top of codes & charges —
 // draft or posted visit, open or closed charge table — while a person without billing keeps the
@@ -486,7 +486,7 @@ async function main(){
   assert.equal(g.evaluate(`(function(){let n=0;(function walk(node){if(!node||!node.children)return;for(const child of node.children){if(child.id==='visit-diagnoses')n++;walk(child);}})($('chart'));return n;})()`),1,'and exactly one editor anywhere on the page');
  }
 
- // 7. Orders and Files are areas of their own: whole screen, single Back to visit button.
+ // 7. Orders and Files are areas of their own: whole screen, single Back to encounter button.
  {
   const g=fixture();
   g.evaluate('renderVisit(false)');g.evaluate("setEncounterSection('orders')");await g.settle();
@@ -496,10 +496,10 @@ async function main(){
   assert.equal(g.live('visit-checkout').hidden,true,'checkout stays away while another area is open');
   assert.equal(g.live('encounter-orders-actions').hidden,false,'the orders action panel opens');
   heading=g.evaluate('encounterWorkflow()');
-  assert.match(heading,/data-encounter-back[^>]*>← Back to visit</,'the area offers Back to visit');
+  assert.match(heading,/data-encounter-back[^>]*>← Back to encounter</,'the area offers Back to encounter');
   assert.doesNotMatch(heading,/data-encounter-step="new-order"|data-chart-section="referrals"/,'the normal visit actions are not doubled up on the area screen');
   g.evaluate("setEncounterSection('visit')");await g.settle();
-  assert.equal(g.evaluate('encounterSection'),'visit','Back to visit returns to the page');
+  assert.equal(g.evaluate('encounterSection'),'visit','Back to encounter returns to the page');
   assert.equal(g.live('visit-editor').hidden,false);
   assert.equal(g.live('visit-checkout').hidden,false,'the whole page comes back');
   assert.match(g.evaluate('encounterWorkflow()'),/encounter-visit-actions/,'and the action row is back');
@@ -511,11 +511,11 @@ async function main(){
   assert.equal(g.live('visit-editor').hidden,true);
   assert.equal(g.live('documents-panel').hidden,false,'the encounter files panel opens');
   assert.ok(g.evaluate('getRenders()').files>=1,'the files area renders its list');
-  assert.match(g.evaluate('encounterWorkflow()'),/data-encounter-back/,'Files offers Back to visit');
+  assert.match(g.evaluate('encounterWorkflow()'),/data-encounter-back/,'Files offers Back to encounter');
   g.evaluate("setEncounterSection('visit')");await g.settle();
-  assert.equal(g.live('visit-editor').hidden,false,'Back to visit leaves Files');
+  assert.equal(g.live('visit-editor').hidden,false,'Back to encounter leaves Files');
  }
 
- console.log('PASS the encounter is one scrolling page in host order through re-renders and visit switches; vitals stay compact; one diagnoses editor above the charge lines; old step keys land on it; record areas take the screen until Back to visit');
+ console.log('PASS the encounter is one scrolling page in host order through re-renders and visit switches; vitals stay compact; one diagnoses editor above the charge lines; old step keys land on it; record areas take the screen until Back to encounter');
 }
 main().catch(error=>{console.error(error.message);process.exit(1);});

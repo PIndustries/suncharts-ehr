@@ -147,12 +147,12 @@ const flagsOf=html=>[...html.slice(0,html.indexOf('patient-banner-actions')).mat
  // ---- Primary action and More menu -----------------------------------------------------
  f=fixture({now:NOW});html=await f.open();
  const actions=out=>out.slice(out.indexOf('patient-banner-actions'),out.indexOf('patient-banner-bottom'));
- assert.match(actions(html),/<button type="button" class="primary" data-start-encounter-flow>Start visit<\/button>/);
+ assert.match(actions(html),/<button type="button" class="primary" data-start-encounter-flow>Start encounter<\/button>/);
  f.c.activeVisit={id:'v1',status:'in_progress'};assert.match(actions(f.markup()),/class="primary" data-chart-section="visits">Continue encounter</);f.c.activeVisit={id:'v1',status:'signed'};assert.match(actions(f.markup()),/data-chart-section="visits">Review encounter</);f.c.activeVisit=undefined;
  f.c.workspace.visits=[{id:'v-other',status:'in_progress',clinician_id:'someone'},{id:'v-mine',status:'in_progress',clinician_id:'owner1'}];assert.match(actions(f.markup()),/class="primary" data-visit="v-mine">Continue encounter</,'an open note is picked up before a new encounter is started');f.c.workspace.visits=[];
- f.c.workspace.appointments=[{id:'a-next-week',starts_at:iso(20),status:'checked_in',clinician_id:'owner1'},{id:'a-today',starts_at:iso(13,11),status:'checked_in',clinician_id:'owner1'}];assert.match(actions(f.markup()),/class="primary" data-start="a-today">Start visit</);
+ f.c.workspace.appointments=[{id:'a-next-week',starts_at:iso(20),status:'checked_in',clinician_id:'owner1'},{id:'a-today',starts_at:iso(13,11),status:'checked_in',clinician_id:'owner1'}];assert.match(actions(f.markup()),/class="primary" data-start="a-today">Start encounter</);
  f.c.workspace.appointments=[{id:'a-today',starts_at:iso(13,11),status:'booked',clinician_id:'owner1'}];assert.match(actions(f.markup()),/class="primary" data-check-in="a-today">Check in</);
- f.c.workspace.appointments=[{id:'a-next-week',starts_at:iso(20),status:'booked',clinician_id:'owner1'}];assert.match(actions(f.markup()),/data-start-encounter-flow>Start visit</,'an appointment on another day is not checked in from here');
+ f.c.workspace.appointments=[{id:'a-next-week',starts_at:iso(20),status:'booked',clinician_id:'owner1'}];assert.match(actions(f.markup()),/data-start-encounter-flow>Start encounter</,'an appointment on another day is not checked in from here');
  f.c.me={...f.c.me,role:'front_desk'};f.c.canStartEncounterFlow=()=>false;f.c.workspace.appointments=[];assert.doesNotMatch(actions(f.markup()),/class="primary"/);
  f.c.me={...f.c.me,role:'owner'};f.c.canStartEncounterFlow=()=>true;f.c.workspace.patient.archived=true;f.c.canStartEncounterFlow=()=>false;assert.doesNotMatch(actions(f.markup()),/class="primary"/,'nothing new starts on an archived chart');
  f=fixture({now:NOW});html=await f.open();let menu=html.slice(html.indexOf('class="patient-banner-menu"'),html.indexOf('</details>',html.indexOf('class="patient-banner-menu"')));

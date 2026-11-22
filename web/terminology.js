@@ -124,7 +124,11 @@ function scheduleTerminologyCombobox(input,immediate=false){
  const allowed=state.scope==='diagnosis'?['ICD-10-CM']:['CPT','HCPCS'];
  if(state.scope!=='procedure'&&!allowed.includes(values.system)){terminologyComboboxStatus(state,state.scope==='diagnosis'?'This diagnosis needs the ICD-10-CM code list. You can still type the code in by hand.':'Choose CPT or HCPCS to search the installed procedure code lists. You can still type the code in by hand.');return;}
  if(state.scope!=='procedure'&&!/^\d{4}-\d{2}-\d{2}$/.test(values.serviceDate)){terminologyComboboxStatus(state,'Enter the service date before searching the code list.');return;}
- if(values.query.length<2){terminologyComboboxStatus(state,'Type at least two characters from a code or name.');return;}
+ if(values.query.length<2){
+  // An empty procedure box offers the codes the practice bills most, before anything is typed.
+  if(state.scope==='procedure'&&values.query===''&&typeof selected!=='undefined'&&selected){const request=state.request;terminologyComboboxStatus(state,'Type at least two characters from a code or name.');void frequentProcedureCombobox(state,request,values);return;}
+  terminologyComboboxStatus(state,'Type at least two characters from a code or name.');return;
+ }
  if(values.query.length>200){terminologyComboboxStatus(state,'Use up to 200 characters to search. Your full description remains available for manual entry.');return;}
  const request=state.request;terminologyComboboxStatus(state,'Searching the code list…');state.input.setAttribute('aria-busy','true');
  state.timer=setTimeout(()=>{state.timer=null;(state.scope==='procedure'?searchProcedureCombobox:searchTerminologyCombobox)(state,request,values);},immediate?0:(state.scope==='diagnosis'?150:250));
@@ -132,6 +136,16 @@ function scheduleTerminologyCombobox(input,immediate=false){
 // A procedure is found by typing: the codes this practice already bills (its fee schedules and
 // earlier charges, with the words they were billed under) come first, then any installed CPT or
 // HCPCS code list. Nothing has to be chosen before searching.
+async function frequentProcedureCombobox(state,request,values){
+ const data=await api(`/api/v1/patients/${encodeURIComponent(selected)}/procedure-codes?frequent=true`).catch(()=>null);
+ if(!terminologyComboboxCurrent(state,request,values))return;
+ const search={...values,procedure:true},items=[];
+ for(const raw of data?.items||[]){// Like a typed search of the practice's own codes, every row here is one the practice already bills.
+  const item={...raw,practice:true,source:'practice'};if(terminologyComboboxEligible(item,search))items.push(item);}
+ if(!items.length)return;
+ state.search=values;state.items=items.slice(0,8);state.active=-1;state.more=null;
+ state.status.textContent='Codes your practice uses most. Type to search every code.';renderTerminologyCombobox(state);
+}
 async function searchProcedureCombobox(state,request,values){
  if(!terminologyComboboxCurrent(state,request,values))return;
  const dated=/^\d{4}-\d{2}-\d{2}$/.test(values.serviceDate),list=system=>dated?api(`/api/v1/terminology/codes?${new URLSearchParams({system,q:values.query,service_date:values.serviceDate,billable:'true',active:'true',limit:'25'})}`).catch(()=>null):Promise.resolve(null);

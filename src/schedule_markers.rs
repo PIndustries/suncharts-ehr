@@ -277,11 +277,18 @@ pub(crate) async fn collect(
                     "SELECT jsonb_build_object('appointment_id',r.appointment_id,
                      'paid_cents',coalesce(sum(r.net) FILTER(WHERE NOT r.test),0)::bigint,
                      'test_paid_cents',coalesce(sum(r.net) FILTER(WHERE r.test),0)::bigint)
-                     FROM (SELECT c.appointment_id,
-                      CASE WHEN EXISTS(SELECT 1 FROM billing_copay_voids x WHERE x.tenant_id=c.tenant_id AND x.receipt_id=c.id) THEN 0 ELSE greatest(0,c.amount_cents-coalesce(o.refunded_cents,0)) END AS net,
+                     FROM (SELECT z.appointment_id,
+                      CASE WHEN EXISTS(SELECT 1 FROM billing_copay_voids x WHERE x.tenant_id=c.tenant_id AND x.receipt_id=c.id) THEN 0 ELSE greatest(0,z.amount_cents-z.refunded_cents) END AS net,
                       coalesce(o.livemode=false,false) AS test
                       FROM billing_copay_receipts c LEFT JOIN copay_checkout_attempts o ON o.tenant_id=c.tenant_id AND o.receipt_id=c.id
-                      WHERE c.tenant_id=$1 AND c.appointment_id=ANY($2)) r
+                      -- A card charge divided between encounters counts its part on each.
+                      CROSS JOIN LATERAL (
+                       SELECT c.appointment_id,c.amount_cents,coalesce(o.refunded_cents,0) AS refunded_cents WHERE NOT EXISTS(SELECT 1 FROM copay_checkout_splits s WHERE s.tenant_id=o.tenant_id AND s.operation_id=o.id)
+                       UNION ALL
+                       SELECT s.appointment_id,s.amount_cents,least(s.amount_cents,greatest(0,o.refunded_cents-(o.amount_cents-(SELECT sum(q.amount_cents) FROM copay_checkout_splits q WHERE q.tenant_id=s.tenant_id AND q.operation_id=s.operation_id AND q.position<=s.position))))
+                       FROM copay_checkout_splits s WHERE s.tenant_id=o.tenant_id AND s.operation_id=o.id) z
+                      WHERE c.tenant_id=$1 AND (c.appointment_id=ANY($2) OR c.id IN (SELECT o2.receipt_id FROM copay_checkout_splits s2 JOIN copay_checkout_attempts o2 ON o2.tenant_id=s2.tenant_id AND o2.id=s2.operation_id WHERE s2.tenant_id=$1 AND s2.appointment_id=ANY($2)))
+                       AND z.appointment_id=ANY($2)) r
                      GROUP BY r.appointment_id",
                 )
                 .bind(tenant)

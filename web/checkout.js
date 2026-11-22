@@ -63,16 +63,73 @@ function renderVisitCheckoutContent(){
  <section class="checkout-followups"><div class="section-head"><h3>Follow-up tasks</h3><button type="button" data-followup-board>Open work queue</button></div>${taskRows(d.followups)}${canCheckout()?`<details><summary>Add follow-up task</summary><form id="followup-create-form" data-request="${crypto.randomUUID()}"><div class="form-grid"><label>Task<input name="title" required maxlength="200"></label><label>Assigned to<select name="assignee_id" required><option value="">Choose staff</option>${followupAssignees.map(a=>`<option value="${esc(a.id)}" ${a.id===d.visit.clinician_id?'selected':''}>${esc(displayPerson(a.label))} · ${esc(displayStatus(a.role))}</option>`).join('')}</select></label><label>Due date<input name="due_date" type="date" required></label></div><label>Instructions<textarea name="instructions" required maxlength="4000"></textarea></label><label>Reason<input name="reason" required maxlength="1000"></label><button type="submit">Add task</button></form></details>`:''}</section>
  <details><summary>History</summary>${d.releases.map(a=>releasedAvs(a)).join('')}${d.events.map(e=>`<p>${esc(displayStatus(e.action))} · ${esc(date(e.created_at))}<br>${esc(e.reason)}</p>`).join('')||'<p>Nothing yet.</p>'}</details><details class="how-this-works"><summary>How this works</summary><p class="muted">Signing the note, giving the summary and follow-up tasks are each recorded separately. Releasing the summary and checking out does not collect a payment or mark charges paid, and opening the print dialog does not record that the summary was given.</p></details></section>`;
 }
-async function showFollowupWorkspace(){
- const [data,assignees]=await Promise.all([api(`/api/v1/follow-up/tasks?${new URLSearchParams({status:followupFilter,...(followupOwner==='mine'?{assignee_id:me.user_id}:{})})}`),canCheckout()?api('/api/v1/follow-up/assignees'):Promise.resolve({items:[]})]);
- followupItems=data.items;followupAssignees=assignees.items;showTool('Work queue');
- $('tools').innerHTML=`<section id="followup-workspace"><div class="section-head"><div><h2>Work queue</h2></div><div class="actions">${typeof showWorkflowRunQueue==='function'&&(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('workflows','view'))?'<button type="button" class="primary" data-journey-workqueue>Patient journeys</button>':''}<button type="button" data-followup-board>Refresh tasks</button></div></div><form id="followup-filter-form"><div class="form-grid"><label>Show<select id="followup-status">${[['open','Open tasks'],['all','All statuses'],['completed','Completed'],['cancelled','Cancelled']].map(([v,l])=>`<option value="${v}" ${followupFilter===v?'selected':''}>${l}</option>`).join('')}</select></label><label>Assigned to<select id="followup-owner"><option value="all" ${followupOwner==='all'?'selected':''}>All staff</option><option value="mine" ${followupOwner==='mine'?'selected':''}>Assigned to me</option></select></label></div><button type="submit">Apply</button></form>${data.has_more?`<p class="muted">Showing the first ${data.items.length} of ${data.total??'many'} tasks.</p>`:''}<div id="followup-rows"></div></section>`;
- renderFollowupRows();
+// ---- Work queue -------------------------------------------------------------------------
+// Everything waiting on the practice, gathered from where each kind of work already lives: notes
+// still open, encounters whose billing is waiting on staff, results nobody has reviewed, referrals
+// past their follow-up date, and the tasks staff set for each other. Each row opens the exact place
+// the work is done.
+const workQueueKinds=[['notes','Notes to finish'],['billing','Charges and claims'],['results','Results to review'],['referrals','Overdue referrals'],['tasks','Tasks']];
+// The billing steps that wait on the practice. An encounter waiting on the insurer or the patient is
+// not work for staff yet, so it is not listed.
+const workQueueStaffStates=['sign_visit','post_charges','self_pay_collect','fix_claim','send_claim','correct_claim','claimmd_correction','post_response','denied','review_response','review_balance'];
+var workQueueSources={},workQueueKind='all';
+function workQueueItems(src){
+ const rows=[],day=value=>value?(typeof displayDate==='function'?displayDate(String(value).slice(0,10)):String(value).slice(0,10)):'';
+ const cash=cents=>Number.isFinite(Number(cents))&&cents!=null?money(cents):'';
+ const join=parts=>parts.filter(Boolean).join(' · ');
+ for(const v of src.unfinished?.items||[])rows.push({kind:'notes',patient:v.patient_name,mrn:v.mrn,what:v.note_saved?'Finish and sign the note':'Write the encounter note',detail:join([v.title,day(v.starts_at),v.provider_label]),label:'Open encounter',attrs:`data-queue-visit="${esc(v.visit_id)}" data-patient="${esc(v.patient_id)}"`});
+ const listed=new Set();
+ for(const a of src.accounts?.items||[]){
+  if(!workQueueStaffStates.includes(a.billing_state))continue;listed.add(a.id);
+  rows.push({kind:'billing',patient:a.patient_name,mrn:a.mrn,what:typeof visitBillingStateName==='function'?visitBillingStateName(a.billing_state):'Billing needs attention',detail:join([day(a.service_date),cash(a.total_cents),a.payer_name]),label:'Open encounter',attrs:`data-queue-account="${esc(a.id)}" data-patient="${esc(a.patient_id)}"`});
+ }
+ // A claim whose encounter is not in the list above still needs sending or correcting.
+ for(const c of src.claims?.items||[]){
+  const fix=c.status==='rejected'||c.claimmd_position?.needs_correction===true;
+  if(listed.has(c.account_id)||(!fix&&!['draft','ready'].includes(c.status)))continue;listed.add(c.account_id);
+  rows.push({kind:'billing',patient:c.patient_name,mrn:'',what:fix?'Claim needs correcting':'Send claim',detail:join([c.payer_name,cash(c.total_cents)]),urgent:fix,label:'Open encounter',attrs:`data-queue-account="${esc(c.account_id)}" data-patient="${esc(c.patient_id)}"`});
+ }
+ for(const r of src.results?.items||[])rows.push({kind:'results',patient:r.patient_name,mrn:r.mrn,what:r.critical?'Critical result to review':'Result to review',detail:r.title,urgent:!!r.critical,label:'Review chart',attrs:`data-open-lab-patient="${esc(r.patient_id)}" data-order="${esc(r.order_id)}"`});
+ for(const e of src.referrals?.items||[])rows.push({kind:'referrals',patient:e.patient_label,mrn:e.mrn,what:'Referral is past its follow-up date',detail:e.content?.requested_service||'',label:'Open referrals',attrs:'data-queue-referrals'});
+ return rows;
 }
+function workQueueMarkup(rows,tasks,kind,missing){
+ const count=key=>key==='tasks'?tasks:rows.filter(row=>row.kind===key).length,total=rows.length+tasks;
+ const chip=(key,label,n)=>`<button type="button" data-queue-kind="${key}" aria-pressed="${kind===key}">${esc(label)} <span class="pill">${n}</span></button>`;
+ const groups=workQueueKinds.filter(([key])=>key!=='tasks'&&(kind==='all'||kind===key)).map(([key,label])=>{
+  const mine=rows.filter(row=>row.kind===key);if(!mine.length)return '';
+  return `<section class="work-queue-group" data-queue-group="${key}"><h3>${esc(label)} <span class="pill">${mine.length}</span></h3><ul class="work-queue-list">${mine.map(row=>`<li${row.urgent?' class="is-urgent"':''}><div><p class="work-queue-who"><b>${esc(row.patient||'Patient')}</b>${row.mrn?` <span class="record-id">MRN ${esc(row.mrn)}</span>`:''}</p><p class="work-queue-what"><strong>${esc(row.what)}</strong>${row.detail?` · ${esc(row.detail)}`:''}</p></div><button type="button" ${row.attrs}>${esc(row.label)}</button></li>`).join('')}</ul></section>`;
+ }).join('');
+ const nothing=kind==='all'?total===0:count(kind)===0;
+ return `<p class="muted">Everything waiting on the practice, in one list. Open a row to do the work; it leaves the list when it is done.</p><div class="work-queue-kinds" role="group" aria-label="Show">${chip('all','Everything',total)}${workQueueKinds.map(([key,label])=>chip(key,label,count(key))).join('')}</div>${missing?'<p class="muted" role="status">Some lists are not shown: they could not be loaded, or are outside your access.</p>':''}${groups}${nothing&&kind!=='tasks'?`<p class="work-queue-empty" role="status">${kind==='all'?'Nothing is waiting on the practice right now.':'Nothing is waiting here right now.'}</p>`:''}`;
+}
+async function showFollowupWorkspace(){
+ const settle=request=>request.then(value=>({value}),()=>({failed:true}));
+ const [taskData,assignees,unfinished,accounts,claims,results,referrals]=await Promise.all([api(`/api/v1/follow-up/tasks?${new URLSearchParams({status:followupFilter,...(followupOwner==='mine'?{assignee_id:me.user_id}:{})})}`),canCheckout()?api('/api/v1/follow-up/assignees'):Promise.resolve({items:[]}),settle(api('/api/v1/practice/worklist')),settle(api('/api/v1/billing/overview')),settle(api('/api/v1/billing/claims')),settle(api('/api/v1/labs/inbox')),settle(api('/api/v1/referrals/worklist?overdue=true&_count=100'))]);
+ const data=taskData;
+ followupItems=data.items;followupAssignees=assignees.items;showTool('Work queue');
+ workQueueSources={unfinished:unfinished.value,accounts:accounts.value?.accounts,claims:claims.value,results:results.value,referrals:referrals.value,missing:[unfinished,accounts,claims,results,referrals].some(part=>part.failed)};
+ $('tools').innerHTML=`<section id="followup-workspace"><div class="section-head"><div><h2>Work queue</h2></div><div class="actions">${typeof showWorkflowRunQueue==='function'&&(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('workflows','view'))?'<button type="button" data-journey-workqueue>Patient journeys</button>':''}<button type="button" data-followup-board>Refresh</button></div></div><div id="work-queue-rows"></div><section class="work-queue-group" id="work-queue-tasks" data-queue-group="tasks"><h3>Tasks</h3><form id="followup-filter-form"><div class="form-grid"><label>Show<select id="followup-status">${[['open','Open tasks'],['all','All statuses'],['completed','Completed'],['cancelled','Cancelled']].map(([v,l])=>`<option value="${v}" ${followupFilter===v?'selected':''}>${l}</option>`).join('')}</select></label><label>Assigned to<select id="followup-owner"><option value="all" ${followupOwner==='all'?'selected':''}>All staff</option><option value="mine" ${followupOwner==='mine'?'selected':''}>Assigned to me</option></select></label></div><button type="submit">Apply</button></form>${data.has_more?`<p class="muted">Showing the first ${data.items.length} of ${data.total??'many'} tasks.</p>`:''}<div id="followup-rows"></div></section></section>`;
+ renderFollowupRows();renderWorkQueue();
+}
+function renderWorkQueue(){
+ const host=$('work-queue-rows');if(!host)return;
+ const open=followupItems.filter(task=>task.status==='open').length;
+ host.innerHTML=workQueueMarkup(workQueueItems(workQueueSources),open,workQueueKind,workQueueSources.missing);
+ const tasks=$('work-queue-tasks');if(tasks)tasks.hidden=!(workQueueKind==='all'||workQueueKind==='tasks');
+}
+if(typeof document!=='undefined'&&document.addEventListener)document.addEventListener('click',async event=>{
+ const button=event.target?.closest?.('#followup-workspace button');if(!button)return;
+ if(button.dataset.queueKind){workQueueKind=button.dataset.queueKind;renderWorkQueue();return;}
+ if(button.dataset.queueVisit){await showClinical();await selectPatient(button.dataset.patient,button.dataset.queueVisit);if(typeof showChartSection==='function')showChartSection('visits');return;}
+ // The encounter that owns the charges or the claim opens on its billing, where the next step is.
+ if(button.dataset.queueAccount){const identity=me,patient=button.dataset.patient;await showClinical();if(me!==identity)return;await selectPatient(patient,null);if(me!==identity||selected!==patient)return;await openEncounterBillingAccount(button.dataset.queueAccount);return;}
+ if(button.hasAttribute('data-queue-referrals')&&typeof showReferralWorkspace==='function'){if(typeof referralBoard!=='undefined')referralBoard.overdue=true;await showReferralWorkspace();}
+});
 function renderFollowupRows(){
  const status=$('followup-status').value,mine=$('followup-owner').value==='mine';
  const items=followupItems.filter(t=>(status==='all'||t.status===status)&&(!mine||t.assignee_id===me.user_id));
- $('followup-rows').innerHTML=items.map(t=>`<section class="panel"><p class="eyebrow">${esc(t.patient_name)} · MRN ${esc(t.mrn)}</p>${taskRows([t])}</section>`).join('')||'<p>No tasks match these filters.</p>';
+ $('followup-rows').innerHTML=items.map(t=>`<section class="panel"><p class="eyebrow">${esc(t.patient_name)} · MRN ${esc(t.mrn)}</p>${taskRows([t])}</section>`).join('')||'<div class="empty-state"><p>No tasks match. Staff add a task from an encounter’s checkout when something needs following up.</p></div>';
 }
 function showAvsPrint(version){
  const avs=checkoutState.releases.find(a=>a.version===version)||checkoutState.current_avs;if(!avs||avs.version!==version)throw new Error('Reload the summary before printing.');
@@ -110,3 +167,6 @@ document.addEventListener('submit',e=>{
  notice(saved);
  });
 },true);
+
+// The work queue follows its filters as they change; there is no separate step to apply them.
+if(typeof document!=='undefined'&&document.addEventListener)document.addEventListener('change',event=>{const form=event.target?.closest?.('#followup-filter-form');if(form?.requestSubmit)form.requestSubmit();});

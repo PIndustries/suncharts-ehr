@@ -373,6 +373,19 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
   // ---- Post charges and send claim stops on fix_claim --------------------------------------
   // A draft the practice is working, with a payer whose claims go electronically: the line under
   // the charge table offers one button that posts, lets the claim be prepared, and sends it.
+  // Something the claim cannot go without is asked for before the charges post: the card's one button
+  // opens the codes, and the line under the charge table says the same thing.
+  {const status=vm.runInContext('visitBillingStatus',ctx),step=vm.runInContext('visitBillingChargeStep',ctx);
+   const none=visitSummary({state:'post_charges',account:{id:'account',status:'draft',version:2},balance_cents:null,claim:null,before_posting:[{code:'diagnoses',missing:'a diagnosis'}]});
+   const card=status(none,{canWrite:true,canCreate:true});
+   assert.equal(card.headline,'Add a diagnosis');assert.match(card.action,/data-encounter-charges/);assert.doesNotMatch(card.action,/data-visit-post-charges/);assert.match(card.detail,/cannot be sent without it/);
+   assert.match(step(none,{canWrite:true}).text,/Add a diagnosis before you post/);
+   const some=visitSummary({state:'post_charges',account:{id:'account',status:'draft',version:2},balance_cents:null,claim:null,before_posting:[{code:'line_diagnoses',missing:'a diagnosis for every charge',lines:2}]});
+   assert.equal(status(some,{canWrite:true}).headline,'Link a diagnosis to every charge');assert.match(status(some,{canWrite:true}).detail,/2 charges have no diagnosis linked/);
+   const one={...some,before_posting:[{code:'line_diagnoses',lines:1}]};assert.match(status(one,{canWrite:true}).detail,/One charge has no diagnosis linked/);
+   // Someone who cannot change the charges is not sent to fix them, and nothing missing leaves the step as it was.
+   assert.equal(status(none,{canWrite:false}).headline,'Post charges');
+   assert.equal(status({...none,before_posting:[]},{canWrite:true}).headline,'Post charges');}
   const draftPost=visitSummary({state:'post_charges',account:{id:'account',status:'draft',version:2},balance_cents:null,claim:null});
   const draftWorkspace={...account,status:'draft',content:{...account.content,coverage_id:'coverage'}};
   ctx.workspace.billing.accounts=[draftWorkspace];ctx.__afterPostSend=true;

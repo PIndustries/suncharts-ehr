@@ -7,7 +7,7 @@ async function loadClaimMdConnection(guard){
  return state;
 }
 function claimMdConnectionCard(state=claimMdConnectionState){
- if(!state?.configured)return `<section class="mapping-notice"><div class="section-head"><div><b>Claim.MD is not connected</b><p>Connect your Claim.MD account to check eligibility, send claims and receive insurance payments (ERA) here.</p></div>${me?.role==='owner'?'<button type="button" class="primary" data-provider-new>Connect Claim.MD</button>':''}</div></section>`;
+ if(!state?.configured)return `<section class="mapping-notice"><div class="section-head"><div><b>No clearinghouse is connected</b><p>Connect your Claim.MD account to check eligibility, send claims and receive insurance payments here.</p></div>${me?.role==='owner'?'<button type="button" class="primary" data-provider-new>Connect Claim.MD</button>':''}</div></section>`;
  if(!state.connected)return '<section class="mapping-notice"><b>Claim.MD is not working yet</b><p>The saved Claim.MD account key was not accepted or the connection is turned off. Ask the practice owner to check the Claim.MD connection.</p></section>';
  const active=state.active||{};
  return `<section class="connection-summary" aria-label="Claim.MD connection"><div class="section-head"><div><h3>Claim.MD</h3><p><b>Connected</b> · ${esc(active.usage==='P'?'Live account':'Test account')}</p></div><div class="actions"><button type="button" data-claimmd-operations="${esc(active.id)}">Claim.MD activity</button></div></div><p class="muted">Eligibility checks, claims, payer responses and insurance payments go through this account.</p></section>`;

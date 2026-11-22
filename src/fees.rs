@@ -641,7 +641,11 @@ pub(crate) async fn resolve(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProcedureQuery {
+    #[serde(default)]
     q: String,
+    /// Asked for with an empty box: the codes this practice bills most, before anything is typed.
+    #[serde(default)]
+    frequent: bool,
 }
 /// The procedures this practice bills, for the procedure box to offer as soon as someone types:
 /// the practice's own enabled codes for CPT/HCPCS first (with the price, default units and
@@ -650,6 +654,84 @@ struct ProcedureQuery {
 /// appears, not even from billed history, and a system the practice turned off never contributes.
 /// CPT names come from the billed history because a licensed CPT list may not be installed;
 /// nothing is priced or saved by reading it.
+/// The codes this practice bills most often, for the procedure box to offer before anything is
+/// typed: counted over the practice's recent charges, newest use breaking a tie, each shown as the
+/// practice's own row (price, default units, modifiers) when it has one. A practice with no
+/// charges yet is offered the start of its own list. A code or code list the practice turned off
+/// is never offered.
+async fn frequent_procedure_codes(s: &State, a: &Actor, p: Uuid) -> Result<Json<Value>> {
+    const LIMIT: usize = 8;
+    let mut tx = tx(s, a).await?;
+    let known: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM patients WHERE tenant_id=$1 AND id=$2")
+            .bind(a.tenant_id)
+            .bind(p)
+            .fetch_optional(&mut *tx)
+            .await?;
+    known.ok_or(Error::NotFound)?;
+    let mut practice: Vec<Value> = Vec::new();
+    let mut enabled: Vec<&str> = Vec::new();
+    for system in ["CPT", "HCPCS"] {
+        if crate::practice_codes::system_enabled(&mut tx, a.tenant_id, system).await? {
+            enabled.push(system);
+            practice
+                .extend(crate::practice_codes::enabled_items(&mut tx, a.tenant_id, system).await?);
+        }
+    }
+    let used: Vec<Value> = sqlx::query_scalar(
+        "SELECT jsonb_build_object('code',code,'system',code_system,'display',description) FROM ( \
+         SELECT upper(btrim(l->>'code')) code,max(l->>'code_system') code_system, \
+         (array_agg(btrim(coalesce(l->>'description','')) ORDER BY b.created_at DESC))[1] description, \
+         count(*) uses,max(b.created_at) last_used \
+         FROM (SELECT content,created_at FROM billing_accounts WHERE tenant_id=$1 AND status<>'void' ORDER BY created_at DESC LIMIT 500) b, \
+         jsonb_array_elements(b.content->'lines') l \
+         WHERE l->>'code_system' IN ('CPT','HCPCS') AND btrim(coalesce(l->>'code',''))<>'' GROUP BY 1) u \
+         ORDER BY uses DESC,last_used DESC,code LIMIT 40",
+    )
+    .bind(a.tenant_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut items: Vec<Value> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for row in used {
+        if items.len() == LIMIT {
+            break;
+        }
+        let code = row["code"].as_str().unwrap_or("").to_owned();
+        let system = row["system"].as_str().unwrap_or("").to_owned();
+        if code.is_empty() || !enabled.contains(&system.as_str()) || seen.contains(&code) {
+            continue;
+        }
+        if crate::practice_codes::code_on(&mut tx, a.tenant_id, &system, &code).await?
+            == Some(false)
+        {
+            continue;
+        }
+        let own = practice
+            .iter()
+            .find(|item| item["code"].as_str() == Some(code.as_str()));
+        let mut item = own.cloned().unwrap_or(row);
+        if own.is_some() {
+            item["practice_code"] = json!(true);
+        }
+        seen.push(code);
+        items.push(item);
+    }
+    for mut item in practice {
+        if items.len() == LIMIT {
+            break;
+        }
+        let code = item["code"].as_str().unwrap_or("").to_owned();
+        if code.is_empty() || seen.contains(&code) {
+            continue;
+        }
+        item["practice_code"] = json!(true);
+        seen.push(code);
+        items.push(item);
+    }
+    tx.commit().await?;
+    Ok(Json(json!({ "items": items, "frequent": true })))
+}
 async fn procedure_codes(
     a: Actor,
     ExtractState(s): ExtractState<State>,
@@ -659,6 +741,9 @@ async fn procedure_codes(
     a.staff()?;
     crate::access_policies::require_native(&s, &a, "billing", "view").await?;
     let query = q.q.trim();
+    if q.frequent && query.is_empty() {
+        return frequent_procedure_codes(&s, &a, p).await;
+    }
     if query.chars().count() < 2 || query.len() > 100 || query.chars().any(char::is_control) {
         return Ok(Json(json!({ "items": [] })));
     }

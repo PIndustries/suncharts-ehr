@@ -34,7 +34,7 @@ async function main(){
  assert.match(actions,/data-chart-section="insurance">Insurance & copay/);
  assert.doesNotMatch(actions,/Prepare charges for claim|Open patient billing|data-patient-create-claim/,'the overview offers a concrete next visit action instead of three repeated workflow launchers');
  evaluate(`workspace.appointments[0].status='checked_in'`);actions=evaluate('patientWorkflowActions()');
- assert.match(actions,/data-start="appt-1">Start visit/);
+ assert.match(actions,/data-start="appt-1">Start encounter/);
 
  // Primary tasks remain visible; supporting longitudinal areas share one record menu.
  let tabs=plain(evaluate('configuredChartTabs(Object.entries(chartTabLabels))'));tabs.splice(tabs.findIndex(([key])=>key==='billing'),0,['insurance','Insurance']);context.tabs=tabs;
@@ -65,9 +65,9 @@ async function main(){
  assert.equal(nodes['visit-editor'].hidden,false);assert.equal(nodes['encounter-documentation'].hidden,false);assert.equal(nodes['encounter-intake'].hidden,false,'the encounter page shows vitals and note together');assert.equal(nodes['encounter-revenue'].hidden,false,'codes & charges sit on the same page');assert.equal(nodes['visit-checkout'].hidden,false,'checkout finishes the same page');assert.equal(nodes['appointments-panel'].hidden,false,'unified history stays reachable while an encounter is selected');
  const before=captured;evaluate("setEncounterSection('intake')");assert.ok(nodes['encounter-revenue'].hidden===false,'rooming shows with the charges block on one page');assert.ok(captured>before,'an old step key still captures drafts');assert.equal(evaluate('encounterSection'),'intake','the old key stays addressable while the whole page shows');assert.ok(nodes['encounter-intake'].scrolled||true);assert.equal(nodes['encounter-intake'].hidden,false);assert.equal(nodes['encounter-documentation'].hidden,false);
  evaluate("setEncounterSection('charges')");assert.equal(evaluate('encounterSection'),'charges','the old key stays addressable');assert.equal(nodes['encounter-revenue'].hidden,false);assert.equal(nodes['visit-editor'].hidden,false);
- // The Orders area is opened from the page and holds the whole screen until Back to visit.
+ // The Orders area is opened from the page and holds the whole screen until Back to encounter.
  evaluate("setEncounterSection('orders')");assert.equal(nodes['encounter-orders-actions'].hidden,false,"the orders action panel opens");assert.equal(nodes['encounter-revenue'].hidden,true);assert.equal(nodes['visit-editor'].hidden,true);assert.equal(nodes['visit-checkout'].hidden,true,'checkout stays away while another area is open');
- evaluate("setEncounterSection('visit')");assert.equal(nodes['visit-checkout'].hidden,false,'Back to visit brings the whole page back');assert.equal(nodes['encounter-revenue'].hidden,false);assert.equal(nodes['lab-workspace'].hidden,true,'back to the encounter page leaves the orders workspace');
+ evaluate("setEncounterSection('visit')");assert.equal(nodes['visit-checkout'].hidden,false,'Back to encounter brings the whole page back');assert.equal(nodes['encounter-revenue'].hidden,false);assert.equal(nodes['lab-workspace'].hidden,true,'back to the encounter page leaves the orders workspace');
  evaluate("setEncounterSection('files')");assert.equal(nodes['documents-panel'].hidden,false);assert.equal(nodes['patient-intake-panel'].hidden,false);assert.equal(nodes['visit-checkout'].hidden,true);
  evaluate("setEncounterSection('visit')");assert.equal(nodes['encounter-revenue'].hidden,false);assert.equal(nodes['visit-checkout'].hidden,false);
  evaluate("setEncounterSection('files');showChartSection('clinical');showChartSection('visits')");assert.equal(evaluate('encounterSection'),'files','an open record area returns to itself, not to the encounter page');

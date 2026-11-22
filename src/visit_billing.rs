@@ -83,8 +83,31 @@ fn receipts(rows: Vec<Value>, appointment: Option<Uuid>, production: bool) -> Re
     let Some(appointment) = appointment else {
         return out;
     };
-    for row in rows {
-        if row["appointment_id"].as_str() != Some(appointment.to_string().as_str()) {
+    let wanted = appointment.to_string();
+    for mut row in rows {
+        // The credit still unused on the whole payment, before it is narrowed to one part.
+        let whole_unapplied = (cents(&row["amount_cents"])
+            - cents(&row["allocated_cents"])
+            - cents(&row["hosted_checkout"]["refunded_unapplied_cents"]))
+        .max(0);
+        let mut part_unapplied = whole_unapplied;
+        if let Some(parts) = row["hosted_checkout"]["splits"].as_array() {
+            // One card charge divided between encounters: this encounter sees only its part.
+            let Some(part) = parts
+                .iter()
+                .find(|part| part["appointment_id"].as_str() == Some(wanted.as_str()))
+                .cloned()
+            else {
+                continue;
+            };
+            part_unapplied = whole_unapplied
+                .min((cents(&part["amount_cents"]) - cents(&part["allocated_cents"])).max(0));
+            row["payment_cents"] = row["amount_cents"].clone();
+            row["appointment_id"] = json!(wanted);
+            row["amount_cents"] = part["amount_cents"].clone();
+            row["allocated_cents"] = part["allocated_cents"].clone();
+            row["hosted_checkout"]["refunded_cents"] = part["refunded_cents"].clone();
+        } else if row["appointment_id"].as_str() != Some(wanted.as_str()) {
             continue;
         }
         let hosted = &row["hosted_checkout"];
@@ -98,10 +121,7 @@ fn receipts(rows: Vec<Value>, appointment: Option<Uuid>, production: bool) -> Re
         }
         let test_only = production && hosted["livemode"] == false;
         if !voided && !reversed && !held && !test_only {
-            out.usable_unapplied += (amount
-                - cents(&row["allocated_cents"])
-                - cents(&hosted["refunded_unapplied_cents"]))
-            .max(0);
+            out.usable_unapplied += part_unapplied;
         }
         out.items.push(row);
     }
@@ -180,7 +200,7 @@ async fn claim_views(
 /// of queries. Every screen that shows what a patient owes reads it from here: the visit
 /// card, the patient banner, the schedule and the patient billing page.
 const BALANCES: &str = r#"WITH acct AS (
- SELECT b.tenant_id,b.id,b.patient_id,b.status,b.version,b.total_cents,v.status AS visit_status,v.appointment_id,
+ SELECT b.tenant_id,b.id,b.patient_id,b.status,b.version,b.total_cents,v.status AS visit_status,v.appointment_id,b.visit_id,
   b.status='posted' AS posted,
   b.coverage_snapshot IS NOT NULL AS insured,
   btrim(coalesce(b.coverage_snapshot->'payer'->'content'->>'payer_code',''))<>'' AS electronic,
@@ -200,15 +220,22 @@ const BALANCES: &str = r#"WITH acct AS (
   FROM billing_entries e LEFT JOIN billing_entries o ON o.tenant_id=e.tenant_id AND o.account_id=e.account_id AND o.id=e.reverses_id
   WHERE e.tenant_id=$1 AND e.account_id IN (SELECT id FROM acct)) x GROUP BY x.account_id
 ), desk AS (
- SELECT r.appointment_id,
-  sum(CASE WHEN y.voided OR y.reversed>0 OR coalesce(o.status='needs_review',false) OR ($5 AND coalesce(o.livemode=false,false)) THEN 0 ELSE greatest(0,r.amount_cents-y.allocated-y.refunded_unapplied) END)::bigint AS unapplied
+ SELECT z.appointment_id,
+  sum(CASE WHEN y.voided OR y.reversed>0 OR coalesce(o.status='needs_review',false) OR ($5 AND coalesce(o.livemode=false,false)) THEN 0 ELSE greatest(0,least(r.amount_cents-y.allocated-y.refunded_unapplied,z.part_left)) END)::bigint AS unapplied
  FROM billing_copay_receipts r LEFT JOIN copay_checkout_attempts o ON o.tenant_id=r.tenant_id AND o.receipt_id=r.id
  CROSS JOIN LATERAL (SELECT
    coalesce((SELECT sum(a.amount_cents) FROM billing_copay_allocations a WHERE a.tenant_id=r.tenant_id AND a.receipt_id=r.id),0)::bigint AS allocated,
    coalesce((SELECT sum(a.amount_cents) FROM billing_copay_allocations a JOIN billing_entries e ON e.tenant_id=a.tenant_id AND e.reverses_id=a.entry_id WHERE a.tenant_id=r.tenant_id AND a.receipt_id=r.id),0)::bigint AS reversed,
    coalesce((SELECT sum(f.unapplied_cents) FROM copay_checkout_refund_events f WHERE f.tenant_id=o.tenant_id AND f.operation_id=o.id),0)::bigint AS refunded_unapplied,
    EXISTS(SELECT 1 FROM billing_copay_voids d WHERE d.tenant_id=r.tenant_id AND d.receipt_id=r.id) AS voided) y
- WHERE r.tenant_id=$1 AND r.appointment_id IN (SELECT appointment_id FROM acct WHERE appointment_id IS NOT NULL) GROUP BY r.appointment_id
+ CROSS JOIN LATERAL (
+  SELECT r.appointment_id,r.amount_cents AS part_left WHERE NOT EXISTS(SELECT 1 FROM copay_checkout_splits s WHERE s.tenant_id=o.tenant_id AND s.operation_id=o.id)
+  UNION ALL
+  SELECT s.appointment_id,s.amount_cents-coalesce((SELECT sum(a.amount_cents) FROM billing_copay_allocations a JOIN billing_accounts b ON b.tenant_id=a.tenant_id AND b.id=a.account_id JOIN visits v ON v.tenant_id=b.tenant_id AND v.id=b.visit_id WHERE a.tenant_id=r.tenant_id AND a.receipt_id=r.id AND v.appointment_id=s.appointment_id),0)::bigint
+  FROM copay_checkout_splits s WHERE s.tenant_id=o.tenant_id AND s.operation_id=o.id) z
+ WHERE r.tenant_id=$1 AND (r.appointment_id IN (SELECT appointment_id FROM acct WHERE appointment_id IS NOT NULL)
+   OR r.id IN (SELECT o2.receipt_id FROM copay_checkout_splits s2 JOIN copay_checkout_attempts o2 ON o2.tenant_id=s2.tenant_id AND o2.id=s2.operation_id WHERE s2.tenant_id=$1 AND s2.appointment_id IN (SELECT appointment_id FROM acct WHERE appointment_id IS NOT NULL)))
+  AND z.appointment_id IN (SELECT appointment_id FROM acct WHERE appointment_id IS NOT NULL) GROUP BY z.appointment_id
 ), facts AS (
  SELECT a.*,a.total_cents+coalesce(l.net,0) AS balance,coalesce(l.patient_credit,0) AS patient_credit,coalesce(l.patient_payments,0) AS patient_payments,
   coalesce(l.insurer_paid,0) AS insurer_paid,coalesce(l.receipts_applied,0) AS receipts_applied,coalesce(d.unapplied,0) AS unapplied,
@@ -258,7 +285,7 @@ SELECT jsonb_build_object('id',o.id,'patient_id',o.patient_id,'status',o.status,
  'pending_cents',CASE WHEN o.posted AND o.insured AND NOT o.answered THEN greatest(o.balance+greatest(o.patient_credit-o.responsibility,0)-o.owes_now,0) ELSE 0 END,
  'unassigned_cents',CASE WHEN o.posted AND ((o.insured AND o.answered) OR (NOT o.insured AND o.responsibility_source='reviewed_statement')) THEN greatest(o.balance-o.owes_now,0) ELSE 0 END,
  'overpaid_cents',CASE WHEN o.posted THEN greatest(greatest(o.patient_credit-o.responsibility,0),-o.balance) ELSE 0 END,
- 'answered',o.answered,'denied',o.denied,'any_void',o.any_void,'claim_id',o.claim_id,'claim_status',o.claim_status,'response_to_review',o.response_to_review,'test_activity',o.test_activity)
+ 'answered',o.answered,'denied',o.denied,'any_void',o.any_void,'claim_id',o.claim_id,'claim_status',o.claim_status,'response_to_review',o.response_to_review,'test_activity',o.test_activity,'appointment_id',o.appointment_id,'visit_id',o.visit_id)
 FROM owed o WHERE $4::boolean IS NULL OR o.test_activity=$4"#;
 
 /// One row per charge account that is not void. `patients` and `accounts` narrow the set;
@@ -323,6 +350,28 @@ pub(crate) async fn patients_owe(
 }
 /// The state name of a visit's billing, from its balance row. `draft_needs_details` says
 /// whether the open draft claim fails the readiness checks.
+/// What an insurance claim cannot go without, read from the draft charges: a diagnosis on the
+/// encounter, and one linked to every charge line. A self-pay encounter needs neither, and an
+/// empty draft has nothing to check yet.
+pub(crate) fn before_posting(insured: bool, lines: &Value, on_encounter: usize) -> Vec<Value> {
+    let lines = lines.as_array().map(Vec::as_slice).unwrap_or(&[]);
+    if !insured || lines.is_empty() {
+        return vec![];
+    }
+    let unlinked = lines
+        .iter()
+        .filter(|l| l["diagnosis_codes"].as_array().is_none_or(Vec::is_empty))
+        .count();
+    if unlinked == 0 {
+        vec![]
+    } else if on_encounter == 0 && unlinked == lines.len() {
+        vec![json!({"code":"diagnoses","missing":"a diagnosis"})]
+    } else {
+        vec![
+            json!({"code":"line_diagnoses","missing":"a diagnosis for every charge","lines":unlinked}),
+        ]
+    }
+}
 pub(crate) fn state_of(
     row: &Value,
     draft_needs_details: bool,
@@ -831,6 +880,23 @@ pub(crate) async fn summarize(
         Some(_) if charges_corrected_after_send => ("correct_claim", "staff"),
         Some(_) => state_of_with_claimmd(&money, !issues.is_empty(), opt.claims, &claimmd),
     };
+    // What would hold the claim up, named while the charges can still be changed in one place
+    // rather than after they post.
+    let before_posting = match (&account, visit_id) {
+        (Some(b), Some(v)) if b.status == "draft" && insured => {
+            let on_encounter = sqlx::query_scalar::<_, Value>(
+                "SELECT diagnoses FROM visit_diagnoses WHERE tenant_id=$1 AND visit_id=$2",
+            )
+            .bind(a.tenant_id)
+            .bind(v)
+            .fetch_optional(&mut **tx)
+            .await?
+            .and_then(|d| d.as_array().map(Vec::len))
+            .unwrap_or(0);
+            before_posting(insured, &b.content["lines"], on_encounter)
+        }
+        _ => vec![],
+    };
     // The day the clearinghouse said the claim needs correcting, for the sentence that names
     // where to release a claim Claim.MD is holding for approval.
     let claimmd_since = claimmd["correction"]["at"]
@@ -887,6 +953,7 @@ pub(crate) async fn summarize(
         "account": account.as_ref().map(|b| json!({"id":b.id,"status":b.status,"version":b.version,"total_cents":b.total_cents,"service_date":b.content["service_date"],"has_visit":b.content["visit_id"].is_string()})),
         "state": state,
         "waiting_on": waiting_on,
+        "before_posting": before_posting,
         "insurance": {
             "insured": insured,
             "insurer": insurer,
@@ -1628,6 +1695,8 @@ async fn encounter_balances(
         .map(|r| {
             json!({
                 "account_id": r["id"],
+                "appointment_id": r["appointment_id"],
+                "visit_id": r["visit_id"],
                 "status": r["status"],
                 "posted": r["posted"],
                 "insured": r["insured"],
@@ -1743,6 +1812,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn what_a_claim_needs_is_named_before_the_charges_post() {
+        let bare = json!([{"code":"99213","diagnosis_codes":[]},{"code":"64616"}]);
+        let half = json!([{"code":"99213","diagnosis_codes":["I10"]},{"code":"64616","diagnosis_codes":[]}]);
+        let linked = json!([{"code":"99213","diagnosis_codes":["I10"]}]);
+        assert_eq!(before_posting(true, &bare, 0)[0]["code"], "diagnoses");
+        // Diagnoses are on the encounter but no line points at one yet.
+        assert_eq!(before_posting(true, &bare, 2)[0]["code"], "line_diagnoses");
+        assert_eq!(before_posting(true, &bare, 2)[0]["lines"], 2);
+        assert_eq!(before_posting(true, &half, 1)[0]["lines"], 1);
+        assert!(before_posting(true, &linked, 1).is_empty());
+        // Lines that carry their own codes are enough, whatever the encounter lists.
+        assert!(before_posting(true, &linked, 0).is_empty());
+        assert!(
+            before_posting(false, &bare, 0).is_empty(),
+            "self-pay needs no diagnosis"
+        );
+        assert!(
+            before_posting(true, &json!([]), 0).is_empty(),
+            "nothing to check yet"
+        );
+        assert!(before_posting(true, &Value::Null, 0).is_empty());
+    }
     #[test]
     fn readiness_problems_are_named_in_plain_words() {
         assert_eq!(

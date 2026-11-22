@@ -4,6 +4,10 @@
 .terminology-combobox > input { width:100%; }
 .terminology-suggestions { position:absolute; z-index:30; top:100%; left:0; width:max(100%,22rem); max-width:min(38rem,calc(100vw - 3rem)); border:1px solid var(--border,#b6cbd2); border-radius:.5rem; background:var(--surface,#fff); color:var(--text,#243944); box-shadow:0 .5rem 1.5rem #163b4926; }
 .terminology-suggestions[hidden] { display:none; }
+/* Plays when the list opens, not when its results change: the list is hidden and shown, never rebuilt. */
+.terminology-suggestions { animation:terminology-suggestions-in .12s cubic-bezier(0,0,0,1); transform-origin:top left; }
+@keyframes terminology-suggestions-in { from { opacity:0; transform:translateY(-3px); } to { opacity:1; transform:none; } }
+@media (prefers-reduced-motion:reduce) { .terminology-suggestions { animation:none; } }
 .terminology-suggestions > p { margin:0; padding:.65rem .8rem; font-size:var(--fs-body); line-height:1.45; }
 .terminology-suggestions > ul { list-style:none; padding:0; margin:0; max-height:19rem; overflow:auto; overscroll-behavior:contain; }
 .terminology-suggestions [role="option"] { padding:.65rem .8rem; border-top:1px solid var(--border,#dce6ea); cursor:pointer; line-height:1.4; overflow-wrap:anywhere; }

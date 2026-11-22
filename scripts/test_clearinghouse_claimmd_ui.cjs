@@ -64,7 +64,7 @@ for(const file of ['web/claimmd-native.js','web/provider-settings.js','web/clear
  assert.equal(order[0],'show:Claim lifecycle','workspace must become visible before any API work');
  assert.match(ediTool.inserted,/INSURANCE CLAIMS/);
  assert.match(ediTool.inserted,/Check insurance/);
- assert.match(connectionNotice.outerHTML,/Claim\.MD is not connected/);
+ assert.match(connectionNotice.outerHTML,/No clearinghouse is connected/);
  assert.match(connectionNotice.outerHTML,/data-provider-new/);
  assert.match(connectionNotice.outerHTML,/Connect your Claim\.MD account to check eligibility, send claims/);
  assert.match(providerHtml,/Claim\.MD is not connected/);
