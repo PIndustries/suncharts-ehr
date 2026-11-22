@@ -272,7 +272,11 @@ function patientPickerPinnedMarkup(options){
 }
 // The box is in the page; connect its parts to the picker that drives it.
 function mountPatientPicker(host){
-  const root=host?.closest?.('[data-patient-picker]')||host?.querySelector?.('[data-patient-picker]')||host;
+  // The picker is the box that holds the search input. A form around it can carry an attribute of
+  // the same name for its own use (the patient to start with), so the box is found from its input
+  // first; taking the form for the picker left the box unconnected and the list never opened.
+  const inner=host?.querySelector?.('[data-patient-picker-input]')?.closest?.('[data-patient-picker]');
+  const root=inner||host?.closest?.('[data-patient-picker]')||host?.querySelector?.('[data-patient-picker]')||host;
   const id=root?.dataset?.patientPicker,picker=id&&patientPickers.get(id);if(!picker)return null;
   if(root.dataset.patientPickerMounted==='1')return picker;
   const input=root.querySelector('[data-patient-picker-input]'),field=root.querySelector('[data-patient-picker-field]'),popup=root.querySelector('[data-patient-picker-popup]');
