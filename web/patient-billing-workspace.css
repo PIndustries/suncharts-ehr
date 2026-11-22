@@ -48,3 +48,4 @@
 /* Add a card: Stripe's form sits inside this sheet. */
 .card-form{display:grid;gap:10px}
 .card-form-mount{min-height:420px;border-radius:10px;overflow:hidden;background:var(--paper)}
+.card-setup.is-saved{border-color:var(--success-line);background:var(--success-bg);color:var(--success-text)}
