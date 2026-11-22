@@ -8,8 +8,7 @@
   'nav-portal':'showPortalInbox','nav-clinical':'showClinical','nav-labs':'showLabInbox',
   'nav-specialty':'showSpecialtyWorklist','nav-referrals':'showReferralWorkspace','nav-billing':'showBillingQueue',
   'nav-claims':'showClaimsWorkspace','nav-edi':'showEdiWorkspace','nav-admin':'showPracticeAdmin',
-  'nav-apps':'showApps','nav-migration':'showMigrations','nav-workflows':'showWorkflowStudio',
-  'nav-automation':'showAutomationCenter','nav-ai-review':'showAiReviewWorkspace'
+  'nav-apps':'showApps','nav-migration':'showMigrations','nav-workflows':'showWorkflowStudio'
  };
  const detailMethods={claim:'showClaim',era:'showEra',eraBatch:'showEraBatch',payment:'openPaymentStatus',paymentSettings:'openPaymentSettings',cardReaders:'openCardReaders',support:'showSupportTicket',portal:'showPortalThread'};
  const screenMethods={sun:'showSunPage',support:'showSupportTickets',connect:'showConnectServices',inbox:'showIntegrationInbox',outbound:'showOutboundWorkspace',previsit:'showPrevisit',reminders:'showReminderWorkspace'};
@@ -25,7 +24,7 @@
  // Readable addresses: every screen has a #/… address made only of screen names and opaque record
  // identifiers, so Back, Forward, reload and bookmarks land on the same screen. No names, MRNs or
  // clinical content ever enter the address.
- const navSlugs={'nav-practice':'home','nav-schedule':'schedule','nav-followup':'work-queue','nav-portal':'inbox','nav-clinical':'patients','nav-labs':'orders','nav-specialty':'specialty','nav-referrals':'referrals','nav-billing':'billing','nav-claims':'claims','nav-edi':'claim-connections','nav-admin':'practice','nav-apps':'integrations','nav-migration':'data-import','nav-workflows':'workflow-studio','nav-automation':'automation','nav-ai-review':'ai-review'};
+ const navSlugs={'nav-practice':'home','nav-schedule':'schedule','nav-followup':'work-queue','nav-portal':'inbox','nav-clinical':'patients','nav-labs':'orders','nav-specialty':'specialty','nav-referrals':'referrals','nav-billing':'billing','nav-claims':'claims','nav-edi':'claim-connections','nav-admin':'practice','nav-apps':'integrations','nav-migration':'data-import','nav-workflows':'workflow-studio'};
  const slugNavs=Object.fromEntries(Object.entries(navSlugs).map(([nav,slug])=>[slug,nav]));
  const screenSlugs={sun:'sun',support:'support',connect:'connect-services',inbox:'messages',outbound:'outbound',previsit:'intake',reminders:'reminders'};
  const detailSlugs={claim:'claims',era:'remittances',eraBatch:'remittance-batches',payment:'payments',paymentSettings:'payment-settings',cardReaders:'card-readers',support:'support',portal:'inbox'};

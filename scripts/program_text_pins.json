@@ -1,7 +1,7 @@
 {
   "files": {
     "web/sun.js": {
-      "sha256": "88a29df4874a7e4f366d2ea70df637d93e6d36b1ae209d5c1b0a053fd276123c",
+      "sha256": "560d5750bfd2962800acf9ce235d43cef2cc5ce478990d6de7f151cf8984f708",
       "why": "Builds the instructions and facts sent to the Sun assistant."
     },
     "web/sun-workflow.js": {

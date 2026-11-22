@@ -8,13 +8,15 @@ function organizeWorkspaceNavigation(){
  const items={home:$('nav-practice'),schedule:$('nav-schedule'),queue:$('nav-followup'),messages:$('nav-portal'),communications:$('nav-communications'),patients:$('nav-clinical'),clinical:$('nav-labs'),specialty:$('nav-specialty'),referrals:$('nav-referrals'),billing:$('nav-billing'),claims:$('nav-claims'),clearinghouse:$('nav-edi'),workflows:$('nav-workflows'),automation:$('nav-automation'),aiReview:$('nav-ai-review'),admin:$('nav-admin'),apps:$('nav-apps'),migration:$('nav-migration')};
  const labels={home:'Home',schedule:'Schedule',queue:'Work queue',messages:'Inbox',communications:'Communications',patients:'Patients',clinical:'Orders & results',specialty:'Specialty care',referrals:'Referrals',billing:'Patient billing',claims:'Insurance claims',clearinghouse:'Claim lifecycle',workflows:'Workflow Studio',automation:'Automation Center',aiReview:'Sun review',admin:'Practice administration',apps:'Integrations',migration:'Data import'};
  for(const [key,item] of Object.entries(items)){const label=item?.querySelector('span');if(label)label.textContent=labels[key];}
- const groups=[['Today',['home','schedule','queue','messages']],['Care',['patients','clinical','specialty','referrals']],['Revenue',['billing','claims','clearinghouse']],['Manage',['admin','apps','workflows']]];
+ const groups=[['Today',['home','schedule','queue','messages']],['Care',['patients','clinical','specialty','referrals']],['Revenue',['billing','claims']],['Manage',['admin','workflows']]];
  navigation.replaceChildren();
  for(const [label,keys] of groups){const group=document.createElement('div');group.className=`nav-group${label==='Care'?' nav-group-primary':''}`;group.setAttribute('role','group');const id=`nav-${label.toLowerCase()}-label`;group.setAttribute('aria-labelledby',id);const heading=document.createElement('p');heading.className='nav-group-label';heading.id=id;heading.textContent=label;group.append(heading,...keys.map(key=>items[key]).filter(Boolean));if(label==='Manage'){
-   // Manage is three places: Practice administration, Integrations and Workflow Studio. Data import
-   // and Customize menu are opened from inside Practice administration. Automation Center and Sun
-   // review are off the menu; their buttons are kept out of sight so their own links still open them.
-   const kept=document.createElement('div');kept.hidden=true;kept.dataset.navOffMenu='';const customize=document.createElement('button');customize.id='nav-customize';customize.className='nav-item';customize.type='button';customize.innerHTML='<span>Customize menu</span>';kept.append(...['automation','aiReview','migration'].map(key=>items[key]).filter(Boolean),customize);group.append(kept);}navigation.append(group);}
+   // Manage is two places: Practice administration and Workflow Studio. Integrations, Claim
+   // connections, Data import and Customize menu are opened from tabs inside Practice
+   // administration; their buttons stay in the page, out of sight, so those tabs and the links
+   // on other screens still open them. Automation Center and Sun review are not part of the menu
+   // at all.
+   const kept=document.createElement('div');kept.hidden=true;const customize=document.createElement('button');customize.id='nav-customize';customize.className='nav-item';customize.type='button';customize.innerHTML='<span>Customize menu</span>';kept.append(...['apps','clearinghouse','migration'].map(key=>items[key]).filter(Boolean),customize);for(const node of kept.children)node.dataset.offMenu='';group.append(kept);}navigation.append(group);}
  navigation.dataset.organized='true';
 }
 
@@ -546,9 +548,6 @@ async function enter() {
   if(new URLSearchParams(location.search).get('open')==='workflow-studio'&&typeof showWorkflowStudio==='function'){
     await showWorkflowStudio();return;
   }
-  if(new URLSearchParams(location.search).get('open')==='automation-center'&&typeof showAutomationCenter==='function'){
-    await showAutomationCenter();return;
-  }
   const batchId=new URLSearchParams(location.search).get('era_batch');
   if (batchId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(batchId)) {
     await showClaimsWorkspace();
@@ -999,7 +998,9 @@ function setPage(title) {
  $('page-description').textContent=descriptions[title]||'Practice workspace';
  $('workspace-section').textContent=(today.includes(title)||title.startsWith('Patient portal'))?'TODAY':care.includes(title)?'CARE':revenue.includes(title)?'REVENUE':manage.includes(title)?'MANAGE':'PRACTICE';
  const active=['Practice home','Practice overview'].includes(title)?'nav-practice':title==='Workflow Studio'?'nav-workflows':title==='Automation Center'?'nav-automation':['AI review','Sun review'].includes(title)?'nav-ai-review':['Inbox','Communications','Send & review'].includes(title)||title.startsWith('Patient portal')?'nav-portal':title==='Patients & encounters'?'nav-clinical':title==='Pre-visit readiness'?'nav-previsit':['Schedule','Appointment reminders','Reminder settings'].includes(title)?'nav-schedule':title==='Labs & results'?'nav-labs':title==='Specialty care'?'nav-specialty':['Billing & insurance','Payment settings','Payment review'].includes(title)?'nav-billing':['Clearinghouse','Claim connections','Claim lifecycle'].includes(title)?'nav-edi':title==='Claims & remittances'?'nav-claims':['Referrals','Referral delivery settings'].includes(title)?'nav-referrals':title==='Follow-up tasks'?'nav-followup':['Integrations','Connect services','Support tickets'].includes(title)?'nav-apps':title==='Data import'?'nav-migration':['Practice administration','Codes & prices'].includes(title)?'nav-admin':null;
- for(const id of ['nav-practice','nav-workflows','nav-automation','nav-ai-review','nav-communications','nav-clinical','nav-schedule','nav-previsit','nav-labs','nav-specialty','nav-referrals','nav-followup','nav-portal','nav-billing','nav-claims','nav-edi','nav-apps','nav-migration','nav-admin']){if(!$(id))continue;if(id===active)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}
+ // A screen opened from inside Practice administration lights that menu item.
+ const lit=active&&$(active)?.dataset?.offMenu!==undefined?'nav-admin':active;
+ for(const id of ['nav-practice','nav-workflows','nav-automation','nav-ai-review','nav-communications','nav-clinical','nav-schedule','nav-previsit','nav-labs','nav-specialty','nav-referrals','nav-followup','nav-portal','nav-billing','nav-claims','nav-edi','nav-apps','nav-migration','nav-admin']){if(!$(id))continue;if(id===lit)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}
  const activeItem=active?$(active):null,activeMore=activeItem?.closest?.('.nav-more');
  document.querySelectorAll?.('#workspace-navigation .nav-more').forEach(more=>{
   more.open=more===activeMore;

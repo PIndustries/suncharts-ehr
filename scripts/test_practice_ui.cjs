@@ -268,7 +268,9 @@ async function testPracticeQueues() {
 
 function journeyStep(html, index) {
   const nav = (html.split('<nav class="practice-journey"')[1] || '').split('</nav>')[0];
-  return (nav.split('</button>').find(part => part.includes(`<span>${index}</span>`)) || '').trim();
+  // Steps carry no number of their own any more (the only number on a step is its count), so a
+  // step is found by its place in the row.
+  return (nav.split('</button>')[index - 1] || '').trim();
 }
 
 async function testJourneyCheckoutVisibility() {

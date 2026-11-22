@@ -701,3 +701,9 @@ main .billing-totals>span>b{display:block;margin:0;font-size:1.5rem;line-height:
 /* Where the menu is taller than the window it scrolls; its last visible item fades out instead of
    being cut in half, and there is room to scroll the final item fully into view. */
 @media(min-width:761px){.sidebar-navigation{padding-bottom:18px;-webkit-mask-image:linear-gradient(to bottom,black calc(100% - 22px),transparent);mask-image:linear-gradient(to bottom,black calc(100% - 22px),transparent)}}
+/* Where patients are today: one number per step, and it is the count. The step's place in the
+   order is shown by its position and the arrows, not by a second number beside the count. */
+.practice-journey button{grid-template-columns:auto minmax(0,1fr);gap:2px 10px}
+.practice-journey button>em{grid-column:1;grid-row:1 / span 2;align-self:center;min-width:30px;font-size:var(--fs-lg);font-style:normal;font-weight:700;text-align:center}
+.practice-journey button>b{grid-column:2;grid-row:1}
+.practice-journey button>small{grid-column:2;grid-row:2}

@@ -38,7 +38,7 @@ function practiceCheckoutHidden(){return typeof workspaceChartTabEnabled==='func
 function practiceJourneyStep(index,action,label,description,count,tone=''){
  const amount=Number.isFinite(count)?count:null;
  const state=amount===null?'unavailable':amount>0?(tone||'attention'):'clear';
- return `<button type="button" class="${state}" data-practice-action="${action}"><span>${index}</span><b>${label}</b><small>${esc(description)}</small>${amount===null?'':`<em>${amount}</em>`}</button>`;
+ return `<button type="button" class="${state}" data-practice-action="${action}"><b>${label}</b><small>${esc(description)}</small>${amount===null?'':`<em>${amount}</em>`}</button>`;
 }
 
 // The overview's numbers: a row of tiles that each open their list, three small charts and what

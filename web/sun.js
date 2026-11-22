@@ -201,7 +201,7 @@ async function sunExecute({automatic=false}={}){
   if(review.body.purpose==='workflow_design'){await sunReceiveWorkflowDraft(draft,review,current);return;}
   sunInvalidatePrivacyReview();
   if(draft.status==='failed'){sunStatus(`Sun could not finish: ${draft.failure_code||'provider unavailable'}. Review the draft before retrying.`);return;}
-  $('sun-answer').textContent=draft.content||'The result is available in Sun review.';$('sun-answer').dataset.origin='provider';$('sun-answer').classList?.remove('sun-local-answer');$('sun-answer').hidden=false;sunCollapseSettings();sunAnswerContext={signature:review.signature,generation,account:me};
+  $('sun-answer').textContent=draft.content||'The result was saved as a draft for review.';$('sun-answer').dataset.origin='provider';$('sun-answer').classList?.remove('sun-local-answer');$('sun-answer').hidden=false;sunCollapseSettings();sunAnswerContext={signature:review.signature,generation,account:me};
   sunStatus(`Draft ready for review · ${draft.provider||review.preview.provider} · ${draft.model}. Recognized placeholders were restored locally. No records or actions were changed.`);sunSpeak(draft.content||'Your draft is ready for review.');
  }catch(error){if(current()){sunInvalidatePrivacyReview();sunStatus(`${error.message} Prepare a new privacy preview before retrying.`);}}finally{if(sunBusy===operation){sunBusy=false;if(generation===sunGeneration&&$('sun-panel')===panel&&$('sun-send'))$('sun-send').disabled=false;if(typeof updateSunOrb==='function')updateSunOrb();}}
 }
