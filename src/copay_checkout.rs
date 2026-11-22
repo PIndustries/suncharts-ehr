@@ -299,6 +299,33 @@ struct Create {
     /// Shared by the parts of one payment taken in pieces; written onto the receipt when paid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     payment_group_id: Option<Uuid>,
+    /// Present when one charge pays for other encounters as well as, or instead of, the one it
+    /// is made on: the part meant for each appointment. The parts add up to the charge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    splits: Option<Vec<Split>>,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Split {
+    appointment_id: Uuid,
+    amount_cents: i64,
+}
+/// The appointments a charge pays for: its own, and any others it was divided between.
+fn split_appointments(appointment: Uuid, splits: Option<&[Split]>) -> Result<Vec<Uuid>> {
+    let Some(splits) = splits else {
+        return Ok(vec![appointment]);
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    if !(1..=50).contains(&splits.len())
+        || splits
+            .iter()
+            .any(|part| part.amount_cents < 1 || !seen.insert(part.appointment_id))
+    {
+        return Err(Error::Invalid("review the encounters this payment is for"));
+    }
+    // The appointment the charge is made on is checked and held as well, part or no part.
+    seen.insert(appointment);
+    Ok(seen.into_iter().collect())
 }
 pub(crate) async fn current_binding(
     pool: &PgPool,
@@ -373,6 +400,14 @@ async fn create_with(
     if input.reader_id.is_some() && input.saved_card_setup_id.is_some() {
         return Err(Error::Invalid("choose one way to take this payment"));
     }
+    let appointments = split_appointments(appointment, input.splits.as_deref())?;
+    if input.splits.as_ref().is_some_and(|parts| {
+        parts.iter().map(|part| part.amount_cents).sum::<i64>() != input.amount_cents
+    }) {
+        return Err(Error::Invalid(
+            "the amounts for each encounter must add up to the payment",
+        ));
+    }
     let hash = crate::oauth::hash(
         &serde_json::to_string(&(patient, appointment, &input))
             .map_err(|_| Error::Invalid("invalid copay request"))?,
@@ -397,28 +432,32 @@ async fn create_with(
         let mut tx = pool.begin().await?;
         return load(&mut tx, a.tenant_id, prior.id).await;
     }
-    let state: Option<String> = sqlx::query_scalar(
-        "SELECT status FROM appointments WHERE tenant_id=$1 AND patient_id=$2 AND id=$3 FOR UPDATE",
-    )
-    .bind(a.tenant_id)
-    .bind(patient)
-    .bind(appointment)
-    .fetch_optional(&mut *tx)
-    .await?;
-    if state
-        .as_deref()
-        .is_none_or(|s| ["cancelled", "canceled", "no_show"].contains(&s))
-    {
-        return Err(Error::Invalid(
-            "select an active appointment for this patient",
-        ));
+    for each in &appointments {
+        let state: Option<String> = sqlx::query_scalar(
+            "SELECT status FROM appointments WHERE tenant_id=$1 AND patient_id=$2 AND id=$3 FOR UPDATE",
+        )
+        .bind(a.tenant_id)
+        .bind(patient)
+        .bind(each)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if state
+            .as_deref()
+            .is_none_or(|s| ["cancelled", "canceled", "no_show"].contains(&s))
+        {
+            return Err(Error::Invalid(
+                "select an active appointment for this patient",
+            ));
+        }
     }
     let coverage: Option<Value> = if let Some(id) = input.coverage_id {
         Some(sqlx::query_scalar("SELECT to_jsonb(c)-'tenant_id' FROM insurance_coverages c WHERE tenant_id=$1 AND patient_id=$2 AND id=$3").bind(a.tenant_id).bind(patient).bind(id).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?)
     } else {
         None
     };
-    let unresolved:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM copay_checkout_attempts WHERE tenant_id=$1 AND appointment_id=$2 AND status IN ('creating','open','needs_review') AND receipt_id IS NULL) OR EXISTS(SELECT 1 FROM invoice_checkout_attempts x JOIN billing_accounts b ON b.tenant_id=x.tenant_id AND b.id=x.account_id JOIN visits v ON v.tenant_id=b.tenant_id AND v.id=b.visit_id WHERE x.tenant_id=$1 AND v.appointment_id=$2 AND x.status IN ('creating','open','needs_review'))").bind(a.tenant_id).bind(appointment).fetch_one(&mut *tx).await?;
+    // A card payment still in progress for any of these encounters, on its own or as part of
+    // a payment for several, has to finish first.
+    let unresolved:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM copay_checkout_attempts o WHERE o.tenant_id=$1 AND o.status IN ('creating','open','needs_review') AND o.receipt_id IS NULL AND (o.appointment_id=ANY($2) OR EXISTS(SELECT 1 FROM copay_checkout_splits p WHERE p.tenant_id=o.tenant_id AND p.operation_id=o.id AND p.appointment_id=ANY($2)))) OR EXISTS(SELECT 1 FROM invoice_checkout_attempts x JOIN billing_accounts b ON b.tenant_id=x.tenant_id AND b.id=x.account_id JOIN visits v ON v.tenant_id=b.tenant_id AND v.id=b.visit_id WHERE x.tenant_id=$1 AND v.appointment_id=ANY($2) AND x.status IN ('creating','open','needs_review'))").bind(a.tenant_id).bind(&appointments).fetch_one(&mut *tx).await?;
     if unresolved {
         return Err(Error::Conflict(
             "review the existing copay checkout before starting another",
@@ -457,6 +496,10 @@ async fn create_with(
     let id = Uuid::new_v4();
     let return_url = format!("{}/?copay_checkout={id}", origin.trim_end_matches('/'));
     sqlx::query("INSERT INTO copay_checkout_attempts(tenant_id,id,patient_id,appointment_id,coverage_id,coverage_snapshot,setting_id,credential_revision,installation_id,provider_account_id,livemode,amount_cents,request_id,creation_hash,requested_by,reason,return_url,channel,reader_id,saved_card_setup_id,payment_group_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)").bind(a.tenant_id).bind(id).bind(patient).bind(appointment).bind(input.coverage_id).bind(coverage).bind(binding.setting).bind(binding.revision).bind(binding.installation).bind(account).bind(mode).bind(input.amount_cents).bind(input.request_id).bind(hash).bind(a.sub).bind(input.reason.trim()).bind(return_url).bind(channel).bind(&input.reader_id).bind(input.saved_card_setup_id).bind(input.payment_group_id).execute(&mut *tx).await?;
+    for (position, part) in input.splits.iter().flatten().enumerate() {
+        sqlx::query("INSERT INTO copay_checkout_splits(tenant_id,operation_id,position,patient_id,appointment_id,amount_cents) VALUES($1,$2,$3,$4,$5,$6)")
+            .bind(a.tenant_id).bind(id).bind(position as i32).bind(patient).bind(part.appointment_id).bind(part.amount_cents).execute(&mut *tx).await?;
+    }
     event(
         &mut tx,
         a,

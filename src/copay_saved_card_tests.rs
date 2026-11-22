@@ -10,6 +10,7 @@ fn card_input(setup: Uuid) -> Create {
     Create {
         saved_card_setup_id: Some(setup),
         payment_group_id: None,
+        splits: None,
         reason: "Copay charged to card on file".into(),
         ..input(false)
     }
