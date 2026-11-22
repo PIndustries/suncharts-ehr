@@ -434,7 +434,7 @@ async function main(){
   assert.match(intake,/id="visit-vitals-summary"/,'the recorded vitals show one summary line');
   assert.match(intake,/BP 120\/80/,'the line carries the blood pressure');
   assert.match(intake,/Pulse 72/,'and the pulse');
-  assert.match(intake,/Weight 45 kg/,'and the weight');
+  assert.match(intake,/Weight 99\.2 lb \(45 kg\)/,'and the weight');
   assert.match(intake,/data-action="edit-vitals">Edit vitals</,'with an Edit vitals button');
   assert.doesNotMatch(intake,/<form id="vitals-form"[^>]*><div class="form-grid/,'the full grid is not standing open on the page');
   assert.ok(g.evaluate('(function(){const held=$("vitals-form-holder");return Boolean(held&&held.innerHTML.includes("id=\\"vitals-form\\""));})()'),'today\u2019s form stays ready inside the closed template');

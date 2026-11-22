@@ -25,10 +25,11 @@ function avsSummary(snapshot){
  const vitalItems=[];
  if(measuredVital('systolic_mm_hg')&&measuredVital('diastolic_mm_hg'))vitalItems.push(`Blood pressure ${esc(v.systolic_mm_hg)}/${esc(v.diastolic_mm_hg)} mmHg`);else if(measuredVital('systolic_mm_hg')||measuredVital('diastolic_mm_hg'))vitalItems.push(`Blood pressure ${esc(v.systolic_mm_hg??'—')}/${esc(v.diastolic_mm_hg??'—')} mmHg`);
  if(measuredVital('heart_rate_bpm'))vitalItems.push(`Pulse ${esc(v.heart_rate_bpm)} bpm`);
- if(measuredVital('temperature_c'))vitalItems.push(`Temperature ${esc(v.temperature_c)} °C`);
+ const both=(key,unit)=>typeof vitalBothUnits==='function'?vitalBothUnits(key,v[key]):`${v[key]} ${unit}`;
+ if(measuredVital('temperature_c'))vitalItems.push(`Temperature ${esc(both('temperature_c','°C'))}`);
  if(measuredVital('oxygen_saturation_pct'))vitalItems.push(`Oxygen saturation ${esc(v.oxygen_saturation_pct)}%`);
- if(measuredVital('weight_kg'))vitalItems.push(`Weight ${esc(v.weight_kg)} kg`);
- if(measuredVital('height_cm'))vitalItems.push(`Height ${esc(v.height_cm)} cm`);
+ if(measuredVital('weight_kg'))vitalItems.push(`Weight ${esc(both('weight_kg','kg'))}`);
+ if(measuredVital('height_cm'))vitalItems.push(`Height ${esc(both('height_cm','cm'))}`);
  const vitals=vitalItems.length?`<section><h4>Visit vitals</h4><p>${vitalItems.join(' · ')}</p></section>`:'';
  return `<div class="avs-summary-grid">${allergies}${problems}<section><h4>Medication statements</h4>${medications.length?`<ul>${medications.map(m=>`<li><strong>${esc(m.title)}</strong><br>${esc([m.dose,m.route,m.frequency,m.status,m.verification?human(m.verification):''].filter(Boolean).join(' · '))}</li>`).join('')}</ul>`:`<p>${review('medication')==='no_known'?'No current medications.':'No medications recorded.'}</p>`}</section><section><h4>Orders</h4>${orders.length?`<ul>${orders.map(o=>`<li><strong>${esc(o.title)}</strong> · ${esc(human(o.status))}</li>`).join('')}</ul>`:'<p>No linked orders on this summary.</p>'}</section>${vitals}</div>`;
 }
