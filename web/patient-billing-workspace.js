@@ -324,8 +324,18 @@ async function patientBillingOpenCardForm(s,form){
  try{
   const Stripe=await loadStripeScript();if(!dialog.isConnected)return;
   const stripe=Stripe(form.publishable_key,{stripeAccount:form.account_id});
-  checkout=await stripe.initEmbeddedCheckout({fetchClientSecret:async()=>form.client_secret,onComplete:()=>{saved=true;if(status){status.hidden=false;status.textContent='Card saved.';}setTimeout(()=>{if(dialog.isConnected)(typeof sheetClose==='function'?sheetClose(dialog):dialog.close());},700);}});
+  const finished=()=>{if(saved)return;saved=true;if(status){status.hidden=false;status.textContent='Card saved.';}setTimeout(()=>{if(dialog.isConnected)(typeof sheetClose==='function'?sheetClose(dialog):dialog.close());},700);};
+  // Stripe has named this call two ways over time; whichever this copy of its script has is used.
+  const start=typeof stripe.createEmbeddedCheckoutPage==='function'?'createEmbeddedCheckoutPage':'initEmbeddedCheckout';
+  checkout=await stripe[start]({fetchClientSecret:async()=>form.client_secret,onComplete:finished});
   if(!dialog.isConnected){checkout.destroy();return;}
+  // The form's own signal is not relied on alone: the request is read every few seconds while
+  // the sheet is open, and the sheet closes as soon as Stripe confirms the card.
+  const watch=setInterval(async()=>{
+   if(!dialog.isConnected||saved){clearInterval(watch);return;}
+   try{const op=patientBillingSetupFor(s);if(!op)return;const now=await api('/api/v1/billing/payment-setups/'+encodeURIComponent(op.request_id));if(now.request_id===op.request_id&&now.status==='succeeded'){clearInterval(watch);finished();}}catch{}
+  },4000);
+  dialog.addEventListener('close',()=>clearInterval(watch),{once:true});
   patientBillingCardForm=checkout;checkout.mount(panel.querySelector('[data-card-form-mount]'));if(status&&!saved)status.hidden=true;
  }catch(error){if(status){status.hidden=false;status.textContent=(error?.message||'The card form could not be loaded.')+' You can close this and use “Send the patient a link” instead.';}}
 }

@@ -112,9 +112,16 @@ fn clean_setup(c: &Context, tenant: Uuid, op: &Setup, raw: &Value) -> Result<Val
                 && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
         };
         if embedded && session_status == "open" {
+            // Stripe's secret continues with URL-safe text, not only letters and digits.
             let secret = v["client_secret"]
                 .as_str()
-                .filter(|text| plain(text, &format!("{id}_secret_"), 512))
+                .filter(|text| {
+                    text.starts_with(&format!("{id}_secret_"))
+                        && text.len() <= 2048
+                        && text
+                            .bytes()
+                            .all(|b| b.is_ascii_graphic() && !b"\"'<>\\`".contains(&b))
+                })
                 .ok_or_else(invalid)?;
             let key = raw["publishable_key"]
                 .as_str()

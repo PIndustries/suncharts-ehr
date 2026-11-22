@@ -131,7 +131,8 @@ impl Source for Fake {
             if mode == "embedded" || mode == "embedded_wrong_key" {
                 out["session"]["url"] = Value::Null;
                 out["session"]["embedded"] = json!(true);
-                out["session"]["client_secret"] = json!("cs_test_synthetic_secret_synthetic0001");
+                out["session"]["client_secret"] =
+                    json!("cs_test_synthetic_secret_fidSynthetic%2FY2Rpdm-Fw.~x");
                 out["publishable_key"] = json!(if mode == "embedded" {
                     "pk_test_synthetic"
                 } else {
@@ -417,7 +418,7 @@ async fn the_card_form_inside_the_ehr_is_handed_to_the_browser_and_never_stored(
     assert_eq!(v["session"]["url"], Value::Null);
     assert_eq!(
         v["form"],
-        json!({"client_secret":"cs_test_synthetic_secret_synthetic0001","publishable_key":"pk_test_synthetic","account_id":"acct_synthetic"})
+        json!({"client_secret":"cs_test_synthetic_secret_fidSynthetic%2FY2Rpdm-Fw.~x","publishable_key":"pk_test_synthetic","account_id":"acct_synthetic"})
     );
     // What is kept as evidence has the session, and neither the secret nor the key.
     let kept: Value = sqlx::query_scalar(
