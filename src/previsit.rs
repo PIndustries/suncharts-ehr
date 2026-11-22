@@ -1198,7 +1198,10 @@ async fn admit_link(pool: &PgPool, packet: Uuid) -> PublicResult<()> {
 
 /// The name patients know the practice by: the managed clinic name, or the
 /// practice's single location or billing name when self-hosted.
-async fn practice_name(tx: &mut Transaction<'_, Postgres>, tenant: Uuid) -> Result<String> {
+pub(crate) async fn practice_name(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+) -> Result<String> {
     let brand = crate::branding::InstanceBranding::from_env();
     if brand.managed {
         return Ok(brand.display_name);

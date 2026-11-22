@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 const insuranceAppointmentSelection=new Map();
+// The appointment whose copay the schedule asked for, per patient, used while no encounter is open.
+const copayAppointmentSelection=new Map();
 function remittancePatientResponsibility(row){
  const explicit=(row?.adjustments||[]).some(adjustment=>adjustment.group==='PR')||row?.patient_responsibility_cents>0;
  return explicit?`Payer-reported patient responsibility ${money(row.patient_responsibility_cents||0)}`:'Patient responsibility not specified in PR evidence; review the response';
@@ -9,7 +11,8 @@ function revenueAppointment(){
  const selectedAppointment=typeof chartSection!=='undefined'&&chartSection==='insurance'?insuranceAppointmentSelection.get(selected):null;
  if(selectedAppointment){const appointment=(workspace.appointments||[]).find(a=>a.id===selectedAppointment);if(appointment)return appointment;}
  if(typeof activeVisit!=='undefined'&&activeVisit)return workspace.appointments.find(a=>a.id===activeVisit.appointment_id);
- return (workspace.appointments||[]).find(a=>['checked_in','in_progress','booked'].includes(a.status));
+ const open=(workspace.appointments||[]).filter(a=>['checked_in','in_progress','booked'].includes(a.status)),asked=copayAppointmentSelection.get(selected);
+ return open.find(a=>a.id===asked)||open[0];
 }
 function revenueServiceDate(appointment=revenueAppointment()){
  const value=appointment?.starts_at?new Date(appointment.starts_at):new Date();
@@ -127,10 +130,32 @@ function paymentGroupReceiptCardMarkup(receipts,context){
 }
 // Receipts open in a preview window first, so staff see exactly what the patient gets (practice
 // logo, codes, charges and payments), then press Print. Closing it returns to where they were.
-function openReceiptPreview(documentHtml,title){
+// The address a receipt is emailed to starts as the patient's own, and staff can change it.
+function receiptEmailMarkup(mail){
+ if(!mail?.receipt?.id||typeof billingCan==='function'&&!billingCan('create'))return '';
+ const onFile=workspace?.demographics?.content?.email||'';
+ return `<form class="receipt-email" data-receipt-email><label>Email receipt to<input type="email" name="email" required maxlength="254" autocomplete="off" value="${esc(onFile)}" placeholder="name@example.com"></label><button type="submit">Email receipt</button><p class="muted" data-receipt-email-note>${onFile?'The patient’s email on file. Change it if they want it sent somewhere else.':'No email is on file for this patient. Type the address to send to.'} The email gives the amount, date and receipt number only.</p></form>`;
+}
+function receiptEmailNumber(receipt){
+ const number=typeof receiptNumberFor==='function'?receiptNumberFor(receipt.appointment_id,receipt.payment_group_id||receipt.id):'';
+ return /^[A-Za-z0-9-]{1,40}$/.test(number)?number:'R-'+String(receipt.id).replace(/-/g,'').slice(0,8).toUpperCase();
+}
+async function sendReceiptEmail(form,mail){
+ const email=String(new FormData(form).get('email')||'').trim(),note=form.querySelector('[data-receipt-email-note]'),button=form.querySelector('button');
+ // The same address pressed twice is the same request, so the patient gets one email.
+ mail.requests??=new Map();if(!mail.requests.has(email))mail.requests.set(email,crypto.randomUUID());
+ button.disabled=true;
+ try{
+  await api(`/api/v1/patients/${encodeURIComponent(mail.patient)}/billing/copays/${encodeURIComponent(mail.receipt.id)}/email`,'POST',{request_id:mail.requests.get(email),email,receipt_number:receiptEmailNumber(mail.receipt)});
+  if(note){note.textContent=`Sent to ${email}.`;note.setAttribute('role','status');}
+ }catch(error){if(note){note.textContent=error.message||'The receipt could not be emailed. Try again.';note.setAttribute('role','alert');}}
+ finally{button.disabled=false;}
+}
+function openReceiptPreview(documentHtml,title,mail){
  const panel=document.createElement('div');panel.className='receipt-preview';
- panel.innerHTML=`<iframe class="receipt-preview-frame" title="${esc(title||'Payment receipt')}" sandbox="allow-same-origin allow-modals"></iframe><div class="actions"><button type="button" class="primary" data-receipt-preview-print>Print</button><button type="button" data-sheet-close>Close</button></div>`;
+ panel.innerHTML=`<iframe class="receipt-preview-frame" title="${esc(title||'Payment receipt')}" sandbox="allow-same-origin allow-modals"></iframe>${receiptEmailMarkup(mail)}<div class="actions"><button type="button" class="primary" data-receipt-preview-print>Print</button><button type="button" data-sheet-close>Close</button></div>`;
  const frame=panel.querySelector('iframe');frame.srcdoc=documentHtml;
+ panel.querySelector('[data-receipt-email]')?.addEventListener('submit',event=>{event.preventDefault();void sendReceiptEmail(event.target,mail);});
  const dialog=sheetOpen(title||'Payment receipt',panel);dialog.classList.add('sheet-wide','receipt-preview-sheet');
  panel.querySelector('[data-receipt-preview-print]').addEventListener('click',()=>{frame.contentWindow?.focus();frame.contentWindow?.print();});
  return dialog;
@@ -148,7 +173,7 @@ async function showPaymentGroupReceipt(group,appointmentId){
  const p=encounterRevenueState?.data?.summary?.patient||{},balance=Number.isSafeInteger(p.owes_now_cents)?p.owes_now_cents:undefined;
  const visitEvidence=await visitReceiptEvidence(appointmentId||receipts[0].appointment_id);
  if(opening!==paymentGroupOpening||!currentHostedCopayView(view))return;
- openReceiptPreview(paymentGroupReceiptDocument(receipts,{...first.context,balanceCents:balance,visitEvidence,printedAt:new Date().toISOString()}));
+ openReceiptPreview(paymentGroupReceiptDocument(receipts,{...first.context,balanceCents:balance,visitEvidence,printedAt:new Date().toISOString()}),undefined,{patient:view.patient,receipt:receipts[0]});
 }
 // 'Print receipt' inside the Collect payment window: load the same grouped receipt a moment after
 // the payment lands and send it straight to the browser print dialog. The window stays open and the
@@ -168,7 +193,7 @@ async function printPaymentGroupReceiptFromCollect(group,button){
   const context={...first.context,balanceCents:balance,visitEvidence,printedAt:new Date().toISOString()};
   if(me!==view.identity||!collectDialog?.isConnected||!button.isConnected)return;
   button.closest('.collect-done')?.querySelector('.collect-print-error')?.remove();
-  openReceiptPreview(paymentGroupReceiptDocument(receipts,context));
+  openReceiptPreview(paymentGroupReceiptDocument(receipts,context),undefined,{patient:view.patient,receipt:receipts[0]});
  }catch(error){
   const host=button.closest?.('.collect-done')||collectDialog;
   if(host?.isConnected!==false)host?.querySelector?.('.collect-print-error')?.remove();
@@ -220,7 +245,7 @@ async function showCopayReceipt(id,appointmentId){
  if(visit&&clinical&&(typeof chartAreaEnabled!=='function'||chartAreaEnabled('visits'))){
   const visitEvidence=await visitReceiptEvidence(expected);
   if(!current())return;
-  openReceiptPreview(copayReceiptDocument(receipt,{...context,visitEvidence,printedAt:new Date().toISOString()}));
+  openReceiptPreview(copayReceiptDocument(receipt,{...context,visitEvidence,printedAt:new Date().toISOString()}),undefined,{patient:view.patient,receipt});
  }else{
   const s=await showPatientBillingWorkspace({patientId:view.patient,tab:'payments',mode:receipt.hosted_checkout?.livemode===false?'test':'recorded'});
   if(opening!==copayReceiptOpening||me!==view.identity||!patientBillingCurrent(s)||s.patientId!==view.patient)return;
@@ -1282,6 +1307,14 @@ function encounterChargeTableInline(){
   else if(account.status==='posted'&&account.content?.visit_id)accountEditor(account,null,true,{correction:true});
  }finally{if(quiet)billingEditorQuiet=false;}
 }
+// The bar's note-side steps: the Note tab, at the Sign button or at the summary and follow-up.
+if(typeof document!=='undefined')document.addEventListener('click',event=>{
+ const next=event.target?.closest?.('[data-encounter-next]')?.dataset?.encounterNext;if(!next)return;event.preventDefault();
+ if(next==='finish'){if(typeof setEncounterSection==='function')setEncounterSection('checkout');return;}
+ invoiceTabSet('note',false);
+ const target=document.querySelector?.('#visit-editor [data-action="sign"]')||$('note-form')||$('visit-editor');
+ target?.scrollIntoView?.({block:'center'});target?.focus?.({preventScroll:true});
+});
 document.addEventListener('click',event=>{const tab=event.target?.closest?.('[data-invoice-tab-key]');if(!tab?.dataset?.invoiceTabKey)return;event.preventDefault();invoiceTabSet(tab.dataset.invoiceTabKey);});
 // The statements on the Payments tab: each one the balance the patient owed on the day it was given.
 // The balance itself stays on the encounter.
@@ -1524,7 +1557,17 @@ function encounterBarSync(){
  const status=card?.querySelector?.('.visit-billing-status');
  // Before any charges exist the bar is only shown when a copay is due, so it can be taken at check-in.
  const standing=typeof visitBillingDue==='function'?visitBillingDue(encounterRevenueState?.data?.summary):{due:1};
- if(!status||!state||(state==='add_charges'&&!(typeof visitBillingDue==='function'&&standing.due>0))){bar?.remove?.();return;}
+ // The note comes before the money. With no charges and nothing due, an unsigned encounter's next
+ // step is its note; once signed it is the card's own Add charges. Without an open encounter to
+ // read there is no bar.
+ const visit=typeof activeVisit!=='undefined'?activeVisit:null,noCharges=state==='add_charges'&&!(typeof visitBillingDue==='function'&&standing.due>0);
+ if(!status||!state||(noCharges&&!visit)){bar?.remove?.();return;}
+ const noteFirst=noCharges&&visit.status!=='signed';
+ const step=noteFirst?`<div class="visit-billing-status"><div><span class="eyebrow">Next step</span><p class="visit-billing-headline">Finish and sign the note</p><p class="muted">Charges can be added before or after signing.</p></div><div class="actions"><button type="button" class="primary" data-encounter-next="note">Go to the note</button>${status.querySelector?.('[data-encounter-charges]')?'<button type="button" data-encounter-charges>Add charges</button>':''}</div></div>`:status.outerHTML;
+ // A signed encounter that is not finished keeps Finish encounter in reach; it is the main button
+ // only when billing has nothing left for staff to press.
+ const wrapUp=typeof checkoutProgress==='function'&&typeof checkoutStates!=='undefined'&&typeof checkoutKey==='function'&&visit?checkoutStates.get(checkoutKey(selected,visit.id)):null;
+ const finish=!noteFirst&&visit?.status==='signed'&&wrapUp&&!wrapUp.checkout?.completed?`<div class="actions encounter-bar-next"><button type="button"${/class="primary/.test(step)?'':' class="primary"'} data-encounter-next="finish">Finish encounter</button></div>`:'';
  const totals=card.querySelector('.visit-billing-totals'),sent=card.querySelector('.visit-billing-sent'),table=card.querySelector('.visit-billing-breakdown');
  // When the patient owes something on this encounter, taking the payment is one press away from
  // the bar, whatever the next billing step is. It opens the same payment sheet (card on file,
@@ -1532,8 +1575,9 @@ function encounterBarSync(){
  // next step is itself the payment.
  // Shown only while something is due: once the encounter is paid, the bar says so and offers nothing to take.
  const collectable=standing.due>0&&!!card.querySelector('[data-visit-collect]')&&!status.querySelector?.('[data-visit-collect]');
- const takePayment=collectable?'<button type="button" class="primary encounter-bar-pay" data-visit-collect>Take payment</button>':'';
- const html=`${status.outerHTML}${totals?totals.outerHTML.replace(/<\/p>$/,`${table?'<button type="button" class="text-button" data-money-details>Money details</button>':''}${takePayment}</p>`):takePayment?`<p class="visit-billing-totals"><span class="is-due"><small>${standing.copayOnly?'Copay due now':'Patient owes now'}</small><b>${money(standing.due)}</b></span>${takePayment}</p>`:''}${sent?sent.outerHTML:''}`;
+ // One main button at a time: Take payment is quiet beside another next step.
+ const takePayment=collectable?`<button type="button" class="${/class="primary/.test(step)?'':'primary '}encounter-bar-pay" data-visit-collect>Take payment</button>`:'';
+ const html=`${step}${finish}${totals?totals.outerHTML.replace(/<\/p>$/,`${table?'<button type="button" class="text-button" data-money-details>Money details</button>':''}${takePayment}</p>`):takePayment?`<p class="visit-billing-totals"><span class="is-due"><small>${standing.copayOnly?'Copay due now':'Patient owes now'}</small><b>${money(standing.due)}</b></span>${takePayment}</p>`:''}${sent?sent.outerHTML:''}`;
  if(!bar){
   bar=document.createElement('section');bar.id='encounter-bar';bar.className='encounter-bar';bar.setAttribute('aria-label','Where this encounter stands');
   const after=$('encounter-progress');page.insertBefore(bar,after?.parentNode===page?after.nextSibling:page.firstChild);

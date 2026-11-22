@@ -72,6 +72,13 @@ function fixture(){
   console.log('PASS reviewed-copy rebase button rendered, clickable and self-closing');
  f=fixture();f.run(`followupAssignees=[{id:'staff-1',label:'Staff <unsafe>',role:'front_desk'}];checkoutState.followups=[{id:'task-1',patient_id:selected,visit_id:activeVisit.id,title:'Call <patient>',instructions:'Confirm follow-up',assignee_id:'staff-1',assignee_label:'Staff <unsafe>',due_date:'2026-10-24',status:'open',version:3,can_update:false}];renderVisitCheckoutContent()`);
  html=f.node('visit-checkout').innerHTML;assert.match(html,/Call &lt;patient&gt;/);assert.match(html,/Staff &lt;unsafe&gt;/);assert.doesNotMatch(html,/class="followup-action-form"/);assert.match(html,/Add task/);
- console.log('PASS follow-up rendering respects task permissions and escapes clinical text');
+ // Suggested follow-ups come only from this encounter's placed orders and open referrals, and never repeat a task already made.
+ f=fixture();f.run("followupAssignees=[];workspace={labs:{orders:[{visit_id:'visit-1',status:'ordered',content:{title:'Panel <b>'}},{visit_id:'visit-1',status:'draft',content:{title:'Draft'}},{visit_id:'other',status:'ordered',content:{title:'Elsewhere'}}]}};checkoutReferrals=[{visit_id:'visit-1',status:'sent',content:{requested_service:'Cardiology consult',recipient:'Synthetic Heart Clinic',follow_up_due:'2031-01-05'}},{visit_id:'visit-1',status:'completed',content:{requested_service:'Done',recipient:'x'}}];");
+ let suggested=JSON.parse(JSON.stringify(f.run('followupSuggestions(checkoutState)')));
+ assert.deepEqual(suggested.map(x=>x.title),['Check result: Panel <b>','Follow up on referral: Cardiology consult']);assert.equal(suggested[1].due,'2031-01-05');assert.match(suggested[0].due,/^\d{4}-\d\d-\d\d$/);
+ f.run('renderVisitCheckoutContent()');html=f.node('visit-checkout').innerHTML;assert.match(html,/data-followup-suggest="0">\+ Check result: Panel &lt;b&gt;</);
+ f.run("checkoutState.followups=[{id:'t',title:'check result: panel <b>',status:'open',due_date:'2031-01-01',patient_id:'patient-1',visit_id:'visit-1',instructions:'',version:1}]");
+ assert.deepEqual(JSON.parse(JSON.stringify(f.run('followupSuggestions(checkoutState).map(x=>x.title)'))),['Follow up on referral: Cardiology consult']);
+ console.log('PASS follow-up rendering respects task permissions and escapes clinical text; suggestions come from this encounter only');
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});

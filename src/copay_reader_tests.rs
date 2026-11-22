@@ -423,6 +423,37 @@ async fn a_test_reader_copay_can_be_paid_by_a_simulated_card_tap() {
     assert_eq!(value["operation"]["status"], "paid", "{value}");
     assert!(value["operation"]["receipt_id"].is_string());
     assert_eq!(broker.state.lock().unwrap().taps, 1);
+    // The receipt can be emailed: payment facts only, to the address staff gave.
+    let receipt: Uuid = serde_json::from_value(value["operation"]["receipt_id"].clone()).unwrap();
+    let mail = |email: &str, number: &str| {
+        serde_json::from_value::<crate::billing::ReceiptEmail>(
+            json!({"request_id":Uuid::from_u128(7),"email":email,"receipt_number":number}),
+        )
+        .unwrap()
+    };
+    let body = crate::billing::receipt_email_body(&pool, &a, patient, receipt, &mail(" pat@example.test ", "ENC-0001-01"))
+        .await
+        .unwrap();
+    let mut keys: Vec<&str> = body.as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        ["amount_cents", "clinic_name", "currency", "paid_on", "receipt_number", "recipient_email", "request_id", "test"],
+        "nothing clinical is in the email request"
+    );
+    assert_eq!(body["recipient_email"], "pat@example.test");
+    assert_eq!(body["amount_cents"], op.amount_cents);
+    assert_eq!(body["test"], true);
+    for (email, number) in [("not an address", "ENC-0001-01"), ("a@b", "ENC-0001-01"), ("pat@example.test", "has space")] {
+        assert!(matches!(
+            crate::billing::receipt_email_body(&pool, &a, patient, receipt, &mail(email, number)).await,
+            Err(Error::Invalid(_))
+        ), "{email} {number}");
+    }
+    assert!(matches!(
+        crate::billing::receipt_email_body(&pool, &a, Uuid::new_v4(), receipt, &mail("pat@example.test", "ENC-0001-01")).await,
+        Err(Error::NotFound)
+    ));
     // A finished payment cannot be tapped again.
     assert!(matches!(tap(op.id, policy(false)).await, Err(Error::Invalid(_))));
     assert_eq!(broker.state.lock().unwrap().taps, 1);

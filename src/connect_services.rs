@@ -1321,6 +1321,35 @@ async fn support_file(
     )
         .into_response())
 }
+/// Asks SunCharts Connect to email a payment receipt. The body carries payment facts only;
+/// Connect refuses any other field. The same request id is sent once however often it is asked.
+pub(crate) async fn email_receipt(pool: &PgPool, tenant: Uuid, body: &Value) -> Result<Value> {
+    let mut tx = pool.begin().await?;
+    let service = ready(&mut tx, tenant)
+        .await
+        .map_err(|_| Error::Conflict("Email is not set up for this practice yet."))?;
+    let (installation, key) =
+        pinned(&mut tx, tenant, service.id, service.credential_revision).await?;
+    tx.commit().await?;
+    let origin = crate::connect_onboarding::cloud_origin()?;
+    let response = send_at(
+        &origin,
+        installation,
+        key.expose(),
+        reqwest::Method::POST,
+        "/receipts",
+        Some(body),
+    )
+    .await?;
+    if !response.status().is_success() {
+        return Err(Error::Invalid(
+            "The receipt could not be emailed. Check the address and try again.",
+        ));
+    }
+    let bytes = crate::stedi::bytes(response, 65536).await?;
+    serde_json::from_slice(&bytes)
+        .map_err(|_| Error::Invalid("The receipt could not be emailed. Try again."))
+}
 pub(crate) async fn managed_send(
     installation: Uuid,
     key: &str,

@@ -33229,6 +33229,104 @@
         }
       }
     },
+    "/api/v1/patients/{p}/billing/copays/{id}/email": {
+      "parameters": [
+        {
+          "name": "p",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "emailCopayReceipt",
+        "summary": "Email a payment receipt to the patient",
+        "description": "Billing edit. Emails the amount, date and receipt number of one payment to the address given. No clinical detail is sent. A voided receipt is refused.",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "billing.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Invalid values or unsupported shape"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Role or billing scope denied"
+          },
+          "404": {
+            "description": "Tenant/patient scoped record not found"
+          },
+          "409": {
+            "description": "Stale review, duplicate evidence, incompatible lifecycle or unsafe balance"
+          },
+          "428": {
+            "description": "Current quoted If-Match required"
+          },
+          "500": {
+            "description": "Database/audit failure; transaction rolled back"
+          },
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "voided": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "voided"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["request_id", "email", "receipt_number"],
+                "properties": {
+                  "request_id": {"type": "string", "format": "uuid"},
+                  "email": {"type": "string", "maxLength": 254},
+                  "receipt_number": {"type": "string", "maxLength": 40}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/patients/{p}/billing/accounts/{id}/copays/apply": {
       "parameters": [
         {

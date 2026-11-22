@@ -432,6 +432,27 @@ async function scheduleOpenVisit(a,section){
  await showClinical();await selectPatient(a.patient_id,visit);
  if(section&&typeof setEncounterSection==='function'&&typeof activeVisit!=='undefined'&&activeVisit?.id===visit)setEncounterSection(section);
 }
+// A copay belongs to one appointment. With its encounter started, that encounter opens on Billing
+// with the payment window up; before that, the chart shows this appointment's own copay card,
+// never another encounter the patient happens to have open.
+async function scheduleCollectCopay(a){
+ const visit=scheduleMarker(a.id)?.visit_id;
+ if(visit){
+  await scheduleOpenVisit(a,'charges');
+  if(typeof activeVisit==='undefined'||activeVisit?.id!==visit)return;
+  if(typeof invoiceTabSet==='function')invoiceTabSet('billing',false);
+  // What is owed is read first, so the window opens with the amount already filled in.
+  if(typeof loadEncounterRevenueStatus==='function'&&typeof encounterChargeAccount==='function'){try{await loadEncounterRevenueStatus(encounterChargeAccount());}catch{}}
+  if(typeof activeVisit==='undefined'||activeVisit?.id!==visit)return;
+  if(typeof openVisitCollect==='function')openVisitCollect();
+  return;
+ }
+ if(typeof copayAppointmentSelection!=='undefined')copayAppointmentSelection.set(a.patient_id,a.id);
+ await showClinical();await selectPatient(a.patient_id,null);
+ if(typeof selected==='undefined'||selected!==a.patient_id)return;
+ showChartSection('visits');
+ const target=$('insurance-copay-title');if(target&&target.isConnected!==false){target.scrollIntoView?.({block:'start'});target.focus?.({preventScroll:true});}
+}
 async function scheduleRefreshAfter(a){await showSchedule();if(a)await appointmentDetail(a.id);}
 // The claims screen's own address opens a claim from anywhere else in the product, so
 // Back, Forward and a reload land on the same claim. With no claim yet the encounter's own
@@ -496,7 +517,7 @@ function scheduleCopyIntakeLink(button){
 async function scheduleMarkerOpen(a,kind){
  const m=scheduleMarker(a.id);
  if(kind==='forms'&&m?.forms?.status==='submitted'&&typeof openWorkflowIntakePacket==='function'){await openWorkflowIntakePacket(m.forms.packet_id);return;}
- if(kind==='copay'&&!scheduleClosed(a)&&scheduleAllowed('billing')&&Number(m?.copay?.due_cents)>Number(m?.copay?.paid_cents)){await scheduleOpenChartStep(a,'visits','insurance-copay-title');return;}
+ if(kind==='copay'&&!scheduleClosed(a)&&scheduleAllowed('billing')&&Number(m?.copay?.due_cents)>Number(m?.copay?.paid_cents)){await scheduleCollectCopay(a);return;}
  if(kind==='balance'&&scheduleAllowed('billing')){await scheduleOpenChartStep(a,'billing');return;}
  if(kind==='note'&&m?.visit_id&&scheduleAllowed('clinical')){await scheduleOpenVisit(a);return;}
   if(kind==='charges'&&m?.visit_id&&scheduleAllowed('billing')&&scheduleAllowed('clinical')){await scheduleOpenVisit(a,'charges');return;}
@@ -522,7 +543,7 @@ async function scheduleBoardClick(b){
   case 'send-intake':await scheduleSendIntake(a);break;
   case 'review-intake':{const packet=scheduleMarker(a.id)?.forms?.packet_id;if(!packet||typeof openWorkflowIntakePacket!=='function')throw new Error('Reload the schedule and open the form again.');await openWorkflowIntakePacket(packet);break;}
   case 'check-eligibility':await scheduleCheckEligibility(a);break;
-  case 'collect-copay':await scheduleOpenChartStep(a,'visits','insurance-copay-title');break;
+  case 'collect-copay':await scheduleCollectCopay(a);break;
   case 'insurance':await scheduleOpenChartStep(a,'insurance','insurance-review-title');break;
   case 'billing':await scheduleOpenChartStep(a,'billing');break;
   case 'copy-link':scheduleCopyIntakeLink(b);break;

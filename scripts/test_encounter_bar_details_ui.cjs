@@ -31,5 +31,12 @@ function page(state,withTable=true){
  assert.equal(bar.dataset.visitBillingState,'post_charges');}
 {const {c,nodes}=page('post_charges',false);c.encounterBarSync();assert.doesNotMatch(nodes['encounter-bar'].html,/Money details/,'no table, no button for it');}
 {const {c,nodes}=page('add_charges');c.encounterBarSync();assert.equal(nodes['encounter-bar'],undefined,'no charges yet: no bar');}
+// The bar always carries the one next step of an open encounter: the note first, then the charges, then finishing.
+{const {c,nodes}=page('add_charges');c.activeVisit={id:'v',status:'in_progress'};c.encounterBarSync();const html=nodes['encounter-bar'].html;
+ assert.match(html,/Finish and sign the note/);assert.match(html,/class="primary" data-encounter-next="note">Go to the note</);assert.equal(html.match(/class="primary"/g).length,1,'one main button');assert.doesNotMatch(html,/STEP/);}
+{const {c,nodes}=page('add_charges');c.activeVisit={id:'v',status:'signed'};c.encounterBarSync();assert.match(nodes['encounter-bar'].html,/^<div class="visit-billing-status">STEP<\/div>/,'signed with no charges: the card’s own Add charges step');}
+{const {c,nodes}=page('post_charges');c.activeVisit={id:'v',status:'signed'};c.selected='p';c.checkoutProgress=()=>({});c.checkoutKey=(p,v)=>`${p}:${v}`;c.checkoutStates=new Map([['p:v',{checkout:{completed:false}}]]);c.encounterBarSync();
+ assert.match(nodes['encounter-bar'].html,/class="primary" data-encounter-next="finish">Finish encounter</,'nothing left to press in billing: finishing is the main step');
+ c.checkoutStates.set('p:v',{checkout:{completed:true}});c.encounterBarSync();assert.doesNotMatch(nodes['encounter-bar'].html,/Finish encounter/,'a finished encounter is not asked to finish again');}
 assert.match(src,/data-details-edit>Edit claim details</);
 console.log('PASS claim details read first and the encounter bar: listed values, skipped fields, copied next step with Money details, no bar without charges');

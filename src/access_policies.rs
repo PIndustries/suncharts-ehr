@@ -369,6 +369,7 @@ fn action(method: &Method, path: &str) -> Option<Action> {
                 "check-in",
                 "commit",
                 "complete",
+                "email",
                 "hardware-session",
                 "install",
                 "models",
@@ -1063,6 +1064,11 @@ mod tests {
             (
                 Method::POST,
                 "/api/v1/billing/invoice-checkouts/{}/reader-simulate-tap",
+                Action::Edit,
+            ),
+            (
+                Method::POST,
+                "/api/v1/patients/{}/billing/copays/{}/email",
                 Action::Edit,
             ),
         ] {

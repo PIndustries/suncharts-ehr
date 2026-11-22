@@ -329,6 +329,7 @@
 .encounter-bar .visit-billing-status>div:first-child>p.muted{grid-column:1/-1;margin:0;font-size:var(--fs-sm);line-height:1.35}
 .encounter-bar .visit-billing-status>div:first-child>:not(.eyebrow):not(.visit-billing-headline):not(p.muted){grid-column:1/-1}
 .encounter-bar .visit-billing-status .actions{order:3;margin:0;flex:0 0 auto}
+.encounter-bar>.encounter-bar-next{order:3;margin:0;flex:0 0 auto}
 .encounter-bar .visit-billing-totals{order:2;display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0}
 .encounter-bar .visit-billing-totals span{padding:4px 10px;min-width:0;gap:0}
 .encounter-bar .visit-billing-totals small{font-size:var(--fs-xs)}
@@ -353,3 +354,7 @@
 #visit-billing-collect:has(.visit-billing-collect-options) .visit-billing-collect-cash{display:none}
 .reader-payment .reader-paid{display:flex;align-items:center;gap:10px;font-size:1.25rem;margin:4px 0 6px}
 .reader-payment .reader-paid-mark{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--success-line);color:var(--surface);font-weight:700;flex:none}
+
+.receipt-email{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 10px;align-items:end;margin:12px 0 4px}
+.receipt-email label{display:grid;gap:4px}
+.receipt-email p{grid-column:1/-1;margin:0}
