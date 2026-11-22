@@ -260,3 +260,8 @@
 .claim-dx-results button{display:block;width:100%;text-align:left;border:0;background:transparent;color:inherit;padding:8px;border-radius:6px;min-height:36px;cursor:pointer}
 .claim-dx-results button:hover,.claim-dx-results button:focus-visible{background:var(--accent)}
 .claim-dx-status{margin:4px 0 0;min-height:0}
+
+/* Find a patient window (Ctrl/⌘ K). */
+.shell-find{display:grid;gap:8px;min-width:min(560px,80vw);min-height:320px;align-content:start}
+.shell-find .patient-picker-input{font-size:1.1rem}
+.patient-billing-back{margin:0 0 8px}
