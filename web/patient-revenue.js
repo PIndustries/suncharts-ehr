@@ -127,10 +127,32 @@ function paymentGroupReceiptCardMarkup(receipts,context){
 }
 // Receipts open in a preview window first, so staff see exactly what the patient gets (practice
 // logo, codes, charges and payments), then press Print. Closing it returns to where they were.
-function openReceiptPreview(documentHtml,title){
+// The address a receipt is emailed to starts as the patient's own, and staff can change it.
+function receiptEmailMarkup(mail){
+ if(!mail?.receipt?.id||typeof billingCan==='function'&&!billingCan('create'))return '';
+ const onFile=workspace?.demographics?.content?.email||'';
+ return `<form class="receipt-email" data-receipt-email><label>Email receipt to<input type="email" name="email" required maxlength="254" autocomplete="off" value="${esc(onFile)}" placeholder="name@example.com"></label><button type="submit">Email receipt</button><p class="muted" data-receipt-email-note>${onFile?'The patient’s email on file. Change it if they want it sent somewhere else.':'No email is on file for this patient. Type the address to send to.'} The email gives the amount, date and receipt number only.</p></form>`;
+}
+function receiptEmailNumber(receipt){
+ const number=typeof receiptNumberFor==='function'?receiptNumberFor(receipt.appointment_id,receipt.payment_group_id||receipt.id):'';
+ return /^[A-Za-z0-9-]{1,40}$/.test(number)?number:'R-'+String(receipt.id).replace(/-/g,'').slice(0,8).toUpperCase();
+}
+async function sendReceiptEmail(form,mail){
+ const email=String(new FormData(form).get('email')||'').trim(),note=form.querySelector('[data-receipt-email-note]'),button=form.querySelector('button');
+ // The same address pressed twice is the same request, so the patient gets one email.
+ mail.requests??=new Map();if(!mail.requests.has(email))mail.requests.set(email,crypto.randomUUID());
+ button.disabled=true;
+ try{
+  await api(`/api/v1/patients/${encodeURIComponent(mail.patient)}/billing/copays/${encodeURIComponent(mail.receipt.id)}/email`,'POST',{request_id:mail.requests.get(email),email,receipt_number:receiptEmailNumber(mail.receipt)});
+  if(note){note.textContent=`Sent to ${email}.`;note.setAttribute('role','status');}
+ }catch(error){if(note){note.textContent=error.message||'The receipt could not be emailed. Try again.';note.setAttribute('role','alert');}}
+ finally{button.disabled=false;}
+}
+function openReceiptPreview(documentHtml,title,mail){
  const panel=document.createElement('div');panel.className='receipt-preview';
- panel.innerHTML=`<iframe class="receipt-preview-frame" title="${esc(title||'Payment receipt')}" sandbox="allow-same-origin allow-modals"></iframe><div class="actions"><button type="button" class="primary" data-receipt-preview-print>Print</button><button type="button" data-sheet-close>Close</button></div>`;
+ panel.innerHTML=`<iframe class="receipt-preview-frame" title="${esc(title||'Payment receipt')}" sandbox="allow-same-origin allow-modals"></iframe>${receiptEmailMarkup(mail)}<div class="actions"><button type="button" class="primary" data-receipt-preview-print>Print</button><button type="button" data-sheet-close>Close</button></div>`;
  const frame=panel.querySelector('iframe');frame.srcdoc=documentHtml;
+ panel.querySelector('[data-receipt-email]')?.addEventListener('submit',event=>{event.preventDefault();void sendReceiptEmail(event.target,mail);});
  const dialog=sheetOpen(title||'Payment receipt',panel);dialog.classList.add('sheet-wide','receipt-preview-sheet');
  panel.querySelector('[data-receipt-preview-print]').addEventListener('click',()=>{frame.contentWindow?.focus();frame.contentWindow?.print();});
  return dialog;
@@ -148,7 +170,7 @@ async function showPaymentGroupReceipt(group,appointmentId){
  const p=encounterRevenueState?.data?.summary?.patient||{},balance=Number.isSafeInteger(p.owes_now_cents)?p.owes_now_cents:undefined;
  const visitEvidence=await visitReceiptEvidence(appointmentId||receipts[0].appointment_id);
  if(opening!==paymentGroupOpening||!currentHostedCopayView(view))return;
- openReceiptPreview(paymentGroupReceiptDocument(receipts,{...first.context,balanceCents:balance,visitEvidence,printedAt:new Date().toISOString()}));
+ openReceiptPreview(paymentGroupReceiptDocument(receipts,{...first.context,balanceCents:balance,visitEvidence,printedAt:new Date().toISOString()}),undefined,{patient:view.patient,receipt:receipts[0]});
 }
 // 'Print receipt' inside the Collect payment window: load the same grouped receipt a moment after
 // the payment lands and send it straight to the browser print dialog. The window stays open and the
@@ -168,7 +190,7 @@ async function printPaymentGroupReceiptFromCollect(group,button){
   const context={...first.context,balanceCents:balance,visitEvidence,printedAt:new Date().toISOString()};
   if(me!==view.identity||!collectDialog?.isConnected||!button.isConnected)return;
   button.closest('.collect-done')?.querySelector('.collect-print-error')?.remove();
-  openReceiptPreview(paymentGroupReceiptDocument(receipts,context));
+  openReceiptPreview(paymentGroupReceiptDocument(receipts,context),undefined,{patient:view.patient,receipt:receipts[0]});
  }catch(error){
   const host=button.closest?.('.collect-done')||collectDialog;
   if(host?.isConnected!==false)host?.querySelector?.('.collect-print-error')?.remove();
@@ -220,7 +242,7 @@ async function showCopayReceipt(id,appointmentId){
  if(visit&&clinical&&(typeof chartAreaEnabled!=='function'||chartAreaEnabled('visits'))){
   const visitEvidence=await visitReceiptEvidence(expected);
   if(!current())return;
-  openReceiptPreview(copayReceiptDocument(receipt,{...context,visitEvidence,printedAt:new Date().toISOString()}));
+  openReceiptPreview(copayReceiptDocument(receipt,{...context,visitEvidence,printedAt:new Date().toISOString()}),undefined,{patient:view.patient,receipt});
  }else{
   const s=await showPatientBillingWorkspace({patientId:view.patient,tab:'payments',mode:receipt.hosted_checkout?.livemode===false?'test':'recorded'});
   if(opening!==copayReceiptOpening||me!==view.identity||!patientBillingCurrent(s)||s.patientId!==view.patient)return;

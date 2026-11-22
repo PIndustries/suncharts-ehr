@@ -618,6 +618,79 @@ async fn account_links(
     }
     Ok(None)
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ReceiptEmail {
+    request_id: Uuid,
+    email: String,
+    receipt_number: String,
+}
+/// What is sent for one receipt: the practice name, the amount, the date and the receipt number.
+/// Nothing clinical is read here, so nothing clinical can be emailed. A voided receipt is refused.
+/// One payment divided between encounters is emailed as the one amount the patient paid.
+pub(crate) async fn receipt_email_body(
+    pool: &sqlx::PgPool,
+    a: &Actor,
+    patient: Uuid,
+    id: Uuid,
+    v: &ReceiptEmail,
+) -> Result<Value> {
+    let email = v.email.trim();
+    if email.len() > 254
+        || email.split('@').count() != 2
+        || email.starts_with('@')
+        || !email.split('@').nth(1).unwrap_or("").contains('.')
+        || email
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || "<>,;\"".contains(c))
+    {
+        return Err(Error::Invalid("Enter one email address."));
+    }
+    if v.receipt_number.is_empty()
+        || v.receipt_number.len() > 40
+        || !v
+            .receipt_number
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err(Error::Invalid("This receipt has no number yet."));
+    }
+    let mut tx = pool.begin().await?;
+    let row: Option<(i64, NaiveDate, bool, bool)> = sqlx::query_as(
+        "SELECT (SELECT COALESCE(SUM(g.amount_cents),0)::bigint FROM billing_copay_receipts g WHERE g.tenant_id=r.tenant_id AND g.patient_id=r.patient_id AND (g.id=r.id OR (r.payment_group_id IS NOT NULL AND g.payment_group_id=r.payment_group_id)) AND NOT EXISTS(SELECT 1 FROM billing_copay_voids gv WHERE gv.tenant_id=g.tenant_id AND gv.receipt_id=g.id)),r.occurred_on,EXISTS(SELECT 1 FROM billing_copay_voids x WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),EXISTS(SELECT 1 FROM copay_checkout_attempts c WHERE c.tenant_id=r.tenant_id AND c.receipt_id=r.id AND NOT c.livemode) FROM billing_copay_receipts r WHERE r.tenant_id=$1 AND r.patient_id=$2 AND r.id=$3",
+    )
+    .bind(a.tenant_id)
+    .bind(patient)
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (amount, paid_on, voided, test) = row.ok_or(Error::NotFound)?;
+    if voided {
+        return Err(Error::Invalid("A voided receipt cannot be emailed."));
+    }
+    let clinic = crate::previsit::practice_name(&mut tx, a.tenant_id).await?;
+    crate::postgres::audit(&mut tx, a, "billing.copay_receipt_emailed", id).await?;
+    tx.commit().await?;
+    Ok(
+        json!({"request_id":v.request_id,"recipient_email":email,"clinic_name":clinic,"amount_cents":amount,
+        "currency":"usd","paid_on":paid_on,"receipt_number":v.receipt_number,"test":test}),
+    )
+}
+async fn email_copay_receipt(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((p, id)): Path<(Uuid, Uuid)>,
+    Json(v): Json<ReceiptEmail>,
+) -> Result<Json<Value>> {
+    write(&a)?;
+    crate::access_policies::require_native(&s, &a, "billing", "edit").await?;
+    let pool = db(&s)?;
+    let body = receipt_email_body(pool, &a, p, id, &v).await?;
+    let sent = crate::connect_services::email_receipt(pool, a.tenant_id, &body).await?;
+    Ok(Json(
+        json!({"sent":true,"email":body["recipient_email"],"status":sent["status"]}),
+    ))
+}
 pub fn router() -> Router<State> {
     Router::new()
         .merge(overview::router())
@@ -649,6 +722,10 @@ pub fn router() -> Router<State> {
         .route(
             "/api/v1/patients/{p}/billing/payment-groups/{group_id}",
             get(payment_group),
+        )
+        .route(
+            "/api/v1/patients/{p}/billing/copays/{id}/email",
+            post(email_copay_receipt),
         )
         .route(
             "/api/v1/patients/{p}/billing/copays/{id}/void",
