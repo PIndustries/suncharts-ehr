@@ -859,10 +859,62 @@ function claimChargeDiagnosisCodes(lines){
 function claimLineCheckedCodes(codes,pointers){
  return (Array.isArray(pointers)?pointers:[]).map(pointer=>codes[pointer-1]).filter(Boolean);
 }
+// The claim's diagnoses are picked, never typed as a list: each one is a chip that can be removed,
+// and a search box finds the next one by code or name. The chosen codes travel in one hidden
+// field, in order, so the first is still the primary diagnosis.
+// Where the service was given is chosen from the standard list, not typed as a two-digit code.
+// A code already on the claim that is not in the list stays selectable, so nothing is lost.
+const CLAIM_PLACES_OF_SERVICE=[['11','Office'],['02','Telehealth, patient not at home'],['10','Telehealth, patient at home'],['12','Patient’s home'],['19','Hospital outpatient, off campus'],['21','Hospital inpatient'],['22','Hospital outpatient, on campus'],['23','Emergency room'],['24','Ambulatory surgical center'],['31','Skilled nursing facility'],['32','Nursing facility'],['49','Independent clinic'],['81','Independent laboratory'],['99','Other place of service']];
+function claimPlaceOfServiceField(value){
+ const current=String(value||'').trim()||'11',rows=CLAIM_PLACES_OF_SERVICE.some(([code])=>code===current)?CLAIM_PLACES_OF_SERVICE:[[current,'Code on this claim'],...CLAIM_PLACES_OF_SERVICE];
+ return selectField('place_of_service','Place of service',rows.map(([code])=>code),current,rows.map(([code,label])=>`${code} · ${label}`));
+}
+const claimDiagnosisPickerLimit=12;
+function claimDiagnosisPickerChips(codes){
+ return codes.length?codes.map((code,index)=>`<li><b>${esc(code)}</b>${index===0?'<small>primary</small>':''}<button type="button" data-claim-dx-remove="${esc(code)}" aria-label="Remove ${esc(code)}">×</button></li>`).join(''):'<li class="muted claim-dx-none">No diagnosis yet. Search below to add one.</li>';
+}
+function claimDiagnosisPickerMarkup(codes){
+ const list=(Array.isArray(codes)?codes:[]).map(code=>String(code??'').trim()).filter(Boolean).slice(0,claimDiagnosisPickerLimit);
+ return `<div class="claim-dx-picker" data-claim-dx><span class="claim-dx-label" id="claim-dx-label">Diagnoses (ICD-10)</span><ul class="claim-dx-chips" aria-labelledby="claim-dx-label" data-claim-dx-chips>${claimDiagnosisPickerChips(list)}</ul><input type="hidden" name="diagnosis_codes" value="${esc(list.join(', '))}"><div class="claim-dx-add"><label class="sr-only" for="claim-dx-search">Search a diagnosis to add</label><input type="search" id="claim-dx-search" placeholder="Search a diagnosis by code or name" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="claim-dx-results" data-claim-dx-search><ul id="claim-dx-results" class="claim-dx-results" role="listbox" hidden></ul><p class="muted claim-dx-status" role="status" data-claim-dx-status></p></div></div>`;
+}
+function claimDiagnosisPickerCodes(form){return String(form?.elements?.diagnosis_codes?.value||'').split(',').map(code=>code.trim()).filter(Boolean);}
+// The chosen list changed: redraw the chips and the per-line ticks, keeping every tick whose
+// diagnosis is still on the claim.
+function claimDiagnosisPickerSet(form,codes){
+ const ticked=Array.from(form.querySelectorAll('[data-diagnosis-line]')).map(row=>Array.from(row.querySelectorAll('input:checked')).map(box=>box.value));
+ form.elements.diagnosis_codes.value=codes.join(', ');
+ const chips=form.querySelector('[data-claim-dx-chips]');if(chips)chips.innerHTML=claimDiagnosisPickerChips(codes);
+ const account=form.claimAccount||claimAccount,old=form.querySelector('.claim-line-diagnosis,.claim-line-diagnosis-empty');
+ if(account&&old){const holder=document.createElement('div');holder.innerHTML=claimLineDiagnosisMarkup(account,{diagnosis_codes:codes,line_diagnosis_pointers:ticked.map(row=>row.map(code=>codes.indexOf(code)+1).filter(Boolean))});if(holder.firstElementChild)old.replaceWith(holder.firstElementChild);}
+ if(typeof captureClaimDraft==='function')captureClaimDraft(form);
+}
+let claimDiagnosisSearchTimer=null,claimDiagnosisSearchRun=0;
+function claimDiagnosisSearchClose(form){const list=form.querySelector('#claim-dx-results'),box=form.querySelector('[data-claim-dx-search]');if(list){list.hidden=true;list.innerHTML='';}box?.setAttribute('aria-expanded','false');}
+async function claimDiagnosisSearch(form,query){
+ const run=++claimDiagnosisSearchRun,list=form.querySelector('#claim-dx-results'),status=form.querySelector('[data-claim-dx-status]'),box=form.querySelector('[data-claim-dx-search]');if(!list)return;
+ const serviceDate=(form.claimAccount||claimAccount)?.content?.service_date,params={system:'ICD-10-CM',q:query,billable:'true',active:'true',limit:'12'};if(/^\d{4}-\d{2}-\d{2}$/.test(serviceDate||''))params.service_date=serviceDate;
+ let result=null;try{result=await api(`/api/v1/terminology/codes?${new URLSearchParams(params)}`);}catch{}
+ if(run!==claimDiagnosisSearchRun||!form.isConnected)return;
+ const chosen=new Set(claimDiagnosisPickerCodes(form)),items=(result?.items||[]).filter(item=>item?.code&&!chosen.has(item.code));
+ list.innerHTML=items.map(item=>`<li role="option"><button type="button" data-claim-dx-add="${esc(item.code)}"><b>${esc(item.code)}</b> ${esc(item.display||item.description||'')}</button></li>`).join('');
+ list.hidden=!items.length;box?.setAttribute('aria-expanded',String(items.length>0));
+ if(status)status.textContent=!result?'The code list could not be searched. Try again.':items.length?'':'No diagnosis matches.';
+}
+if(typeof document!=='undefined'&&document.addEventListener){
+ document.addEventListener('input',event=>{const box=event.target;if(!box?.hasAttribute?.('data-claim-dx-search'))return;const form=box.closest('form'),query=String(box.value||'').trim();clearTimeout(claimDiagnosisSearchTimer);if(query.length<2){claimDiagnosisSearchRun++;claimDiagnosisSearchClose(form);const status=form.querySelector('[data-claim-dx-status]');if(status)status.textContent='';return;}claimDiagnosisSearchTimer=setTimeout(()=>void claimDiagnosisSearch(form,query),200);});
+ document.addEventListener('click',event=>{
+  const add=event.target?.closest?.('[data-claim-dx-add]'),remove=event.target?.closest?.('[data-claim-dx-remove]'),target=add||remove;if(!target?.dataset)return;
+  const form=target.closest('form');if(!form?.elements?.diagnosis_codes)return;event.preventDefault();
+  const codes=claimDiagnosisPickerCodes(form);
+  if(add){const code=add.dataset.claimDxAdd,status=form.querySelector('[data-claim-dx-status]');if(codes.length>=claimDiagnosisPickerLimit){if(status)status.textContent=`A claim holds up to ${claimDiagnosisPickerLimit} diagnoses. Remove one first.`;return;}if(!codes.includes(code))codes.push(code);claimDiagnosisPickerSet(form,codes);const box=form.querySelector('[data-claim-dx-search]');if(box){box.value='';box.focus?.();}claimDiagnosisSearchClose(form);return;}
+  claimDiagnosisPickerSet(form,codes.filter(code=>code!==remove.dataset.claimDxRemove));
+ });
+ document.addEventListener('keydown',event=>{const box=event.target;if(!box?.hasAttribute?.('data-claim-dx-search'))return;if(event.key==='Enter'){event.preventDefault();box.closest('form')?.querySelector('[data-claim-dx-add]')?.click();}else if(event.key==='Escape'){const form=box.closest('form');if(form&&!form.querySelector('#claim-dx-results')?.hidden){event.stopPropagation();claimDiagnosisSearchClose(form);}}});
+}
 function claimLineDiagnosisMarkup(account,content){
  const codes=claimDiagnosisChoices(content);
  const pointers=Array.isArray(content.line_diagnosis_pointers)?content.line_diagnosis_pointers:[];
- if(!codes.length)return '<p class="muted claim-line-diagnosis-empty">Fill in the diagnosis codes above first, then tick which ones apply to each charge line.</p>';
+ if(!codes.length)return '<p class="muted claim-line-diagnosis-empty">Add a diagnosis above first, then tick which ones apply to each charge line.</p>';
  return `<fieldset class="claim-line-diagnosis"><legend>Which diagnoses apply to each line</legend><p class="muted">Tick up to ${claimLineDiagnosisLimit} for each charge line. The first one ticked is the main reason for that line.</p>${account.content.lines.map((line,index)=>{
   const checked=new Set(claimLineCheckedCodes(codes,pointers[index]));
   return `<div class="claim-line-diagnosis-row" data-diagnosis-line="${index}"><b>Line ${index+1}: ${esc(line.code)}</b><div class="scope-options">${codes.map(code=>`<label><input type="checkbox" name="diagnosis_line_${index}" value="${esc(code)}" ${checked.has(code)?'checked':''}>${esc(code)}</label>`).join('')}</div></div>`;
@@ -880,7 +932,7 @@ function claimEditor(b,c=null,source=null,parent=null,coordination=null){
  captureClaimDraft();b={...b,patient_id:b.patient_id||c?.patient_id||parent?.patient_id};
  const context=claimContextSnapshot();requireClaimContext(context,c||parent||{patient_id:b.patient_id,account_id:b.id});
  claimAccount=b;claimSource=source;const defaults=typeof claimmdClaimProviderDefaults==='function'?claimmdClaimProviderDefaults():{},coverage=b.coverage_snapshot?.coverage?.content||{},patientAddress=source?'':claimPatientAddressDefault(b),diagnoses=source?{diagnosis_codes:[],line_diagnosis_pointers:b.content.lines.map(()=>[])}:claimChargeDiagnosisDefaults(b);const v=c?.content||(coordination?{...parent.content,subscriber_address:coverage.relationship==='self'?parent.content.patient_address:'',subscriber_birth_date:coverage.subscriber_birth_date||'',external_control_number:''}:parent?.content)||{billing_provider_name:defaults.billing_provider_name||'',billing_npi:defaults.billing_npi||'',tax_id:'',billing_address:defaults.billing_address||'',rendering_npi:defaults.rendering_npi||'',patient_address:patientAddress,subscriber_address:coverage.relationship==='self'?patientAddress:'',subscriber_birth_date:coverage.subscriber_birth_date||'',place_of_service:'',...diagnoses,external_control_number:'',notes:'',synthetic_test:false};
- const html=`<form id="claim-editor-form" data-request="${crypto.randomUUID()}" data-edit="${c?.id||''}" data-parent="${parent?.id||''}"><h3>${c?'Edit draft claim':source?'Create a claim from an imported record':coordination?'Create secondary claim':parent?'Create corrected claim':'Create claim'}</h3>${sourceNotice(source)}<p>${money(b.total_cents)} in charges · Service ${esc(displayDate(b.content.service_date))}</p><div class="form-grid">${parent&&!coordination?selectField('frequency','Claim frequency',parent.payer_control_number?['replacement','void_request']:['original'],parent.payer_control_number?'replacement':'original'):'<input type="hidden" name="frequency" value="original">'}${billingField('billing_provider_name','Billing provider name',v.billing_provider_name)}${billingField('billing_npi','Billing NPI',v.billing_npi,'text',10)}${billingField('rendering_npi','Rendering NPI',v.rendering_npi,'text',10)}${billingField('tax_id','Tax ID / EIN (9 digits)',v.tax_id,'text',9)}${billingField('billing_address','Billing address',v.billing_address,'text',1000)}${billingField('patient_address','Patient address',v.patient_address,'text',1000)}${billingField('subscriber_address','Subscriber address',v.subscriber_address,'text',1000)}${billingField('subscriber_birth_date','Subscriber date of birth',v.subscriber_birth_date||'','date')}${billingField('place_of_service','Place of service code (2 digits, 11 = office)',v.place_of_service,'text',2)}${billingField('diagnosis_codes','ICD-10 diagnosis codes (comma-separated)',v.diagnosis_codes.join(', '),'text',250)}${billingField('external_control_number','Claim number from a previous system',v.external_control_number,'text',100)}</div>${claimLineDiagnosisMarkup(b,v)}<label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>${billingField('reason','Reason (saved in the claim history)','','text',1000,true)}${source?'<label class="review-ack"><input type="checkbox" required> I checked that the patient, payer, charges and claim number match the imported record.</label>':''}<button type="submit" class="primary">Save draft claim</button></form>`;
+ const html=`<form id="claim-editor-form" data-request="${crypto.randomUUID()}" data-edit="${c?.id||''}" data-parent="${parent?.id||''}"><h3>${c?'Edit draft claim':source?'Create a claim from an imported record':coordination?'Create secondary claim':parent?'Create corrected claim':'Create claim'}</h3>${sourceNotice(source)}<p>${money(b.total_cents)} in charges · Service ${esc(displayDate(b.content.service_date))}</p><div class="form-grid">${parent&&!coordination?selectField('frequency','Claim frequency',parent.payer_control_number?['replacement','void_request']:['original'],parent.payer_control_number?'replacement':'original'):'<input type="hidden" name="frequency" value="original">'}${billingField('billing_provider_name','Billing provider name',v.billing_provider_name)}${billingField('billing_npi','Billing NPI',v.billing_npi,'text',10)}${billingField('rendering_npi','Rendering NPI',v.rendering_npi,'text',10)}${billingField('tax_id','Tax ID / EIN (9 digits)',v.tax_id,'text',9)}${billingField('billing_address','Billing address',v.billing_address,'text',1000)}${billingField('patient_address','Patient address',v.patient_address,'text',1000)}${billingField('subscriber_address','Subscriber address',v.subscriber_address,'text',1000)}${billingField('subscriber_birth_date','Subscriber date of birth',v.subscriber_birth_date||'','date')}${claimPlaceOfServiceField(v.place_of_service)}${claimDiagnosisPickerMarkup(v.diagnosis_codes)}${billingField('external_control_number','Claim number from a previous system',v.external_control_number,'text',100)}</div>${claimLineDiagnosisMarkup(b,v)}<label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>${billingField('reason','Reason (saved in the claim history)','','text',1000,true)}${source?'<label class="review-ack"><input type="checkbox" required> I checked that the patient, payer, charges and claim number match the imported record.</label>':''}<button type="submit" class="primary">Save draft claim</button></form>`;
  if($('claim-editor'))$('claim-editor').innerHTML=html;else claimPane(html);
  const editorHost=$('claim-editor')||claimWorkspaceHost(context);
  if(editorHost){editorHost.scrollIntoView({block:'start'});const editorHeading=editorHost.querySelector('#claim-editor-form h3');if(editorHeading){editorHeading.tabIndex=-1;editorHeading.focus({preventScroll:true});editorHeading.id='claim-editor-heading';}}

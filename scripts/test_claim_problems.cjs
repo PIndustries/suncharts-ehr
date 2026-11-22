@@ -111,6 +111,8 @@ const editor=fs.readFileSync('web/claims.js','utf8');
 // The claim editor's own field names, read from the form it renders, so a focus target that does
 // not exist fails here rather than silently focusing nothing.
 const editorFields=new Set([...editor.matchAll(/(?:billingField|selectField)\('([a-z_0-9]+)'/g)].map(m=>m[1]));
+// The diagnosis list is a picker with its own hidden field of the same name.
+if(/claimDiagnosisPickerMarkup\(/.test(editor)&&/name="diagnosis_codes"/.test(fs.readFileSync(path.join(__dirname,'../web/claims.js'),'utf8')))editorFields.add('diagnosis_codes');
 for(const key of ['billing_provider_name','billing_npi','rendering_npi','tax_id','billing_address','patient_address','subscriber_address','subscriber_birth_date','place_of_service','diagnosis_codes']){
  assert.ok(editorFields.has(key),`the claim editor renders ${key}`);
 }

@@ -21,6 +21,8 @@ vm.runInContext(fs.readFileSync('web/billing.js','utf8').match(/function diagnos
 ctx.diagnosisCodeList=vm.runInContext('diagnosisCodeList',billingHelpers);
 vm.createContext(ctx);
 vm.runInContext(fs.readFileSync('web/claims.js','utf8'),ctx);
+// The diagnosis list is a picker now (chips and a search box); what it holds is its hidden field.
+{const real=ctx.claimDiagnosisPickerMarkup;ctx.claimDiagnosisPickerMarkup=codes=>{const html=real(codes);fields.diagnosis_codes=(html.match(/name="diagnosis_codes" value="([^"]*)"/)||[])[1];assert.doesNotMatch(html,/comma-separated/);assert.match(html,/data-claim-dx-search/);return html;};}
 
 // Draws the claim form, then keeps the diagnosis boxes its markup drew. Ticking a box here is
 // ticking it on the form, because the node hands the same object back to the form that reads it.
@@ -60,7 +62,7 @@ assert.deepEqual(boxesOf(1).map(box=>box.checked),[true,false]);
 assert.deepEqual(boxesOf(2).map(box=>box.checked),[true,true]);
 assert.equal(fields.patient_address,'Reviewed patient address');
 draw(account,null,null,{id:'parent',payer_control_number:'SYN-PCN',content:reviewed});assert.equal(fields.diagnosis_codes,'Z01.00, M62.81');assert.deepEqual(boxesOf(2).map(box=>box.checked),[true,true]);assert.equal(fields.subscriber_address,'Reviewed subscriber address');
-draw(account,null,{source_history_id:'source'});assert.equal(fields.diagnosis_codes,'');assert.deepEqual(built.boxes,{},'a source packet has no codes yet, so there is nothing to tick');assert.match(node('claim-editor').innerHTML,/Fill in the diagnosis codes above first/);assert.equal(fields.patient_address,'');
+draw(account,null,{source_history_id:'source'});assert.equal(fields.diagnosis_codes,'');assert.deepEqual(built.boxes,{},'a source packet has no codes yet, so there is nothing to tick');assert.match(node('claim-editor').innerHTML,/Add a diagnosis above first/);assert.equal(fields.patient_address,'');
 
 (async()=>{
  const claim={id:'claim',patient_id:'patient',account_id:'account',version:1,status:'ready',frequency:'original',control_number:'SYN-CLAIM',content:reviewed,snapshot:{account,patient:{given_name:'Avery',family_name:'Synthetic'}}};

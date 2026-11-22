@@ -246,3 +246,17 @@
 @media(prefers-reduced-motion:no-preference){.encounter-switch-grid button,.encounter-switch-list button{transition:background-color .15s ease,border-color .15s ease,box-shadow .15s ease}}
 .encounter-switch .encounter-switch-grid button:disabled{background:transparent;border-color:transparent;box-shadow:none}
 .encounter-switch .encounter-switch-list button.is-selected{border-color:var(--blue);box-shadow:0 0 0 1px var(--blue),inset 4px 0 0 var(--blue)}
+
+/* Claim form: diagnoses are picked as chips with a search box, never typed as a list. */
+.claim-dx-picker{display:grid;gap:6px;grid-column:1/-1;min-width:0}
+.claim-dx-label{font-weight:600}
+.claim-dx-chips{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
+.claim-dx-chips li{display:inline-flex;align-items:center;gap:6px;padding:2px 4px 2px 10px;border:1px solid var(--line);border-radius:999px;min-height:32px}
+.claim-dx-chips li.claim-dx-none{border:0;padding:0}
+.claim-dx-chips small{color:var(--muted)}
+.claim-dx-chips button{min-width:24px;min-height:24px;padding:0;border:0;border-radius:50%;background:transparent;color:inherit;cursor:pointer}
+.claim-dx-add{position:relative;max-width:520px}
+.claim-dx-results{list-style:none;margin:4px 0 0;padding:4px;border:1px solid var(--line);border-radius:8px;background:var(--paper);max-height:260px;overflow:auto;position:absolute;left:0;right:0;z-index:5}
+.claim-dx-results button{display:block;width:100%;text-align:left;border:0;background:transparent;color:inherit;padding:8px;border-radius:6px;min-height:36px;cursor:pointer}
+.claim-dx-results button:hover,.claim-dx-results button:focus-visible{background:var(--accent)}
+.claim-dx-status{margin:4px 0 0;min-height:0}
