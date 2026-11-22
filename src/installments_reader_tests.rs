@@ -121,4 +121,30 @@ async fn invoice_balance_taken_on_a_reader_posts_to_the_ledger_like_a_hosted_pay
     assert_eq!(value["operation"]["last_result"], "reader_cancelled");
     assert_eq!(financial(&pool, &a, account).await, (1500, 1500));
     assert_eq!(count(&pool, "billing_entries").await, 1);
+
+    // The same installment on a test reader, paid by a simulated card tap.
+    let version = read_plan(&pool, &a, patient, pid).await["version"]
+        .as_i64()
+        .unwrap();
+    let fourth = checkout_with(
+        &pool,
+        &a,
+        patient,
+        pid,
+        2,
+        reader_checkout(),
+        version,
+        "https://synthetic.example",
+        &broker,
+        policy(false),
+    )
+    .await
+    .unwrap();
+    let tapped: Uuid = serde_json::from_value(fourth["operation"]["id"].clone()).unwrap();
+    let value = reader_simulate_tap_with(&s, &a, tapped, &broker, policy(false))
+        .await
+        .unwrap();
+    assert_eq!(value["operation"]["status"], "paid", "{value}");
+    assert_eq!(broker.state.lock().unwrap().taps, 1);
+    assert_eq!(count(&pool, "billing_entries").await, 2);
 }

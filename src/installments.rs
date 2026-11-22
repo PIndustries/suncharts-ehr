@@ -1343,18 +1343,29 @@ async fn reader_simulate_tap(
     ExtractState(s): ExtractState<State>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>> {
-    authorize(&s, &a, "edit").await?;
-    operation_with(&s, &a, id).await?;
+    Ok(Json(
+        reader_simulate_tap_with(&s, &a, id, &HttpBroker, Policy::current()).await?,
+    ))
+}
+async fn reader_simulate_tap_with(
+    s: &State,
+    a: &Actor,
+    id: Uuid,
+    broker: &dyn Broker,
+    policy: Policy,
+) -> Result<Value> {
+    authorize(s, a, "edit").await?;
+    operation_with(s, a, id).await?;
     crate::reader_payments::simulate_tap(
-        db(&s)?,
-        &a,
+        db(s)?,
+        a,
         crate::reader_payments::Kind::Invoice,
         id,
-        &HttpBroker,
-        Policy::current(),
+        broker,
+        policy,
     )
     .await?;
-    Ok(Json(operation_with(&s, &a, id).await?))
+    operation_with(s, a, id).await
 }
 async fn authorize(s: &State, a: &Actor, action: &str) -> Result<()> {
     if action != "view" {

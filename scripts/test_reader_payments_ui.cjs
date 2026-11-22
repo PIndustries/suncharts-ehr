@@ -85,8 +85,8 @@ test('the status area follows the payment from waiting to approved and shows the
  await f.tick({...op,last_result:'reader_finishing'});html=f.live();
  assert.match(html,/<b>Finishing on the reader<\/b>/);assert.doesNotMatch(html,/data-reader-payment-cancel|Checking again/,'no Cancel while a card is being approved');
  await f.tick({...op,status:'paid',last_result:'provider_verified',receipt_id:'receipt'});html=f.live();
- assert.match(html,/data-reader-payment="approved"/);assert.match(html,/<b>Approved<\/b>/);
- assert.match(html,/<button type="button" class="primary" data-hosted-copay-receipt="receipt" data-appointment="appt">View \/ print receipt<\/button><button type="button" data-reader-payment-close>Close<\/button>/);
+ assert.match(html,/data-reader-payment="approved"/);assert.match(html,/<b>\$25\.00 paid by card<\/b>/);
+ assert.match(html,/<button type="button" class="primary" data-hosted-copay-receipt="receipt" data-appointment="appt">View \/ print receipt<\/button><button type="button" data-reader-payment-close>Done<\/button>/);
  assert.doesNotMatch(html,/data-reader-payment-cancel|Try again/);
  assert.equal(f.waiting(),0,'a finished payment is not read again');
  const state=c.hostedCopayStateFor('appt');assert.equal(state.items[0].status,'paid');assert.equal(state.items[0].receipt_id,'receipt');
@@ -120,7 +120,7 @@ test('Cancel asks the reader to stop and shows what really happened',async()=>{
  f=fixture();c=f.ctx;await f.click({readerCopay:'appt'});c.next=op;await f.submit(f.form());
  c.next={...op,last_result:'reader_finishing'};await f.click({readerPaymentCancel:''});
  assert.match(f.live(),/<b>Finishing on the reader<\/b>/);assert.equal(f.waiting(),1);
- await f.tick({...op,status:'paid',last_result:'provider_verified',receipt_id:'receipt'});assert.match(f.live(),/<b>Approved<\/b>/);
+ await f.tick({...op,status:'paid',last_result:'provider_verified',receipt_id:'receipt'});assert.match(f.live(),/<b>\$25\.00 paid by card<\/b>/);
  // The appointment panel can cancel a waiting payment after the status area is closed.
  f=fixture();c=f.ctx;c.items=[op];await c.loadHostedCopays('appt',true);
  const panel=c.hostedCopayMarkup(c.hostedCopayStateFor('appt'));
@@ -150,7 +150,7 @@ test('the form and the live status stay on the screen and under the copay contro
  c.next=op;await f.submit(f.form({},'encounter-hosted-copay'));
  assert.equal(f.slot('encounter-hosted-copay-reader'),'<div id="reader-payment-live"></div>','the live status replaces the form in the same place');
  assert.match(f.live(),/Waiting for card on Front desk/);assert.equal(f.slot('insurance-hosted-copay-reader'),'');
- await f.tick({...op,status:'paid',last_result:'provider_verified',receipt_id:'receipt'});assert.match(f.live(),/<b>Approved<\/b>/);
+ await f.tick({...op,status:'paid',last_result:'provider_verified',receipt_id:'receipt'});assert.match(f.live(),/<b>\$25\.00 paid by card<\/b>/);
  assert.equal(c.chartSection,'visits');assert.equal(c.editor,undefined);
  assert.equal(f.calls.some(call=>['showChartSection','openBillingEditor','selectPatient'].includes(call[0])),false,'the page and the tab never change');
  // From the Insurance "Collect copay" step the same thing happens under that panel.
@@ -200,7 +200,16 @@ test('a test payment on a test reader offers Simulate card tap, and nothing else
  const before=f.calls.length;c.next={...op,status:'paid',receipt_id:'receipt'};
  f.click({readerPaymentSimulate:''});await c.pending;
  same(f.calls.slice(before).filter(call=>call[1]==='POST'),[[base+'/op/reader-simulate-tap','POST',{}]]);
- assert.match(f.live(),/Approved/);assert.doesNotMatch(f.live(),/data-reader-payment-simulate/);
+ assert.match(f.live(),/paid by card/);assert.doesNotMatch(f.live(),/data-reader-payment-simulate/);
+ // One press only: while the answer is on its way the button is gone and a second press asks nothing.
+ const again=fixture([testReader]);await again.click({readerCopay:'appt'});again.ctx.next=op;await again.submit(again.form());
+ let answer;again.ctx.next=()=>new Promise(resolve=>{answer=resolve;});const sent=again.calls.length;
+ again.click({readerPaymentSimulate:''});again.click({readerPaymentSimulate:''});
+ assert.doesNotMatch(again.live(),/data-reader-payment-simulate/);assert.match(visibleText(again.live()),/Test card presented\. Waiting for the answer\./);
+ assert.equal(again.calls.slice(sent).filter(call=>call[1]==='POST').length,1);
+ // After a reload the listed payment offers Show progress, which brings the same panel back.
+ const listed=again.ctx.hostedCopayOperationMarkup(op);assert.match(listed,/data-watch-reader-copay="op"[^>]*>Show progress</);
+ assert.doesNotMatch(again.ctx.hostedCopayOperationMarkup({...op,status:'paid',receipt_id:'receipt'}),/data-watch-reader-copay/);
  // A real reader, a live payment, and a payment already finishing never offer it.
  const live=waitingOp=>c.readerPaymentMarkup({operation:waitingOp,readerName:'Front desk',simulateUrl:'x',simulated:true});
  assert.match(live(op),/data-reader-payment-simulate/);

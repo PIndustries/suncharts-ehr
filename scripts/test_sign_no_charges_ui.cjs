@@ -144,17 +144,17 @@ async function main(){
   async function signNextStepWordings(){
     const cases=[
       {label:'charges and checkout',checkout:true,billingVisible:true,billingAllowed:true,
-        asked:'Signing locks the clinical note. Continue to charges and checkout after signing. Later corrections are preserved as signed amendments.',
-        notice:'Note signed. Next: charges, then checkout.',landed:null},
+        asked:'Signing locks the clinical note. Continue to charges and the visit summary after signing. Later corrections are preserved as signed amendments.',
+        notice:'Note signed. Next: charges, then the visit summary.',landed:null},
       {label:'checkout off',checkout:false,billingVisible:true,billingAllowed:true,
         asked:'Signing locks the clinical note. Continue to charges after signing. Later corrections are preserved as signed amendments.',
         notice:'Note signed. Next: charges.',landed:null},
       {label:'billing off',checkout:true,billingVisible:false,billingAllowed:true,
-        asked:'Signing locks the clinical note. Continue to checkout after signing. Later corrections are preserved as signed amendments.',
-        notice:'Note signed. Next: checkout.',landed:null},
+        asked:'Signing locks the clinical note. Continue to the visit summary after signing. Later corrections are preserved as signed amendments.',
+        notice:'Note signed. Next: the visit summary.',landed:null},
       {label:'billing not allowed for the role',checkout:true,billingVisible:true,billingAllowed:false,
-        asked:'Signing locks the clinical note. Continue to checkout after signing. Later corrections are preserved as signed amendments.',
-        notice:'Note signed. Next: checkout.',landed:'section:checkout'},
+        asked:'Signing locks the clinical note. Continue to the visit summary after signing. Later corrections are preserved as signed amendments.',
+        notice:'Note signed. Next: the visit summary.',landed:'section:checkout'},
       {label:'both off',checkout:false,billingVisible:false,billingAllowed:true,
         asked:'Signing locks the clinical note. Later corrections are preserved as signed amendments.',
         notice:'Note signed.',landed:null},
@@ -170,7 +170,7 @@ async function main(){
       const notice=steps.find(step=>step.startsWith('notice:'));
       assert.equal(notice,'notice:'+testCase.notice,testCase.label+': the signed notice names only the steps shown');
       assert.ok(!steps.some(step=>step.startsWith('section:')),testCase.label+': signing leaves staff on the encounter page itself');
-      const named=/checkout/i.test(testCase.notice+testCase.asked);
+      const named=/visit summary/i.test(testCase.notice+testCase.asked);
       if(testCase.checkout===false)assert.ok(!named,testCase.label+': checkout is never mentioned');
     }
     console.log('PASS the sign question and signed notice skip chart areas the practice hid');

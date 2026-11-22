@@ -289,7 +289,7 @@ async function testJourneyCheckoutVisibility() {
   }
 
   let step = await stepFor(loaded);
-  assert.match(step, />Checkout</);
+  assert.match(step, />Wrap-up</);
   assert.match(step, /Instructions, charges and handoff/);
 
   step = await stepFor(checkoutOff);
@@ -299,7 +299,7 @@ async function testJourneyCheckoutVisibility() {
 
   // Home before the workspace settings have loaded treats checkout as shown.
   step = await stepFor(null);
-  assert.match(step, />Checkout</,'an unloaded settings read defaults checkout to shown');
+  assert.match(step, />Wrap-up</,'an unloaded settings read defaults checkout to shown');
   assert.match(step, /Instructions, charges and handoff/);
 
   // The count is visits with a saved note, and the click target, whichever title shows.
