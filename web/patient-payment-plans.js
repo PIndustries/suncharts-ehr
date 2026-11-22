@@ -398,9 +398,9 @@ async function takeInstallmentOnReader(s,form){
 }
 function showInstallmentReaderPayment(s,operation,planId,number){
  const host=installmentCollectionHost(s,planId);if(!host)return;
- const base='/api/v1/billing/invoice-checkouts/'+encodeURIComponent(operation.id),name=(s.paymentReaders||[]).find(reader=>reader.id===operation.reader_id)?.name;
+ const base='/api/v1/billing/invoice-checkouts/'+encodeURIComponent(operation.id),reader=(s.paymentReaders||[]).find(item=>item.id===operation.reader_id),name=reader?.name;
  host.innerHTML='<div id="reader-payment-live"></div>';host.scrollIntoView({block:'nearest'});
- watchReaderPayment({operation,readerName:name,statusUrl:base,cancelUrl:base+'/reader-cancel',accept:()=>{},
+ watchReaderPayment({operation,readerName:name,statusUrl:base,cancelUrl:base+'/reader-cancel',simulateUrl:base+'/reader-simulate-tap',simulated:reader?.simulated===true,accept:()=>{},
   again:async()=>{if(patientBillingCurrent(s)&&s.tab==='subscriptions')openInstallmentCollection(s,planId,number);},
   approved:()=>'<p>The payment is recorded in the patient ledger.</p>',
   // The plan is read again so its balance and history match, then the result is shown once more.

@@ -412,14 +412,16 @@ function readerPaymentStepsMarkup(state){
  const stopped=['offline','busy','declined','failed','cancelled','review'].includes(state.key);
  return `<ol class="reader-steps" aria-hidden="true">${readerPaymentSteps.map((label,index)=>`<li class="${index<at||state.key==='approved'&&index===at?'is-done':index===at?(stopped?'is-stopped':'is-current'):''}"><span></span>${esc(index===at&&stopped?state.text:label)}</li>`).join('')}</ol>`;
 }
+// A test payment on a test reader has no card to tap, so staff can stand in for the patient.
+function readerPaymentCanSimulate(live,state){return !!live.simulateUrl&&live.simulated===true&&live.operation?.livemode===false&&state.key==='waiting';}
 function readerPaymentMarkup(live){
  const state=readerPaymentState(live.operation,live.readerName),operation=live.operation;
- const actions=state.final?(state.key==='approved'?live.approved?.(operation)||'':state.key==='review'?'':'<button type="button" class="primary" data-reader-payment-again>Try again</button>')+'<button type="button" data-reader-payment-close>Close</button>':state.locked?'':'<button type="button" data-reader-payment-cancel>Cancel</button>';
- return `<section class="billing-section reader-payment" data-reader-payment="${esc(state.key)}"><h3>Card payment on reader</h3><p class="reader-amount">${money(operation.amount_cents)}${operation.livemode===false&&testPaymentLabel()?' · '+testPaymentLabel():''}</p>${readerPaymentStepsMarkup(state)}<p role="status" aria-live="polite" class="reader-state"><b>${esc(state.text)}</b></p>${state.help?`<p class="muted">${esc(state.help)}</p>`:''}${live.unreachable?'<p class="muted">Checking again…</p>':''}<div class="actions">${actions}</div></section>`;
+ const actions=state.final?(state.key==='approved'?live.approved?.(operation)||'':state.key==='review'?'':'<button type="button" class="primary" data-reader-payment-again>Try again</button>')+'<button type="button" data-reader-payment-close>Close</button>':state.locked?'':(readerPaymentCanSimulate(live,state)?'<button type="button" class="primary" data-reader-payment-simulate>Simulate card tap</button>':'')+'<button type="button" data-reader-payment-cancel>Cancel</button>';
+ return `<section class="billing-section reader-payment" data-reader-payment="${esc(state.key)}"><h3>Card payment on reader</h3><p class="reader-amount">${money(operation.amount_cents)}${operation.livemode===false&&testPaymentLabel()?' · '+testPaymentLabel():''}</p>${readerPaymentStepsMarkup(state)}<p role="status" aria-live="polite" class="reader-state"><b>${esc(state.text)}</b></p>${state.help?`<p class="muted">${esc(state.help)}</p>`:''}${readerPaymentCanSimulate(live,state)?'<p class="muted">This is a test reader. Simulate card tap stands in for the patient tapping a test card; no real card is charged.</p>':''}${live.unreachable?'<p class="muted">Checking again…</p>':''}<div class="actions">${actions}</div></section>`;
 }
 function paintReaderPayment(){const host=$('reader-payment-live'),live=readerPaymentLive;if(host&&live)host.innerHTML=readerPaymentMarkup(live);return !!host;}
 function stopReaderPayment(){if(readerPaymentLive)clearTimeout(readerPaymentLive.timer);readerPaymentLive=null;}
-// live: {operation, readerName, statusUrl, cancelUrl, accept(operation), approved(operation), again(), finished(operation)}
+// live: {operation, readerName, statusUrl, cancelUrl, simulateUrl, simulated, accept(operation), approved(operation), again(), finished(operation)}
 function watchReaderPayment(live){
  stopReaderPayment();live.identity=me;readerPaymentLive=live;paintReaderPayment();
  const settle=()=>{if(readerPaymentState(live.operation).final){clearTimeout(live.timer);live.timer=null;live.finished?.(live.operation);return true;}return false;};
@@ -433,6 +435,12 @@ function watchReaderPayment(live){
  };
  if(!settle())live.timer=setTimeout(tick,2000);
 }
+async function simulateReaderTap(){
+ const live=readerPaymentLive;if(!live?.simulateUrl)return;
+ const data=await api(live.simulateUrl,'POST',{});if(readerPaymentLive!==live)return;
+ live.accept(data.operation);live.operation=data.operation;paintReaderPayment();
+ if(readerPaymentState(live.operation).final){clearTimeout(live.timer);live.timer=null;live.finished?.(live.operation);}
+}
 async function cancelReaderPayment(){
  const live=readerPaymentLive;if(!live)return;
  const data=await api(live.cancelUrl,'POST',{});if(readerPaymentLive!==live)return;
@@ -442,6 +450,7 @@ async function cancelReaderPayment(){
 document.addEventListener('click',event=>{
  const button=event.target.closest?.('button');if(!button?.dataset)return;const d=button.dataset;
  if('readerPaymentCancel' in d){event.preventDefault();run(cancelReaderPayment);}
+ else if('readerPaymentSimulate' in d){event.preventDefault();run(simulateReaderTap);}
  else if('readerPaymentClose' in d){event.preventDefault();const host=$('reader-payment-live');stopReaderPayment();if(host)host.innerHTML='';}
  else if('readerPaymentAgain' in d){event.preventDefault();const again=readerPaymentLive?.again;stopReaderPayment();const host=$('reader-payment-live');if(host)host.innerHTML='';if(again)run(again);}
 });

@@ -437,6 +437,61 @@ pub(crate) async fn cancel(
     drive(pool, a, kind, id, broker, policy).await
 }
 
+/// Test payments only: asks SunCharts Connect to present a test card on a test reader, so a
+/// practice can try a reader payment from start to finish before it owns a reader. Nothing is
+/// recorded here; the payment is then read like any other and posts by the usual rule.
+pub(crate) async fn simulate_tap(
+    pool: &PgPool,
+    a: &Actor,
+    kind: Kind,
+    id: Uuid,
+    broker: &dyn Broker,
+    policy: Policy,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    let row = load(&mut tx, kind, a.tenant_id, id)
+        .await?
+        .ok_or(Error::NotFound)?;
+    tx.commit().await?;
+    if row.livemode
+        || policy.production
+        || row.reader_cancel_requested_at.is_some()
+        || !["creating", "open"].contains(&row.status.as_str())
+    {
+        return Err(Error::Invalid(
+            "A card tap can only be simulated for a test payment that is waiting on the reader.",
+        ));
+    }
+    let reply = broker
+        .reply(
+            pool,
+            &row.binding(),
+            Method::POST,
+            &format!("/terminal/payments/{}/simulate-tap", row.id),
+            Some(row.account()),
+        )
+        .await
+        .map_err(|_| unconfirmed())?;
+    if !(200..=299).contains(&reply.status) {
+        return Err(Error::Invalid(match reply.code() {
+            "reader_not_simulated" => "This is a real reader. Tap a test card on it instead.",
+            "reader_not_waiting" | "payment_cancelled" => {
+                "The reader is not waiting for a card. Start the payment again."
+            }
+            _ => "The card tap could not be simulated. Try again.",
+        }));
+    }
+    sqlx::query(&format!(
+        "UPDATE {} SET next_poll_at=now(),updated_at=now() WHERE tenant_id=$1 AND id=$2",
+        kind.table()
+    ))
+    .bind(a.tenant_id)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    drive(pool, a, kind, id, broker, policy).await
+}
+
 async fn poll(pool: &PgPool, broker: &dyn Broker, policy: Policy) -> Result<()> {
     for kind in [Kind::Copay, Kind::Invoice] {
         let due: Vec<(Uuid, Uuid)> = sqlx::query_as(&format!("SELECT tenant_id,id FROM {} WHERE channel='reader' AND status IN ('creating','open') AND ((livemode AND $1) OR (NOT livemode AND $2)) AND next_poll_at<=now() AND (lease_until IS NULL OR lease_until<now()) ORDER BY next_poll_at LIMIT 20", kind.table()))
@@ -561,7 +616,8 @@ fn reader(value: &Value) -> Option<Value> {
         "name":name,
         "model":model(value["device_type"].as_str().unwrap_or_default()),
         "online":value["status"]=="online",
-        "busy":value["action"]["status"]=="in_progress"
+        "busy":value["action"]["status"]=="in_progress",
+        "simulated":value["device_type"].as_str().is_some_and(|device|device.starts_with("simulated"))
     }))
 }
 fn model(device: &str) -> &'static str {

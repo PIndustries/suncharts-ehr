@@ -192,4 +192,23 @@ test('everything staff read is plain and short',async()=>{
  for(const page of pages){const text=visibleText(page);assert.doesNotMatch(text,/terminal|intent|session|server|simulated|connect|sandbox|payload|checkout/i,text);assert.doesNotMatch(text,/[—–]/,text);}
 });
 
+test('a test payment on a test reader offers Simulate card tap, and nothing else does',async()=>{
+ const testReader={...frontDesk,simulated:true},f=fixture([testReader]),c=f.ctx;await f.click({readerCopay:'appt'});
+ c.next=op;await f.submit(f.form());
+ assert.match(f.live(),/data-reader-payment-simulate>Simulate card tap</);assert.match(visibleText(f.live()),/no real card is charged/);
+ // Pressing it asks the server once and shows what came back.
+ const before=f.calls.length;c.next={...op,status:'paid',receipt_id:'receipt'};
+ f.click({readerPaymentSimulate:''});await c.pending;
+ same(f.calls.slice(before).filter(call=>call[1]==='POST'),[[base+'/op/reader-simulate-tap','POST',{}]]);
+ assert.match(f.live(),/Approved/);assert.doesNotMatch(f.live(),/data-reader-payment-simulate/);
+ // A real reader, a live payment, and a payment already finishing never offer it.
+ const live=waitingOp=>c.readerPaymentMarkup({operation:waitingOp,readerName:'Front desk',simulateUrl:'x',simulated:true});
+ assert.match(live(op),/data-reader-payment-simulate/);
+ assert.doesNotMatch(live({...op,livemode:true}),/data-reader-payment-simulate/);
+ assert.doesNotMatch(live({...op,last_result:'reader_finishing'}),/data-reader-payment-simulate/);
+ assert.doesNotMatch(c.readerPaymentMarkup({operation:op,readerName:'Front desk',simulateUrl:'x',simulated:false}),/data-reader-payment-simulate/);
+ const real=fixture([frontDesk]);await real.click({readerCopay:'appt'});real.ctx.next=op;await real.submit(real.form());
+ assert.doesNotMatch(real.live(),/data-reader-payment-simulate/);
+});
+
 (async()=>{let failed=0;for(const [name,fn] of tests){try{await fn();console.log('PASS '+name);}catch(error){failed++;console.error('FAIL '+name+'\n'+(error.stack||error.message));}}if(failed)process.exitCode=1;})().catch(error=>{console.error(error);process.exitCode=1;});

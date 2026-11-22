@@ -376,6 +376,7 @@ fn action(method: &Method, path: &str) -> Option<Action> {
                 "privacy-preview",
                 "read",
                 "reader-cancel",
+                "reader-simulate-tap",
                 "reconcile",
                 "patient-decisions",
                 "use-contact",
@@ -1052,6 +1053,16 @@ mod tests {
             (
                 Method::POST,
                 "/api/v1/billing/invoice-checkouts/{}/reader-cancel",
+                Action::Edit,
+            ),
+            (
+                Method::POST,
+                "/api/v1/patients/{}/appointments/{}/copay-checkouts/{}/reader-simulate-tap",
+                Action::Edit,
+            ),
+            (
+                Method::POST,
+                "/api/v1/billing/invoice-checkouts/{}/reader-simulate-tap",
                 Action::Edit,
             ),
         ] {

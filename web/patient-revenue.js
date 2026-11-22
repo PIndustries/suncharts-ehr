@@ -911,7 +911,7 @@ async function cancelCopayLink(appointment,id){
 function showReaderCopay(state,operation,panelId){
  const reader=(hostedCopayState.readers||[]).find(item=>item.id===operation.reader_id),base=`${hostedCopayBase(state)}/${encodeURIComponent(operation.id)}`;
  if(!drawReaderCopay(panelId,'<div id="reader-payment-live"></div>'))return;
- watchReaderPayment({operation,readerName:reader?.name,statusUrl:base,cancelUrl:`${base}/reader-cancel`,
+ watchReaderPayment({operation,readerName:reader?.name,statusUrl:base,cancelUrl:`${base}/reader-cancel`,simulateUrl:`${base}/reader-simulate-tap`,simulated:reader?.simulated===true,
   // Try again keeps the amount that was just attempted.
   again:()=>openReaderCopayEditor(state.appointment,panelId,operation.amount_cents),
   finished:done=>{if(collectDialog&&['paid','refunded'].includes(done.status))collectPartTaken(done.amount_cents,'card on the reader',done.receipt_id?{id:done.receipt_id}:null,done.appointment_id,{kind:'card'});},
