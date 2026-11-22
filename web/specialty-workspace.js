@@ -83,7 +83,7 @@ function configuredChartTabs(all){
 // the menu at all) has no row to customize. Its saved settings are kept as they are.
 function workspaceModuleOffMenu(key){const node=$(workspaceModuleIds[key]);return !node||node.dataset?.offMenu!==undefined;}
 function adminTabs(active){
- return `<nav class="chart-tabs practice-admin-nav" aria-label="Practice administration">${practiceAdminKinds.map(([key,label])=>`<button type="button" data-admin-tab="${key}" aria-pressed="false">${esc(label)}</button>`).join('')}<button type="button" data-admin-tab="workspace" aria-pressed="${active==='workspace'}">Customize menu</button><button type="button" data-go-nav="nav-apps">Integrations</button><button type="button" data-go-nav="nav-edi">Claim connections</button><button type="button" data-go-nav="nav-migration">Data import</button>${typeof renderTerminologyAdminEntry==='function'?renderTerminologyAdminEntry():''}</nav>`;
+ return `<nav class="chart-tabs practice-admin-nav" aria-label="Practice administration">${practiceAdminKinds.map(([key,label])=>`<button type="button" data-admin-tab="${key}" aria-pressed="false">${esc(label)}</button>`).join('')}<button type="button" data-admin-tab="workspace" aria-pressed="${active==='workspace'}">Customize menu</button><button type="button" data-go-nav="nav-apps">Integrations</button><button type="button" data-go-nav="nav-workflows">Workflow Studio</button><button type="button" data-go-nav="nav-edi">Claim connections</button><button type="button" data-go-nav="nav-migration">Data import</button>${typeof renderTerminologyAdminEntry==='function'?renderTerminologyAdminEntry():''}</nav>`;
 }
 function renderWorkspaceSettingsAdmin(target){
  const c=practiceWorkspaceSettings.content;
