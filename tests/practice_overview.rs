@@ -143,6 +143,30 @@ async fn overview_counts_patients_gaps_claims_and_money() {
     assert_eq!(v["money"]["collected_today_cents"], 0);
     assert!(v["money"]["payment_account_balance"].is_null());
     assert_eq!(v["trend"].as_array().unwrap().len(), 30);
+    // Money received is counted once per payment: a desk receipt on its day, a voided one not at all.
+    let appointment = Uuid::new_v4();
+    sqlx::query("INSERT INTO appointments(tenant_id,id,patient_id,clinician_id,starts_at,ends_at,status) VALUES($1,$2,$3,$4,now(),now()+interval '30 minutes','checked_in')").bind(f.tenant).bind(appointment).bind(selfpay).bind(Uuid::new_v4()).execute(&f.db).await.unwrap();
+    let (kept, voided) = (Uuid::new_v4(), Uuid::new_v4());
+    for (id, cents) in [(kept, 2500_i64), (voided, 1000)] {
+        sqlx::query("INSERT INTO billing_copay_receipts(tenant_id,id,patient_id,appointment_id,amount_cents,method,reference,occurred_on,reason,request_id,creation_hash,actor_id) VALUES($1,$2,$3,$4,$5,'cash','',(now() AT TIME ZONE 'America/New_York')::date,'Synthetic cash',$6,'x',$7)").bind(f.tenant).bind(id).bind(selfpay).bind(appointment).bind(cents).bind(Uuid::new_v4()).bind(Uuid::new_v4()).execute(&f.db).await.unwrap();
+    }
+    sqlx::query("INSERT INTO billing_copay_voids(tenant_id,receipt_id,reason,actor_id) VALUES($1,$2,'Synthetic void',$3)").bind(f.tenant).bind(voided).bind(Uuid::new_v4()).execute(&f.db).await.unwrap();
+    let (_, v) = call(
+        &f.app,
+        &f.cookie,
+        "GET",
+        "/api/v1/practice/overview?tz=America/New_York",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(v["money"]["collected_today_cents"], 2500);
+    assert_eq!(v["money"]["collected_month_cents"], 2500);
+    assert_eq!(
+        v["trend"].as_array().unwrap().last().unwrap()["collected_cents"],
+        2500,
+        "the 30-day line agrees with the tile"
+    );
     // An unknown time zone falls back to UTC rather than failing.
     let (status, v) = call(
         &f.app,

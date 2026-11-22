@@ -33,7 +33,7 @@ async function restorePatientBillingRoute(route){
 }
 function patientBillingShell(s){
  const patient=s.patient;
- const selector=s.surface==='global'?`<section class="patient-billing-selector" aria-label="Choose patient"><form id="billing-patient-search-form"><label for="billing-patient-search">Find a patient</label><div class="patient-billing-search-row"><input id="billing-patient-search" name="q" type="search" maxlength="100" autocomplete="off" placeholder="Name or medical record number"><button type="submit">Search</button>${s.patientId?'<button type="button" data-hub-all>All patients</button>':''}</div></form><div id="billing-patient-results" aria-live="polite"></div></section>`:'';
+ const selector=s.surface==='global'&&s.patientId?'<p class="patient-billing-back"><button type="button" class="text-button" data-hub-all>← All patients</button></p>':s.surface==='global'?`<section class="patient-billing-selector" aria-label="Choose patient"><form id="billing-patient-search-form"><label for="billing-patient-search">Find a patient</label><div class="patient-billing-search-row"><input id="billing-patient-search" name="q" type="search" maxlength="100" autocomplete="off" placeholder="Name or medical record number"><button type="submit">Search</button>${s.patientId?'<button type="button" data-hub-all>All patients</button>':''}</div></form><div id="billing-patient-results" aria-live="polite"></div></section>`:'';
  return `<header class="patient-billing-header"><div><p class="chart-record-label">PATIENT BILLING</p><h2 id="patient-billing-heading">${esc((s.patientId&&!patient?'Selected patient':patientBillingName(patient)))}</h2><p id="patient-billing-context">${s.patientId?(patient?`MRN ${esc(patient.mrn)}${patient.archived?' · Archived patient':''}`:'Loading selected patient…'):'Practice overview · choose a patient to manage their billing'}</p></div><div class="actions">${s.surface==='global'?'<button type="button" data-hub-tools>Practice billing tools</button>':''}${me.role==='owner'?'<button type="button" data-payment-settings>Practice payment settings</button>':''}</div></header>${selector}<nav class="patient-billing-tabs" role="tablist" aria-label="Patient billing">${patientBillingTabs.map(([key,label])=>`<button type="button" id="patient-billing-tab-${key}" role="tab" aria-controls="patient-billing-panel" aria-selected="${s.tab===key}" tabindex="${s.tab===key?0:-1}" data-hub-tab="${key}">${label}</button>`).join('')}</nav><div class="patient-billing-scope" ${['methods','subscriptions'].includes(s.tab)?'hidden':''}><label>Showing<select id="patient-billing-mode"><option value="recorded" ${s.mode==='recorded'?'selected':''}>Live payments</option><option value="test" ${s.mode==='test'?'selected':''}>Test payments</option></select></label></div><section id="patient-billing-panel" role="tabpanel" aria-labelledby="patient-billing-tab-${s.tab}" aria-live="polite"><p role="status">Loading billing records…</p></section><section id="patient-billing-preview" aria-live="polite" hidden></section>`;
 }
 function patientBillingState(host,surface,options={}){
@@ -225,7 +225,11 @@ function patientBillingProfileMarkup(data,tab,s){
  else{
   const items=tab==='subscriptions'&&s?.memberships?section.data.items.filter(item=>!s.memberships.some(m=>m.subscription_id===item.id)):section.data.items;
   const rows=items.map(item=>{
-   if(tab==='methods')return `<article class="patient-billing-card payment-card"><span class="payment-card-brand">${esc(human(item.brand||'Card'))}</span><strong class="payment-card-number">•••• ${esc(item.last4||'••••')}</strong><small>Expires ${esc(String(item.exp_month).padStart(2,'0'))}/${esc(item.exp_year)}</small><small class="payment-card-use">${item.charge_later===true?'Can be charged later':'Saved for in-person use - ask the patient to save it again to charge it later'}</small></article>`;
+   if(tab==='methods'){
+    // A saved card is drawn as a card: chip, brand, the last four digits and the expiry.
+    const brand=human(item.brand||'Card'),last4=item.last4||'••••',expires=`${String(item.exp_month).padStart(2,'0')}/${item.exp_year}`;
+    return `<article class="patient-billing-card payment-card-holder"><div class="payment-card payment-card-${esc(String(item.brand||'card').toLowerCase().replace(/[^a-z]/g,''))}" role="img" aria-label="${esc(brand)} card ending ${esc(last4)}, expires ${esc(expires)}"><span class="payment-card-chip" aria-hidden="true"></span><span class="payment-card-brand">${esc(brand)}</span><strong class="payment-card-number"><span aria-hidden="true">•••• •••• ••••</span> ${esc(last4)}</strong><span class="payment-card-exp"><small>Expires</small>${esc(expires)}</span></div><small class="payment-card-use">${item.charge_later===true?'Can be charged later':'Saved for in-person use - ask the patient to save it again to charge it later'}</small></article>`;
+   }
    if(tab==='subscriptions')return `<article class="patient-billing-card"><h4>${esc(human(item.status||'Status unavailable'))}</h4>${(item.items||[]).map(line=>`<p>${patientBillingAmount(line.unit_amount,item.currency)} per unit${line.interval?' every '+esc(line.interval_count||1)+' '+esc(line.interval):''} · quantity ${esc(line.quantity??'Not recorded')}</p><small>Current period: ${esc(patientBillingProviderDate(line.current_period_start))} – ${esc(patientBillingProviderDate(line.current_period_end))}</small>`).join('')}${item.cancel_at_period_end?'<p>Cancellation scheduled at period end.</p>':''}</article>`;
    return `<article class="patient-billing-card"><h4>${esc(human(item.status||'Status unavailable'))}</h4><p>Remaining ${patientBillingAmount(item.amount_remaining,item.currency)} · Paid ${patientBillingAmount(item.amount_paid,item.currency)}</p><p>Total ${patientBillingAmount(item.total,item.currency)}</p><small>Created ${esc(patientBillingProviderDate(item.created))}${item.due_date?' · Due '+esc(patientBillingProviderDate(item.due_date)):''}</small></article>`;
   }).join('');
@@ -261,10 +265,11 @@ function patientBillingSetupMarkup(s){
  const url=['open','pending'].includes(op.status)?patientBillingCheckoutUrl(op.session?.url):null;
  if(op.status==='expired'&&op.cancelled)labels.expired='Cancelled';
  const cancel=['creating','open','unknown'].includes(op.status)&&typeof billingCan==='function'&&billingCan('edit')?'<button type="button" data-hub-setup-cancel-link>Cancel link</button>':'';
- const waiting=!!url,finished=['succeeded','expired'].includes(op.status);
+ const waiting=!!url,finished=['succeeded','expired'].includes(op.status),inApp=op.session?.embedded===true&&op.status==='open';
+ if(inApp)return `<section class="mapping-notice card-setup" aria-live="polite"><h4>Finish adding the card</h4><p>Nothing is charged now. The card is typed into Stripe’s secure form here, and the patient agrees that the practice may charge it later.</p>${op.error?`<p role="status">${esc(op.error)}</p>`:''}<div class="card-setup-actions"><button type="button" class="primary" data-hub-setup-form>Enter the card</button>${cancel.replace('Cancel link','Cancel')}</div></section>`;
  const retry=op.retry_allowed&&Number.isFinite(Date.parse(op.retry_safe_until))&&Date.parse(op.retry_safe_until)>Date.now()&&typeof billingCan==='function'&&billingCan('create')?'<button type="button" data-hub-setup-retry>Try again</button>':'';
  const steps=waiting?`<ol class="card-setup-steps"><li><b>Enter the card</b><div class="card-setup-actions"><a class="button primary" href="${esc(url)}" rel="noreferrer" referrerpolicy="no-referrer">Enter it on this computer</a><a class="button" href="${esc(patientBillingSetupMailto(s,url))}">Email the link to the patient</a><button type="button" data-hub-setup-copy>Copy the link</button></div><label class="card-setup-link" hidden>Card link<input readonly value="${esc(url)}" data-hub-setup-link></label></li><li><b>After the card is entered</b><div class="card-setup-actions"><button type="button" data-hub-setup-refresh>Show the saved card</button></div></li></ol>`:'';
- return `<section class="mapping-notice card-setup" aria-live="polite"><h4>${esc(waiting?'Save a card for this patient':labels[op.status]||labels.unknown)}</h4><p>${op.status==='succeeded'?'The card is on file for this patient.':op.status==='expired'?'Start again to get a new link.':waiting?'Nothing is charged now. The patient agrees on the card page that the practice may charge the card later.':'Nothing is charged. The card shows here once Stripe confirms it.'}</p>${op.error?`<p role="status">${esc(op.error)}</p>`:''}${steps}<div class="card-setup-actions">${finished||waiting?'':'<button type="button" data-hub-setup-refresh>Check again</button>'}${retry}${cancel.replace('Cancel link','Cancel this link')}${finished?'<button type="button" data-hub-setup-dismiss>Done</button>':''}</div></section>`;
+ return `<section class="mapping-notice card-setup${op.status==='succeeded'?' is-saved':''}" aria-live="polite"><h4>${esc(waiting?'Save a card for this patient':labels[op.status]||labels.unknown)}</h4><p>${op.status==='succeeded'?'The card is on file for this patient.':op.status==='expired'?'Start again to get a new link.':waiting?'Nothing is charged now. The patient agrees on the card page that the practice may charge the card later.':'Nothing is charged. The card shows here once Stripe confirms it.'}</p>${op.error?`<p role="status">${esc(op.error)}</p>`:''}${steps}<div class="card-setup-actions">${finished||waiting?'':'<button type="button" data-hub-setup-refresh>Check again</button>'}${retry}${cancel.replace('Cancel link','Cancel this link')}${finished?'<button type="button" data-hub-setup-dismiss>Done</button>':''}</div></section>`;
 }
 function patientBillingShowSetupConsent(s){
  if(!patientBillingCurrent(s)||s.tab!=='methods'||!s.profile?.setup_available||!billingCan('create')||patientBillingSetupFor(s))return;
@@ -277,15 +282,71 @@ async function patientBillingCreateSetup(s,existing,openNow=false){
  const requestId=existing?.request_id||crypto.randomUUID(),op={...existing,request_id:requestId,patient_id:s.patientId,status:'creating',retry_safe_until:existing?.retry_safe_until||new Date(Date.now()+23*60*60*1000).toISOString()};
  patientBillingSetups.set(s.patientId,op);const target=patientBillingProfileTarget(s);target.innerHTML=patientBillingProfileMarkup(s.profile,'methods',s);
  try{
-  const result=await api(`/api/v1/billing/patients/${encodeURIComponent(s.patientId)}/payment-setups`,'POST',{request_id:requestId,consent:true});
+  const result=await api(`/api/v1/billing/patients/${encodeURIComponent(s.patientId)}/payment-setups`,'POST',{request_id:requestId,consent:true,...(openNow?{embedded:true}:{})});
   if(me!==s.identity)return;
   if(result.request_id!==requestId||result.patient_id!==s.patientId)throw new Error('The setup response did not match this patient and request.');
+  // What Stripe's form needs is used once and never kept with the request.
+  const form=result.form;delete result.form;
   patientBillingSetups.set(s.patientId,result);
+  // Add card opens the card form here, inside the app. Only when that form is not available
+  // does it go to Stripe's own page, as before.
+  if(openNow&&form&&result.status==='open'&&patientBillingCurrent(s)){if(patientBillingProfileTarget(s)===target)target.innerHTML=patientBillingProfileMarkup(s.profile,'methods',s);await patientBillingOpenCardForm(s,form);return;}
   // Add card goes straight to Stripe; the status box remains for when the patient returns.
   const stripe=openNow&&result.status==='open'?patientBillingCheckoutUrl(result.session?.url):null;
   if(stripe&&patientBillingCurrent(s)&&typeof location!=='undefined'&&typeof location.assign==='function'){location.assign(stripe);return;}
  }catch(error){if(me===s.identity)patientBillingSetups.set(s.patientId,{...op,status:'unknown',retry_allowed:false,error:error.message||'The setup response was not received. Check this request before starting another.'});}
  if(patientBillingCurrent(s)&&s.tab==='methods'&&patientBillingProfileTarget(s)===target)target.innerHTML=patientBillingProfileMarkup(s.profile,'methods',s);
+}
+// Stripe's card form, shown inside the app. The card number is typed into Stripe's own frame and
+// never reaches this page or the practice's server; the page only learns that the card was saved.
+let stripeScriptLoading=null;
+function loadStripeScript(){
+ if(typeof window!=='undefined'&&typeof window.Stripe==='function')return Promise.resolve(window.Stripe);
+ if(!stripeScriptLoading)stripeScriptLoading=new Promise((resolve,reject)=>{
+  const script=document.createElement('script');script.src='https://js.stripe.com/v3/';script.async=true;
+  script.onload=()=>typeof window.Stripe==='function'?resolve(window.Stripe):reject(new Error('The card form did not load.'));
+  script.onerror=()=>{stripeScriptLoading=null;script.remove();reject(new Error('The card form could not be loaded. Check the connection and try again.'));};
+  document.head.append(script);
+ });
+ return stripeScriptLoading;
+}
+let patientBillingCardForm=null;
+async function patientBillingOpenCardForm(s,form){
+ if(typeof sheetOpen!=='function'||!form?.client_secret||!form.publishable_key)return;
+ try{patientBillingCardForm?.destroy?.();}catch{}patientBillingCardForm=null;
+ const panel=document.createElement('div');panel.className='card-form';
+ panel.innerHTML='<p class="muted">Nothing is charged now. The card is typed into Stripe’s secure form; the practice never sees the full number.</p><p role="status" data-card-form-status>Loading the card form…</p><div class="card-form-mount" data-card-form-mount></div>';
+ const dialog=sheetOpen('Add a card',panel);dialog.classList.add('sheet-wide','card-form-sheet');
+ const status=panel.querySelector('[data-card-form-status]');let saved=false,checkout=null;
+ dialog.addEventListener('close',()=>{try{checkout?.destroy?.();}catch{}if(patientBillingCardForm===checkout)patientBillingCardForm=null;
+  // Closed with or without a card: read what Stripe has, so the list and the request are current.
+  if(me===s.identity&&patientBillingCurrent(s))run(()=>patientBillingRefreshSetup(s));},{once:true});
+ try{
+  const Stripe=await loadStripeScript();if(!dialog.isConnected)return;
+  const stripe=Stripe(form.publishable_key,{stripeAccount:form.account_id});
+  const finished=()=>{if(saved)return;saved=true;if(status){status.hidden=false;status.textContent='Card saved.';}setTimeout(()=>{if(dialog.isConnected)(typeof sheetClose==='function'?sheetClose(dialog):dialog.close());},700);};
+  // Stripe has named this call two ways over time; whichever this copy of its script has is used.
+  const start=typeof stripe.createEmbeddedCheckoutPage==='function'?'createEmbeddedCheckoutPage':'initEmbeddedCheckout';
+  checkout=await stripe[start]({fetchClientSecret:async()=>form.client_secret,onComplete:finished});
+  if(!dialog.isConnected){checkout.destroy();return;}
+  // The form's own signal is not relied on alone: the request is read every few seconds while
+  // the sheet is open, and the sheet closes as soon as Stripe confirms the card.
+  const watch=setInterval(async()=>{
+   if(!dialog.isConnected||saved){clearInterval(watch);return;}
+   try{const op=patientBillingSetupFor(s);if(!op)return;const now=await api('/api/v1/billing/payment-setups/'+encodeURIComponent(op.request_id));if(now.request_id===op.request_id&&now.status==='succeeded'){clearInterval(watch);finished();}}catch{}
+  },4000);
+  dialog.addEventListener('close',()=>clearInterval(watch),{once:true});
+  patientBillingCardForm=checkout;checkout.mount(panel.querySelector('[data-card-form-mount]'));if(status&&!saved)status.hidden=true;
+ }catch(error){if(status){status.hidden=false;status.textContent=(error?.message||'The card form could not be loaded.')+' You can close this and use “Send the patient a link” instead.';}}
+}
+// An unfinished in-app request: read it again for a fresh form and open it.
+async function patientBillingReopenCardForm(s){
+ const op=patientBillingSetupFor(s);if(!op||!patientBillingCurrent(s))return;
+ const result=await api('/api/v1/billing/payment-setups/'+encodeURIComponent(op.request_id));
+ if(me!==s.identity||result.request_id!==op.request_id||result.patient_id!==s.patientId)return;
+ const form=result.form;delete result.form;patientBillingSetups.set(s.patientId,result);
+ if(form&&result.status==='open'){await patientBillingOpenCardForm(s,form);return;}
+ if(patientBillingCurrent(s)&&s.tab==='methods')await loadPatientBillingProfile(s,s.panelRequest);
 }
 async function patientBillingRefreshSetup(s){
  const op=patientBillingSetupFor(s);if(!op||!patientBillingCurrent(s))return;
@@ -440,6 +501,7 @@ document.addEventListener('click',event=>{
  else if(button.hasAttribute('data-hub-setup-copy')){const link=patientBillingCheckoutUrl(patientBillingSetupFor(s)?.session?.url);if(link){const showLink=()=>{const field=button.closest('section')?.querySelector('[data-hub-setup-link]');if(!field)return;field.closest('label').hidden=false;field.focus();field.select();button.textContent='Copy it from the box below';};Promise.resolve().then(()=>navigator.clipboard?.writeText?navigator.clipboard.writeText(link):Promise.reject(new Error('unavailable'))).then(()=>{button.textContent='Link copied';},showLink);}}
  else if(button.hasAttribute('data-hub-setup-cancel')){patientBillingProfileTarget(s).innerHTML=patientBillingProfileMarkup(s.profile,'methods',s);}
  else if(button.hasAttribute('data-hub-setup-refresh'))run(()=>patientBillingRefreshSetup(s));
+ else if(button.hasAttribute('data-hub-setup-form'))run(()=>patientBillingReopenCardForm(s));
  else if(button.hasAttribute('data-hub-setup-cancel-link'))run(()=>patientBillingCancelSetup(s));
  else if(d.balanceSavedCard)run(()=>openBalanceSavedCard(s,d.balanceSavedCard));
  else if(d.balanceClose){const slot=patientBillingBalanceSlot(s,d.balanceClose);if(slot)slot.replaceChildren();}

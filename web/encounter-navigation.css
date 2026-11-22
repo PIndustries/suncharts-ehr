@@ -19,3 +19,10 @@
  .patient-encounter-history .section-head,.encounter-history-row{align-items:flex-start;flex-wrap:wrap}
  .encounter-history-row>button{margin-top:4px}
 }
+
+/* The short encounter list on the chart overview: the words take the width, the button sits
+   beside them and drops underneath when the card is narrow. Nothing is squeezed into a column. */
+.chart-history-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px 12px}
+.chart-history-row>div{flex:1 1 200px;min-width:0}
+.chart-history-row strong,.chart-history-row small{display:block;overflow-wrap:normal;word-break:normal}
+.chart-history-row>button{flex:0 0 auto}

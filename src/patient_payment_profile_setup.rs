@@ -103,7 +103,39 @@ fn clean_setup(c: &Context, tenant: Uuid, op: &Setup, raw: &Value) -> Result<Val
         let v = &raw["session"];
         let id = identifier(&v["id"], if c.live { "cs_live_" } else { "cs_test_" })?;
         let session_status = choice_field(v, "status", &["open", "complete", "expired"])?;
-        let url = if session_status == "open" {
+        // The card form shown inside the EHR has no page of its own. While it is open the broker
+        // sends what Stripe's form needs; that is handed to the browser once and never stored.
+        let embedded = v["embedded"] == true;
+        let plain = |text: &str, prefix: &str, max: usize| {
+            text.starts_with(prefix)
+                && text.len() <= max
+                && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        };
+        if embedded && session_status == "open" {
+            // Stripe's secret continues with URL-safe text, not only letters and digits.
+            let secret = v["client_secret"]
+                .as_str()
+                .filter(|text| {
+                    text.starts_with(&format!("{id}_secret_"))
+                        && text.len() <= 2048
+                        && text
+                            .bytes()
+                            .all(|b| b.is_ascii_graphic() && !b"\"'<>\\`".contains(&b))
+                })
+                .ok_or_else(invalid)?;
+            let key = raw["publishable_key"]
+                .as_str()
+                .filter(|text| plain(text, if c.live { "pk_live_" } else { "pk_test_" }, 200))
+                .ok_or_else(invalid)?;
+            out["form"] =
+                json!({"client_secret":secret,"publishable_key":key,"account_id":c.account});
+        }
+        let url = if embedded {
+            if !v["url"].is_null() {
+                return Err(invalid());
+            }
+            Value::Null
+        } else if session_status == "open" {
             let text = v["url"].as_str().ok_or_else(invalid)?;
             let url = url::Url::parse(text).map_err(|_| invalid())?;
             if text.len() > 4096
@@ -171,7 +203,11 @@ fn clean_setup(c: &Context, tenant: Uuid, op: &Setup, raw: &Value) -> Result<Val
         if status != expected || recovery {
             return Err(invalid());
         }
-        json!({"id":id,"url":url,"status":session_status,"setup_intent_id":intent,"setup_intent_status":intent_status,"payment_method_id":pm})
+        let mut session = json!({"id":id,"url":url,"status":session_status,"setup_intent_id":intent,"setup_intent_status":intent_status,"payment_method_id":pm});
+        if embedded {
+            session["embedded"] = json!(true);
+        }
+        session
     };
     if session.is_null() && recovery != (status == "needs_review") {
         return Err(invalid());
@@ -224,6 +260,9 @@ async fn store(
 pub(in crate::payments) struct Input {
     request_id: Uuid,
     consent: bool,
+    /// Ask for the card form shown inside the EHR instead of Stripe's own page.
+    #[serde(default)]
+    embedded: bool,
 }
 
 pub(in crate::payments) async fn create(
@@ -323,6 +362,9 @@ async fn create_with(
     if op.consent_scope == crate::saved_card_payments::CONSENT_SCOPE {
         body["consent_scope"] = json!(op.consent_scope);
         body["consent_version"] = json!(op.consent_version);
+    }
+    if v.embedded {
+        body["embedded"] = json!(true);
     }
     let raw = source
         .request(
@@ -443,10 +485,18 @@ async fn complete(
                         .await
                         .is_ok()
             );
+            // What Stripe's form needs goes to the browser with this answer only: it is taken
+            // out before the evidence is saved.
+            let form = value
+                .as_object_mut()
+                .and_then(|fields| fields.remove("form"));
             store(&mut tx, a, &current, &mut value).await?;
             crate::postgres::audit(&mut tx, a, "payment.patient_setup_verified", op.request_id)
                 .await?;
             tx.commit().await?;
+            if let Some(form) = form {
+                value["form"] = form;
+            }
             Ok(response(value))
         }
         Err(error) => {

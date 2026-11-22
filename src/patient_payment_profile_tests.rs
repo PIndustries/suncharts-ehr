@@ -127,6 +127,18 @@ impl Source for Fake {
             } else {
                 json!({"id":"cs_test_synthetic","url":if complete{Value::Null}else{json!("https://checkout.stripe.com/c/pay/synthetic#stripe-fragment")},"status":if complete{"complete"}else{"open"},"setup_intent_id":if complete{json!("seti_synthetic")}else{Value::Null},"setup_intent_status":if complete{json!("succeeded")}else{Value::Null},"payment_method_id":if complete{json!("pm_synthetic")}else{Value::Null},"client_secret":"must-not-leak"})
             };
+            // The card form shown inside the EHR: no page, a client secret and the public key.
+            if mode == "embedded" || mode == "embedded_wrong_key" {
+                out["session"]["url"] = Value::Null;
+                out["session"]["embedded"] = json!(true);
+                out["session"]["client_secret"] =
+                    json!("cs_test_synthetic_secret_fidSynthetic%2FY2Rpdm-Fw.~x");
+                out["publishable_key"] = json!(if mode == "embedded" {
+                    "pk_test_synthetic"
+                } else {
+                    "pk_live_synthetic"
+                });
+            }
             out["retry_safe_until"] = json!(Utc::now() + chrono::Duration::hours(23));
             out["recovery_required"] = json!(mode == "review");
             // The broker echoes the consent it reserved, and closes a link it is asked to expire
@@ -384,6 +396,65 @@ async fn setup_lost_before_broker_is_recoverable_but_explicit_refusal_is_not() {
         2
     );
     f.untouched().await;
+}
+#[tokio::test]
+async fn the_card_form_inside_the_ehr_is_handed_to_the_browser_and_never_stored() {
+    let f = Fixture::new().await;
+    let request = Uuid::new_v4();
+    let create = format!("/api/v1/billing/patients/{}/payment-setups", f.patient);
+    f.fake.set("embedded");
+    let (status, v) = f
+        .call(
+            "POST",
+            &create,
+            json!({"request_id":request,"consent":true,"embedded":true}),
+            false,
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["status"], "open");
+    assert_eq!(v["session"]["embedded"], true);
+    assert_eq!(v["session"]["url"], Value::Null);
+    assert_eq!(
+        v["form"],
+        json!({"client_secret":"cs_test_synthetic_secret_fidSynthetic%2FY2Rpdm-Fw.~x","publishable_key":"pk_test_synthetic","account_id":"acct_synthetic"})
+    );
+    // What is kept as evidence has the session, and neither the secret nor the key.
+    let kept: Value = sqlx::query_scalar(
+        "SELECT provider_evidence FROM patient_payment_setups WHERE tenant_id=$1 AND request_id=$2",
+    )
+    .bind(f.actor.tenant_id)
+    .bind(request)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(kept["session"]["id"], "cs_test_synthetic");
+    assert!(!kept.to_string().contains("secret") && !kept.to_string().contains("pk_test"));
+    // Reading it again while it is open hands out the form again, for a closed sheet reopened.
+    let (status, again) = f
+        .call(
+            "GET",
+            &format!("/api/v1/billing/payment-setups/{request}"),
+            Value::Null,
+            false,
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{again}");
+    assert_eq!(again["form"]["publishable_key"], "pk_test_synthetic");
+    // A key for the other payment mode is refused whole.
+    f.fake.set("embedded_wrong_key");
+    let (status, _) = f
+        .call(
+            "GET",
+            &format!("/api/v1/billing/payment-setups/{request}"),
+            Value::Null,
+            false,
+            None,
+        )
+        .await;
+    assert_ne!(status, 200);
 }
 #[tokio::test]
 async fn setup_lost_response_resumes_exact_request_and_never_posts_money() {

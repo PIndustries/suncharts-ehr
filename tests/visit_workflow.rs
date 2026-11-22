@@ -790,7 +790,7 @@ async fn standalone_browser_sessions_require_origin_and_revoke_on_logout() {
         policy.contains("script-src 'self' https://connect-js.stripe.com https://js.stripe.com;")
     );
     assert!(
-        policy.contains("frame-src 'self' https://connect-js.stripe.com https://js.stripe.com;")
+        policy.contains("frame-src 'self' https://connect-js.stripe.com https://js.stripe.com https://checkout.stripe.com https://hooks.stripe.com;")
     );
     assert!(policy.contains("frame-ancestors 'none'"));
     assert!(!gui.headers().contains_key("cross-origin-opener-policy"));

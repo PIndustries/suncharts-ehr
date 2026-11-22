@@ -84,9 +84,14 @@ assert.deepEqual(cell(b,'Charges'),['Posted','$280.00']);assert.doesNotMatch(b,/
 b=ctx.visitBillingBreakdown(visitSummary(),all);
 assert.match(b,/Insurance: Synthetic Medicare PPO/);assert.deepEqual(cell(b,'Insurance paid'),['Not sent yet','$0.00']);assert.equal(cell(b,'Insurance pending')[1],'$270.00');
 assert.deepEqual(cell(b,'Copay \\$10\\.00'),['Paid','$10.00']);assert.match(b,/<tr class="visit-billing-receipts"><th scope="row">Patient paid<\/th><td>1 payment · [^]*?<td class="money-cell">\$10\.00<\/td><\/tr>/);
-assert.deepEqual(cell(b,'Patient owes now'),['The plan copay, until the insurer answers','$0.00']);assert.doesNotMatch(b,/data-visit-collect/,'a paid copay offers nothing to collect');
+assert.deepEqual(cell(b,'Patient owes now'),['Paid. Nothing more is due unless the insurer says so','$0.00']);assert.doesNotMatch(b,/data-visit-collect/,'a paid copay offers nothing to collect');
+// What is due decides whether a payment is offered at all, and how a settled encounter reads.
+assert.deepEqual(JSON.parse(JSON.stringify(ctx.visitBillingDue(visitSummary()))),{due:0,copayOnly:false,paid:1000,paidUp:true,label:'Nothing due now',note:'Paid. Nothing more is due unless the insurer says so'});
+assert.match(ctx.visitBillingTotalsLine(visitSummary()),/<small>Patient paid<\/small><b>\$10\.00 · Nothing due now<\/b>/);
+{const draft=visitSummary({account:{id:'a',status:'draft'},patient:{copay_cents:2500,copay_paid_cents:0,copay_due_cents:2500,owes_now_cents:0},receipts:[]}),d=ctx.visitBillingDue(draft);assert.equal(d.due,2500);assert.equal(d.copayOnly,true);assert.equal(d.paidUp,false);assert.match(ctx.visitBillingTotalsLine(draft),/class="is-due"><small>Copay due now<\/small><b>\$25\.00/);const rows=ctx.visitBillingBreakdown(draft,all);assert.deepEqual(cell(rows,'Copay due now'),['The rest is set when the charges are posted','$25.00']);assert.match(rows,/Not paid yet/);}
+{const done=selfPay();done.patient={...done.patient,owes_now_cents:0};done.receipts=[{id:'r',amount_cents:28000,method:'cash'}];done.insurance={...(done.insurance||{}),pending_cents:0};const d=ctx.visitBillingDue(done);assert.equal(d.paidUp,true);assert.equal(d.label,'Paid in full');assert.match(ctx.visitBillingTotalsLine(done),/Patient paid<\/small><b>\$280\.00 · Paid in full/);}
 b=ctx.visitBillingBreakdown(visitSummary({patient:{copay_cents:2500,copay_paid_cents:0,copay_due_cents:2500,received_cents:0,owes_now_cents:2500},receipts:[]}),all);
-assert.match(cell(b,'Copay \\$25\\.00')[0],/^Due <button type="button" class="text-button" data-visit-collect>Collect<\/button>$/);assert.doesNotMatch(b,/visit-billing-receipts/);assert.equal(cell(b,'Patient owes now')[1],'$25.00');
+assert.match(cell(b,'Copay \\$25\\.00')[0],/^Not paid yet <button type="button" class="text-button" data-visit-collect>Collect<\/button>$/);assert.doesNotMatch(b,/visit-billing-receipts/);assert.equal(cell(b,'Patient owes now')[1],'$25.00');
 assert.doesNotMatch(ctx.visitBillingBreakdown(visitSummary({patient:{copay_cents:2500,copay_paid_cents:0,copay_due_cents:2500,received_cents:0,owes_now_cents:2500},receipts:[]}),{canCreate:false}),/data-visit-collect/);
 b=ctx.visitBillingBreakdown(visitSummary({state:'waiting_insurer',insurance:{status:'waiting',sent_on:'2026-11-12'}}),all);
 assert.deepEqual(cell(b,'Insurance paid'),['Waiting since Nov 12, 2026','$0.00']);assert.deepEqual(cell(b,'Insurance pending'),['Waiting on the insurer’s answer','$270.00']);
@@ -101,19 +106,19 @@ assert.deepEqual(cell(b,'Paid more than owed'),['Refund it or keep it as a credi
 b=ctx.visitBillingBreakdown(selfPay({patient:{unapplied_cents:1500,received_cents:1500},receipts:[{id:'r2',appointment_id:'appointment',amount_cents:1500,method:'card',occurred_on:'2026-11-12',voided:false}]}),all);
 assert.match(cell(b,'Paid but not applied yet')[0],/data-apply-copays/);assert.match(b,/<th scope="row">Patient paid<\/th>/);
 assert.match(ctx.visitBillingBreakdown(visitSummary({patient:{receipt_needs_review:true}}),all),/A payment for this encounter needs review/);
-b=ctx.visitBillingBreakdown(visitSummary({patient:{copay_cents:2500,copay_paid_cents:1000,copay_due_cents:1500,owes_now_cents:1500}}),all);assert.match(cell(b,'Copay \\$25\\.00')[0],/^\$10\.00 paid, \$15\.00 due <button[^>]*data-visit-collect>Collect<\/button>$/);assert.equal(cell(b,'Copay \\$25\\.00')[1],'$10.00');
+b=ctx.visitBillingBreakdown(visitSummary({patient:{copay_cents:2500,copay_paid_cents:1000,copay_due_cents:1500,owes_now_cents:1500}}),all);assert.match(cell(b,'Copay \\$25\\.00')[0],/^\$10\.00 paid, \$15\.00 still due <button[^>]*data-visit-collect>Collect<\/button>$/);assert.equal(cell(b,'Copay \\$25\\.00')[1],'$10.00');
 b=ctx.visitBillingBreakdown(visitSummary({patient:{received_cents:1500,other_patient_payments_cents:500}}),all);assert.deepEqual(cell(b,'Other patient payments'),['','$5.00']);b=ctx.visitBillingBreakdown(selfPay({patient:{other_patient_payments_cents:4000}}),all);assert.deepEqual(cell(b,'Patient payments'),['','$40.00']);
 // A copay the plan never recorded but the insurer reported: the card says where it came from.
 const fromCheck=visitSummary({state:'waiting_insurer',waiting_on:'insurer',insurance:{status:'waiting',sent_on:'2026-11-12',pending_cents:27000},patient:{copay_cents:1500,copay_paid_cents:0,copay_due_cents:1500,paid_above_copay_cents:0,received_cents:0,receipts_applied_cents:0,other_patient_payments_cents:0,responsibility_cents:0,responsibility_source:'insurer_check_copay',owes_now_cents:0,copay_from_insurer_check:true,copay_source_date:'2026-11-10'},receipts:[],claim:{status:'submitted',sent_on:'2026-11-12'}});
 b=ctx.visitBillingBreakdown(fromCheck,all);
-assert.deepEqual(cell(b,'Copay \\$15\\.00'),['from the insurer check on Nov 10, 2026','$0.00']);
+assert.deepEqual(cell(b,'Copay \\$15\\.00'),['from the insurer check on Nov 10, 2026','']);
 assert.deepEqual(cell(b,'Patient owes now'),['Based on the insurer check on Nov 10, 2026','$0.00']);
 assert.doesNotMatch(b,/No copay recorded for this plan|The plan copay, until the insurer answers/,'a copay from the check is neither missing nor the plan\'s own');
 // A date the server did not send is never invented, and the plain copay rows are unchanged.
 b=ctx.visitBillingBreakdown(visitSummary({...fromCheck,patient:{...fromCheck.patient,copay_source_date:null}}),all);
-assert.deepEqual(cell(b,'Copay \\$15\\.00'),['from the insurer check on ','$0.00']);
+assert.deepEqual(cell(b,'Copay \\$15\\.00'),['from the insurer check on ','']);
 b=ctx.visitBillingBreakdown(visitSummary(),all);
-assert.deepEqual(cell(b,'Copay \\$10\\.00'),['Paid','$10.00']);assert.deepEqual(cell(b,'Patient owes now'),['The plan copay, until the insurer answers','$0.00']);
+assert.deepEqual(cell(b,'Copay \\$10\\.00'),['Paid','$10.00']);assert.deepEqual(cell(b,'Patient owes now'),['Paid. Nothing more is due unless the insurer says so','$0.00']);
 b=ctx.visitBillingBreakdown(visitSummary({patient:{copay_cents:null,copay_paid_cents:null,copay_due_cents:null,paid_above_copay_cents:null,received_cents:0,receipts_applied_cents:0,other_patient_payments_cents:0,responsibility_cents:0,responsibility_source:'copay_not_recorded',owes_now_cents:0,copay_from_insurer_check:false,copay_source_date:null},receipts:[]}),all);
 assert.match(b,/<th scope="row">Copay<\/th><td>No copay recorded for this plan<\/td><td class="money-cell"><\/td>/);assert.deepEqual(cell(b,'Patient owes now'),['Nothing until the insurer answers','$0.00']);
 // Amounts are only formatted: every money cell is exactly a value the server sent.

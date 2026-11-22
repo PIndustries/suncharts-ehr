@@ -66,7 +66,7 @@ function practiceDashboardMarkup(d){
  const tiles=[
   practiceTile('schedule','Today’s patients',String(appointments.length),`${arrived} arrived`),
   practiceTile('followup','Unfinished encounters',unfinished?String(unfinished.total):'—','Notes to finish',unfinished?.total?'attention':''),
-  o?.claims?practiceTile('claims','Claims needing attention',String(attention),`${practiceClaimCount(o,'draft')+practiceClaimCount(o,'ready')} ready to send`,attention?'attention':''):'',
+  o?.claims?(toSend=>practiceTile('claims','Claims to send',String(toSend),attention?`${attention} ${attention===1?'needs':'need'} correcting`:'None need correcting',toSend||attention?'attention':''))(practiceClaimCount(o,'draft')+practiceClaimCount(o,'ready')):'',
   o?.money?practiceTile('claims','Waiting on insurers',practiceMoney(o.money.waiting_on_insurers_cents),`${practiceClaimCount(o,'submitted')+practiceClaimCount(o,'accepted')} claims sent`):'',
   o?.money?practiceTile('billing','Collected today',practiceMoney(o.money.collected_today_cents),`${practiceMoney(o.money.collected_month_cents)} this month`,'good'):'',
   o?.money?practiceTile('billing','Charges this month',practiceMoney(o.money.charges_month_cents),o.money.payment_account_balance?`Payout account ${practiceMoney(o.money.payment_account_balance.available_cents)}`:'Posted visit charges'):''

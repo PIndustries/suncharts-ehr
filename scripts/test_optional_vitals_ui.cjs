@@ -81,7 +81,9 @@ function fixture(vitals){
  return {context,run,nodes,requests,notices,vitalsForm,editor,type,submit,
   vitalsHtml:()=>{const html=editor();return html.slice(html.indexOf('id="vitals-form"'),html.indexOf('</form>',html.indexOf('id="vitals-form"')));}};
 }
-const full={systolic_mm_hg:120,diastolic_mm_hg:80,heart_rate_bpm:72,temperature_c:36.8,weight_kg:70,height_cm:175,oxygen_saturation_pct:98};
+// Temperature, weight and height are typed in US units (°F, lb, in) and kept in metric.
+const typed={systolic_mm_hg:120,diastolic_mm_hg:80,heart_rate_bpm:72,temperature_c:98.6,weight_kg:154,height_cm:69,oxygen_saturation_pct:98};
+const full={systolic_mm_hg:120,diastolic_mm_hg:80,heart_rate_bpm:72,temperature_c:37,weight_kg:69.85,height_cm:175.3,oxygen_saturation_pct:98};
 async function main(){
  // Every box is optional and an unmeasured box renders empty, never a placeholder.
  let f=fixture({heart_rate_bpm:72});
@@ -111,12 +113,12 @@ async function main(){
 
  // All seven still save and read back identically.
  f=fixture({});
- f.type(Object.fromEntries(Object.entries(full).map(([key,value])=>[key,String(value)])));
+ f.type(Object.fromEntries(Object.entries(typed).map(([key,value])=>[key,String(value)])));
  await f.submit();
- assert.deepEqual(f.requests.find(r=>r.method==='PUT').body,full,'a full record is sent exactly as before');
+ assert.deepEqual(f.requests.find(r=>r.method==='PUT').body,full,'a full record is sent in metric');
  assert.deepEqual(JSON.parse(f.run('JSON.stringify(activeVisit.vitals)')),full,'all seven read back unchanged');
  f.run('renderVisit(false)');
- for(const [key,value] of Object.entries(full))assert.equal(f.vitalsForm().values[key],String(value),`${key} keeps its saved value`);
+ for(const [key,value] of Object.entries(typed))assert.equal(f.vitalsForm().values[key],String(value),`${key} comes back as it was typed`);
  console.log('PASS all seven measurements still save and read back identically');
 
  // Half a blood pressure is refused by the server and keeps the typed value on screen.
