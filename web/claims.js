@@ -626,11 +626,15 @@ function updateClaimStatusSurfaces(claim,context=claimContextSnapshot(),detail={
  requireClaimContext(context,claim);const host=claimWorkspaceHost(context);if(!host)return;
  // The claim page as it stands, with the next step and the status word replaced where they sit. The
  // panels inside More details keep whatever the person has opened and typed into.
- const page=host.innerHTML;
- const withPrimary=replaceMarkupSection(page,'data-claim-primary',claimPrimaryActionMarkup(claim,detail,{connectionNotice:claimConnectionNotice(claim,detail),secondaryEvidence:secondaryEvidenceMarkup(claim)}));
- const withStatus=replaceMarkupSection(withPrimary,'data-claim-current-status',`<span class="status-badge claim-status-word" data-claim-current-status>${esc(claimPlainStatus(claim,detail))}</span>`);
- const withVersion=replaceMarkupSection(withStatus,'data-claim-current-version',`<small class="claim-control" data-claim-current-version>${esc(claim.control_number)} · v${claim.version}</small>`);
- if(withVersion!==page)host.innerHTML=withVersion;
+ const sections=[['data-claim-primary',claimPrimaryActionMarkup(claim,detail,{connectionNotice:claimConnectionNotice(claim,detail),secondaryEvidence:secondaryEvidenceMarkup(claim)})],['data-claim-current-status',`<span class="status-badge claim-status-word" data-claim-current-status>${esc(claimPlainStatus(claim,detail))}</span>`],['data-claim-current-version',`<small class="claim-control" data-claim-current-version>${esc(claim.control_number)} · v${claim.version}</small>`]];
+ // Each section is swapped where it stands. The page is never written back as a whole: doing that
+ // rebuilt every form on it and threw away what was being typed.
+ if(typeof HTMLElement!=='undefined'&&host instanceof HTMLElement){
+  for(const [attribute,markup] of sections){const node=host.querySelector(`[${attribute}]`);if(node&&node.outerHTML!==markup)node.outerHTML=markup;}
+  return;
+ }
+ const page=host.innerHTML,next=sections.reduce((html,[attribute,markup])=>replaceMarkupSection(html,attribute,markup),page);
+ if(next!==page)host.innerHTML=next;
 }
 // Swaps one labelled section of the drawn page for its new markup, matching on the opening tag so
 // the section's own nesting is respected. Returns the page untouched when that section is not on it,
