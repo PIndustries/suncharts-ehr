@@ -1706,7 +1706,9 @@ async fn one_card_charge_pays_several_encounters_each_by_its_own_part() {
     assert_eq!(account_net(&pool, account_two).await, -4000);
     // Each encounter reads only its own part.
     let mut tx = pool.begin().await.unwrap();
-    let rows = billing::copay_rows(&mut tx, &a, patient, None).await.unwrap();
+    let rows = billing::copay_rows(&mut tx, &a, patient, None)
+        .await
+        .unwrap();
     drop(tx);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["amount_cents"], 9000);
@@ -1722,9 +1724,10 @@ async fn one_card_charge_pays_several_encounters_each_by_its_own_part() {
         vec![(2500, 2500), (4000, 4000), (2500, 0)]
     );
     let mut tx = pool.begin().await.unwrap();
-    let balances = crate::visit_billing::balances(&mut tx, a.tenant_id, Some(&[patient]), None, None)
-        .await
-        .unwrap();
+    let balances =
+        crate::visit_billing::balances(&mut tx, a.tenant_id, Some(&[patient]), None, None)
+            .await
+            .unwrap();
     drop(tx);
     let owed = |account: Uuid| {
         balances
