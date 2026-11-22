@@ -1385,7 +1385,7 @@ function collectDoneMarkup(amount,label,receiptButton){
  const owed=several?collectSession.encounters.filter(e=>e.on||e.paid>0).reduce((sum,e)=>sum+e.owes,0):Number.isSafeInteger(collectSession.owedAtOpen)?collectSession.owedAtOpen:0;
  const taken=collectTakenCents(),parts=collectSession.taken.length,over=Math.max(0,taken-owed);
  const head=parts>1?`${money(taken)} paid in ${parts} parts`:`${money(amount)} ${esc(label)} recorded`;
- const sentence=over>0?(over<taken?`${money(over)} more than ${several?'these encounters':'this encounter'} owed stays as credit on the patient's account.`:`${money(taken)} stays as credit on the patient's account. This encounter owed nothing.`):several&&paidFor>1?`The payment is shared between ${paidFor} encounters.`:several&&paidFor===1&&!collectSession.encounters.find(e=>e.paid>0&&e.appointment===collectSession.current)?'The payment goes to the encounter you chose.':'The payment goes to this encounter\'s balance.';
+ const sentence=over>0?(over<taken?`${money(over)} more than ${several?'these encounters':'this encounter'} owed stays as credit on the patient's account.`:`${money(taken)} stays as credit on the patient's account. This encounter owed nothing.`):several&&paidFor>1?`The payment is shared between ${paidFor} encounters.`:several&&paidFor===1&&!collectSession.encounters.find(e=>e.paid>0&&e.appointment===collectSession.current)?'The payment goes to the encounter you chose.':collectSession.copayOnly?'The copay is applied when this encounter\'s charges are posted.':'The payment goes to this encounter\'s balance.';
  return `<section class="collect-done" role="status"><div class="collect-done-mark" aria-hidden="true">✓</div><h3>${head}</h3><p class="muted">${sentence}</p><div class="actions">${receiptButton}<button type="button" class="primary" data-sheet-close>Done</button></div></section>`;
 }
 function collectOwedMarkup(){
@@ -1397,12 +1397,12 @@ function collectOwedMarkup(){
  const copay=p.copay_cents!=null?`<li><span>Plan copay</span><b>${money(p.copay_cents)}</b>${p.copay_due_cents===0?'<em class="is-paid">Paid</em>':p.copay_paid_cents?`<em>${money(p.copay_paid_cents)} paid · ${money(p.copay_due_cents)} due</em>`:'<em>Due</em>'}</li>`:'';
  const paidTotal=receipts.reduce((sum,r)=>sum+Number(r.amount_cents||0)-Number(r.refunded_cents||0),0),payments=new Set(receipts.map(r=>r.payment_group_id||r.id)).size;
  const paid=receipts.length?`<li><span>Paid on this encounter</span><b>${money(paidTotal)}</b><em title="${esc(receipts.map(r=>`${money(r.amount_cents)} ${r.method==='card'?'card':r.method||''}`).join(', '))}">${payments===1?'1 payment':payments+' payments'}</em></li>`:'';
- const credit=Number(p.unapplied_cents||0)>0?`<li class="has-credit"><span>Credit on account</span><b>${money(p.unapplied_cents)}</b><button type="button" data-apply-copays>Use ${money(p.unapplied_cents)} credit</button></li>`:'';
+ const credit=Number(p.unapplied_cents||0)>0&&(typeof encounterChargeAccount==='function'?encounterChargeAccount():null)?.status==='posted'?`<li class="has-credit"><span>Credit on account</span><b>${money(p.unapplied_cents)}</b><button type="button" data-apply-copays>Use ${money(p.unapplied_cents)} credit</button></li>`:'';
  const account=typeof encounterChargeAccount==='function'?encounterChargeAccount():null,lines=account?.content?.lines||[];
  const items=lines.length?`<details class="collect-lines"${lines.length<=4?' open':''}><summary>${lines.length} ${lines.length===1?'charge':'charges'} · ${money(account.total_cents??lines.reduce((sum,l)=>sum+Number(l.amount_cents||0),0))}</summary><ul>${lines.map(l=>`<li><span><b>${esc(l.code)}</b>${l.modifiers?' · '+esc(l.modifiers):''} ${esc(l.description||'')}</span><span>${Number(l.units)>1?esc(String(l.units))+' × ':''}${money(l.amount_cents)}</span></li>`).join('')}</ul>${summary?.insurance?.insured&&p.owes_now_cents!=null&&summary.charges_cents!=null?`<p class="muted">Insurance is billed for the rest; the patient pays their share now.</p>`:''}</details>`:'';
  const posted=account?.status==='posted',dueBefore=!posted&&p.copay_due_cents!=null?p.copay_due_cents:null;
  const standing=typeof visitBillingDue==='function'?visitBillingDue(summary):null;
- const settled=standing&&standing.due===0?`<p class="collect-settled" role="status">${standing.paidUp?`✓ ${standing.note}.`:'Nothing is due on this encounter right now.'}</p>`:'';
+ const settled=standing&&standing.due===0?`<p class="collect-settled" role="status">${standing.paidUp?`✓ ${standing.note}.`:Number(p.copay_cents)>0&&p.copay_due_cents===0&&Number(p.copay_paid_cents)>0?'✓ Copay paid. It is applied when the charges are posted.':'Nothing is due on this encounter right now.'}</p>`:'';
  return `${items}${settled}<div class="collect-owed"><span>${number?esc(number)+' · ':''}${dueBefore!=null?'Copay due now':'Patient owes now'}</span><b>${dueBefore!=null?money(dueBefore):owes==null?'—':money(owes)}</b>${dueBefore!=null?'<small>The rest is set when the charges are posted.</small>':''}</div>${copay||paid||credit?`<ul class="collect-paid-so-far">${copay}${paid}${credit}</ul>`:''}`;
 }
 function openCollectModal(){
@@ -1414,7 +1414,7 @@ function openCollectModal(){
  // What this encounter owed when the window opened, frozen for the success panel: the same
  // 'Patient owes now' figure staff read on the window itself, in cents.
  const current=collectAppointmentId();
- collectSession={target:due,owedAtOpen:Number.isSafeInteger(owes)&&owes>0?owes:0,taken:[],group:crypto.randomUUID(),encounters:current&&due?[{appointment:current,owes:due,paid:0,on:true}]:[],current,typed:false};
+ collectSession={target:due,owedAtOpen:due||0,copayOnly:!(Number.isSafeInteger(owes)&&owes>0)&&due>0,taken:[],group:crypto.randomUUID(),encounters:current&&due?[{appointment:current,owes:due,paid:0,on:true}]:[],current,typed:false};
  head.innerHTML=`<div data-collect-owed>${collectOwedMarkup()}</div><div data-collect-encounters></div><div data-collect-progress>${collectProgressMarkup()}</div><nav class="invoice-tabs collect-methods" role="tablist" aria-label="How the patient is paying">${collectMethods.map(([key,label])=>`<button type="button" role="tab" data-collect-method="${key}" aria-selected="false">${label}</button>`).join('')}</nav><div data-collect-holder></div>`;
  panel.hidden=false;
  const dialog=sheetOpen('Collect payment',panel);dialog.classList.add('sheet-wide','collect-sheet');collectDialog=dialog;
@@ -1497,17 +1497,18 @@ function encounterBarSync(){
  const card=node?.querySelector?.('.visit-billing-card'),state=card?.getAttribute?.('data-visit-billing-state')||'';
  let bar=$('encounter-bar');
  const status=card?.querySelector?.('.visit-billing-status');
- if(!status||!state||state==='add_charges'){bar?.remove?.();return;}
+ // Before any charges exist the bar is only shown when a copay is due, so it can be taken at check-in.
+ const standing=typeof visitBillingDue==='function'?visitBillingDue(encounterRevenueState?.data?.summary):{due:1};
+ if(!status||!state||(state==='add_charges'&&!(typeof visitBillingDue==='function'&&standing.due>0))){bar?.remove?.();return;}
  const totals=card.querySelector('.visit-billing-totals'),sent=card.querySelector('.visit-billing-sent'),table=card.querySelector('.visit-billing-breakdown');
  // When the patient owes something on this encounter, taking the payment is one press away from
  // the bar, whatever the next billing step is. It opens the same payment sheet (card on file,
  // card reader, payment link) as the Payments part of the Billing tab. Not repeated when the
  // next step is itself the payment.
  // Shown only while something is due: once the encounter is paid, the bar says so and offers nothing to take.
- const standing=typeof visitBillingDue==='function'?visitBillingDue(encounterRevenueState?.data?.summary):{due:1};
  const collectable=standing.due>0&&!!card.querySelector('[data-visit-collect]')&&!status.querySelector?.('[data-visit-collect]');
  const takePayment=collectable?'<button type="button" class="primary encounter-bar-pay" data-visit-collect>Take payment</button>':'';
- const html=`${status.outerHTML}${totals?totals.outerHTML.replace(/<\/p>$/,`${table?'<button type="button" class="text-button" data-money-details>Money details</button>':''}${takePayment}</p>`):''}${sent?sent.outerHTML:''}`;
+ const html=`${status.outerHTML}${totals?totals.outerHTML.replace(/<\/p>$/,`${table?'<button type="button" class="text-button" data-money-details>Money details</button>':''}${takePayment}</p>`):takePayment?`<p class="visit-billing-totals"><span class="is-due"><small>${standing.copayOnly?'Copay due now':'Patient owes now'}</small><b>${money(standing.due)}</b></span>${takePayment}</p>`:''}${sent?sent.outerHTML:''}`;
  if(!bar){
   bar=document.createElement('section');bar.id='encounter-bar';bar.className='encounter-bar';bar.setAttribute('aria-label','Where this encounter stands');
   const after=$('encounter-progress');page.insertBefore(bar,after?.parentNode===page?after.nextSibling:page.firstChild);
