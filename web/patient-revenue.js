@@ -1400,7 +1400,9 @@ function collectOwedMarkup(){
  const account=typeof encounterChargeAccount==='function'?encounterChargeAccount():null,lines=account?.content?.lines||[];
  const items=lines.length?`<details class="collect-lines"${lines.length<=4?' open':''}><summary>${lines.length} ${lines.length===1?'charge':'charges'} · ${money(account.total_cents??lines.reduce((sum,l)=>sum+Number(l.amount_cents||0),0))}</summary><ul>${lines.map(l=>`<li><span><b>${esc(l.code)}</b>${l.modifiers?' · '+esc(l.modifiers):''} ${esc(l.description||'')}</span><span>${Number(l.units)>1?esc(String(l.units))+' × ':''}${money(l.amount_cents)}</span></li>`).join('')}</ul>${summary?.insurance?.insured&&p.owes_now_cents!=null&&summary.charges_cents!=null?`<p class="muted">Insurance is billed for the rest; the patient pays their share now.</p>`:''}</details>`:'';
  const posted=account?.status==='posted',dueBefore=!posted&&p.copay_due_cents!=null?p.copay_due_cents:null;
- return `${items}<div class="collect-owed"><span>${number?esc(number)+' · ':''}${dueBefore!=null?'Copay due now':'Patient owes now'}</span><b>${dueBefore!=null?money(dueBefore):owes==null?'—':money(owes)}</b>${dueBefore!=null?'<small>The rest is set when the charges are posted.</small>':''}</div>${copay||paid||credit?`<ul class="collect-paid-so-far">${copay}${paid}${credit}</ul>`:''}`;
+ const standing=typeof visitBillingDue==='function'?visitBillingDue(summary):null;
+ const settled=standing&&standing.due===0?`<p class="collect-settled" role="status">${standing.paidUp?`✓ ${standing.note}.`:'Nothing is due on this encounter right now.'}</p>`:'';
+ return `${items}${settled}<div class="collect-owed"><span>${number?esc(number)+' · ':''}${dueBefore!=null?'Copay due now':'Patient owes now'}</span><b>${dueBefore!=null?money(dueBefore):owes==null?'—':money(owes)}</b>${dueBefore!=null?'<small>The rest is set when the charges are posted.</small>':''}</div>${copay||paid||credit?`<ul class="collect-paid-so-far">${copay}${paid}${credit}</ul>`:''}`;
 }
 function openCollectModal(){
  const panel=$('visit-billing-collect');if(!panel)return false;
@@ -1500,7 +1502,9 @@ function encounterBarSync(){
  // the bar, whatever the next billing step is. It opens the same payment sheet (card on file,
  // card reader, payment link) as the Payments part of the Billing tab. Not repeated when the
  // next step is itself the payment.
- const collectable=!!card.querySelector('[data-visit-collect]')&&!status.querySelector?.('[data-visit-collect]');
+ // Shown only while something is due: once the encounter is paid, the bar says so and offers nothing to take.
+ const standing=typeof visitBillingDue==='function'?visitBillingDue(encounterRevenueState?.data?.summary):{due:1};
+ const collectable=standing.due>0&&!!card.querySelector('[data-visit-collect]')&&!status.querySelector?.('[data-visit-collect]');
  const takePayment=collectable?'<button type="button" class="primary encounter-bar-pay" data-visit-collect>Take payment</button>':'';
  const html=`${status.outerHTML}${totals?totals.outerHTML.replace(/<\/p>$/,`${table?'<button type="button" class="text-button" data-money-details>Money details</button>':''}${takePayment}</p>`):''}${sent?sent.outerHTML:''}`;
  if(!bar){

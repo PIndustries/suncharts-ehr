@@ -214,8 +214,8 @@ function visitBillingBreakdown(s,ctx={}){
  const copay=p.copay_cents,links=visitBillingReceiptEntries(receipts).map(entry=>entry.group?`<button type="button" class="text-button" data-payment-group="${esc(entry.group)}" data-appointment="${esc(entry.appointment)}">Receipt: Payment ${money(entry.total)} · ${esc(entry.tenders)}</button>`:`<button type="button" class="text-button" data-copay-receipt="${esc(entry.receipt.id)}" data-appointment="${esc(entry.receipt.appointment_id)}">Receipt: ${money(entry.receipt.amount_cents)}${visitBillingReceiptNote(entry.receipt)?' '+esc(visitBillingReceiptNote(entry.receipt)):''}</button>`).join(' ');
  if(copay!=null){
   const fromCheck=p.copay_from_insurer_check,due=p.copay_due_cents,paidTowards=p.copay_paid_cents;
-  const note=fromCheck?`from the insurer check on ${esc(visitBillingDate(p.copay_source_date))}`:due===0?'Paid':paidTowards>0?`${money(paidTowards)} paid, ${money(due)} due ${collect}`:`Due ${collect}`;
-  rows+=row(`Copay ${money(copay)}`,note,money(paidTowards));
+  const note=fromCheck?`from the insurer check on ${esc(visitBillingDate(p.copay_source_date))}`:due===0?'Paid':paidTowards>0?`${money(paidTowards)} paid, ${money(due)} still due ${collect}`:`Not paid yet ${collect}`;
+  rows+=row(`Copay ${money(copay)}`,note,paidTowards>0?money(paidTowards):'');
  }else if(i.insured)rows+=row('Copay','No copay recorded for this plan','');
  if(p.other_patient_payments_cents)rows+=row(copay!=null?'Other patient payments':'Patient payments','',money(p.other_patient_payments_cents));
  // One line for what the patient paid; each payment and its receipt are in the Payments list.
@@ -225,7 +225,9 @@ function visitBillingBreakdown(s,ctx={}){
  if(p.unapplied_cents>0)rows+=row('Paid but not applied yet',posted&&s.balance_cents>0&&ctx.canWrite?'<button type="button" class="text-button" data-apply-copays>Apply to this encounter</button>':'Credit on the patient’s account',money(p.unapplied_cents));
  if(p.overpaid_cents>0)rows+=row('Paid more than owed','Refund it or keep it as a credit',money(p.overpaid_cents));
  const basis=p.copay_from_insurer_check?`Based on the insurer check on ${esc(visitBillingDate(p.copay_source_date))}`:({self_pay:'No insurance on this encounter',plan_copay:'The plan copay, until the insurer answers',reviewed_statement:'What the latest statement says, less what they paid',copay_not_recorded:posted?'Nothing until the insurer answers':'',insurer_response:'What the insurer says the patient owes, less what they paid',not_final:'Set when the charges are posted'}[p.responsibility_source]||'');
- rows+=row('Patient owes now',basis,money(p.owes_now_cents),'visit-billing-total');
+ const standing=visitBillingDue(s);
+ if(standing.copayOnly)rows+=row('Copay due now','The rest is set when the charges are posted',money(standing.due),'visit-billing-total');
+ else rows+=row('Patient owes now',standing.paidUp?standing.note:basis,money(p.owes_now_cents),'visit-billing-total');
  return `<table class="visit-billing-breakdown"><caption class="sr-only">Money for this encounter</caption><tbody>${rows}</tbody></table>${p.receipt_needs_review?'<p role="status">A payment for this encounter needs review. Open History before collecting again.</p>':''}`;
 }
 function visitBillingMore(s,ctx={}){
@@ -244,10 +246,21 @@ function visitBillingMore(s,ctx={}){
 }
 // The money in one line, for the Billing areas where the full table would push the work down the
 // page. The table itself stays on Payments.
+// What can be collected on this encounter right now, and whether the patient has paid all of it.
+// Before the charges are posted only the plan copay can be due.
+function visitBillingDue(s){
+ const p=s?.patient||{},posted=s?.account?.status==='posted',owes=Number(p.owes_now_cents)||0,copay=posted?0:Number(p.copay_due_cents)||0;
+ const paid=(s?.receipts||[]).filter(r=>!r.voided).reduce((sum,r)=>sum+Number(r.amount_cents||0)-Number(r.refunded_cents||0),0);
+ const due=owes>0?owes:copay;
+ // 'Paid in full' is only said once the charges are final.
+ // While the insurer has not answered, more may still fall to the patient, so it is 'nothing due now'.
+ const waiting=Number(s?.insurance?.pending_cents)>0;
+ return {due,copayOnly:owes<=0&&copay>0,paid,paidUp:posted&&due===0&&paid>0,label:waiting?'Nothing due now':'Paid in full',note:waiting?'Paid. Nothing more is due unless the insurer says so':'Paid in full'};
+}
 function visitBillingTotalsLine(s){
  if(s.charges_cents==null)return '';
  const i=s.insurance||{},p=s.patient||{},item=(label,value,tone='')=>`<span${tone?` class="${tone}"`:''}><small>${label}</small><b>${value}</b></span>`;
- return `<p class="visit-billing-totals">${item('Charges',money(s.charges_cents))}${i.insured?item(i.paid_cents>0?'Insurance paid':'Insurance pending',money(i.paid_cents>0?i.paid_cents:i.pending_cents||0)):''}${p.overpaid_cents>0?item('Patient credit',money(p.overpaid_cents)):''}${item('Patient owes now',money(p.owes_now_cents||0),p.owes_now_cents>0?'is-due':'is-clear')}</p>`;
+ return `<p class="visit-billing-totals">${item('Charges',money(s.charges_cents))}${i.insured?item(i.paid_cents>0?'Insurance paid':'Insurance pending',money(i.paid_cents>0?i.paid_cents:i.pending_cents||0)):''}${p.overpaid_cents>0?item('Patient credit',money(p.overpaid_cents)):''}${(d=>d.copayOnly?item('Copay due now',money(d.due),'is-due'):d.paidUp?item('Patient paid',money(d.paid)+' · '+d.label,'is-clear'):item('Patient owes now',money(p.owes_now_cents||0),p.owes_now_cents>0?'is-due':'is-clear'))(visitBillingDue(s))}</p>`;
 }
 function visitBillingCardMarkup(s,ctx={}){
    const status=visitBillingStatus(s,ctx),owing=['patient_owes','self_pay_collect'].includes(s.state),posted=s.account?.status==='posted';
