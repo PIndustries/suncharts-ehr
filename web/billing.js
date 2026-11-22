@@ -809,6 +809,15 @@ function addChargeRow(){
  captureBillingChargeDraft();
  scheduleChargeAutosave(form);
 }
+// A second line like this one, right under it: same code, words, modifiers, units, diagnoses and
+// amount, ready to be changed (a different side, a different modifier). It is saved like any edit.
+function duplicateChargeRow(form,row){
+ const line=chargeRowValue(row);if(!line.code)return;
+ row.insertAdjacentHTML('afterend',chargeRow(line,form.dataset.compact==='true',chargeLineKey(null,chargeLiveRows(form).length)));
+ const copy=row.nextElementSibling;copy?.classList?.add('charge-row-new');
+ chargeTableTotals(form);renderChargeRowProblems(form);captureBillingChargeDraft();scheduleChargeAutosave(form);
+ (copy?.querySelector?.('input[name="modifiers"]')||copy?.querySelector?.('input[name="procedure"]'))?.focus?.();
+}
 function removeChargeRow(form,row){
  chargeRowCapture(row);
  row.dataset.chargeRemoved='true';
@@ -1257,7 +1266,7 @@ function restoreChargeTyping(form,typing){
  chargeTableTotals(form);
 }
 function chargeRow(l={},compact=false,key=''){
- return `<tr class="billing-charge-row"${key?` data-charge-key="${key}"`:''} ${!l.code&&l.amount_cents==null&&!(l.diagnosis_codes||[]).length?'data-diagnoses-default="pending"':''} data-catalog-release-id="${esc(l.catalog_release_id||'')}" data-catalog-code="${esc(l.code||'')}" data-catalog-display="${esc(l.description||'')}" data-catalog-system="${esc(l.code_system||chargeCodeSystem(l))}" data-charge-system="${esc(l.code_system||chargeCodeSystem(l))}"${l.amount_cents==null?'':' data-charge-amount="'+l.amount_cents+'"'}${l.fee_schedule_id?` data-fee-schedule="${esc(l.fee_schedule_id)}"`:''}${l.fee_entry_key?` data-fee-entry="${esc(l.fee_entry_key)}"`:''}><td class="charge-cell-code">${chargeCodeCell(l)}${chargeDescriptionCell(l)}${chargeRowExtras(l,compact)}</td><td class="charge-cell-modifiers">${compact?`<label>Modifiers<input name="modifiers" type="text" value="${esc(l.modifiers||'')}" maxlength="100" readonly placeholder="None"></label><div class="modifier-options" data-modifier-options></div>`:chargeMiniField('modifiers','Modifiers',l.modifiers||'',100)+'<div class="modifier-options" data-modifier-options></div>'}</td><td class="charge-cell-units"><label>Units<input name="units" type="number" min="1" max="1000" step="1" value="${l.units===undefined?1:l.units}" required></label></td><td class="charge-cell-diagnoses">${chargeDiagnosisCell(l)}</td><td class="charge-cell-amount">${chargeMiniField('amount','Amount',dollars(l.amount_cents),30,true)}${typeof feeLineMarkup==='function'?feeLineMarkup(l):''}${l.source_fee!==undefined?`<p class="mapping-notice">Source fee: ${esc(l.source_fee)} · Check whether that was the whole line or one unit, then enter the amount for the whole line.</p>`:''}</td><td class="charge-cell-remove"><button type="button" data-remove-charge>Remove</button></td>${chargeLineTail(l)}</tr>`;
+ return `<tr class="billing-charge-row"${key?` data-charge-key="${key}"`:''} ${!l.code&&l.amount_cents==null&&!(l.diagnosis_codes||[]).length?'data-diagnoses-default="pending"':''} data-catalog-release-id="${esc(l.catalog_release_id||'')}" data-catalog-code="${esc(l.code||'')}" data-catalog-display="${esc(l.description||'')}" data-catalog-system="${esc(l.code_system||chargeCodeSystem(l))}" data-charge-system="${esc(l.code_system||chargeCodeSystem(l))}"${l.amount_cents==null?'':' data-charge-amount="'+l.amount_cents+'"'}${l.fee_schedule_id?` data-fee-schedule="${esc(l.fee_schedule_id)}"`:''}${l.fee_entry_key?` data-fee-entry="${esc(l.fee_entry_key)}"`:''}><td class="charge-cell-code">${chargeCodeCell(l)}${chargeDescriptionCell(l)}${chargeRowExtras(l,compact)}</td><td class="charge-cell-modifiers">${compact?`<label>Modifiers<input name="modifiers" type="text" value="${esc(l.modifiers||'')}" maxlength="100" readonly placeholder="None"></label><div class="modifier-options" data-modifier-options></div>`:chargeMiniField('modifiers','Modifiers',l.modifiers||'',100)+'<div class="modifier-options" data-modifier-options></div>'}</td><td class="charge-cell-units"><label>Units<input name="units" type="number" min="1" max="1000" step="1" value="${l.units===undefined?1:l.units}" required></label></td><td class="charge-cell-diagnoses">${chargeDiagnosisCell(l)}</td><td class="charge-cell-amount">${chargeMiniField('amount','Amount',dollars(l.amount_cents),30,true)}${typeof feeLineMarkup==='function'?feeLineMarkup(l):''}${l.source_fee!==undefined?`<p class="mapping-notice">Source fee: ${esc(l.source_fee)} · Check whether that was the whole line or one unit, then enter the amount for the whole line.</p>`:''}</td><td class="charge-cell-remove"><button type="button" data-remove-charge>Remove</button><button type="button" data-duplicate-charge>Duplicate</button></td>${chargeLineTail(l)}</tr>`;
 }
 // The browser can only point at an invalid control that is visible, so the tucked-away visit,
 // insurance and fee fields are opened before validation runs whenever one of them fails.
@@ -1549,6 +1558,7 @@ document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||
  if(b.hasAttribute('data-add-charge')){addChargeRow();return;}
  if(b.hasAttribute('data-charge-proposal-blank')){e.preventDefault();chargeProposalStartBlank(b.closest('#billing-account-form'));return;}
  if(b.hasAttribute('data-remove-charge')){const form=b.closest('#billing-account-form'),row=b.closest('.billing-charge-row');if(form&&row)removeChargeRowTable(form,row);return;}
+ if(b.hasAttribute('data-duplicate-charge')){const form=b.closest('#billing-account-form'),row=b.closest('.billing-charge-row');if(form&&row)duplicateChargeRow(form,row);return;}
  if(b.dataset.undoCharge!==undefined){const form=b.closest('#billing-account-form');undoChargeRemoval(form);return;}
  if(b.dataset.retryChargeSave!==undefined){const form=b.closest('#billing-account-form');if(form){delete form.dataset.chargeConflict;setChargeStatus(form,'saving');scheduleChargeAutosave(form,0);}return;}
   if(b.hasAttribute('data-visit-charges-overview')){billingEditorHost()?.replaceChildren();return;}

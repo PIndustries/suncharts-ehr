@@ -694,6 +694,24 @@ async fn procedure_codes_offer_practice_codes_first_and_hide_disabled_rows() {
         found["items"][0],
         json!({"code":"99214","system":"CPT","display":"Synthetic office visit"})
     );
+    // An empty box asks for the codes the practice bills most: the one it billed twice comes
+    // before the one it billed once, and nothing is offered that was never billed or listed.
+    let frequent = format!("/api/v1/patients/{p}/procedure-codes?frequent=true");
+    post_charge(&f, p, "99214", "Synthetic office visit").await;
+    post_charge(&f, p, "64616", "Synthetic injection").await;
+    let (status, most) = call(&f.app, &f.cookie, "GET", &frequent, Value::Null, None).await;
+    assert_eq!(status, StatusCode::OK, "{most}");
+    assert_eq!(most["frequent"], json!(true));
+    let most: Vec<&str> = most["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(most, vec!["99214", "64616"]);
+    // Without the flag an empty search still answers nothing, as before.
+    let (_, empty) = call(&f.app, &f.cookie, "GET", &codes(""), Value::Null, None).await;
+    assert_eq!(empty["items"], json!([]));
     // Adding the practice row puts it first and adds its pricing fields.
     let (status, item) = create(
         &f.app,
