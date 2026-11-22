@@ -112,6 +112,7 @@ function markVisitDiagnosesSaved(form,host,data){
 }
 async function finishVisitDiagnosisSave(form,submitted,account,autosave){
  const id=form.dataset.visitId,patient=form.dataset.patientId,version=Number(form.dataset.version);
+ visitDiagnosisLoads.delete(id);
  let data;try{data=await api(`/api/v1/visits/${id}/diagnoses`,'PUT',submitted,version);}finally{visitDiagnosisPending.delete(id);if(autosave)visitDiagnosisAutosave.busy=false;}
  if(me!==account)return;
  const existing=visitDiagnosisDrafts.get(id),visible=$('visit-diagnoses-form')===form&&activeVisit?.id===id&&selected===patient,latest=visible?visitDiagnosisFormValues(form):existing?.values||submitted;

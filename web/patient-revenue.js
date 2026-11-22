@@ -96,7 +96,7 @@ async function visitReceiptEvidence(appointmentId){
  if(!visit)return null;
  const account=(workspace?.billing?.accounts||[]).filter(a=>a.status!=='void'&&a.content?.visit_id===visit.id).pop()||null;
  let diagnoses=null;
- try{const data=await api(`/api/v1/visits/${encodeURIComponent(visit.id)}/diagnoses`);diagnoses=(data?.diagnoses||[]).filter(d=>d&&String(d.code||'').trim()).sort((a,b)=>(a.rank??99)-(b.rank??99));}catch{}
+ try{const data=await (typeof visitDiagnosisLoad==='function'?visitDiagnosisLoad(visit.id):api(`/api/v1/visits/${encodeURIComponent(visit.id)}/diagnoses`));diagnoses=(data?.diagnoses||[]).filter(d=>d&&String(d.code||'').trim()).sort((a,b)=>(a.rank??99)-(b.rank??99));}catch{}
  return {visit,account,diagnoses,lines:Array.isArray(account?.content?.lines)?account.content.lines:[]};
 }
 function visitReceiptServiceDate(evidence){return evidence?.account?.content?.service_date||'';}
