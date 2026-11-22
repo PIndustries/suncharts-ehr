@@ -192,14 +192,25 @@ function ledgerReferenceText(reference){
 // their place, so a number never moves to another payment.
 function receiptNumberFor(appointmentId,key){
  const keys=[];
- for(const r of [...(typeof workspace!=='undefined'&&workspace?.billing?.copays||[])].filter(r=>r.appointment_id===appointmentId).sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at))||String(a.id).localeCompare(String(b.id)))){const k=r.payment_group_id||r.id;if(!keys.includes(k))keys.push(k);}
+ for(const r of copaysForAppointment(appointmentId).sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at))||String(a.id).localeCompare(String(b.id)))){const k=r.payment_group_id||r.id;if(!keys.includes(k))keys.push(k);}
  const n=keys.indexOf(key)+1;if(!n)return '';
  const encounter=typeof encounterNumberForAppointment==='function'?encounterNumberForAppointment(appointmentId):'';
  return encounter?`${encounter}-${String(n).padStart(2,'0')}`:`Payment ${n} on this visit`;
 }
+// Payments as one encounter sees them. A card charge divided between encounters shows on each
+// of them, with only that encounter's part.
+function copaysForAppointment(appointmentId){
+ const out=[];
+ for(const r of (typeof workspace!=='undefined'&&workspace?.billing?.copays||[])){
+  const parts=r.hosted_checkout?.splits;
+  if(Array.isArray(parts)){const part=parts.find(p=>p.appointment_id===appointmentId);if(part)out.push({...r,appointment_id:appointmentId,payment_cents:r.amount_cents,amount_cents:part.amount_cents,allocated_cents:part.allocated_cents,hosted_checkout:{...r.hosted_checkout,refunded_cents:part.refunded_cents}});}
+  else if(r.appointment_id===appointmentId)out.push(r);
+ }
+ return out;
+}
 function billingEncounterReceiptRows(a){
  const visit=(workspace.visits||[]).find(v=>v.id===a?.content?.visit_id);if(!visit)return '';
- const receipts=(workspace.billing?.copays||[]).filter(r=>r.appointment_id===visit.appointment_id&&!r.voided);
+ const receipts=copaysForAppointment(visit.appointment_id).filter(r=>!r.voided);
  const how=r=>r.hosted_checkout?'Card':r.method==='check'?'Check':r.method==='cash'?'Cash':'Payment';
  const net=r=>r.amount_cents-Number(r.hosted_checkout?.refunded_cents||0);
  // One payment, however many ways it was paid, is one row and one receipt. How it was paid is

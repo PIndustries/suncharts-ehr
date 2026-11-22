@@ -52,4 +52,12 @@ assert.deepEqual(plain(facts.encounters),[{label:'ENC-0007',amount:3000},{label:
 // Two cash parts on the same encounter stay two lines, as before.
 const same=sandbox.paymentGroupReceiptFacts([{id:'r1',appointment_id:'a1',amount_cents:500,method:'cash'},{id:'r2',appointment_id:'a1',amount_cents:700,method:'cash'}],{});
 assert.equal(same.lines.length,2);assert.equal(same.encounters.length,0);
+// The payments list of each encounter shows only that encounter's part of a divided card charge.
+const billing=fs.readFileSync(path.join(__dirname,'../web/billing.js'),'utf8');
+const at=billing.indexOf('function copaysForAppointment(');let depth=0,end=billing.indexOf('{',at);for(;end<billing.length;end++){if(billing[end]==='{')depth++;else if(billing[end]==='}'&&--depth===0)break;}
+const box={workspace:{billing:{copays:[{id:'r1',appointment_id:'a1',amount_cents:500,method:'cash'},{id:'r3',appointment_id:'a1',amount_cents:4000,allocated_cents:4000,method:'external',hosted_checkout:{refunded_cents:0,splits:[{appointment_id:'a1',amount_cents:2000,allocated_cents:2000,refunded_cents:0},{appointment_id:'a2',amount_cents:2000,allocated_cents:2000,refunded_cents:0}]}}]}}};
+vm.createContext(box);vm.runInContext(billing.slice(at,end+1),box);
+assert.deepEqual(plain(box.copaysForAppointment('a1').map(r=>[r.id,r.amount_cents])),[['r1',500],['r3',2000]]);
+assert.deepEqual(plain(box.copaysForAppointment('a2').map(r=>[r.id,r.amount_cents,r.payment_cents,r.appointment_id])),[['r3',2000,4000,'a2']]);
+assert.equal(box.copaysForAppointment('a3').length,0);
 console.log('ok collect several encounters');
