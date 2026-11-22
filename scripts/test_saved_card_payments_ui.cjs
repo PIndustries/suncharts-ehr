@@ -215,8 +215,8 @@ function workspace(cards=[visa,old]){
 test('cards saved before later charges are shown as in-person only, and an open card link can be cancelled',async()=>{
  const f=workspace(),c=f.ctx;f.s.tab='methods';
  let html=c.patientBillingProfileMarkup(f.s.profile,'methods',f.s);
- assert.match(html,/4242<\/strong><small>Expires 04\/2030<\/small><small class="payment-card-use">Can be charged later<\/small>/);
- assert.match(html,/4444<\/strong><small>Expires 09\/2029<\/small><small class="payment-card-use">Saved for in-person use - ask the patient to save it again to charge it later<\/small>/);
+ assert.match(html,/4242<\/strong><span class="payment-card-exp"><small>Expires<\/small>04\/2030<\/span><\/div><small class="payment-card-use">Can be charged later<\/small>/);assert.match(html,/role="img" aria-label="[^"]*card ending 4242, expires 04\/2030"/);
+ assert.match(html,/4444<\/strong><span class="payment-card-exp"><small>Expires<\/small>09\/2029<\/span><\/div><small class="payment-card-use">Saved for in-person use - ask the patient to save it again to charge it later<\/small>/);
  assert.match(html,/agrees there that the practice may charge it later\. Nothing is charged now\./);plain(html,'cards on file');
  f.setups.set(patient,{request_id:'setup-open',patient_id:patient,status:'open',session:{url:'https://checkout.stripe.com/c/pay/cs_test_setup'}});
  html=c.patientBillingProfileMarkup(f.s.profile,'methods',f.s);

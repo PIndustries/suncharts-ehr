@@ -5,7 +5,8 @@ use super::*;
 const ACCOUNTS: &str = r#"WITH account_rows AS (
  SELECT b.id,b.patient_id,p.family_name||', '||p.given_name AS patient_name,p.mrn,
  b.status,b.version,b.total_cents,b.created_at,b.content->>'service_date' AS service_date,
- b.coverage_snapshot->'payer'->'content'->>'name' AS payer_name,
+ -- A draft has no snapshot yet: its insurer is the one on the coverage the charges name.
+ coalesce(b.coverage_snapshot->'payer'->'content'->>'name',(SELECT y.content->>'name' FROM insurance_coverages c JOIN ehr_payers y ON y.tenant_id=c.tenant_id AND y.id=c.payer_id WHERE c.tenant_id=b.tenant_id AND c.patient_id=b.patient_id AND c.id::text=b.content->>'coverage_id')) AS payer_name,
  CASE WHEN b.status='posted' THEN b.total_cents+coalesce((SELECT sum(e.effect_cents) FROM billing_entries e WHERE e.tenant_id=b.tenant_id AND e.account_id=b.id),0) END AS account_balance_cents,
  i.id AS invoice_id,i.created_at AS invoice_created_at,i.snapshot->'amount_due_cents' AS invoice_due_cents,
  i.snapshot->'responsibility_cents' AS reviewed_responsibility_cents,

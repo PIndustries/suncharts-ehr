@@ -252,6 +252,7 @@ pub(crate) async fn collect(
     let mut checks: HashMap<Uuid, Vec<Value>> = HashMap::new();
     let mut copays: HashMap<Uuid, Value> = HashMap::new();
     let mut balances: HashMap<Uuid, i64> = HashMap::new();
+    let mut posted_charges: HashMap<Uuid, i64> = HashMap::new();
     let mut claims: HashMap<Uuid, Value> = HashMap::new();
     if access.billing {
         for coverage in reads
@@ -298,6 +299,26 @@ pub(crate) async fn collect(
         {
             if let Some(appointment) = uuid(&row["appointment_id"]) {
                 copays.insert(appointment, row);
+            }
+        }
+        // Once an encounter's charges are posted, the patient can never owe more copay than the
+        // charges themselves: a $25 copay on a $20 encounter is $20.
+        for row in reads
+            .rows(
+                sqlx::query_scalar(
+                    "SELECT jsonb_build_object('appointment_id',v.appointment_id,'total_cents',sum(b.total_cents)::bigint)
+                     FROM visits v JOIN billing_accounts b ON b.tenant_id=v.tenant_id AND b.visit_id=v.id AND b.status='posted'
+                     WHERE b.tenant_id=$1 AND v.appointment_id=ANY($2) GROUP BY v.appointment_id",
+                )
+                .bind(tenant)
+                .bind(&appointment_ids),
+            )
+            .await?
+        {
+            if let (Some(appointment), Some(total)) =
+                (uuid(&row["appointment_id"]), row["total_cents"].as_i64())
+            {
+                posted_charges.insert(appointment, total);
             }
         }
         // What each patient owes now: the one figure the visit billing card, the patient
@@ -433,7 +454,12 @@ pub(crate) async fn collect(
             }
             let due = coverage
                 .and_then(|coverage| coverage["content"]["copay_cents"].as_i64())
-                .filter(|cents| *cents > 0);
+                .filter(|cents| *cents > 0)
+                .map(|cents| {
+                    posted_charges
+                        .get(&id)
+                        .map_or(cents, |total| cents.min(*total))
+                });
             let paid = copays.get(&id);
             let paid_cents = paid.and_then(|row| row["paid_cents"].as_i64()).unwrap_or(0);
             let test_paid_cents = paid

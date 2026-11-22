@@ -11,7 +11,7 @@ const overview={patients:{active:12,insured:9,self_pay:3,missing_address:2,missi
  claims:{by_status:{draft:{count:1,billed_cents:8000},submitted:{count:4,billed_cents:166181},rejected:{count:0,billed_cents:0},adjudicated:{count:2,billed_cents:30000}},needs_correction:1,received_by_clearinghouse:3},
  money:{collected_today_cents:2500,collected_month_cents:41000,charges_month_cents:250000,waiting_on_insurers_cents:166181,payment_account_balance:null},trend};
 const html=ctx.practiceDashboardMarkup({overview,appointments:[{status:'checked_in'},{status:'booked'}],unfinished:{total:2}});
-for(const [label,value] of [['Today’s patients','2'],['Unfinished encounters','2'],['Claims needing attention','1'],['Waiting on insurers','$1661.81'],['Collected today','$25.00'],['Charges this month','$2500.00']])
+for(const [label,value] of [['Today’s patients','2'],['Unfinished encounters','2'],['Claims to send','1'],['Waiting on insurers','$1661.81'],['Collected today','$25.00'],['Charges this month','$2500.00']])
  assert.ok(html.includes(`<span>${label}</span><b>${value}</b>`),label);
 assert.match(html,/data-practice-action="claims"/);assert.match(html,/data-practice-action="billing"/);
 assert.match(html,/<h3>Claims<\/h3><div class="practice-bars"/);assert.match(html,/Ready to send 1/);assert.match(html,/Needs correcting 1/);assert.match(html,/With the clearinghouse 3/);

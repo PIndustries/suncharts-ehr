@@ -80,7 +80,8 @@ function scheduleMarkerList(a){
   const due=Number(m.copay.due_cents)||0,paid=Number(m.copay.paid_cents)||0,test=Number(m.copay.test_paid_cents)||0;
   if(paid>0&&paid>=due)add('copay','Copay paid','green',`${scheduleMoney(paid)} copay received.`,20);
   else if(test>0&&paid+test>=due)add('copay','Copay paid (test)','grey','Paid with a test card. No money was received.',10);
-  else if(due>paid&&!closed)add('copay',`${scheduleMoney(due-paid)} due`,'amber',paid?`${scheduleMoney(paid)} of the ${scheduleMoney(due)} copay was received.`:`The plan’s copay of ${scheduleMoney(due)} has not been collected.`,2);
+  // Test-card money is not money received, so it never shrinks what is due; it is only named.
+  else if(due>paid&&!closed)add('copay',`${scheduleMoney(due-paid)} due`,'amber',(paid?`${scheduleMoney(paid)} of the ${scheduleMoney(due)} copay was received.`:`The plan’s copay of ${scheduleMoney(due)} has not been collected.`)+(test>0?` ${scheduleMoney(test)} was paid with a test card.`:''),2);
  }
  if(Number(m.balance_cents)>0)add('balance',`Owes ${scheduleMoney(Number(m.balance_cents))}`,'amber','The patient owes this from earlier visits. Money still with insurance is not counted.',6);
  if(started&&'note' in m){

@@ -15,6 +15,24 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+/// Money received, one row per payment, for the Home figures and the 30-day line. Each payment is
+/// counted once: a desk or card receipt on the day it was taken, net of refunds; and a payment
+/// posted straight to an encounter (an insurance payment, an invoice paid by card) on the day it
+/// was posted. A ledger line that only applies a receipt is not a second payment. Voided
+/// receipts, reversed postings and test-mode card payments are not money received.
+const PAID: &str = "
+               SELECT r.occurred_on AS day, greatest(0, r.amount_cents - coalesce(o.refunded_cents,0)) AS cents
+                 FROM billing_copay_receipts r
+                 LEFT JOIN copay_checkout_attempts o ON o.tenant_id=r.tenant_id AND o.receipt_id=r.id
+                WHERE r.tenant_id=$1 AND coalesce(o.livemode,true)
+                  AND NOT EXISTS(SELECT 1 FROM billing_copay_voids v WHERE v.tenant_id=r.tenant_id AND v.receipt_id=r.id)
+               UNION ALL
+               SELECT (e.created_at AT TIME ZONE $2)::date, abs(e.effect_cents)
+                 FROM billing_entries e
+                WHERE e.tenant_id=$1 AND e.kind='payment' AND NOT (e.content ? 'copay_receipt_id')
+                  AND coalesce(e.content->>'test_mode','false')<>'true'
+                  AND NOT EXISTS(SELECT 1 FROM billing_entries x WHERE x.tenant_id=e.tenant_id AND x.reverses_id=e.id)";
+
 pub fn router() -> Router<State> {
     Router::new().route("/api/v1/practice/overview", get(overview))
 }
@@ -108,14 +126,7 @@ async fn overview(
         // Money the practice recorded: patient payments on visit invoices (cards included, they
         // land in the ledger), cash or check copays, and paid online copay checkouts.
         out["money"] = sqlx::query_scalar(
-            "WITH paid AS (
-               SELECT (e.created_at AT TIME ZONE $2)::date AS day, abs(e.effect_cents) AS cents
-                 FROM billing_entries e WHERE e.tenant_id=$1 AND e.kind='payment'
-               UNION ALL
-               SELECT r.occurred_on, r.amount_cents FROM billing_copay_receipts r WHERE r.tenant_id=$1
-               UNION ALL
-               SELECT (k.updated_at AT TIME ZONE $2)::date, k.amount_cents-k.refunded_cents
-                 FROM copay_checkout_attempts k WHERE k.tenant_id=$1 AND k.status='paid'
+            &format!("WITH paid AS ({PAID}
              ), today AS (SELECT (now() AT TIME ZONE $2)::date AS d)
              SELECT jsonb_build_object(
                'collected_today_cents',coalesce(sum(cents) FILTER (WHERE day=(SELECT d FROM today)),0),
@@ -125,7 +136,7 @@ async fn overview(
                'waiting_on_insurers_cents',(SELECT coalesce(sum(b.total_cents),0) FROM ehr_claims c JOIN billing_accounts b ON b.tenant_id=c.tenant_id AND b.id=c.account_id
                   WHERE c.tenant_id=$1 AND c.status IN ('submitted','accepted')),
                'payment_account_balance',NULL)
-             FROM paid",
+             FROM paid"),
         )
         .bind(a.tenant_id)
         .bind(&tz)
@@ -133,13 +144,13 @@ async fn overview(
         .await?;
         // The last 30 days, one row a day: charges by service date and money recorded.
         out["trend"] = sqlx::query_scalar(
-            "WITH days AS (SELECT generate_series((now() AT TIME ZONE $2)::date-29,(now() AT TIME ZONE $2)::date,'1 day')::date AS day),
+            &format!("WITH days AS (SELECT generate_series((now() AT TIME ZONE $2)::date-29,(now() AT TIME ZONE $2)::date,'1 day')::date AS day),
              charges AS (SELECT (b.content->>'service_date')::date AS day,sum(b.total_cents) cents FROM billing_accounts b
                          WHERE b.tenant_id=$1 AND b.status='posted' GROUP BY 1),
-             paid AS (SELECT (e.created_at AT TIME ZONE $2)::date AS day,sum(abs(e.effect_cents)) cents FROM billing_entries e
-                      WHERE e.tenant_id=$1 AND e.kind='payment' GROUP BY 1)
+             received AS ({PAID}),
+             paid AS (SELECT day,sum(cents) cents FROM received GROUP BY 1)
              SELECT jsonb_agg(jsonb_build_object('day',d.day,'charges_cents',coalesce(c.cents,0),'collected_cents',coalesce(p.cents,0)) ORDER BY d.day)
-             FROM days d LEFT JOIN charges c ON c.day=d.day LEFT JOIN paid p ON p.day=d.day",
+             FROM days d LEFT JOIN charges c ON c.day=d.day LEFT JOIN paid p ON p.day=d.day"),
         )
         .bind(a.tenant_id)
         .bind(&tz)

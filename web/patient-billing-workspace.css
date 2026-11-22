@@ -36,8 +36,11 @@
 @media(max-width:600px){.copay-receipt-card{padding:16px}.copay-receipt-card dl{grid-template-columns:1fr}.copay-receipt-card header button{width:100%}}
 @media(max-width:800px){.patient-billing-header,.patient-billing-scope{display:block}.patient-billing-header>.actions{margin-top:12px}.patient-billing-totals{grid-template-columns:1fr}.patient-billing-search-row{flex-wrap:wrap}.patient-billing-scope p{margin-top:8px}.patient-billing-tabs button{padding:12px}}
 
-.payment-card{display:flex;flex-direction:column;gap:10px;min-height:118px;max-width:300px;border-radius:12px;background:linear-gradient(135deg,color-mix(in srgb,var(--accent,#5fd0c0) 16%,transparent),transparent 70%)}
-.payment-card-brand{font-size:var(--fs-xs);font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-.payment-card-number{font-size:20px;letter-spacing:.06em;font-variant-numeric:tabular-nums}
-.payment-card small{margin-top:auto;color:var(--muted)}
-.payment-card small.payment-card-use{margin-top:0;line-height:1.35}
+.payment-card-holder{border:0;padding:0;display:grid;gap:8px;max-width:340px}
+.payment-card{position:relative;display:grid;grid-template-columns:1fr auto;grid-template-rows:auto 1fr auto;gap:6px 12px;aspect-ratio:1.586;width:100%;max-width:340px;padding:18px 20px;border-radius:14px;border:1px solid color-mix(in srgb,var(--blue) 45%,var(--line));color:var(--ink);background:linear-gradient(135deg,color-mix(in srgb,var(--blue) 34%,var(--paper)),color-mix(in srgb,var(--blue) 8%,var(--paper)) 60%,color-mix(in srgb,var(--success-line) 22%,var(--paper)));box-shadow:0 6px 18px color-mix(in srgb,var(--ink) 14%,transparent)}
+.payment-card-chip{width:38px;height:28px;border-radius:6px;border:1px solid color-mix(in srgb,var(--ink) 30%,transparent);background:linear-gradient(135deg,color-mix(in srgb,var(--warning-line,var(--line)) 70%,var(--paper)),color-mix(in srgb,var(--ink) 18%,var(--paper)))}
+.payment-card-brand{justify-self:end;align-self:start;font-size:var(--fs-sm);font-weight:800;letter-spacing:.08em;text-transform:uppercase}
+.payment-card-number{grid-column:1/-1;align-self:center;font-size:20px;letter-spacing:.12em;font-variant-numeric:tabular-nums;white-space:nowrap}
+.payment-card-exp{grid-column:1/-1;display:flex;gap:8px;align-items:baseline;font-variant-numeric:tabular-nums}
+.payment-card-exp small{font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.payment-card-use{color:var(--muted);line-height:1.35}
