@@ -358,3 +358,42 @@
 .receipt-email{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 10px;align-items:end;margin:12px 0 4px}
 .receipt-email label{display:grid;gap:4px}
 .receipt-email p{grid-column:1/-1;margin:0}
+
+/* Billing in one column. The summary is the tab; an area opened from it takes its place. */
+#encounter-revenue[data-invoice-tab="billing"][data-billing-part="summary"]>:not(.invoice-tabs):not(#encounter-revenue-status):not(.codes-editor-bar):not(.codes-editor-foot){display:none}
+#encounter-revenue[data-invoice-tab="billing"]:not([data-billing-part="summary"]) .billing-column{display:none}
+#encounter-revenue[data-invoice-tab="billing"][data-billing-part] .visit-billing-totals{display:none}
+#encounter-revenue[data-invoice-tab="billing"] #encounter-revenue-status .visit-billing-breakdown{display:none}
+#encounter-revenue[data-invoice-tab="billing"]:not([data-billing-part="summary"])>#encounter-revenue-status{display:none}
+#encounter-revenue:not([data-invoice-tab="billing"]) .billing-column{display:none}
+.billing-parts{display:flex;align-items:center;gap:12px;border:0;background:none;padding:0;margin:4px 0 12px;width:auto}
+.billing-parts button{border:1px solid var(--line);border-radius:8px;background:var(--paper);padding:6px 12px;color:var(--ink);font-weight:600}
+#encounter-revenue[data-billing-part="summary"]>.billing-parts,#encounter-revenue[data-billing-part="codes"]>.billing-parts{display:none}
+.billing-column{margin:0;padding:0 6px 4px}
+.billing-rows{list-style:none;margin:0;padding:0}
+.billing-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto minmax(132px,auto);gap:4px 14px;align-items:center;padding:14px 0;border-bottom:1px solid var(--line)}
+.billing-row-mark{width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;border:1px solid var(--line);color:var(--muted)}
+.billing-row-mark.is-done{border-color:var(--success-line);background:var(--success-bg);color:var(--success-text)}
+.billing-row-mark.is-now{border-color:var(--blue);background:var(--blue);color:var(--paper)}
+.billing-row-text{display:grid;gap:2px;min-width:0}
+.billing-row-text b{font-size:15px}
+.billing-row-text .muted{line-height:1.45}
+.billing-row-amount{text-align:right;font-variant-numeric:tabular-nums;font-weight:600;white-space:nowrap}
+.billing-row-amount small{display:block;font-weight:400;color:var(--muted);font-size:var(--fs-sm)}
+.billing-row-action{display:flex;justify-content:flex-end}
+.billing-row-action button{white-space:nowrap;min-width:120px}
+.billing-column-total{display:flex;justify-content:space-between;align-items:baseline;margin:0;padding:14px 0 6px;font-size:16px;font-weight:700}
+.billing-column-total b{font-variant-numeric:tabular-nums}
+.billing-column-total.is-due b{color:var(--error-text)}
+.billing-column-more{margin-top:4px}
+.billing-column-more>summary{cursor:pointer;color:var(--muted);font-weight:600;width:fit-content}
+.billing-column-more .actions{margin-top:10px;flex-wrap:wrap;justify-content:flex-start}
+@media(max-width:700px){.billing-row{grid-template-columns:24px minmax(0,1fr) auto}.billing-row-action{grid-column:2/-1;justify-content:flex-start}}
+/* On Billing the column carries the money, so the bar keeps only the next step. */
+#visit-page-host[data-encounter-tab="billing"]>#encounter-bar .visit-billing-totals>span,#visit-page-host[data-encounter-tab="billing"]>#encounter-bar [data-money-details],#visit-page-host[data-encounter-tab="billing"]>#encounter-bar .encounter-bar-pay{display:none}
+/* The bar holds the next step, so on the summary the card shows only the column. */
+#visit-page-host:has(>#encounter-bar) #encounter-revenue[data-invoice-tab="billing"][data-billing-part="summary"]:not([data-invoice-tab="payments"]):not([data-billing-part="payments"])>#encounter-revenue-status{display:block}
+#visit-page-host:has(>#encounter-bar) #encounter-revenue[data-invoice-tab="billing"][data-billing-part="summary"]>#encounter-revenue-status :is(.visit-billing-status,.visit-billing-sent,.visit-billing-more){display:none}
+#encounter-revenue[data-invoice-tab="billing"][data-billing-part="summary"]>#encounter-revenue-status .visit-billing-more{display:none}
+#encounter-revenue[data-invoice-tab="billing"]>.billing-parts{order:0}
+#encounter-revenue[data-invoice-tab="billing"][data-billing-part="payments"]>#encounter-codes-strip{display:none}

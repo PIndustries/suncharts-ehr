@@ -324,6 +324,7 @@ function paintEncounterRevenue(state,current){
   const held=node.querySelector?.('[data-claim-send-error]')?.textContent||'';
 state.reviewCard=state.data?.summary||null;node.innerHTML=encounterRevenueStatusMarkup(encounterChargeAccount(),state.data||{});
   if(typeof encounterBarSync==='function')encounterBarSync();
+  if(typeof billingRowCodesFill==='function')billingRowCodesFill();
   if(held&&!node.querySelector?.('[data-claim-send-error]'))node.querySelector?.('.visit-billing-status .actions')?.insertAdjacentHTML?.('beforeend',`<p class="claim-send-error" data-claim-send-error role="alert">${esc(held)}</p>`);
   for(const d of node.querySelectorAll?.('details[data-revenue-disclosure]')||[])d.open=open.includes(d.dataset.revenueDisclosure);
   // The review panel beside the table is the person's own working space. A background refresh
@@ -1056,15 +1057,20 @@ const encounterTabAliases={checkout:'note',encounter:'billing',invoice:'billing'
 let encounterTabFor={visit:null,key:null};
 // The Billing tab shows one area at a time: the codes, the claim details, the payments, the claim.
 // The next step and the money stay above them. The area used last is remembered.
-const billingParts=[['details','Claim details'],['payments','Payments'],['claim','Claim']],billingPartKeys=['codes','details','payments','claim'];
-function billingPartsMarkup(){return `<nav class="billing-parts" role="tablist" aria-label="Billing for this encounter">${billingParts.map(([key,label])=>`<button type="button" role="tab" data-billing-part-key="${key}" aria-selected="false">${label}</button>`).join('')}</nav>`;}
-function billingPartRemembered(){try{const key=localStorage.getItem('suncharts.billingPart');return billingParts.some(([k])=>k===key)?key:'details';}catch{return 'details';}}
+const billingParts=[['details','Claim details'],['payments','Payments'],['claim','Claim']],billingPartKeys=['summary','codes','details','payments','claim'];
+// Billing opens on its one-column summary. An area opened from it (claim details, payments, the
+// claim) takes its place, with one way back.
+function billingPartsMarkup(){return `<nav class="billing-parts" aria-label="Billing for this encounter"><button type="button" data-billing-part-key="summary">← Billing</button><b data-billing-part-title></b></nav>`;}
+// The area open on the encounter on the screen is kept while that encounter is re-drawn; another
+// encounter starts on the summary.
+let billingPartFor={visit:null,key:'summary'};
+function billingPartRemembered(){const visit=typeof activeVisit!=='undefined'&&activeVisit?activeVisit.id:null;return visit&&billingPartFor.visit===visit?billingPartFor.key:'summary';}
 function billingPartSet(key,remember=true){
  const host=typeof $==='function'?$('encounter-revenue'):null;if(!host?.dataset||!billingPartKeys.includes(key))return;
  host.dataset.billingPart=key;
- const buttons=typeof host.querySelectorAll==='function'?Array.from(host.querySelectorAll('[data-billing-part-key]')||[]):[];
- for(const button of buttons){if(!button?.dataset)continue;const on=button.dataset.billingPartKey===key;button.setAttribute?.('aria-selected',String(on));button.classList?.toggle('active',on);}
- if(remember&&key!=='codes')try{localStorage.setItem('suncharts.billingPart',key);}catch{}
+ if(key!=='codes'){const visit=typeof activeVisit!=='undefined'&&activeVisit?activeVisit.id:null;billingPartFor={visit,key};}
+ const title=typeof host.querySelector==='function'?host.querySelector('[data-billing-part-title]'):null;
+ if(title)title.textContent=(billingParts.find(([k])=>k===key)||[])[1]||'';
  if(key!=='codes')encounterCodesStripRender();
  if(key==='details'&&typeof encounterDetailsSummaryRender==='function')encounterDetailsSummaryRender();
  // Payments is never an empty screen: before any charge exists there is no payments table yet,
@@ -1113,6 +1119,17 @@ async function encounterCodesStripRender(){
  const evidence=await visitReceiptEvidence(visit.appointment_id);
  if(token!==encounterCodesStripToken||(typeof activeVisit!=='undefined'?activeVisit:null)!==visit)return;
  const node=$('encounter-codes-strip');if(node){node.innerHTML=encounterCodesStripMarkup(evidence);encounterCodesStripClaimSync();}
+ encounterCodesEvidence={visit:visit.id,evidence};billingRowCodesFill();
+}
+// The Charges row of the Billing column names the codes behind the amount.
+let encounterCodesEvidence={visit:null,evidence:null};
+function billingRowCodesFill(){
+ const node=typeof $==='function'?$('encounter-revenue-status')?.querySelector?.('[data-billing-row-codes]'):null,visit=typeof activeVisit!=='undefined'?activeVisit:null;
+ if(!node||!visit||encounterCodesEvidence.visit!==visit.id)return;
+ const lines=encounterCodesEvidence.evidence?.lines||[];if(!lines.length)return;
+ const words=lines.slice(0,3).map(line=>`${String(line.code||'').trim()}${line.description?' '+line.description:''}`).join(', ')+(lines.length>3?` and ${lines.length-3} more`:'');
+ const standing=node.dataset.standing||node.textContent;node.dataset.standing=standing;
+ node.textContent=`${words} · ${standing.charAt(0).toLowerCase()}${standing.slice(1)}`;
 }
 // Put the strip under the encounter tabs and the Billing areas under the next step.
 function encounterBillingChrome(host){
@@ -1188,7 +1205,7 @@ function encounterCodesEditorClose(){
  host.codesCloseNow=false;delete host.dataset.codesClosing;
  delete host.dataset.codesEditing;
  const back=host.dataset.partBeforeEditing;delete host.dataset.partBeforeEditing;
- billingPartSet(billingParts.some(([k])=>k===back)?back:billingPartRemembered(),false);encounterCodesStripRender();encounterDetailsSummaryRender();
+ billingPartSet(billingPartKeys.includes(back)&&back!=='codes'?back:billingPartRemembered(),false);encounterCodesStripRender();encounterDetailsSummaryRender();
 }
 // Claim details, read first. What the claim will carry besides its codes (who is billed, the date,
 // the provider and place, and anything filled in beyond that) reads as a short list; Edit opens the
@@ -1235,6 +1252,7 @@ if(typeof document!=='undefined'&&document.addEventListener){
    return;
   }
   if(event.target?.closest?.('[data-codes-strip-edit]')?.hasAttribute?.('data-codes-strip-edit')){event.preventDefault();encounterCodesEditorOpen(0,true);return;}
+  const form=event.target?.closest?.('[data-claim-form-preview]');if(form?.dataset?.claimFormPreview){event.preventDefault();run(()=>openClaimFormPreview(form.dataset.claimFormPreview));return;}
   const cms=event.target?.closest?.('[data-codes-strip-cms]');if(cms?.hasAttribute?.('data-codes-strip-cms')){event.preventDefault();if(cms.dataset?.codesStripCms)run(()=>openClaimFormPreview(cms.dataset.codesStripCms));return;}
   if(event.target?.closest?.('[data-codes-editor-save]')?.hasAttribute?.('data-codes-editor-save')){event.preventDefault();run(()=>encounterCodesEditorSave());return;}
   if(event.target?.closest?.('[data-codes-editor-close]')?.hasAttribute?.('data-codes-editor-close')){event.preventDefault();encounterCodesEditorClose();return;}
@@ -1246,7 +1264,6 @@ if(typeof document!=='undefined'&&document.addEventListener){
   const has=names=>names.some(name=>button.hasAttribute(name));
   if(has(['data-encounter-charges'])||button.dataset?.visitReviewFix==='line')setTimeout(()=>encounterCodesEditorOpen(),0);
   else if(has(['data-visit-claim-send','data-visit-claim-fix','data-visit-claim-prepare','data-revenue-claim','data-claim-open','data-revenue-remittance']))billingPartSet('claim',false);
-  else if(has(['data-visit-collect']))billingPartSet('payments',false);
  },true);
  document.addEventListener('keydown',event=>{if(event.key!=='Escape'||document.querySelector?.('dialog[open]'))return;if($('encounter-revenue')?.dataset?.codesEditing!==undefined){event.preventDefault();encounterCodesEditorClose();}});
  // A field the browser refuses on save has to be on screen to be fixed.

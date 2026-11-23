@@ -214,7 +214,8 @@ function visitBillingBreakdown(s,ctx={}){
  const copay=p.copay_cents,links=visitBillingReceiptEntries(receipts).map(entry=>entry.group?`<button type="button" class="text-button" data-payment-group="${esc(entry.group)}" data-appointment="${esc(entry.appointment)}">Receipt: Payment ${money(entry.total)} · ${esc(entry.tenders)}</button>`:`<button type="button" class="text-button" data-copay-receipt="${esc(entry.receipt.id)}" data-appointment="${esc(entry.receipt.appointment_id)}">Receipt: ${money(entry.receipt.amount_cents)}${visitBillingReceiptNote(entry.receipt)?' '+esc(visitBillingReceiptNote(entry.receipt)):''}</button>`).join(' ');
  if(copay!=null){
   const fromCheck=p.copay_from_insurer_check,due=p.copay_due_cents,paidTowards=p.copay_paid_cents;
-  const note=fromCheck?`from the insurer check on ${esc(visitBillingDate(p.copay_source_date))}`:due===0?'Paid':paidTowards>0?`${money(paidTowards)} paid, ${money(due)} still due ${collect}`:`Not paid yet ${collect}`;
+  const settled=posted&&Number(p.owes_now_cents||0)<=0;
+  const note=fromCheck?`from the insurer check on ${esc(visitBillingDate(p.copay_source_date))}`:due===0?'Paid':settled?(paidTowards>0?`${money(paidTowards)} paid. Nothing more is owed`:'Nothing owed on this encounter'):paidTowards>0?`${money(paidTowards)} paid, ${money(due)} still due ${collect}`:`Not paid yet ${collect}`;
   rows+=row(`Copay ${money(copay)}`,note,paidTowards>0?money(paidTowards):'');
  }else if(i.insured)rows+=row('Copay','No copay recorded for this plan','');
  if(p.other_patient_payments_cents)rows+=row(copay!=null?'Other patient payments':'Patient payments','',money(p.other_patient_payments_cents));
@@ -262,6 +263,56 @@ function visitBillingTotalsLine(s){
  const i=s.insurance||{},p=s.patient||{},item=(label,value,tone='')=>`<span${tone?` class="${tone}"`:''}><small>${label}</small><b>${value}</b></span>`;
  return `<p class="visit-billing-totals">${item('Charges',money(s.charges_cents))}${i.insured?item(i.paid_cents>0?'Insurance paid':'Insurance pending',money(i.paid_cents>0?i.paid_cents:i.pending_cents||0)):''}${p.overpaid_cents>0?item('Patient credit',money(p.overpaid_cents)):''}${(d=>d.copayOnly?item('Copay due now',money(d.due),'is-due'):d.paidUp?item('Patient paid',money(d.paid)+' · '+d.label,'is-clear'):item('Patient owes now',money(p.owes_now_cents||0),p.owes_now_cents>0?'is-due':'is-clear'))(visitBillingDue(s))}</p>`;
 }
+// Billing in one column, read top to bottom: the charges, the insurer's side, the patient's side,
+// then the one line for what the patient owes now. Each row says where it stands and has the one
+// button for it; the next step itself stays in the bar above. Everything else is under More.
+const visitBillingRowOf={add_charges:'charges',sign_visit:'charges',post_charges:'charges',self_pay_collect:'patient',patient_owes:'patient',review_balance:'patient',patient_credit:'patient',paid_in_full:'',claim_restricted:'insurance'};
+function visitBillingRowNow(s){return s.state in visitBillingRowOf?visitBillingRowOf[s.state]:'insurance';}
+function visitBillingInsuranceWords(s){
+ const i=s.insurance||{};
+ if(s.state==='fix_claim')return 'Claim needs details before it can be sent';
+ if(s.state==='denied')return 'Denied. Fix the claim and send it again';
+ if(s.state==='post_response')return 'Answered. Review and post their payment';
+ if(s.state==='claimmd_correction')return 'The clearinghouse found a problem';
+ if(s.state==='claimmd_received')return 'Received by the clearinghouse';
+ if(s.state==='correct_claim')return 'Charges changed after the claim was sent';
+ if(s.state==='claim_cancelled')return 'Claim cancelled. Nothing is with the insurer';
+ return ({not_billed:'Claim is made when the charges are posted',not_sent:'Claim not sent yet',waiting:`Claim sent${i.sent_on?` ${visitBillingDate(i.sent_on)}`:''}. Waiting for their answer`,denied:'Denied',answered:s.claim?.answer?.payment_date?`Answered ${visitBillingDate(s.claim.answer.payment_date)}`:'Answered',outside:'Billed outside SunCharts',restricted:'Handled by billing staff'})[i.status]||'';
+}
+function visitBillingColumn(s,ctx={}){
+ const i=s.insurance||{},p=s.patient||{},posted=s.account?.status==='posted',now=visitBillingRowNow(s),standing=visitBillingDue(s),claim=s.claim;
+ const mark=(key,done)=>now===key?'<span class="billing-row-mark is-now" aria-label="Next">→</span>':done?'<span class="billing-row-mark is-done" aria-label="Done">✓</span>':'<span class="billing-row-mark" aria-hidden="true"></span>';
+ const row=(key,n,title,note,amount,button,done)=>`<li class="billing-row${now===key?' is-now':''}" data-billing-row="${key}">${mark(key,done)}<div class="billing-row-text"><b>${n} · ${title}</b><span class="muted"${key==='charges'?' data-billing-row-codes':''}>${note}</span></div><span class="billing-row-amount">${amount}</span><span class="billing-row-action">${button||''}</span></li>`;
+ // 1. Charges.
+ const none=s.charges_cents==null;
+ const charges=row('charges',1,'Charges',none?'No charges yet':posted?'Posted':'Not posted yet. They can still be changed',none?'':money(s.charges_cents),ctx.canCreate?`<button type="button" data-encounter-charges>${none?'Add charges':'Edit codes'}</button>`:'',posted);
+ // 2. Insurance.
+ let insurance;
+ if(!i.insured)insurance=row('insurance',2,'Insurance','No insurance on this encounter. The patient pays','','<button type="button" data-chart-section="insurance">Add insurance</button>',false);
+ else{
+  const paid=Number(i.paid_cents)||0,pending=Number(i.pending_cents)||0;
+  const amount=!posted?'':paid>0?`${money(paid)}<small>paid</small>`:pending>0?`${money(pending)}<small>pending</small>`:money(0);
+  const button=claim&&ctx.claimsAllowed!==false?`<button type="button" data-revenue-claim="${esc(claim.id)}">Open claim</button>`:'<button type="button" data-billing-part-key="details">Claim details</button>';
+  insurance=row('insurance',2,'Insurance',`${esc(i.insurer||visitBillingInsurer(s))} · ${esc(visitBillingInsuranceWords(s))}`,amount,button,i.status==='answered'&&!(Number(i.unassigned_cents)>0));
+ }
+ // 3. Patient.
+ const entries=visitBillingReceiptEntries((s.receipts||[]).filter(r=>!r.voided)),last=entries[entries.length-1];
+ const receipt=last?last.group?`<button type="button" class="text-button" data-payment-group="${esc(last.group)}" data-appointment="${esc(last.appointment)}">Receipt</button>`:`<button type="button" class="text-button" data-copay-receipt="${esc(last.receipt.id)}" data-appointment="${esc(last.receipt.appointment_id)}">Receipt</button>`:'';
+ const paidWords=standing.paid>0?`Paid ${money(standing.paid)}${entries.length>1?` in ${entries.length} payments`:last&&!last.group&&visitBillingReceiptNote(last.receipt)?` by ${esc(visitBillingReceiptNote(last.receipt))}`:''}`:'';
+ const oweWords=standing.copayOnly?`Copay ${money(standing.due)} due now`:standing.due>0?`Owes ${money(standing.due)}`:standing.paidUp?standing.label:Number(p.overpaid_cents)>0?`Has a ${money(p.overpaid_cents)} credit`:posted?'Nothing owed now':p.copay_cents!=null?'Copay paid':'Nothing due until the charges are posted';
+ const patientNote=[paidWords,paidWords&&standing.paidUp?'':oweWords].filter(Boolean).join(' · ')+(receipt?` · ${receipt}`:'')+(entries.length>1?' · <button type="button" class="text-button" data-billing-part-key="payments">All payments</button>':'');
+ const pay=ctx.canCreate&&s.visit&&standing.due>0?'<button type="button" data-visit-collect>Take payment</button>':entries.length?'<button type="button" data-billing-part-key="payments">Payments</button>':ctx.canCreate&&s.visit?'<button type="button" data-visit-collect>Take payment</button>':'';
+ const patient=row('patient',3,i.insured?'Patient':'Patient (self-pay)',patientNote,standing.paid>0?`${money(standing.paid)}<small>paid</small>`:'',pay,standing.paidUp);
+ // More: the things that are not everyday steps.
+ const more=[];
+ if(i.insured)more.push('<button type="button" data-billing-part-key="details">Claim details</button>');
+ more.push('<button type="button" data-billing-part-key="payments">Payments and receipts</button>');
+ if(posted&&ctx.canCreate)more.push('<button type="button" data-visit-statement>Patient statement</button>','<button type="button" data-new-ledger>Write-off or adjustment</button>');
+ if(claim&&ctx.claimsAllowed!==false&&claim.status!=='void'&&!claim.secondary&&!claim.crossover)more.push(`<button type="button" data-claim-form-preview="${esc(claim.id)}">Claim form (CMS-1500)</button>`);
+ more.push('<button type="button" data-chart-section="insurance">Insurance and eligibility</button>','<button type="button" data-invoice-tab-key="history">History</button>');
+ const total=standing.copayOnly?['Copay due now',standing.due]:['Patient owes now',Number(p.owes_now_cents)||0];
+ return `<section class="billing-column" aria-label="Billing for this encounter"><ol class="billing-rows">${charges}${insurance}${patient}</ol><p class="billing-column-total${total[1]>0?' is-due':''}"><span>${total[0]}</span><b>${money(total[1])}</b></p>${p.receipt_needs_review?'<p role="status">A payment for this encounter needs review. Open History before collecting again.</p>':''}<details class="billing-column-more" data-revenue-disclosure="column-more"><summary>More</summary><div class="actions">${more.join('')}</div></details></section>`;
+}
 function visitBillingCardMarkup(s,ctx={}){
    const status=visitBillingStatus(s,ctx),owing=['patient_owes','self_pay_collect'].includes(s.state),posted=s.account?.status==='posted';
    const issues=visitBillingMissingMarkup(status.issues,s.claim?.id||'',ctx);
@@ -273,7 +324,7 @@ function visitBillingCardMarkup(s,ctx={}){
    // The one-click send keeps its small review link beside it; a card left opening the review
    // panel says it once, as its single main button.
    const action=direct&&!main.includes(direct)?`${main}${review}`:main;
-      return `<section class="visit-billing-card" data-visit-billing-state="${esc(s.state)}"><div class="visit-billing-status"><div><span class="eyebrow">${s.waiting_on==='nobody'?'Status':'Next step'}</span><p class="visit-billing-headline">${esc(status.headline)}</p><p class="muted">${esc(status.detail)}</p>${issues}</div><div class="actions">${action||''}${secondary}</div></div>${sent}${visitBillingTotalsLine(s)}${visitBillingBreakdown(s,ctx)}${posted||s.account||s.visit?visitBillingMore(s,ctx):''}</section>`;
+      return `<section class="visit-billing-card" data-visit-billing-state="${esc(s.state)}"><div class="visit-billing-status"><div><span class="eyebrow">${s.waiting_on==='nobody'?'Status':'Next step'}</span><p class="visit-billing-headline">${esc(status.headline)}</p><p class="muted">${esc(status.detail)}</p>${issues}</div><div class="actions">${action||''}${secondary}</div></div>${sent}${visitBillingColumn(s,ctx)}${visitBillingTotalsLine(s)}${visitBillingBreakdown(s,ctx)}${posted||s.account||s.visit?visitBillingMore(s,ctx):''}</section>`;
 }
 const visitBillingFilters=[['all','Everything'],['charges','Charges'],['insurance','Insurance'],['payments','Payments'],['statements','Statements']];
 function visitBillingEventText(event){
