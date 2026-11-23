@@ -136,11 +136,16 @@ function patientBillingPaymentVisit(item,s){
  return (workspace?.visits||[]).find(v=>(item.visit_id&&v.id===item.visit_id)||(item.appointment_id&&v.appointment_id===item.appointment_id))||null;
 }
 function patientBillingPaymentEncounter(item,s){
- const visit=patientBillingPaymentVisit(item,s);
- if(!visit)return item.appointment_id||item.visit_id?'<span class="muted">Appointment without an encounter yet</span>':'<span class="muted">Not tied to an encounter</span>';
- const appointment=(workspace?.appointments||[]).find(a=>a.id===visit.appointment_id),number=typeof encounterNumberText==='function'?encounterNumberText(visit):'';
- const encounterChip=typeof encounterTimelineChip==='function'?encounterTimelineChip(null,number,{visit:visit.id,amount:item.received_cents==null?'':item.received_cents,date:item.created_at||''}):`<button type="button" class="text-button" data-encounter-chip="${esc(visit.id)}" data-payment-amount="${item.received_cents==null?'':esc(item.received_cents)}" data-payment-date="${esc(item.created_at||'')}">${esc(number||'Encounter')}</button>`;
- return `${encounterChip}<small>${esc([appointment?.title,appointment?.starts_at?date(appointment.starts_at):''].filter(Boolean).join(' · '))}</small>`;
+ const visit=patientBillingPaymentVisit(item,s),id=item.visit_id||visit?.id;
+ if(!id)return item.appointment_id?'<span class="muted">Appointment without an encounter yet</span>':'<span class="muted">Not tied to an encounter</span>';
+ // The number comes from the payment row itself, so it shows whether or not this chart is open.
+ const appointment=visit?(workspace?.appointments||[]).find(a=>a.id===visit.appointment_id):null;
+ const row={visit_id:id,encounter_number:item.encounter_number??visit?.encounter_number,patient_id:s.patientId};
+ const number=typeof encounterNumberLabel==='function'?encounterNumberLabel(row.encounter_number):'';
+ const extra={amount:item.received_cents==null?'':item.received_cents,date:item.created_at||''};
+ const encounterChip=typeof encounterRowChip==='function'?encounterRowChip(row,extra):`<button type="button" class="text-button" data-encounter-chip="${esc(id)}" data-patient="${esc(s.patientId)}" data-payment-amount="${item.received_cents==null?'':esc(item.received_cents)}" data-payment-date="${esc(item.created_at||'')}">${esc(number||'Encounter')}</button>`;
+ const detail=[appointment?.title,appointment?.starts_at?date(appointment.starts_at):''].filter(Boolean).join(' · ');
+ return `${encounterChip}${detail?`<small>${esc(detail)}</small>`:''}`;
 }
 function patientBillingChoosePatient(label){return `<section class="patient-billing-empty"><h3>Choose a patient to view ${esc(label)}</h3><p>Use the patient selector above. Records are retrieved only for the selected patient.</p></section>`;}
 async function patientBillingInvoices(s){

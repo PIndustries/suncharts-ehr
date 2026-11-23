@@ -37905,6 +37905,14 @@
                             ],
                             "format": "uuid"
                           },
+                            "encounter_number": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ],
+                              "format": "int64",
+                              "description": "The encounter's number in the practice (ENC-0042 is 42): its position among the practice's encounters in the order they were started. Not stored."
+                            },
                           "receipt_id": {
                             "type": [
                               "string",
@@ -45440,12 +45448,37 @@
       },
       "ClaimWorklist": {
         "type": "object",
-        "description": "Tenant-scoped claim summary page with patient_name, payer_name, coverage_priority, total_cents, lifecycle and boolean crossover_tracking_only; at most100 items. Tracking-only submitted rows represent a received secondary response, not an EHR transmission.",
+        "description": "Tenant-scoped claim summary page with patient_name, payer_name, coverage_priority, total_cents, lifecycle and boolean crossover_tracking_only; at most100 items. Each item also carries visit_id, encounter_number and service_date (the date of service on the claim's account). Tracking-only submitted rows represent a received secondary response, not an EHR transmission.",
         "properties": {
           "items": {
             "type": "array",
             "items": {
-              "type": "object"
+              "type": "object",
+              "properties": {
+                  "visit_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "uuid",
+                    "description": "The encounter this row belongs to, when there is one."
+                  },
+                  "encounter_number": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "format": "int64",
+                    "description": "The encounter's number in the practice (ENC-0042 is 42): its position among the practice's encounters in the order they were started. Not stored."
+                  },
+                  "service_date": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Date of service on the claim's account."
+                  }
+              }
             },
             "maxItems": 100
           },
@@ -59179,6 +59212,22 @@
       "BillingOverviewAccount": {
         "type": "object",
         "properties": {
+            "visit_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "uuid",
+              "description": "The encounter this row belongs to, when there is one."
+            },
+            "encounter_number": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "description": "The encounter's number in the practice (ENC-0042 is 42): its position among the practice's encounters in the order they were started. Not stored."
+            },
           "id": {
             "type": "string",
             "format": "uuid"
@@ -59316,6 +59365,22 @@
       "BillingOverviewCopay": {
         "type": "object",
         "properties": {
+            "visit_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "uuid",
+              "description": "The encounter this row belongs to, when there is one."
+            },
+            "encounter_number": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "description": "The encounter's number in the practice (ENC-0042 is 42): its position among the practice's encounters in the order they were started. Not stored."
+            },
           "id": {
             "type": "string",
             "format": "uuid"

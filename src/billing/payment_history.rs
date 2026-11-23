@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Payment sources appear once; allocating a receipt is not another collection.
 use super::*;
-const ROWS: &str = r#"WITH rows AS (
- SELECT 'copay'::text AS kind,r.id,r.created_at,NULL::uuid AS account_id,NULL::text AS visit_id,r.appointment_id,
+const ROWS: &str = r#"rows AS (
+ SELECT 'copay'::text AS kind,r.id,r.created_at,NULL::uuid AS account_id,(SELECT v.id::text FROM visits v WHERE v.tenant_id=r.tenant_id AND v.appointment_id=r.appointment_id) AS visit_id,r.appointment_id,
  CASE WHEN EXISTS(SELECT 1 FROM billing_copay_voids v WHERE v.tenant_id=r.tenant_id AND v.receipt_id=r.id) THEN 0 ELSE r.amount_cents END AS received_cents,
  coalesce(o.refunded_cents,0) AS refunded_cents,
  greatest(0,r.amount_cents-coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),0)::bigint-coalesce((SELECT sum(f.unapplied_cents) FROM copay_checkout_refund_events f WHERE f.tenant_id=o.tenant_id AND f.operation_id=o.id),0)::bigint) AS unapplied_cents,
@@ -15,20 +15,20 @@ const ROWS: &str = r#"WITH rows AS (
  FROM billing_copay_receipts r LEFT JOIN copay_checkout_attempts o ON o.tenant_id=r.tenant_id AND o.receipt_id=r.id
  WHERE r.tenant_id=$1 AND r.patient_id=$2
  UNION ALL
- SELECT 'account_payment',p.id,p.created_at,p.account_id,b.content->>'visit_id',NULL::uuid,
+ SELECT 'account_payment',p.id,p.created_at,p.account_id,b.visit_id::text,NULL::uuid,
  CASE WHEN p.paid_entry_id IS NOT NULL THEN p.amount_cents END,p.refunded_cents,0,p.paid_entry_id IS NOT NULL,
  coalesce(p.provider_charge_id,p.id::text),p.status,true,NULL::uuid
  FROM payment_attempts p JOIN billing_accounts b ON b.tenant_id=p.tenant_id AND b.id=p.account_id
  WHERE p.tenant_id=$1 AND b.patient_id=$2
  UNION ALL
- SELECT 'invoice_checkout',o.id,o.created_at,o.account_id,b.content->>'visit_id',NULL::uuid,
+ SELECT 'invoice_checkout',o.id,o.created_at,o.account_id,b.visit_id::text,NULL::uuid,
  CASE WHEN o.provider_captured_at IS NOT NULL THEN o.amount_cents END,o.refunded_cents,
  CASE WHEN o.provider_captured_at IS NOT NULL AND o.paid_entry_id IS NULL THEN o.amount_cents-o.refunded_cents ELSE 0 END,
  o.paid_entry_id IS NOT NULL,coalesce(o.provider_charge_id,o.id::text),o.status,NOT o.livemode,NULL::uuid
  FROM invoice_checkout_attempts o JOIN billing_accounts b ON b.tenant_id=o.tenant_id AND b.id=o.account_id
  WHERE o.tenant_id=$1 AND o.patient_id=$2 AND b.patient_id=$2
  UNION ALL
- SELECT 'recorded_payment',e.id,e.created_at,e.account_id,b.content->>'visit_id',NULL::uuid,
+ SELECT 'recorded_payment',e.id,e.created_at,e.account_id,b.visit_id::text,NULL::uuid,
  -e.effect_cents,0,0,true,e.content->>'reference',
  CASE WHEN EXISTS(SELECT 1 FROM billing_entries reversal WHERE reversal.tenant_id=e.tenant_id AND reversal.reverses_id=e.id) THEN 'reversed' ELSE 'recorded' END,
  coalesce(e.content->>'test_mode'='true',false),NULL::uuid
@@ -38,9 +38,10 @@ const ROWS: &str = r#"WITH rows AS (
  AND NOT EXISTS(SELECT 1 FROM billing_copay_allocations x WHERE x.tenant_id=e.tenant_id AND x.entry_id=e.id)
  AND NOT EXISTS(SELECT 1 FROM payment_ledger_links x WHERE x.tenant_id=e.tenant_id AND x.entry_id=e.id)
 ), filtered AS (SELECT * FROM rows WHERE test_activity=$3)
-SELECT to_jsonb(f) FROM filtered f
+SELECT to_jsonb(f)||jsonb_build_object('encounter_number',n.encounter_number) FROM filtered f
+LEFT JOIN en n ON n.id=f.visit_id::uuid
 WHERE ($4::text IS NULL OR (f.created_at,f.kind,f.id)<(SELECT created_at,kind,id FROM filtered WHERE kind=$4 AND id=$5))
-ORDER BY created_at DESC,kind DESC,id DESC LIMIT $6"#;
+ORDER BY f.created_at DESC,f.kind DESC,f.id DESC LIMIT $6"#;
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct HistoryQuery {
@@ -97,7 +98,12 @@ async fn read(
     if !exists {
         return Err(Error::NotFound);
     }
-    let mut rows: Vec<Value> = sqlx::query_scalar(ROWS)
+    // The encounter numbers are computed once for the request.
+    let sql = format!(
+        "WITH en AS ({}), {ROWS}",
+        crate::postgres::ENCOUNTER_NUMBERS
+    );
+    let mut rows: Vec<Value> = sqlx::query_scalar(&sql)
         .bind(a.tenant_id)
         .bind(patient_id)
         .bind(mode == "test")
