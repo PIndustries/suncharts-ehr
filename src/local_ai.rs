@@ -1263,6 +1263,9 @@ async fn chosen(
         }
         charged.push(code.clone());
         let evidence = services[index]["evidence"].as_str();
+        // An amount given belongs to a drug or supply code. On a procedure code it would mislead
+        // (the assistant sometimes attaches the drug's amount to the injection itself).
+        let measured = candidate["system"] == "HCPCS";
         procedures.push((
             index,
             json!({
@@ -1275,8 +1278,8 @@ async fn chosen(
                 "modifiers": candidate.get("modifiers").cloned().unwrap_or(Value::Null),
                 "evidence": evidence,
                 "evidence_found": evidence.is_some(),
-                "quantity": services[index]["quantity"],
-                "quantity_unit": services[index]["quantity_unit"]
+                "quantity": if measured { services[index]["quantity"].clone() } else { Value::Null },
+                "quantity_unit": if measured { services[index]["quantity_unit"].clone() } else { Value::Null }
             }),
         ));
     }
