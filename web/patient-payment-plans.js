@@ -71,7 +71,7 @@ function membershipEnrolment(s){
  if(s.membershipCatalogError)return {text:s.membershipCatalogError+' Memberships already started stay listed above.',fix:'<button type="button" data-memberships-refresh>Try again</button>'};
  if(!Array.isArray(s.membershipPrices))return {text:'Membership prices have not loaded yet.',fix:'<button type="button" data-memberships-refresh>Check again</button>'};
  if(!s.membershipAvailable)return {text:'Card payments are not set up yet, so a membership cannot be started.',fix:paymentsFix};
- const activePrices=s.membershipPrices.filter(price=>price.status==='active');
+ const activePrices=s.membershipPrices.filter(price=>price.status==='active'&&price.enrolment_open!==false);
  const prices=activePrices.filter(price=>!(s.memberships||[]).some(op=>op.price?.id===price.id&&!['expired','canceled'].includes(op.status)));
  if(!prices.length&&s.membershipPricesNext)return {text:'No other membership prices are in the results loaded so far.',fix:`<button type="button" data-membership-prices-next="${esc(s.membershipPricesNext)}">Load more prices</button>`};
  if(!prices.length&&activePrices.length)return {text:'This patient already has every membership the practice offers.',fix:''};
@@ -85,7 +85,7 @@ function membershipSelectionForm(s){
  return `<form id="patient-membership-form" data-patient-plan-draft="membership"><label>Membership price<select name="price_id" required><option value="">Choose a price</option>${prices.map(price=>`<option value="${esc(price.id)}">${esc(price.name)} · ${esc(membershipCadence(price))}</option>`).join('')}</select></label><div id="patient-membership-terms"><p>Choose a price to see the amount and how often it is charged.</p></div><label class="check"><input name="consent" type="checkbox" required> The patient has agreed to this recurring price and schedule. They will separately authorize recurring charges on the secure page.</label><div class="actions"><button type="submit" class="primary">Continue to secure card page</button></div></form>`;
 }
 function patientMembershipTerms(s,form){
- const price=(s.membershipPrices||[]).find(price=>price.id===form.elements.price_id.value&&price.status==='active'),host=form.querySelector('#patient-membership-terms');if(!host)return;
+ const price=(s.membershipPrices||[]).find(price=>price.id===form.elements.price_id.value&&price.status==='active'&&price.enrolment_open!==false),host=form.querySelector('#patient-membership-terms');if(!host)return;
  host.innerHTML=price?`<section class="mapping-notice"><b>${esc(price.name)}</b><p>${esc(membershipCadence(price))}. Billing continues until canceled. Cancellation is scheduled for the end of the paid period; it does not issue an immediate refund.</p><p>Only the secure checkout can start this membership. Saving a card alone does not enroll the patient.</p></section>`:'<p>Choose a price to see the amount and how often it is charged.</p>';
 }
 function installmentDueDateBounds(){
@@ -120,8 +120,8 @@ document.addEventListener('change',event=>{
  capturePatientPaymentPlanDrafts();
 });
 let membershipRequestOwner=null;
-const membershipRequests=new Map(),membershipPriceRequests=new Map(),membershipCancelRequests=new Map();
-function membershipSession(){if(membershipRequestOwner!==me){membershipRequests.clear();membershipPriceRequests.clear();membershipCancelRequests.clear();membershipRequestOwner=me;}}
+const membershipRequests=new Map(),membershipPriceRequests=new Map(),membershipCancelRequests=new Map(),membershipRetireRequests=new Map();
+function membershipSession(){if(membershipRequestOwner!==me){membershipRequests.clear();membershipPriceRequests.clear();membershipCancelRequests.clear();membershipRetireRequests.clear();membershipRequestOwner=me;}}
 function membershipCurrentRequest(s){membershipSession();return membershipRequests.get(s.patientId);}
 function membershipRequestMarkup(op){
  if(!op)return '';
@@ -139,7 +139,7 @@ function patientMembershipRows(s){
  return (s.memberships||[]).map(op=>{
   const ending=op.cancel_at_period_end,live=['active','trialing'].includes(op.subscription_status)||(!op.subscription_status&&op.status==='active');
   const when=op.current_period_end?(ending?`Ends ${esc(patientBillingProviderDate(op.current_period_end))}`:live?`Next charge ${esc(patientBillingProviderDate(op.current_period_end))}`:''):'';
-  return `<article class="patient-billing-card"><h4>${esc(op.price?.name||'Practice membership')}</h4><p>${op.price?esc(membershipCadence(op.price)):'Price not available'}</p><p>${esc(membershipStatusWords(op))}${ending?' · will end at the end of the paid period':''}</p>${when?`<small>${when}</small>`:''}${['creating','open','pending','needs_review'].includes(op.status)?membershipRequestMarkup(op):''}${op.cancellation_available===true&&op.subscription_id&&!op.cancel_at_period_end&&!['canceled','incomplete_expired'].includes(op.subscription_status)&&billingCan('edit')&&!s.membershipPending?.some(p=>p.kind==='cancel')?`<button type="button" data-membership-cancel="${esc(op.request_id)}">Cancel at period end</button>`:''}</article>`;
+  return `<article class="patient-billing-card"><h4>${esc(op.price?.name||'Practice membership')}</h4><p>${op.price?esc(membershipCadence(op.price)):'Price not available'}</p><p>${esc(membershipStatusWords(op))}${ending?' · will end at the end of the paid period':''}</p>${when?`<small>${when}</small>`:''}${['creating','open','pending','needs_review'].includes(op.status)?membershipRequestMarkup(op):''}${op.cancellation_available===true&&op.subscription_id&&!op.cancel_at_period_end&&!['canceled','incomplete_expired'].includes(op.subscription_status)&&billingCan('edit')&&!s.membershipPending?.some(p=>p.kind==='cancel')?`<button type="button" data-membership-cancel="${esc(op.request_id)}">Cancel at period end</button>`:''}${op.cancel_now_available===true&&op.subscription_id&&!['canceled','incomplete_expired'].includes(op.subscription_status)&&billingCan('edit')&&!s.membershipPending?.some(p=>p.kind==='cancel')?`<button type="button" data-membership-cancel-now="${esc(op.request_id)}">Cancel now</button>`:''}</article>`;
  }).join('')||'<p>This patient has no memberships yet.</p>';
 }
 function renderPatientMembershipPanel(s){
@@ -196,7 +196,7 @@ async function createPatientMembership(s,form,existing){
  if(existing){if(membershipCurrentRequest(s)!==existing||!existing.retry_allowed||!(Date.parse(existing.retry_safe_until)>Date.now())||(!existing.input&&!existing.price?.id))return;body=existing.input||{request_id:existing.request_id,price_id:existing.price.id,consent:true};}
  else{
   if(!form.elements.consent.checked)return;
-  const price=s.membershipPrices?.find(p=>p.id===form.elements.price_id.value&&p.status==='active');if(!price)throw new Error('Choose an approved active membership price.');
+  const price=s.membershipPrices?.find(p=>p.id===form.elements.price_id.value&&p.status==='active'&&p.enrolment_open!==false);if(!price)throw new Error('Choose an approved active membership price.');
   if((s.memberships||[]).some(op=>op.price?.id===price.id&&!['expired','canceled'].includes(op.status)))throw new Error('Review the existing membership for this price before starting another.');
   body={request_id:crypto.randomUUID(),price_id:price.id,consent:true};
  }
@@ -235,7 +235,7 @@ async function retryMembershipOperation(s,id){
  if(!op?.retry_allowed||!op.request||Date.parse(op.retry_safe_until)<=Date.now())return;
  if(op.kind==='membership'){
   const price=s.membershipPrices?.find(price=>price.id===op.request.price_id),pending={...op,price,input:op.request};membershipRequests.set(s.patientId,pending);await createPatientMembership(s,null,pending);
- }else if(op.kind==='cancel')await cancelPatientMembership(s,null,op);
+ }else if(op.kind==='cancel'){if(op.request?.cancel_kind==='now'){if(await confirmAction('The membership ends today. Nothing is refunded and no further charges are made.',{title:'Cancel membership now?',confirmLabel:'Retry original cancellation'}))await cancelPatientMembershipNow(s,null,op);}else await cancelPatientMembership(s,null,op);}
 }
 async function cancelPatientMembership(s,id,pending){
  const op=pending?null:s.memberships?.find(item=>item.request_id===id),subscription=pending?.request?.subscription_id||op?.subscription_id;
@@ -256,10 +256,38 @@ async function cancelPatientMembership(s,id,pending){
   s.membershipPending=[...(s.membershipPending||[]).filter(item=>item.request_id!==request),current];renderPatientMembershipPanel(s);notice(error.message||'The cancellation result is unknown. Check the original request before retrying.',true);
  }}
 }
+// "Cancel now" ends a running membership today: no refund and no further charges.
+function openCancelNowSheet(s,id){
+ const op=s.memberships?.find(item=>item.request_id===id);
+ if(!op||op.cancel_now_available!==true||!op.subscription_id||['canceled','incomplete_expired'].includes(op.subscription_status)||!patientBillingCurrent(s)||s.tab!=='subscriptions'||!billingCan('edit')||typeof sheetOpen!=='function')return null;
+ closePlansSheet(s);
+ const holder=document.createElement('div');
+ holder.innerHTML=`<form id="membership-cancel-now-form" data-membership="${esc(op.request_id)}"><p>The membership ends today. Nothing is refunded and no further charges are made.</p><div class="actions"><button type="submit">Cancel membership now</button><button type="button" data-membership-cancel-now-keep>Keep membership</button></div></form>`;
+ s.plansSheet=sheetOpen('Cancel membership now',holder);
+ return s.plansSheet;
+}
+async function cancelPatientMembershipNow(s,id,pending){
+ const op=pending?null:s.memberships?.find(item=>item.request_id===id),subscription=pending?.request?.subscription_id||op?.subscription_id;
+ if(!subscription||(!pending&&op?.cancel_now_available!==true)||!billingCan('edit'))return false;
+ if(pending&&(!pending.retry_allowed||Date.parse(pending.retry_safe_until)<=Date.now()))return false;
+ if(!patientBillingCurrent(s)||s.tab!=='subscriptions')return false;
+ s.membershipRead=(s.membershipRead||0)+1;
+ membershipSession();const key=s.patientId+':'+subscription+':now',request=pending?.request_id||membershipCancelRequests.get(key)||crypto.randomUUID();membershipCancelRequests.set(key,request);
+ const body={request_id:request};
+ try{
+  const data=await api(`/api/v1/billing/patients/${encodeURIComponent(s.patientId)}/memberships/${encodeURIComponent(subscription)}/cancel-now`,'POST',body);
+  if(!patientBillingCurrent(s)||s.tab!=='subscriptions')return false;
+  if(data.patient_id!==s.patientId||data.request_id!==request||data.subscription?.id!==subscription)throw new Error('The cancellation result did not match this membership. Refresh its status.');
+  if(data.status==='canceled'){membershipCancelRequests.delete(key);await loadPatientMemberships(s,s.planRequest);notice('Membership cancelled.');return true;}
+  await loadPatientMemberships(s,s.planRequest);notice('The cancellation is not confirmed yet. Check the original request; a new one is not needed.',true);return false;
+ }catch(error){if(patientBillingCurrent(s)&&s.tab==='subscriptions'){
+  const current={request_id:request,kind:'cancel',status:'unknown',retry_allowed:true,retry_safe_until:pending?.retry_safe_until||new Date(Date.now()+23*3600000).toISOString(),request:{...body,subscription_id:subscription,cancel_kind:'now'}};
+  s.membershipPending=[...(s.membershipPending||[]).filter(item=>item.request_id!==request),current];renderPatientMembershipPanel(s);notice(error.message||'The cancellation result is unknown. Check the original request before retrying.',true);
+ }return false;}
+}
 
 // ---- Practice administration > Memberships: the practice's membership prices -------------------
-// A price belongs to the whole practice, so it is added here and not from a patient. When the
-// server can retire a price, add a "Retire" button to each row of membershipPriceRows below.
+// A price belongs to the whole practice, so it is added here and not from a patient.
 let membershipAdmin=null;
 function membershipAdminState(){
  membershipSession();
@@ -270,14 +298,20 @@ function membershipAdminState(){
 function practiceAdminExtraTabs(active){return `<button type="button" data-admin-tab="memberships" aria-pressed="${active==='memberships'}">Memberships</button>`;}
 function practiceAdminExtraRender(tab,target){if(tab!=='memberships')return false;renderMembershipPricesAdmin(target);return true;}
 function membershipEvery(price){return price.interval_count===1?`Every ${price.interval}`:`Every ${price.interval_count} ${price.interval}s`;}
-function membershipPriceRows(items){
- return items.map(price=>`<tr><td><strong>${esc(price.name)}</strong></td><td>${esc(patientBillingAmount(price.amount_cents,price.currency))}</td><td>${esc(membershipEvery(price))}</td><td>${esc(price.status==='active'?'Active':human(price.status||'unknown'))}</td></tr>`).join('');
+function membershipPriceRetired(price){return price.status==='retired';}
+function membershipPriceRows(items,canRetire){
+ return items.map(price=>{
+  const retired=membershipPriceRetired(price);
+  const status=retired?`Retired${price.retired_at?' '+date(price.retired_at):''}`:price.status==='active'?'Active':human(price.status||'unknown');
+  const action=canRetire&&!retired?`<button type="button" data-membership-price-retire="${esc(price.id)}">Retire</button>`:'';
+  return `<tr><td><strong>${esc(price.name)}</strong></td><td>${esc(patientBillingAmount(price.amount_cents,price.currency))}</td><td>${esc(membershipEvery(price))}</td><td>${esc(status)}</td><td>${action}</td></tr>`;
+ }).join('');
 }
 function membershipPricesAdminMarkup(st){
  const owner=me?.role==='owner',pending=membershipPriceRequests.get(me?.tenant_id);
  const action=owner&&!pending&&!st.error&&st.available&&billingCan('create')?'<button type="button" class="primary" data-membership-price-new>Add membership price</button>':'';
  const unavailable=owner&&st.prices&&!st.available&&!st.error?'<p class="muted">Card payments must be set up before a membership price can be added.</p><p><button type="button" data-payment-settings>Set up card payments</button></p>':'';
- const body=st.error?`<p role="alert">${esc(st.error)}</p><button type="button" data-membership-prices-reload>Try again</button>`:!st.prices?'<p role="status">Loading membership prices…</p>':`<div class="practice-table-wrap"><table class="practice-table"><caption class="sr-only">Membership prices</caption><thead><tr><th scope="col">Name</th><th scope="col">Price</th><th scope="col">How often</th><th scope="col">Status</th></tr></thead><tbody>${membershipPriceRows(st.prices)||'<tr><td colspan="4">No membership prices yet.</td></tr>'}</tbody></table></div>${st.next?`<button type="button" data-membership-prices-admin-next="${esc(st.next)}">Load more prices</button>`:''}`;
+ const body=st.error?`<p role="alert">${esc(st.error)}</p><button type="button" data-membership-prices-reload>Try again</button>`:!st.prices?'<p role="status">Loading membership prices…</p>':`<div class="practice-table-wrap"><table class="practice-table"><caption class="sr-only">Membership prices</caption><thead><tr><th scope="col">Name</th><th scope="col">Price</th><th scope="col">How often</th><th scope="col">Status</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${membershipPriceRows(st.prices,!!action)||'<tr><td colspan="5">No membership prices yet.</td></tr>'}</tbody></table></div>${st.next?`<button type="button" data-membership-prices-admin-next="${esc(st.next)}">Load more prices</button>`:''}`;
  return `<div class="section-head"><div><h3>Membership prices</h3><p class="muted">A membership price is a fixed amount charged on a schedule. Patients are enrolled from their own billing page.</p></div>${action}</div>${pending&&owner?membershipPricePendingMarkup(pending):''}${unavailable}${body}`;
 }
 function paintMembershipPricesAdmin(target){
@@ -302,6 +336,27 @@ async function loadMembershipPrices(target,cursor){
   if(pendingPrice)membershipPriceRequests.set(me.tenant_id,{request_id:pendingPrice.request_id,body:pendingPrice.request,deadline:Date.parse(pendingPrice.retry_safe_until),retry_allowed:pendingPrice.retry_allowed===true});
  }catch(error){if(!current())return;st.error=error.message||'Membership prices could not be loaded.';}
  paintMembershipPricesAdmin(target);
+}
+// "Retire" stops new enrolments on a price. Patients already on it keep their membership.
+function openRetirePriceSheet(id){
+ const st=membershipAdminState(),price=st.prices?.find(item=>item.id===id);
+ if(me?.role!=='owner'||!st.available||!billingCan('create')||!price||membershipPriceRetired(price)||typeof sheetOpen!=='function')return null;
+ if(st.retireSheet?.isConnected)return st.retireSheet;
+ const holder=document.createElement('div');
+ holder.innerHTML=`<form id="membership-price-retire-form" data-price="${esc(price.id)}"><p>Nobody new can be started on this price. Patients already on it keep their membership.</p><div class="actions"><button type="submit">Retire this price</button><button type="button" data-membership-price-retire-keep>Keep price</button></div></form>`;
+ st.retireSheet=sheetOpen('Retire membership price',holder);return st.retireSheet;
+}
+function closeRetirePriceSheet(st){if(st.retireSheet){const sheet=st.retireSheet;st.retireSheet=null;if(typeof sheetClose==='function')sheetClose(sheet);}}
+async function retireMembershipPrice(form){
+ const st=membershipAdminState(),identity=me,id=form.dataset.price,price=st.prices?.find(item=>item.id===id);
+ if(me?.role!=='owner'||!billingCan('create')||!st.available||!price||membershipPriceRetired(price))return;
+ const key=me.tenant_id+':'+id,request=membershipRetireRequests.get(key)||crypto.randomUUID();membershipRetireRequests.set(key,request);
+ const result=await api('/api/v1/billing/membership-prices/'+encodeURIComponent(id)+'/retire','POST',{request_id:request});
+ if(me!==identity)return;
+ if(result.price?.id!==id||result.price.status!=='retired')throw new Error('The answer did not match this price. Try again.');
+ membershipRetireRequests.delete(key);closeRetirePriceSheet(st);
+ const panel=typeof $==='function'?$('practice-admin-panel'):null;if(panel&&membershipAdmin===st)await loadMembershipPrices(panel,null);
+ notice('Membership price retired.');
 }
 function openMembershipPriceSheet(){
  const st=membershipAdminState();
@@ -340,6 +395,8 @@ if(typeof document!=='undefined'){
  document.addEventListener('click',event=>{
   const button=event.target?.closest?.('button');if(!button)return;
   if(button.hasAttribute('data-membership-price-new')){event.preventDefault();openMembershipPriceSheet();return;}
+  if(button.dataset.membershipPriceRetire){event.preventDefault();openRetirePriceSheet(button.dataset.membershipPriceRetire);return;}
+  if(button.hasAttribute('data-membership-price-retire-keep')){event.preventDefault();closeRetirePriceSheet(membershipAdminState());return;}
   const panel=button.closest('#practice-admin-panel');if(!panel)return;
   if(button.dataset.membershipPriceCheck)run(()=>checkMembershipPrice(button.dataset.membershipPriceCheck));
   else if(button.hasAttribute('data-membership-price-retry'))run(()=>approveMembershipPrice(null));
@@ -349,7 +406,13 @@ if(typeof document!=='undefined'){
  document.addEventListener('input',event=>{const form=event.target?.closest?.('#membership-price-form');if(form&&event.target.name!=='approved')form.elements.approved.checked=false;});
  document.addEventListener('change',event=>{const form=event.target?.closest?.('#membership-price-form');if(form&&event.target.name==='interval')form.elements.interval_count.max=String({day:365,week:52,month:12,year:1}[event.target.value]);});
  document.addEventListener('submit',event=>{
-  const form=event.target;if(form?.id!=='membership-price-form')return;
+  const form=event.target;
+  if(form?.id==='membership-price-retire-form'){
+   event.preventDefault();const sheet=form.closest('dialog');
+   Promise.resolve().then(()=>retireMembershipPrice(form)).catch(error=>{const body=sheet?.querySelector('.sheet-body')||sheet;if(!body)return;let alert=body.querySelector('[data-sheet-error]');if(!alert){alert=document.createElement('p');alert.setAttribute('role','alert');alert.setAttribute('data-sheet-error','');body.prepend(alert);}alert.textContent=error?.message||'The price was not retired. Try again.';});
+   return;
+  }
+  if(form?.id!=='membership-price-form')return;
   event.preventDefault();const sheet=form.closest('dialog');
   const show=message=>{const body=sheet?.querySelector('.sheet-body');if(!body)return;let alert=body.querySelector('[data-sheet-error]');if(!alert){alert=document.createElement('p');alert.setAttribute('role','alert');alert.setAttribute('data-sheet-error','');body.prepend(alert);}alert.textContent=message;};
   Promise.resolve().then(()=>approveMembershipPrice(form)).catch(error=>show(error?.message||'The price was not added. Try again.'));
@@ -626,13 +689,14 @@ async function openInvoiceCheckoutReturn(id){
  }catch(error){if(current())host.innerHTML=`<h2>Installment payment result unavailable</h2><p role="alert">${esc(error.message||'This payment could not be loaded with your current access.')}</p><p>No new checkout was created by returning here.</p><button type="button" data-invoice-checkout-review="${esc(id||'')}">Check again</button>`;}
 }
 document.addEventListener('submit',event=>{
- const form=event.target;if(!['patient-membership-form','installment-preview-form','installment-confirm-form','installment-checkout-form','installment-cancel-form'].includes(form.id))return;
+ const form=event.target;if(!['patient-membership-form','installment-preview-form','installment-confirm-form','installment-checkout-form','installment-cancel-form','membership-cancel-now-form'].includes(form.id))return;
  event.preventDefault();const s=patientBillingWorkspace;if(!patientBillingCurrent(s)||!patientPlanInScope(s,form))return;
  planSheetRun(s,form,async()=>{
   if(form.id==='patient-membership-form'){await createPatientMembership(s,form);closePlansSheet(s);}
   else if(form.id==='installment-preview-form')await previewInstallmentPlan(s,form);
   else if(form.id==='installment-confirm-form')await createInstallmentPlan(s,form,false);
   else if(form.id==='installment-cancel-form')await cancelInstallmentPlan(s,form);
+  else if(form.id==='membership-cancel-now-form'){await cancelPatientMembershipNow(s,form.dataset.membership);closePlansSheet(s);}
   else await createInstallmentCheckout(s,form);
  });
 });
@@ -650,6 +714,8 @@ document.addEventListener('click',event=>{
  else if(d.membershipOperationCheck)run(()=>refreshMembershipOperation(s,d.membershipOperationCheck));
  else if(d.membershipOperationRetry)run(()=>retryMembershipOperation(s,d.membershipOperationRetry));
  else if(d.membershipCancel)run(()=>cancelPatientMembership(s,d.membershipCancel));
+ else if(d.membershipCancelNow)openCancelNowSheet(s,d.membershipCancelNow);
+ else if(button.hasAttribute('data-membership-cancel-now-keep'))closePlansSheet(s);
  else if(d.membershipPricesNext)run(()=>loadMoreMembershipPrices(s,d.membershipPricesNext));
  else if(d.membershipsNext||button.hasAttribute('data-memberships-first')){s.membershipsAfter=d.membershipsNext||null;run(()=>loadPatientMemberships(s,s.planRequest));}
  else if(button.hasAttribute('data-installments-refresh'))run(()=>loadPatientInstallments(s,s.planRequest));

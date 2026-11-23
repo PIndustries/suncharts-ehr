@@ -7,6 +7,7 @@ struct Fake {
     tenant: Uuid,
     installation: Uuid,
     calls: Mutex<Vec<(Method, String)>>,
+    bodies: Mutex<Vec<(String, Value)>>,
     behavior: Mutex<String>,
     price: Uuid,
     price_request: Uuid,
@@ -26,7 +27,10 @@ impl Fake {
         json!({"id":self.price,"request_id":request,"provider_price_id":"price_synthetic","name":"Synthetic Monthly Care","amount_cents":2500,"currency":"usd","interval":"month","interval_count":1,"status":status,"created_at":"2026-11-01T00:00:00Z"})
     }
     fn subscription(&self, cancel: bool) -> Value {
-        json!({"id":"sub_synthetic","status":"active","currency":"usd","created":1793491200,"cancel_at_period_end":cancel,"items":[{"id":"si_synthetic","quantity":1,"unit_amount":2500,"interval":"month","interval_count":1,"current_period_start":1793491200,"current_period_end":1796083200}]})
+        self.subscription_in(cancel, "active")
+    }
+    fn subscription_in(&self, cancel: bool, status: &str) -> Value {
+        json!({"id":"sub_synthetic","status":status,"currency":"usd","created":1793491200,"cancel_at_period_end":cancel,"items":[{"id":"si_synthetic","quantity":1,"unit_amount":2500,"interval":"month","interval_count":1,"current_period_start":1793491200,"current_period_end":1796083200}]})
     }
 }
 #[async_trait]
@@ -51,6 +55,9 @@ impl Source for Fake {
             .lock()
             .unwrap()
             .push((method.clone(), path.into()));
+        if let Some(b) = &body {
+            self.bodies.lock().unwrap().push((path.into(), b.clone()));
+        }
         if path == "/status" {
             return Ok(
                 json!({"installation_id":self.installation,"remote_tenant_id":self.tenant,"account_id":"acct_synthetic","livemode":false}),
@@ -67,7 +74,21 @@ impl Source for Fake {
             };
             let mut out = self.envelope(patient);
             let mut items = Vec::new();
-            if let Some(patient) = patient.filter(|_| mode == "active_list") {
+            if patient.is_none() && mode.starts_with("price_list") {
+                let mut price = self.price(self.price_request, "active");
+                if mode == "price_list_retired" {
+                    price["status"] = json!("retired");
+                    price["enrolment_open"] = json!(false);
+                    price["retired_at"] = json!("2026-11-10T00:00:00Z");
+                } else {
+                    price["enrolment_open"] = json!(true);
+                    price["retired_at"] = Value::Null;
+                }
+                items.push(price);
+            }
+            if let Some(patient) =
+                patient.filter(|_| matches!(mode.as_str(), "active_list" | "cancel_list"))
+            {
                 let requests:Vec<Uuid>=sqlx::query_scalar("SELECT request_id FROM patient_membership_operations WHERE tenant_id=$1 AND patient_id=$2 AND kind='membership' ORDER BY request_id").bind(self.tenant).bind(patient).fetch_all(&self.pool).await?;
                 for request in requests {
                     let proof = self
@@ -105,6 +126,9 @@ impl Source for Fake {
         if mode == "lost" {
             return Err(Error::Invalid("Synthetic lost response"));
         }
+        if mode == "retiredprice" && op.kind == "membership" {
+            return Err(Error::Conflict("This membership price is retired."));
+        }
         if mode == "disable" {
             sqlx::query("UPDATE browser_users SET disabled=true WHERE tenant_id=$1")
                 .bind(self.tenant)
@@ -115,15 +139,25 @@ impl Source for Fake {
             sqlx::query("UPDATE payment_settings SET credential_revision=credential_revision+1,version=version+1 WHERE tenant_id=$1").bind(self.tenant).execute(&self.pool).await?;
         }
         let mut out = self.envelope(op.patient_id);
-        if op.kind == "price" {
+        if op.kind == "price_retire" {
+            let mut price = self.price(self.price_request, "retired");
+            price["enrolment_open"] = json!(false);
+            price["retired_at"] = json!("2026-11-10T00:00:00Z");
+            out["price"] = price;
+            out["retry_safe_until"] = json!(op.created_at + chrono::Duration::hours(23));
+            out["recovery_required"] = json!(false);
+        } else if op.kind == "price" {
             out["price"] = self.price(request, "active");
             out["retry_safe_until"] = json!(op.created_at + chrono::Duration::hours(23));
             out["recovery_required"] = json!(false);
         } else if op.kind == "membership" {
-            let active = matches!(mode.as_str(), "active" | "cancel" | "active_list");
+            let active = matches!(
+                mode.as_str(),
+                "active" | "cancel" | "active_list" | "cancel_list"
+            );
             let pending = mode == "creating" || mode == "review" || mode == "missing";
             let sub = if active {
-                self.subscription(mode == "cancel")
+                self.subscription(matches!(mode.as_str(), "cancel" | "cancel_list"))
             } else {
                 Value::Null
             };
@@ -132,7 +166,7 @@ impl Source for Fake {
             } else {
                 json!({"id":"cs_test_synthetic","url":if active{Value::Null}else{json!("https://checkout.stripe.com/c/pay/synthetic")},"status":if active{"complete"}else{"open"},"authorization_accepted":active,"subscription":sub})
             };
-            out["membership"] = json!({"request_id":request,"price":self.price(self.price_request,"approved"),"terms":"You authorize USD 25.00 every 1 month for Synthetic Monthly Care. This membership renews automatically until canceled. Cancellation takes effect at the end of the paid period; cancellation does not issue a refund.","customer_id":"cus_synthetic","status":if mode=="review"{"needs_review"}else if pending{"creating"}else if active{"active"}else{"open"},"session":session,"subscription_id":if active{json!("sub_synthetic")}else{Value::Null},"subscription_status":if active{json!("active")}else{Value::Null},"cancel_at_period_end":if active{json!(mode=="cancel")}else{Value::Null},"current_period_end":if active{json!(1796083200_i64)}else{Value::Null},"retry_safe_until":op.created_at+chrono::Duration::hours(23),"recovery_required":mode=="review","created_at":op.created_at});
+            out["membership"] = json!({"request_id":request,"price":self.price(self.price_request,"approved"),"terms":"You authorize USD 25.00 every 1 month for Synthetic Monthly Care. This membership renews automatically until canceled. Cancellation takes effect at the end of the paid period; cancellation does not issue a refund.","customer_id":"cus_synthetic","status":if mode=="review"{"needs_review"}else if pending{"creating"}else if active{"active"}else{"open"},"session":session,"subscription_id":if active{json!("sub_synthetic")}else{Value::Null},"subscription_status":if active{json!("active")}else{Value::Null},"cancel_at_period_end":if active{json!(matches!(mode.as_str(),"cancel"|"cancel_list"))}else{Value::Null},"current_period_end":if active{json!(1796083200_i64)}else{Value::Null},"retry_safe_until":op.created_at+chrono::Duration::hours(23),"recovery_required":mode=="review","created_at":op.created_at});
             if mode == "missing" {
                 out["membership"].as_object_mut().unwrap().remove("session");
             }
@@ -143,8 +177,19 @@ impl Source for Fake {
             let enrollment:Uuid=sqlx::query_scalar("SELECT request_id FROM patient_membership_operations WHERE tenant_id=$1 AND patient_id=$2 AND kind='membership' LIMIT 1").bind(self.tenant).bind(op.patient_id).fetch_one(&self.pool).await?;
             out["request_id"] = json!(request);
             out["membership_request_id"] = json!(enrollment);
-            out["status"] = json!("scheduled");
-            out["subscription"] = self.subscription(true);
+            if op.request_body["cancel_kind"] == "now" {
+                out["kind"] = json!("now");
+                if mode == "nowpending" {
+                    out["status"] = json!("pending");
+                    out["subscription"] = self.subscription(false);
+                } else {
+                    out["status"] = json!("canceled");
+                    out["subscription"] = self.subscription_in(false, "canceled");
+                }
+            } else {
+                out["status"] = json!("scheduled");
+                out["subscription"] = self.subscription(true);
+            }
             out["retry_safe_until"] = json!(op.created_at + chrono::Duration::hours(23));
             out["recovery_required"] = json!(false);
         }
@@ -173,7 +218,7 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
-        Self::at_revision(102).await
+        Self::at_revision(122).await
     }
     async fn at_revision(revision: i64) -> Self {
         let url = std::env::var("TEST_DATABASE_URL").expect("disposable TEST_DATABASE_URL");
@@ -239,6 +284,7 @@ impl Fixture {
             tenant,
             installation: Uuid::new_v4(),
             calls: Mutex::new(vec![]),
+            bodies: Mutex::new(vec![]),
             behavior: Mutex::new("open".into()),
             price: Uuid::new_v4(),
             price_request: Uuid::new_v4(),
@@ -285,6 +331,87 @@ impl Fixture {
             self.fake.as_ref(),
         )
         .await
+    }
+    async fn cancel_now(&self, patient: Uuid, request: Uuid) -> Result<Response> {
+        create_with(
+            self.actor.clone(),
+            self.state.clone(),
+            Some(patient),
+            self.headers(),
+            "cancel",
+            request,
+            json!({"subscription_id":"sub_synthetic","cancel_kind":"now"}),
+            self.fake.as_ref(),
+        )
+        .await
+    }
+    async fn cancel_period_end(&self, request: Uuid) -> Value {
+        value(
+            create_with(
+                self.actor.clone(),
+                self.state.clone(),
+                Some(self.patient),
+                self.headers(),
+                "cancel",
+                request,
+                json!({"subscription_id":"sub_synthetic","expected_cancel_at_period_end":false}),
+                self.fake.as_ref(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await
+    }
+    async fn retire(&self, request: Uuid) -> Result<Response> {
+        create_with(
+            self.actor.clone(),
+            self.state.clone(),
+            None,
+            self.headers(),
+            "price_retire",
+            request,
+            json!({"price_id":self.fake.price}),
+            self.fake.as_ref(),
+        )
+        .await
+    }
+    async fn prices_list(&self) -> Value {
+        value(
+            list_with(
+                self.actor.clone(),
+                self.state.clone(),
+                None,
+                Page::default(),
+                self.headers(),
+                self.fake.as_ref(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await
+    }
+    async fn member_list(&self) -> Value {
+        value(
+            list_with(
+                self.actor.clone(),
+                self.state.clone(),
+                Some(self.patient),
+                Page::default(),
+                self.headers(),
+                self.fake.as_ref(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await
+    }
+    /// A running membership the EHR has verified, ready to be cancelled.
+    async fn running_member(&self) -> Uuid {
+        let request = Uuid::new_v4();
+        self.create_member(request).await.unwrap();
+        self.fake.set("active");
+        self.read_member(request).await.unwrap();
+        request
     }
     fn posts(&self) -> usize {
         self.fake
@@ -671,5 +798,262 @@ async fn membership_gateway_lost_return_list_reconciles_native_mapping_for_edit_
     .await;
     assert_eq!(cancel["status"], "scheduled");
     assert_eq!(f.posts(), 2);
+    f.untouched().await;
+}
+
+#[tokio::test]
+async fn membership_cancel_now_ends_it_with_one_call_and_replay_only_reads() {
+    let f = Fixture::new().await;
+    f.running_member().await;
+    let before = f.posts();
+    let cancel = Uuid::new_v4();
+    let out = value(f.cancel_now(f.patient, cancel).await.unwrap()).await;
+    assert_eq!(out["status"], "canceled");
+    assert_eq!(out["kind"], "now");
+    assert_eq!(out["subscription"]["status"], "canceled");
+    assert_eq!(f.posts(), before + 1);
+    let (path, body) = f.fake.bodies.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(
+        path,
+        format!(
+            "/patient-billing/{}/memberships/sub_synthetic/cancel-now",
+            f.patient
+        )
+    );
+    assert_eq!(
+        body,
+        json!({"request_id":cancel,"account_id":"acct_synthetic","livemode":false,"remote_tenant_id":f.actor.tenant_id})
+    );
+    let replay = value(f.cancel_now(f.patient, cancel).await.unwrap()).await;
+    assert_eq!(replay["status"], "canceled");
+    assert_eq!(
+        f.posts(),
+        before + 1,
+        "a finished cancellation is only read again"
+    );
+    let last = f.fake.calls.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(last.0, Method::GET);
+    assert!(last.1.contains(&format!("/cancellations/{cancel}")));
+    // Re-using the id for the other kind is refused before anything is sent.
+    assert!(create_with(
+        f.actor.clone(),
+        f.state.clone(),
+        Some(f.patient),
+        f.headers(),
+        "cancel",
+        cancel,
+        json!({"subscription_id":"sub_synthetic","expected_cancel_at_period_end":false}),
+        f.fake.as_ref(),
+    )
+    .await
+    .is_err());
+    assert_eq!(f.posts(), before + 1);
+    let stored: String = sqlx::query_scalar(
+        "SELECT status FROM patient_membership_operations WHERE tenant_id=$1 AND request_id=$2",
+    )
+    .bind(f.actor.tenant_id)
+    .bind(cancel)
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(stored, "canceled");
+    f.untouched().await;
+}
+
+#[tokio::test]
+async fn membership_cancel_now_lost_answer_is_recovered_by_reading_not_resending() {
+    let f = Fixture::new().await;
+    f.running_member().await;
+    let cancel = Uuid::new_v4();
+    f.fake.set("lost");
+    assert!(f.cancel_now(f.patient, cancel).await.is_err());
+    let before = f.posts();
+    // A replacement request id is refused while the first is unresolved.
+    f.fake.set("active");
+    assert!(f.cancel_now(f.patient, Uuid::new_v4()).await.is_err());
+    assert_eq!(f.posts(), before);
+    let read = value(f.read_member(cancel).await.unwrap()).await;
+    assert_eq!(read["status"], "canceled");
+    assert_eq!(read["kind"], "now");
+    assert_eq!(
+        f.posts(),
+        before,
+        "recovery never sends the cancellation again"
+    );
+    let last = f.fake.calls.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(last.0, Method::GET);
+    f.untouched().await;
+}
+
+#[tokio::test]
+async fn membership_cancel_now_pending_answer_keeps_the_original_request() {
+    let f = Fixture::new().await;
+    f.running_member().await;
+    f.fake.set("nowpending");
+    let cancel = Uuid::new_v4();
+    let out = value(f.cancel_now(f.patient, cancel).await.unwrap()).await;
+    assert_eq!(out["status"], "pending");
+    assert_eq!(out["retry_allowed"], true);
+    assert!(f.cancel_now(f.patient, Uuid::new_v4()).await.is_err());
+    f.untouched().await;
+}
+
+#[tokio::test]
+async fn membership_cancel_now_refuses_wrong_role_and_another_patients_membership() {
+    let f = Fixture::new().await;
+    f.running_member().await;
+    let before = f.posts();
+    let other = Uuid::new_v4();
+    sqlx::query("INSERT INTO patients(tenant_id,id,mrn,given_name,family_name,birth_date) VALUES($1,$2,'SYN-OTHER','Blake','Synthetic','1991-01-01')").bind(f.actor.tenant_id).bind(other).execute(&f.pool).await.unwrap();
+    assert!(f.cancel_now(other, Uuid::new_v4()).await.is_err());
+    assert_eq!(
+        f.posts(),
+        before,
+        "another patient's membership is never sent"
+    );
+    sqlx::query("UPDATE browser_users SET role='nurse' WHERE tenant_id=$1")
+        .bind(f.actor.tenant_id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    assert!(f.cancel_now(f.patient, Uuid::new_v4()).await.is_err());
+    assert_eq!(f.posts(), before);
+    f.untouched().await;
+}
+
+#[tokio::test]
+async fn membership_cancel_now_is_offered_and_allowed_after_a_period_end_cancellation() {
+    let f = Fixture::new().await;
+    f.running_member().await;
+    f.fake.set("active_list");
+    let listed = f.member_list().await;
+    assert_eq!(listed["items"][0]["cancellation_available"], true);
+    assert_eq!(listed["items"][0]["cancel_now_available"], true);
+    let scheduled = f.cancel_period_end(Uuid::new_v4()).await;
+    assert_eq!(scheduled["status"], "scheduled");
+    f.fake.set("cancel_list");
+    let listed = f.member_list().await;
+    assert_eq!(listed["items"][0]["cancel_at_period_end"], true);
+    assert_eq!(listed["items"][0]["cancellation_available"], false);
+    assert_eq!(listed["items"][0]["cancel_now_available"], true);
+    let before = f.posts();
+    let out = value(f.cancel_now(f.patient, Uuid::new_v4()).await.unwrap()).await;
+    assert_eq!(out["status"], "canceled");
+    assert_eq!(f.posts(), before + 1);
+    f.untouched().await;
+}
+
+#[tokio::test]
+async fn membership_price_retire_sends_one_bound_request_and_audits() {
+    let f = Fixture::new().await;
+    let request = Uuid::new_v4();
+    let out = value(f.retire(request).await.unwrap()).await;
+    assert_eq!(out["price"]["status"], "retired");
+    assert_eq!(out["price"]["enrolment_open"], false);
+    assert!(out["price"]["retired_at"].is_string());
+    assert_eq!(f.posts(), 1);
+    let (path, body) = f.fake.bodies.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(path, format!("/membership-prices/{}/retire", f.fake.price));
+    assert_eq!(
+        body,
+        json!({"request_id":request,"account_id":"acct_synthetic","livemode":false,"remote_tenant_id":f.actor.tenant_id})
+    );
+    let audited: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE tenant_id=$1 AND action='billing.membership_price_retired'").bind(f.actor.tenant_id).fetch_one(&f.pool).await.unwrap();
+    assert_eq!(audited, 1);
+    // Repeating the finished request returns the stored answer without another call.
+    let replay = value(f.retire(request).await.unwrap()).await;
+    assert_eq!(replay["price"]["status"], "retired");
+    assert_eq!(f.posts(), 1);
+    // A second request id for the same price is simply answered by the payment service.
+    let again = value(f.retire(Uuid::new_v4()).await.unwrap()).await;
+    assert_eq!(again["price"]["status"], "retired");
+    f.untouched().await;
+}
+
+#[tokio::test]
+async fn membership_price_retire_is_owner_only() {
+    let f = Fixture::new().await;
+    sqlx::query("UPDATE browser_users SET role='clinician' WHERE tenant_id=$1")
+        .bind(f.actor.tenant_id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    assert!(f.retire(Uuid::new_v4()).await.is_err());
+    assert_eq!(f.posts(), 0);
+    f.untouched().await;
+}
+
+#[tokio::test]
+async fn membership_price_retire_lost_answer_is_settled_by_the_same_request() {
+    let f = Fixture::new().await;
+    let request = Uuid::new_v4();
+    f.fake.set("lost");
+    assert!(f.retire(request).await.is_err());
+    assert!(
+        f.retire(Uuid::new_v4()).await.is_err(),
+        "no replacement id while unfinished"
+    );
+    assert_eq!(f.posts(), 1);
+    f.fake.set("open");
+    let out = value(f.retire(request).await.unwrap()).await;
+    assert_eq!(out["price"]["status"], "retired");
+    assert_eq!(f.posts(), 2);
+    f.untouched().await;
+}
+
+#[tokio::test]
+async fn membership_price_list_shows_whether_enrolment_is_open() {
+    let f = Fixture::new().await;
+    f.fake.set("price_list");
+    let open = f.prices_list().await;
+    assert_eq!(open["items"][0]["enrolment_open"], true);
+    assert!(open["items"][0]["retired_at"].is_null());
+    f.fake.set("price_list_retired");
+    let retired = f.prices_list().await;
+    assert_eq!(retired["items"][0]["status"], "retired");
+    assert_eq!(retired["items"][0]["enrolment_open"], false);
+    assert_eq!(retired["items"][0]["retired_at"], "2026-11-10T00:00:00Z");
+    f.untouched().await;
+}
+
+#[tokio::test]
+async fn membership_enrolment_at_a_retired_price_is_refused_before_any_checkout() {
+    let f = Fixture::new().await;
+    f.retire(Uuid::new_v4()).await.unwrap();
+    let before = f.posts();
+    let err = f.create_member(Uuid::new_v4()).await.unwrap_err();
+    assert_eq!(err.to_string(), "This membership price is retired.");
+    assert_eq!(f.posts(), before, "nothing was sent to the payment service");
+    let ops: i64 = sqlx::query_scalar("SELECT count(*) FROM patient_membership_operations WHERE tenant_id=$1 AND kind='membership'").bind(f.actor.tenant_id).fetch_one(&f.pool).await.unwrap();
+    assert_eq!(ops, 0, "no checkout was reserved");
+    f.untouched().await;
+}
+
+#[tokio::test]
+async fn membership_enrolment_surfaces_a_retired_price_refusal_from_the_payment_service() {
+    let f = Fixture::new().await;
+    f.fake.set("retiredprice");
+    let request = Uuid::new_v4();
+    let err = f.create_member(request).await.unwrap_err();
+    assert_eq!(err.to_string(), "This membership price is retired.");
+    // Nothing is left unresolved, so another price or a later attempt is not blocked.
+    f.fake.set("open");
+    assert!(f.create_member(Uuid::new_v4()).await.is_ok());
+    f.untouched().await;
+}
+
+#[tokio::test]
+async fn membership_price_retire_follows_the_payment_mode_gate_of_price_creation() {
+    // Test-mode writes need the test activation, live writes the separate live activation.
+    assert!(!writes_allowed_in(true, true, false));
+    assert!(writes_allowed_in(false, true, false));
+    assert!(!writes_allowed_in(false, false, true));
+    let f = Fixture::new().await;
+    let fake = f.fake.clone();
+    fake.set("wrongmode");
+    // A payment service answering for the wrong mode is never accepted as a retirement.
+    assert!(f.retire(Uuid::new_v4()).await.is_err());
+    let stored: Option<Value> = sqlx::query_scalar("SELECT provider_evidence FROM patient_membership_operations WHERE tenant_id=$1 AND kind='price_retire'").bind(f.actor.tenant_id).fetch_one(&f.pool).await.unwrap();
+    assert!(stored.is_none());
     f.untouched().await;
 }

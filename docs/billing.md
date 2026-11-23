@@ -905,3 +905,18 @@ EHR operator flag `ENGINE_LIVE_MEMBERSHIPS_ENABLED=enabled` and the correspondin
 Connect membership activation. Existing live subscriptions remain readable.
 Production refuses test-mode creation even if live membership activation is set.
 No operator flag is enabled by installing this feature.
+
+Staff with billing edit access can also cancel a running membership immediately
+(`POST /api/v1/billing/patients/{id}/memberships/{subscription}/cancel-now`, body
+`{"request_id": uuid}`). The membership ends today with no credit, refund or final
+invoice, and this is offered even after a cancellation at period end was scheduled
+(`cancel_now_available` in the membership list). It follows the same stored-request
+rules as cancelling at period end: one request ID per cancellation, a lost answer is
+recovered by repeating that request or reading its status, never by a new request.
+The practice owner can retire a membership price
+(`POST /api/v1/billing/membership-prices/{price}/retire`): nobody new can be started on
+it, patients already on it keep their membership, and the price list shows
+`enrolment_open: false` and `retired_at`. Retiring is audited as
+`billing.membership_price_retired` and uses the same payment-mode gating as adding a
+price. Starting a membership on a retired price is refused with "This membership price
+is retired."

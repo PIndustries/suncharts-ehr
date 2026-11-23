@@ -233,5 +233,82 @@ const mutations=f=>f.calls.filter(call=>call[1]==='POST');
   assert.match(card,/\$5\.00 in 2 payments · 1 paid · \$2\.50 still owed/);assert.doesNotMatch(card,/Next due/);
   assert.doesNotMatch(card,/data-installment-collect|data-installment-cancel-plan|Collect payment|Cancel plan/);
   f.s.installmentPlans=[cancelled];c.renderPatientInstallments(f.s);assert.match(f.nodes['patient-billing-installments'].innerHTML,/Cancelled/);}
+ // Retire a membership price: quiet button for the owner on rows that are not retired.
+ f=fixture();c=f.ctx;{
+  const st=c.membershipAdminState();st.available=true;
+  st.prices=[{...f.price,id:'price-one'},{...f.price,id:'price-two',status:'retired',enrolment_open:false,retired_at:'2026-11-10T00:00:00Z'}];
+  const rows=c.membershipPriceRows(st.prices,true);
+  assert.match(rows,/<button type="button" data-membership-price-retire="price-one">Retire<\/button>/);
+  assert.equal((rows.match(/data-membership-price-retire=/g)||[]).length,1,'a retired row has no button');
+  assert.match(rows,/Retired 2026-11-10T00:00:00Z/);
+  assert.doesNotMatch(c.membershipPriceRows(st.prices,false),/data-membership-price-retire/);
+  assert.match(c.membershipPricesAdminMarkup(st),/data-membership-price-retire="price-one"/);
+  c.me.role='front_desk';assert.doesNotMatch(c.membershipPricesAdminMarkup(st),/data-membership-price-retire/,'owner only');
+  assert.equal(c.openRetirePriceSheet('price-one'),null,'no sheet for anyone but the owner');c.me.role='owner';
+  c.billingCan=()=>false;assert.doesNotMatch(c.membershipPricesAdminMarkup(st),/data-membership-price-retire/);c.billingCan=()=>true;
+  // The sheet: title, one plain line, two buttons.
+  const holder={innerHTML:'',querySelector:()=>null};let opened=null;const sheet={isConnected:true};
+  c.document.createElement=()=>holder;c.sheetOpen=(title,node)=>{opened={title,node};return sheet;};
+  assert.equal(c.openRetirePriceSheet('price-two'),null,'no sheet for a retired price');
+  assert.equal(c.openRetirePriceSheet('price-one'),sheet);assert.equal(opened.title,'Retire membership price');
+  assert.match(holder.innerHTML,/Nobody new can be started on this price\. Patients already on it keep their membership\./);
+  assert.match(holder.innerHTML,/<button type="submit">Retire this price<\/button>/);assert.match(holder.innerHTML,/data-membership-price-retire-keep>Keep price<\/button>/);
+  assert.doesNotMatch(holder.innerHTML,/Stripe/i);
+  // One request id per price until it succeeds: a failed attempt and the repeat click send the same id.
+  let n=0;c.crypto={randomUUID:()=>'retire-'+(++n)};
+  let fail=true;const base=c.api;
+  c.api=async(path,method='GET',body)=>{if(path.endsWith('/retire')){f.calls.push([path,method,body]);if(fail)throw Error('The result is not known yet.');return {price:{...st.prices[0],status:'retired',enrolment_open:false,retired_at:'2026-11-12T10:00:00Z'}};}return base(path,method,body);};
+  let closed=0;c.sheetClose=()=>{closed++;};const form={dataset:{price:'price-one'}};
+  await assert.rejects(c.retireMembershipPrice(form),/not known yet/);await assert.rejects(c.retireMembershipPrice(form),/not known yet/);
+  assert.equal(mutations(f).length,2);assert.equal(mutations(f)[0][2].request_id,'retire-1');assert.equal(mutations(f)[1][2].request_id,'retire-1');
+  assert.equal(closed,0);assert.ok(!f.calls.some(call=>call[0]==='notice'));
+  fail=false;await c.retireMembershipPrice(form);
+  assert.equal(mutations(f).length,3);assert.equal(mutations(f)[2][0],'/api/v1/billing/membership-prices/price-one/retire');
+  assert.deepEqual(JSON.parse(JSON.stringify(mutations(f)[2][2])),{request_id:'retire-1'});
+  assert.equal(closed,1);assert.ok(f.calls.some(call=>call[0]==='notice'&&call[1]==='Membership price retired.'&&!call[2]));}
+ // Retired prices are not offered when starting a membership; with none left the usual "no prices" line shows.
+ f=fixture();c=f.ctx;{
+  const retired={...f.price,id:'price-old',name:'Old plan',status:'retired',enrolment_open:false};
+  f.s.membershipPrices=[retired,{...f.price,id:'price-new',name:'New plan',enrolment_open:true},{...f.price,id:'price-closed',name:'Closed plan',enrolment_open:false}];
+  const form=c.membershipSelectionForm(f.s);assert.match(form,/New plan/);assert.doesNotMatch(form,/Old plan|Closed plan/);
+  f.s.membershipPrices=[retired];assert.match(c.membershipSelectionForm(f.s),/No membership prices have been added yet\./);assert.doesNotMatch(c.membershipSelectionForm(f.s),/Old plan|<form/);}
+ // Cancel now: only on a running membership the server says can be cancelled now, and only with permission.
+ f=fixture();c=f.ctx;{
+  const running={request_id:request,price:f.price,status:'active',subscription_status:'active',subscription_id:'sub_one',cancellation_available:false,cancel_at_period_end:true,cancel_now_available:true};
+  f.s.memberships=[running];
+  let html=c.patientMembershipRows(f.s);assert.match(html,/<button type="button" data-membership-cancel-now="22222222-2222-4222-8222-222222222222">Cancel now<\/button>/);assert.doesNotMatch(html,/data-membership-cancel="/,'period-end button stays tied to its own flag');
+  f.s.memberships=[{...running,cancellation_available:true,cancel_at_period_end:false}];html=c.patientMembershipRows(f.s);assert.match(html,/data-membership-cancel="/);assert.match(html,/Cancel at period end<\/button><button type="button" data-membership-cancel-now=/);
+  f.s.memberships=[{...running,cancel_now_available:false}];assert.doesNotMatch(c.patientMembershipRows(f.s),/data-membership-cancel-now/);
+  f.s.memberships=[{...running,cancel_now_available:undefined}];assert.doesNotMatch(c.patientMembershipRows(f.s),/data-membership-cancel-now/);
+  f.s.memberships=[running];c.billingCan=()=>false;assert.doesNotMatch(c.patientMembershipRows(f.s),/data-membership-cancel-now/);assert.equal(c.openCancelNowSheet(f.s,request),null);c.billingCan=()=>true;
+  // The sheet: title, one plain line, two buttons.
+  const holder={innerHTML:'',querySelector:()=>null};let opened=null;const sheet={isConnected:true,querySelectorAll:()=>[]};
+  c.document.createElement=()=>holder;c.sheetOpen=(title,node)=>{opened={title,node};return sheet;};
+  assert.equal(c.openCancelNowSheet(f.s,request),sheet);assert.equal(opened.title,'Cancel membership now');
+  assert.match(holder.innerHTML,/The membership ends today\. Nothing is refunded and no further charges are made\./);
+  assert.match(holder.innerHTML,/<button type="submit">Cancel membership now<\/button>/);assert.match(holder.innerHTML,/data-membership-cancel-now-keep>Keep membership<\/button>/);
+  assert.doesNotMatch(holder.innerHTML,/Stripe/i);
+  // One request id until it is resolved; a lost answer leaves the usual check / try again card.
+  let n=0;c.crypto={randomUUID:()=>'now-'+(++n)};let lost=true;const base=c.api;
+  c.api=async(path,method='GET',body)=>{if(path.endsWith('/cancel-now')){f.calls.push([path,method,body]);if(lost)throw Error('The cancellation result is unknown.');return {patient_id:patient,request_id:body.request_id,status:'canceled',kind:'now',subscription:{id:'sub_one'}};}return base(path,method,body);};
+  assert.equal(await c.cancelPatientMembershipNow(f.s,request),false);
+  assert.equal(mutations(f).length,1);assert.equal(mutations(f)[0][0],`/api/v1/billing/patients/${patient}/memberships/sub_one/cancel-now`);
+  assert.deepEqual(JSON.parse(JSON.stringify(mutations(f)[0][2])),{request_id:'now-1'});
+  const pending=f.s.membershipPending.find(item=>item.kind==='cancel');assert.equal(pending.status,'unknown');assert.equal(pending.request.cancel_kind,'now');
+  assert.match(c.patientMembershipPendingMarkup(f.s),/Check original request/);
+  assert.doesNotMatch(c.patientMembershipRows(f.s),/data-membership-cancel-now/,'no second cancel while one is unresolved');
+  assert.equal(await c.cancelPatientMembershipNow(f.s,request),false,'cancel-now click repeats the same id');assert.equal(mutations(f)[1][2].request_id,'now-1');
+  // Retrying the original request goes to the cancel-now path with the same id.
+  lost=false;await c.retryMembershipOperation(f.s,'now-1');
+  assert.equal(mutations(f).length,3);assert.match(mutations(f)[2][0],/\/cancel-now$/);assert.equal(mutations(f)[2][2].request_id,'now-1');
+  assert.ok(f.calls.some(call=>call[0]==='notice'&&call[1]==='Membership cancelled.'&&!call[2]));}
+ // A fresh cancel now posts once and shows the notice.
+ f=fixture();c=f.ctx;{
+  f.s.memberships=[{request_id:request,price:f.price,status:'active',subscription_status:'active',subscription_id:'sub_one',cancel_now_available:true}];
+  const base=c.api;c.api=async(path,method='GET',body)=>path.endsWith('/cancel-now')?(f.calls.push([path,method,body]),{patient_id:patient,request_id:body.request_id,status:'canceled',subscription:{id:'sub_one'}}):base(path,method,body);
+  assert.equal(await c.cancelPatientMembershipNow(f.s,request),true);assert.equal(mutations(f).length,1);assert.deepEqual(JSON.parse(JSON.stringify(mutations(f)[0][2])),{request_id:request});
+  assert.ok(f.calls.some(call=>call[0]==='notice'&&call[1]==='Membership cancelled.'&&!call[2]));
+  f.s.memberships=[{request_id:request,price:f.price,status:'active',subscription_status:'active',subscription_id:'sub_one'}];
+  assert.equal(await c.cancelPatientMembershipNow(f.s,request),false);assert.equal(mutations(f).length,1,'nothing is sent unless the server offered it');}
  console.log('PASS patient plans: exact minor-unit schedule, explicit recurring/patient-present consent, duplicate guard, stable request retry, invoice-version preview/create, read-only membership return and existing-only installment refresh');
 })().catch(error=>{console.error(error);process.exitCode=1;});

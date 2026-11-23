@@ -38451,6 +38451,117 @@
         }
       }
     },
+    "/api/v1/billing/patients/{id}/memberships/{subscription}/cancel-now": {
+      "post": {
+        "summary": "Cancel a native membership now",
+        "description": "Scheduling role and billing edit; verified native subscription mapping required. Stable request ID. Ends the membership immediately with no credit, refund or final invoice; allowed also while a period-end cancellation is scheduled. A lost answer is recovered by repeating the same request or by reading the cancellation status.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "subscription",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^sub_[A-Za-z0-9]+$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Fresh minimized account-bound evidence; no encounter ledger mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientMembershipCancellation"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "required": [
+                  "request_id"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/billing/membership-prices/{id}/retire": {
+      "post": {
+        "summary": "Retire a membership price",
+        "description": "Practice owner only, same payment-mode gating as creating a price. Nobody new can be started on a retired price; patients already on it keep their membership. Stable request ID; repeating a finished request returns the stored result.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "The price id returned by the membership price list."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The retired price; no encounter ledger mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientMembershipPriceResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another retirement for this price is unfinished, or the payment connection changed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "required": [
+                  "request_id"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/patients/{patient}/intake-packets": {
       "get": {
         "operationId": "listPatientIntakePackets",
@@ -60118,7 +60229,23 @@
               "inactive",
               "approved",
               "needs_review",
-              "unavailable"
+              "unavailable",
+              "retired"
+            ]
+          },
+          "enrolment_open": {
+            "type": "boolean",
+            "description": "False once the price is retired; nobody new can be started on it."
+          },
+          "retired_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "created_at": {
@@ -60242,6 +60369,10 @@
           "cancellation_available": {
             "type": "boolean",
             "description": "List-only capability: verified local membership mapping and current scheduling/billing-edit permission."
+          },
+          "cancel_now_available": {
+            "type": "boolean",
+            "description": "List-only capability: the membership is still running and the user may cancel it. Stays true after a period-end cancellation is scheduled."
           }
         },
         "required": [
@@ -60439,6 +60570,12 @@
           "membership_request_id": {
             "type": "string",
             "format": "uuid"
+          },
+          "kind": {
+            "enum": [
+              "now",
+              "period_end"
+            ]
           },
           "status": {
             "enum": [

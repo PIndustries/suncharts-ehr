@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
-fn uuid(v: &Value) -> Result<Uuid> {
+pub(super) fn uuid(v: &Value) -> Result<Uuid> {
     serde_json::from_value::<Uuid>(v.clone())
         .ok()
         .filter(|v| !v.is_nil())
@@ -55,6 +55,7 @@ pub(super) fn clean_price(v: &Value, snapshot: bool) -> Result<Value> {
                 "inactive",
                 "needs_review",
                 "unavailable",
+                "retired",
             ]
         },
     )?;
@@ -74,15 +75,35 @@ pub(super) fn clean_price(v: &Value, snapshot: bool) -> Result<Value> {
         return Err(invalid());
     }
     let provider = nullable_id(v, "provider_price_id", "price_")?;
-    if matches!(status.as_str(), "active" | "inactive" | "approved") && provider.is_null() {
+    if matches!(
+        status.as_str(),
+        "active" | "inactive" | "approved" | "retired"
+    ) && provider.is_null()
+    {
         return Err(invalid());
     }
     if matches!(status.as_str(), "creating" | "needs_review") && !provider.is_null() {
         return Err(invalid());
     }
-    Ok(
-        json!({"id":id,"request_id":request,"provider_price_id":provider,"name":text_field(v,"name",100)?,"amount_cents":number(v,"amount_cents",50,100_000_000)?,"currency":"usd","interval":interval,"interval_count":count,"status":status,"created_at":date(&v["created_at"])?}),
-    )
+    let mut out = json!({"id":id,"request_id":request,"provider_price_id":provider,"name":text_field(v,"name",100)?,"amount_cents":number(v,"amount_cents",50,100_000_000)?,"currency":"usd","interval":interval,"interval_count":count,"status":status,"created_at":date(&v["created_at"])?});
+    if !snapshot {
+        // Older answers carry no enrolment flag: an active price is open, anything else is not.
+        let open = match v.get("enrolment_open") {
+            None | Some(Value::Null) => status == "active",
+            Some(Value::Bool(b)) => *b,
+            _ => return Err(invalid()),
+        };
+        let retired_at = match v.get("retired_at") {
+            None | Some(Value::Null) => Value::Null,
+            Some(t) => json!(date(t)?),
+        };
+        if status == "retired" && open {
+            return Err(invalid());
+        }
+        out["enrolment_open"] = json!(open);
+        out["retired_at"] = retired_at;
+    }
+    Ok(out)
 }
 fn retry_fields(v: &Value, local: Option<DateTime<Utc>>) -> Result<(DateTime<Utc>, bool)> {
     let mut until = date(&v["retry_safe_until"])?;
@@ -275,6 +296,27 @@ pub(super) fn clean_operation(
         out["membership"] = clean_membership(c, &v["membership"], Some(op))?;
         return Ok(out);
     }
+    if op.kind == "price_retire" {
+        // Retiring is settled by repeating the same request; the answer may carry no retry window.
+        let (until, recovery) = if v.get("retry_safe_until").is_some() {
+            retry_fields(v, Some(op.created_at))?
+        } else {
+            (op.created_at + chrono::Duration::hours(23), false)
+        };
+        let price = clean_price(&v["price"], false)?;
+        if price["id"] != op.request_body["price_id"]
+            || price["status"] != "retired"
+            || price["enrolment_open"] != false
+            || price["retired_at"].is_null()
+            || recovery
+        {
+            return Err(invalid());
+        }
+        out["retry_safe_until"] = json!(until.min(op.deadline()));
+        out["recovery_required"] = json!(false);
+        out["price"] = price;
+        return Ok(out);
+    }
     let (until, recovery) = retry_fields(v, Some(op.created_at))?;
     let until = until.min(op.deadline());
     out["retry_safe_until"] = json!(until);
@@ -323,12 +365,19 @@ pub(super) fn clean_operation(
             "status",
             &["scheduled", "canceled", "pending", "needs_review"],
         )?;
+        let now = op.request_body["cancel_kind"] == "now";
+        let want = if now { "now" } else { "period_end" };
+        match v.get("kind").and_then(Value::as_str) {
+            Some(k) if k == want => {}
+            None if !now => {}
+            _ => return Err(invalid()),
+        }
         let expected = if matches!(
             sub["status"].as_str(),
             Some("canceled" | "incomplete_expired")
         ) {
             "canceled"
-        } else if sub["cancel_at_period_end"] == true {
+        } else if !now && sub["cancel_at_period_end"] == true {
             "scheduled"
         } else if recovery {
             "needs_review"
@@ -347,12 +396,13 @@ pub(super) fn clean_operation(
         out["membership_request_id"] = json!(member);
         out["subscription"] = sub;
         out["status"] = json!(status);
+        out["kind"] = json!(if now { "now" } else { "period_end" });
     }
     Ok(out)
 }
 pub(super) fn operation_status<'a>(kind: &str, v: &'a Value) -> Result<&'a str> {
     match kind {
-        "price" => v["price"]["status"].as_str(),
+        "price" | "price_retire" => v["price"]["status"].as_str(),
         "membership" => v["membership"]["status"].as_str(),
         _ => v["status"].as_str(),
     }
@@ -361,6 +411,7 @@ pub(super) fn operation_status<'a>(kind: &str, v: &'a Value) -> Result<&'a str> 
 pub(super) fn evidence_pending(kind: &str, v: &Value) -> Option<bool> {
     Some(match kind {
         "price" => v["price"]["provider_price_id"].is_null() && v["price"]["status"] == "creating",
+        "price_retire" => v["price"]["status"] != "retired",
         "membership" => {
             v["membership"]["session"].is_null() && v["membership"]["status"] == "creating"
         }

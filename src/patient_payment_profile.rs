@@ -63,6 +63,17 @@ impl Source for HttpSource {
             return Err(Error::NotFound);
         }
         if !reply.status().is_success() {
+            if reply.status() == reqwest::StatusCode::CONFLICT && method == Method::POST {
+                // Enrolling at a retired price is a definite refusal the screen can explain.
+                if let Ok(text) = crate::stedi::bytes(reply, 8192).await {
+                    if String::from_utf8_lossy(&text).contains("This membership price is retired") {
+                        return Err(Error::Conflict("This membership price is retired."));
+                    }
+                }
+                return Err(Error::Conflict(
+                    "The payment service declined this setup request. Refresh its status before further action.",
+                ));
+            }
             if reply.status().is_client_error() && method == Method::POST {
                 return Err(Error::Conflict(
                     "The payment service declined this setup request. Refresh its status before further action.",
