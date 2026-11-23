@@ -30,7 +30,8 @@ async function renderEncounterStartBenefits(hostId,serviceDate){
   line(summary+`${matching?'':`<p class="mapping-notice">The last eligibility check was for ${esc(checkedDate||'another date')}, not this encounter date.</p>`}${check.status==='completed'?claimmdEligibilityRows(check):'<p>The last eligibility check did not get an answer from the insurer. Open Review insurance to see why.</p>'}<p class="muted">An insurer\'s answer is not a promise to pay. The recorded plan copay only changes when staff save it.</p>`,words,matching&&check.status==='completed'?'ok':'warn');
  }catch{if(current())line(summary+'<p class="muted">The eligibility history could not be loaded.</p>',words);}
 }
-async function openEncounterStartFlow(){
+async function openEncounterStartFlow(intent){
+ const isNew=intent==='new';
  if(!canStartEncounterFlow()||!selected)throw new Error('Only the assigned clinician can start an encounter here.');
  encounterStartSession();const patient=selected,identity=me;
  // Refresh before offering an unscheduled start, so an existing encounter is visible.
@@ -40,11 +41,26 @@ async function openEncounterStartFlow(){
  workspace.appointments=fresh.appointments;workspace.visits=fresh.visits;
  showChartSection('visits');
  const host=$('encounter-start-editor');if(!host)throw new Error('Open the patient chart before starting an encounter.');
- host.hidden=false;const pending=encounterStartOperations.get(patient),appointments=encounterStartAppointments();
+ host.hidden=false;const pending=encounterStartOperations.get(patient);let appointments=encounterStartAppointments();
  if(pending){host.innerHTML=`<section class="panel"><h3>Continue starting visit</h3><p>The previous start has not been confirmed. Continue the same appointment and request to check its saved state.</p><button type="button" class="primary" data-resume-encounter-start>Continue the same visit</button></section>`;host.scrollIntoView({block:'nearest'});return;}
- const start=new Date();start.setSeconds(0,0);const local=localTime(start.toISOString()),existing=appointments.find(a=>a.status==='in_progress')||appointments.find(a=>a.status==='checked_in')||appointments.find(a=>revenueServiceDate(a)===local.slice(0,10));
- host.innerHTML=`<section class="panel"><h3>Start encounter</h3><p>Pick the appointment, or enter the date and time for a walk-in.</p><form id="encounter-start-form" data-patient="${esc(patient)}"><label>Appointment<select name="appointment_id"><option value="" ${existing?'':'selected'}>Unscheduled encounter</option>${appointments.map(a=>`<option value="${esc(a.id)}" ${existing?.id===a.id?'selected':''}>${esc(date(a.starts_at))} · ${esc(a.title)} · ${esc(human(a.status))}</option>`).join('')}</select></label><div id="encounter-start-new-fields" ${existing?'hidden':''}><div class="form-grid"><label>Service date & time<input name="starts_at" type="datetime-local" value="${esc(local)}" required></label><label>Duration (minutes)<input name="duration" type="number" value="30" min="5" max="480" required></label><label>Visit title<input name="title" value="Office visit" maxlength="200" required></label><label>Visit category<input name="category" value="Office visit" maxlength="100" required></label></div><p class="muted">Clinician: you. Times use this device’s timezone (${esc(Intl.DateTimeFormat().resolvedOptions().timeZone)}).</p></div><div id="encounter-start-benefits"></div><p id="encounter-start-status" role="status"></p><button type="submit" class="primary">${existing?.status==='in_progress'?'Continue encounter':'Start visit'}</button></form></section>`;
- host.scrollIntoView({block:'nearest'});void renderEncounterStartBenefits('encounter-start-benefits',existing?revenueServiceDate(existing):local.slice(0,10));
+ const start=new Date();start.setSeconds(0,0);const local=localTime(start.toISOString());
+ // A new encounter never offers the appointment that is already an encounter in progress.
+ if(isNew)appointments=appointments.filter(a=>a.status!=='in_progress');
+ const today=a=>revenueServiceDate(a)===local.slice(0,10);
+ const existing=isNew?(appointments.find(a=>a.status==='booked'&&today(a))||appointments.find(a=>a.status==='checked_in'&&today(a))):(appointments.find(a=>a.status==='in_progress')||appointments.find(a=>a.status==='checked_in')||appointments.find(today));
+ const open=isNew?(workspace.visits||[]).find(v=>v.patient_id===patient&&v.status==='in_progress'):null,openNumber=open&&typeof encounterNumberText==='function'?encounterNumberText(open):'';
+ const openLine=open?`<p class="muted">${openNumber?`${esc(openNumber)} stays open`:'The encounter already open stays open'}; you can switch back to it any time.</p>`:'';
+ const form=`<form id="encounter-start-form" data-patient="${esc(patient)}"><label>Appointment<select name="appointment_id"><option value="" ${existing?'':'selected'}>Unscheduled encounter</option>${appointments.map(a=>`<option value="${esc(a.id)}" ${existing?.id===a.id?'selected':''}>${esc(date(a.starts_at))} · ${esc(a.title)} · ${esc(human(a.status))}</option>`).join('')}</select></label><div id="encounter-start-new-fields" ${existing?'hidden':''}><div class="form-grid"><label>Service date & time<input name="starts_at" type="datetime-local" value="${esc(local)}" required></label><label>Duration (minutes)<input name="duration" type="number" value="30" min="5" max="480" required></label><label>Visit title<input name="title" value="Office visit" maxlength="200" required></label><label>Visit category<input name="category" value="Office visit" maxlength="100" required></label></div><p class="muted">Clinician: you. Times use this device’s timezone (${esc(Intl.DateTimeFormat().resolvedOptions().timeZone)}).</p></div><div id="encounter-start-benefits"></div><p id="encounter-start-status" role="status"></p><button type="submit" class="primary">${isNew?'Start new encounter':existing?.status==='in_progress'?'Continue encounter':'Start visit'}</button></form>`;
+ const benefits=()=>void renderEncounterStartBenefits('encounter-start-benefits',existing?revenueServiceDate(existing):local.slice(0,10));
+ if(isNew&&typeof sheetOpen==='function'){
+  // The form lives in a sheet; nothing is left in the page, so ids stay unique.
+  host.replaceChildren();host.hidden=true;
+  document.querySelectorAll('dialog.sheet-dialog').forEach(d=>{if(d.querySelector('#encounter-start-form'))sheetClose(d);});
+  const body=document.createElement('div');body.innerHTML=`<p>Pick a booked appointment, or enter the date and time for a walk-in.</p>${openLine}${form}`;
+  sheetOpen('New encounter',body);benefits();return;
+ }
+ host.innerHTML=isNew?`<section class="panel"><h3>New encounter</h3><p>Pick a booked appointment, or enter the date and time for a walk-in.</p>${openLine}${form}</section>`:`<section class="panel"><h3>Start encounter</h3><p>Pick the appointment, or enter the date and time for a walk-in.</p>${form}</section>`;
+ host.scrollIntoView({block:'nearest'});benefits();
 }
 function encounterStartConflict(error){return /provider, patient or room is unavailable during that time/i.test(String(error?.message||''));}
 function encounterStartInput(form){
@@ -87,6 +103,7 @@ async function continueEncounterStart(op){
  // A confirmed encounter remains the recovery target if the final chart reload fails.
  await selectPatient(op.patient,visit.id);requireEncounterStartContext(op);
  encounterStartOperations.delete(op.patient);
+ {const sheet=$('encounter-start-form')?.closest?.('dialog');if(sheet&&typeof sheetClose==='function')sheetClose(sheet);}
  const editor=$('encounter-start-editor');if(editor){editor.replaceChildren();editor.hidden=true;}
  if(typeof insuranceAppointmentSelection!=='undefined')insuranceAppointmentSelection.set(op.patient,op.appointmentId);
  setEncounterSection('intake');
@@ -95,7 +112,7 @@ async function continueEncounterStart(op){
 }
 document.addEventListener('click',event=>{
  const start=event.target.closest('button[data-start-encounter-flow]'),resume=event.target.closest('button[data-resume-encounter-start]');if(!start&&!resume)return;
- event.preventDefault();event.stopImmediatePropagation();run(async()=>{if(start){await openEncounterStartFlow();return;}encounterStartSession();const op=encounterStartOperations.get(selected);if(!op)throw new Error('Open Start visit to review the appointment.');await continueEncounterStart(op);});
+ event.preventDefault();event.stopImmediatePropagation();run(async()=>{if(start){await openEncounterStartFlow(start.dataset.startEncounterFlow);return;}encounterStartSession();const op=encounterStartOperations.get(selected);if(!op)throw new Error('Open Start visit to review the appointment.');await continueEncounterStart(op);});
 },true);
 document.addEventListener('submit',event=>{
  if(event.target.id!=='encounter-start-form')return;event.preventDefault();event.stopImmediatePropagation();const form=event.target;

@@ -40,6 +40,23 @@ function harness(){
  await h.ctx.openEncounterStartFlow();assert.match(h.node('encounter-start-editor').innerHTML,/appointment-1/);assert.match(h.node('encounter-start-editor').innerHTML,/Continue encounter/);
  h.form.values.appointment_id='appointment-1';const existing=h.ctx.encounterStartInput(h.form);await h.ctx.continueEncounterStart(existing);assert.equal(h.bookings.size,1);assert.equal(h.visits.length,1);
 
+ {
+  // An encounter is already open: the default flow continues it, the "new" intent starts another.
+  const busy=harness();busy.appointments.push({id:'open-appt',patient_id:'patient',clinician_id:'clinician',title:'Open one',starts_at:'2026-11-10T09:00:00Z',status:'in_progress'},{id:'later-appt',patient_id:'patient',clinician_id:'clinician',title:'Later one',starts_at:'2026-12-01T09:00:00Z',status:'booked'});
+  busy.visits.push({id:'visit-open',patient_id:'patient',clinician_id:'clinician',appointment_id:'open-appt',status:'in_progress',encounter_number:5});
+  busy.ctx.encounterNumberText=v=>`ENC-${String(v.encounter_number).padStart(4,'0')}`;
+  await busy.ctx.openEncounterStartFlow();let html=busy.node('encounter-start-editor').innerHTML;
+  assert.match(html,/Continue encounter/);assert.match(html,/open-appt/);
+  await busy.ctx.openEncounterStartFlow('new');html=busy.node('encounter-start-editor').innerHTML;
+  assert.match(html,/<h3>New encounter<\/h3>/);assert.match(html,/Start new encounter/);assert.doesNotMatch(html,/Continue encounter/);
+  assert.doesNotMatch(html,/open-appt/,'the encounter already in progress is not offered');assert.match(html,/later-appt/);
+  assert.match(html,/<option value="" selected>Unscheduled encounter/);assert.doesNotMatch(html,/id="encounter-start-new-fields" hidden/,'walk-in fields show');
+  assert.match(html,/ENC-0005 stays open; you can switch back to it any time\./);
+  // In a sheet the page host is left empty so ids are not duplicated.
+  const sheets=[];busy.ctx.document.querySelectorAll=()=>[];busy.ctx.sheetOpen=(title,body)=>{sheets.push({title,html:body.innerHTML});return {};};
+  busy.ctx.document.createElement=()=>({set innerHTML(v){this.html=v;},get innerHTML(){return this.html;}});
+  await busy.ctx.openEncounterStartFlow('new');assert.equal(sheets.length,1);assert.equal(sheets[0].title,'New encounter');assert.match(sheets[0].html,/id="encounter-start-form"/);assert.equal(busy.node('encounter-start-editor').innerHTML,'');assert.equal(busy.node('encounter-start-editor').hidden,true);
+ }
  const cross=harness(),crossOp=cross.ctx.encounterStartInput(cross.form),original=cross.ctx.api;
  cross.ctx.api=async(...args)=>{const result=await original(...args);if(args[0]==='/api/v1/appointments')cross.ctx.selected='other-patient';return result;};
  await assert.rejects(cross.ctx.continueEncounterStart(crossOp),/Patient or sign-in changed/);

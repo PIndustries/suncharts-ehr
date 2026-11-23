@@ -178,7 +178,7 @@ fn user_message(sections: &[(&'static str, String)]) -> String {
 
 /// The first balanced `{ ... }` in the text, skipping braces inside JSON strings. A model may wrap
 /// its answer in code fences or add a sentence around it.
-fn first_object(text: &str) -> Option<&str> {
+pub(crate) fn first_object(text: &str) -> Option<&str> {
     let start = text.find('{')?;
     let (mut depth, mut in_string, mut escaped) = (0usize, false, false);
     for (offset, c) in text[start..].char_indices() {
@@ -397,8 +397,21 @@ where
     let number: Option<i64> = sqlx::query_scalar("SELECT n FROM (SELECT id,row_number() OVER (ORDER BY created_at,id) AS n FROM visits WHERE tenant_id=$1) x WHERE id=$2")
         .bind(a.tenant_id).bind(visit_id).fetch_optional(pool).await?;
     let result = row.result.as_ref();
+    // While waiting: which step the request is on, and only how many problems and services the
+    // first step found. The text itself is never returned here.
+    let progress: Option<(String, i32, i32, String)> = if row.status == "queued" {
+        sqlx::query_as("SELECT stage,coalesce(jsonb_array_length(problems),0),coalesce(jsonb_array_length(services),0),to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') FROM diagnosis_suggestion_requests WHERE tenant_id=$1 AND id=$2")
+            .bind(a.tenant_id).bind(row.id).fetch_optional(pool).await?
+    } else {
+        None
+    };
+    let choosing = progress.as_ref().filter(|p| p.0 == "choose");
     Ok(json!({
         "encounter_number": number,
+        "stage": progress.as_ref().map_or(Value::Null, |p| json!(p.0)),
+        "problems_found": choosing.map_or(Value::Null, |p| json!(p.1)),
+        "services_found": choosing.map_or(Value::Null, |p| json!(p.2)),
+        "started_at": progress.as_ref().map_or(Value::Null, |p| json!(p.3)),
         "request_id": row.id,
         "status": row.status,
         "position": if row.status == "queued" { json!(row.position.unwrap_or(0)) } else { Value::Null },

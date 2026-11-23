@@ -376,6 +376,8 @@ fn action(method: &Method, path: &str) -> Option<Action> {
                 "commit",
                 "complete",
                 "diagnosis-suggestions",
+                "voice-notes",
+                "retry",
                 "dismiss",
                 "email",
                 "hardware-session",

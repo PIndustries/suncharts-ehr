@@ -1353,12 +1353,12 @@ pub(crate) async fn email_receipt(pool: &PgPool, tenant: Uuid, body: &Value) -> 
 const AI_OFF: &str = "SunCharts AI is not switched on for this practice yet.";
 const AI_FULL: &str = "Too many requests are waiting. Try again in a few minutes.";
 const AI_FAILED: &str = "The assistant could not answer. Try again.";
-fn ai_client() -> Result<reqwest::Client> {
+fn ai_client_within(seconds: u64) -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
         .connect_timeout(std::time::Duration::from_secs(5))
-        .timeout(std::time::Duration::from_secs(20))
+        .timeout(std::time::Duration::from_secs(seconds))
         .build()
         .map_err(|_| Error::Unavailable(AI_FAILED))
 }
@@ -1385,12 +1385,17 @@ async fn local_ai_at(
     path: &str,
     body: Option<&Value>,
 ) -> Result<Value> {
-    let mut req = ai_client()?
-        .request(
-            method,
-            format!("{base}/api/v1/ehr-services/installations/{installation}{path}"),
-        )
-        .bearer_auth(key);
+    // A recording goes up in one request, so it gets longer than a chat job does.
+    let mut req = ai_client_within(if path == "/ai/transcriptions" {
+        120
+    } else {
+        20
+    })?
+    .request(
+        method,
+        format!("{base}/api/v1/ehr-services/installations/{installation}{path}"),
+    )
+    .bearer_auth(key);
     if let Some(body) = body {
         req = req.json(body);
     }
@@ -1407,6 +1412,9 @@ async fn local_ai_at(
     }
     Err(match status {
         StatusCode::TOO_MANY_REQUESTS => Error::Unavailable(AI_FULL),
+        StatusCode::PAYLOAD_TOO_LARGE => {
+            Error::Invalid("The recording is too large to transcribe.")
+        }
         StatusCode::SERVICE_UNAVAILABLE | StatusCode::CONFLICT => Error::Conflict(AI_OFF),
         StatusCode::NOT_FOUND => Error::NotFound,
         _ => Error::Unavailable(AI_FAILED),
@@ -1426,6 +1434,25 @@ pub(crate) async fn local_ai_submit(pool: &PgPool, tenant: Uuid, body: &Value) -
         key.expose(),
         reqwest::Method::POST,
         "/ai/jobs",
+        Some(body),
+    )
+    .await
+}
+/// Queues a recording for transcription. The audio is the only thing that goes; no name or other
+/// detail about the patient or the encounter. Answers `{request_id, kind, status, position}`.
+pub(crate) async fn transcription_submit(
+    pool: &PgPool,
+    tenant: Uuid,
+    body: &Value,
+) -> Result<Value> {
+    let (installation, key) = ai_credentials(pool, tenant).await?;
+    let origin = crate::connect_onboarding::cloud_origin()?;
+    local_ai_at(
+        &origin,
+        installation,
+        key.expose(),
+        reqwest::Method::POST,
+        "/ai/transcriptions",
         Some(body),
     )
     .await
