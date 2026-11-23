@@ -1378,6 +1378,16 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/encounter-timeline.js",
+            get(|| async {
+                web_asset(
+                    "encounter-timeline.js",
+                    "application/javascript",
+                    include_str!("../web/encounter-timeline.js"),
+                )
+            }),
+        )
+        .route(
             "/visit-billing.css",
             get(|| async {
                 web_asset(
