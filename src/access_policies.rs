@@ -375,6 +375,8 @@ fn action(method: &Method, path: &str) -> Option<Action> {
                 "check-in",
                 "commit",
                 "complete",
+                "diagnosis-suggestions",
+                "dismiss",
                 "email",
                 "hardware-session",
                 "install",
@@ -1093,6 +1095,22 @@ mod tests {
         assert!(known_route(&Method::POST, cancel));
         assert_eq!(action(&Method::POST, cancel), Some(Action::Edit));
         assert_eq!(resources(cancel), Some(vec!["scheduling"]));
+    }
+    #[test]
+    fn diagnosis_suggestions_follow_clinical_permissions() {
+        let ask = "/api/v1/visits/{}/diagnosis-suggestions";
+        let dismiss = "/api/v1/visits/{}/diagnosis-suggestions/dismiss";
+        for path in [ask, dismiss] {
+            assert!(known_route(&Method::POST, path));
+            assert_eq!(action(&Method::POST, path), Some(Action::Edit));
+            assert_eq!(resources(path), Some(vec!["clinical"]));
+        }
+        assert!(known_route(&Method::GET, ask));
+        assert_eq!(action(&Method::GET, ask), Some(Action::View));
+        let status = "/api/v1/ai/local-status";
+        assert!(known_route(&Method::GET, status));
+        assert_eq!(action(&Method::GET, status), Some(Action::View));
+        assert_eq!(resources(status), Some(vec!["ai"]));
     }
     #[test]
     fn invoice_installment_permissions_are_billing_only_and_explicit() {

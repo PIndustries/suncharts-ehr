@@ -50,7 +50,11 @@ function acceptSunEvent(value,expectedTopic){
  if(topic!=='clinical'&&!sunEventActions.has(value.action))return;
  if(topic==='clinical'&&!/^(patient|appointment|visit|migration)\.[a-z0-9_.]+$/.test(value.action))return;
  sunEventsCursor=value.id;
- if(topic==='clinical')return;
+ if(topic==='clinical'){
+  // The notice names only the encounter and whether the assistant finished or failed; the screen reads the answer itself.
+  if(/^visit\.diagnosis_suggestions_(ready|failed)$/.test(value.action)&&typeof diagnosisSuggestionsEvent==='function')diagnosisSuggestionsEvent(value.action,value.resource_id);
+  return;
+ }
  // Copy only the allowlisted reference fields; do not forward arbitrary server
  // properties, provider content, prompts, or clinical record data into events.
  const change=Object.freeze({id:value.id,action:value.action,resource_id:value.resource_id,topic});

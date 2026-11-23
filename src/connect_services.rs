@@ -1350,6 +1350,118 @@ pub(crate) async fn email_receipt(pool: &PgPool, tenant: Uuid, body: &Value) -> 
     serde_json::from_slice(&bytes)
         .map_err(|_| Error::Invalid("The receipt could not be emailed. Try again."))
 }
+const AI_OFF: &str = "SunCharts AI is not switched on for this practice yet.";
+const AI_FULL: &str = "Too many requests are waiting. Try again in a few minutes.";
+const AI_FAILED: &str = "The assistant could not answer. Try again.";
+fn ai_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|_| Error::Unavailable(AI_FAILED))
+}
+/// The installation and key for the in-house assistant. Unlike the email services this needs
+/// only a working, verified connection; the assistant itself says whether it is switched on.
+async fn ai_credentials(
+    pool: &PgPool,
+    tenant: Uuid,
+) -> Result<(Uuid, crate::provider_settings::Secret)> {
+    let mut tx = pool.begin().await?;
+    let service = setting(&mut tx, tenant)
+        .await?
+        .filter(|s| s.enabled && s.verified && !s.revoked)
+        .ok_or(Error::Conflict(AI_OFF))?;
+    let out = pinned(&mut tx, tenant, service.id, service.credential_revision).await?;
+    tx.commit().await?;
+    Ok(out)
+}
+async fn local_ai_at(
+    base: &str,
+    installation: Uuid,
+    key: &str,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<Value> {
+    let mut req = ai_client()?
+        .request(
+            method,
+            format!("{base}/api/v1/ehr-services/installations/{installation}{path}"),
+        )
+        .bearer_auth(key);
+    if let Some(body) = body {
+        req = req.json(body);
+    }
+    let response = req
+        .send()
+        .await
+        .map_err(|_| Error::Unavailable(AI_FAILED))?;
+    let status = response.status();
+    if status.is_success() {
+        let bytes = crate::stedi::bytes(response, 262144)
+            .await
+            .map_err(|_| Error::Unavailable(AI_FAILED))?;
+        return serde_json::from_slice(&bytes).map_err(|_| Error::Unavailable(AI_FAILED));
+    }
+    Err(match status {
+        StatusCode::TOO_MANY_REQUESTS => Error::Unavailable(AI_FULL),
+        StatusCode::SERVICE_UNAVAILABLE | StatusCode::CONFLICT => Error::Conflict(AI_OFF),
+        StatusCode::NOT_FOUND => Error::NotFound,
+        _ => Error::Unavailable(AI_FAILED),
+    })
+}
+/// Queues a job with the in-house assistant, which SunCharts Connect runs on machines the operator
+/// controls. This path deliberately skips the identifier substitution and approval step in
+/// `ai_privacy`: that exists for outside AI companies, and here the text stays on machines the
+/// operator runs and Connect stores nothing. The caller still sends only what the feature needs.
+/// Answers `{request_id, status, position}`; the same request id is queued once.
+pub(crate) async fn local_ai_submit(pool: &PgPool, tenant: Uuid, body: &Value) -> Result<Value> {
+    let (installation, key) = ai_credentials(pool, tenant).await?;
+    let origin = crate::connect_onboarding::cloud_origin()?;
+    local_ai_at(
+        &origin,
+        installation,
+        key.expose(),
+        reqwest::Method::POST,
+        "/ai/jobs",
+        Some(body),
+    )
+    .await
+}
+/// The state of one queued job. A job Connect no longer knows is reported as expired.
+pub(crate) async fn local_ai_job(pool: &PgPool, tenant: Uuid, request_id: Uuid) -> Result<Value> {
+    let (installation, key) = ai_credentials(pool, tenant).await?;
+    let origin = crate::connect_onboarding::cloud_origin()?;
+    match local_ai_at(
+        &origin,
+        installation,
+        key.expose(),
+        reqwest::Method::GET,
+        &format!("/ai/jobs/{request_id}"),
+        None,
+    )
+    .await
+    {
+        Err(Error::NotFound) => Ok(json!({"request_id":request_id,"status":"expired"})),
+        other => other,
+    }
+}
+/// Whether the in-house assistant is switched on: `{available, model, overflow, queued}`.
+pub(crate) async fn local_ai_status(pool: &PgPool, tenant: Uuid) -> Result<Value> {
+    let (installation, key) = ai_credentials(pool, tenant).await?;
+    let origin = crate::connect_onboarding::cloud_origin()?;
+    local_ai_at(
+        &origin,
+        installation,
+        key.expose(),
+        reqwest::Method::GET,
+        "/ai",
+        None,
+    )
+    .await
+}
 pub(crate) async fn managed_send(
     installation: Uuid,
     key: &str,
@@ -1491,6 +1603,106 @@ mod tests {
             String::from_utf8(bytes).unwrap()
         });
         (base, task)
+    }
+    #[tokio::test]
+    async fn the_assistant_queue_http_contract_and_plain_errors() {
+        let (installation, request) = (Uuid::new_v4(), Uuid::new_v4());
+        let body = json!({"request_id":request,"purpose":"diagnosis_suggestions"});
+        let (base, task) = endpoint(
+            202,
+            json!({"request_id":request,"status":"queued","position":2}),
+        )
+        .await;
+        let queued = local_ai_at(
+            &base,
+            installation,
+            "key",
+            reqwest::Method::POST,
+            "/ai/jobs",
+            Some(&body),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            (queued["status"].as_str(), queued["position"].as_i64()),
+            (Some("queued"), Some(2))
+        );
+        let sent = task.await.unwrap();
+        assert!(
+            sent.starts_with(&format!(
+                "POST /api/v1/ehr-services/installations/{installation}/ai/jobs HTTP/1.1"
+            )),
+            "{sent}"
+        );
+        assert!(sent.to_lowercase().contains("authorization: bearer key"));
+        assert!(sent.contains("diagnosis_suggestions"));
+        let (base, task) = endpoint(
+            200,
+            json!({"request_id":request,"status":"running","position":null}),
+        )
+        .await;
+        let job = local_ai_at(
+            &base,
+            installation,
+            "key",
+            reqwest::Method::GET,
+            &format!("/ai/jobs/{request}"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(job["status"], "running");
+        assert!(task.await.unwrap().starts_with(&format!(
+            "GET /api/v1/ehr-services/installations/{installation}/ai/jobs/{request} "
+        )));
+        for (status, reply, message) in [
+            (
+                429,
+                json!({"error":"queue_full"}),
+                "Too many requests are waiting. Try again in a few minutes.",
+            ),
+            (
+                503,
+                json!({"error":"off"}),
+                "SunCharts AI is not switched on for this practice yet.",
+            ),
+            (
+                409,
+                json!({"error":"off"}),
+                "SunCharts AI is not switched on for this practice yet.",
+            ),
+            (
+                500,
+                json!({"error":"x"}),
+                "The assistant could not answer. Try again.",
+            ),
+        ] {
+            let (base, _task) = endpoint(status, reply).await;
+            let error = local_ai_at(
+                &base,
+                installation,
+                "key",
+                reqwest::Method::POST,
+                "/ai/jobs",
+                Some(&body),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.to_string(), message, "{status}");
+        }
+        let (base, _task) = endpoint(404, json!({})).await;
+        assert!(matches!(
+            local_ai_at(
+                &base,
+                installation,
+                "key",
+                reqwest::Method::GET,
+                "/ai/jobs/x",
+                None
+            )
+            .await,
+            Err(Error::NotFound)
+        ));
     }
     #[tokio::test]
     async fn authenticated_status_and_managed_http_contract() {

@@ -57,6 +57,7 @@ pub mod import_matching;
 pub mod installments;
 pub mod instance_integrations;
 pub mod labs;
+pub mod local_ai;
 pub mod managed_connect;
 pub mod migration;
 pub mod model;
@@ -440,6 +441,7 @@ pub fn app(state: State) -> Router {
         .merge(specialty_workspace::router())
         .merge(rooming::routes())
         .merge(visit_diagnoses::routes())
+        .merge(local_ai::routes())
         .merge(terminology::router())
         .merge(demographics::router())
         .merge(billing::router())
@@ -1210,6 +1212,16 @@ pub fn app(state: State) -> Router {
                     "visit-diagnoses.js",
                     "application/javascript",
                     include_str!("../web/visit-diagnoses.js"),
+                )
+            }),
+        )
+        .route(
+            "/diagnosis-suggestions.js",
+            get(|| async {
+                web_asset(
+                    "diagnosis-suggestions.js",
+                    "application/javascript",
+                    include_str!("../web/diagnosis-suggestions.js"),
                 )
             }),
         )
