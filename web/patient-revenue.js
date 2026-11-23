@@ -1130,10 +1130,10 @@ function billingRowCodesFill(){
  const host=node.parentElement;if(!host?.insertAdjacentHTML)return;
  host.querySelector('.billing-row-lines')?.remove();
  if(!lines.length&&!diagnoses.length)return;
- // Each charge on its own line with its amount, then the diagnoses they are billed under.
+ // The diagnoses first, then each charge billed under them on its own line with its amount.
  const items=lines.map(line=>`<li><span class="codes-strip-code">${esc(String(line.code||'').trim())}${line.modifiers?'-'+esc(String(line.modifiers).trim().replace(/[,\s]+/g,'-')):''}</span><span>${esc(line.description||'')}${Number(line.units)>1?` × ${esc(line.units)}`:''}</span><b>${line.amount_cents==null?'':money(line.amount_cents)}</b></li>`).join('');
  const dx=diagnoses.length?`<p class="billing-row-dx"><span class="muted">Diagnoses</span> ${diagnoses.map(d=>`<span class="codes-strip-code">${esc(String(d.code).trim())}</span> ${esc(d.display||'')}`).join(' · ')}</p>`:'';
- host.insertAdjacentHTML('beforeend',`<div class="billing-row-lines">${items?`<ul>${items}</ul>`:''}${dx}</div>`);
+ host.insertAdjacentHTML('beforeend',`<div class="billing-row-lines">${dx}${items?`<ul>${items}</ul>`:''}</div>`);
 }
 // Put the strip under the encounter tabs and the Billing areas under the next step.
 function encounterBillingChrome(host){
