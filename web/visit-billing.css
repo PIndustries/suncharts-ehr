@@ -453,3 +453,17 @@ dialog.sheet-dialog:has(.payment-encounter-preview){width:min(760px,94vw);max-wi
 .payment-encounter-preview .encounter-timeline li{min-width:0}
 .payment-encounter-preview .encounter-timeline li>*{white-space:normal;overflow:visible;text-overflow:clip}
 .payment-encounter-preview .billing-table{width:100%;table-layout:auto}
+
+/* Code suggestions: one line in the codes editor, and the full list in a sheet. */
+.diagnosis-suggest-line{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin:8px 0;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-soft)}
+.diagnosis-suggest-line [data-diagnosis-suggest-count]{font-weight:600}
+.diagnosis-suggest-sheet{display:grid;gap:14px}
+.diagnosis-suggest-sheet p,.diagnosis-suggest-sheet h4{margin:0}
+.diagnosis-suggest-section{display:grid;gap:6px}
+.diagnosis-suggest-section h4{font-size:1rem}
+.diagnosis-suggest-list{list-style:none;margin:4px 0 0;padding:0;display:grid;gap:8px}
+.diagnosis-suggest-list li{display:grid;gap:2px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-soft)}
+.diagnosis-suggest-list label{display:flex;align-items:baseline;gap:10px;margin:0;cursor:pointer}
+.diagnosis-suggest-list label input{flex:none;margin:0;align-self:center}
+.diagnosis-suggest-list .diagnosis-suggest-quote,.diagnosis-suggest-list small{padding-left:28px;font-size:.85em;color:var(--muted)}
+.diagnosis-suggest-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin-top:4px}
