@@ -407,3 +407,6 @@
 .billing-row-dx{margin:0;font-size:var(--fs-sm);line-height:1.5}
 .billing-row[data-billing-row="charges"]{align-items:start}
 .billing-row[data-billing-row="charges"]>:is(.billing-row-mark,.billing-row-amount,.billing-row-action){margin-top:2px}
+/* A message beside the bar's buttons (why a send stopped) takes its own line and wraps. */
+.encounter-bar .visit-billing-status .actions{flex:0 1 auto;min-width:0;max-width:100%;flex-wrap:wrap}
+.claim-send-error{flex:1 1 100%;min-width:0;margin:6px 0 0;white-space:normal;overflow-wrap:anywhere;color:var(--warning-text,var(--error-text));font-size:var(--fs-sm);line-height:1.4}
