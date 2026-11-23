@@ -1,0 +1,52 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/* One small motion system. Every animation here is decoration on top of state that has already
+   changed: nothing waits for it, and content is fully visible if it never runs. */
+:root{--motion-fast:120ms;--motion-base:180ms;--motion-slow:260ms;--ease-out:cubic-bezier(.2,.8,.2,1)}
+
+/* Loading placeholders */
+.skeleton-group{display:grid;gap:10px;padding:4px 0}
+.skeleton-group[data-skeleton="tiles"]{grid-template-columns:repeat(4,minmax(0,1fr))}
+.skeleton{display:block;border-radius:5px;background:color-mix(in srgb,var(--line) 70%,var(--surface,var(--paper)));animation:motion-pulse 1.4s ease-in-out infinite}
+.skeleton-row{height:44px}
+.skeleton-tile{height:84px}
+.skeleton-heading{height:20px;width:38%}
+.skeleton-line{height:12px}
+.skeleton-line:nth-of-type(2){width:92%}
+.skeleton-line:nth-of-type(3){width:80%}
+.skeleton-line:last-of-type{width:56%}
+@keyframes motion-pulse{0%,100%{opacity:1}50%{opacity:.5}}
+@media(max-width:640px){.skeleton-group[data-skeleton="tiles"]{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* Content arrives softly */
+.motion-in{animation:motion-in var(--motion-base) var(--ease-out)}
+@keyframes motion-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* Show what changed */
+.motion-flash{animation:motion-flash calc(var(--motion-slow) * 3) var(--ease-out)}
+@keyframes motion-flash{from{background-color:var(--success-bg)}to{background-color:transparent}}
+.billing-row-mark.is-done.motion-just-done{animation:motion-mark-in var(--motion-base) var(--ease-out)}
+@keyframes motion-mark-in{0%{transform:scale(.6)}65%{transform:scale(1.14)}100%{transform:scale(1)}}
+
+/* One confirmation style: a toast at the bottom centre */
+.toast-region{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:60;display:flex;align-items:stretch;max-width:min(560px,calc(100vw - 32px));pointer-events:none}
+.toast-region>*{pointer-events:auto}
+.toast-region #notice{margin:0;padding:11px 14px;border-radius:8px 0 0 8px;border-right:0;background:var(--success-bg);color:var(--success-text);border:1px solid var(--success-line);border-right:0;box-shadow:0 10px 30px color-mix(in srgb,var(--ink) 28%,transparent);overflow-wrap:anywhere}
+.toast-region #notice.error{background:var(--error-bg);color:var(--error-text);border-color:var(--error-line)}
+.toast-region #notice.toast-in{animation:motion-toast var(--motion-slow) var(--ease-out)}
+.toast-region #notice-close{margin:0;min-height:0;border-radius:0 8px 8px 0;border:1px solid var(--success-line);background:var(--success-bg);color:var(--success-text);padding:0 12px;font-size:18px;line-height:1;box-shadow:0 10px 30px color-mix(in srgb,var(--ink) 28%,transparent)}
+.toast-region #notice.error+#notice-close{background:var(--error-bg);color:var(--error-text);border-color:var(--error-line)}
+.toast-region #notice[hidden]+#notice-close{display:none}
+@keyframes motion-toast{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+
+/* Buttons, tabs and rows */
+button{transition:background-color var(--motion-fast) ease,border-color var(--motion-fast) ease,color var(--motion-fast) ease,transform var(--motion-fast) ease}
+button:active:not(:disabled){transform:translateY(1px)}
+tbody tr{transition:background-color var(--motion-fast) ease}
+button:focus-visible,a:focus-visible{transition:none}
+
+@media(prefers-reduced-motion:reduce){
+ :root{--motion-fast:0ms;--motion-base:0ms;--motion-slow:0ms}
+ .skeleton,.motion-in,.motion-flash,.billing-row-mark.is-done.motion-just-done,.toast-region #notice.toast-in{animation:none}
+ button,tbody tr{transition:none}
+ button:active:not(:disabled){transform:none}
+}

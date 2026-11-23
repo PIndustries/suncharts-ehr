@@ -14,7 +14,7 @@ function practiceUnavailable(index,label){return `<div class="practice-unavailab
 async function showPracticeWorkspace(){
  const generation=++practiceLoad;
  showTool('Practice overview');
- $('tools').innerHTML='<section id="practice-home" class="practice-home" aria-busy="true"><p class="muted" role="status">Loading today…</p></section>';
+ $('tools').innerHTML='<section id="practice-home" class="practice-home" aria-busy="true">'+(typeof skeletonMarkup==='function'?skeletonMarkup('tiles')+skeletonMarkup('rows'):'<p class="muted" role="status">Loading today…</p>')+'</section>';
  const start=new Date();start.setHours(0,0,0,0);const end=new Date(start);end.setDate(end.getDate()+1);
  const results=await Promise.allSettled([
   api(`/api/v1/schedule?${new URLSearchParams({start:start.toISOString(),end:end.toISOString()})}`),

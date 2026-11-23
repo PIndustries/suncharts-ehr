@@ -58,7 +58,7 @@ async function main(){
  });
  context.location.assign=context.locationAssign;
 
- vm.runInContext(between(appSource,"function notice(message, error = false) { $('notice').textContent=message; $('notice').className=`notice${error?' error':''}`; $('notice').hidden=false; }\n",'async function enter()'),context,{filename:'app-run.js'});
+ vm.runInContext(between(appSource,"function notice(message, error = false) { $('notice').textContent=message; $('notice').className=`notice${error?' error':''}`; $('notice').hidden=false; if(typeof motionNotice==='function')motionNotice($('notice'),error); }\n",'async function enter()'),context,{filename:'app-run.js'});
  const appClick=between(appSource,"document.addEventListener('click',e=>{", "\ndocument.addEventListener('keydown',e=>");
  vm.runInContext(`document.addEventListener('click',e=>{${appClick}`,context,{filename:'app-click.js'});
  const showToolSource=between(appSource,'function showTool(title) {','\nasync function showConsent()');
