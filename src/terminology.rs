@@ -708,6 +708,50 @@ fn cursor(value: Option<&str>) -> Result<Option<CodeCursor>> {
         })
         .transpose()
 }
+/// What a code lookup asks for. `search` is matched as a code prefix or as the words of a
+/// description; `ranked` puts the closest descriptions first instead of ordering by code.
+pub(crate) struct CodeFilter<'a> {
+    pub tenant: Uuid,
+    pub release: Uuid,
+    pub search: &'a str,
+    pub billable: Option<bool>,
+    pub active: bool,
+    pub date: NaiveDate,
+    pub after: Option<&'a str>,
+    pub limit: i64,
+    pub ranked: bool,
+}
+/// The one lookup behind the code search screen and the assistant's candidate lists, so both
+/// find the same codes for the same words.
+pub(crate) async fn query_codes(
+    conn: &mut sqlx::PgConnection,
+    f: &CodeFilter<'_>,
+) -> Result<Vec<Value>> {
+    let code_prefix = format!(
+        "{}%",
+        f.search
+            .replace('.', "")
+            .to_ascii_uppercase()
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+    let words = f
+        .search
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .take(20)
+        .map(|word| format!("{word}:*"))
+        .collect::<Vec<_>>()
+        .join(" & ");
+    let order = if f.ranked {
+        "ts_rank(c.search_text,to_tsquery('simple',$5)) DESC,length(c.display),c.code"
+    } else {
+        "c.code"
+    };
+    Ok(sqlx::query_scalar(&format!("SELECT {CODE_PUBLIC} FROM terminology_codes c JOIN terminology_releases r ON r.tenant_id=c.tenant_id AND r.id=c.release_id WHERE c.tenant_id=$1 AND c.release_id=$2 AND ($3::text='' OR c.code_key LIKE $4 OR c.search_text@@to_tsquery('simple',$5)) AND ($6::boolean IS NULL OR c.billable=$6) AND c.active=$7 AND greatest(r.effective_start,c.effective_start)<=$8 AND (least(r.effective_end,c.effective_end) IS NULL OR least(r.effective_end,c.effective_end)>=$8) AND ($9::text IS NULL OR c.code>$9) ORDER BY {order} LIMIT $10"))
+        .bind(f.tenant).bind(f.release).bind(f.search).bind(code_prefix).bind(words).bind(f.billable).bind(f.active).bind(f.date).bind(f.after).bind(f.limit).fetch_all(conn).await?)
+}
 async fn search(
     actor: Actor,
     ExtractState(state): ExtractState<State>,
@@ -769,24 +813,21 @@ async fn search(
             "catalog cursor belongs to a different search or service date",
         ));
     }
-    let code_prefix = format!(
-        "{}%",
-        search
-            .replace('.', "")
-            .to_ascii_uppercase()
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_")
-    );
-    let words = search
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .take(20)
-        .map(|word| format!("{word}:*"))
-        .collect::<Vec<_>>()
-        .join(" & ");
-    let rows:Vec<Value>=sqlx::query_scalar(&format!("SELECT {CODE_PUBLIC} FROM terminology_codes c JOIN terminology_releases r ON r.tenant_id=c.tenant_id AND r.id=c.release_id WHERE c.tenant_id=$1 AND c.release_id=$2 AND ($3::text='' OR c.code_key LIKE $4 OR c.search_text@@to_tsquery('simple',$5)) AND ($6::boolean IS NULL OR c.billable=$6) AND c.active=$7 AND greatest(r.effective_start,c.effective_start)<=$8 AND (least(r.effective_end,c.effective_end) IS NULL OR least(r.effective_end,c.effective_end)>=$8) AND ($9::text IS NULL OR c.code>$9) ORDER BY c.code LIMIT $10"))
-        .bind(actor.tenant_id).bind(id).bind(search).bind(code_prefix).bind(words).bind(query.billable).bind(query.active.unwrap_or(true)).bind(date).bind(cursor.as_ref().map(|c|c.code.as_str())).bind(limit+1).fetch_all(&mut *tx).await?;
+    let rows = query_codes(
+        &mut tx,
+        &CodeFilter {
+            tenant: actor.tenant_id,
+            release: id,
+            search,
+            billable: query.billable,
+            active: query.active.unwrap_or(true),
+            date,
+            after: cursor.as_ref().map(|c| c.code.as_str()),
+            limit: limit + 1,
+            ranked: false,
+        },
+    )
+    .await?;
     let has_more = rows.len() > limit as usize;
     let items: Vec<Value> = rows.into_iter().take(limit as usize).collect();
     let next = if has_more {
