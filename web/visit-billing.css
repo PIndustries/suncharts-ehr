@@ -410,3 +410,6 @@
 /* A message beside the bar's buttons (why a send stopped) takes its own line and wraps. */
 .encounter-bar .visit-billing-status .actions{flex:0 1 auto;min-width:0;max-width:100%;flex-wrap:wrap}
 .claim-send-error{flex:1 1 100%;min-width:0;margin:6px 0 0;white-space:normal;overflow-wrap:anywhere;color:var(--warning-text,var(--error-text));font-size:var(--fs-sm);line-height:1.4}
+/* Codes read as badges, so the eye finds them before the wording. */
+.codes-strip-code{display:inline-block;padding:1px 8px;border-radius:6px;border:1px solid color-mix(in srgb,var(--blue) 45%,transparent);background:color-mix(in srgb,var(--blue) 16%,transparent);color:var(--ink);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.95em;font-weight:700;letter-spacing:.02em;line-height:1.5}
+.encounter-codes-strip li,.billing-row-lines li{align-items:first baseline}
