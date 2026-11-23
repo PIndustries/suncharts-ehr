@@ -520,11 +520,7 @@ pub fn app(state: State) -> Router {
         .route(
             "/motion.css",
             get(|| async {
-                web_asset(
-                    "motion.css",
-                    "text/css",
-                    include_str!("../web/motion.css"),
-                )
+                web_asset("motion.css", "text/css", include_str!("../web/motion.css"))
             }),
         )
         .route(
