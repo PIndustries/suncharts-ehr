@@ -333,6 +333,14 @@ pub fn router() -> Router<State> {
             post(patient_profile::memberships::cancel),
         )
         .route(
+            "/api/v1/billing/patients/{id}/memberships/{subscription}/cancel-now",
+            post(patient_profile::memberships::cancel_now),
+        )
+        .route(
+            "/api/v1/billing/membership-prices/{id}/retire",
+            post(patient_profile::memberships::retire_price),
+        )
+        .route(
             "/api/v1/billing/patients/{id}/payment-profile",
             get(patient_profile::read),
         )

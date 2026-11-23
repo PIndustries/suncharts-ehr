@@ -22,7 +22,7 @@ function cardReaderAppearance(){
  return {variables:{...cardReaderPalettes[theme]}};
 }
 function cardReaderPage(body,paymentAccount=true,opened=0){
- return `<section id="card-readers-workspace" data-card-readers-page="${opened}"><div class="section-head"><div><h2>Card readers</h2></div>${paymentAccount?'<button type="button" data-payment-settings>Payment account</button>':''}</div><div id="card-reader-list">${cardReaderListMarkup()}</div><p>Readers are ordered from Stripe, shipped to the practice and billed by Stripe.</p>${body}</section>`;
+ return `<section id="card-readers-workspace" data-card-readers-page="${opened}"><div class="section-head"><div><h2>Card readers</h2></div>${paymentAccount?'<button type="button" data-payment-settings>Payment account</button>':''}</div><div id="card-reader-list">${cardReaderListMarkup()}</div><p>Readers are ordered here, shipped to the practice and billed to the practice’s payment account.</p>${body}</section>`;
 }
 const cardReaderNotConnected='<div class="notice"><p>Finish payment setup before ordering a reader.</p><p><button type="button" class="primary" data-payment-settings>Payment setup</button></p></div>';
 const cardReaderUnavailable='<div class="notice"><p>Reader ordering is not available yet.</p><p><button type="button" data-support-tickets>Support</button></p></div>';
@@ -37,7 +37,7 @@ let cardReaderViolation='';
 function cardReaderFailureMessage(reason){
  switch(reason?.kind){
   case 'blocked':return `Reader ordering could not load. The browser blocked ${cardReaderViolation||'stripe.com'}. ${cardReaderRetryHint}`;
-  case 'timeout':return 'Reader ordering could not load. The connection to Stripe timed out. Check your connection and try again.';
+  case 'timeout':return 'Reader ordering could not load. The connection timed out. Check your connection and try again.';
   case 'unreachable':return `Reader ordering could not load. The browser could not reach stripe.com. ${cardReaderRetryHint}`;
   // Connect.js arrived but its views could not be started: the browser refused to run it.
   case 'refused':return `Reader ordering could not start in this browser. ${cardReaderRetryHint}`;
@@ -154,7 +154,7 @@ function mountCardReaders(connection,current){
   return list;
  };
  // Stripe may report the same load failure more than once; showing the message is repeatable.
- function failed(event){if(!current())return;const host=$('card-reader-status');if(!host)return;const detail=String(event?.error?.message||'').trim().slice(0,300);host.innerHTML=cardReaderFailure(cardReaderLoadFailure)+(detail?`<p class="muted">Stripe said: ${esc(detail)}</p>`:'<p class="muted">Stripe gave no reason. If this keeps happening, turn off any ad or tracker blocker for this site or try another browser.</p>');if(detail&&typeof console!=='undefined')console.warn('Card reader ordering:',event?.error?.type||'',detail);}
+ function failed(event){if(!current())return;const host=$('card-reader-status');if(!host)return;const detail=String(event?.error?.message||'').trim().slice(0,300);host.innerHTML=cardReaderFailure(cardReaderLoadFailure)+(detail?`<p class="muted">The card service said: ${esc(detail)}</p>`:'<p class="muted">No reason was given. If this keeps happening, turn off any ad or tracker blocker for this site or try another browser.</p>');if(detail&&typeof console!=='undefined')console.warn('Card reader ordering:',event?.error?.type||'',detail);}
  shop.setOnLoadError?.(failed);
  // A finished checkout adds an order, so the list below is drawn again.
  shop.setOnCheckoutFinished?.(()=>{if(current()&&$('card-reader-orders')===ordersHost)ordersHost.replaceChildren(orders());});
@@ -211,7 +211,7 @@ document.addEventListener('click',event=>{
 
 // ---- Your readers ----------------------------------------------------------------------------
 // The readers the practice has added. The owner adds a reader by typing the code the reader
-// shows; every reader belongs to the practice's own Stripe account.
+// shows; every reader belongs to the practice's own Payment account.
 const cardReaderListApi='/api/v1/billing/payments/readers';
 let cardReaderListState=null,cardReaderAddressForm=null;
 function cardReaderRowMarkup(reader,manage){

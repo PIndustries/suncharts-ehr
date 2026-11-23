@@ -29,7 +29,7 @@ const count=(s,needle)=>s.split(needle).length-1;
  // Before an encounter exists the appointment's copay is on the Encounters tab; once it exists, in its Billing.
  assert.ok(bannerPaints>0,'the banner is repainted with the insurance workspace');
  let panel=ctx.hostedCopayMarkup(ctx.hostedCopayStateFor(old.id));
- assert.equal(count(panel,'Continue to Stripe checkout'),1);assert.equal(count(panel,'class="button primary"'),1);
+ assert.equal(count(panel,'Continue to secure checkout'),1);assert.equal(count(panel,'class="button primary"'),1);
  assert.equal(count(panel,'Check payment status'),1);assert.match(panel,/data-refresh-hosted-copay="operation-old" data-appointment="appointment-old"/);assert.equal(count(panel,'Test payment'),1);
  assert.doesNotMatch(panel,/data-collect-card-copay|mapping-notice|TEST ·/);
  assert.equal(ctx.hostedCopayStateFor(old.id).items.length,1,'server response items remain filtered to the exact selected appointment');
@@ -48,7 +48,7 @@ const count=(s,needle)=>s.split(needle).length-1;
  assert.doesNotMatch(ctx.hostedCopayMarkup(nextState),/receipt-old|23\.11/);
  change(old.id);await tick();panel=ctx.hostedCopayMarkup(oldState);
  assert.equal(count(panel,'data-copay-receipt="receipt-old"'),1);assert.equal(count(panel,'View / print receipt'),1);assert.match(panel,/class="primary" data-copay-receipt/);
- assert.doesNotMatch(panel,/Continue to Stripe checkout|No copay receipt/);
+ assert.doesNotMatch(panel,/Continue to secure checkout|No copay receipt/);
  assert(panel.indexOf('data-collect-card-copay')>panel.indexOf('<details'),'additional collection is explicit and collapsed after capture');
  assert.equal(count(panel,'Test payment'),1);assert.doesNotMatch(panel,/mapping-notice|TEST ·/);
  const encounter=ctx.encounterHostedCopayMarkup(oldState);assert.equal(count(encounter,'data-copay-receipt="receipt-old"'),1);assert.equal(count(encounter,'Test payment'),0,'the encounter payment list keeps no lone test line; the Collect payment window carries the badge');

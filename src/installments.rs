@@ -97,6 +97,13 @@ struct Plan {
     schedule: Value,
     version: i64,
     created_at: DateTime<Utc>,
+    cancelled_at: Option<DateTime<Utc>>,
+    cancel_reason: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Cancel {
+    reason: String,
 }
 #[derive(Clone, sqlx::FromRow)]
 struct Attempt {
@@ -469,16 +476,18 @@ async fn plan_value(
     }
     let schedule: Vec<Installment> = serde_json::from_value(p.schedule.clone())
         .map_err(|_| Error::Invalid("stored schedule unavailable"))?;
-    let review = b.blocked.or(if (1..50).contains(&b.remaining) {
+    let cancelled = p.cancelled_at.is_some();
+    let review = b.blocked.filter(|_| !cancelled).or(if (1..50).contains(&b.remaining) {
         Some("Remaining patient balance is below the card minimum; review another payment method.")
     } else if attempts.iter().any(|r| r.status == "needs_review") {
         Some("A collection needs review before further payment.")
     } else {
         None
     });
-    let installments:Vec<Value>=schedule.iter().enumerate().map(|(n,s)|{let collected=attempts.iter().filter(|r|r.installment_number==n as i32+1&&r.provider_captured_at.is_some()).map(|r|r.amount_cents-r.refunded_cents).sum::<i64>();let collectible=(s.amount_cents-collected).max(0).min(b.remaining);json!({"number":n+1,"due_on":s.due_on,"amount_cents":s.amount_cents,"collected_cents":collected,"collectible_cents":collectible,"status":if collectible==0{"complete"}else{"pending"}})}).collect();
+    let review = if cancelled { None } else { review };
+    let installments:Vec<Value>=schedule.iter().enumerate().map(|(n,s)|{let collected=attempts.iter().filter(|r|r.installment_number==n as i32+1&&r.provider_captured_at.is_some()).map(|r|r.amount_cents-r.refunded_cents).sum::<i64>();let collectible=(s.amount_cents-collected).max(0).min(b.remaining);json!({"number":n+1,"due_on":s.due_on,"amount_cents":s.amount_cents,"collected_cents":collected,"collectible_cents":collectible,"status":if collectible==0{"complete"}else if cancelled{"cancelled"}else{"pending"}})}).collect();
     Ok(
-        json!({"id":p.id,"request_id":p.request_id,"reason":p.reason,"patient_id":p.patient_id,"account_id":p.account_id,"invoice_id":p.invoice_id,"version":p.version,"status":if review.is_some(){"needs_review"}else if b.remaining==0{"complete"}else{"active"},"livemode":p.livemode,"total_cents":p.total_cents,"responsibility_cents":p.responsibility_cents,"patient_credit_cents":b.credit,"remaining_cents":b.remaining,"blocked_reason":review,"installments":installments,"attempts":attempts.iter().map(|v|v.public(policy)).collect::<Vec<_>>(),"created_at":p.created_at,"autopay":false}),
+        json!({"id":p.id,"request_id":p.request_id,"reason":p.reason,"patient_id":p.patient_id,"account_id":p.account_id,"invoice_id":p.invoice_id,"version":p.version,"status":if cancelled{"cancelled"}else if review.is_some(){"needs_review"}else if b.remaining==0{"complete"}else{"active"},"cancelled_at":p.cancelled_at,"cancel_reason":p.cancel_reason,"livemode":p.livemode,"total_cents":p.total_cents,"responsibility_cents":p.responsibility_cents,"patient_credit_cents":b.credit,"remaining_cents":b.remaining,"blocked_reason":review,"installments":installments,"attempts":attempts.iter().map(|v|v.public(policy)).collect::<Vec<_>>(),"created_at":p.created_at,"autopay":false}),
     )
 }
 #[allow(clippy::too_many_arguments)]
@@ -541,6 +550,9 @@ async fn checkout_with(
         process(pool, a, prior.id, broker, policy, true).await?;
         return checkout_result(pool, a, patient, plan_id, prior.id, policy).await;
     }
+    if p.cancelled_at.is_some() {
+        return Err(Error::Conflict("This payment plan was cancelled."));
+    }
     tx.commit().await?;
     // Provider readiness is read outside the financial transaction. The local
     // settings revision is checked again before reserving this exact attempt.
@@ -576,6 +588,9 @@ async fn checkout_with(
         }
         tx.commit().await?;
         return checkout_result(pool, a, patient, plan_id, prior.id, policy).await;
+    }
+    if p.cancelled_at.is_some() {
+        return Err(Error::Conflict("This payment plan was cancelled."));
     }
     if p.version != version {
         return Err(Error::Conflict("plan changed; reload before collection"));
@@ -1170,7 +1185,7 @@ async fn balance_charge_with(
     )
     .await?;
     // A balance charge that was declined leaves its one-payment plan; the next try reuses it.
-    let existing: Option<(Uuid, String, i32)> = sqlx::query_as("SELECT id,reason,jsonb_array_length(schedule) FROM patient_installment_plans WHERE tenant_id=$1 AND patient_id=$2 AND invoice_id=$3")
+    let existing: Option<(Uuid, String, i32)> = sqlx::query_as("SELECT id,reason,jsonb_array_length(schedule) FROM patient_installment_plans WHERE tenant_id=$1 AND patient_id=$2 AND invoice_id=$3 AND cancelled_at IS NULL")
         .bind(a.tenant_id)
         .bind(patient)
         .bind(invoice_id)
@@ -1449,7 +1464,10 @@ async fn list(
             .unwrap_or(i.snapshot["test_activity"] != true);
         let b = balance(&mut tx, &a, &i, None, live).await?;
         let mut v = preview_value(&i, &b, live, &[]);
-        if let Some(existing) = items.iter().find(|p| p["invoice_id"] == i.id.to_string()) {
+        if let Some(existing) = items
+            .iter()
+            .find(|p| p["invoice_id"] == i.id.to_string() && p["status"] != "cancelled")
+        {
             v["existing_plan_id"] = existing["id"].clone();
             v["eligible"] = json!(false);
             v["blocked_reason"] = json!("This invoice already has an immutable installment plan.");
@@ -1484,6 +1502,67 @@ async fn create(
             db(&s)?,
             &a,
             patient,
+            input,
+            crate::expected(&h)?,
+            Policy::current(),
+        )
+        .await?,
+    ))
+}
+/// Cancelling stops further collection on the plan. Payments already taken, the statement and
+/// the encounter balance are untouched. A payment still in progress must finish first.
+async fn cancel_with(
+    pool: &PgPool,
+    a: &Actor,
+    patient: Uuid,
+    plan_id: Uuid,
+    mut input: Cancel,
+    version: i64,
+    policy: Policy,
+) -> Result<Value> {
+    a.scheduling()?;
+    reason(&input.reason)?;
+    input.reason = input.reason.trim().to_owned();
+    let mut tx = pool.begin().await?;
+    billing::tenant_lock(&mut tx, a).await?;
+    let p = plan(&mut tx, a, patient, plan_id).await?;
+    if p.cancelled_at.is_some() {
+        let out = plan_value(&mut tx, a, &p, policy).await?;
+        tx.commit().await?;
+        return Ok(out);
+    }
+    if p.version != version {
+        return Err(Error::Conflict("plan changed; reload before cancelling"));
+    }
+    let in_flight: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM invoice_checkout_attempts WHERE tenant_id=$1 AND plan_id=$2 AND status IN ('creating','open','needs_review'))").bind(a.tenant_id).bind(p.id).fetch_one(&mut *tx).await?;
+    if in_flight {
+        return Err(Error::Conflict(
+            "A payment for this plan is still in progress. Finish or cancel that payment first.",
+        ));
+    }
+    sqlx::query("UPDATE patient_installment_plans SET cancelled_at=now(),cancelled_by=$3,cancel_reason=$4,version=version+1 WHERE tenant_id=$1 AND id=$2")
+        .bind(a.tenant_id).bind(p.id).bind(a.sub).bind(&input.reason).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO patient_installment_events(tenant_id,id,plan_id,operation_id,actor_id,action) VALUES($1,$2,$3,NULL,$4,'plan_cancelled')").bind(a.tenant_id).bind(Uuid::new_v4()).bind(p.id).bind(a.sub).execute(&mut *tx).await?;
+    crate::postgres::audit(&mut tx, a, "billing.installment_plan_cancelled", p.id).await?;
+    let row = plan(&mut tx, a, patient, plan_id).await?;
+    let out = plan_value(&mut tx, a, &row, policy).await?;
+    tx.commit().await?;
+    Ok(out)
+}
+async fn cancel(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((patient, pid)): Path<(Uuid, Uuid)>,
+    h: HeaderMap,
+    Json(input): Json<Cancel>,
+) -> Result<Json<Value>> {
+    authorize(&s, &a, "create").await?;
+    Ok(Json(
+        cancel_with(
+            db(&s)?,
+            &a,
+            patient,
+            pid,
             input,
             crate::expected(&h)?,
             Policy::current(),
@@ -1562,6 +1641,7 @@ pub fn router() -> Router<State> {
  .route("/api/v1/billing/patients/{patient}/installment-plans",get(list).post(create))
  .route("/api/v1/billing/patients/{patient}/installment-plans/preview",post(preview))
  .route("/api/v1/billing/patients/{patient}/installment-plans/{plan}",get(detail))
+ .route("/api/v1/billing/patients/{patient}/installment-plans/{plan}/cancel",post(cancel))
  .route("/api/v1/billing/patients/{patient}/installment-plans/{plan}/installments/{number}/checkout",post(checkout))
  .route("/api/v1/billing/invoice-checkouts/{id}",get(operation))
  .route("/api/v1/billing/invoice-checkouts/{id}/refresh",post(refresh))

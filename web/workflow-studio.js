@@ -52,7 +52,7 @@ function studioNodeContract(step){
   staff_task:['Linked patient journey','Create assigned work',`${role} work queue`,'Completed task evidence'],
   patient_form:['Linked patient and appointment','Issue the configured intake form','SunCharts Patient portal','Submitted answers for staff review'],
   eligibility_query:['Patient coverage details','Prepare an eligibility request','Mapped Claim.MD connection at run time','Coverage response attached to billing'],
-  payment_request:['Patient balance and amount','Prepare a payment request','SunCharts Payments via Stripe Connect','Processor evidence reconciled to the ledger'],
+  payment_request:['Patient balance and amount','Prepare a payment request','SunCharts Payments','Processor evidence reconciled to the ledger'],
   document_signature:['Linked patient document','Request reviewed consent work',`${role} work queue`,'Reviewed consent evidence'],
   notification:['Recipient and reminder content','Create reminder work',`${role} work queue`,'Completed reminder task'],
   communication_send:['Recipient and reviewed content','Prepare a communication','Mapped Gmail, RingCentral or webhook at run time','Delivery result attached to the journey'],

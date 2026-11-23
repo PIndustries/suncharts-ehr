@@ -8,9 +8,6 @@
   "fees.js": {
     "JSON": 1
   },
-  "patient-payment-plans.js": {
-    "catalog": 1
-  },
   "patient-portal.js": {
     "JSON": 3,
     "snapshot": 7

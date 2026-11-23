@@ -168,6 +168,20 @@ pub(in crate::payments) struct CancelInput {
     request_id: Uuid,
     expected_cancel_at_period_end: bool,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::payments) struct CancelNowInput {
+    request_id: Uuid,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::payments) struct RetireInput {
+    request_id: Uuid,
+}
+const RETIRED_PRICE: &str = "This membership price is retired.";
+fn is_price_kind(kind: &str) -> bool {
+    matches!(kind, "price" | "price_retire")
+}
 async fn authorize(
     a: &Actor,
     s: &State,
@@ -188,7 +202,7 @@ async fn authorize(
     if mutating {
         current.scheduling()?;
     }
-    if kind == "price" && action != "view" {
+    if is_price_kind(kind) && action != "view" {
         owner(&current)?;
     }
     Ok(current)
@@ -213,11 +227,21 @@ async fn create_with(
 ) -> Result<Response> {
     let path = if kind == "price" {
         "/api/v1/billing/membership-prices".into()
+    } else if kind == "price_retire" {
+        format!(
+            "/api/v1/billing/membership-prices/{}/retire",
+            uuid(&body["price_id"])?
+        )
     } else if kind == "cancel" {
         format!(
-            "/api/v1/billing/patients/{}/memberships/{}/cancel-at-period-end",
+            "/api/v1/billing/patients/{}/memberships/{}/{}",
             patient.ok_or_else(invalid)?,
-            identifier(&body["subscription_id"], "sub_")?
+            identifier(&body["subscription_id"], "sub_")?,
+            if body["cancel_kind"] == "now" {
+                "cancel-now"
+            } else {
+                "cancel-at-period-end"
+            }
         )
     } else {
         format!(
@@ -265,6 +289,11 @@ async fn create_with(
                 "This membership request was already reserved with different terms or permission.",
             ));
         }
+        if kind == "price_retire" && op.status == "retired" {
+            // A finished retirement is final; answer from the stored, verified result.
+            tx.commit().await?;
+            return Ok(response(op.provider_evidence.clone().ok_or_else(invalid)?));
+        }
         if op
             .provider_evidence
             .as_ref()
@@ -302,8 +331,14 @@ async fn create_with(
                 ));
             }
         }
+        if kind == "membership" {
+            let retired:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM patient_membership_operations WHERE tenant_id=$1 AND kind='price_retire' AND status='retired' AND request_body->>'price_id'=$2)").bind(a.tenant_id).bind(body["price_id"].as_str()).fetch_one(&mut *tx).await?;
+            if retired {
+                return Err(Error::Conflict(RETIRED_PRICE));
+            }
+        }
         // Serialize on the setting and refuse replacement IDs for unresolved native operations.
-        let pending:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM patient_membership_operations WHERE tenant_id=$1 AND kind=$2 AND patient_id IS NOT DISTINCT FROM $3 AND status IN ('creating','open','pending','needs_review') AND ($2='price' OR $2='membership' AND request_body->>'price_id'=$4 OR $2='cancel' AND request_body->>'subscription_id'=$5))").bind(a.tenant_id).bind(kind).bind(patient).bind(body["price_id"].as_str()).bind(body["subscription_id"].as_str()).fetch_one(&mut *tx).await?;
+        let pending:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM patient_membership_operations WHERE tenant_id=$1 AND kind=$2 AND patient_id IS NOT DISTINCT FROM $3 AND status IN ('creating','open','pending','needs_review') AND ($2='price' OR ($2='membership' OR $2='price_retire') AND request_body->>'price_id'=$4 OR $2='cancel' AND request_body->>'subscription_id'=$5))").bind(a.tenant_id).bind(kind).bind(patient).bind(body["price_id"].as_str()).bind(body["subscription_id"].as_str()).fetch_one(&mut *tx).await?;
         if pending {
             return Err(Error::Conflict(
                 "A matching membership operation is unresolved. Continue its original request.",
@@ -317,14 +352,22 @@ async fn create_with(
     let broker_path = match kind {
         "price" => "/membership-prices".into(),
         "membership" => format!("/patient-billing/{}/membership-checkouts", patient.unwrap()),
+        "price_retire" => format!("/membership-prices/{}/retire", uuid(&body["price_id"])?),
         "cancel" => format!(
-            "/patient-billing/{}/memberships/{}/cancel-at-period-end",
+            "/patient-billing/{}/memberships/{}/{}",
             patient.unwrap(),
-            identifier(&body["subscription_id"], "sub_")?
+            identifier(&body["subscription_id"], "sub_")?,
+            if body["cancel_kind"] == "now" {
+                "cancel-now"
+            } else {
+                "cancel-at-period-end"
+            }
         ),
         _ => return Err(invalid()),
     };
     body.as_object_mut().unwrap().remove("subscription_id");
+    body.as_object_mut().unwrap().remove("cancel_kind");
+    body.as_object_mut().unwrap().remove("price_id");
     body.as_object_mut()
         .unwrap()
         .remove("membership_request_id");
@@ -334,6 +377,14 @@ async fn create_with(
     let raw = source
         .request(&c.config, Method::POST, &broker_path, Some(body))
         .await;
+    if kind == "membership" && matches!(&raw, Err(Error::Conflict(m)) if *m == RETIRED_PRICE) {
+        // The payment service refused before starting anything: nothing is pending.
+        let mut tx = db(&s)?.begin().await?;
+        sqlx::query("UPDATE patient_membership_operations SET status='expired',version=version+1,updated_at=now() WHERE tenant_id=$1 AND request_id=$2 AND status='creating' AND provider_evidence IS NULL").bind(a.tenant_id).bind(request).execute(&mut *tx).await?;
+        crate::postgres::audit(&mut tx, &a, "payment.membership_refused", request).await?;
+        tx.commit().await?;
+        return Err(Error::Conflict(RETIRED_PRICE));
+    }
     complete(&a, &s, &h, &path, Method::POST, &c, &op, raw).await
 }
 pub(in crate::payments) async fn create_price(
@@ -391,6 +442,48 @@ pub(in crate::payments) async fn cancel(
         "cancel",
         v.request_id,
         json!({"subscription_id":subscription,"expected_cancel_at_period_end":false}),
+        &HttpSource,
+    )
+    .await
+}
+pub(in crate::payments) async fn cancel_now(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path((p, subscription)): Path<(Uuid, String)>,
+    h: HeaderMap,
+    Json(v): Json<CancelNowInput>,
+) -> Result<Response> {
+    identifier(&json!(subscription), "sub_")?;
+    create_with(
+        a,
+        s,
+        Some(p),
+        h,
+        "cancel",
+        v.request_id,
+        json!({"subscription_id":subscription,"cancel_kind":"now"}),
+        &HttpSource,
+    )
+    .await
+}
+pub(in crate::payments) async fn retire_price(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(price): Path<Uuid>,
+    h: HeaderMap,
+    Json(v): Json<RetireInput>,
+) -> Result<Response> {
+    if price.is_nil() {
+        return Err(invalid());
+    }
+    create_with(
+        a,
+        s,
+        None,
+        h,
+        "price_retire",
+        v.request_id,
+        json!({"price_id":price}),
         &HttpSource,
     )
     .await
@@ -474,7 +567,7 @@ async fn complete(
                 && deadline > Utc::now()
                 && current.requested_by == a.sub
                 && actor.scheduling().is_ok()
-                && (op.kind != "price" || owner(&actor).is_ok())
+                && (!is_price_kind(&op.kind) || owner(&actor).is_ok())
                 && (op.kind == "cancel" || live_writes_allowed(c.live))
                 && crate::access_policies::require_native(
                     s,
@@ -497,6 +590,15 @@ async fn complete(
             sqlx::query("UPDATE patient_membership_operations SET status=$3,provider_evidence=$4,version=version+1,updated_at=now() WHERE tenant_id=$1 AND request_id=$2").bind(a.tenant_id).bind(op.request_id).bind(&status).bind(&out).execute(&mut *tx).await?;
             crate::postgres::audit(&mut tx, a, "payment.membership_verified", op.request_id)
                 .await?;
+            if op.kind == "price_retire" && status == "retired" {
+                crate::postgres::audit(
+                    &mut tx,
+                    a,
+                    "billing.membership_price_retired",
+                    op.request_id,
+                )
+                .await?;
+            }
             tx.commit().await?;
             Ok(response(out))
         }
@@ -602,6 +704,7 @@ async fn list_with(
     if patient.is_some() {
         for item in &mut items {
             item["cancellation_available"] = json!(false);
+            item["cancel_now_available"] = json!(false);
             let request: Uuid =
                 serde_json::from_value(item["request_id"].clone()).map_err(|_| invalid())?;
             let op:Option<Operation>=sqlx::query_as("SELECT * FROM patient_membership_operations WHERE tenant_id=$1 AND request_id=$2 AND patient_id=$3 AND kind='membership' FOR UPDATE").bind(a.tenant_id).bind(request).bind(patient).fetch_optional(&mut *tx).await?;
@@ -616,15 +719,15 @@ async fn list_with(
                     crate::postgres::audit(&mut tx, &a, "payment.membership_verified", request)
                         .await?;
                     *item = evidence["membership"].clone();
-                    item["cancellation_available"] = json!(
-                        can_edit
-                            && item["subscription_id"].is_string()
-                            && item["cancel_at_period_end"] == false
-                            && !matches!(
-                                item["subscription_status"].as_str(),
-                                Some("canceled" | "incomplete_expired")
-                            )
-                    );
+                    let running = can_edit
+                        && item["subscription_id"].is_string()
+                        && !matches!(
+                            item["subscription_status"].as_str(),
+                            Some("canceled" | "incomplete_expired")
+                        );
+                    item["cancellation_available"] =
+                        json!(running && item["cancel_at_period_end"] == false);
+                    item["cancel_now_available"] = json!(running);
                 }
             }
         }
@@ -635,7 +738,7 @@ async fn list_with(
             .is_ok();
     let pending_rows:Vec<Operation>=sqlx::query_as("SELECT * FROM patient_membership_operations WHERE tenant_id=$1 AND patient_id IS NOT DISTINCT FROM $2 AND status IN ('creating','open','pending','needs_review') ORDER BY created_at DESC LIMIT 20").bind(a.tenant_id).bind(patient).fetch_all(&mut *tx).await?;
     let pending:Vec<Value>=pending_rows.iter().map(|op| {
-        let owns = op.requested_by==actor.sub && (if op.kind=="cancel" {can_edit} else {can_create}) && (op.kind!="price" || owner(&actor).is_ok());
+        let owns = op.requested_by==actor.sub && (if op.kind=="cancel" {can_edit} else {can_create}) && (!is_price_kind(&op.kind) || owner(&actor).is_ok());
         let deadline=op.deadline();
         let retry = owns && op.check(&c,patient).is_ok() && deadline>Utc::now() && (op.kind=="cancel" || live_writes_allowed(c.live)) && op.provider_evidence.as_ref().is_none_or(|v| evidence_pending(&op.kind,v)==Some(true) && evidence_recovery(&op.kind,v)==Some(false));
         let mut request=op.request_body.clone();

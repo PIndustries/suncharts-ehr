@@ -99,7 +99,7 @@ test('Declined and a bank that wants the patient are plain, and the card link is
  const before=f.calls.length;c.next=link;await f.click({savedCardLink:''});
  same(f.calls.slice(before),[[base,'POST',{request_id:'stable-request',amount_cents:2500,coverage_id:'coverage',livemode:false,reason:'Card link sent after the bank asked the patient to confirm'}]]);
  assert.match(f.slot(),/Card link created\. Open it or send it from the copay list\./);
- const list=c.hostedCopayMarkup(state);assert.match(list,/Continue to Stripe checkout/);assert.match(list,/data-cancel-copay-link="link" data-appointment="appt">Cancel link</);
+ const list=c.hostedCopayMarkup(state);assert.match(list,/Continue to secure checkout/);assert.match(list,/data-cancel-copay-link="link" data-appointment="appt">Cancel link</);
  assert.equal(f.calls.some(call=>['openBillingEditor','showChartSection'].includes(call[0])),false);
  // A charge the bank is still working on is checked every two seconds until it ends.
  const g=copay(),gc=g.ctx;gc.hostedCopayStateFor('appt').availability=gc.availability;await g.click({savedCardCopay:'appt'},'insurance-hosted-copay');await g.submit(g.form({},'insurance-hosted-copay'));
@@ -115,7 +115,7 @@ test('an open card link has Cancel link; afterwards it reads Cancelled and anoth
  c.next={...link,status:'expired',last_result:'link_cancelled',checkout_url:null};await f.click({cancelCopayLink:'link',appointment:'appt'});
  same(f.calls.at(-1),[`${base}/link/cancel`,'POST',{}]);
  panel=c.hostedCopayMarkup(state);
- assert.match(panel,/\$25\.00 · Cancelled/);assert.doesNotMatch(panel,/Continue to Stripe checkout|data-cancel-copay-link|disabled/);
+ assert.match(panel,/\$25\.00 · Cancelled/);assert.doesNotMatch(panel,/Continue to secure checkout|data-cancel-copay-link|disabled/);
  assert.match(panel,/data-collect-card-copay="appt" >Collect card copay</);assert.match(panel,/data-reader-copay="appt" >/);assert.match(panel,/data-saved-card-copay="appt" >/);plain(panel,'cancelled link');
  // A link the patient paid in the same moment is shown as paid, never as cancelled.
  state.items=[link];c.next={...link,status:'paid',receipt_id:'receipt',checkout_url:null};await f.click({cancelCopayLink:'link',appointment:'appt'});

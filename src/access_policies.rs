@@ -304,13 +304,19 @@ fn action(method: &Method, path: &str) -> Option<Action> {
             if path.starts_with("/api/v1/billing/patients/")
                 && (path.ends_with("/payment-setups")
                     || path.ends_with("/installment-plans")
-                    || (path.contains("/installment-plans/") && path.ends_with("/checkout")))
+                    || (path.contains("/installment-plans/")
+                        && (path.ends_with("/checkout") || path.ends_with("/cancel"))))
             {
                 return Some(Action::Create);
             }
 
-            if path.starts_with("/api/v1/billing/") && path.ends_with("/cancel-at-period-end") {
+            if path.starts_with("/api/v1/billing/")
+                && (path.ends_with("/cancel-at-period-end") || path.ends_with("/cancel-now"))
+            {
                 return Some(Action::Edit);
+            }
+            if path.starts_with("/api/v1/billing/membership-prices/") && path.ends_with("/retire") {
+                return Some(Action::Create);
             }
             if path.starts_with("/api/v1/billing/")
                 && (path.ends_with("/membership-prices") || path.ends_with("/memberships"))
@@ -1093,6 +1099,7 @@ mod tests {
         for path in [
             "/api/v1/billing/patients/{}/installment-plans",
             "/api/v1/billing/patients/{}/installment-plans/{}/installments/{}/checkout",
+            "/api/v1/billing/patients/{}/installment-plans/{}/cancel",
         ] {
             assert_eq!(action(&Method::POST, path), Some(Action::Create));
             assert_eq!(resources(path), Some(vec!["billing"]));
@@ -1111,6 +1118,15 @@ mod tests {
             ),
             Some(Action::Edit)
         );
+    }
+    #[test]
+    fn membership_cancel_now_is_an_edit_and_price_retire_a_create_both_billing() {
+        let cancel = "/api/v1/billing/patients/{}/memberships/sub_x/cancel-now";
+        assert_eq!(action(&Method::POST, cancel), Some(Action::Edit));
+        assert_eq!(resources(cancel), Some(vec!["billing"]));
+        let retire = "/api/v1/billing/membership-prices/{}/retire";
+        assert_eq!(action(&Method::POST, retire), Some(Action::Create));
+        assert_eq!(resources(retire), Some(vec!["billing"]));
     }
     #[test]
     fn one_time_connect_handoffs_replace_stale_browser_sessions() {

@@ -833,6 +833,17 @@ activity cannot be mixed. Billing-view access is sufficient to inspect plans and
 collections without opening clinical records; new collections and reconciliation
 retain their separate write permissions and audit events.
 
+Staff who may create a plan can cancel it with
+`POST /api/v1/billing/patients/{patient}/installment-plans/{plan}/cancel`, sending
+a required reason and the plan version in `If-Match`. Cancelling stops further
+collection; payments already taken stay as they are, nothing is refunded, and the
+encounter balance is untouched. It is refused while a payment for the plan is in
+progress (a card link that is open or being created, a card-reader payment
+waiting, or a payment that needs review). Repeating a cancel returns the
+cancelled plan. The agreed schedule and consent stay immutable; only the
+cancelled time, person and reason are added. A cancelled plan no longer counts as
+the statement's plan, so a new plan can be started from it while a balance remains.
+
 ### Patient billing workspace
 
 The chart's **Billing** tab and the practice-wide **Patient billing** selector use
@@ -894,3 +905,18 @@ EHR operator flag `ENGINE_LIVE_MEMBERSHIPS_ENABLED=enabled` and the correspondin
 Connect membership activation. Existing live subscriptions remain readable.
 Production refuses test-mode creation even if live membership activation is set.
 No operator flag is enabled by installing this feature.
+
+Staff with billing edit access can also cancel a running membership immediately
+(`POST /api/v1/billing/patients/{id}/memberships/{subscription}/cancel-now`, body
+`{"request_id": uuid}`). The membership ends today with no credit, refund or final
+invoice, and this is offered even after a cancellation at period end was scheduled
+(`cancel_now_available` in the membership list). It follows the same stored-request
+rules as cancelling at period end: one request ID per cancellation, a lost answer is
+recovered by repeating that request or reading its status, never by a new request.
+The practice owner can retire a membership price
+(`POST /api/v1/billing/membership-prices/{price}/retire`): nobody new can be started on
+it, patients already on it keep their membership, and the price list shows
+`enrolment_open: false` and `retired_at`. Retiring is audited as
+`billing.membership_price_retired` and uses the same payment-mode gating as adding a
+price. Starting a membership on a retired price is refused with "This membership price
+is retired."

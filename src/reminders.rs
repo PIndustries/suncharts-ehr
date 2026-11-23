@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 use zeroize::Zeroizing;
+pub mod phone;
 const RESEND: &str = "https://api.resend.com";
 fn db(s: &State) -> Result<&PgPool> {
     Ok(&s.browser.as_ref().ok_or(Error::NotFound)?.db)
@@ -70,11 +71,12 @@ struct Preference {
     consented: bool,
     verified: bool,
     automatic_email: bool,
+    automatic_phone: Option<String>,
     version: i64,
 }
 impl Preference {
     fn content(&self) -> Value {
-        json!({"channel":self.channel,"destination":self.destination,"consented":self.consented,"verified":self.verified,"automatic_email":self.automatic_email})
+        json!({"channel":self.channel,"destination":self.destination,"consented":self.consented,"verified":self.verified,"automatic_email":self.automatic_email,"automatic_phone":self.automatic_phone})
     }
 }
 #[derive(Clone, Serialize, sqlx::FromRow)]
@@ -106,12 +108,17 @@ pub struct Reminder {
     pub provider_id: Option<Uuid>,
     pub last_result: Option<String>,
     last_poll_at: Option<DateTime<Utc>>,
+    /// "text" or "call" when the practice's Twilio account sends this one.
+    pub automatic_phone: Option<String>,
+    phone_setting_id: Option<Uuid>,
+    phone_revision: Option<i64>,
+    pub provider_ref: Option<String>,
 }
 impl Reminder {
     fn public(&self) -> Value {
         let actions = if self.status == "sending" {
             vec![]
-        } else if self.provider_id.is_some() {
+        } else if self.provider_id.is_some() || self.provider_ref.is_some() {
             vec!["refresh_delivery"]
         } else if self.first_attempt_at.is_some()
             && ["scheduled", "needs_review"].contains(&self.status.as_str())
@@ -142,7 +149,7 @@ impl Reminder {
         } else {
             vec![]
         };
-        json!({"id":self.id,"appointment_id":self.appointment_id,"patient_id":self.patient_id,"before_minutes":self.before_minutes,"due_at":self.due_at,"starts_at":self.starts_at,"channel":self.channel,"destination":self.destination,"automatic_email":self.automatic_email,"status":self.status,"invalidated":self.invalidated,"version":self.version,"attempts":self.attempts,"provider_id":self.provider_id,"last_result":self.last_result,"actions":actions})
+        json!({"id":self.id,"appointment_id":self.appointment_id,"patient_id":self.patient_id,"before_minutes":self.before_minutes,"due_at":self.due_at,"starts_at":self.starts_at,"channel":self.channel,"destination":self.destination,"automatic_email":self.automatic_email,"automatic_phone":self.automatic_phone,"status":self.status,"invalidated":self.invalidated,"version":self.version,"attempts":self.attempts,"provider_id":self.provider_id,"provider_ref":self.provider_ref,"last_result":self.last_result,"actions":actions})
     }
 }
 async fn reminder_lock(tx: &mut Transaction<'_, Postgres>, a: &Actor) -> Result<()> {
@@ -259,6 +266,7 @@ pub fn router() -> Router<State> {
         .route("/api/v1/schedule/reminders", get(worklist))
         .route("/api/v1/schedule/reminders/{id}", get(detail))
         .route("/api/v1/schedule/reminders/{id}/actions", post(action))
+        .merge(phone::router())
 }
 async fn read_settings(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json<Value>> {
     owner(&a)?;
@@ -274,7 +282,7 @@ async fn read_settings(a: Actor, ExtractState(s): ExtractState<State>) -> Result
     crate::postgres::audit(&mut tx, &a, "appointment.reminder_sender_read", a.tenant_id).await?;
     tx.commit().await?;
     Ok(Json(
-        json!({"setting":r.map(|r|r.public()),"credential_storage_ready":ready,"automatic_email_provider":"suncharts_connect","sms_delivery_available":false}),
+        json!({"setting":r.map(|r|r.public()),"credential_storage_ready":ready,"automatic_email_provider":"suncharts_connect","sms_delivery_available":true}),
     ))
 }
 #[derive(Deserialize)]
@@ -494,6 +502,9 @@ struct PreferenceSave {
     consented: bool,
     verified: bool,
     automatic_email: bool,
+    /// "text" or "call": remind this patient through the practice's Twilio account.
+    #[serde(default)]
+    automatic_phone: Option<String>,
     reason: String,
 }
 async fn save_preference(
@@ -512,6 +523,19 @@ async fn save_preference(
         return Err(Error::Invalid(
             "automatic email requires explicit verified email permission",
         ));
+    }
+    if let Some(kind) = v.automatic_phone.as_deref() {
+        if !["text", "call"].contains(&kind) || v.channel != "phone" || !v.consented || !v.verified
+        {
+            return Err(Error::Invalid(
+                "Text and call reminders need the patient's permission and a confirmed phone number.",
+            ));
+        }
+        if phone::e164(&v.destination).is_none() {
+            return Err(Error::Invalid(
+                "This phone number cannot be texted or called as written. Save it with its area code first.",
+            ));
+        }
     }
     let mut tx = db(&s)?.begin().await?;
     reminder_lock(&mut tx, &a).await?;
@@ -539,7 +563,7 @@ async fn save_preference(
         .bind(a.sub.to_string())
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO patient_reminder_preferences(tenant_id,patient_id,channel,destination,consented,verified,automatic_email,reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(tenant_id,patient_id) DO UPDATE SET channel=$3,destination=$4,consented=$5,verified=$6,automatic_email=$7,reason=$8,version=patient_reminder_preferences.version+1").bind(a.tenant_id).bind(id).bind(v.channel).bind(v.destination).bind(v.consented).bind(v.verified).bind(v.automatic_email).bind(v.reason).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO patient_reminder_preferences(tenant_id,patient_id,channel,destination,consented,verified,automatic_email,reason,automatic_phone) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,patient_id) DO UPDATE SET channel=$3,destination=$4,consented=$5,verified=$6,automatic_email=$7,reason=$8,automatic_phone=$9,version=patient_reminder_preferences.version+1").bind(a.tenant_id).bind(id).bind(v.channel).bind(v.destination).bind(v.consented).bind(v.verified).bind(v.automatic_email).bind(v.reason).bind(v.automatic_phone).execute(&mut *tx).await?;
     let p = preference(&mut tx, a.tenant_id, id)
         .await?
         .ok_or(Error::NotFound)?;
@@ -622,7 +646,7 @@ async fn create(
     let pref = preference(&mut tx, a.tenant_id, p).await?;
     let valid = pref.as_ref().is_some_and(|p| p.consented && p.verified);
     let reminder = Uuid::new_v4();
-    sqlx::query("INSERT INTO appointment_reminders(tenant_id,id,appointment_id,patient_id,request_id,creation_hash,definition_key,before_minutes,due_at,starts_at,appointment_version,preference_version,channel,destination,automatic_email,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)").bind(a.tenant_id).bind(reminder).bind(id).bind(p).bind(v.request_id).bind(hash).bind(format!("custom:{}",v.request_id)).bind(v.before_minutes).bind(starts-chrono::Duration::minutes(v.before_minutes.into())).bind(starts).bind(version).bind(pref.as_ref().map(|p|p.version)).bind(pref.as_ref().map(|p|p.channel.as_str()).unwrap_or("phone")).bind(pref.as_ref().filter(|_|valid).map(|p|p.destination.as_str())).bind(valid&&pref.as_ref().is_some_and(|p|p.automatic_email)).bind(if valid{"scheduled"}else{"needs_contact"}).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO appointment_reminders(tenant_id,id,appointment_id,patient_id,request_id,creation_hash,definition_key,before_minutes,due_at,starts_at,appointment_version,preference_version,channel,destination,automatic_email,status,automatic_phone) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)").bind(a.tenant_id).bind(reminder).bind(id).bind(p).bind(v.request_id).bind(hash).bind(format!("custom:{}",v.request_id)).bind(v.before_minutes).bind(starts-chrono::Duration::minutes(v.before_minutes.into())).bind(starts).bind(version).bind(pref.as_ref().map(|p|p.version)).bind(pref.as_ref().map(|p|p.channel.as_str()).unwrap_or("phone")).bind(pref.as_ref().filter(|_|valid).map(|p|p.destination.as_str())).bind(valid&&pref.as_ref().is_some_and(|p|p.automatic_email)).bind(if valid{"scheduled"}else{"needs_contact"}).bind(pref.as_ref().filter(|_|valid).and_then(|p|p.automatic_phone.clone())).execute(&mut *tx).await?;
     event(&mut tx, &a, reminder, "custom_scheduled", &v.reason).await?;
     let r = row(&mut tx, a.tenant_id, reminder).await?;
     tx.commit().await?;
@@ -917,7 +941,7 @@ async fn process_one_inner(
     pool: &PgPool,
     override_transport: Option<&dyn EmailTransport>,
 ) -> Result<bool> {
-    let candidate:Option<(Uuid,Uuid)>=sqlx::query_as("SELECT r.tenant_id,r.id FROM appointment_reminders r JOIN reminder_sender_settings s ON s.tenant_id=r.tenant_id WHERE ((s.enabled AND s.verified AND ((r.status='scheduled' AND r.automatic_email AND NOT r.invalidated AND r.due_at<=now() AND r.next_attempt_at<=now()) OR (r.status='sending' AND r.lease_until<now()))) OR (r.provider_id IS NOT NULL AND r.status IN ('accepted','needs_review') AND (r.last_poll_at IS NULL OR r.last_poll_at<now()-interval '60 seconds'))) ORDER BY CASE WHEN r.provider_id IS NULL THEN 0 ELSE 1 END,r.last_poll_at NULLS FIRST,r.due_at,r.id LIMIT 1").fetch_optional(pool).await?;
+    let candidate:Option<(Uuid,Uuid)>=sqlx::query_as("SELECT r.tenant_id,r.id FROM appointment_reminders r JOIN reminder_sender_settings s ON s.tenant_id=r.tenant_id WHERE ((s.enabled AND s.verified AND ((r.status='scheduled' AND r.automatic_email AND NOT r.invalidated AND r.due_at<=now() AND r.next_attempt_at<=now()) OR (r.status='sending' AND r.automatic_phone IS NULL AND r.lease_until<now()))) OR (r.provider_id IS NOT NULL AND r.status IN ('accepted','needs_review') AND (r.last_poll_at IS NULL OR r.last_poll_at<now()-interval '60 seconds'))) ORDER BY CASE WHEN r.provider_id IS NULL THEN 0 ELSE 1 END,r.last_poll_at NULLS FIRST,r.due_at,r.id LIMIT 1").fetch_optional(pool).await?;
     let Some((tenant, id)) = candidate else {
         return Ok(false);
     };
@@ -1154,6 +1178,9 @@ pub async fn run(pool: PgPool) {
         tick.tick().await;
         if process_one(&pool).await.is_err() {
             eprintln!("Appointment reminder processing unavailable; durable request retained");
+        }
+        if phone::process_one(&pool).await.is_err() {
+            eprintln!("Text and call reminder processing unavailable; request retained");
         }
     }
 }

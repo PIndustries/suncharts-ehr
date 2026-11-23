@@ -278,7 +278,7 @@ function patientBannerEncounterSync(summary,visit){
   put(patientBannerClaimMarkup());return;
  }
  const shown=patientBannerClaim,claimVisit=shown.claim?.snapshot?.account?.content?.visit_id;
- if(shown.selfPay||(shown.claim&&claimVisit&&claimVisit!==visit.id&&summary.claim?.id!==shown.claim.id)){patientBannerClaim={patient:null,claim:null,bar:'',now:''};put('');}
+ if(shown.selfPay||(shown.claim&&(!claimVisit||claimVisit!==visit.id)&&summary.claim?.id!==shown.claim.id)){patientBannerClaim={patient:null,claim:null,bar:'',now:''};put('');}
 }
 function patientBannerClaimSet(claim,bar,now){
  if(!claim||claim.patient_id!==selected)return;
