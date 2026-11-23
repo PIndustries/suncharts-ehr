@@ -625,7 +625,8 @@ pub(crate) struct ReceiptEmail {
     email: String,
     receipt_number: String,
 }
-/// What is sent for one receipt: the practice name, the amount, the date and the receipt number.
+/// What is sent for one receipt: the practice name, address and phone, the amount, how it was
+/// paid, the date and the receipt number.
 /// Nothing clinical is read here, so nothing clinical can be emailed. A voided receipt is refused.
 /// One payment divided between encounters is emailed as the one amount the patient paid.
 pub(crate) async fn receipt_email_body(
@@ -669,12 +670,57 @@ pub(crate) async fn receipt_email_body(
         return Err(Error::Invalid("A voided receipt cannot be emailed."));
     }
     let clinic = crate::previsit::practice_name(&mut tx, a.tenant_id).await?;
+    // How it was paid, one line per way. A card payment is one the card processor confirmed.
+    let tenders: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT CASE WHEN EXISTS(SELECT 1 FROM copay_checkout_attempts c WHERE c.tenant_id=g.tenant_id AND c.receipt_id=g.id) THEN 'card' WHEN g.method IN ('cash','check') THEN g.method ELSE 'other' END,SUM(g.amount_cents)::bigint FROM billing_copay_receipts g JOIN billing_copay_receipts r ON r.tenant_id=g.tenant_id AND r.patient_id=g.patient_id AND (g.id=r.id OR (r.payment_group_id IS NOT NULL AND g.payment_group_id=r.payment_group_id)) WHERE r.tenant_id=$1 AND r.patient_id=$2 AND r.id=$3 AND NOT EXISTS(SELECT 1 FROM billing_copay_voids gv WHERE gv.tenant_id=g.tenant_id AND gv.receipt_id=g.id) GROUP BY 1 ORDER BY 1",
+    )
+    .bind(a.tenant_id)
+    .bind(patient)
+    .bind(id)
+    .fetch_all(&mut *tx)
+    .await?;
+    // The practice's own address and phone close the receipt, when it has one location.
+    let places: Vec<(String, String)> = sqlx::query_as(
+        "SELECT address,phone FROM practice_facilities WHERE tenant_id=$1 AND active ORDER BY name LIMIT 2",
+    )
+    .bind(a.tenant_id)
+    .fetch_all(&mut *tx)
+    .await?;
     crate::postgres::audit(&mut tx, a, "billing.copay_receipt_emailed", id).await?;
     tx.commit().await?;
-    Ok(
-        json!({"request_id":v.request_id,"recipient_email":email,"clinic_name":clinic,"amount_cents":amount,
-        "currency":"usd","paid_on":paid_on,"receipt_number":v.receipt_number,"test":test}),
-    )
+    let mut body = json!({"request_id":v.request_id,"recipient_email":email,"clinic_name":clinic,"amount_cents":amount,
+        "currency":"usd","paid_on":paid_on,"receipt_number":v.receipt_number,"test":test});
+    if tenders.iter().map(|t| t.1).sum::<i64>() == amount {
+        body["paid_with"] = tenders
+            .iter()
+            .map(|(method, cents)| json!({"method":method,"amount_cents":cents}))
+            .collect();
+    }
+    if let [(address, phone)] = places.as_slice() {
+        // Connect measures these in bytes, so they are cut on a character boundary under its limit.
+        let fit = |text: &str, max: usize, lines: bool| {
+            let mut out = String::new();
+            for c in text
+                .trim()
+                .chars()
+                .filter(|c| !c.is_control() || (lines && *c == '\n'))
+            {
+                if out.len() + c.len_utf8() > max {
+                    break;
+                }
+                out.push(c);
+            }
+            out
+        };
+        let (address, phone) = (fit(address, 300, true), fit(phone, 40, false));
+        if !address.trim().is_empty() {
+            body["clinic_address"] = json!(address.trim());
+        }
+        if !phone.trim().is_empty() {
+            body["clinic_phone"] = json!(phone.trim());
+        }
+    }
+    Ok(body)
 }
 async fn email_copay_receipt(
     a: Actor,
