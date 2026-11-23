@@ -17833,6 +17833,750 @@
         }
       }
     },
+    "/api/v1/visits/{id}/voice-notes": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "recordVisitVoiceNote",
+        "summary": "Record a voice note on an encounter",
+        "description": "Owner or clinician who may draft the note, signed in as themselves. Multipart form: audio (a file part of type audio/webm, audio/mp4, audio/ogg, audio/wav or audio/mpeg, at most 10 MiB), mode (dictation or encounter), consent (true, required for encounter), duration_seconds (optional). The recording is kept as an encounter file and handed to SunCharts Connect for transcription; if Connect cannot be reached the voice note stays saved and can be retried. At most 3 unfinished voice notes per encounter. The audit trail records that a voice note was made, never its audio or words.",
+        "tags": [
+          "SunCharts AI"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "audio",
+                  "mode"
+                ],
+                "properties": {
+                  "audio": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "dictation",
+                      "encounter"
+                    ]
+                  },
+                  "consent": {
+                    "type": "string",
+                    "enum": [
+                      "true"
+                    ]
+                  },
+                  "duration_seconds": {
+                    "type": "number"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "mode",
+                    "consent_recorded",
+                    "created_at",
+                    "file_id",
+                    "patient_id",
+                    "stage",
+                    "error",
+                    "dismissed"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "dictation",
+                        "encounter"
+                      ]
+                    },
+                    "consent_recorded": {
+                      "type": "boolean"
+                    },
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "created_by_name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "duration_seconds": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "file_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "patient_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "stage": {
+                      "type": "string",
+                      "enum": [
+                        "saved",
+                        "waiting",
+                        "transcribing",
+                        "drafting",
+                        "ready",
+                        "failed"
+                      ]
+                    },
+                    "position": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "error": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "unavailable",
+                        "timeout",
+                        "upstream_error",
+                        "empty",
+                        "draft_invalid",
+                        null
+                      ]
+                    },
+                    "started_at": {
+                      "type": "string"
+                    },
+                    "transcript": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "draft": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "subjective": {
+                          "type": "string"
+                        },
+                        "objective": {
+                          "type": "string"
+                        },
+                        "assessment": {
+                          "type": "string"
+                        },
+                        "plan": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "dismissed": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant"
+          },
+          "409": {
+            "description": "The note is signed"
+          },
+          "413": {
+            "description": "Recording too large"
+          },
+          "422": {
+            "description": "Missing recording, format or consent"
+          },
+          "429": {
+            "description": "Too many unfinished voice notes"
+          }
+        }
+      },
+      "get": {
+        "operationId": "listVisitVoiceNotes",
+        "summary": "The encounter's voice notes",
+        "description": "Newest first; dismissed ones only with all=1. Asks SunCharts Connect about unfinished ones so a missed notice never strands them. The transcript is returned once there is one; the draft when ready. available says whether transcription is switched on for the practice.",
+        "tags": [
+          "SunCharts AI"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "all",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "true"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "available",
+                    "items"
+                  ],
+                  "properties": {
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "mode",
+                          "consent_recorded",
+                          "created_at",
+                          "file_id",
+                          "patient_id",
+                          "stage",
+                          "error",
+                          "dismissed"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "mode": {
+                            "type": "string",
+                            "enum": [
+                              "dictation",
+                              "encounter"
+                            ]
+                          },
+                          "consent_recorded": {
+                            "type": "boolean"
+                          },
+                          "created_at": {
+                            "type": "string"
+                          },
+                          "created_by_name": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "duration_seconds": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "file_id": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "patient_id": {
+                            "type": "string",
+                            "format": "uuid"
+                          },
+                          "stage": {
+                            "type": "string",
+                            "enum": [
+                              "saved",
+                              "waiting",
+                              "transcribing",
+                              "drafting",
+                              "ready",
+                              "failed"
+                            ]
+                          },
+                          "position": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "error": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "enum": [
+                              "unavailable",
+                              "timeout",
+                              "upstream_error",
+                              "empty",
+                              "draft_invalid",
+                              null
+                            ]
+                          },
+                          "started_at": {
+                            "type": "string"
+                          },
+                          "transcript": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "draft": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "properties": {
+                              "subjective": {
+                                "type": "string"
+                              },
+                              "objective": {
+                                "type": "string"
+                              },
+                              "assessment": {
+                                "type": "string"
+                              },
+                              "plan": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "dismissed": {
+                            "type": "boolean"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant"
+          }
+        }
+      }
+    },
+    "/api/v1/visits/{id}/voice-notes/{note}/retry": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "in": "path",
+          "name": "note",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "retryVisitVoiceNote",
+        "summary": "Try a saved or failed voice note again",
+        "description": "Sends the stored recording again, or only the drafting step when the transcript was kept. Answers the updated voice note.",
+        "tags": [
+          "SunCharts AI"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "mode",
+                    "consent_recorded",
+                    "created_at",
+                    "file_id",
+                    "patient_id",
+                    "stage",
+                    "error",
+                    "dismissed"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "dictation",
+                        "encounter"
+                      ]
+                    },
+                    "consent_recorded": {
+                      "type": "boolean"
+                    },
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "created_by_name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "duration_seconds": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "file_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "patient_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "stage": {
+                      "type": "string",
+                      "enum": [
+                        "saved",
+                        "waiting",
+                        "transcribing",
+                        "drafting",
+                        "ready",
+                        "failed"
+                      ]
+                    },
+                    "position": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "error": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "unavailable",
+                        "timeout",
+                        "upstream_error",
+                        "empty",
+                        "draft_invalid",
+                        null
+                      ]
+                    },
+                    "started_at": {
+                      "type": "string"
+                    },
+                    "transcript": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "draft": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "subjective": {
+                          "type": "string"
+                        },
+                        "objective": {
+                          "type": "string"
+                        },
+                        "assessment": {
+                          "type": "string"
+                        },
+                        "plan": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "dismissed": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant"
+          },
+          "409": {
+            "description": "The note is signed"
+          }
+        }
+      }
+    },
+    "/api/v1/visits/{id}/voice-notes/{note}/dismiss": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "in": "path",
+          "name": "note",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "dismissVisitVoiceNote",
+        "summary": "Dismiss a voice note",
+        "description": "Hides it and clears its transcript and draft. The recording stays in the chart as an encounter file. Answers the updated voice note.",
+        "tags": [
+          "SunCharts AI"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dismissed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "mode",
+                    "consent_recorded",
+                    "created_at",
+                    "file_id",
+                    "patient_id",
+                    "stage",
+                    "error",
+                    "dismissed"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "dictation",
+                        "encounter"
+                      ]
+                    },
+                    "consent_recorded": {
+                      "type": "boolean"
+                    },
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "created_by_name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "duration_seconds": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "file_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "patient_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "stage": {
+                      "type": "string",
+                      "enum": [
+                        "saved",
+                        "waiting",
+                        "transcribing",
+                        "drafting",
+                        "ready",
+                        "failed"
+                      ]
+                    },
+                    "position": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "error": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "unavailable",
+                        "timeout",
+                        "upstream_error",
+                        "empty",
+                        "draft_invalid",
+                        null
+                      ]
+                    },
+                    "started_at": {
+                      "type": "string"
+                    },
+                    "transcript": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "draft": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "subjective": {
+                          "type": "string"
+                        },
+                        "objective": {
+                          "type": "string"
+                        },
+                        "assessment": {
+                          "type": "string"
+                        },
+                        "plan": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "dismissed": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant"
+          }
+        }
+      }
+    },
     "/api/v1/visits/{id}/diagnosis-suggestions": {
       "parameters": [
         {

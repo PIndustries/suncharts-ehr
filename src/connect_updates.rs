@@ -266,6 +266,14 @@ struct RemoteEvent {
     #[serde(default)]
     message_id: Option<Uuid>,
     created_at: DateTime<Utc>,
+    /// An assistant job event says which kind of job and how far it is. Settling reads the job
+    /// itself, so these only need to be accepted.
+    #[serde(default)]
+    #[allow(dead_code)]
+    job_kind: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    job_status: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -425,6 +433,7 @@ async fn apply_page(db: &PgPool, claim: &Claim, lease: Uuid, value: Value) -> Re
     for request in finished_jobs {
         // The request stays waiting if this fails; reading it later asks Connect again.
         let _ = crate::local_ai::job_finished(db, claim.tenant_id, request).await;
+        let _ = crate::voice_notes::job_event(db, claim.tenant_id, request).await;
     }
     Ok(true)
 }

@@ -390,7 +390,7 @@ fn file_bytes(v: &Upload) -> Result<Vec<u8>> {
     validate_file_type(&v.content_type, &bytes)?;
     Ok(bytes)
 }
-pub(super) fn validate_file_type(content_type: &str, bytes: &[u8]) -> Result<()> {
+pub(crate) fn validate_file_type(content_type: &str, bytes: &[u8]) -> Result<()> {
     let magic = match content_type {
         "application/pdf" => bytes.starts_with(b"%PDF-") && bytes.windows(5).any(|v| v == b"%%EOF"),
         "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),

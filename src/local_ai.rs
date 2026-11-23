@@ -178,7 +178,7 @@ fn user_message(sections: &[(&'static str, String)]) -> String {
 
 /// The first balanced `{ ... }` in the text, skipping braces inside JSON strings. A model may wrap
 /// its answer in code fences or add a sentence around it.
-fn first_object(text: &str) -> Option<&str> {
+pub(crate) fn first_object(text: &str) -> Option<&str> {
     let start = text.find('{')?;
     let (mut depth, mut in_string, mut escaped) = (0usize, false, false);
     for (offset, c) in text[start..].char_indices() {

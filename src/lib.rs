@@ -106,6 +106,7 @@ pub mod terminology;
 pub mod test_db;
 mod visit_billing;
 pub mod visit_diagnoses;
+pub mod voice_notes;
 pub mod workflow_dispatcher;
 pub mod workflow_evidence;
 pub mod workflow_triggers;
@@ -442,6 +443,7 @@ pub fn app(state: State) -> Router {
         .merge(rooming::routes())
         .merge(visit_diagnoses::routes())
         .merge(local_ai::routes())
+        .merge(voice_notes::routes())
         .merge(terminology::router())
         .merge(demographics::router())
         .merge(billing::router())
@@ -1218,6 +1220,26 @@ pub fn app(state: State) -> Router {
                     "diagnosis-suggestions.js",
                     "application/javascript",
                     include_str!("../web/diagnosis-suggestions.js"),
+                )
+            }),
+        )
+        .route(
+            "/voice-notes.js",
+            get(|| async {
+                web_asset(
+                    "voice-notes.js",
+                    "application/javascript",
+                    include_str!("../web/voice-notes.js"),
+                )
+            }),
+        )
+        .route(
+            "/voice-notes.css",
+            get(|| async {
+                web_asset(
+                    "voice-notes.css",
+                    "text/css",
+                    include_str!("../web/voice-notes.css"),
                 )
             }),
         )
