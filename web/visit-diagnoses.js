@@ -38,6 +38,7 @@ function showVisitDiagnoses(host,data,id,patient){
  const unsaved=!!retained&&(needsReview||!!retained.values.reason||JSON.stringify(rows.filter(row=>row.code||row.display).map(row=>[row.code,row.display]))!==JSON.stringify(data.diagnoses.map(row=>[row.code,row.display])));
  host.innerHTML=`<div class="section-head"><h3>Diagnoses</h3>${data.diagnoses.length?`<span class="badge">${data.diagnoses.length} saved</span>`:''}</div><p class="muted">List the primary diagnosis first.</p>${data.visit?.status==='signed'?(locked?'<p class="muted">Only a clinician or the practice owner can change the diagnoses of a signed visit.</p>':'<p class="muted">Changes after signing are saved as billing corrections.</p>'):''}${data.visit?.status==='signed'&&!locked&&unsaved?'<section role="status"><button type="button" data-diagnosis-discard>Discard unsaved diagnoses</button></section>':''}${unsaved?'<p role="status" data-diagnosis-unsaved>You have diagnosis edits that have not saved yet.</p>':''}${needsReview?`<section role="status"><p>Someone else saved this encounter. Compare your changes with the saved diagnoses before saving.</p>${diagnosisListMarkup(data.diagnoses)}${!locked?`<button type="button" data-diagnosis-rebase="${data.version}">Keep my changes</button>`:''}</section>`:''}${stale?'<p role="status">This encounter was changed elsewhere. Reload it before editing; your unsaved changes are kept.</p>':''}<button type="button" class="text-button" data-diagnosis-refresh>Reload</button>${locked?diagnosisListMarkup(data.diagnoses):`<form id="visit-diagnoses-form" data-visit-id="${esc(id)}" data-patient-id="${esc(patient)}" data-version="${retained?.version??data.version}"><div>${rows.map((row,i)=>`<div class="amendment" data-diagnosis-row data-catalog-release-id="${esc(row.catalog_release_id||'')}" data-catalog-code="${esc(row.code)}" data-catalog-display="${esc(row.display)}" data-catalog-system="ICD-10-CM"><div class="section-head"><strong>${typeof diagnosisLetterBadge==='function'?diagnosisLetterBadge(i):''}${i===0?'Primary diagnosis':`Diagnosis ${i+1}`}</strong><div class="actions"><button type="button" data-diagnosis-up="${i}" ${i===0?'disabled':''}>Move up</button><button type="button" data-diagnosis-remove="${i}">Remove</button></div></div><div class="form-grid">${typeof terminologyDiagnosisFields==='function'?terminologyDiagnosisFields(row):`<label>Code<input name="code" value="${esc(row.code)}" required maxlength="8" autocomplete="off"></label><label>Description<input name="display" value="${esc(row.display)}" required maxlength="2000" autocomplete="off"></label>`}</div>${typeof terminologySnapshotMarkup==='function'?terminologySnapshotMarkup(data.diagnoses.find(saved=>saved.code===row.code&&saved.display===row.display&&saved.catalog_release_id===row.catalog_release_id)?.catalog_snapshot):''}</div>`).join('')||'<p class="muted">No diagnoses yet.</p>'}</div><div class="actions"><button type="button" data-diagnosis-add ${rows.length>=20?'disabled':''}>Add diagnosis</button></div><label>Reason for this change<input name="reason" value="${esc(retained?.values.reason||'')}" ${data.visit?.status==='signed'?'placeholder="Billing correction"':'required placeholder="For example: added after exam"'} maxlength="2000" autocomplete="off"></label><div class="actions"><button type="submit" ${needsReview?'disabled':''}>Save diagnoses</button>${unsaved?'<button type="button" class="text-button" data-diagnosis-discard>Discard diagnosis edits</button>':''}</div></form>`}<details><summary>Diagnosis history</summary>${(data.history||[]).map(revision=>`<section class="amendment"><p>${esc(date(revision.created_at))} · ${esc(revision.actor_label||revision.actor_id)} · ${esc(revision.reason)}</p>${diagnosisListMarkup(revision.diagnoses||(Array.isArray(revision.snapshot)?revision.snapshot:revision.snapshot?.diagnoses)||[])}</section>`).join('')||'<p class="muted">No changes yet.</p>'}${data.history_truncated?'<p class="muted">Older changes are not shown.</p>':''}</details>`;
  const form=$('visit-diagnoses-form');if(form){visitDiagnosisBaselines.set(form,diagnosisValues(data.diagnoses));if(!host.querySelector('[data-diagnosis-rebase]'))queueVisitDiagnosisAutosave(form);}
+ if(typeof diagnosisSuggestionsMount==='function')diagnosisSuggestionsMount(host,data,id,patient);
  refreshEncounterProgress();
 }
 // Opening an encounter asks for its diagnoses from several places at once; requests made within a
@@ -82,6 +83,22 @@ document.addEventListener('click',event=>{
   if(button.hasAttribute('data-diagnosis-remove')||button.hasAttribute('data-diagnosis-up'))queueVisitDiagnosisAutosave($('visit-diagnoses-form'));
  });
 },true);
+// Adds a diagnosis chosen somewhere other than the type-ahead (the note suggestions) the same way the
+// add button and the type-ahead do: the row joins the draft, the list redraws, and the usual autosave
+// records it. Answers whether the row was added.
+function visitDiagnosisAppendRow(row){
+ const id=activeVisit?.id,patient=selected,host=$('visit-diagnoses'),state=visitDiagnosisStates.get(id);
+ if(!id||!host||state?.patientId!==patient||!state.can_edit||state.version!==activeVisit.version)return false;
+ if($('visit-diagnoses-form')?.querySelectorAll('[data-diagnosis-row]').length)captureVisitDiagnosisDraft();
+ const draft=visitDiagnosisDrafts.get(id)||{patientId:patient,version:state.version,values:{diagnoses:diagnosisValues(state.diagnoses),reason:''}};
+ const list=draft.values.diagnoses;
+ if(list.length>=20||list.some(item=>item.code===row.code))return false;
+ list.push({code:row.code,display:row.display,...(row.catalog_release_id?{catalog_release_id:row.catalog_release_id}:{})});
+ if(!draft.values.reason&&state.visit?.status!=='signed')draft.values.reason='Added from the note suggestions';
+ visitDiagnosisDrafts.set(id,draft);showVisitDiagnoses(host,state,id,patient);
+ queueVisitDiagnosisAutosave($('visit-diagnoses-form'));
+ return true;
+}
 function visitDiagnosisReady(form){
  if(!form||form.closest?.('#visit-diagnoses')?.querySelector('[data-diagnosis-rebase]'))return false;
  const rows=Array.from(form.querySelectorAll('[data-diagnosis-row]'));

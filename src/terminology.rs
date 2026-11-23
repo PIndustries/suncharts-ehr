@@ -262,7 +262,7 @@ impl Import {
 // in staff reference responses. All catalog content remains tenant scoped.
 const RELEASE_PUBLIC:&str="jsonb_build_object('id',r.id,'system',r.system,'edition',r.edition,'source_name',r.source_name,'source_url',r.source_url,'source_sha256',r.source_sha256,'effective_start',r.effective_start,'effective_end',r.effective_end,'rights',r.rights,'license_valid_until',r.license_valid_until,'code_count',r.code_count,'created_at',r.created_at)";
 const CODE_PUBLIC:&str="jsonb_build_object('release_id',r.id,'system',r.system,'edition',r.edition,'source_name',r.source_name,'source_url',r.source_url,'source_sha256',r.source_sha256,'code',c.code,'display',c.display,'short_display',c.short_display,'billable',c.billable,'active',c.active,'effective_start',greatest(r.effective_start,c.effective_start),'effective_end',least(r.effective_end,c.effective_end),'metadata',c.metadata)";
-const LICENSE_VISIBLE:&str="(r.rights<>'licensed' OR r.license_valid_until IS NULL OR r.license_valid_until>=CURRENT_DATE)";
+pub(crate) const LICENSE_VISIBLE:&str="(r.rights<>'licensed' OR r.license_valid_until IS NULL OR r.license_valid_until>=CURRENT_DATE)";
 async fn release(tx: &mut Transaction<'_, Postgres>, actor: &Actor, id: Uuid) -> Result<Value> {
     sqlx::query_scalar(&format!("SELECT {RELEASE_PUBLIC} FROM terminology_releases r WHERE r.tenant_id=$1 AND r.id=$2 AND {LICENSE_VISIBLE}"))
         .bind(actor.tenant_id).bind(id).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)

@@ -115,6 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(suncharts_engine::installments::run(db.clone()));
     tokio::spawn(suncharts_engine::reader_payments::run(db.clone()));
     tokio::spawn(suncharts_engine::connect_updates::run(db.clone()));
+    tokio::spawn(suncharts_engine::local_ai::run(db.clone()));
     tokio::spawn(suncharts_engine::referral_delivery::run(
         db.clone(),
         documents.clone(),

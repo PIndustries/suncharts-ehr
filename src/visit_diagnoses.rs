@@ -73,7 +73,7 @@ impl Input {
 fn db(s: &State) -> Result<&sqlx::PgPool> {
     Ok(&s.browser.as_ref().ok_or(Error::NotFound)?.db)
 }
-async fn visit(
+pub(crate) async fn visit(
     tx: &mut Transaction<'_, Postgres>,
     a: &Actor,
     id: Uuid,
@@ -91,7 +91,11 @@ async fn visit(
         .await?
         .ok_or(Error::NotFound)
 }
-async fn diagnoses(tx: &mut Transaction<'_, Postgres>, a: &Actor, id: Uuid) -> Result<Value> {
+pub(crate) async fn diagnoses(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    id: Uuid,
+) -> Result<Value> {
     Ok(sqlx::query_scalar::<_, Value>(
         "SELECT diagnoses FROM visit_diagnoses WHERE tenant_id=$1 AND visit_id=$2",
     )
@@ -119,7 +123,7 @@ async fn payload(tx: &mut Transaction<'_, Postgres>, a: &Actor, v: &Visit) -> Re
         json!({"visit":v,"service_date":service_date,"version":v.version,"can_edit":can_edit,"diagnoses":items,"history":history,"history_truncated":truncated,"code_system":"http://hl7.org/fhir/sid/icd-10-cm"}),
     )
 }
-async fn diagnosis_service_date(
+pub(crate) async fn diagnosis_service_date(
     tx: &mut Transaction<'_, Postgres>,
     a: &Actor,
     v: &Visit,
@@ -161,7 +165,7 @@ async fn support_session(tx: &mut Transaction<'_, Postgres>, a: &Actor) -> Resul
 /// answer truthfully as well. A nurse, a medical assistant, a read-only account and a
 /// delegated support session are refused. The note itself is not part of this path and
 /// stays locked.
-async fn may_correct(tx: &mut Transaction<'_, Postgres>, a: &Actor) -> Result<bool> {
+pub(crate) async fn may_correct(tx: &mut Transaction<'_, Postgres>, a: &Actor) -> Result<bool> {
     if a.scheduling().is_err() || support_session(tx, a).await? {
         return Ok(false);
     }

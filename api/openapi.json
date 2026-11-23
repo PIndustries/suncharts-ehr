@@ -17779,6 +17779,363 @@
         }
       ]
     },
+    "/api/v1/ai/local-status": {
+      "get": {
+        "operationId": "readLocalAiStatus",
+        "summary": "Whether SunCharts AI is switched on for this practice",
+        "description": "Staff-only. Asks SunCharts Connect whether the in-house assistant is available. A practice that is not connected, or an assistant that cannot be reached, answers available false rather than an error. Nothing is stored.",
+        "tags": [
+          "SunCharts AI"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "available",
+                    "model"
+                  ],
+                  "properties": {
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "model": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          }
+        }
+      }
+    },
+    "/api/v1/visits/{id}/diagnosis-suggestions": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "requestVisitDiagnosisSuggestions",
+        "summary": "Queue the encounter's note for diagnosis suggestions",
+        "description": "Clinician or owner who may change the encounter's diagnoses. Returns at once; the request waits in line with SunCharts AI and the browser is told through the change feed when it is ready. Sends only the note's assessment, plan and procedure text (subjective and objective only when assessment and plan are empty) with no patient identifiers. Asking again while a request is waiting returns that request. Nothing is saved to the encounter. The request is audited without note text.",
+        "tags": [
+          "SunCharts AI"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "request_id"
+                ],
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "request_id",
+                    "status",
+                    "position"
+                  ],
+                  "properties": {
+                    "request_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "queued",
+                        "ready",
+                        "failed"
+                      ]
+                    },
+                    "position": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The note has no text, or the ICD-10 code list is not installed"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant"
+          },
+          "409": {
+            "description": "SunCharts AI is not switched on for this practice"
+          },
+          "503": {
+            "description": "Too many requests are waiting, or the assistant could not answer"
+          }
+        }
+      },
+      "get": {
+        "operationId": "readVisitDiagnosisSuggestions",
+        "summary": "The encounter's latest diagnosis suggestions request",
+        "description": "While the request is waiting this also asks SunCharts Connect about the job, so a missed notice never strands it. A ready request carries the checked suggestions; every code is in the practice's installed ICD-10-CM list. note_changed is true when the encounter changed after the request was made.",
+        "tags": [
+          "SunCharts AI"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "request_id",
+                    "status"
+                  ],
+                  "properties": {
+                    "request_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "none",
+                        "queued",
+                        "ready",
+                        "failed"
+                      ]
+                    },
+                    "position": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "suggestions": {
+                      "type": [
+                        "array",
+                        "null"
+                      ],
+                      "maxItems": 8,
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "code",
+                          "description",
+                          "evidence",
+                          "evidence_found",
+                          "catalog_release_id"
+                        ],
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "evidence": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "evidence_found": {
+                            "type": "boolean"
+                          },
+                          "catalog_release_id": {
+                            "type": "string",
+                            "format": "uuid"
+                          }
+                        }
+                      }
+                    },
+                    "dropped": {
+                      "type": "integer"
+                    },
+                    "model": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "note_version": {
+                      "type": "integer"
+                    },
+                    "note_changed": {
+                      "type": "boolean"
+                    },
+                    "mine": {
+                      "type": "boolean"
+                    },
+                    "encounter_number": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "patient_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "error": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant"
+          }
+        }
+      }
+    },
+    "/api/v1/visits/{id}/diagnosis-suggestions/dismiss": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "dismissVisitDiagnosisSuggestions",
+        "summary": "Dismiss the encounter's diagnosis suggestions",
+        "description": "Marks the latest request dismissed; it is removed by the daily sweep. Changes no diagnosis.",
+        "tags": [
+          "SunCharts AI"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "clinical.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dismissed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "dismissed"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Role or scope denied"
+          },
+          "404": {
+            "description": "Resource not found in tenant"
+          }
+        }
+      }
+    },
     "/api/v1/visits/{id}/diagnoses": {
       "parameters": [
         {
