@@ -624,6 +624,63 @@ pub(crate) struct ReceiptEmail {
     request_id: Uuid,
     email: String,
     receipt_number: String,
+    #[serde(default)]
+    include_services: bool,
+}
+/// The services listed on an itemised receipt: only code, description, units and amount, cut to
+/// what Connect accepts. Lines it would refuse are left out.
+fn receipt_services(accounts: &[Value]) -> Vec<Value> {
+    let mut out = Vec::new();
+    for line in accounts
+        .iter()
+        .flat_map(|c| c["lines"].as_array().into_iter().flatten())
+    {
+        if out.len() >= 40 {
+            break;
+        }
+        let mut code = line["code"].as_str().unwrap_or("").to_string();
+        for m in line["modifiers"]
+            .as_str()
+            .unwrap_or("")
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|m| !m.is_empty())
+        {
+            code.push('-');
+            code.push_str(m);
+        }
+        let code: String = code
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .collect();
+        let code = code.trim_matches('-');
+        if code.is_empty() || code.len() > 20 {
+            continue;
+        }
+        let units = line["units"].as_i64().unwrap_or(1);
+        let Some(cents) = line["amount_cents"].as_i64() else {
+            continue;
+        };
+        if !(1..=9999).contains(&units) || !(0..=10_000_000).contains(&cents) {
+            continue;
+        }
+        let mut description = String::new();
+        for c in line["description"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .filter(|c| !c.is_control())
+        {
+            if description.len() + c.len_utf8() > 160 {
+                break;
+            }
+            description.push(c);
+        }
+        let description = description.trim();
+        out.push(json!({"code":code,"description":if description.is_empty() { code } else { description },
+            "units":units,"amount_cents":cents}));
+    }
+    out
 }
 /// What is sent for one receipt: the practice name, address and phone, the amount, how it was
 /// paid, the date and the receipt number.
@@ -686,10 +743,41 @@ pub(crate) async fn receipt_email_body(
     .bind(a.tenant_id)
     .fetch_all(&mut *tx)
     .await?;
-    crate::postgres::audit(&mut tx, a, "billing.copay_receipt_emailed", id).await?;
+    let services = if v.include_services {
+        // The latest charges on each encounter this payment covered, in the order they are stored.
+        let accounts: Vec<(Uuid, Value)> = sqlx::query_as(
+            "SELECT DISTINCT ON (x.visit_id) x.visit_id,x.content FROM (SELECT b.visit_id,b.content,g.occurred_on,g.id AS receipt_id,b.created_at FROM billing_copay_receipts g JOIN billing_copay_receipts r ON r.tenant_id=g.tenant_id AND r.patient_id=g.patient_id AND (g.id=r.id OR (r.payment_group_id IS NOT NULL AND g.payment_group_id=r.payment_group_id)) JOIN visits v ON v.tenant_id=g.tenant_id AND v.patient_id=g.patient_id AND v.appointment_id=g.appointment_id JOIN billing_accounts b ON b.tenant_id=v.tenant_id AND b.visit_id=v.id AND b.status<>'void' WHERE r.tenant_id=$1 AND r.patient_id=$2 AND r.id=$3 AND NOT EXISTS(SELECT 1 FROM billing_copay_voids gv WHERE gv.tenant_id=g.tenant_id AND gv.receipt_id=g.id)) x ORDER BY x.visit_id,x.created_at DESC",
+        )
+        .bind(a.tenant_id)
+        .bind(patient)
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let contents: Vec<Value> = accounts.into_iter().map(|x| x.1).collect();
+        if contents
+            .iter()
+            .all(|c| c["lines"].as_array().is_none_or(|l| l.is_empty()))
+        {
+            return Err(Error::Invalid(
+                "This encounter has no charges to list yet. Send the receipt without services.",
+            ));
+        }
+        Some(receipt_services(&contents))
+    } else {
+        None
+    };
+    let action = if v.include_services {
+        "billing.copay_receipt_emailed_with_services"
+    } else {
+        "billing.copay_receipt_emailed"
+    };
+    crate::postgres::audit(&mut tx, a, action, id).await?;
     tx.commit().await?;
     let mut body = json!({"request_id":v.request_id,"recipient_email":email,"clinic_name":clinic,"amount_cents":amount,
         "currency":"usd","paid_on":paid_on,"receipt_number":v.receipt_number,"test":test});
+    if let Some(services) = services {
+        body["services"] = json!(services);
+    }
     if tenders.iter().map(|t| t.1).sum::<i64>() == amount {
         body["paid_with"] = tenders
             .iter()

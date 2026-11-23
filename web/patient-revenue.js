@@ -134,19 +134,19 @@ function paymentGroupReceiptCardMarkup(receipts,context){
 function receiptEmailMarkup(mail){
  if(!mail?.receipt?.id||typeof billingCan==='function'&&!billingCan('create'))return '';
  const onFile=workspace?.demographics?.content?.email||'';
- return `<form class="receipt-email" data-receipt-email><label>Email receipt to<input type="email" name="email" required maxlength="254" autocomplete="off" value="${esc(onFile)}" placeholder="name@example.com"></label><button type="submit">Email receipt</button><p class="muted" data-receipt-email-note>${onFile?'The patient’s email on file. Change it if they want it sent somewhere else.':'No email is on file for this patient. Type the address to send to.'} The email gives the amount, date and receipt number only.</p></form>`;
+ return `<form class="receipt-email" data-receipt-email><label>Email receipt to<input type="email" name="email" required maxlength="254" autocomplete="off" value="${esc(onFile)}" placeholder="name@example.com"></label><label class="review-ack"><input type="checkbox" name="include_services"> Include services and codes</label><p class="muted">Tick this when the patient asks for an itemised receipt. The email will list what was done at the encounter.</p><button type="submit">Email receipt</button><p class="muted" data-receipt-email-note>${onFile?'The patient’s email on file. Change it if they want it sent somewhere else.':'No email is on file for this patient. Type the address to send to.'} By default the email gives the amount, date and receipt number only.</p></form>`;
 }
 function receiptEmailNumber(receipt){
  const number=typeof receiptNumberFor==='function'?receiptNumberFor(receipt.appointment_id,receipt.payment_group_id||receipt.id):'';
  return /^[A-Za-z0-9-]{1,40}$/.test(number)?number:'R-'+String(receipt.id).replace(/-/g,'').slice(0,8).toUpperCase();
 }
 async function sendReceiptEmail(form,mail){
- const email=String(new FormData(form).get('email')||'').trim(),note=form.querySelector('[data-receipt-email-note]'),button=form.querySelector('button');
+ const email=String(new FormData(form).get('email')||'').trim(),services=Boolean(form.querySelector('[name=include_services]')?.checked),key=email+'|'+(services?'services':'plain'),note=form.querySelector('[data-receipt-email-note]'),button=form.querySelector('button');
  // The same address pressed twice is the same request, so the patient gets one email.
- mail.requests??=new Map();if(!mail.requests.has(email))mail.requests.set(email,crypto.randomUUID());
+ mail.requests??=new Map();if(!mail.requests.has(key))mail.requests.set(key,crypto.randomUUID());
  button.disabled=true;
  try{
-  await api(`/api/v1/patients/${encodeURIComponent(mail.patient)}/billing/copays/${encodeURIComponent(mail.receipt.id)}/email`,'POST',{request_id:mail.requests.get(email),email,receipt_number:receiptEmailNumber(mail.receipt)});
+  await api(`/api/v1/patients/${encodeURIComponent(mail.patient)}/billing/copays/${encodeURIComponent(mail.receipt.id)}/email`,'POST',{request_id:mail.requests.get(key),email,receipt_number:receiptEmailNumber(mail.receipt),...(services?{include_services:true}:{})});
   if(note){note.textContent=`Sent to ${email}.`;note.setAttribute('role','status');}
  }catch(error){if(note){note.textContent=error.message||'The receipt could not be emailed. Try again.';note.setAttribute('role','alert');}}
  finally{button.disabled=false;}

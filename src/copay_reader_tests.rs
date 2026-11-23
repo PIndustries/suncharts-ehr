@@ -445,6 +445,33 @@ async fn a_test_reader_copay_can_be_paid_by_a_simulated_card_tap() {
     assert_eq!(body["recipient_email"], "pat@example.test");
     assert_eq!(body["amount_cents"], op.amount_cents);
     assert_eq!(body["test"], true);
+    // Services are listed only when asked for, and only code, description, units and amount.
+    let with_services = serde_json::from_value::<crate::billing::ReceiptEmail>(
+        json!({"request_id":Uuid::from_u128(8),"email":"pat@example.test","receipt_number":"ENC-0001-01","include_services":true}),
+    )
+    .unwrap();
+    assert!(matches!(
+        crate::billing::receipt_email_body(&pool, &a, patient, receipt, &with_services).await,
+        Err(Error::Invalid(m)) if m.contains("no charges")
+    ));
+    let visit = Uuid::new_v4();
+    sqlx::query("INSERT INTO visits(tenant_id,id,patient_id,appointment_id,clinician_id,status,version,note,signed_by,signed_at) VALUES($1,$2,$3,$4,$5,'signed',3,'{}',$5,now())").bind(a.tenant_id).bind(visit).bind(patient).bind(appointment).bind(a.sub).execute(&pool).await.unwrap();
+    let content = json!({"visit_id":visit,"service_date":"2026-10-25","currency":"USD","notes":"PRIVATE NOTE","lines":[
+        {"code_system":"CPT","code":"99214","modifiers":"25","description":"  Synthetic office\nvisit ","units":1,"amount_cents":12000,"diagnosis_codes":["Z00.00"]},
+        {"code_system":"CPT","code":"97110","modifiers":"","description":"","units":2,"amount_cents":5000,"diagnosis_codes":[]}]});
+    sqlx::query("INSERT INTO billing_accounts(tenant_id,id,patient_id,visit_id,content,total_cents,status,request_id,creation_hash) VALUES($1,$2,$3,$4,$5,17000,'posted',$6,'x')").bind(a.tenant_id).bind(Uuid::new_v4()).bind(patient).bind(visit).bind(&content).bind(Uuid::new_v4()).execute(&pool).await.unwrap();
+    let itemised = crate::billing::receipt_email_body(&pool, &a, patient, receipt, &with_services).await.unwrap();
+    assert_eq!(
+        itemised["services"],
+        json!([{"code":"99214-25","description":"Synthetic officevisit","units":1,"amount_cents":12000},
+               {"code":"97110","description":"97110","units":2,"amount_cents":5000}])
+    );
+    let mut more: Vec<&str> = itemised.as_object().unwrap().keys().map(String::as_str).collect();
+    more.sort_unstable();
+    assert_eq!(more, ["amount_cents", "clinic_name", "currency", "paid_on", "paid_with", "receipt_number", "recipient_email", "request_id", "services", "test"]);
+    assert!(!itemised.to_string().contains("PRIVATE NOTE") && !itemised.to_string().contains("Z00.00"));
+    let plain = crate::billing::receipt_email_body(&pool, &a, patient, receipt, &mail("pat@example.test", "ENC-0001-01")).await.unwrap();
+    assert!(plain.get("services").is_none());
     for (email, number) in [("not an address", "ENC-0001-01"), ("a@b", "ENC-0001-01"), ("pat@example.test", "has space")] {
         assert!(matches!(
             crate::billing::receipt_email_body(&pool, &a, patient, receipt, &mail(email, number)).await,
