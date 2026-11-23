@@ -172,7 +172,7 @@ async function patientBillingInvoices(s){
 }
 async function loadPatientBillingTab(s){
  const panel=s.host.querySelector('#patient-billing-panel');if(!panel||!patientBillingCurrent(s))return;
- const request=++s.panelRequest;panel.innerHTML='<p role="status">Loading billing records…</p>';
+ const request=++s.panelRequest;panel.innerHTML=typeof skeletonMarkup==='function'?skeletonMarkup('rows'):'<p role="status">Loading billing records…</p>';
  try{
   let html;
   if(s.modeAuto&&!await patientBillingNative(s))return;

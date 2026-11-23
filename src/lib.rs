@@ -506,6 +506,26 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/motion.js",
+            get(|| async {
+                web_asset(
+                    "motion.js",
+                    "text/javascript; charset=utf-8",
+                    include_str!("../web/motion.js"),
+                )
+            }),
+        )
+        .route(
+            "/motion.css",
+            get(|| async {
+                web_asset(
+                    "motion.css",
+                    "text/css",
+                    include_str!("../web/motion.css"),
+                )
+            }),
+        )
+        .route(
             "/appointment-workflows.js",
             get(|| async {
                 web_asset(
