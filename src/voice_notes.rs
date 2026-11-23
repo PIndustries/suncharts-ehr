@@ -114,6 +114,8 @@ fn availability_cache() -> &'static Mutex<HashMap<Uuid, (Instant, bool)>> {
     static CACHE: OnceLock<Mutex<HashMap<Uuid, (Instant, bool)>>> = OnceLock::new();
     CACHE.get_or_init(Default::default)
 }
+// The trait returns `impl Future + Send`, so these stay plain fns returning futures.
+#[allow(clippy::manual_async_fn)]
 impl Connect for Live<'_> {
     fn available(&self) -> impl Future<Output = bool> + Send {
         async move {
@@ -259,11 +261,11 @@ fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
         .position(|w| w == needle)
         .map(|i| i + from)
 }
-/// The parts of a `multipart/form-data` body: (field name, part content type, content).
-fn multipart<'a>(
-    content_type: &str,
-    body: &'a [u8],
-) -> Option<Vec<(String, Option<String>, &'a [u8])>> {
+/// One part of a `multipart/form-data` body: (field name, part content type, content).
+type MultipartPart<'a> = (String, Option<String>, &'a [u8]);
+
+/// The parts of a `multipart/form-data` body.
+fn multipart<'a>(content_type: &str, body: &'a [u8]) -> Option<Vec<MultipartPart<'a>>> {
     let lower = content_type.to_ascii_lowercase();
     if !lower.trim_start().starts_with("multipart/form-data") {
         return None;

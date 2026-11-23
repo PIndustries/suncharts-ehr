@@ -101,6 +101,7 @@ impl Stub {
         self.chats.lock().unwrap().last().cloned().unwrap()
     }
 }
+#[allow(clippy::manual_async_fn)]
 impl Connect for Stub {
     fn available(&self) -> impl Future<Output = bool> + Send {
         async move { !*self.down.lock().unwrap() }
@@ -268,19 +269,16 @@ async fn an_encounter_recording_needs_consent_and_a_big_file_is_refused() {
     );
     assert_eq!((status, message.as_str()), (422, NEEDS_CONSENT));
     // A dictation needs no consent.
-    assert_eq!(
-        record(
-            &f.db,
-            &f.store,
-            &f.owner,
-            f.visit,
-            recording("dictation", false),
-            &c
-        )
-        .await
-        .is_ok(),
-        true
-    );
+    assert!(record(
+        &f.db,
+        &f.store,
+        &f.owner,
+        f.visit,
+        recording("dictation", false),
+        &c
+    )
+    .await
+    .is_ok());
     let mut big = recording("dictation", false);
     big.audio = webm(MAX_AUDIO);
     let (status, message) = refusal(record(&f.db, &f.store, &f.owner, f.visit, big, &c).await);
@@ -563,6 +561,7 @@ async fn a_drafting_job_that_could_not_be_submitted_is_submitted_by_the_next_loo
     c.set(id, "done", Some(WORDS));
     // The assistant is unreachable for the chat step only.
     struct ChatDown<'a>(&'a Stub, Mutex<bool>);
+    #[allow(clippy::manual_async_fn)]
     impl Connect for ChatDown<'_> {
         fn available(&self) -> impl Future<Output = bool> + Send {
             self.0.available()
