@@ -148,7 +148,7 @@ function beginPatientPayment(){
  if(!accounts.length&&typeof openCopayReceiptEditor==='function'){openCopayReceiptEditor();return;}
  if(!accounts.length){notice('Open Insurance to record a received copay for this appointment.',true);return;}
  if(accounts.length===1){showBillingAccount(accounts[0].id,false);$('account-payment-panel')?.scrollIntoView({block:'start'});return;}
- openBillingEditor(`<section><div class="section-head"><div><h3>Choose the patient account</h3><p class="muted">Select the posted service account that should receive this copay or patient payment. Stripe checkout is created only after you review the account balance and amount.</p></div></div>${accounts.map(a=>`<button type="button" data-bill-open="${a.id}">${esc(a.content.service_date)} · ${money(billBalance(a))} open balance</button>`).join('')}</section>`);
+ openBillingEditor(`<section><div class="section-head"><div><h3>Choose the patient account</h3><p class="muted">Select the posted service account that should receive this copay or patient payment. secure checkout is created only after you review the account balance and amount.</p></div></div>${accounts.map(a=>`<button type="button" data-bill-open="${a.id}">${esc(a.content.service_date)} · ${money(billBalance(a))} open balance</button>`).join('')}</section>`);
 }
 // A pasted "G81.14 - Spastic hemiplegia, left side" keeps only the code; claims need bare ICD-10 codes.
 function diagnosisCodeList(parts){

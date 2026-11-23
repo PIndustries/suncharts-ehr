@@ -101,7 +101,7 @@ test('practice without finished payment setup sees a plain message and the payme
  assert.equal(JSON.stringify(f.calls),JSON.stringify([['/api/v1/billing/payments/readers/hardware-session','POST',{}]]));
  assert.equal(f.context.page,'Card readers');
  assert.match(html,/<h2>Card readers<\/h2>/);
- assert.match(html,/Readers are ordered from Stripe, shipped to the practice and billed by Stripe\./);
+ assert.match(html,/Readers are ordered here, shipped to the practice and billed to the practice’s payment account\./);
  assert.match(html,/Finish payment setup before ordering a reader\./);
  assert.equal(html.match(/data-payment-settings/g).length,1,'one button to the existing payment setup');
  assert.match(html,/<button type="button" class="primary" data-payment-settings>Payment setup<\/button>/);
@@ -128,7 +128,7 @@ test('ready practice loads Connect.js from the documented address and starts it 
  assert.deepEqual(instance.created.map(e=>e.name),['terminal-hardware-shop','terminal-hardware-orders']);
  assert.match(html,/<h3>Order a reader<\/h3><p class="muted">Readers that work with SunCharts: BBPOS WisePOS E, Stripe Reader S700, S710 and T600\. The Stripe Reader M2 does not\.<\/p><div id="card-reader-shop"><\/div>/);
  assert.match(html,/<h3>Your orders<\/h3><div id="card-reader-orders"><\/div>/);
- assert.ok(html.indexOf('Readers are ordered from Stripe')<html.indexOf('Order a reader')&&html.indexOf('Order a reader')<html.indexOf('Your orders'));
+ assert.ok(html.indexOf('Readers are ordered here')<html.indexOf('Order a reader')&&html.indexOf('Order a reader')<html.indexOf('Your orders'));
  assert.deepEqual(f.nodes['card-reader-shop'].children,[instance.created[0]]);
  assert.deepEqual(f.nodes['card-reader-orders'].children,[instance.created[1]]);
  assert.doesNotMatch(html,/accs_secret|pk_test_/,'keys are handed to Stripe, never written into the page');
@@ -229,7 +229,7 @@ test('a stalled download gives up after 30 seconds and says it timed out',async(
  await f.fire({ms:30000});await f.done(opening);
  assert.equal(f.scripts.length,1,'a stalled file is not asked for a second time');
  assert.equal(f.scripts[0].removed,true);
- assert.match(f.tools.innerHTML,/Reader ordering could not load\. The connection to Stripe timed out\./);
+ assert.match(f.tools.innerHTML,/Reader ordering could not load\. The connection timed out\./);
  assert.match(f.tools.innerHTML,/Check your connection and try again\./);
  assert.doesNotMatch(f.tools.innerHTML,/blocker|could not reach/,'a slow connection is never blamed on an ad blocker');
  assert.match(f.tools.innerHTML,/<button type="button" data-card-readers>Try again<\/button>/);
@@ -314,7 +314,7 @@ const listed=(readers,extra={})=>({status:'ready',readers,can_manage:true,paymen
 test('Your readers sits above ordering and lists each reader with its model and whether it is on',async()=>{
  const f=fixture();f.context.readers=listed([frontDesk,back]);await f.open();const html=f.tools.innerHTML;
  assert.deepEqual(f.readerCalls,[['/api/v1/billing/payments/readers']]);
- assert.ok(html.indexOf('<h3>Your readers</h3>')>0&&html.indexOf('<h3>Your readers</h3>')<html.indexOf('Readers are ordered from Stripe')&&html.indexOf('Your readers')<html.indexOf('Order a reader'));
+ assert.ok(html.indexOf('<h3>Your readers</h3>')>0&&html.indexOf('<h3>Your readers</h3>')<html.indexOf('Readers are ordered here')&&html.indexOf('Your readers')<html.indexOf('Order a reader'));
  assert.match(html,/<b>Front desk<\/b><small>BBPOS WisePOS E · Online<\/small>/);
  assert.match(html,/<b>Back &lt;office&gt;<\/b><small>Stripe Reader S700 · Offline<\/small>/,'a reader name is never read as page markup');
  assert.match(html,/<button type="button" data-rename-reader="tmr_front">Rename<\/button><button type="button" data-remove-reader="tmr_front">Remove<\/button>/);

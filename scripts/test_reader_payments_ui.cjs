@@ -124,7 +124,7 @@ test('Cancel asks the reader to stop and shows what really happened',async()=>{
  // The appointment panel can cancel a waiting payment after the status area is closed.
  f=fixture();c=f.ctx;c.items=[op];await c.loadHostedCopays('appt',true);
  const panel=c.hostedCopayMarkup(c.hostedCopayStateFor('appt'));
- assert.match(panel,/Waiting for card on the reader/);assert.match(panel,/<button type="button" data-cancel-reader-copay="op" data-appointment="appt">Cancel payment<\/button>/);assert.doesNotMatch(panel,/Continue to Stripe checkout|Awaiting card payment/);
+ assert.match(panel,/Waiting for card on the reader/);assert.match(panel,/<button type="button" data-cancel-reader-copay="op" data-appointment="appt">Cancel payment<\/button>/);assert.doesNotMatch(panel,/Continue to secure checkout|Awaiting card payment/);
  c.next={...op,status:'expired',last_result:'reader_cancelled'};await f.click({cancelReaderCopay:'op',appointment:'appt'});
  same(f.calls.at(-1),[`${base}/op/reader-cancel`,'POST',{}]);assert.equal(c.hostedCopayStateFor('appt').items[0].status,'expired');
 });

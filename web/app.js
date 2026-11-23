@@ -1029,7 +1029,7 @@ function setPage(title) {
   'Clearinghouse':'Verify coverage, submit reviewed claims and reconcile payer responses',
   'Claim lifecycle':'Verify coverage, submit reviewed claims and reconcile payer responses',
   'Claims & remittances':'Prepare claims, post remittances and resolve corrections',
-  'Payment settings':'Configure Stripe or SunCharts Payments for this practice',
+  'Payment settings':'Set up card payments for this practice',
   'Payment review':'Review checkout status and verified payment history',
   'Referral delivery settings':'Configure receiving partners and delivery credentials',
   'Referrals':'Coordinate referral handoffs, follow-up dates and outcomes',

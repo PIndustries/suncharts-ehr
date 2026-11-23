@@ -19,10 +19,10 @@ context.FormData=FixtureFormData;
 (async()=>{
  await vm.runInContext("showInstanceIntegrations({connection:{},onboarding:{},grants:{items:[{id:'grant-1',name:'HealthClinics',scope:'scheduling.read'}]},clients:{items:[{id:'client-1',name:'HealthClinics scheduling',redirect_uri:'https://healthclinics.example/oauth/callback',disabled:false}]}})",context);
  const html=nodes.tools.innerHTML;
- for(const label of ['SunCharts Payments','Stripe Connect','Patient payments','Clinic payouts','SunCharts online booking','HealthClinics','RingCentral','Gmail referrals','Claude','Erebine','Sun assistance','Authorized applications'])assert.match(html,new RegExp(label));
+ for(const label of ['SunCharts Payments','Patient payments','Clinic payouts','SunCharts online booking','HealthClinics','RingCentral','Gmail referrals','Claude','Erebine','Sun assistance','Authorized applications'])assert.match(html,new RegExp(label));
  assert.match(html,/data-payment-settings/);
  assert.match(html,/Setup incomplete/);
- assert.match(html,/never asks for a Stripe secret key/);
+ assert.match(html,/never asks for a secret key/);
  assert.match(html,/HealthClinics.*reads availability and writes appointments|A booking partner you approve can see open times/s);
  assert.match(html,/Sign-in details for each service are kept with this practice only/);
  assert.match(html,/practice uses its own account with the AI service/i);
