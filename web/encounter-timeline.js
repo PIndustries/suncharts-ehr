@@ -82,6 +82,17 @@ function encounterTimelineChip(steps,number,extra={}){
  const now=steps.find(step=>step.state==='now'),words=now?now.label:'Closed';
  return `<button type="button" class="encounter-chip"${attrs} aria-label="${esc(`${number||'Encounter'}. ${now?`Now: ${now.label}`:'Closed'}`)}">${esc(number||'Encounter')}<span class="encounter-chip-steps" aria-hidden="true">${steps.map(step=>`<i class="is-${esc(step.state)}"></i>`).join('')}</span><span class="encounter-chip-now">${esc(words)}</span></button>`;
 }
+// "ENC-0005" from the encounter number a server row carries (empty when it has none).
+function encounterNumberLabel(n){return typeof encounterNumberText==='function'?encounterNumberText({encounter_number:n}):'';}
+// The chip for a list row that names its encounter (visit_id, encounter_number). The number comes from
+// the row itself, so it shows even when that patient's chart is not open. A row with no encounter
+// gets nothing.
+function encounterRowChip(row,extra={}){
+ const id=row?.visit_id;if(!id||typeof encounterTimelineChip!=='function')return '';
+ let number=encounterNumberLabel(row.encounter_number);
+ if(!number&&typeof workspace!=='undefined'&&typeof encounterNumberText==='function')number=encounterNumberText((workspace?.visits||[]).find(v=>v.id===id));
+ return encounterTimelineChip(null,number,{...extra,visit:id,patient:row.patient_id||extra.patient});
+}
 // The line above the timeline: which encounter, when, with whom.
 function encounterTimelineHeading(visit,appointment,summary){
  const number=typeof encounterNumberText==='function'?encounterNumberText(visit):'',kind=appointment?.title||'';
