@@ -708,6 +708,16 @@ fn cursor(value: Option<&str>) -> Result<Option<CodeCursor>> {
         })
         .transpose()
 }
+/// The release of a code system in force on a date, if one is installed and its license holds.
+pub(crate) async fn release_on(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    system: &str,
+    date: NaiveDate,
+) -> Result<Option<Uuid>> {
+    Ok(sqlx::query_scalar(&format!("SELECT r.id FROM terminology_releases r WHERE r.tenant_id=$1 AND r.system=$2 AND {LICENSE_VISIBLE} AND r.effective_start<=$3 AND (r.effective_end IS NULL OR r.effective_end>=$3) ORDER BY r.effective_start DESC,r.created_at DESC,r.id DESC LIMIT 1"))
+        .bind(tenant).bind(system).bind(date).fetch_optional(&mut **tx).await?)
+}
 /// What a code lookup asks for. `search` is matched as a code prefix or as the words of a
 /// description; `ranked` puts the closest descriptions first instead of ordering by code.
 pub(crate) struct CodeFilter<'a> {

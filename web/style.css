@@ -719,3 +719,8 @@ dialog.sheet-dialog:has(.receipt-sheet){width:min(680px,92vw);max-width:none}
 .receipt-sheet>div{min-width:0}
 .receipt-sheet .copay-receipt-card{margin:0;width:auto;max-width:100%;box-sizing:border-box}
 .receipt-sheet .copay-receipt-card header{flex-wrap:wrap}
+
+/* Suggest diagnoses sits just above Save and Sign, with a line saying where it stands. */
+.note-suggest-row{align-items:center;margin:6px 0 0}
+.note-suggest-row:has([data-note-suggest][hidden]){display:none}
+.note-suggest-row [data-note-suggest-status]{font-size:var(--fs-sm)}

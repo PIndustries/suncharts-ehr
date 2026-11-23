@@ -174,6 +174,8 @@ function renderPatientBanner(){
   else if(key)host.querySelector?.(`[data-banner-item="${key}"]`)?.focus?.();
   else if(flag)host.querySelector?.(`[data-banner-flag="${flag}"]`)?.focus?.();
  }
+ // A redrawn header keeps the open encounter's timeline: it is put back from the money already read.
+ if(typeof activeVisit!=='undefined'&&activeVisit&&typeof encounterRevenueState!=='undefined'&&encounterRevenueState?.visit===activeVisit.id&&encounterRevenueState.data?.summary&&typeof patientBannerEncounterSync==='function'&&!host.querySelector?.('.encounter-timeline'))patientBannerEncounterSync(encounterRevenueState.data.summary,activeVisit);
  patientBannerStickyOffset(host);
 }
 // Chart opened or redrawn: paint from what is in memory, then read the rest.

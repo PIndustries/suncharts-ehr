@@ -118,11 +118,22 @@ async function encounterPreviewOpen(visitId,extra={}){
  panel.innerHTML=`<div data-preview-timeline></div><dl class="payment-encounter-facts">${fact('Encounter',esc(appointment?.title||'Encounter'))}${fact('Date',appointment?.starts_at?esc(date(appointment.starts_at)):'')}${fact('Note',visit.status==='signed'?'Signed':'Not signed yet')}${fact('This payment',paid)}</dl><div data-preview-codes><p class="muted">Loading charges…</p></div><div class="actions"><button type="button" class="primary" data-preview-open>Go to encounter</button><button type="button" data-sheet-close>Close</button></div>`;
  paint(null);
  const dialog=sheetOpen(number?`Encounter ${number}`:'Encounter',panel);
- panel.querySelector('[data-preview-open]').addEventListener('click',()=>{sheetClose(dialog);run(()=>openPatientEncounter(visit.id));});
+ panel.querySelector('[data-preview-open]').addEventListener('click',()=>{sheetClose(dialog);run(()=>encounterGoTo(visit.id,visit.patient_id||(typeof selected!=='undefined'?selected:null)));});
  void encounterTimelineSummary(visit.id).then(summary=>{if(summary&&dialog.isConnected!==false)paint(summary);});
  const evidence=typeof visitReceiptEvidence==='function'?await visitReceiptEvidence(visit.appointment_id).catch(()=>null):null,host=panel.querySelector('[data-preview-codes]');if(!host)return;
  const lines=evidence?.lines||[],diagnoses=evidence?.diagnoses||[],total=lines.reduce((sum,line)=>sum+(Number(line.amount_cents)||0),0);
  host.innerHTML=lines.length||diagnoses.length?`${lines.length?`<table class="billing-table"><thead><tr><th>Charge</th><th></th><th>Amount</th></tr></thead><tbody>${lines.map(line=>`<tr><td><b>${esc(line.code||'')}</b></td><td>${esc(line.description||'')}${Number(line.units)>1?` × ${esc(line.units)}`:''}</td><td>${line.amount_cents==null?'':money(line.amount_cents)}</td></tr>`).join('')}<tr><td colspan="2"><b>Total charges</b></td><td><b>${money(total)}</b></td></tr></tbody></table>`:'<p class="muted">No charges on this encounter yet.</p>'}${diagnoses.length?`<p><span class="muted">Diagnoses</span> ${diagnoses.map(d=>`<b>${esc(String(d.code).trim())}</b> ${esc(d.display||'')}`).join(' · ')}</p>`:''}`:'<p class="muted">No charges on this encounter yet.</p>';
+}
+// Go to an encounter from anywhere: the patient area, that patient's chart, then the encounter.
+async function encounterGoTo(visitId,patientId){
+ const identity=me;
+ if(typeof showClinical==='function')await showClinical();
+ if(me!==identity)return;
+ const patient=patientId||(typeof selected!=='undefined'?selected:null);
+ if(patient&&(selected!==patient||!(workspace?.visits||[]).some(v=>v.id===visitId)))await selectPatient(patient,null);
+ if(me!==identity||(patient&&selected!==patient))return;
+ if(!(workspace?.visits||[]).some(v=>v.id===visitId))throw new Error('This encounter could not be found in the patient’s chart.');
+ await openPatientEncounter(visitId);
 }
 // The preview of an encounter whose chart is not open: its timeline, read on its own, and the way in.
 async function encounterPreviewElsewhere(visitId,patient,number){
@@ -130,14 +141,7 @@ async function encounterPreviewElsewhere(visitId,patient,number){
  const identity=me,panel=document.createElement('div');panel.className='payment-encounter-preview';
  panel.innerHTML=`<div data-preview-timeline>${typeof skeletonMarkup==='function'?skeletonMarkup('card'):'<p class="muted" role="status">Loading…</p>'}</div><div class="actions"><button type="button" class="primary" data-preview-open>Go to encounter</button><button type="button" data-sheet-close>Close</button></div>`;
  const dialog=sheetOpen(number?`Encounter ${number}`:'Encounter',panel);
- panel.querySelector('[data-preview-open]').addEventListener('click',()=>{sheetClose(dialog);run(async()=>{
-  if(typeof showClinical==='function')await showClinical();
-  if(me!==identity)return;
-  await selectPatient(patient,null);
-  if(me!==identity||selected!==patient)return;
-  if(!(workspace?.visits||[]).some(v=>v.id===visitId))throw new Error('This encounter could not be found in the patient’s chart.');
-  await openPatientEncounter(visitId);
- });});
+ panel.querySelector('[data-preview-open]').addEventListener('click',()=>{sheetClose(dialog);run(()=>encounterGoTo(visitId,patient));});
  const [visit,summary]=await Promise.all([api(`/api/v1/visits/${encodeURIComponent(visitId)}`).catch(()=>null),encounterTimelineSummary(visitId,patient)]);
  const host=panel.querySelector('[data-preview-timeline]');if(!host||dialog.isConnected===false||me!==identity)return;
  if(!visit){host.innerHTML='<p class="muted">This encounter’s details could not be loaded. Use Go to encounter.</p>';return;}

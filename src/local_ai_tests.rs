@@ -1229,3 +1229,427 @@ async fn the_stage_migration_applies_over_an_existing_database_with_a_waiting_re
         1
     );
 }
+
+// ---- Procedure suggestions: the same request also reads the services done at the encounter.
+
+const SERVICES_FIRST: &str = "{\"problems\":[\
+ {\"problem\":\"Cervical dystonia\",\"evidence\":\"Cervical dystonia (spasmodic torticollis)\",\"search_terms\":[\"spasmodic torticollis\"]}],\
+ \"services\":[\
+ {\"service\":\"Neck injection\",\"evidence\":\"Synthetic neck injection to the left splenius\",\"search_terms\":[\"neck injection\"],\"quantity\":null,\"quantity_unit\":null},\
+ {\"service\":\"OnabotulinumtoxinA\",\"evidence\":\"OnabotulinumtoxinA 155 units given\",\"search_terms\":[\"onabotulinumtoxinA\"],\"quantity\":155,\"quantity_unit\":\"units\"},\
+ {\"service\":\"Office visit\",\"evidence\":\"Office visit today\",\"search_terms\":[\"office visit\"],\"quantity\":null,\"quantity_unit\":null}]}";
+
+/// A practice with its own billing list (made-up wording for CPT-shaped codes), an installed
+/// HCPCS list and no CPT list, and an encounter whose procedure section names three services.
+async fn setup_services() -> Fixture {
+    let f = setup_with(json!({"subjective":"History text","objective":"Exam text","assessment":"Cervical dystonia (spasmodic torticollis).","plan":format!("Return in twelve weeks. {MARKER}"),"procedure":"Synthetic neck injection to the left splenius. OnabotulinumtoxinA 155 units given. Office visit today."})).await;
+    let tenant = f.owner.tenant_id;
+    for (system, code, display, price) in [
+        ("CPT", "64616", "Synthetic neck injection", 15000),
+        (
+            "CPT",
+            "99213",
+            "Synthetic office visit, established, level three",
+            9000,
+        ),
+        (
+            "CPT",
+            "99214",
+            "Synthetic office visit, established, level four",
+            13000,
+        ),
+        (
+            "HCPCS",
+            "J0585",
+            "Injection, onabotulinumtoxinA, 1 unit",
+            10,
+        ),
+    ] {
+        sqlx::query("INSERT INTO practice_codes(tenant_id,id,system,code,display,enabled,price_cents,default_units,modifiers,version,created_by,updated_by) VALUES($1,$2,$3,$4,$5,true,$6,1,'',1,$7,$7)")
+            .bind(tenant).bind(Uuid::new_v4()).bind(system).bind(code).bind(display).bind(price).bind(f.owner.sub).execute(&f.db).await.unwrap();
+    }
+    let release = Uuid::new_v4();
+    sqlx::query("INSERT INTO terminology_releases(tenant_id,id,system,edition,source_name,source_url,source_sha256,effective_start,rights,rights_attested,request_id,request_digest,code_count,created_by,reason) VALUES($1,$2,'HCPCS','synthetic','Synthetic list','https://example.test/hcpcs',$3,'2020-01-01','public_use',true,$4,$5,2,$6,'Synthetic')").bind(tenant).bind(release).bind("c".repeat(64)).bind(Uuid::new_v4()).bind("d".repeat(64)).bind(f.owner.sub).execute(&f.db).await.unwrap();
+    for (code, display) in [
+        ("J0585", "Injection, onabotulinumtoxinA, 1 unit"),
+        ("Q9999", "Synthetic onabotulinumtoxinA lookalike"),
+    ] {
+        sqlx::query("INSERT INTO terminology_codes(tenant_id,release_id,code,code_key,display,billable,active,effective_start) VALUES($1,$2,$3,$3,$4,true,true,'2020-01-01')").bind(tenant).bind(release).bind(code).bind(display).execute(&f.db).await.unwrap();
+    }
+    f
+}
+fn service_answer(items: Value) -> String {
+    json!({"choices":[{"problem":1,"code":"G24.3"}],"service_choices":items}).to_string()
+}
+async fn stored_services(f: &Fixture, id: Uuid) -> Vec<Value> {
+    let stored: Value =
+        sqlx::query_scalar("SELECT services FROM diagnosis_suggestion_requests WHERE id=$1")
+            .bind(id)
+            .fetch_one(&f.db)
+            .await
+            .unwrap();
+    stored.as_array().unwrap().clone()
+}
+
+#[tokio::test]
+async fn the_first_step_reads_services_from_the_procedure_and_exam_sections_too() {
+    let f = setup_services().await;
+    let (out, sent) = f.ask(&f.owner, Uuid::new_v4(), 0).await;
+    out.unwrap();
+    let body = sent.lock().unwrap()[0].clone();
+    let system = body["messages"][0]["content"].as_str().unwrap();
+    assert!(system.contains("\"services\"") && system.contains("PERFORMED"));
+    assert!(system.contains("quantity_unit") && system.contains("Do not give any codes"));
+    let text = body["messages"][1]["content"].as_str().unwrap();
+    assert!(text.contains("Synthetic neck injection") && text.contains("Exam text"));
+    assert!(!text.contains("History text"));
+    for private in ["Zelda", "Quillfeather", "SYN-MRN-4417", "1987"] {
+        assert!(!text.contains(private), "{private} was sent");
+    }
+}
+
+#[tokio::test]
+async fn services_are_looked_up_in_the_practice_list_first_and_chosen_alongside_the_diagnoses() {
+    let f = setup_services().await;
+    let id = Uuid::new_v4();
+    f.ask(&f.owner, id, 0).await.0.unwrap();
+    let answer = service_answer(json!([
+        {"service":1,"code":"64616"},
+        {"service":2,"code":"j0585"},
+        {"service":3,"code":"99214"}
+    ]));
+    let (body, out) = f.two_steps(&f.owner, id, SERVICES_FIRST, &answer).await;
+
+    // Candidates are what this practice can bill: its own list first, then the HCPCS list.
+    let services = stored_services(&f, id).await;
+    assert_eq!(services.len(), 3);
+    let codes = |i: usize| -> Vec<(String, String)> {
+        services[i]["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| {
+                (
+                    c["code"].as_str().unwrap().to_string(),
+                    c["source"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(codes(0), [("64616".into(), "practice".into())]);
+    assert_eq!(
+        codes(1),
+        [
+            ("J0585".into(), "practice".into()),
+            ("Q9999".into(), "catalog".into())
+        ]
+    );
+    assert_eq!(services[1]["candidates"][0]["system"], "HCPCS");
+    assert_eq!(services[1]["quantity"], 155.0);
+    assert_eq!(services[1]["quantity_unit"], "units");
+    // A code taken from an installed list says which list; the practice's own row does not.
+    assert_eq!(services[1]["candidates"][0]["release_id"], Value::Null);
+    assert!(services[1]["candidates"][1]["release_id"].is_string());
+    // Several levels of one visit: flagged from the candidates themselves.
+    assert_eq!(codes(2).len(), 2);
+    assert_eq!(services[2]["level"], true);
+
+    // The second job carries services with their candidates and evidence, not the note or the patient.
+    let text = body.to_string();
+    assert!(text.contains("Synthetic neck injection") && text.contains("J0585"));
+    assert!(text.contains("Synthetic neck injection to the left splenius"));
+    assert!(!text.contains("ZEBRA-MARKER-8841") && !text.contains("Return in twelve weeks"));
+    assert!(!text.contains("History text") && !text.contains("Exam text"));
+    for private in [
+        "Zelda",
+        "Quillfeather",
+        "SYN-MRN-4417",
+        "1987",
+        "03-09",
+        &f.patient.to_string(),
+        &f.visit.to_string(),
+    ] {
+        assert!(!text.contains(private), "{private} was sent");
+    }
+    let asked = body["messages"][1]["content"].as_str().unwrap();
+    let list: Value = serde_json::from_str(asked.split_once('\n').unwrap().1).unwrap();
+    assert_eq!(list["problems"].as_array().unwrap().len(), 1);
+    // The visit comes in levels, so it is not put to the assistant at all.
+    let numbers: Vec<i64> = list["services"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["service"].as_i64().unwrap())
+        .collect();
+    assert_eq!(numbers, [1, 2]);
+    assert!(!asked.contains("99213") && !asked.contains("Synthetic office visit"));
+
+    // The answer: diagnoses as before, the injection and the drug, and the visit left to the clinician.
+    assert_eq!(out["status"], "ready", "{out}");
+    assert_eq!(out["suggestions"][0]["code"], "G24.3");
+    let procedures = out["procedures"].as_array().unwrap();
+    assert_eq!(procedures.len(), 2, "{out}");
+    assert_eq!(procedures[0]["code"], "64616");
+    assert_eq!(procedures[0]["description"], "Synthetic neck injection");
+    assert_eq!(procedures[0]["source"], "practice");
+    assert_eq!(
+        procedures[0]["evidence"],
+        "Synthetic neck injection to the left splenius"
+    );
+    assert_eq!(procedures[0]["evidence_found"], true);
+    assert_eq!(procedures[0]["quantity"], Value::Null);
+    assert_eq!(procedures[1]["code"], "J0585");
+    assert_eq!(procedures[1]["system"], "HCPCS");
+    assert_eq!(procedures[1]["default_units"], 1);
+    assert_eq!(procedures[0]["catalog_release_id"], Value::Null);
+    assert_eq!(procedures[1]["quantity"], 155.0);
+    assert_eq!(procedures[1]["quantity_unit"], "units");
+    assert_eq!(
+        out["procedures_unmatched"],
+        json!([{"service":"Office visit","evidence":"Office visit today","reason":"level"}])
+    );
+    assert_eq!(out["dropped"], 0);
+    // Reading it again from the stored request gives the same lists, and nothing reached the chart.
+    let again = f.read_with(&f.owner, done(id, "{}")).await.unwrap();
+    assert_eq!(again["procedures"], out["procedures"]);
+    assert_eq!(again["procedures_unmatched"], out["procedures_unmatched"]);
+    assert_eq!(
+        f.count("SELECT count(*) FROM visit_diagnoses WHERE tenant_id=$1")
+            .await,
+        0
+    );
+    assert_eq!(
+        f.count("SELECT count(*) FROM billing_accounts WHERE tenant_id=$1")
+            .await,
+        0
+    );
+    assert_eq!(f.audits("visit.diagnosis_suggestions_ready").await, 1);
+}
+
+#[tokio::test]
+async fn a_service_choice_outside_the_candidates_or_a_visit_level_is_dropped() {
+    let f = setup_services().await;
+    let id = Uuid::new_v4();
+    f.ask(&f.owner, id, 0).await.0.unwrap();
+    let answer = service_answer(json!([
+        {"service":1,"code":"64999"},
+        {"service":2,"code":null},
+        {"service":3,"code":"99213"},
+        {"service":9,"code":"64616"}
+    ]));
+    let (_, out) = f.two_steps(&f.owner, id, SERVICES_FIRST, &answer).await;
+    assert_eq!(out["status"], "ready", "{out}");
+    assert_eq!(out["procedures"], json!([]));
+    assert_eq!(out["dropped"], 2, "{out}");
+    let reasons: Vec<(&str, &str)> = out["procedures_unmatched"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| {
+            (
+                u["service"].as_str().unwrap(),
+                u["reason"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        reasons,
+        [
+            ("Neck injection", "none"),
+            ("OnabotulinumtoxinA", "none"),
+            ("Office visit", "level")
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_visit_level_chosen_for_a_single_candidate_is_still_left_to_the_clinician() {
+    let f = setup_services().await;
+    sqlx::query("UPDATE practice_codes SET enabled=false WHERE tenant_id=$1 AND code='99213'")
+        .bind(f.owner.tenant_id)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let id = Uuid::new_v4();
+    f.ask(&f.owner, id, 0).await.0.unwrap();
+    let answer = service_answer(json!([{"service":3,"code":"99214"}]));
+    let (_, out) = f.two_steps(&f.owner, id, SERVICES_FIRST, &answer).await;
+    assert_eq!(out["procedures"], json!([]), "{out}");
+    assert_eq!(out["procedures_unmatched"][2]["reason"], "level");
+}
+
+#[tokio::test]
+async fn codes_already_on_the_charge_lines_are_not_offered_again() {
+    let f = setup_services().await;
+    sqlx::query("INSERT INTO billing_accounts(tenant_id,id,patient_id,visit_id,content,total_cents,request_id,creation_hash) VALUES($1,$2,$3,$4,$5,15000,$6,'synthetic')")
+        .bind(f.owner.tenant_id).bind(Uuid::new_v4()).bind(f.patient).bind(f.visit)
+        .bind(json!({"visit_id":f.visit,"lines":[{"code":"64616","code_system":"CPT","description":"Synthetic neck injection"}]}))
+        .bind(Uuid::new_v4()).execute(&f.db).await.unwrap();
+    let id = Uuid::new_v4();
+    f.ask(&f.owner, id, 0).await.0.unwrap();
+    let answer = service_answer(json!([{"service":1,"code":"64616"},{"service":2,"code":"J0585"}]));
+    let (_, out) = f.two_steps(&f.owner, id, SERVICES_FIRST, &answer).await;
+    let codes: Vec<&str> = out["procedures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["J0585"], "{out}");
+    // Already charged is covered, not "no code found".
+    let left: Vec<&str> = out["procedures_unmatched"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["service"].as_str().unwrap())
+        .collect();
+    assert_eq!(left, ["Office visit"]);
+}
+
+#[tokio::test]
+async fn services_alone_still_reach_the_assistant_and_a_service_without_candidates_is_listed() {
+    let f = setup_services().await;
+    let id = Uuid::new_v4();
+    f.ask(&f.owner, id, 0).await.0.unwrap();
+    let first = "{\"problems\":[],\"services\":[{\"service\":\"Neck injection\",\"evidence\":\"Synthetic neck injection to the left splenius\",\"search_terms\":[\"neck injection\"]},{\"service\":\"Unlisted wizardry\",\"evidence\":\"made up\",\"search_terms\":[\"wizardry\"]}]}";
+    let answer = json!({"service_choices":[{"service":1,"code":"64616"}]}).to_string();
+    let (body, out) = f.two_steps(&f.owner, id, first, &answer).await;
+    let asked = body["messages"][1]["content"].as_str().unwrap();
+    let list: Value = serde_json::from_str(asked.split_once('\n').unwrap().1).unwrap();
+    assert!(list.get("problems").is_none());
+    assert_eq!(list["services"].as_array().unwrap().len(), 1);
+    assert_eq!(out["suggestions"], json!([]));
+    assert_eq!(out["procedures"][0]["code"], "64616");
+    assert_eq!(
+        out["procedures_unmatched"],
+        json!([{"service":"Unlisted wizardry","evidence":null,"reason":"none"}])
+    );
+    // Nothing to choose from at all: no second job, the services are listed as unmatched.
+    let g = setup_services().await;
+    let id = Uuid::new_v4();
+    g.ask(&g.owner, id, 0).await.0.unwrap();
+    let only = "{\"problems\":[],\"services\":[{\"service\":\"Unlisted wizardry\",\"evidence\":\"made up\",\"search_terms\":[\"wizardry\"]}]}";
+    let (out, sent) = g.step(&g.owner, done(id, only), Ok(0)).await;
+    let out = out.unwrap();
+    assert!(sent.lock().unwrap().is_empty());
+    assert_eq!(out["status"], "ready");
+    assert_eq!(out["procedures_unmatched"][0]["reason"], "none");
+}
+
+#[tokio::test]
+async fn a_practice_with_a_licensed_cpt_list_finds_its_codes_after_its_own() {
+    let f = setup_services().await;
+    let tenant = f.owner.tenant_id;
+    let release = Uuid::new_v4();
+    sqlx::query("INSERT INTO terminology_releases(tenant_id,id,system,edition,source_name,source_url,source_sha256,effective_start,rights,rights_attested,request_id,request_digest,code_count,created_by,reason,license_reference,license_valid_until) VALUES($1,$2,'CPT','synthetic','Synthetic licensed list','https://example.test/cpt',$3,'2020-01-01','licensed',true,$4,$5,1,$6,'Synthetic','Synthetic license','2099-01-01')").bind(tenant).bind(release).bind("e".repeat(64)).bind(Uuid::new_v4()).bind("f".repeat(64)).bind(f.owner.sub).execute(&f.db).await.unwrap();
+    sqlx::query("INSERT INTO terminology_codes(tenant_id,release_id,code,code_key,display,billable,active,effective_start) VALUES($1,$2,'64617','64617','Synthetic neck injection, second kind',true,true,'2020-01-01')").bind(tenant).bind(release).execute(&f.db).await.unwrap();
+    let id = Uuid::new_v4();
+    f.ask(&f.owner, id, 0).await.0.unwrap();
+    f.step(&f.owner, done(id, SERVICES_FIRST), Ok(1))
+        .await
+        .0
+        .unwrap();
+    let services = stored_services(&f, id).await;
+    let found: Vec<(&str, &str)> = services[0]["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| (c["code"].as_str().unwrap(), c["source"].as_str().unwrap()))
+        .collect();
+    assert_eq!(found, [("64616", "practice"), ("64617", "catalog")]);
+    // A lapsed license hides the list, as it does in the procedure box.
+    let h = setup_services().await;
+    sqlx::query("INSERT INTO terminology_releases(tenant_id,id,system,edition,source_name,source_url,source_sha256,effective_start,rights,rights_attested,request_id,request_digest,code_count,created_by,reason,license_reference,license_valid_until) VALUES($1,$2,'CPT','synthetic','Synthetic licensed list','https://example.test/cpt',$3,'2020-01-01','licensed',true,$4,$5,1,$6,'Synthetic','Synthetic license','2020-02-01')").bind(h.owner.tenant_id).bind(release).bind("e".repeat(64)).bind(Uuid::new_v4()).bind("f".repeat(64)).bind(h.owner.sub).execute(&h.db).await.unwrap();
+    sqlx::query("INSERT INTO terminology_codes(tenant_id,release_id,code,code_key,display,billable,active,effective_start) VALUES($1,$2,'64617','64617','Synthetic neck injection, second kind',true,true,'2020-01-01')").bind(h.owner.tenant_id).bind(release).execute(&h.db).await.unwrap();
+    let id = Uuid::new_v4();
+    h.ask(&h.owner, id, 0).await.0.unwrap();
+    h.step(&h.owner, done(id, SERVICES_FIRST), Ok(1))
+        .await
+        .0
+        .unwrap();
+    assert_eq!(
+        stored_services(&h, id).await[0]["candidates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    // Turned off for the practice, nothing of the HCPCS list is offered, its own codes included.
+    let g = setup_services().await;
+    sqlx::query("INSERT INTO practice_code_sets(tenant_id,system,enabled,version,updated_by) VALUES($1,'HCPCS',false,1,$1)").bind(g.owner.tenant_id).execute(&g.db).await.unwrap();
+    let id = Uuid::new_v4();
+    g.ask(&g.owner, id, 0).await.0.unwrap();
+    g.step(&g.owner, done(id, SERVICES_FIRST), Ok(1))
+        .await
+        .0
+        .unwrap();
+    let drug = &stored_services(&g, id).await[1];
+    assert_eq!(drug["candidates"], json!([]), "{drug}");
+}
+
+#[tokio::test]
+async fn no_more_than_eight_procedures_are_kept() {
+    let f = setup_services().await;
+    for n in 0..10 {
+        sqlx::query("INSERT INTO practice_codes(tenant_id,id,system,code,display,enabled,price_cents,default_units,modifiers,version,created_by,updated_by) VALUES($1,$2,'CPT',$3,$4,true,100,1,'',1,$5,$5)")
+            .bind(f.owner.tenant_id).bind(Uuid::new_v4()).bind(format!("7000{n}")).bind(format!("Synthetic bulk service {n}")).bind(f.owner.sub).execute(&f.db).await.unwrap();
+    }
+    let items: Vec<Value> = (0..10).map(|n| json!({"service":format!("Bulk {n}"),"evidence":"Office visit today","search_terms":[format!("bulk service {n}")]})).collect();
+    let first = json!({"problems":[],"services":items}).to_string();
+    let id = Uuid::new_v4();
+    f.ask(&f.owner, id, 0).await.0.unwrap();
+    let picks: Vec<Value> = (0..10)
+        .map(|n| json!({"service":n+1,"code":format!("7000{n}")}))
+        .collect();
+    let answer = json!({"service_choices":picks}).to_string();
+    let (_, out) = f.two_steps(&f.owner, id, &first, &answer).await;
+    assert_eq!(out["procedures"].as_array().unwrap().len(), 8, "{out}");
+    assert_eq!(out["procedures"][0]["code"], "70000");
+}
+
+#[tokio::test]
+async fn the_services_migration_applies_over_an_existing_database_with_a_waiting_request() {
+    let db = pool_at(Some(124)).await;
+    let tenant = Uuid::new_v4();
+    let (patient, appointment, visit, request, clinician) = (
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    );
+    sqlx::query("INSERT INTO patients(tenant_id,id,mrn,given_name,family_name,birth_date) VALUES($1,$2,'SYN-MRN-1','Synthetic','Person','1990-01-01')").bind(tenant).bind(patient).execute(&db).await.unwrap();
+    sqlx::query("INSERT INTO appointments(tenant_id,id,patient_id,clinician_id,starts_at,ends_at,status) VALUES($1,$2,$3,$4,'2026-10-25T14:00:00Z','2026-10-25T14:30:00Z','checked_in')").bind(tenant).bind(appointment).bind(patient).bind(clinician).execute(&db).await.unwrap();
+    sqlx::query("INSERT INTO visits(tenant_id,id,patient_id,appointment_id,clinician_id,note) VALUES($1,$2,$3,$4,$5,'{}')").bind(tenant).bind(visit).bind(patient).bind(appointment).bind(clinician).execute(&db).await.unwrap();
+    sqlx::query("INSERT INTO diagnosis_suggestion_requests(tenant_id,id,visit_id,requested_by,note_version,status,position,stage,problems,choose_id) VALUES($1,$2,$3,$4,1,'queued',2,'choose','[]',$5)").bind(tenant).bind(request).bind(visit).bind(clinician).bind(Uuid::new_v4()).execute(&db).await.unwrap();
+    crate::MIGRATOR.run(&db).await.unwrap();
+    crate::MIGRATOR.run(&db).await.unwrap();
+    let (stage, services, status, position): (String, Option<Value>, String, Option<i32>) =
+        sqlx::query_as(
+            "SELECT stage,services,status,position FROM diagnosis_suggestion_requests WHERE id=$1",
+        )
+        .bind(request)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(
+        (stage.as_str(), services, status.as_str(), position),
+        ("choose", None, "queued", Some(2))
+    );
+    assert!(
+        sqlx::query("UPDATE diagnosis_suggestion_requests SET services='{}' WHERE id=$1")
+            .bind(request)
+            .execute(&db)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        sqlx::query("UPDATE diagnosis_suggestion_requests SET services='[]' WHERE id=$1")
+            .bind(request)
+            .execute(&db)
+            .await
+            .unwrap()
+            .rows_affected(),
+        1
+    );
+}
