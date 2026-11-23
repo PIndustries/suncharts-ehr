@@ -438,9 +438,10 @@ async fn a_test_reader_copay_can_be_paid_by_a_simulated_card_tap() {
     keys.sort_unstable();
     assert_eq!(
         keys,
-        ["amount_cents", "clinic_name", "currency", "paid_on", "receipt_number", "recipient_email", "request_id", "test"],
+        ["amount_cents", "clinic_name", "currency", "paid_on", "paid_with", "receipt_number", "recipient_email", "request_id", "test"],
         "nothing clinical is in the email request"
     );
+    assert_eq!(body["paid_with"], json!([{"method":"card","amount_cents":op.amount_cents}]));
     assert_eq!(body["recipient_email"], "pat@example.test");
     assert_eq!(body["amount_cents"], op.amount_cents);
     assert_eq!(body["test"], true);
