@@ -66,7 +66,7 @@ for(const file of ['web/claimmd-native.js','web/provider-settings.js','web/clear
  assert.match(ediTool.inserted,/Check insurance/);
  assert.match(connectionNotice.outerHTML,/No clearinghouse is connected/);
  assert.match(connectionNotice.outerHTML,/data-provider-new/);
- assert.match(connectionNotice.outerHTML,/Connect your Claim\.MD account to check eligibility, send claims/);
+ assert.match(connectionNotice.outerHTML,/Connect your clearinghouse account to check eligibility, send claims/);
  assert.match(providerHtml,/Claim\.MD is not connected/);
  assert(order.indexOf('delivery')>0,'legacy delivery panels load after native settings');
  assert(calls.indexOf('/api/v1/billing/provider-settings')<calls.indexOf('/api/v1/billing/delivery/routes')||!calls.includes('/api/v1/billing/delivery/routes'));
