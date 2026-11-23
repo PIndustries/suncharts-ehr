@@ -732,38 +732,31 @@ async fn frequent_procedure_codes(s: &State, a: &Actor, p: Uuid) -> Result<Json<
     tx.commit().await?;
     Ok(Json(json!({ "items": items, "frequent": true })))
 }
-async fn procedure_codes(
-    a: Actor,
-    ExtractState(s): ExtractState<State>,
-    Path(p): Path<Uuid>,
-    Query(q): Query<ProcedureQuery>,
-) -> Result<Json<Value>> {
-    a.staff()?;
-    crate::access_policies::require_native(&s, &a, "billing", "view").await?;
-    let query = q.q.trim();
-    if q.frequent && query.is_empty() {
-        return frequent_procedure_codes(&s, &a, p).await;
-    }
-    if query.chars().count() < 2 || query.len() > 100 || query.chars().any(char::is_control) {
-        return Ok(Json(json!({ "items": [] })));
+/// A typed procedure search worth running: two or more characters, not absurdly long.
+pub(crate) fn usable_procedure_query(query: &str) -> bool {
+    !(query.chars().count() < 2 || query.len() > 100 || query.chars().any(char::is_control))
+}
+/// What the procedure box finds for a typed word: the practice's own enabled CPT and HCPCS codes
+/// first (code prefix or every word of the name), then codes found in its fee schedules and billed
+/// history, at most 8. The assistant's service lookup uses this same search, so what it offers is
+/// what the box would.
+pub(crate) async fn procedure_matches(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    query: &str,
+) -> Result<Vec<Value>> {
+    let query = query.trim();
+    if !usable_procedure_query(query) {
+        return Ok(Vec::new());
     }
     let pattern = query
         .replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_");
-    let mut tx = tx(&s, &a).await?;
-    let known: Option<Uuid> =
-        sqlx::query_scalar("SELECT id FROM patients WHERE tenant_id=$1 AND id=$2")
-            .bind(a.tenant_id)
-            .bind(p)
-            .fetch_optional(&mut *tx)
-            .await?;
-    known.ok_or(Error::NotFound)?;
     let mut practice: Vec<Value> = Vec::new();
     for system in ["CPT", "HCPCS"] {
-        if crate::practice_codes::system_enabled(&mut tx, a.tenant_id, system).await? {
-            practice
-                .extend(crate::practice_codes::enabled_items(&mut tx, a.tenant_id, system).await?);
+        if crate::practice_codes::system_enabled(tx, tenant, system).await? {
+            practice.extend(crate::practice_codes::enabled_items(tx, tenant, system).await?);
         }
     }
     let upper = query.to_ascii_uppercase();
@@ -808,9 +801,9 @@ async fn procedure_codes(
              SELECT jsonb_build_object('code',code,'system',code_system,'display',description) FROM best \
              ORDER BY (code LIKE upper($2)||'%') DESC,code LIMIT 8",
         )
-        .bind(a.tenant_id)
+        .bind(tenant)
         .bind(&pattern)
-        .fetch_all(&mut *tx)
+        .fetch_all(&mut **tx)
         .await?;
         let mut systems: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
         for item in others {
@@ -827,8 +820,7 @@ async fn procedure_codes(
                 Some(enabled) => *enabled,
                 None => {
                     let enabled =
-                        crate::practice_codes::system_enabled(&mut tx, a.tenant_id, &system)
-                            .await?;
+                        crate::practice_codes::system_enabled(tx, tenant, &system).await?;
                     systems.insert(system.to_owned(), enabled);
                     enabled
                 }
@@ -838,15 +830,39 @@ async fn procedure_codes(
             }
             // A practice row that is turned off hides its code even from fee-schedule or
             // billed-history matches.
-            if crate::practice_codes::code_on(&mut tx, a.tenant_id, &system, &code).await?
-                == Some(false)
-            {
+            if crate::practice_codes::code_on(tx, tenant, &system, &code).await? == Some(false) {
                 continue;
             }
             seen.push(code);
             items.push(item);
         }
     }
+    Ok(items)
+}
+async fn procedure_codes(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(p): Path<Uuid>,
+    Query(q): Query<ProcedureQuery>,
+) -> Result<Json<Value>> {
+    a.staff()?;
+    crate::access_policies::require_native(&s, &a, "billing", "view").await?;
+    let query = q.q.trim();
+    if q.frequent && query.is_empty() {
+        return frequent_procedure_codes(&s, &a, p).await;
+    }
+    if !usable_procedure_query(query) {
+        return Ok(Json(json!({ "items": [] })));
+    }
+    let mut tx = tx(&s, &a).await?;
+    let known: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM patients WHERE tenant_id=$1 AND id=$2")
+            .bind(a.tenant_id)
+            .bind(p)
+            .fetch_optional(&mut *tx)
+            .await?;
+    known.ok_or(Error::NotFound)?;
+    let items = procedure_matches(&mut tx, a.tenant_id, query).await?;
     tx.commit().await?;
     Ok(Json(json!({ "items": items })))
 }

@@ -149,19 +149,28 @@ function chargeBundlesPaint(){
  const can=typeof billingCan==='function'&&billingCan('edit')&&!form.dataset.draftReadOnly,items=chargeBundles||[];
  host.innerHTML=`<span class="charge-bundles-label">Bundles</span>${items.map(bundle=>`<button type="button" data-bundle-add="${esc(bundle.id)}" title="${esc(chargeBundleSummary(bundle))}">+ ${esc(bundle.name)}</button>`).join('')||'<span class="muted">None yet. Enter your usual lines once, then save them as a bundle.</span>'}${can?'<button type="button" class="text-button" data-bundle-save>Save these lines as a bundle</button>':''}${can&&items.length?'<button type="button" class="text-button" data-bundle-manage>Manage bundles</button>':''}`;
 }
-function chargeBundleApply(bundle){
- const form=$('billing-account-form'),body=form?.querySelector('#billing-charge-lines tbody');if(!body||form.dataset.draftReadOnly||form.dataset.draftStale)return;
- // A row nobody has typed in makes way for the bundle.
+// Lines go onto the open charge table the way a bundle's do: a row nobody has typed in makes way,
+// each new line is a normal row (so the practice price, the encounter's diagnoses and the
+// autosave all work as they do for a typed line), and nothing is saved by this call itself.
+// Returns the rows added, or none when the table cannot take lines.
+function chargeLinesAppend(lines){
+ const form=$('billing-account-form'),body=form?.querySelector('#billing-charge-lines tbody');if(!body||form.dataset.draftReadOnly||form.dataset.draftStale)return [];
  for(const row of chargeLiveRows(form)){const blank=!(row.querySelector('[name="code"]')?.value||'').trim()&&!chargeLineDescription(row).trim()&&chargeRowAmount(row)==null;if(blank){chargeRowMemoryCache.delete(row);row.remove();}}
  const added=[];
- for(const line of bundle.lines||[]){
-  body.insertAdjacentHTML('beforeend',chargeRow({code_system:line.code_system,code:line.code,description:line.description,modifiers:String(line.modifiers||'').split(/\s+/).filter(Boolean).join(','),units:line.units||1,diagnosis_codes:[],...(line.ndc_code?{ndc_code:line.ndc_code,ndc_quantity:line.ndc_quantity,ndc_unit:line.ndc_unit}:{})},form.dataset.compact==='true',chargeLineKey(null,chargeLiveRows(form).length)));
+ for(const line of lines||[]){
+  body.insertAdjacentHTML('beforeend',chargeRow({diagnosis_codes:[],...line},form.dataset.compact==='true',chargeLineKey(null,chargeLiveRows(form).length)));
   const row=body.lastElementChild;row.dataset.diagnosesDefault='pending';chargeRowCapture(row);added.push(row);
  }
+ if(!added.length)return added;
  chargeTableTotals(form);renderChargeRowProblems(form);
  for(const row of added){row.dataset.priceMemorySeen='1';void priceMemoryCheck(row);}
  captureBillingChargeDraft();scheduleChargeAutosave(form);
  added[0]?.scrollIntoView?.({block:'nearest'});
+ return added;
+}
+function chargeBundleApply(bundle){
+ const added=chargeLinesAppend((bundle.lines||[]).map(line=>({code_system:line.code_system,code:line.code,description:line.description,modifiers:String(line.modifiers||'').split(/\s+/).filter(Boolean).join(','),units:line.units||1,...(line.ndc_code?{ndc_code:line.ndc_code,ndc_quantity:line.ndc_quantity,ndc_unit:line.ndc_unit}:{})})));
+ if(!added.length)return;
  if(typeof notice==='function')notice(`Added ${bundle.name}: ${added.length} line${added.length===1?'':'s'}.`);
 }
 function chargeBundleLinesFromTable(form){
