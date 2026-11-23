@@ -6,7 +6,7 @@ const source=fs.readFileSync('web/diagnosis-suggestions.js','utf8');
 const esc=s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
 function fixture({available=true,role='clinician',can_edit=true,charges='open',allow=true,chargeCodes=[]}={}){
  const handlers={},sheets=[],calls=[],added=[],lines=[],noteButton={hidden:true,disabled:false,textContent:''},noteLine={textContent:'',innerHTML:''},timers=new Map(),notices=[];let timerId=0,visible=true;
- const host={suggest:'',querySelector(sel){return sel==='[data-diagnosis-suggest]'&&this.suggest?{remove:()=>{this.suggest='';}}:null;},append(section){this.suggest=section.html;}};
+ const host={suggest:'',querySelector(sel){return sel==='[data-diagnosis-suggest]'&&this.suggest?{remove:()=>{this.suggest='';}}:null;},append(section){this.suggest=section.html;this.placed='last';},prepend(section){this.suggest=section.html;this.placed='first';}};
  const holder={appended:[],hidden:false,append(...items){this.appended.push(...items.filter(item=>typeof item!=='string'));}};
  const replies={};
  const context=vm.createContext({console,Map,Set,Promise,selected:'p1',me:{role,user_id:'u1'},activeVisit:{id:'v1',version:3,status:'in_progress'},esc,
@@ -50,14 +50,40 @@ const ready=(extra={})=>({request_id:'r1',status:'ready',position:null,suggestio
  // Asking returns at once and shows the waiting line, with the place in line only when someone is ahead.
  f=fixture();await f.mount();f.replies['POST /api/v1/visits/v1/diagnosis-suggestions']={request_id:'r1',status:'queued',position:2};
  await f.click('ask');let post=f.calls.find(c=>c.method==='POST');assert.match(post.body.request_id,/^[0-9a-f-]{36}$/);assert.deepEqual(Object.keys(post.body),['request_id']);
- assert.match(f.view(),/Reading the note\. You can keep working; you’ll be told when the suggestions are ready\./);assert.match(f.view(),/2 ahead of you/);assert.doesNotMatch(f.view(),/data-diagnosis-suggest-ask/);
- f=fixture();await f.mount();f.replies['POST /api/v1/visits/v1/diagnosis-suggestions']={request_id:'r1',status:'queued',position:0};await f.click('ask');assert.match(f.view(),/Reading the note\./);assert.doesNotMatch(f.view(),/ahead of you/);
+ assert.match(f.view(),/Waiting for a turn · <span data-diagnosis-suggest-place>2 ahead of you<\/span>/);assert.doesNotMatch(f.view(),/You can keep working|you’ll be told/);assert.match(f.view(),/data-suggest-elapsed/);assert.doesNotMatch(f.view(),/data-diagnosis-suggest-ask/);
+ f=fixture();await f.mount();f.replies['POST /api/v1/visits/v1/diagnosis-suggestions']={request_id:'r1',status:'queued',position:0};await f.click('ask');assert.match(f.view(),/Reading the note…/);assert.doesNotMatch(f.view(),/ahead of you/);
  console.log('PASS asking shows the waiting line, with the place in line only when it is more than zero');
 
  // A queued request that was already waiting when the editor opens shows the waiting line.
  f=fixture();f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']={request_id:'r1',status:'queued',position:1,mine:true};await f.mount();assert.match(f.view(),/1 ahead of you/);
- assert.ok([...f.timers.values()].some(t=>t.delay===30000),'a safety-net refresh is scheduled while waiting');
+ assert.ok([...f.timers.values()].some(t=>t.delay===1500),'a quick refresh is scheduled while waiting');
  console.log('PASS opening the editor shows a request that is still waiting');
+
+
+ // The panel is the first thing in the editor, and says what it does before anything is asked.
+ f=fixture();await f.mount();assert.equal(f.host.placed,'first');
+ assert.match(f.view(),/<h4 class="suggest-title">Suggested codes<\/h4>/);assert.match(f.view(),/SunCharts AI reads the saved note and suggests diagnosis and procedure codes\./);assert.match(f.view(),/class="primary" data-diagnosis-suggest-ask>Suggest codes</);
+ // Extract stage: step 1 is the current one and the line says it is reading.
+ f=fixture();f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']={request_id:'r1',status:'queued',position:0,stage:'extract',problems_found:null,services_found:null,started_at:new Date(Date.now()-5000).toISOString(),mine:true};await f.mount();
+ assert.equal(f.host.placed,'first');assert.match(f.view(),/<li class="is-now" aria-current="step">[^]*?<b>Reading the note<\/b>/);assert.match(f.view(),/<li class="is-later">[^]*?<b>Finding matching codes<\/b>/);assert.equal((f.view().match(/is-done/g)||[]).length,0);
+ assert.match(f.view(),/Reading the note…/);assert.doesNotMatch(f.view(),/Found \d/);
+ assert.match(f.noteLine.textContent,/^Reading the note… \d+ s$/);
+ // Choose stage: steps 1 and 2 are done, step 3 is current, and the counts are in the line.
+ f=fixture();f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']={request_id:'r1',status:'queued',position:0,stage:'choose',problems_found:4,services_found:2,started_at:new Date(Date.now()-5000).toISOString(),mine:true};await f.mount();
+ assert.equal((f.view().match(/<li class="is-done">/g)||[]).length,2);assert.match(f.view(),/<li class="is-now" aria-current="step">[^]*?<b>Choosing the best fit<\/b>/);
+ assert.match(f.view(),/Found 4 problems and 2 services in the note\. Choosing codes…/);assert.match(f.noteLine.textContent,/^Choosing codes… \d+ s$/);
+ f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']={request_id:'r1',status:'queued',position:0,stage:'choose',problems_found:1,services_found:0};await f.context.diagnosisSuggestRefresh('v1');
+ assert.match(f.view(),/Found 1 problem in the note\. Choosing codes…/);assert.doesNotMatch(f.view(),/service/);
+ // The waiting sheet shows the same steps and none of the old sentence.
+ await f.review();assert.match(f.sheets[0].html,/data-suggest-steps/);assert.doesNotMatch(f.sheets[0].html,/You can keep working/);
+ // The elapsed time counts from the moment the person asked.
+ f=fixture();await f.mount();f.replies['POST /api/v1/visits/v1/diagnosis-suggestions']={request_id:'r1',status:'queued',position:0};await f.click('ask');
+ const waiting=vm.runInContext("diagnosisSuggestStates",f.context).get('v1');waiting.startedAt=Date.now()-12500;assert.equal(vm.runInContext("diagnosisSuggestElapsed(diagnosisSuggestStates.get('v1'))",f.context),'12 s');
+ // Ready: all three steps are ticked, with Review and add as the main button.
+ f=fixture();f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']=ready();await f.mount();
+ assert.equal((f.host.suggest.match(/<li class="is-done">/g)||[]).length,3);assert.match(f.host.suggest,/class="primary" data-diagnosis-suggest-review>Review and add</);assert.match(f.host.suggest,/data-diagnosis-suggest-ask>Suggest again</);assert.match(f.host.suggest,/data-diagnosis-suggest-dismiss>Dismiss</);
+ assert.doesNotMatch(source,/You can keep working; you’ll be told/);
+ console.log('PASS the panel sits first, shows the three live steps, the counts and elapsed time, and ticks them when ready');
 
  // Ready in place: rows unchecked, text escaped, evidence quoted or the plain missing-sentence line.
  f=fixture();f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']=ready();await f.mount();await f.review();
@@ -191,7 +217,7 @@ const ready=(extra={})=>({request_id:'r1',status:'ready',position:null,suggestio
 
  // The editor keeps one line; the list opens in a sheet from Review, on the note or in the editor.
  f=fixture();f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']=withProcedures();await f.mount();
- assert.match(f.host.suggest,/3 diagnoses and 2 procedures suggested/);assert.match(f.host.suggest,/data-diagnosis-suggest-review>Review</);assert.doesNotMatch(f.host.suggest,/type="checkbox"|diagnosis-suggest-list|<h4>/);assert.equal(f.sheets.length,0);
+ assert.match(f.host.suggest,/3 diagnoses and 2 procedures suggested/);assert.match(f.host.suggest,/data-diagnosis-suggest-review>Review and add</);assert.doesNotMatch(f.host.suggest,/type="checkbox"|diagnosis-suggest-list|<h4>/);assert.equal(f.sheets.length,0);
  const noteReview=()=>{const button={dataset:{},hasAttribute:n=>n==='data-note-suggest-review',getAttribute:()=>null};for(const handler of f.handlers.click)handler({target:{closest:()=>button},preventDefault(){}});return f.flush();};
  await noteReview();assert.equal(f.sheets.length,1);assert.equal(f.sheets[0].title,'Suggested codes');assert.equal(f.sheets[0].cls,'sheet-wide');
  assert.match(f.sheets[0].html,/^<div data-diagnosis-suggest /);assert.match(f.sheets[0].html,/<h4>Procedures<\/h4>/);assert.match(f.sheets[0].html,/Added to the charges/);

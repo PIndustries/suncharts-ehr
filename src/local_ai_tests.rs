@@ -390,6 +390,10 @@ async fn reading_while_the_job_waits_keeps_it_waiting_and_shows_the_place() {
         (Some("queued"), Some(1))
     );
     assert!(out["suggestions"].is_null());
+    // The step is named while waiting; counts appear only once the codes are being chosen.
+    assert_eq!(out["stage"], "extract");
+    assert!(out["problems_found"].is_null() && out["services_found"].is_null());
+    assert!(out["started_at"].as_str().is_some_and(|t| t.ends_with('Z')));
     let running = f
         .read_with(
             &f.owner,
@@ -398,6 +402,26 @@ async fn reading_while_the_job_waits_keeps_it_waiting_and_shows_the_place() {
         .await
         .unwrap();
     assert_eq!(running["position"], 0);
+    sqlx::query("UPDATE diagnosis_suggestion_requests SET stage='choose',problems='[{\"a\":1},{\"a\":2},{\"a\":3}]'::jsonb,services='[{\"b\":1}]'::jsonb WHERE id=$1")
+        .bind(id)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let choosing = f
+        .read_with(
+            &f.owner,
+            json!({"request_id":id,"status":"queued","position":0}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(choosing["stage"], "choose");
+    assert_eq!(
+        (
+            choosing["problems_found"].as_i64(),
+            choosing["services_found"].as_i64()
+        ),
+        (Some(3), Some(1))
+    );
     // Connect being unreachable leaves what we last knew.
     let unreachable = read(
         &f.db,

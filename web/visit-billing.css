@@ -457,6 +457,26 @@ dialog.sheet-dialog:has(.payment-encounter-preview){width:min(760px,94vw);max-wi
 /* Code suggestions: one line in the codes editor, and the full list in a sheet. */
 .diagnosis-suggest-line{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin:8px 0;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface-soft)}
 .diagnosis-suggest-line [data-diagnosis-suggest-count]{font-weight:600}
+.diagnosis-suggest-panel{display:grid;gap:10px;margin:0 0 14px;padding:12px 14px;border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:10px;background:color-mix(in srgb,var(--blue) 7%,var(--surface-soft))}
+.diagnosis-suggest-panel p,.diagnosis-suggest-panel .suggest-title{margin:0}
+.diagnosis-suggest-panel .suggest-title{font-size:1rem}
+.diagnosis-suggest-panel .actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0}
+.diagnosis-suggest-panel.is-ready{border-left-color:var(--success-text)}
+.suggest-headline{font-weight:600}
+.suggest-steps{list-style:none;margin:0;padding:0;display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:8px}
+.suggest-steps>li{display:flex;align-items:flex-start;gap:8px;min-width:0}
+.suggest-step-mark{flex:none;display:grid;place-items:center;width:22px;height:22px;border-radius:50%;border:2px solid var(--line);font-size:var(--fs-sm);font-weight:600;color:var(--muted);background:var(--surface-soft)}
+.suggest-step-text{display:grid;min-width:0}
+.suggest-step-text b{font-size:var(--fs-sm);font-weight:500;color:var(--muted)}
+.suggest-step-text small{font-size:var(--fs-sm);color:var(--muted)}
+.suggest-steps>li.is-done .suggest-step-mark{background:var(--success-text);border-color:var(--success-text);color:var(--surface-soft)}
+.suggest-steps>li.is-done .suggest-step-text b{color:inherit}
+.suggest-steps>li.is-now .suggest-step-mark{background:var(--blue);border-color:var(--blue);color:var(--surface-soft);animation:claim-step-glow 1.8s ease-in-out infinite}
+.suggest-steps>li.is-now .suggest-step-text b{color:var(--blue);font-weight:600}
+.suggest-live{font-size:var(--fs-sm)}
+.suggest-elapsed{color:var(--muted);white-space:nowrap}
+@media(max-width:700px){.suggest-steps{grid-auto-flow:row}}
+@media(prefers-reduced-motion:reduce){.suggest-steps>li.is-now .suggest-step-mark{animation:none}}
 .diagnosis-suggest-sheet{display:grid;gap:14px}
 .diagnosis-suggest-sheet p,.diagnosis-suggest-sheet h4{margin:0}
 .diagnosis-suggest-section{display:grid;gap:6px}

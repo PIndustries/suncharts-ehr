@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 // SunCharts AI reads the encounter's note and suggests diagnosis codes and procedure codes. The
-// request waits in line with the assistant, so asking returns at once and the clinician is told when
-// the answer is ready. Nothing is added to the encounter until a person ticks a suggestion and
+// request waits in line with the assistant, so asking returns at once and the panel shows each step as it
+// happens. Nothing is added to the encounter until a person ticks a suggestion and
 // chooses Add selected; a ticked procedure is added to the charge table like a code typed there.
 const diagnosisSuggestStates=new Map();
 let diagnosisAiStatusCache=null;
@@ -16,9 +16,14 @@ function diagnosisAiAvailable(){
 }
 function diagnosisSuggestState(id){let state=diagnosisSuggestStates.get(id);if(!state){state={status:'idle',position:0,suggestions:null,procedures:[],proceduresUnmatched:[],picked:new Set(),pickedProcedures:new Set(),message:'',noteChanged:false,hydrated:false,account:me};diagnosisSuggestStates.set(id,state);}return state;}
 function diagnosisSuggestApply(state,data){
+ const fresh=data.request_id!==state.requestId;
  state.requestId=data.request_id||null;state.patientId=data.patient_id||state.patientId;state.number=data.encounter_number||state.number;
  state.unmatched=Array.isArray(data.unmatched)?data.unmatched:[];state.mine=data.mine!==false;state.noteChanged=data.note_changed===true;state.dropped=data.dropped||0;
- if(data.status==='queued'){state.status='queued';state.position=Number(data.position)||0;}
+ if(data.status==='queued'){
+  state.status='queued';state.position=Number(data.position)||0;state.stage=data.stage==='choose'?'choose':'extract';
+  state.problemsFound=Number(data.problems_found)||0;state.servicesFound=Number(data.services_found)||0;
+  if(fresh||!state.startedAt){const at=Date.parse(data.started_at);state.startedAt=Number.isFinite(at)?at:(state.startedAt||Date.now());}
+ }
  else if(data.status==='ready'){if(state.status!=='ready'){state.picked=new Set();state.pickedProcedures=new Set();}state.status='ready';state.suggestions=Array.isArray(data.suggestions)?data.suggestions:[];state.procedures=Array.isArray(data.procedures)?data.procedures:[];state.proceduresUnmatched=Array.isArray(data.procedures_unmatched)?data.procedures_unmatched:[];}
  else if(data.status==='failed'){state.status='failed';state.message='The assistant could not read the note. Try again.';}
  else state.status='idle';
@@ -74,11 +79,47 @@ function diagnosisSuggestPickedCount(state){
  return diagnoses+procedures;
 }
 function diagnosisSuggestAddLabel(state){const count=diagnosisSuggestPickedCount(state);return count?`Add ${count} selected`:'Add selected';}
+// Live progress: three steps and one line that says what is happening now. The elapsed seconds are
+// filled in by a timer so the markup stays the same between polls and the current step keeps glowing.
+function diagnosisSuggestWorking(state){return state?.status==='asking'||state?.status==='queued';}
+function diagnosisSuggestElapsed(state){
+ if(!state?.startedAt)return '';
+ const seconds=Math.max(0,Math.floor((Date.now()-state.startedAt)/1000));
+ return seconds<60?`${seconds} s`:`${Math.floor(seconds/60)} min ${seconds%60} s`;
+}
+function diagnosisSuggestFoundText(state){
+ const problems=Number(state.problemsFound)||0,services=Number(state.servicesFound)||0,parts=[];
+ if(problems)parts.push(`${problems} ${problems===1?'problem':'problems'}`);
+ if(services)parts.push(`${services} ${services===1?'service':'services'}`);
+ return parts.join(' and ');
+}
+// The line under the steps, or its short form for the button beside Save note.
+function diagnosisSuggestLiveText(state,short=false){
+ if(state.status==='asking')return 'Sending the note…';
+ if(state.status==='queued'&&state.stage!=='choose'&&state.position>0)return `Waiting for a turn · ${state.position} ahead of you`;
+ if(state.stage==='choose'){
+  const found=diagnosisSuggestFoundText(state);
+  return short||!found?'Choosing codes…':`Found ${found} in the note. Choosing codes…`;
+ }
+ return 'Reading the note…';
+}
+function diagnosisSuggestStepsMarkup(state,allDone=false){
+ const current=allDone?0:state.stage==='choose'?3:1;
+ const steps=[['Reading the note',''],['Finding matching codes',allDone||current===3?'Checked your code lists':''],['Choosing the best fit','']];
+ return `<ol class="suggest-steps" data-suggest-steps>${steps.map((step,index)=>{
+  const number=index+1,cls=allDone||number<current?'is-done':number===current?'is-now':'is-later';
+  return `<li class="${cls}"${number===current?' aria-current="step"':''}><span class="suggest-step-mark" aria-hidden="true">${cls==='is-done'?'✓':number}</span><span class="suggest-step-text"><b>${step[0]}</b><small>${step[1]}</small></span></li>`;
+ }).join('')}</ol>`;
+}
+function diagnosisSuggestWorkingMarkup(state){
+ const place=state.status==='queued'&&state.stage!=='choose'&&state.position>0?`Waiting for a turn · <span data-diagnosis-suggest-place>${esc(String(state.position))} ahead of you</span>`:esc(diagnosisSuggestLiveText(state));
+ return `${diagnosisSuggestStepsMarkup(state)}<p class="suggest-live" role="status" data-diagnosis-suggest-waiting>${place} <span class="suggest-elapsed" data-suggest-elapsed></span></p>`;
+}
 function diagnosisSuggestSheetMarkup(id,state){
  const ask='<button type="button" data-diagnosis-suggest-ask>Suggest again</button>',dismiss='<button type="button" class="text-button" data-diagnosis-suggest-dismiss>Dismiss</button>';
  const wrap=body=>`<div data-diagnosis-suggest data-visit-id="${esc(id)}" class="diagnosis-suggest-sheet">${body}</div>`;
  const alert=state.message?`<p role="alert" data-diagnosis-suggest-error>${esc(state.message)}</p>`:'';
- if(state.status==='asking'||state.status==='queued')return wrap(`<p class="muted" role="status" data-diagnosis-suggest-waiting>Reading the note. You can keep working; you’ll be told when the suggestions are ready.${state.position>0?` <span data-diagnosis-suggest-place>${esc(String(state.position))} ahead of you</span>`:''}</p>`);
+ if(diagnosisSuggestWorking(state))return wrap(diagnosisSuggestWorkingMarkup(state));
  if(state.status==='failed'||state.status==='error')return wrap(`<p role="alert" data-diagnosis-suggest-error>${esc(state.message||'The assistant could not read the note. Try again.')}</p><div class="actions diagnosis-suggest-actions">${ask}</div>`);
  const diagnoses=state.suggestions||[],procedures=state.procedures||[],found=diagnoses.length+procedures.length;
  if(state.noteChanged)return wrap(`<p role="status" data-diagnosis-suggest-stale>The note changed. Suggest again.</p><div class="actions diagnosis-suggest-actions">${ask}${dismiss}</div>`);
@@ -88,19 +129,18 @@ function diagnosisSuggestSheetMarkup(id,state){
  const procedureSection=procedures.length||hasProcedureUnmatched?`<section class="diagnosis-suggest-section"><h4>Procedures</h4>${procedures.length?`<p class="muted">Added to the charges</p>${gate.ok?'':`<p class="muted" data-diagnosis-suggest-charges-note>${esc(gate.why)}</p>`}<ul class="diagnosis-suggest-list" data-diagnosis-suggest-procedures>${procedures.map((item,index)=>diagnosisSuggestItemRow('procedure',item,index,gate.ok,state)).join('')}</ul>`:''}${diagnosisSuggestProceduresUnmatchedMarkup(state)}</section>`:'';
  return wrap(`<p class="diagnosis-suggest-intro">Read from the saved note. Tick what applies; nothing is added until you choose.</p>${alert}${diagnosisSection}${procedureSection}<div class="actions diagnosis-suggest-actions"><button type="button" class="primary" data-diagnosis-suggest-add>${esc(diagnosisSuggestAddLabel(state))}</button><button type="button" class="text-button" data-diagnosis-suggest-all>Tick all</button><button type="button" class="text-button" data-diagnosis-suggest-ask>Suggest again</button><button type="button" class="text-button" data-diagnosis-suggest-dismiss>Dismiss</button></div><p class="muted"><small>Suggestions come from SunCharts AI and are read from the saved note. Check each one against the note. If you change the note, save it and press Suggest again.</small></p>`);
 }
-// The one line left in the codes editor. The list itself opens in a sheet.
+// The panel at the top of the codes editor. The list itself opens in a sheet.
 function diagnosisSuggestMarkup(id,state){
- const ask='<button type="button" data-diagnosis-suggest-ask>Suggest codes</button>',dismiss='<button type="button" class="text-button" data-diagnosis-suggest-dismiss>Dismiss</button>';
- let body='';
+ const ask='<button type="button" class="primary" data-diagnosis-suggest-ask>Suggest codes</button>',again='<button type="button" data-diagnosis-suggest-ask>Suggest again</button>',dismiss='<button type="button" class="text-button" data-diagnosis-suggest-dismiss>Dismiss</button>';
  const diagnoses=(state.suggestions||[]).length,procedures=(state.procedures||[]).length,found=diagnoses+procedures;
- if(state.status==='asking')body='<button type="button" disabled>Suggest codes</button><span class="muted" role="status">Sending the note…</span>';
- else if(state.status==='queued')body=`<span class="muted" role="status" data-diagnosis-suggest-waiting>Reading the note. You can keep working; you’ll be told when the suggestions are ready.${state.position>0?` <span data-diagnosis-suggest-place>${esc(String(state.position))} ahead of you</span>`:''}</span>`;
- else if(state.status==='failed'||state.status==='error')body=`${ask}<span role="alert" data-diagnosis-suggest-error>${esc(state.message||'The assistant could not read the note. Try again.')}</span>`;
- else if(state.status==='ready'&&state.noteChanged)body=`<span role="status" data-diagnosis-suggest-stale>The note changed. Suggest again.</span>${ask}${dismiss}`;
- else if(state.status==='ready'&&!found)body=`<span class="muted" data-diagnosis-suggest-empty>No codes found in the note.</span>${ask}${dismiss}`;
- else if(state.status==='ready')body=`<span data-diagnosis-suggest-count>${esc(diagnosisSuggestCountText(diagnoses,procedures,'suggested'))}</span><button type="button" data-diagnosis-suggest-review>Review</button>${dismiss}`;
- else body=`${ask}<span class="muted"><small>Reads the saved note and proposes codes for you to tick. Nothing is added until you choose.</small></span>`;
- return `<section data-diagnosis-suggest class="diagnosis-suggest-line" aria-label="Code suggestions">${body}</section>`;
+ let body='',mode='';
+ if(diagnosisSuggestWorking(state)){mode='working';body=diagnosisSuggestWorkingMarkup(state);}
+ else if(state.status==='failed'||state.status==='error')body=`<p role="alert" data-diagnosis-suggest-error>${esc(state.message||'The assistant could not read the note. Try again.')}</p><div class="actions">${ask}</div>`;
+ else if(state.status==='ready'&&state.noteChanged)body=`<p role="status" data-diagnosis-suggest-stale>The note changed. Suggest again.</p><div class="actions">${ask}${dismiss}</div>`;
+ else if(state.status==='ready'&&!found)body=`<p class="muted" data-diagnosis-suggest-empty>No codes found in the note.</p><div class="actions">${ask}${dismiss}</div>`;
+ else if(state.status==='ready'){mode='ready';body=`${diagnosisSuggestStepsMarkup(state,true)}<p class="suggest-headline" data-diagnosis-suggest-count>${esc(diagnosisSuggestCountText(diagnoses,procedures,'suggested'))}</p><div class="actions"><button type="button" class="primary" data-diagnosis-suggest-review>Review and add</button>${again}${dismiss}</div>`;}
+ else body=`<p class="muted">SunCharts AI reads the saved note and suggests diagnosis and procedure codes.</p><div class="actions">${ask}</div>`;
+ return `<section data-diagnosis-suggest class="diagnosis-suggest-panel${mode?` is-${mode}`:''}" aria-label="Suggested codes"><h4 class="suggest-title">Suggested codes</h4>${body}</section>`;
 }
 // The button beside Save note, and a short line saying where the suggestions stand.
 function diagnosisSuggestCountText(diagnoses,procedures,word='ready'){
@@ -117,7 +157,7 @@ function diagnosisSuggestNoteSync(id){
  button.textContent=state?.status==='ready'?'Suggest codes again':'Suggest codes';
  if(!line)return;
  const diagnoses=(state?.suggestions||[]).length,procedures=(state?.procedures||[]).length;
- if(state?.status==='queued'||state?.status==='asking')line.textContent=`Reading the note${state.position>0?` · ${state.position} ahead of you`:''}. You can keep working.`;
+ if(diagnosisSuggestWorking(state))line.textContent=`${diagnosisSuggestLiveText(state,true)} ${diagnosisSuggestElapsed(state)}`.trim();
  else if(state?.status==='ready'&&state.noteChanged)line.textContent='The note changed since the last suggestions.';
  else if(state?.status==='ready')line.innerHTML=`${diagnosisSuggestCountText(diagnoses,procedures)} · <button type="button" class="text-button" data-note-suggest-review>Review</button>`;
  else if(state?.status==='failed'||state?.status==='error')line.textContent=state.message||'The assistant could not read the note. Try again.';
@@ -135,7 +175,11 @@ function diagnosisSuggestSheetPaint(id){
  const state=diagnosisSuggestStates.get(id);
  if(!state||!diagnosisSuggestSheetIsOpen(state))return;
  if(state.status==='idle'){diagnosisSuggestSheetClose(state);return;}
- const slot=document.createElement('div');slot.innerHTML=diagnosisSuggestSheetMarkup(id,state);
+ const html=diagnosisSuggestSheetMarkup(id,state);
+ // A waiting sheet is left alone while nothing in it changed, so the current step keeps glowing.
+ if(diagnosisSuggestWorking(state)&&state.sheetHtml===html)return;
+ state.sheetHtml=html;
+ const slot=document.createElement('div');slot.innerHTML=html;
  const node=slot.firstElementChild||slot,body=state.sheet.querySelector?.('.sheet-body');
  if(body?.replaceChildren)body.replaceChildren(node);
 }
@@ -143,7 +187,8 @@ function diagnosisSuggestSheetOpen(id){
  const state=diagnosisSuggestStates.get(id);
  if(!state||typeof sheetOpen!=='function')return;
  if(diagnosisSuggestSheetIsOpen(state)){diagnosisSuggestSheetPaint(id);return;}
- const slot=document.createElement('div');slot.innerHTML=diagnosisSuggestSheetMarkup(id,state);
+ const html=diagnosisSuggestSheetMarkup(id,state);state.sheetHtml=html;
+ const slot=document.createElement('div');slot.innerHTML=html;
  state.sheet=sheetOpen('Suggested codes',slot.firstElementChild||slot);
  state.sheet?.classList?.add('sheet-wide');
 }
@@ -174,17 +219,35 @@ function diagnosisSuggestPaint(id){
  diagnosisSuggestNoteSync(id);diagnosisSuggestSheetPaint(id);
  const host=$('visit-diagnoses'),state=diagnosisSuggestStates.get(id);
  if(!host||!state||activeVisit?.id!==id||state.account!==me)return;
- host.querySelector?.('[data-diagnosis-suggest]')?.remove();
- const slot=document.createElement('div');slot.innerHTML=diagnosisSuggestMarkup(id,state);
+ const html=diagnosisSuggestMarkup(id,state),present=host.querySelector?.('[data-diagnosis-suggest]');
+ // While working the markup does not change between polls; leaving it alone keeps the glow smooth.
+ if(present&&diagnosisSuggestWorking(state)&&state.panelHtml===html&&state.panelHost===host){diagnosisSuggestTick(id);return;}
+ present?.remove();
+ const slot=document.createElement('div');slot.innerHTML=html;
  const section=slot.firstElementChild||slot;
- const anchor=host.querySelector?.('details');
- if(anchor)anchor.before(section);else host.append(section);
+ // The panel is the first thing in the editor.
+ if(typeof host.prepend==='function')host.prepend(section);else host.append(section);
+ const wasWorking=state.painted==='working';
+ state.panelHtml=html;state.panelHost=host;state.painted=diagnosisSuggestWorking(state)?'working':state.status;
+ if(wasWorking&&state.status==='ready'&&!state.noteChanged&&typeof motionFlash==='function')motionFlash(section);
+ diagnosisSuggestTick(id);
+}
+const diagnosisSuggestTicks=new Map();
+// Fills in the elapsed seconds once a second while the request is working.
+function diagnosisSuggestTick(id){
+ clearTimeout(diagnosisSuggestTicks.get(id));diagnosisSuggestTicks.delete(id);
+ const state=diagnosisSuggestStates.get(id);
+ if(!diagnosisSuggestWorking(state))return;
+ const text=diagnosisSuggestElapsed(state);
+ for(const node of document.querySelectorAll?.('[data-suggest-elapsed]')||[])node.textContent=text;
+ diagnosisSuggestNoteSync(id);
+ diagnosisSuggestTicks.set(id,setTimeout(()=>diagnosisSuggestTick(id),1000));
 }
 function diagnosisSuggestSchedulePoll(id){
  clearTimeout(diagnosisSuggestPoll.get(id));diagnosisSuggestPoll.delete(id);
  const state=diagnosisSuggestStates.get(id);
- // The live notice normally arrives first; this is only a safety net while the editor stays open.
- if(state?.status==='queued')diagnosisSuggestPoll.set(id,setTimeout(()=>{void diagnosisSuggestRefresh(id);},30000));
+ // The live notice normally arrives first; the quick poll keeps the steps moving in between.
+ if(state?.status==='queued')diagnosisSuggestPoll.set(id,setTimeout(()=>{void diagnosisSuggestRefresh(id);},1500));
 }
 async function diagnosisSuggestRefresh(id,{announce=false}={}){
  const account=me,state=diagnosisSuggestState(id),before=state.status;
@@ -239,11 +302,11 @@ function diagnosisSuggestNoteMount(){
 if(typeof MutationObserver==='function'&&typeof document!=='undefined'&&document.documentElement)new MutationObserver(()=>{const button=document.querySelector('[data-note-suggest][hidden]');if(button&&!button.dataset.suggestSeen){button.dataset.suggestSeen='1';diagnosisSuggestNoteMount();}}).observe(document.documentElement,{childList:true,subtree:true});
 async function diagnosisSuggestAsk(id){
  const account=me,state=diagnosisSuggestState(id);
- state.status='asking';state.message='';diagnosisSuggestPaint(id);
+ state.status='asking';state.message='';state.stage='extract';state.startedAt=Date.now();diagnosisSuggestPaint(id);
  try{
   const data=await api(`/api/v1/visits/${id}/diagnosis-suggestions`,'POST',{request_id:diagnosisSuggestUuid()});
   if(me!==account)return;
-  state.status='queued';state.position=Number(data.position)||0;state.requestId=data.request_id;state.suggestions=null;state.procedures=[];state.proceduresUnmatched=[];state.noteChanged=false;state.picked=new Set();state.pickedProcedures=new Set();
+  state.status='queued';state.position=Number(data.position)||0;state.stage='extract';state.problemsFound=0;state.servicesFound=0;state.requestId=data.request_id;state.suggestions=null;state.procedures=[];state.proceduresUnmatched=[];state.noteChanged=false;state.picked=new Set();state.pickedProcedures=new Set();
   diagnosisSuggestSchedulePoll(id);
  }catch(error){
   if(me!==account)return;
