@@ -332,6 +332,9 @@ async function loadMembershipPrices(target,cursor){
   if(!Array.isArray(data.items))throw new Error('Membership prices could not be loaded.');
   const known=new Set(cursor?(st.prices||[]).map(price=>price.id):[]);
   st.prices=cursor?[...(st.prices||[]),...data.items.filter(price=>!known.has(price.id))]:data.items;st.next=data.next_cursor||null;st.available=data.creation_available===true;st.error=null;
+  // A retire that did not finish keeps its request, so pressing Retire again carries on with it
+  // even after the page was reloaded.
+  for(const op of data.pending_operations||[])if(op.kind==='price_retire'&&op.request?.price_id&&op.request_id)membershipRetireRequests.set(me.tenant_id+':'+op.request.price_id,op.request_id);
   const pendingPrice=(data.pending_operations||[]).find(op=>op.kind==='price');
   if(pendingPrice)membershipPriceRequests.set(me.tenant_id,{request_id:pendingPrice.request_id,body:pendingPrice.request,deadline:Date.parse(pendingPrice.retry_safe_until),retry_allowed:pendingPrice.retry_allowed===true});
  }catch(error){if(!current())return;st.error=error.message||'Membership prices could not be loaded.';}
