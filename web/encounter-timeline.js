@@ -25,7 +25,9 @@ function encounterTimelineSteps(summary,visit,appointment){
  add('checkin','Checked in',arrived?encounterTimelineTime(appointment?.checked_in_at||appointment?.arrived_at):'',arrived);
  if(s&&p.copay_cents!=null){
   const due=Number(p.copay_due_cents)||0,paid=Number(p.copay_paid_cents)||0,done=posted||due<=0;
-  add('copay','Copay',paid>0&&due<=0?`${encounterTimelineMoney(paid)} paid`:due>0?`${encounterTimelineMoney(due)} due`:done?'Nothing due':'',done);
+  // Once the charges are posted and the patient owes nothing, the copay line never says money is due.
+  const settled=posted&&(Number(p.owes_now_cents)||0)<=0;
+  add('copay','Copay',settled?(paid>0?`${encounterTimelineMoney(paid)} paid`:'Nothing due'):paid>0&&due<=0?`${encounterTimelineMoney(paid)} paid`:due>0?`${encounterTimelineMoney(due)} due`:done?'Nothing due':'',done);
  }
  add('note','Note signed',signed?encounterTimelineTime(visit?.signed_at):'',signed);
  add('charges','Charges posted',s&&s.charges_cents!=null?encounterTimelineMoney(s.charges_cents):'',posted);
