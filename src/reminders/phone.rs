@@ -40,10 +40,7 @@ pub(super) fn e164(v: &str) -> Option<String> {
         _ => None,
     }
 }
-async fn setting(
-    tx: &mut Transaction<'_, Postgres>,
-    tenant: Uuid,
-) -> Result<Option<PhoneSetting>> {
+async fn setting(tx: &mut Transaction<'_, Postgres>, tenant: Uuid) -> Result<Option<PhoneSetting>> {
     Ok(
         sqlx::query_as("SELECT * FROM reminder_phone_settings WHERE tenant_id=$1 FOR UPDATE")
             .bind(tenant)
@@ -164,21 +161,21 @@ async fn save(
     sqlx::query("INSERT INTO reminder_phone_settings(tenant_id,id,account_sid,from_number) VALUES($1,$2,$3,$4) ON CONFLICT(tenant_id) DO UPDATE SET account_sid=$3,from_number=$4,credential_revision=reminder_phone_settings.credential_revision+1,enabled=false,verified=false,last_test_at=NULL,last_test_result=NULL,version=reminder_phone_settings.version+1").bind(a.tenant_id).bind(id).bind(sid).bind(&from).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO reminder_phone_credentials(tenant_id,setting_id,revision,encrypted_key,account_sid,from_number) VALUES($1,$2,$3,$4,$5,$6)").bind(a.tenant_id).bind(id).bind(revision).bind(encrypted).bind(sid).bind(&from).execute(&mut *tx).await?;
     setting_event(&mut tx, &a, id, "phone_saved_off").await?;
-    let r = setting(&mut tx, a.tenant_id).await?.ok_or(Error::NotFound)?;
+    let r = setting(&mut tx, a.tenant_id)
+        .await?
+        .ok_or(Error::NotFound)?;
     tx.commit().await?;
     Ok(Json(r.public()))
 }
 /// Checks the saved account with Twilio: the credential signs in, the account is active and the
 /// sending number belongs to it. Nothing is sent to anyone.
-async fn test(
-    a: Actor,
-    ExtractState(s): ExtractState<State>,
-    h: HeaderMap,
-) -> Result<Json<Value>> {
+async fn test(a: Actor, ExtractState(s): ExtractState<State>, h: HeaderMap) -> Result<Json<Value>> {
     owner(&a)?;
     let mut tx = db(&s)?.begin().await?;
     reminder_lock(&mut tx, &a).await?;
-    let r = setting(&mut tx, a.tenant_id).await?.ok_or(Error::NotFound)?;
+    let r = setting(&mut tx, a.tenant_id)
+        .await?
+        .ok_or(Error::NotFound)?;
     if crate::expected(&h)? != r.version {
         return Err(Error::Conflict("reminder phone settings changed"));
     }
@@ -197,7 +194,9 @@ async fn test(
     };
     sqlx::query("UPDATE reminder_phone_settings SET enabled=false,verified=$2,last_test_at=now(),last_test_result=$3,version=version+1 WHERE tenant_id=$1").bind(a.tenant_id).bind(verified).bind(note).execute(&mut *tx).await?;
     setting_event(&mut tx, &a, r.id, "phone_connection_checked").await?;
-    let out = setting(&mut tx, a.tenant_id).await?.ok_or(Error::NotFound)?;
+    let out = setting(&mut tx, a.tenant_id)
+        .await?
+        .ok_or(Error::NotFound)?;
     tx.commit().await?;
     Ok(Json(json!({"setting":out.public(),"verified":verified})))
 }
@@ -215,7 +214,9 @@ async fn activate(
     owner(&a)?;
     let mut tx = db(&s)?.begin().await?;
     reminder_lock(&mut tx, &a).await?;
-    let r = setting(&mut tx, a.tenant_id).await?.ok_or(Error::NotFound)?;
+    let r = setting(&mut tx, a.tenant_id)
+        .await?
+        .ok_or(Error::NotFound)?;
     if crate::expected(&h)? != r.version {
         return Err(Error::Conflict("reminder phone settings changed"));
     }
@@ -225,11 +226,13 @@ async fn activate(
     if v.enabled {
         token(&mut tx, a.tenant_id, r.id, r.credential_revision).await?;
     }
-    sqlx::query("UPDATE reminder_phone_settings SET enabled=$2,version=version+1 WHERE tenant_id=$1")
-        .bind(a.tenant_id)
-        .bind(v.enabled)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE reminder_phone_settings SET enabled=$2,version=version+1 WHERE tenant_id=$1",
+    )
+    .bind(a.tenant_id)
+    .bind(v.enabled)
+    .execute(&mut *tx)
+    .await?;
     setting_event(
         &mut tx,
         &a,
@@ -241,7 +244,9 @@ async fn activate(
         },
     )
     .await?;
-    let r = setting(&mut tx, a.tenant_id).await?.ok_or(Error::NotFound)?;
+    let r = setting(&mut tx, a.tenant_id)
+        .await?
+        .ok_or(Error::NotFound)?;
     tx.commit().await?;
     Ok(Json(r.public()))
 }
@@ -260,7 +265,10 @@ async fn twilio_get(base: &str, sid: &str, key: &str, path: &str) -> Result<(u16
         .map_err(|_| Error::Invalid("Twilio could not be reached"))?;
     let status = response.status().as_u16();
     let bytes = crate::stedi::bytes(response, 262_144).await?;
-    Ok((status, serde_json::from_slice(&bytes).unwrap_or(Value::Null)))
+    Ok((
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    ))
 }
 async fn verify_at(base: &str, sid: &str, key: &str, from: &str) -> Result<Check> {
     let (status, account) = twilio_get(base, sid, key, ".json").await?;
@@ -305,13 +313,17 @@ pub trait PhoneTransport: Send + Sync {
         from: &str,
         words: &str,
     ) -> PhoneSend;
-    async fn status(&self, sid: &str, key: &str, kind: &str, reference: &str)
-        -> Result<DeliveryResult>;
+    async fn status(
+        &self,
+        sid: &str,
+        key: &str,
+        kind: &str,
+        reference: &str,
+    ) -> Result<DeliveryResult>;
 }
 pub struct Twilio;
 fn xml(v: &str) -> String {
-    v.replace('&', "and")
-        .replace(['<', '>', '"', '\''], " ")
+    v.replace('&', "and").replace(['<', '>', '"', '\''], " ")
 }
 async fn send_at(
     base: &str,
@@ -469,7 +481,10 @@ pub async fn process_one_with_transport(
                 .ok_or(Error::Invalid("sender evidence missing"))?,
         )
         .await?;
-        let (status, note) = match transport.status(&sid, key.expose(), &kind, &reference).await {
+        let (status, note) = match transport
+            .status(&sid, key.expose(), &kind, &reference)
+            .await
+        {
             Ok(DeliveryResult::Delivered) => ("delivered", "provider_confirmed_delivery"),
             Ok(DeliveryResult::Failed) => ("failed", "provider_confirmed_failure"),
             _ => ("accepted", "provider_delivery_not_yet_confirmed"),
@@ -517,7 +532,16 @@ pub async fn process_one_with_transport(
         return Ok(true);
     }
     let Some(to) = r.destination.as_deref().and_then(e164) else {
-        hold(&mut tx, &a, id, "failed", "phone_number_not_valid", "dispatch_held", "The phone number on file cannot be texted or called as written").await?;
+        hold(
+            &mut tx,
+            &a,
+            id,
+            "failed",
+            "phone_number_not_valid",
+            "dispatch_held",
+            "The phone number on file cannot be texted or called as written",
+        )
+        .await?;
         tx.commit().await?;
         return Ok(true);
     };
@@ -564,9 +588,11 @@ pub async fn process_one_with_transport(
         .send(&sid, key.expose(), &kind, &to, &from, &text)
         .await;
     let (status, note, reference) = match result {
-        PhoneSend::Accepted(reference) => {
-            ("accepted", "provider_accepted_not_delivered", Some(reference))
-        }
+        PhoneSend::Accepted(reference) => (
+            "accepted",
+            "provider_accepted_not_delivered",
+            Some(reference),
+        ),
         PhoneSend::Rejected(429, _) if r.attempts < 5 => {
             ("scheduled", "rate_limited_retry_pending", None)
         }
@@ -589,4 +615,250 @@ pub async fn process_one_with_transport(
     .await?;
     tx.commit().await?;
     Ok(true)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    const SID: &str = "AC00000000000000000000000000000000";
+    const KEY: &str = "0123456789abcdef0123456789abcdef";
+    const FROM: &str = "+14155550100";
+    const TO: &str = "+14155550123";
+    const MESSAGE: &str = "SM0123456789abcdef0123456789abcdef";
+    const CALL: &str = "CA0123456789abcdef0123456789abcdef";
+    /// A local endpoint that answers one request per canned response, in order, and hands back
+    /// each raw request it saw.
+    async fn endpoint(
+        responses: Vec<(u16, Value)>,
+    ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for (status, response) in responses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                loop {
+                    let mut part = [0; 4096];
+                    let n = stream.read(&mut part).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&part[..n]);
+                    if let Some(index) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {
+                        let header = String::from_utf8_lossy(&bytes[..index]);
+                        let length = header
+                            .lines()
+                            .find_map(|v| {
+                                v.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .and_then(|x| x.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
+                        if bytes.len() >= index + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                let body = response.to_string();
+                stream.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+                seen.push(String::from_utf8(bytes).unwrap());
+            }
+            seen
+        });
+        (base, task)
+    }
+    fn has_basic_auth(request: &str) -> bool {
+        use base64::Engine;
+        let want = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("{SID}:{KEY}"))
+        );
+        request.lines().any(|l| {
+            l.split_once(':')
+                .is_some_and(|(k, v)| k.eq_ignore_ascii_case("authorization") && v.trim() == want)
+        })
+    }
+    #[test]
+    fn phone_numbers_are_put_in_international_form() {
+        for (given, want) in [
+            ("4155550100", "+14155550100"),
+            ("14155550100", "+14155550100"),
+            ("+14155550100", "+14155550100"),
+            ("+442071838750", "+442071838750"),
+            ("(415) 555-0100", "+14155550100"),
+            (" 415.555.0100 ", "+14155550100"),
+            ("1-415-555-0100", "+14155550100"),
+        ] {
+            assert_eq!(e164(given).as_deref(), Some(want), "{given}");
+        }
+        for bad in [
+            "",
+            "   ",
+            "555-0100",
+            "415555010a",
+            "call me",
+            "0155550100",
+            "1155550100",
+            "+0442071838750",
+            "+1234567",
+            "415555010012345",
+        ] {
+            assert_eq!(e164(bad), None, "{bad}");
+        }
+    }
+    #[tokio::test]
+    async fn text_send_contract_and_outcomes() {
+        let (base, task) = endpoint(vec![(201, json!({"sid":MESSAGE}))]).await;
+        let sent = send_at(&base, SID, KEY, "text", TO, FROM, "Clinic: reminder").await;
+        assert!(matches!(sent, PhoneSend::Accepted(ref v) if v == MESSAGE));
+        let request = task.await.unwrap().remove(0);
+        assert!(request.starts_with(&format!("POST /2010-04-01/Accounts/{SID}/Messages.json ")));
+        assert!(has_basic_auth(&request));
+        assert!(request.contains("To=%2B14155550123"));
+        assert!(request.contains("From=%2B14155550100"));
+        assert!(request.contains("Body=Clinic%3A+reminder"));
+        assert!(!request.contains("Twiml"));
+        for (status, body, rejected) in [
+            (
+                400,
+                json!({"code":21610,"message":"synthetic"}),
+                Some((400, Some(21610))),
+            ),
+            (400, json!({"message":"no code"}), Some((400, None))),
+            (500, json!({"message":"synthetic"}), None),
+            (201, json!({"sid":"SMshort"}), None),
+            (
+                201,
+                json!({"sid":"SM0123456789abcdef0123456789abcde!"}),
+                None,
+            ),
+            (201, json!({"status":"queued"}), None),
+        ] {
+            let (base, task) = endpoint(vec![(status, body)]).await;
+            let sent = send_at(&base, SID, KEY, "text", TO, FROM, "words").await;
+            task.await.unwrap();
+            match rejected {
+                Some((code, number)) => {
+                    assert!(matches!(sent, PhoneSend::Rejected(c, n) if c == code && n == number))
+                }
+                None => assert!(matches!(sent, PhoneSend::Uncertain)),
+            }
+        }
+    }
+    #[tokio::test]
+    async fn call_send_speaks_the_words_without_raw_markup() {
+        let (base, task) = endpoint(vec![(201, json!({"sid":CALL}))]).await;
+        let sent = send_at(
+            &base,
+            SID,
+            KEY,
+            "call",
+            TO,
+            FROM,
+            "Fish & <b>Chips</b> clinic",
+        )
+        .await;
+        assert!(matches!(sent, PhoneSend::Accepted(ref v) if v == CALL));
+        let request = task.await.unwrap().remove(0);
+        assert!(request.starts_with(&format!("POST /2010-04-01/Accounts/{SID}/Calls.json ")));
+        assert!(has_basic_auth(&request));
+        let body = request.split("\r\n\r\n").nth(1).unwrap();
+        let twiml: String = url::form_urlencoded::parse(body.as_bytes())
+            .find(|(k, _)| k == "Twiml")
+            .map(|(_, v)| v.into_owned())
+            .expect("Twiml field");
+        assert!(twiml.contains("<Say>"));
+        assert!(twiml.contains("Fish and  b Chips /b  clinic"));
+        let inside: String = twiml
+            .split("<Say>")
+            .skip(1)
+            .map(|s| s.split("</Say>").next().unwrap())
+            .collect();
+        assert!(!inside.contains(['&', '<', '>']));
+        assert!(!body.contains("Body="));
+        // A call reference must start with CA or MM; a message reference is not enough.
+        let (base, task) = endpoint(vec![(201, json!({"sid":MESSAGE}))]).await;
+        let sent = send_at(&base, SID, KEY, "call", TO, FROM, "words").await;
+        task.await.unwrap();
+        assert!(matches!(sent, PhoneSend::Uncertain));
+    }
+    #[tokio::test]
+    async fn delivery_status_is_read_from_twilio() {
+        for (kind, reference, state, want) in [
+            ("text", MESSAGE, "delivered", DeliveryResult::Delivered),
+            ("text", MESSAGE, "undelivered", DeliveryResult::Failed),
+            ("text", MESSAGE, "sent", DeliveryResult::Pending),
+            ("call", CALL, "completed", DeliveryResult::Delivered),
+            ("call", CALL, "no-answer", DeliveryResult::Failed),
+            ("call", CALL, "ringing", DeliveryResult::Pending),
+        ] {
+            let (base, task) = endpoint(vec![(200, json!({"sid":reference,"status":state}))]).await;
+            let got = status_at(&base, SID, KEY, kind, reference).await.unwrap();
+            let request = task.await.unwrap().remove(0);
+            let folder = if kind == "call" { "Calls" } else { "Messages" };
+            assert!(request.starts_with(&format!(
+                "GET /2010-04-01/Accounts/{SID}/{folder}/{reference}.json "
+            )));
+            assert!(has_basic_auth(&request));
+            assert!(
+                matches!(
+                    (&got, &want),
+                    (DeliveryResult::Delivered, DeliveryResult::Delivered)
+                        | (DeliveryResult::Failed, DeliveryResult::Failed)
+                        | (DeliveryResult::Pending, DeliveryResult::Pending)
+                ),
+                "{kind} {state}"
+            );
+        }
+        let (base, task) = endpoint(vec![(
+            200,
+            json!({"sid":"SMffffffffffffffffffffffffffffffff","status":"delivered"}),
+        )])
+        .await;
+        assert!(status_at(&base, SID, KEY, "text", MESSAGE).await.is_err());
+        task.await.unwrap();
+    }
+    #[tokio::test]
+    async fn account_check_needs_active_account_and_the_number() {
+        let account = json!({"sid":SID,"status":"active"});
+        let (base, task) = endpoint(vec![
+            (200, account.clone()),
+            (
+                200,
+                json!({"incoming_phone_numbers":[{"phone_number":FROM}]}),
+            ),
+        ])
+        .await;
+        assert_eq!(
+            verify_at(&base, SID, KEY, FROM).await.unwrap(),
+            Check::Ready
+        );
+        let seen = task.await.unwrap();
+        assert!(seen[0].starts_with(&format!("GET /2010-04-01/Accounts/{SID}.json ")));
+        assert!(seen[1].contains("IncomingPhoneNumbers.json?PhoneNumber=%2B14155550100"));
+        assert!(seen.iter().all(|r| has_basic_auth(r)));
+        let (base, task) = endpoint(vec![(401, json!({"code":20003}))]).await;
+        assert_eq!(
+            verify_at(&base, SID, KEY, FROM).await.unwrap(),
+            Check::NotSignedIn
+        );
+        assert_eq!(task.await.unwrap().len(), 1);
+        let (base, task) = endpoint(vec![(200, json!({"sid":SID,"status":"suspended"}))]).await;
+        assert_eq!(
+            verify_at(&base, SID, KEY, FROM).await.unwrap(),
+            Check::NotSignedIn
+        );
+        task.await.unwrap();
+        let (base, task) = endpoint(vec![
+            (200, account.clone()),
+            (200, json!({"incoming_phone_numbers":[]})),
+        ])
+        .await;
+        assert_eq!(
+            verify_at(&base, SID, KEY, FROM).await.unwrap(),
+            Check::NumberNotOnAccount
+        );
+        task.await.unwrap();
+    }
 }
