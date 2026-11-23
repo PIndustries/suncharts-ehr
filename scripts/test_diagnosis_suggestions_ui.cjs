@@ -65,6 +65,18 @@ const ready=(extra={})=>({request_id:'r1',status:'ready',position:null,suggestio
  assert.match(f.host.suggest,/Add selected/);assert.match(f.host.suggest,/Dismiss/);
  console.log('PASS ready suggestions appear in place, unchecked, with escaped text and quoted or missing evidence');
 
+ // Problems with no code: a muted block under the list, escaped, and absent when there are none.
+ assert.doesNotMatch(f.host.suggest,/No code found for/);
+ f=fixture();f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']=ready({unmatched:[{problem:'Anxiety <b>about</b> travel',evidence:'worried about <i>flying</i>'},{problem:'Insomnia',evidence:null}]});await f.mount();
+ assert.match(f.host.suggest,/data-diagnosis-suggest-unmatched/);assert.match(f.host.suggest,/No code found for:/);assert.match(f.host.suggest,/Use the code search above to add these\./);
+ assert.match(f.host.suggest,/Anxiety &lt;b&gt;about&lt;\/b&gt; travel <small>“worried about &lt;i&gt;flying&lt;\/i&gt;”<\/small>/);assert.match(f.host.suggest,/<li>Insomnia<\/li>/);assert.doesNotMatch(f.host.suggest,/<b>about|<i>flying/);
+ assert.ok(f.host.suggest.indexOf('No code found for:')>f.host.suggest.indexOf('</ul>'));assert.equal((f.host.suggest.match(/type="checkbox"/g)||[]).length,3);
+ f=fixture();f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']=ready({unmatched:[]});await f.mount();assert.doesNotMatch(f.host.suggest,/No code found for/);
+ f=fixture();f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']=ready({suggestions:[],unmatched:[{problem:'Insomnia',evidence:'cannot sleep'}]});await f.mount();assert.match(f.host.suggest,/No codes found in the note\./);assert.match(f.host.suggest,/No code found for:/);
+ f=fixture();f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']=ready({unmatched:undefined});await f.mount();assert.doesNotMatch(f.host.suggest,/No code found for/);
+ console.log('PASS problems with no code are listed under the suggestions, escaped, and hidden when there are none');
+
+ f=fixture();f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']=ready();await f.mount();
  // Add selected: the existing add path, once per ticked code, in order; then the request is dismissed.
  f.tick(2);f.tick(0);f.replies['POST /api/v1/visits/v1/diagnosis-suggestions/dismiss']={status:'dismissed'};
  await f.click('add');assert.deepEqual(f.added.map(r=>r.code),['E11.9','J06.9']);assert.equal(f.added[0].display,'Type 2 diabetes <b>without</b> complications');assert.equal(f.added[0].catalog_release_id,'rel1');

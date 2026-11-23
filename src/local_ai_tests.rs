@@ -97,6 +97,21 @@ async fn setup_with(note: Value) -> Fixture {
             true,
         ),
     ];
+    codes.extend([
+        ("G24", "Dystonia", false),
+        ("G24.1", "Genetic torsion dystonia", true),
+        ("G24.3", "Spasmodic torticollis", true),
+        (
+            "G44.229",
+            "Chronic tension-type headache, not intractable",
+            true,
+        ),
+        (
+            "G44.209",
+            "Tension-type headache, unspecified, not intractable",
+            true,
+        ),
+    ]);
     let many: Vec<String> = (0..12).map(|i| format!("Q10.{}", i)).collect();
     for c in &many {
         codes.push((c.as_str(), "Synthetic listed code", true));
@@ -128,7 +143,51 @@ impl Fixture {
         (out, sent)
     }
     async fn read_with(&self, a: &Actor, job: Value) -> Result<Value> {
-        read(&self.db, a, self.visit, |_| async move { Ok(job) }).await
+        self.step(a, job, Ok(0)).await.0
+    }
+    /// Reads while Connect reports `job`; a second job, if one is submitted, is logged and
+    /// accepted at `place` (or refused with the error text when `place` is an error).
+    async fn step(
+        &self,
+        a: &Actor,
+        job: Value,
+        place: std::result::Result<i64, Error>,
+    ) -> (Result<Value>, Sent) {
+        let sent: Sent = Arc::default();
+        let log = sent.clone();
+        let out = read(
+            &self.db,
+            a,
+            self.visit,
+            |_| async move { Ok(job) },
+            move |body| async move {
+                log.lock().unwrap().push(body.clone());
+                place.map(
+                    |n| json!({"request_id":body["request_id"],"status":"queued","position":n}),
+                )
+            },
+        )
+        .await;
+        (out, sent)
+    }
+    /// Finishes the first job with `first`, then the second with `second`; returns the body sent
+    /// for the second job and the final reading.
+    async fn two_steps(&self, a: &Actor, id: Uuid, first: &str, second: &str) -> (Value, Value) {
+        let (out, sent) = self.step(a, done(id, first), Ok(3)).await;
+        let out = out.unwrap();
+        assert_eq!(out["status"], "queued", "{out}");
+        let body = sent
+            .lock()
+            .unwrap()
+            .first()
+            .cloned()
+            .expect("a second job was submitted");
+        let second_id = choose_job_id(id);
+        assert_eq!(body["request_id"], json!(second_id));
+        (
+            body,
+            self.read_with(a, done(second_id, second)).await.unwrap(),
+        )
     }
     async fn count(&self, sql: &str) -> i64 {
         sqlx::query_scalar(sql)
@@ -193,7 +252,7 @@ async fn asking_queues_at_once_and_sends_only_the_note() {
     let sent = sent.lock().unwrap().clone();
     assert_eq!(sent.len(), 1);
     let body = &sent[0];
-    assert_eq!(body["purpose"], "diagnosis_suggestions");
+    assert_eq!(body["purpose"], "extraction");
     assert_eq!(body["request_id"], json!(id));
     assert_eq!(body["json"], true);
     assert_eq!(body["max_tokens"], 900);
@@ -340,9 +399,13 @@ async fn reading_while_the_job_waits_keeps_it_waiting_and_shows_the_place() {
         .unwrap();
     assert_eq!(running["position"], 0);
     // Connect being unreachable leaves what we last knew.
-    let unreachable = read(&f.db, &f.owner, f.visit, |_| async {
-        Err(Error::Unavailable("x"))
-    })
+    let unreachable = read(
+        &f.db,
+        &f.owner,
+        f.visit,
+        |_| async { Err(Error::Unavailable("x")) },
+        |_| async { panic!("nothing to submit") },
+    )
     .await
     .unwrap();
     assert_eq!(unreachable["status"], "queued");
@@ -353,12 +416,119 @@ async fn reading_while_the_job_waits_keeps_it_waiting_and_shows_the_place() {
     );
 }
 
+const MARKER: &str = "ZEBRA-MARKER-8841 appears only in this sentence of the plan.";
+const FIRST_ANSWER: &str = "Here you go:\n```json\n{\"problems\":[\
+ {\"problem\":\"Cervical dystonia\",\"evidence\":\"Cervical dystonia (spasmodic torticollis)\",\"search_terms\":[\"spasmodic torticollis\",\"cervical dystonia\",\"dystonia\"]},\
+ {\"problem\":\"Chronic tension-type headache\",\"evidence\":\"Chronic   tension-type headache\",\"search_terms\":[\"tension-type headache\",\"chronic tension headache\"]},\
+ {\"problem\":\"Essential hypertension\",\"evidence\":\"Essential hypertension\",\"search_terms\":[\"hypertension\"]},\
+ {\"problem\":\"Type 2 diabetes mellitus\",\"evidence\":\"made up words\",\"search_terms\":[\"type 2 diabetes mellitus\"]},\
+ {\"problem\":\"Anxiety about travel\",\"evidence\":\"Anxiety about travel\",\"search_terms\":[\"anxiety\"]}]}\n```";
+async fn setup_neuro() -> Fixture {
+    setup_with(json!({"subjective":"History text","objective":"Exam text","assessment":"Cervical dystonia (spasmodic torticollis). Chronic tension-type headache. Essential hypertension. Type 2 diabetes mellitus without complications. Anxiety about travel.","plan":format!("Botulinum toxin discussed. {MARKER}")})).await
+}
+fn choices(items: Value) -> String {
+    json!({"choices":items}).to_string()
+}
+async fn stage(f: &Fixture, id: Uuid) -> (String, Option<Uuid>) {
+    sqlx::query_as("SELECT stage,choose_id FROM diagnosis_suggestion_requests WHERE id=$1")
+        .bind(id)
+        .fetch_one(&f.db)
+        .await
+        .unwrap()
+}
+
 #[tokio::test]
-async fn a_finished_job_is_read_checked_against_the_code_list_and_stored() {
-    let f = setup().await;
+async fn the_assistant_chooses_among_codes_looked_up_in_the_practice_list() {
+    let f = setup_neuro().await;
     let id = Uuid::new_v4();
     f.ask(&f.owner, id, 0).await.0.unwrap();
-    // I10 is already on the encounter, so it is not suggested again.
+    let answer = choices(json!([
+        {"problem":1,"code":"g243"},
+        {"problem":2,"code":"G44.229"},
+        {"problem":3,"code":"I10"},
+        {"problem":4,"code":"E11.9"},
+        {"problem":5,"code":null}
+    ]));
+    let (body, out) = f.two_steps(&f.owner, id, FIRST_ANSWER, &answer).await;
+    // The second job carries problems, evidence and candidates, never the note or the patient.
+    assert_eq!(body["purpose"], "diagnosis_suggestions");
+    assert_eq!(body["json"], true);
+    let text = body.to_string();
+    assert!(
+        text.contains("G24.3") && text.contains("Spasmodic torticollis"),
+        "{text}"
+    );
+    assert!(
+        text.contains("G44.229") && text.contains("Chronic tension-type headache, not intractable")
+    );
+    assert!(text.contains("Cervical dystonia (spasmodic torticollis)"));
+    assert!(
+        !text.contains("ZEBRA-MARKER-8841"),
+        "the note was sent again"
+    );
+    assert!(!text.contains("Botulinum") && !text.contains("History text"));
+    for private in [
+        "Zelda",
+        "Quillfeather",
+        "SYN-MRN-4417",
+        "1987",
+        "03-09",
+        &f.patient.to_string(),
+        &f.visit.to_string(),
+    ] {
+        assert!(!text.contains(private), "{private} was sent");
+    }
+    // The non-billable parent is never offered; problems with no candidate are not sent.
+    let asked = body["messages"][1]["content"].as_str().unwrap();
+    assert!(!asked.contains("\"G24\"") && !asked.contains("Anxiety"));
+    let list: Value = serde_json::from_str(asked.split_once('\n').unwrap().1).unwrap();
+    assert_eq!(list["problems"].as_array().unwrap().len(), 4);
+    assert_eq!(list["problems"][0]["problem"], 1);
+    assert!(list["problems"][0]["candidates"].as_array().unwrap().len() <= 12);
+    // The answer is the catalog's code, with the catalog's wording.
+    assert_eq!(out["status"], "ready", "{out}");
+    let codes: Vec<&str> = out["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["G24.3", "G44.229", "I10", "E11.9"]);
+    assert_eq!(
+        out["suggestions"][0]["description"],
+        "Spasmodic torticollis"
+    );
+    assert_eq!(
+        out["suggestions"][0]["evidence"],
+        "Cervical dystonia (spasmodic torticollis)"
+    );
+    assert_eq!(out["suggestions"][0]["evidence_found"], true);
+    assert_eq!(
+        out["suggestions"][1]["evidence"],
+        "Chronic tension-type headache"
+    );
+    assert_eq!(out["suggestions"][3]["evidence"], Value::Null);
+    assert_eq!(out["suggestions"][3]["evidence_found"], false);
+    assert!(out["suggestions"][0]["catalog_release_id"].is_string());
+    assert_eq!(out["dropped"], 0);
+    assert_eq!(
+        out["unmatched"],
+        json!([{"problem":"Anxiety about travel","evidence":"Anxiety about travel"}])
+    );
+    assert_eq!(out["model"], "synthetic-model");
+    assert_eq!(f.audits("visit.diagnosis_suggestions_ready").await, 1);
+    assert_eq!(
+        f.count("SELECT count(*) FROM visit_diagnoses WHERE tenant_id=$1")
+            .await,
+        0
+    );
+}
+#[tokio::test]
+async fn a_choice_outside_the_candidates_is_dropped_and_unchosen_problems_are_listed() {
+    let f = setup_neuro().await;
+    let id = Uuid::new_v4();
+    f.ask(&f.owner, id, 0).await.0.unwrap();
+    // Hypertension is already on the encounter.
     sqlx::query(
         "INSERT INTO visit_diagnoses(tenant_id,visit_id,diagnoses,updated_by) VALUES($1,$2,$3,$4)",
     )
@@ -369,77 +539,130 @@ async fn a_finished_job_is_read_checked_against_the_code_list_and_stored() {
     .execute(&f.db)
     .await
     .unwrap();
-    let content = "Sure.\n```json\n{\"suggestions\":[\
-      {\"code\":\" e119 \",\"description\":\"The model's own words\",\"evidence\":\"Type 2 diabetes   mellitus WITHOUT complications\"},\
-      {\"code\":\"Z99.99\",\"description\":\"Not in the list\",\"evidence\":\"x\"},\
-      {\"code\":\"I10\",\"description\":\"Already there\",\"evidence\":\"essential hypertension\"},\
-      {\"code\":\"E11\",\"description\":\"A heading, not billable\",\"evidence\":\"diabetes\"},\
-      {\"code\":\"J06.9\",\"description\":\"Invented\",\"evidence\":\"cough and sore throat\"},\
-      {\"code\":\"E11.9\",\"description\":\"Duplicate\",\"evidence\":\"stable on metformin\"}]}\n```";
-    let out = f.read_with(&f.owner, done(id, content)).await.unwrap();
-    assert_eq!(out["status"], "ready");
-    assert_eq!(out["dropped"], 2);
-    assert_eq!(out["model"], "synthetic-model");
-    assert_eq!(out["mine"], true);
-    assert_eq!(out["note_changed"], false);
-    assert_eq!(out["patient_id"], json!(f.patient));
-    let list = out["suggestions"].as_array().unwrap();
-    assert_eq!(list.len(), 2, "{out}");
-    assert_eq!(list[0]["code"], "E11.9");
+    let answer = choices(json!([
+        {"problem":1,"code":"I10"},
+        {"problem":2,"code":"G44.229"},
+        {"problem":2,"code":"G44.209"},
+        {"problem":3,"code":"I10"},
+        {"problem":4,"code":null},
+        {"problem":9,"code":"E11.9"},
+        {"problem":2,"code":"Z99.99"}
+    ]));
+    let (_, out) = f.two_steps(&f.owner, id, FIRST_ANSWER, &answer).await;
+    assert_eq!(out["status"], "ready", "{out}");
+    let codes: Vec<&str> = out["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["code"].as_str().unwrap())
+        .collect();
+    // I10 for problem 1 is real but not that problem's candidate; the second choice for a problem
+    // that already has one is ignored; I10 for hypertension is already on the encounter.
+    assert_eq!(codes, ["G44.229"]);
+    assert_eq!(out["dropped"], 2, "{out}");
+    let unmatched: Vec<&str> = out["unmatched"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["problem"].as_str().unwrap())
+        .collect();
     assert_eq!(
-        list[0]["description"],
-        "Type 2 diabetes mellitus without complications (catalog wording)"
+        unmatched,
+        [
+            "Cervical dystonia",
+            "Type 2 diabetes mellitus",
+            "Anxiety about travel"
+        ]
     );
-    assert_eq!(list[0]["evidence_found"], true);
-    assert_eq!(
-        list[0]["evidence"],
-        "Type 2 diabetes mellitus WITHOUT complications"
-    );
-    assert_eq!(list[1]["code"], "J06.9");
-    assert_eq!(list[1]["evidence"], Value::Null);
-    assert_eq!(list[1]["evidence_found"], false);
-    assert!(list[0]["catalog_release_id"].is_string());
-    // Stored once; reading again does not ask Connect or settle twice.
-    let again = read(&f.db, &f.owner, f.visit, |_| async {
-        panic!("asked again")
-    })
-    .await
-    .unwrap();
-    assert_eq!(again["suggestions"], out["suggestions"]);
-    assert_eq!(f.audits("visit.diagnosis_suggestions_ready").await, 1);
-    // Still nothing on the chart but what was already there.
-    let saved: Value =
-        sqlx::query_scalar("SELECT diagnoses FROM visit_diagnoses WHERE visit_id=$1")
-            .bind(f.visit)
+    assert_eq!(out["unmatched"][1]["evidence"], Value::Null);
+}
+#[tokio::test]
+async fn candidates_are_the_best_billable_codes_by_the_search_and_a_second_job_is_skipped_when_there_are_none(
+) {
+    let f = setup_neuro().await;
+    let id = Uuid::new_v4();
+    f.ask(&f.owner, id, 0).await.0.unwrap();
+    let (out, sent) = f.step(&f.owner, done(id, "{\"problems\":[{\"problem\":\"Anxiety about travel\",\"evidence\":\"Anxiety about travel\",\"search_terms\":[\"anxiety\",\"!!\"]},{\"problem\":\"Dystonia\",\"evidence\":\"Cervical dystonia (spasmodic torticollis)\",\"search_terms\":[]}]}"), Ok(1)).await;
+    // The second problem is found by its own name even with no search terms.
+    assert_eq!(out.unwrap()["status"], "queued");
+    let body = sent.lock().unwrap()[0].clone();
+    let asked = body["messages"][1]["content"].as_str().unwrap();
+    let list: Value = serde_json::from_str(asked.split_once('\n').unwrap().1).unwrap();
+    assert_eq!(list["problems"].as_array().unwrap().len(), 1);
+    assert_eq!(list["problems"][0]["problem"], 2);
+    let stored: Value =
+        sqlx::query_scalar("SELECT problems FROM diagnosis_suggestion_requests WHERE id=$1")
+            .bind(id)
             .fetch_one(&f.db)
             .await
             .unwrap();
-    assert_eq!(saved.as_array().unwrap().len(), 1);
-    // No note text or codes in anything the feed carries.
-    let rows: Vec<(String,)> = sqlx::query_as("SELECT action FROM audit_events WHERE tenant_id=$1")
-        .bind(f.owner.tenant_id)
-        .fetch_all(&f.db)
-        .await
-        .unwrap();
-    assert!(rows
-        .iter()
-        .all(|(a,)| !a.contains("E11") && !a.contains("diabetes")));
+    assert_eq!(stored.as_array().unwrap().len(), 2);
+    assert_eq!(stored[0]["candidates"], json!([]));
+    let (codes, place): (Vec<String>, i32) = (
+        stored[1]["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["code"].as_str().unwrap().to_string())
+            .collect(),
+        sqlx::query_scalar("SELECT position FROM diagnosis_suggestion_requests WHERE id=$1")
+            .bind(id)
+            .fetch_one(&f.db)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(codes, ["G24.1"]);
+    assert_eq!(place, 1);
+    // No problem has a candidate: no second job, the problems are all listed as unmatched.
+    let g = setup_neuro().await;
+    let id = Uuid::new_v4();
+    g.ask(&g.owner, id, 0).await.0.unwrap();
+    let (out, sent) = g.step(&g.owner, done(id, "{\"problems\":[{\"problem\":\"Anxiety about travel\",\"evidence\":\"Anxiety about travel\",\"search_terms\":[\"anxiety\"]}]}"), Ok(0)).await;
+    let out = out.unwrap();
+    assert!(sent.lock().unwrap().is_empty());
+    assert_eq!(
+        (out["status"].as_str(), out["suggestions"].clone()),
+        (Some("ready"), json!([]))
+    );
+    assert_eq!(
+        out["unmatched"],
+        json!([{"problem":"Anxiety about travel","evidence":"Anxiety about travel"}])
+    );
+    // No problems: ready and empty.
+    let h = setup_neuro().await;
+    let id = Uuid::new_v4();
+    h.ask(&h.owner, id, 0).await.0.unwrap();
+    let (out, sent) = h.step(&h.owner, done(id, "{\"problems\":[]}"), Ok(0)).await;
+    let out = out.unwrap();
+    assert!(sent.lock().unwrap().is_empty());
+    assert_eq!(
+        (
+            out["status"].as_str(),
+            out["suggestions"].clone(),
+            out["unmatched"].clone()
+        ),
+        (Some("ready"), json!([]), json!([]))
+    );
 }
 #[tokio::test]
 async fn no_more_than_eight_codes_are_kept() {
     let f = setup().await;
     let id = Uuid::new_v4();
     f.ask(&f.owner, id, 0).await.0.unwrap();
-    let items: Vec<Value> = (0..12)
-        .map(|i| json!({"code":format!("Q10.{i}"),"description":"x","evidence":"metformin"}))
+    let problems: Vec<Value> = (0..12)
+        .map(|i| json!({"problem":format!("Listed problem {i}"),"evidence":"metformin","search_terms":["synthetic listed code"]}))
         .collect();
-    let out = f
-        .read_with(
+    let picks: Vec<Value> = (0..10)
+        .map(|i| json!({"problem":i + 1,"code":format!("Q10.{i}")}))
+        .collect();
+    let (_, out) = f
+        .two_steps(
             &f.owner,
-            done(id, &json!({"suggestions":items}).to_string()),
+            id,
+            &json!({"problems":problems}).to_string(),
+            &choices(json!(picks)),
         )
-        .await
-        .unwrap();
+        .await;
     assert_eq!(out["suggestions"].as_array().unwrap().len(), 8);
     assert_eq!(out["suggestions"][0]["code"], "Q10.0");
 }
@@ -448,7 +671,8 @@ async fn an_unreadable_answer_fails_the_request() {
     for content in [
         "I could not decide.",
         "{\"other\":1}",
-        "{\"suggestions\":\"none\"}",
+        "{\"problems\":\"none\"}",
+        "{\"suggestions\":[]}",
         "{bad json}",
     ] {
         let f = setup().await;
@@ -462,6 +686,27 @@ async fn an_unreadable_answer_fails_the_request() {
         );
         assert!(out["suggestions"].is_null());
     }
+    for content in [
+        "Cannot say.",
+        "{\"choices\":\"none\"}",
+        "{\"suggestions\":[]}",
+        "{bad}",
+    ] {
+        let f = setup_neuro().await;
+        let id = Uuid::new_v4();
+        f.ask(&f.owner, id, 0).await.0.unwrap();
+        let (out, _) = f.step(&f.owner, done(id, FIRST_ANSWER), Ok(0)).await;
+        assert_eq!(out.unwrap()["status"], "queued");
+        let out = f
+            .read_with(&f.owner, done(choose_job_id(id), content))
+            .await
+            .unwrap();
+        assert_eq!(
+            (out["status"].as_str(), out["error"].as_str()),
+            (Some("failed"), Some("unreadable")),
+            "{content}"
+        );
+    }
     let none = setup().await;
     let id = Uuid::new_v4();
     none.ask(&none.owner, id, 0).await.0.unwrap();
@@ -470,6 +715,140 @@ async fn an_unreadable_answer_fails_the_request() {
     assert_eq!(
         none.read_with(&none.owner, job).await.unwrap()["error"],
         "unreadable"
+    );
+}
+#[tokio::test]
+async fn a_failure_in_either_step_fails_the_request() {
+    let f = setup_neuro().await;
+    let id = Uuid::new_v4();
+    f.ask(&f.owner, id, 0).await.0.unwrap();
+    let (out, _) = f.step(&f.owner, done(id, FIRST_ANSWER), Ok(0)).await;
+    assert_eq!(out.unwrap()["status"], "queued");
+    let second = choose_job_id(id);
+    // A late word about the first job changes nothing now that the second is the one waited on.
+    let late = f
+        .read_with(
+            &f.owner,
+            json!({"request_id":second,"status":"queued","position":4}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (late["status"].as_str(), late["position"].as_i64()),
+        (Some("queued"), Some(4))
+    );
+    let out = f
+        .read_with(
+            &f.owner,
+            json!({"request_id":second,"status":"failed","error":"timeout"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (out["status"].as_str(), out["error"].as_str()),
+        (Some("failed"), Some("timeout"))
+    );
+    assert_eq!(f.audits("visit.diagnosis_suggestions_failed").await, 1);
+    // A refused second job fails the request; an unreachable assistant leaves it waiting.
+    let g = setup_neuro().await;
+    let id = Uuid::new_v4();
+    g.ask(&g.owner, id, 0).await.0.unwrap();
+    let (out, _) = g
+        .step(
+            &g.owner,
+            done(id, FIRST_ANSWER),
+            Err(Error::Unavailable("busy")),
+        )
+        .await;
+    assert_eq!(out.unwrap()["status"], "queued");
+    assert_eq!(stage(&g, id).await.0, "extract");
+    let (out, _) = g
+        .step(
+            &g.owner,
+            done(id, FIRST_ANSWER),
+            Err(Error::Conflict("off")),
+        )
+        .await;
+    let out = out.unwrap();
+    assert_eq!(
+        (out["status"].as_str(), out["error"].as_str()),
+        (Some("failed"), Some("upstream_error"))
+    );
+}
+#[tokio::test]
+async fn reading_moves_the_request_on_when_the_events_were_missed_and_a_retry_reuses_the_second_job(
+) {
+    let f = setup_neuro().await;
+    let id = Uuid::new_v4();
+    f.ask(&f.owner, id, 0).await.0.unwrap();
+    // The assistant could not be reached for the second job: the request keeps waiting on the first.
+    let (out, first_try) = f
+        .step(
+            &f.owner,
+            done(id, FIRST_ANSWER),
+            Err(Error::Unavailable("busy")),
+        )
+        .await;
+    assert_eq!(out.unwrap()["status"], "queued");
+    assert_eq!(stage(&f, id).await, ("extract".to_string(), None));
+    let (out, second_try) = f.step(&f.owner, done(id, FIRST_ANSWER), Ok(5)).await;
+    let out = out.unwrap();
+    assert_eq!(
+        (
+            out["status"].as_str(),
+            out["position"].as_i64(),
+            out["request_id"].clone()
+        ),
+        (Some("queued"), Some(5), json!(id))
+    );
+    let (a, b) = (
+        first_try.lock().unwrap()[0].clone(),
+        second_try.lock().unwrap()[0].clone(),
+    );
+    assert_eq!(a["request_id"], b["request_id"]);
+    assert_eq!(b["request_id"], json!(choose_job_id(id)));
+    assert_ne!(b["request_id"], json!(id));
+    assert_eq!(
+        stage(&f, id).await,
+        ("choose".to_string(), Some(choose_job_id(id)))
+    );
+    // While it waits on the second job the encounter still has exactly one request.
+    let (again, sent) = f.ask(&f.owner, Uuid::new_v4(), 0).await;
+    assert_eq!(
+        again.unwrap(),
+        json!({"request_id":id,"status":"queued","position":5})
+    );
+    assert!(sent.lock().unwrap().is_empty());
+    assert_eq!(
+        f.count("SELECT count(*) FROM diagnosis_suggestion_requests WHERE tenant_id=$1")
+            .await,
+        1
+    );
+    // A repeat word about the finished first job is ignored.
+    job_finished_with(
+        &f.db,
+        f.owner.tenant_id,
+        id,
+        |_| async move { panic!("asked again") },
+        |_| async move { panic!("sent again") },
+    )
+    .await
+    .unwrap();
+    let out = f
+        .read_with(
+            &f.owner,
+            done(
+                choose_job_id(id),
+                &choices(json!([{"problem":1,"code":"G24.3"}])),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out["status"], "ready");
+    assert_eq!(out["suggestions"][0]["code"], "G24.3");
+    assert_eq!(
+        out["suggestions"][0]["description"],
+        "Spasmodic torticollis"
     );
 }
 #[tokio::test]
@@ -511,14 +890,56 @@ async fn failed_and_expired_jobs_fail_the_request_and_free_the_encounter() {
     assert_eq!(out["error"], "upstream_error");
 }
 #[tokio::test]
-async fn the_finished_event_settles_the_request_and_tells_browsers_without_codes() {
-    let f = setup().await;
+async fn the_finished_events_move_the_request_on_and_tell_browsers_without_codes() {
+    let f = setup_neuro().await;
     let id = Uuid::new_v4();
     f.ask(&f.owner, id, 0).await.0.unwrap();
-    let content = "{\"suggestions\":[{\"code\":\"E11.9\",\"description\":\"x\",\"evidence\":\"stable on metformin\"}]}";
-    job_finished_with(&f.db, f.owner.tenant_id, id, |_| async move {
-        Ok(done(id, content))
-    })
+    let sent: Sent = Arc::default();
+    let log = sent.clone();
+    job_finished_with(
+        &f.db,
+        f.owner.tenant_id,
+        id,
+        |_| async move { Ok(done(id, FIRST_ANSWER)) },
+        move |body| async move {
+            log.lock().unwrap().push(body);
+            Ok(json!({"status":"queued","position":2}))
+        },
+    )
+    .await
+    .unwrap();
+    // The first job finishing is not the end: the request waits on the second and nobody is told yet.
+    assert_eq!(sent.lock().unwrap().len(), 1);
+    let (status, position): (String, i32) =
+        sqlx::query_as("SELECT status,position FROM diagnosis_suggestion_requests WHERE id=$1")
+            .bind(id)
+            .fetch_one(&f.db)
+            .await
+            .unwrap();
+    assert_eq!((status.as_str(), position), ("queued", 2));
+    assert_eq!(f.audits("visit.diagnosis_suggestions_ready").await, 0);
+    // A word about a job that is not the one being waited on is ignored.
+    job_finished_with(
+        &f.db,
+        f.owner.tenant_id,
+        id,
+        |_| async move { panic!("asked again") },
+        |_| async move { panic!("sent again") },
+    )
+    .await
+    .unwrap();
+    let second = choose_job_id(id);
+    let content = choices(json!([{"problem":1,"code":"G24.3"}]));
+    job_finished_with(
+        &f.db,
+        f.owner.tenant_id,
+        second,
+        |asked| async move {
+            assert_eq!(asked, second);
+            Ok(done(second, &content))
+        },
+        |_| async move { panic!("sent again") },
+    )
     .await
     .unwrap();
     let (status, result): (String, Value) =
@@ -528,7 +949,7 @@ async fn the_finished_event_settles_the_request_and_tells_browsers_without_codes
             .await
             .unwrap();
     assert_eq!(status, "ready");
-    assert_eq!(result["suggestions"][0]["code"], "E11.9");
+    assert_eq!(result["suggestions"][0]["code"], "G24.3");
     // The notice is an audit row on the encounter: it reaches the tenant's change feed as a
     // clinical change and has no field that could hold a code or a word of the note.
     let (action, resource): (String, Uuid) = sqlx::query_as("SELECT action,resource_id FROM audit_events WHERE tenant_id=$1 AND action LIKE 'visit.diagnosis_suggestions_%' AND action<>'visit.diagnosis_suggestions_requested'").bind(f.owner.tenant_id).fetch_one(&f.db).await.unwrap();
@@ -537,16 +958,24 @@ async fn the_finished_event_settles_the_request_and_tells_browsers_without_codes
         ("visit.diagnosis_suggestions_ready", f.visit)
     );
     // A second notice for the same job changes and announces nothing.
-    job_finished_with(&f.db, f.owner.tenant_id, id, |_| async move {
-        panic!("asked again")
-    })
+    job_finished_with(
+        &f.db,
+        f.owner.tenant_id,
+        second,
+        |_| async move { panic!("asked again") },
+        |_| async move { panic!("sent again") },
+    )
     .await
     .unwrap();
     assert_eq!(f.audits("visit.diagnosis_suggestions_ready").await, 1);
     // An unknown job is ignored.
-    job_finished_with(&f.db, f.owner.tenant_id, Uuid::new_v4(), |_| async move {
-        panic!("unknown")
-    })
+    job_finished_with(
+        &f.db,
+        f.owner.tenant_id,
+        Uuid::new_v4(),
+        |_| async move { panic!("unknown") },
+        |_| async move { panic!("unknown") },
+    )
     .await
     .unwrap();
 }
@@ -559,9 +988,13 @@ async fn dismissing_clears_it_and_a_late_answer_does_not_bring_it_back() {
         dismiss(&f.db, &f.owner, f.visit).await.unwrap()["status"],
         "dismissed"
     );
-    job_finished_with(&f.db, f.owner.tenant_id, id, |_| async move {
-        panic!("dismissed")
-    })
+    job_finished_with(
+        &f.db,
+        f.owner.tenant_id,
+        id,
+        |_| async move { panic!("dismissed") },
+        |_| async move { panic!("dismissed") },
+    )
     .await
     .unwrap();
     assert_eq!(
@@ -760,4 +1193,39 @@ async fn the_migration_applies_over_an_existing_database_and_connect_may_announc
     sqlx::query("INSERT INTO connect_remote_events(tenant_id,installation_id,cloud_id,kind,resource_id,created_at) VALUES($1,$2,2,'ai.job',$3,now())").bind(tenant).bind(installation).bind(Uuid::new_v4()).execute(&db).await.unwrap();
     assert!(sqlx::query("INSERT INTO connect_remote_events(tenant_id,installation_id,cloud_id,kind,resource_id,created_at) VALUES($1,$2,3,'other.kind',$3,now())").bind(tenant).bind(installation).bind(Uuid::new_v4()).execute(&db).await.is_err());
     let _ = setting;
+}
+
+#[tokio::test]
+async fn the_stage_migration_applies_over_an_existing_database_with_a_waiting_request() {
+    let db = pool_at(Some(123)).await;
+    let tenant = Uuid::new_v4();
+    let (patient, appointment, visit, request, clinician) = (
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    );
+    sqlx::query("INSERT INTO patients(tenant_id,id,mrn,given_name,family_name,birth_date) VALUES($1,$2,'SYN-MRN-1','Synthetic','Person','1990-01-01')").bind(tenant).bind(patient).execute(&db).await.unwrap();
+    sqlx::query("INSERT INTO appointments(tenant_id,id,patient_id,clinician_id,starts_at,ends_at,status) VALUES($1,$2,$3,$4,'2026-10-25T14:00:00Z','2026-10-25T14:30:00Z','checked_in')").bind(tenant).bind(appointment).bind(patient).bind(clinician).execute(&db).await.unwrap();
+    sqlx::query("INSERT INTO visits(tenant_id,id,patient_id,appointment_id,clinician_id,note) VALUES($1,$2,$3,$4,$5,'{}')").bind(tenant).bind(visit).bind(patient).bind(appointment).bind(clinician).execute(&db).await.unwrap();
+    sqlx::query("INSERT INTO diagnosis_suggestion_requests(tenant_id,id,visit_id,requested_by,note_version,status,position) VALUES($1,$2,$3,$4,1,'queued',2)").bind(tenant).bind(request).bind(visit).bind(clinician).execute(&db).await.unwrap();
+    crate::MIGRATOR.run(&db).await.unwrap();
+    crate::MIGRATOR.run(&db).await.unwrap();
+    let (stage, problems, choose, status, position): (String, Option<Value>, Option<Uuid>, String, Option<i32>) = sqlx::query_as("SELECT stage,problems,choose_id,status,position FROM diagnosis_suggestion_requests WHERE id=$1").bind(request).fetch_one(&db).await.unwrap();
+    assert_eq!(
+        (stage.as_str(), problems, choose, status.as_str(), position),
+        ("extract", None, None, "queued", Some(2))
+    );
+    assert!(
+        sqlx::query("UPDATE diagnosis_suggestion_requests SET stage='other' WHERE id=$1")
+            .bind(request)
+            .execute(&db)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        sqlx::query("UPDATE diagnosis_suggestion_requests SET stage='choose',problems='[]',choose_id=$2 WHERE id=$1").bind(request).bind(Uuid::new_v4()).execute(&db).await.unwrap().rows_affected(),
+        1
+    );
 }

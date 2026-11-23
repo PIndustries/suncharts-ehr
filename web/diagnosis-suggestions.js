@@ -16,11 +16,17 @@ function diagnosisAiAvailable(){
 function diagnosisSuggestState(id){let state=diagnosisSuggestStates.get(id);if(!state){state={status:'idle',position:0,suggestions:null,picked:new Set(),message:'',noteChanged:false,hydrated:false,account:me};diagnosisSuggestStates.set(id,state);}return state;}
 function diagnosisSuggestApply(state,data){
  state.requestId=data.request_id||null;state.patientId=data.patient_id||state.patientId;state.number=data.encounter_number||state.number;
- state.mine=data.mine!==false;state.noteChanged=data.note_changed===true;state.dropped=data.dropped||0;
+ state.unmatched=Array.isArray(data.unmatched)?data.unmatched:[];state.mine=data.mine!==false;state.noteChanged=data.note_changed===true;state.dropped=data.dropped||0;
  if(data.status==='queued'){state.status='queued';state.position=Number(data.position)||0;}
  else if(data.status==='ready'){if(state.status!=='ready'){state.picked=new Set();}state.status='ready';state.suggestions=Array.isArray(data.suggestions)?data.suggestions:[];}
  else if(data.status==='failed'){state.status='failed';state.message='The assistant could not read the note. Try again.';}
  else state.status='idle';
+}
+// Problems the note states for which no code was chosen, so the person knows they were read.
+function diagnosisSuggestUnmatchedMarkup(state){
+ const items=(state.unmatched||[]).filter(item=>item&&item.problem);
+ if(!items.length)return '';
+ return `<div class="muted" data-diagnosis-suggest-unmatched><p>No code found for:</p><ul>${items.map(item=>`<li>${esc(item.problem)}${item.evidence?` <small>“${esc(item.evidence)}”</small>`:''}</li>`).join('')}</ul><p><small>Use the code search above to add these.</small></p></div>`;
 }
 function diagnosisSuggestMarkup(id,state){
  const ask=`<button type="button" data-diagnosis-suggest-ask>Suggest from the note</button>`;
@@ -29,8 +35,8 @@ function diagnosisSuggestMarkup(id,state){
  else if(state.status==='queued')body=`<p class="muted" role="status" data-diagnosis-suggest-waiting>Reading the note. You can keep working; you’ll be told when the suggestions are ready.${state.position>0?` <span data-diagnosis-suggest-place>${esc(String(state.position))} ahead of you</span>`:''}</p>`;
  else if(state.status==='failed'||state.status==='error')body=`${ask}<p role="alert" data-diagnosis-suggest-error>${esc(state.message||'The assistant could not read the note. Try again.')}</p>`;
  else if(state.status==='ready'&&state.noteChanged)body=`<p role="status" data-diagnosis-suggest-stale>The note changed. Suggest again.</p><div class="actions">${ask}<button type="button" class="text-button" data-diagnosis-suggest-dismiss>Dismiss</button></div>`;
- else if(state.status==='ready'&&!(state.suggestions||[]).length)body=`<p class="muted" data-diagnosis-suggest-empty>No codes found in the note.</p><div class="actions">${ask}<button type="button" class="text-button" data-diagnosis-suggest-dismiss>Dismiss</button></div>`;
- else if(state.status==='ready')body=`<ul class="diagnosis-suggest-list">${state.suggestions.map((item,index)=>`<li><label><input type="checkbox" data-diagnosis-suggest-pick="${index}" ${state.picked.has(index)?'checked':''}> <span class="codes-strip-code">${esc(item.code)}</span> ${esc(item.description)}</label><small class="muted">${item.evidence_found&&item.evidence?`“${esc(item.evidence)}”`:'No matching sentence found in the note'}</small></li>`).join('')}</ul><div class="actions"><button type="button" data-diagnosis-suggest-add>Add selected</button><button type="button" class="text-button" data-diagnosis-suggest-dismiss>Dismiss</button></div><p class="muted"><small>Suggestions come from SunCharts AI. Check each one against the note.</small></p>`;
+ else if(state.status==='ready'&&!(state.suggestions||[]).length)body=`<p class="muted" data-diagnosis-suggest-empty>No codes found in the note.</p>${diagnosisSuggestUnmatchedMarkup(state)}<div class="actions">${ask}<button type="button" class="text-button" data-diagnosis-suggest-dismiss>Dismiss</button></div>`;
+ else if(state.status==='ready')body=`<ul class="diagnosis-suggest-list">${state.suggestions.map((item,index)=>`<li><label><input type="checkbox" data-diagnosis-suggest-pick="${index}" ${state.picked.has(index)?'checked':''}> <span class="codes-strip-code">${esc(item.code)}</span> ${esc(item.description)}</label><small class="muted">${item.evidence_found&&item.evidence?`“${esc(item.evidence)}”`:'No matching sentence found in the note'}</small></li>`).join('')}</ul>${diagnosisSuggestUnmatchedMarkup(state)}<div class="actions"><button type="button" data-diagnosis-suggest-add>Add selected</button><button type="button" class="text-button" data-diagnosis-suggest-dismiss>Dismiss</button></div><p class="muted"><small>Suggestions come from SunCharts AI. Check each one against the note.</small></p>`;
  else body=ask;
  return `<section data-diagnosis-suggest aria-label="Diagnosis suggestions"><h4>Diagnosis suggestions</h4>${state.message&&state.status==='ready'?`<p role="alert">${esc(state.message)}</p>`:''}${body}</section>`;
 }
