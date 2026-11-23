@@ -55,10 +55,10 @@ const mutations=f=>f.calls.filter(call=>call[1]==='POST');
  assert.throws(()=>c.validateInstallmentDueDates([{due_on:'2031-11-13'}]),/five-year scheduling limit/);
  // An invoice with an existing immutable plan is not a missing responsibility review.
  f.s.eligibleInvoices=[{...f.invoice,eligible:false,existing_plan_id:f.plan.id}];
- assert.match(c.installmentPlanForm(f.s),/All reviewed invoices already have payment plans/);
- assert.doesNotMatch(c.installmentPlanForm(f.s),/Check what the patient owes for the encounter|id="installment-preview-form"/);
+ assert.match(c.installmentPlanForm(f.s),/Every billed statement already has a payment plan/);
+ assert.doesNotMatch(c.installmentPlanForm(f.s),/A payment plan is made from a statement|id="installment-preview-form"/);
  f.s.eligibleInvoices.push({...f.invoice,invoice_id:'another-invoice'});assert.match(c.installmentPlanForm(f.s),/id="installment-preview-form"/);
- f.s.eligibleInvoices=[];f.s.installmentPlans=[];assert.match(c.installmentPlanForm(f.s),/Check what the patient owes for the encounter/);
+ f.s.eligibleInvoices=[];f.s.installmentPlans=[];assert.match(c.installmentPlanForm(f.s),/A payment plan is made from a statement for an encounter that has been billed\./);assert.match(c.installmentPlanForm(f.s),/<button type="button" data-hub-tab="overview">Go to billing<\/button>/);
  // Creating the plan never collects; collecting requires fresh patient-present consent.
  f=fixture();c=f.ctx;f.collection.elements.patient_present.checked=false;await c.createInstallmentCheckout(f.s,f.collection);assert.equal(mutations(f).length,0);f.collection.elements.patient_present.checked=true;await c.createInstallmentCheckout(f.s,f.collection);assert.equal(mutations(f).length,1);assert.equal(mutations(f)[0][3],1);assert.equal(mutations(f)[0][2].patient_present,true);assert.equal(mutations(f)[0][2].amount_cents,250,'collection sends the exact amount the patient reviewed');assert.match(f.nodes['patient-billing-installments'].innerHTML,/No patient ledger capture is confirmed/);
  // Return refresh can retrieve only the existing operation, never create Checkout.
@@ -69,21 +69,21 @@ const mutations=f=>f.calls.filter(call=>call[1]==='POST');
  c.api=async(path,...args)=>path==='/api/v1/billing/memberships/'+request?{patient_id:patient,membership:activeMembership}:path.endsWith('/memberships')?{patient_id:patient,livemode:false,items:[activeMembership],creation_available:true}:returnApi(path,...args);
  c.showPatientBillingWorkspace=async()=>{await c.loadPatientMemberships(f.s,1);return f.s;};
  await c.openPatientMembershipReturn(request);
- assert.match(f.nodes['patient-billing-memberships'].innerHTML,/already has a membership for each approved active price/);
- assert.doesNotMatch(f.nodes['patient-billing-memberships'].innerHTML,/No approved active membership prices|id="patient-membership-form"/);
+ assert.match(f.nodes['patient-billing-memberships'].innerHTML,/already has every membership the practice offers/);
+ assert.doesNotMatch(f.nodes['patient-billing-memberships'].innerHTML,/No membership prices have been added|id="patient-membership-form"/);
  await assert.rejects(c.createPatientMembership(f.s,f.enrollment),/existing membership/);assert.equal(mutations(f).length,0);
  // Unknown, paginated, failed and confirmed-empty catalog states remain distinct.
  f=fixture();c=f.ctx;delete f.s.membershipPrices;
- assert.match(c.membershipSelectionForm(f.s),/have not been loaded/);
- assert.doesNotMatch(c.membershipSelectionForm(f.s),/No approved active membership prices/);
- f.s.membershipPrices=[];assert.match(c.membershipSelectionForm(f.s),/No approved active membership prices/);
- f.s.membershipPricesNext='next';assert.match(c.membershipSelectionForm(f.s),/loaded results/);
- assert.doesNotMatch(c.membershipSelectionForm(f.s),/No approved active membership prices/);
+ assert.match(c.membershipSelectionForm(f.s),/have not loaded yet/);
+ assert.doesNotMatch(c.membershipSelectionForm(f.s),/No membership prices have been added/);
+ f.s.membershipPrices=[];assert.match(c.membershipSelectionForm(f.s),/No membership prices have been added/);
+ f.s.membershipPricesNext='next';assert.match(c.membershipSelectionForm(f.s),/No other membership prices/);
+ assert.doesNotMatch(c.membershipSelectionForm(f.s),/No membership prices have been added/);
  f.s.membershipPrices=[f.price];f.s.memberships=[{...activeMembership,status:'canceled'}];f.s.membershipPricesNext=null;
  assert.match(c.membershipSelectionForm(f.s),/id="patient-membership-form"/);
  const malformedApi=c.api;c.api=(path,...args)=>path==='/api/v1/billing/membership-prices'?Promise.resolve({creation_available:true}):malformedApi(path,...args);
- await c.loadPatientMemberships(f.s,1);assert.match(f.nodes['patient-billing-memberships'].innerHTML,/Approved prices are unavailable/);
- assert.doesNotMatch(f.nodes['patient-billing-memberships'].innerHTML,/No approved active membership prices/);
+ await c.loadPatientMemberships(f.s,1);assert.match(f.nodes['patient-billing-memberships'].innerHTML,/could not be verified/);
+ assert.doesNotMatch(f.nodes['patient-billing-memberships'].innerHTML,/No membership prices have been added/);
  f=fixture();c=f.ctx;c.api=()=>new Promise(r=>finish=r);const returning=c.openInvoiceCheckoutReturn(operation);c.me={tenant_id:'other',role:'owner'};finish({operation:f.op});await returning;assert.ok(!f.calls.some(call=>call[0]==='open-hub'));assert.equal(mutations(f).length,0);
  // Drafts are memory-only, scoped to the patient and authenticated identity; consent is never restored.
  f=fixture();c=f.ctx;
@@ -125,7 +125,7 @@ const mutations=f=>f.calls.filter(call=>call[1]==='POST');
  const staleStatus=c.refreshPatientMembership(f.s,request);await c.loadPatientMemberships(f.s,1);
  oldStatus({patient_id:patient,membership:{request_id:request,price:f.price,status:'active',cancel_at_period_end:false}});await staleStatus;
  assert.equal(f.s.memberships[0].cancel_at_period_end,true,'older per-operation GET cannot undo newer cancellation evidence');
- for(const read of ['refreshPatientMembership','refreshMembershipOperation','refreshMembershipPrice']){
+ for(const read of ['refreshPatientMembership','refreshMembershipOperation']){
   f=fixture();c=f.ctx;let resolveRead;c.api=()=>new Promise(resolve=>resolveRead=resolve);const pendingRead=c[read](f.s,request);f.s.planRequest++;
   resolveRead({patient_id:patient,membership:{request_id:request,price:f.price,status:'open'},price:{...f.price,request_id:request}});await pendingRead;
   assert.equal(f.s.memberships.length,0,'a replaced subscriptions section ignores '+read);
@@ -140,6 +140,51 @@ const mutations=f=>f.calls.filter(call=>call[1]==='POST');
  // A refreshed server response can forbid a retry even while the local time window remains open.
  f=fixture();c=f.ctx;const refused={request_id:request,price:f.price,status:'needs_review',input:{request_id:request,price_id:f.price.id,consent:true},retry_allowed:false,retry_safe_until:new Date(Date.now()+60000).toISOString()};
  c.membershipSession();vm.runInContext('membershipRequests',c).set(patient,refused);await c.createPatientMembership(f.s,null,refused);assert.equal(mutations(f).length,0);
+
+ // Patient tab: two clear cards, one button each, and every unavailable state carries its fixing button.
+ f=fixture();c=f.ctx;c.renderPatientMembershipPanel(f.s);let panel=f.nodes['patient-billing-memberships'].innerHTML;
+ assert.match(panel,/<h3>Memberships<\/h3>/);assert.match(panel,/<button type="button" class="primary" data-start-membership>Start membership<\/button>/);assert.equal((panel.match(/class="primary"/g)||[]).length,1);
+ assert.doesNotMatch(panel,/<details|membership-price-form|Approve a practice membership price|<form/,'no price form and no inline form on the patient tab');
+ f.s.membershipAvailable=false;assert.match(c.membershipSelectionForm(f.s),/Card payments are not set up yet[\s\S]*data-payment-settings>Set up card payments<\/button>/);
+ f.s.identity.role='front_desk';assert.doesNotMatch(c.membershipSelectionForm(f.s),/<button/);assert.match(c.membershipSelectionForm(f.s),/Ask the practice owner to set up card payments/);
+ f.s.membershipAvailable=true;f.s.membershipPrices=[];assert.match(c.membershipSelectionForm(f.s),/Ask the practice owner to add a membership price/);assert.doesNotMatch(c.membershipSelectionForm(f.s),/data-open-membership-prices/);
+ f.s.identity.role='owner';assert.match(c.membershipSelectionForm(f.s),/No membership prices have been added yet\.[\s\S]*data-open-membership-prices>Add a membership price<\/button>/);
+ c.renderPatientMembershipPanel(f.s);panel=f.nodes['patient-billing-memberships'].innerHTML;assert.doesNotMatch(panel,/data-start-membership/);assert.match(panel,/data-open-membership-prices/);
+ f.s.membershipPrices=[f.price];f.s.memberships=[{request_id:'existing',price:f.price,status:'active',subscription_status:'active',current_period_end:'2026-12-01T00:00:00Z'}];c.renderPatientMembershipPanel(f.s);panel=f.nodes['patient-billing-memberships'].innerHTML;
+ assert.match(panel,/already has every membership the practice offers/);assert.doesNotMatch(panel,/data-start-membership/);assert.match(panel,/Generic membership/);assert.match(panel,/Active/);
+ // The enrolment form is still the same form with the consent box, and opens only when enrolment is possible.
+ f=fixture();c=f.ctx;assert.match(c.membershipSelectionForm(f.s),/id="patient-membership-form"[\s\S]*name="consent" type="checkbox" required/);
+ // Payment plans card.
+ f=fixture();c=f.ctx;c.renderPatientInstallments(f.s);panel=f.nodes['patient-billing-installments'].innerHTML;
+ assert.match(panel,/<h3>Payment plans<\/h3>/);assert.match(panel,/<button type="button" class="primary" data-start-payment-plan-sheet>Start payment plan<\/button>/);assert.doesNotMatch(panel,/<details|<form id="installment-preview-form"|Visit payment plan/);
+ assert.match(panel,/\$5\.00 in 2 payments · 0 paid · \$5\.00 left · Next due 2026-11-30/);assert.match(panel,/data-installment-collect="plan-one" data-installment-number="1">Collect payment<\/button>/);
+ f.s.eligibleInvoices=[];f.s.installmentPlans=[];c.renderPatientInstallments(f.s);panel=f.nodes['patient-billing-installments'].innerHTML;
+ assert.doesNotMatch(panel,/data-start-payment-plan-sheet/);assert.match(panel,/A payment plan is made from a statement for an encounter that has been billed\.[\s\S]*data-hub-tab="overview">Go to billing<\/button>/);
+ f.s.installmentAvailability={available:false};c.renderPatientInstallments(f.s);panel=f.nodes['patient-billing-installments'].innerHTML;assert.match(panel,/Card payments are not set up yet[\s\S]*data-payment-settings>Set up card payments<\/button>/);
+ f.s.identity.role='front_desk';c.renderPatientInstallments(f.s);assert.match(f.nodes['patient-billing-installments'].innerHTML,/Ask the practice owner to set up card payments/);
+ // Start payment plan sheet holds the same create-plan form; the scope check accepts it and its schedule review lands in the sheet.
+ f=fixture();c=f.ctx;{const holder={innerHTML:'',querySelector:sel=>sel==='#installment-plan-review'?review:sel==='#installment-preview-form'?null:null},review={id:'r'};
+  let opened=null;c.document.createElement=()=>holder;c.sheetOpen=(title,node)=>{opened={title,node};return sheet;};const sheet={isConnected:true,querySelector:sel=>sel==='#installment-plan-review'?review:null,contains:()=>true};
+  const dialog=c.openStartPaymentPlanSheet(f.s);assert.equal(dialog,sheet);assert.equal(opened.title,'Start payment plan');assert.match(holder.innerHTML,/id="installment-preview-form"[\s\S]*name="invoice_id"[\s\S]*name="count"[\s\S]*name="first_due"[\s\S]*data-installment-divide>Propose schedule/);assert.match(holder.innerHTML,/id="installment-plan-review"/);
+  assert.equal(c.planReviewHost(f.s),review,'the review shows inside the sheet while it is open');
+  const inSheet={closest:sel=>sel==='dialog'?sheet:null};assert.equal(c.patientPlanInScope(f.s,inSheet),true);assert.equal(c.patientPlanInScope(f.s,{closest:()=>null}),false);
+  f.s.eligibleInvoices=[];assert.equal(c.openStartPaymentPlanSheet(f.s),null,'no sheet when no statement is eligible');}
+ // Practice administration > Memberships: list, owner-only add button, payment-settings button when unavailable, same posted body.
+ const adminTarget=(x)=>{x.nodes['membership-prices-admin']={innerHTML:''};return {innerHTML:'',querySelector:sel=>x.nodes[sel.slice(1)]||null};};
+ f=fixture();c=f.ctx;let target=adminTarget(f);c.renderMembershipPricesAdmin(target);await new Promise(resolve=>setImmediate(resolve));
+ let admin=f.nodes['membership-prices-admin'].innerHTML;
+ assert.match(target.innerHTML,/<h2>Practice administration<\/h2>/);assert.match(admin,/Generic membership[\s\S]*\$50\.00[\s\S]*Every month[\s\S]*Active/);assert.match(admin,/<button type="button" class="primary" data-membership-price-new>Add membership price<\/button>/);
+ assert.match(c.practiceAdminExtraTabs('memberships'),/data-admin-tab="memberships" aria-pressed="true">Memberships/);assert.equal(c.practiceAdminExtraRender('staff',target),false);
+ f.s.identity.role='front_desk';c.paintMembershipPricesAdmin(target);admin=f.nodes['membership-prices-admin'].innerHTML;assert.match(admin,/Generic membership/);assert.doesNotMatch(admin,/data-membership-price-new|data-payment-settings/,'other roles see the list without the button');
+ f=fixture();c=f.ctx;const priceApi=c.api;c.api=async(path,...args)=>path.startsWith('/api/v1/billing/membership-prices')&&(args[0]||'GET')==='GET'?{items:[],creation_available:false}:priceApi(path,...args);target=adminTarget(f);c.renderMembershipPricesAdmin(target);await new Promise(resolve=>setImmediate(resolve));
+ admin=f.nodes['membership-prices-admin'].innerHTML;assert.match(admin,/Card payments must be set up before a membership price can be added\.[\s\S]*data-payment-settings>Set up card payments<\/button>/);assert.doesNotMatch(admin,/data-membership-price-new/);assert.match(admin,/No membership prices yet/);
+ f=fixture();c=f.ctx;target=adminTarget(f);c.renderMembershipPricesAdmin(target);await new Promise(resolve=>setImmediate(resolve));
+ const priceForm={elements:{approved:{checked:false},name:{value:' Gold plan '},amount:{value:'50.00'},interval:{value:'month'},interval_count:{value:'1'},approval_reason:{value:'Approved by the owner'}}};
+ await c.approveMembershipPrice(priceForm);assert.equal(mutations(f).length,0,'approval box is required');
+ priceForm.elements.approved.checked=true;await c.approveMembershipPrice(priceForm);assert.equal(mutations(f).length,1);assert.equal(mutations(f)[0][0],'/api/v1/billing/membership-prices');
+ assert.deepEqual(JSON.parse(JSON.stringify(mutations(f)[0][2])),{request_id:request,name:'Gold plan',amount_cents:5000,currency:'usd',interval:'month',interval_count:1,approved:true,approval_reason:'Approved by the owner'});
+ f.ctx.me.role='front_desk';await c.approveMembershipPrice(priceForm);assert.equal(mutations(f).length,1,'only a practice owner can add a price');
+ assert.doesNotMatch(source,/Approve a practice membership price/);
 
  console.log('PASS patient plans: exact minor-unit schedule, explicit recurring/patient-present consent, duplicate guard, stable request retry, invoice-version preview/create, read-only membership return and existing-only installment refresh');
 })().catch(error=>{console.error(error);process.exitCode=1;});

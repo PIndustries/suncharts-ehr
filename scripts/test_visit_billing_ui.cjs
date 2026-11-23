@@ -492,5 +492,12 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
  // People who cannot prepare claims never trigger it.
  ctx.billingCan=()=>false;node('encounter-revenue').dataset.revenueKey='';ctx.workspace.billing.accounts=[{...account,version:40}];sent.length=0;reply=()=>visitSummary({state:'prepare_claim',claim:null,account:{version:40}});ctx.renderEncounterRevenue();await settle();
  assert.equal(sent.filter(c=>c[1]==='POST').length,0);assert.match(node('encounter-revenue-status').innerHTML,/Billing staff prepare the claim to Synthetic Medicare PPO/);assert.deepEqual(primaries(node('encounter-revenue-status').innerHTML),[]);
+ // Start payment plan is offered from the encounter More list only when charges are posted, the patient owes something and staff can create.
+ {const column=(summary,context)=>ctx.visitBillingColumn(summary,context);
+  const owes=visitSummary({account:{status:'posted'},patient:{owes_now_cents:4000,received_cents:0}});
+  assert.match(column(owes,{canCreate:true}),/<button type="button" data-start-payment-plan>Start payment plan<\/button>/);
+  assert.doesNotMatch(column(owes,{canCreate:false}),/data-start-payment-plan/,'needs permission to create');
+  assert.doesNotMatch(column(visitSummary({account:{status:'draft'},patient:{owes_now_cents:4000}}),{canCreate:true}),/data-start-payment-plan/,'needs posted charges');
+  assert.doesNotMatch(column(visitSummary({account:{status:'posted'},patient:{owes_now_cents:0}}),{canCreate:true}),/data-start-payment-plan/,'needs an amount owed');}
  console.log('PASS visit billing card: one next step per state, self-explaining breakdown, automatic claim draft, statement on first use, one history, owner-only details, escaping and theme colours');
 })().catch(error=>{console.error(error);process.exitCode=1;});

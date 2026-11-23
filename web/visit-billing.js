@@ -308,6 +308,8 @@ function visitBillingColumn(s,ctx={}){
  if(i.insured)more.push('<button type="button" data-billing-part-key="details">Claim details</button>');
  more.push('<button type="button" data-billing-part-key="payments">Payments and receipts</button>');
  if(posted&&ctx.canCreate)more.push('<button type="button" data-visit-statement>Patient statement</button>','<button type="button" data-new-ledger>Write-off or adjustment</button>');
+ // A payment plan splits what the patient owes into dated payments; its button opens the patient's billing page.
+ if(posted&&ctx.canCreate&&Number(p.owes_now_cents)>0)more.push('<button type="button" data-start-payment-plan>Start payment plan</button>');
  if(claim&&ctx.claimsAllowed!==false&&claim.status!=='void'&&!claim.secondary&&!claim.crossover)more.push(`<button type="button" data-claim-form-preview="${esc(claim.id)}">Claim form (CMS-1500)</button>`);
  more.push('<button type="button" data-chart-section="insurance">Insurance and eligibility</button>','<button type="button" data-invoice-tab-key="history">History</button>');
  const total=standing.copayOnly?['Copay due now',standing.due]:['Patient owes now',Number(p.owes_now_cents)||0];

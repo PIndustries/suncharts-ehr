@@ -4,7 +4,7 @@
 // One patient billing view serves the chart and the practice worklist. Only opaque
 // navigation identifiers enter history; patient data stays in memory.
 // Statements are part of Payments: an encounter's money is one place, not a separate invoice record.
-const patientBillingTabs=[['overview','Overview'],['payments','Payments'],['methods','Payment methods'],['subscriptions','Subscriptions & plans']];
+const patientBillingTabs=[['overview','Overview'],['payments','Payments'],['methods','Payment methods'],['subscriptions','Memberships & payment plans']];
 let patientBillingWorkspace=null,patientBillingGeneration=0;
 function patientBillingAllowed(resource='billing'){
  return typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed(resource);
@@ -181,9 +181,9 @@ async function loadPatientBillingTab(s){
   if(s.tab==='payments'&&s.patientId){html=patientBillingTestNotice(s)+await patientBillingPaymentHistory(s);const statements=await patientBillingInvoices(s).catch(()=>'');if(statements)html+=`<section class="patient-billing-statements">${statements}</section>`;}
   else if(s.tab==='overview'||s.tab==='payments'){
    const data=await patientBillingNative(s);if(!data)return;
-   html=patientBillingTestNotice(s)+patientBillingSummary(data)+(s.tab==='overview'?`${s.patientId?'<div class="actions"><button type="button" class="primary" data-hub-tab="payments">Payments and statements</button><button type="button" data-hub-tab="methods">Save a card on file</button><button type="button" data-hub-tab="subscriptions">Start membership or payment plan</button></div><section id="patient-billing-balances" class="billing-section" hidden></section>':''}${patientBillingAccounts(data,s)}`:patientBillingReceipts(data,s));
+   html=patientBillingTestNotice(s)+patientBillingSummary(data)+(s.tab==='overview'?`${s.patientId?'<div class="actions"><button type="button" class="primary" data-hub-tab="payments">Payments and statements</button><button type="button" data-hub-tab="methods">Save a card on file</button><button type="button" data-hub-tab="subscriptions">Memberships & payment plans</button></div><section id="patient-billing-balances" class="billing-section" hidden></section>':''}${patientBillingAccounts(data,s)}`:patientBillingReceipts(data,s));
   }else if(s.tab==='invoices')html=patientBillingTestNotice(s)+await patientBillingInvoices(s);
-  else if(s.tab==='subscriptions'&&s.patientId&&typeof loadPatientPaymentPlans==='function')html='<section id="patient-billing-memberships" class="billing-section"><p role="status">Loading practice memberships…</p></section><section id="patient-billing-installments" class="billing-section"><p role="status">Loading visit payment plans…</p></section><details class="billing-section"><summary>Other subscription records</summary><section id="patient-billing-profile-section"><p role="status">Loading subscription records…</p></section></details>';
+  else if(s.tab==='subscriptions'&&s.patientId&&typeof loadPatientPaymentPlans==='function')html='<section id="patient-billing-memberships" class="billing-section"><p role="status">Loading memberships…</p></section><section id="patient-billing-installments" class="billing-section"><p role="status">Loading payment plans…</p></section><details class="billing-section patient-billing-more"><summary>More</summary><div class="actions"><button type="button" data-memberships-refresh>Refresh memberships</button><button type="button" data-installments-refresh>Refresh payment plans</button></div><section id="patient-billing-profile-section"><p role="status">Loading other subscription records…</p></section></details>';
   else html=s.patientId?`<section id="patient-billing-profile-section"><p role="status">Loading ${s.tab==='methods'?'payment methods':'subscriptions'}…</p></section>`:patientBillingChoosePatient(s.tab==='methods'?'payment methods':'subscriptions');
   if(!patientBillingCurrent(s)||s.panelRequest!==request||s.host.querySelector('#patient-billing-panel')!==panel)return;
   panel.innerHTML=html;
@@ -240,11 +240,11 @@ async function loadPatientBillingProfile(s,request){
    }catch(error){if(!patientBillingCurrent(s)||s.panelRequest!==request||s.profileRequest!==profileRequest)return;const current=patientBillingSetupFor(s);if(current?.request_id===active.request_id)patientBillingSetups.set(s.patientId,{...current,error:error.message||'The pending setup is unavailable.'});}
   }
   target.innerHTML=patientBillingProfileMarkup(data,tab,s);
- }catch(error){if(patientBillingCurrent(s)&&s.panelRequest===request&&s.profileRequest===profileRequest&&patientBillingProfileTarget(s)===target)target.innerHTML=`<h3>${tab==='methods'?'Payment methods':tab==='subscriptions'?'Memberships & recurring services':'Other invoices'}</h3><p role="status">${esc(error.message||'records are unavailable.')}</p><p class="muted">Availability is unknown. This is not an empty list and does not change the patient ledger.</p><button type="button" data-hub-profile-refresh>Retry records</button>${tab==='methods'?patientBillingSetupMarkup(s):''}`;}
+ }catch(error){if(patientBillingCurrent(s)&&s.panelRequest===request&&s.profileRequest===profileRequest&&patientBillingProfileTarget(s)===target)target.innerHTML=`<h3>${tab==='methods'?'Payment methods':tab==='subscriptions'?'Other subscription records':'Other invoices'}</h3><p role="status">${esc(error.message||'records are unavailable.')}</p><p class="muted">Availability is unknown. This is not an empty list and does not change the patient ledger.</p><button type="button" data-hub-profile-refresh>Retry records</button>${tab==='methods'?patientBillingSetupMarkup(s):''}`;}
 }
 function patientBillingProfileMarkup(data,tab,s){
- const label=tab==='methods'?'Cards on file':tab==='subscriptions'?'Memberships & recurring services':'Other invoices',key=patientBillingProfileKey(tab),section=data[key];
- let html=`<h3>${label}</h3><p class="muted">${tab==='methods'?'Cards this patient has saved for future visits.':tab==='subscriptions'?'Recurring charges set up for this patient.':'Invoices sent to this patient by card billing.'}${data.checked_at?' Updated '+esc(date(data.checked_at))+'.':''}</p>`;
+ const label=tab==='methods'?'Cards on file':tab==='subscriptions'?'Other subscription records':'Other invoices',key=patientBillingProfileKey(tab),section=data[key];
+ let html=`<h3>${label}</h3><p class="muted">${tab==='methods'?'Cards this patient has saved for future visits.':tab==='subscriptions'?'Recurring charges on this patient’s card that are not in the memberships list above.':'Invoices sent to this patient by card billing.'}${data.checked_at?' Updated '+esc(date(data.checked_at))+'.':''}</p>`;
  if(data.customer?.status==='creating')html+='<p role="status">The customer link is being prepared. Refresh to check its verified state.</p>';
  if(section?.status==='not_created')html+=`<p>${tab==='methods'?'No card on file yet. Paying a copay does not save the card.':tab==='subscriptions'?'No subscriptions yet.':'No invoices yet.'}</p>`;
  else if(section?.status!=='available'||!Array.isArray(section.data?.items))html+='<p role="status">These records are unavailable. The number of records is unknown.</p><button type="button" data-hub-profile-refresh>Retry records</button>';
@@ -267,7 +267,7 @@ function patientBillingProfileMarkup(data,tab,s){
   html+=patientBillingSetupMarkup(s);
   if((!patientBillingSetupFor(s)||patientBillingSetupFor(s).status==='expired')&&data.setup_available&&typeof billingCan==='function'&&billingCan('create'))html+='<div class="actions"><button type="button" class="primary" data-hub-add-method>Add card</button><button type="button" data-hub-add-method-link>Send the patient a link</button></div><p class="muted">The patient enters the card on the secure payment page and agrees there that the practice may charge it later. Nothing is charged now.</p>';
   else if(!data.setup_available)html+='<p class="muted">Hosted card setup is not available for the configured account. Existing saved methods remain listed above.</p>';
- }else if(tab==='subscriptions'&&typeof loadPatientPaymentPlans!=='function')html+='<section class="billing-section"><h3>Visit payment plans</h3><p>Visit balances and saved invoices are available in Overview and Invoices. Creating a fixed-balance installment plan is not available in this workspace yet.</p></section>';
+ }else if(tab==='subscriptions'&&typeof loadPatientPaymentPlans!=='function')html+='<section class="billing-section"><h3>Payment plans</h3><p>Balances and statements are on the Overview and Payments tabs. Starting a payment plan is not available on this screen yet.</p></section>';
  return html;
 }
 let patientBillingSetupOwner=null;
