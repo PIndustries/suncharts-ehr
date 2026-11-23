@@ -77,7 +77,7 @@ function encounterTimelineMarkup(steps,{title='',subtitle=''}={}){
 }
 // The small inline version for lists. With no steps (nothing is known about the money) it is a plain chip.
 function encounterTimelineChip(steps,number,extra={}){
- const id=extra.visit||extra.visitId||'',attrs=`${id?` data-encounter-chip="${esc(id)}"`:' data-encounter-chip=""'}${extra.patient?` data-patient="${esc(extra.patient)}"`:''}${extra.amount!=null&&extra.amount!==''?` data-payment-amount="${esc(extra.amount)}"`:''}${extra.date?` data-payment-date="${esc(extra.date)}"`:''}`;
+ const id=extra.visit||extra.visitId||'',attrs=`${id?` data-encounter-chip="${esc(id)}"`:' data-encounter-chip=""'}${extra.patient?` data-patient="${esc(extra.patient)}"`:''}${extra.amount!=null&&extra.amount!==''?` data-payment-amount="${esc(extra.amount)}"`:''}${extra.date?` data-payment-date="${esc(extra.date)}"`:''}${number?` data-encounter-number="${esc(number)}"`:''}`;
  if(!steps||!steps.length)return `<button type="button" class="encounter-chip is-plain"${attrs} title="Open this encounter">${esc(number||'Encounter')}<span class="encounter-chip-now">Open</span></button>`;
  const now=steps.find(step=>step.state==='now'),words=now?now.label:'Closed';
  return `<button type="button" class="encounter-chip"${attrs} aria-label="${esc(`${number||'Encounter'}. ${now?`Now: ${now.label}`:'Closed'}`)}">${esc(number||'Encounter')}<span class="encounter-chip-steps" aria-hidden="true">${steps.map(step=>`<i class="is-${esc(step.state)}"></i>`).join('')}</span><span class="encounter-chip-now">${esc(words)}</span></button>`;
@@ -123,20 +123,35 @@ async function encounterPreviewOpen(visitId,extra={}){
  const lines=evidence?.lines||[],diagnoses=evidence?.diagnoses||[],total=lines.reduce((sum,line)=>sum+(Number(line.amount_cents)||0),0);
  host.innerHTML=lines.length||diagnoses.length?`${lines.length?`<table class="billing-table"><thead><tr><th>Charge</th><th></th><th>Amount</th></tr></thead><tbody>${lines.map(line=>`<tr><td><b>${esc(line.code||'')}</b></td><td>${esc(line.description||'')}${Number(line.units)>1?` × ${esc(line.units)}`:''}</td><td>${line.amount_cents==null?'':money(line.amount_cents)}</td></tr>`).join('')}<tr><td colspan="2"><b>Total charges</b></td><td><b>${money(total)}</b></td></tr></tbody></table>`:'<p class="muted">No charges on this encounter yet.</p>'}${diagnoses.length?`<p><span class="muted">Diagnoses</span> ${diagnoses.map(d=>`<b>${esc(String(d.code).trim())}</b> ${esc(d.display||'')}`).join(' · ')}</p>`:''}`:'<p class="muted">No charges on this encounter yet.</p>';
 }
-// From a chip on a list: the open patient's encounter opens its preview; a chip on another patient's
-// row opens that patient's chart first.
+// The preview of an encounter whose chart is not open: its timeline, read on its own, and the way in.
+async function encounterPreviewElsewhere(visitId,patient,number){
+ if(typeof sheetOpen!=='function')return;
+ const identity=me,panel=document.createElement('div');panel.className='payment-encounter-preview';
+ panel.innerHTML=`<div data-preview-timeline>${typeof skeletonMarkup==='function'?skeletonMarkup('card'):'<p class="muted" role="status">Loading…</p>'}</div><div class="actions"><button type="button" class="primary" data-preview-open>Go to encounter</button><button type="button" data-sheet-close>Close</button></div>`;
+ const dialog=sheetOpen(number?`Encounter ${number}`:'Encounter',panel);
+ panel.querySelector('[data-preview-open]').addEventListener('click',()=>{sheetClose(dialog);run(async()=>{
+  if(typeof showClinical==='function')await showClinical();
+  if(me!==identity)return;
+  await selectPatient(patient,null);
+  if(me!==identity||selected!==patient)return;
+  if(!(workspace?.visits||[]).some(v=>v.id===visitId))throw new Error('This encounter could not be found in the patient’s chart.');
+  await openPatientEncounter(visitId);
+ });});
+ const [visit,summary]=await Promise.all([api(`/api/v1/visits/${encodeURIComponent(visitId)}`).catch(()=>null),encounterTimelineSummary(visitId)]);
+ const host=panel.querySelector('[data-preview-timeline]');if(!host||dialog.isConnected===false||me!==identity)return;
+ if(!visit){host.innerHTML='<p class="muted">This encounter’s details could not be loaded. Use Go to encounter.</p>';return;}
+ host.innerHTML=encounterTimelineMarkup(encounterTimelineSteps(summary,visit,null),encounterTimelineHeading(visit,null,summary));
+}
+// From a chip on a list: the open patient's encounter opens its full preview; a chip on another
+// patient's row previews it in place.
 async function encounterChipOpen(chip){
  const visitId=chip.dataset.encounterChip,patient=chip.dataset.patient,extra={amount:chip.dataset.paymentAmount,date:chip.dataset.paymentDate};
  if(!visitId)return;
  const identity=me,own=()=>typeof workspace!=='undefined'&&(workspace?.visits||[]).some(v=>v.id===visitId)&&(!patient||selected===patient);
  if(!own()){
   if(!patient)throw new Error('This encounter is in another patient’s chart. Open the patient first.');
-  const dialog=chip.closest('dialog');if(dialog&&typeof sheetClose==='function')sheetClose(dialog);
-  if(typeof showClinical==='function')await showClinical();
-  if(me!==identity)return;
-  await selectPatient(patient,null);
-  if(me!==identity||selected!==patient)return;
-  if(!(workspace?.visits||[]).some(v=>v.id===visitId))throw new Error('This encounter could not be found in the patient’s chart.');
+  // A chip on a list previews the encounter where you are; the chart opens only on Go to encounter.
+  await encounterPreviewElsewhere(visitId,patient,chip.dataset.encounterNumber||'');return;
  }
  await encounterPreviewOpen(visitId,extra);
 }
