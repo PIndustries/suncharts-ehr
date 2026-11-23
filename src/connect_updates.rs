@@ -363,8 +363,13 @@ async fn apply_page(db: &PgPool, claim: &Claim, lease: Uuid, value: Value) -> Re
     let mut previous = claim.cloud_cursor;
     for event in &page.items {
         if event.id <= previous
-            || !["support.reply", "support.updated", "reminder.delivery"]
-                .contains(&event.kind.as_str())
+            || ![
+                "support.reply",
+                "support.updated",
+                "reminder.delivery",
+                "ai.job",
+            ]
+            .contains(&event.kind.as_str())
             || event.kind == "support.reply" && event.message_id.is_none()
         {
             return Err(Error::Invalid("invalid Connect event order"));
@@ -393,6 +398,7 @@ async fn apply_page(db: &PgPool, claim: &Claim, lease: Uuid, value: Value) -> Re
     if !owned {
         return Err(Error::Conflict("Connect update lease changed"));
     }
+    let mut finished_jobs = Vec::new();
     for event in page.items {
         let wrote=sqlx::query("INSERT INTO connect_remote_events(tenant_id,installation_id,cloud_id,kind,resource_id,message_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING").bind(claim.tenant_id).bind(claim.installation_id).bind(event.id).bind(&event.kind).bind(event.resource_id).bind(event.message_id).bind(event.created_at).execute(&mut *tx).await?;
         if wrote.rows_affected() == 0 {
@@ -400,6 +406,9 @@ async fn apply_page(db: &PgPool, claim: &Claim, lease: Uuid, value: Value) -> Re
         }
         if event.kind == "reminder.delivery" {
             sqlx::query("UPDATE appointment_reminders r SET last_poll_at=NULL WHERE r.tenant_id=$1 AND r.id=$2 AND r.provider_id=$2 AND r.status IN('accepted','needs_review') AND EXISTS(SELECT 1 FROM reminder_credentials rc JOIN connect_service_credentials cc ON cc.tenant_id=rc.tenant_id AND cc.setting_id=rc.connect_setting_id AND cc.revision=rc.connect_revision WHERE rc.tenant_id=r.tenant_id AND rc.setting_id=r.sender_setting_id AND rc.revision=r.sender_revision AND rc.delivery_mode='suncharts_connect' AND cc.installation_id=$3)").bind(claim.tenant_id).bind(event.resource_id).bind(claim.installation_id).execute(&mut *tx).await?;
+        } else if event.kind == "ai.job" {
+            // A queued assistant job finished. It is settled after this transaction commits.
+            finished_jobs.push(event.resource_id);
         } else {
             sqlx::query("INSERT INTO connect_update_events(tenant_id,installation_id,cloud_id,kind,resource_id,message_id,created_at) VALUES($1,$2,$3,$4,$5,$6,$7)").bind(claim.tenant_id).bind(claim.installation_id).bind(event.id).bind(&event.kind).bind(event.resource_id).bind(event.message_id).bind(event.created_at).execute(&mut *tx).await?;
         }
@@ -413,6 +422,10 @@ async fn apply_page(db: &PgPool, claim: &Claim, lease: Uuid, value: Value) -> Re
     }
     sqlx::query("UPDATE connect_update_sync SET cloud_cursor=$4,lease_id=NULL,lease_until=NULL,next_attempt_at=clock_timestamp()+CASE WHEN $5 OR wake_cursor>$4 THEN interval '0 seconds' ELSE interval '15 seconds' END,last_result='verified' WHERE tenant_id=$1 AND installation_id=$2 AND lease_id=$3").bind(claim.tenant_id).bind(claim.installation_id).bind(lease).bind(page.next_cursor).bind(page.has_more).execute(&mut *tx).await?;
     tx.commit().await?;
+    for request in finished_jobs {
+        // The request stays waiting if this fails; reading it later asks Connect again.
+        let _ = crate::local_ai::job_finished(db, claim.tenant_id, request).await;
+    }
     Ok(true)
 }
 

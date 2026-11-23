@@ -57,6 +57,7 @@ pub mod import_matching;
 pub mod installments;
 pub mod instance_integrations;
 pub mod labs;
+pub mod local_ai;
 pub mod managed_connect;
 pub mod migration;
 pub mod model;
@@ -440,6 +441,7 @@ pub fn app(state: State) -> Router {
         .merge(specialty_workspace::router())
         .merge(rooming::routes())
         .merge(visit_diagnoses::routes())
+        .merge(local_ai::routes())
         .merge(terminology::router())
         .merge(demographics::router())
         .merge(billing::router())
@@ -503,6 +505,22 @@ pub fn app(state: State) -> Router {
                     "text/javascript; charset=utf-8",
                     include_str!("../web/connect-services.js"),
                 )
+            }),
+        )
+        .route(
+            "/motion.js",
+            get(|| async {
+                web_asset(
+                    "motion.js",
+                    "text/javascript; charset=utf-8",
+                    include_str!("../web/motion.js"),
+                )
+            }),
+        )
+        .route(
+            "/motion.css",
+            get(|| async {
+                web_asset("motion.css", "text/css", include_str!("../web/motion.css"))
             }),
         )
         .route(
@@ -1194,6 +1212,16 @@ pub fn app(state: State) -> Router {
             }),
         )
         .route(
+            "/diagnosis-suggestions.js",
+            get(|| async {
+                web_asset(
+                    "diagnosis-suggestions.js",
+                    "application/javascript",
+                    include_str!("../web/diagnosis-suggestions.js"),
+                )
+            }),
+        )
+        .route(
             "/visit-note.js",
             get(|| async {
                 web_asset(
@@ -1374,6 +1402,16 @@ pub fn app(state: State) -> Router {
                     "visit-billing.js",
                     "application/javascript",
                     include_str!("../web/visit-billing.js"),
+                )
+            }),
+        )
+        .route(
+            "/encounter-timeline.js",
+            get(|| async {
+                web_asset(
+                    "encounter-timeline.js",
+                    "application/javascript",
+                    include_str!("../web/encounter-timeline.js"),
                 )
             }),
         )

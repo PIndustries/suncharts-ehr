@@ -313,7 +313,7 @@ function encounterRevenueStatusMarkup(account,data={}){
  // A card with something wrong to answer for keeps its own button: while a claim could not be
  // prepared, or is preparing, the review panel has nothing to offer yet.
  if(data.summary)return visitBillingCardMarkup(data.summary,visitBillingContext({prepareError:data.prepareError,preparing:data.preparing,noReview:!!data.prepareError||!!data.preparing}))+(data.stale?'<p role="status">These amounts could not be refreshed just now. Refresh before relying on them.</p>':'');
- return `<section class="visit-billing-card"><div class="section-head"><h3>Next step</h3>${data.error?'<button type="button" class="text-button" data-refresh-revenue>Refresh</button>':''}</div><p ${data.error?'role="status"':'class="muted"'}>${data.error?'Billing for this encounter could not be loaded. Refresh before relying on any amount.':'Loading billing for this encounter…'}</p></section>`;
+ return `<section class="visit-billing-card"><div class="section-head"><h3>Next step</h3>${data.error?'<button type="button" class="text-button" data-refresh-revenue>Refresh</button>':''}</div>${data.error?'<p role="status">Billing for this encounter could not be loaded. Refresh before relying on any amount.</p>':typeof skeletonMarkup==='function'?skeletonMarkup('card'):'<p class="muted" role="status">Loading billing for this encounter…</p>'}</section>`;
 }
 function paintEncounterRevenue(state,current){
  if(!current())return;const node=$('encounter-revenue-status');if(!node)return;
@@ -324,9 +324,19 @@ function paintEncounterRevenue(state,current){
   const held=node.querySelector?.('[data-claim-send-error]')?.textContent||'';
 state.reviewCard=state.data?.summary||null;node.innerHTML=encounterRevenueStatusMarkup(encounterChargeAccount(),state.data||{});
   if(typeof encounterBarSync==='function')encounterBarSync();
+  if(typeof patientBannerEncounterSync==='function'&&state.data?.summary&&typeof activeVisit!=='undefined'&&activeVisit)patientBannerEncounterSync(state.data.summary,activeVisit);
   if(typeof billingRowCodesFill==='function')billingRowCodesFill();
   if(held&&!node.querySelector?.('[data-claim-send-error]'))node.querySelector?.('.visit-billing-status .actions')?.insertAdjacentHTML?.('beforeend',`<p class="claim-send-error" data-claim-send-error role="alert">${esc(held)}</p>`);
   for(const d of node.querySelectorAll?.('details[data-revenue-disclosure]')||[])d.open=open.includes(d.dataset.revenueDisclosure);
+ // Show what just changed: the step that became done, and the amount the patient owes.
+ if(typeof motionFlash==='function'){
+  const doneNow=Array.from(node.querySelectorAll?.('[data-billing-row]')||[]).filter(r=>r.querySelector?.('.billing-row-mark.is-done')),owesNow=state.data?.summary?.patient?.owes_now_cents,before=state.motionPrev;
+  state.motionPrev={done:doneNow.map(r=>r.dataset?.billingRow),owes:owesNow};
+  if(before){
+   for(const row of doneNow)if(!before.done.includes(row.dataset?.billingRow)){motionFlash(row);if(typeof motionMarkDone==='function')motionMarkDone(row.querySelector('.billing-row-mark.is-done'));}
+   if(before.owes!==owesNow&&Number.isFinite(before.owes)&&Number.isFinite(owesNow)){const total=node.querySelector?.('.billing-column-total');if(total){motionFlash(total);if(typeof motionCount==='function')motionCount(total.querySelector('b'),before.owes,owesNow);}}
+  }
+ }
   // The review panel beside the table is the person's own working space. A background refresh
   // redraws the card underneath it; the panel is redrawn only if it was taken out of the DOM.
   const panel=$('visit-billing-review'),review=state.review;
@@ -380,7 +390,7 @@ async function loadEncounterRevenueStatus(account,force=false){
    // The banner's progress line follows this encounter: its claim, or its self-pay steps.
    if(current()&&typeof patientBannerEncounterSync==='function')patientBannerEncounterSync(state.data?.summary,typeof activeVisit!=='undefined'?activeVisit:null);
    const claimId=state.data?.summary?.claim?.id;
-   if(current()&&claimId&&typeof patientBannerClaim!=='undefined'&&patientBannerClaim.claim?.id!==claimId&&typeof claimMdClaimLifecycle==='function'&&typeof claimsBase!=='undefined')void api(`${claimsBase}/${encodeURIComponent(claimId)}`).then(detail=>{if(current()&&detail?.claim?.id===claimId)claimMdClaimLifecycle(detail.claim,detail);}).catch(()=>{});
+   if(current()&&claimId&&!(typeof patientBannerEncounterOpen==='function'&&patientBannerEncounterOpen())&&typeof patientBannerClaim!=='undefined'&&patientBannerClaim.claim?.id!==claimId&&typeof claimMdClaimLifecycle==='function'&&typeof claimsBase!=='undefined')void api(`${claimsBase}/${encodeURIComponent(claimId)}`).then(detail=>{if(current()&&detail?.claim?.id===claimId)claimMdClaimLifecycle(detail.claim,detail);}).catch(()=>{});
   if(current()&&typeof setTimeout==='function'&&state.data?.summary?.account?.status==='posted'){clearTimeout(state.timer);state.timer=setTimeout(()=>{const node=$('encounter-revenue-status');if(current()&&node&&(!node.getClientRects||node.getClientRects().length))void loadEncounterRevenueStatus(encounterChargeAccount(),true);},20000);}}
  })();
  return state.pending;
@@ -1068,6 +1078,7 @@ function billingPartRemembered(){const visit=typeof activeVisit!=='undefined'&&a
 function billingPartSet(key,remember=true){
  const host=typeof $==='function'?$('encounter-revenue'):null;if(!host?.dataset||!billingPartKeys.includes(key))return;
  host.dataset.billingPart=key;
+ if(typeof motionIn==='function')motionIn($('encounter-revenue-status'));
  if(key!=='codes'){const visit=typeof activeVisit!=='undefined'&&activeVisit?activeVisit.id:null;billingPartFor={visit,key};}
  const title=typeof host.querySelector==='function'?host.querySelector('[data-billing-part-title]'):null;
  if(title)title.textContent=(billingParts.find(([k])=>k===key)||[])[1]||'';
@@ -1115,7 +1126,7 @@ let encounterCodesStripToken=0;
 async function encounterCodesStripRender(){
  const strip=typeof $==='function'?$('encounter-codes-strip'):null,visit=typeof activeVisit!=='undefined'?activeVisit:null;if(!strip?.isConnected||!visit)return;
  const token=++encounterCodesStripToken;
- if(!strip.innerHTML)strip.innerHTML='<p class="muted">Loading codes…</p>';
+ if(!strip.innerHTML)strip.innerHTML=typeof skeletonMarkup==='function'?skeletonMarkup('card'):'<p class="muted">Loading codes…</p>';
  const evidence=await visitReceiptEvidence(visit.appointment_id);
  if(token!==encounterCodesStripToken||(typeof activeVisit!=='undefined'?activeVisit:null)!==visit)return;
  const node=$('encounter-codes-strip');if(node){node.innerHTML=encounterCodesStripMarkup(evidence);encounterCodesStripClaimSync();}
@@ -1291,6 +1302,7 @@ function invoiceTabSet(key,remember=true){
  // The whole encounter page follows the tab: the note, checkout and the other encounters list
  // show only on their own tab, so nothing is stacked under anything else.
  const page=$('visit-page-host');if(page?.dataset)page.dataset.encounterTab=key;
+ if(typeof motionIn==='function'&&page)motionIn(page);
  if(typeof activeVisit!=='undefined'&&activeVisit)encounterTabFor={visit:activeVisit.id,key};
  const buttons=typeof host.querySelectorAll==='function'?Array.from(host.querySelectorAll('[data-invoice-tab-key]')||[]):[];
  for(const button of buttons){if(!button?.dataset)continue;const on=button.dataset.invoiceTabKey===key;button.setAttribute?.('aria-selected',String(on));button.classList?.toggle('active',on);}

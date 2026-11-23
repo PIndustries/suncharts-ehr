@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026 P Industries
 //! Local claim packets and reviewed ERA posting. No clearinghouse or payment transport.
+use crate::postgres::ENCOUNTER_NUMBERS;
 use crate::{
     auth::Actor,
     billing,
@@ -819,7 +820,7 @@ async fn claims(
 ) -> Result<Json<Value>> {
     a.staff()?;
     let mut tx = db(&s)?.begin().await?;
-    let mut rows:Vec<Value>=sqlx::query_scalar("SELECT (to_jsonb(c)-'tenant_id'-'creation_hash'-'request_id'-'content'-'snapshot')||jsonb_build_object('patient_name',p.family_name||', '||p.given_name,'total_cents',c.snapshot->'account'->'total_cents','payer_name',c.snapshot->'account'->'coverage_snapshot'->'payer'->'content'->>'name','coverage_priority',c.snapshot->'account'->'coverage_snapshot'->'coverage'->'content'->>'priority','crossover_tracking_only',coalesce(jsonb_typeof(c.snapshot->'coordination_of_benefits'->'crossover')='object',false),'synthetic_test',coalesce((c.content->>'synthetic_test')::boolean,false)) FROM ehr_claims c JOIN patients p ON p.tenant_id=c.tenant_id AND p.id=c.patient_id WHERE c.tenant_id=$1 AND ($2::uuid IS NULL OR c.id>$2) AND ($3::uuid IS NULL OR c.patient_id=$3) AND ($4::uuid IS NULL OR c.account_id=$4) ORDER BY c.id LIMIT 101").bind(a.tenant_id).bind(q.after).bind(q.patient_id).bind(q.account_id).fetch_all(&mut *tx).await?;
+    let mut rows:Vec<Value>=sqlx::query_scalar(&format!("WITH en AS ({ENCOUNTER_NUMBERS}) SELECT (to_jsonb(c)-'tenant_id'-'creation_hash'-'request_id'-'content'-'snapshot')||jsonb_build_object('visit_id',x.visit_id,'encounter_number',n.encounter_number,'service_date',c.snapshot->'account'->'content'->>'service_date','patient_name',p.family_name||', '||p.given_name,'total_cents',c.snapshot->'account'->'total_cents','payer_name',c.snapshot->'account'->'coverage_snapshot'->'payer'->'content'->>'name','coverage_priority',c.snapshot->'account'->'coverage_snapshot'->'coverage'->'content'->>'priority','crossover_tracking_only',coalesce(jsonb_typeof(c.snapshot->'coordination_of_benefits'->'crossover')='object',false),'synthetic_test',coalesce((c.content->>'synthetic_test')::boolean,false)) FROM ehr_claims c JOIN patients p ON p.tenant_id=c.tenant_id AND p.id=c.patient_id LEFT JOIN billing_accounts b ON b.tenant_id=c.tenant_id AND b.id=c.account_id CROSS JOIN LATERAL (SELECT coalesce(b.visit_id,(NULLIF(c.snapshot->'account'->'content'->>'visit_id',''))::uuid) AS visit_id) x LEFT JOIN en n ON n.id=x.visit_id WHERE c.tenant_id=$1 AND ($2::uuid IS NULL OR c.id>$2) AND ($3::uuid IS NULL OR c.patient_id=$3) AND ($4::uuid IS NULL OR c.account_id=$4) ORDER BY c.id LIMIT 101")).bind(a.tenant_id).bind(q.after).bind(q.patient_id).bind(q.account_id).fetch_all(&mut *tx).await?;
     let next = if rows.len() > 100 {
         rows.truncate(100);
         rows.last().map(|r| r["id"].clone())

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Read-only native receivables and receipts. Processor objects are not the ledger.
 use super::*;
+use crate::postgres::ENCOUNTER_NUMBERS;
 
 const ACCOUNTS: &str = r#"WITH account_rows AS (
  SELECT b.id,b.patient_id,p.family_name||', '||p.given_name AS patient_name,p.mrn,
- b.status,b.version,b.total_cents,b.created_at,b.content->>'service_date' AS service_date,
+ b.status,b.version,b.total_cents,b.created_at,b.visit_id,b.content->>'service_date' AS service_date,
  -- A draft has no snapshot yet: its insurer is the one on the coverage the charges name.
  coalesce(b.coverage_snapshot->'payer'->'content'->>'name',(SELECT y.content->>'name' FROM insurance_coverages c JOIN ehr_payers y ON y.tenant_id=c.tenant_id AND y.id=c.payer_id WHERE c.tenant_id=b.tenant_id AND c.patient_id=b.patient_id AND c.id::text=b.content->>'coverage_id')) AS payer_name,
  CASE WHEN b.status='posted' THEN b.total_cents+coalesce((SELECT sum(e.effect_cents) FROM billing_entries e WHERE e.tenant_id=b.tenant_id AND e.account_id=b.id),0) END AS account_balance_cents,
@@ -117,7 +118,7 @@ async fn overview(
     let accounts = page(
         &mut tx,
         &a,
-        ACCOUNTS,
+        (ACCOUNTS, "f.visit_id"),
         mode == "test",
         q.patient_id,
         q.accounts_after,
@@ -159,7 +160,7 @@ async fn overview(
     let copays = page(
         &mut tx,
         &a,
-        COPAYS,
+        (COPAYS, "(SELECT v.id FROM visits v WHERE v.tenant_id=$1 AND v.appointment_id=f.appointment_id)"),
         mode == "test",
         q.patient_id,
         q.copays_after,
@@ -175,13 +176,15 @@ async fn overview(
 async fn page(
     tx: &mut Transaction<'_, Postgres>,
     a: &Actor,
-    cte: &str,
+    (cte, visit_of): (&str, &str),
     test: bool,
     patient: Option<Uuid>,
     after: Option<Uuid>,
     limit: i64,
 ) -> Result<Value> {
-    let mut rows:Vec<Value>=sqlx::query_scalar(&format!("{cte} SELECT to_jsonb(f) FROM filtered f WHERE ($4::uuid IS NULL OR (f.created_at,f.id)<(SELECT created_at,id FROM filtered WHERE id=$4)) ORDER BY f.created_at DESC,f.id DESC LIMIT $5"))
+    // Each row names its encounter and the encounter's practice number; the numbers are computed
+    // once for the request, not per row.
+    let mut rows:Vec<Value>=sqlx::query_scalar(&format!("{cte}, en AS ({ENCOUNTER_NUMBERS}) SELECT to_jsonb(f)||jsonb_build_object('visit_id',x.visit_id,'encounter_number',n.encounter_number) FROM filtered f CROSS JOIN LATERAL (SELECT {visit_of} AS visit_id) x LEFT JOIN en n ON n.id=x.visit_id WHERE ($4::uuid IS NULL OR (f.created_at,f.id)<(SELECT created_at,id FROM filtered WHERE id=$4)) ORDER BY f.created_at DESC,f.id DESC LIMIT $5"))
         .bind(a.tenant_id).bind(test).bind(patient).bind(after).bind(limit+1).fetch_all(&mut **tx).await?;
     let next = if rows.len() > limit as usize {
         rows.truncate(limit as usize);

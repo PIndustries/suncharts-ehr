@@ -750,3 +750,229 @@ async fn payment_history_lists_each_receipt_once_and_keeps_direct_payment_eviden
         StatusCode::NOT_FOUND
     );
 }
+
+// ---- Encounter numbers on billing rows ----------------------------------------------------
+// An encounter that is the practice's fifth is "ENC-0005" wherever it is listed, whichever patient's
+// chart is open, so these rows carry the encounter and its number.
+async fn numbered_encounter(
+    db: &PgPool,
+    tenant: Uuid,
+    clinician: Uuid,
+    patient: Uuid,
+    created: &str,
+) -> (Uuid, Uuid) {
+    let (visit, appointment) = (Uuid::new_v4(), Uuid::new_v4());
+    sqlx::query("INSERT INTO appointments(tenant_id,id,patient_id,clinician_id,starts_at,ends_at,status) VALUES($1,$2,$3,$4,$5::timestamptz,$5::timestamptz+interval '30 minutes','checked_in')").bind(tenant).bind(appointment).bind(patient).bind(clinician).bind(created).execute(db).await.unwrap();
+    sqlx::query("INSERT INTO visits(tenant_id,id,patient_id,appointment_id,clinician_id,created_at) VALUES($1,$2,$3,$4,$5,$6::timestamptz)").bind(tenant).bind(visit).bind(patient).bind(appointment).bind(clinician).bind(created).execute(db).await.unwrap();
+    (visit, appointment)
+}
+async fn account_for(db: &PgPool, tenant: Uuid, patient: Uuid, visit: Uuid, day: &str) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO billing_accounts(tenant_id,id,patient_id,visit_id,content,total_cents,status,version,request_id,creation_hash) VALUES($1,$2,$3,$4,jsonb_build_object('service_date',$5::text,'visit_id',$4::text),10000,'posted',2,$6,'synthetic')").bind(tenant).bind(id).bind(patient).bind(visit).bind(day).bind(Uuid::new_v4()).execute(db).await.unwrap();
+    id
+}
+fn by_id<'a>(rows: &'a Value, key: &str, id: Uuid) -> &'a Value {
+    rows.as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row[key] == json!(id))
+        .unwrap_or_else(|| panic!("no row for {id} in {rows}"))
+}
+// Another practice's encounters, started before this practice's, must not shift its numbers.
+async fn other_practice_encounters(db: &PgPool) {
+    let tenant = Uuid::new_v4();
+    let (patient, user) = (Uuid::new_v4(), Uuid::new_v4());
+    sqlx::query("INSERT INTO patients(tenant_id,id,mrn,given_name,family_name,birth_date) VALUES($1,$2,'SYN-OTHER','Other','Practice','1990-01-01')").bind(tenant).bind(patient).execute(db).await.unwrap();
+    for day in ["2026-01-01T09:00:00Z", "2026-01-02T09:00:00Z"] {
+        numbered_encounter(db, tenant, user, patient, day).await;
+    }
+}
+#[tokio::test]
+async fn billing_rows_name_their_encounter_and_its_practice_number() {
+    let (db, a, p1, null_appointment) = setup().await;
+    let r = app(db.clone());
+    other_practice_encounters(&db).await;
+    let p2 = Uuid::new_v4();
+    sqlx::query("INSERT INTO patients(tenant_id,id,mrn,given_name,family_name,birth_date) VALUES($1,$2,'SYN-SECOND','Blake','Synthetic','1991-02-02')").bind(a.tenant_id).bind(p2).execute(&db).await.unwrap();
+    // Started in this order: patient 2, patient 1, patient 2. Patient 1's only encounter is the
+    // practice's second, not its first.
+    let (v1, _) = numbered_encounter(&db, a.tenant_id, a.sub, p2, "2026-03-01T09:00:00Z").await;
+    let (v2, appointment2) =
+        numbered_encounter(&db, a.tenant_id, a.sub, p1, "2026-03-02T09:00:00Z").await;
+    let (v3, appointment3) =
+        numbered_encounter(&db, a.tenant_id, a.sub, p2, "2026-03-03T09:00:00Z").await;
+    let expected = [(v1, 1), (v2, 2), (v3, 3)];
+    let accounts = [
+        (
+            account_for(&db, a.tenant_id, p2, v1, "2026-03-01").await,
+            p2,
+            v1,
+        ),
+        (
+            account_for(&db, a.tenant_id, p1, v2, "2026-03-02").await,
+            p1,
+            v2,
+        ),
+        (
+            account_for(&db, a.tenant_id, p2, v3, "2026-03-03").await,
+            p2,
+            v3,
+        ),
+    ];
+    // The numbers the chart shows for the same encounters.
+    for (patient, visit, number) in [(p2, v1, 1), (p1, v2, 2), (p2, v3, 3)] {
+        let (status, chart) = call(
+            &r,
+            &a,
+            "GET",
+            &format!("/api/v1/patients/{patient}/workspace"),
+            Value::Null,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{chart}");
+        let chart_visit = by_id(&chart["visits"], "id", visit);
+        assert_eq!(chart_visit["encounter_number"], number);
+    }
+    // Patient billing overview: account rows.
+    let data = overview(&r, &a, "").await;
+    for (account, _, visit) in accounts {
+        let row = by_id(&data["accounts"]["items"], "id", account);
+        let number = expected.iter().find(|e| e.0 == visit).unwrap().1;
+        assert_eq!(row["visit_id"], json!(visit));
+        assert_eq!(row["encounter_number"], number);
+    }
+    // Copay receipts: one on an encounter, one on an appointment that has no encounter yet.
+    let on_encounter = add_receipt(&r, &a, p1, appointment2, 2500).await;
+    let on_nothing = add_receipt(&r, &a, p1, null_appointment, 1500).await;
+    let on_third = add_receipt(&r, &a, p2, appointment3, 500).await;
+    let data = overview(&r, &a, "").await;
+    let copays = &data["copays"]["items"];
+    let row = by_id(
+        copays,
+        "id",
+        on_encounter["id"].as_str().unwrap().parse().unwrap(),
+    );
+    assert_eq!(
+        (row["visit_id"].clone(), row["encounter_number"].clone()),
+        (json!(v2), json!(2))
+    );
+    let row = by_id(
+        copays,
+        "id",
+        on_third["id"].as_str().unwrap().parse().unwrap(),
+    );
+    assert_eq!(
+        (row["visit_id"].clone(), row["encounter_number"].clone()),
+        (json!(v3), json!(3))
+    );
+    let row = by_id(
+        copays,
+        "id",
+        on_nothing["id"].as_str().unwrap().parse().unwrap(),
+    );
+    assert!(
+        row["visit_id"].is_null() && row["encounter_number"].is_null(),
+        "{row}"
+    );
+    // One patient's own view numbers the same encounters the same way.
+    let data = overview(&r, &a, &format!("?patient_id={p1}")).await;
+    assert_eq!(data["accounts"]["items"][0]["encounter_number"], 2);
+    // Payment history.
+    let (status, history) = call(
+        &r,
+        &a,
+        "GET",
+        &format!("/api/v1/billing/patients/{p1}/payment-history"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    let items = &history["items"];
+    let row = by_id(
+        items,
+        "id",
+        on_encounter["id"].as_str().unwrap().parse().unwrap(),
+    );
+    assert_eq!(
+        (row["visit_id"].clone(), row["encounter_number"].clone()),
+        (json!(v2.to_string()), json!(2))
+    );
+    let row = by_id(
+        items,
+        "id",
+        on_nothing["id"].as_str().unwrap().parse().unwrap(),
+    );
+    assert!(
+        row["visit_id"].is_null() && row["encounter_number"].is_null(),
+        "{row}"
+    );
+    // A direct payment on an account made through the usual flow carries its encounter: the
+    // practice's fourth, started after the others.
+    let appointment4 = Uuid::new_v4();
+    sqlx::query("INSERT INTO appointments(tenant_id,id,patient_id,clinician_id,starts_at,ends_at,status) VALUES($1,$2,$3,$4,'2026-10-26T14:00:00Z','2026-10-26T14:30:00Z','checked_in')").bind(a.tenant_id).bind(appointment4).bind(p1).bind(a.sub).execute(&db).await.unwrap();
+    let account = posted_account(&db, &r, &a, p1, appointment4).await;
+    let visit4: Uuid =
+        sqlx::query_scalar("SELECT id FROM visits WHERE tenant_id=$1 AND appointment_id=$2")
+            .bind(a.tenant_id)
+            .bind(appointment4)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let path = format!(
+        "/api/v1/patients/{p1}/billing/accounts/{}/entries",
+        account["id"].as_str().unwrap()
+    );
+    let (status, entry) = call(&r, &a, "POST", &path, json!({"request_id":Uuid::new_v4(),"kind":"payment","amount_cents":1000,"reverses_id":null,"party":"patient","method":"cash","reference":"SYNTHETIC-DIRECT","occurred_on":Utc::now().date_naive(),"reason":"Synthetic confirmed cash payment"}), Some(2)).await;
+    assert_eq!(status, StatusCode::OK, "{entry}");
+    let (_, history) = call(
+        &r,
+        &a,
+        "GET",
+        &format!("/api/v1/billing/patients/{p1}/payment-history"),
+        Value::Null,
+        None,
+    )
+    .await;
+    let direct = history["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["kind"] == "recorded_payment")
+        .unwrap();
+    assert_eq!(
+        (
+            direct["visit_id"].clone(),
+            direct["encounter_number"].clone()
+        ),
+        (json!(visit4.to_string()), json!(4))
+    );
+    // Claims list: the claim's account names the encounter and the date of service.
+    let payer = Uuid::new_v4();
+    sqlx::query("INSERT INTO ehr_payers(tenant_id,id,content,request_id,creation_hash) VALUES($1,$2,'{}',$3,'synthetic')").bind(a.tenant_id).bind(payer).bind(Uuid::new_v4()).execute(&db).await.unwrap();
+    let mut claims = Vec::new();
+    for (index, (account, patient, visit)) in accounts.iter().enumerate() {
+        let claim = Uuid::new_v4();
+        // The snapshot carries the account as it was when the claim was made.
+        sqlx::query("INSERT INTO ehr_claims(tenant_id,id,patient_id,account_id,payer_id,control_number,frequency,content,snapshot,request_id,creation_hash) VALUES($1,$2,$3,$4,$5,$6,'original','{}',jsonb_build_object('account',jsonb_build_object('total_cents',10000,'content',jsonb_build_object('visit_id',$7::text,'service_date',$8::text))),$9,'synthetic')").bind(a.tenant_id).bind(claim).bind(patient).bind(account).bind(payer).bind(format!("SYN-ENC-{index}")).bind(visit.to_string()).bind(format!("2026-03-0{}", index + 1)).bind(Uuid::new_v4()).execute(&db).await.unwrap();
+        claims.push((claim, *visit, index + 1));
+    }
+    let (status, list) = call(&r, &a, "GET", "/api/v1/billing/claims", Value::Null, None).await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    for (claim, visit, number) in claims {
+        let row = by_id(&list["items"], "id", claim);
+        assert_eq!(row["visit_id"], json!(visit));
+        assert_eq!(row["encounter_number"], number);
+        assert_eq!(row["service_date"], format!("2026-03-0{number}"));
+        assert_eq!(row["total_cents"], 10000);
+    }
+    // Another practice sees none of these and numbers its own from 1.
+    let mut other = a.clone();
+    other.tenant_id = Uuid::new_v4();
+    other.sub = Uuid::new_v4();
+    user(&db, &other, other.sub, "owner", false).await;
+    let data = overview(&r, &other, "").await;
+    assert_eq!(data["accounts"]["items"], json!([]));
+    assert_eq!(data["copays"]["items"], json!([]));
+}

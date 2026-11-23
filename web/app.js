@@ -475,7 +475,7 @@ async function refreshSignInMode(){
   else{$('connect-login').href='#';$('login-description').textContent='Sign in to your self-hosted SunCharts EHR.';$('login-connect-state').hidden=true;$('login-connect-state').textContent='';}
  }catch{$('login-connect-state').hidden=false;$('login-connect-state').textContent='Unable to verify Connect status. Try again shortly.';}
 }
-function notice(message, error = false) { $('notice').textContent=message; $('notice').className=`notice${error?' error':''}`; $('notice').hidden=false; }
+function notice(message, error = false) { $('notice').textContent=message; $('notice').className=`notice${error?' error':''}`; $('notice').hidden=false; if(typeof motionNotice==='function')motionNotice($('notice'),error); }
 async function run(action) {
   if (busy) return;
   busy=true; $('notice').hidden=true;
@@ -1078,7 +1078,8 @@ function showTool(title) {
  for(const key of Object.keys(keep))if(query.has(key)&&(!keep[key]||(key==='open'&&query.get(key)!==keep[key])))query.delete(key);
  const search=query.size?'?'+query.toString():'';
  if(search!==location.search)history.replaceState(null,'',location.pathname+search+location.hash);
- setPage(title);$('clinical-workspace').hidden=true;$('patient-form').hidden=true;$('tools').hidden=false;$('new-patient').hidden=true;$('toggle-directory').hidden=true;
+ const motionPrev=typeof $==='function'?$('page-title')?.textContent:null;
+ setPage(title);if(typeof motionIn==='function'&&motionPrev!==title)motionIn($('tools'));$('clinical-workspace').hidden=true;$('patient-form').hidden=true;$('tools').hidden=false;$('new-patient').hidden=true;$('toggle-directory').hidden=true;
 }
 let sunReturnWorkspace='nav-practice';
 async function showSunPage(){
@@ -1116,7 +1117,7 @@ async function showClinical() {
  captureVisitDrafts();showTool('Patients & encounters');
  selected=undefined;activeVisit=undefined;workspace=undefined;chartSection='overview';
  $('chart').innerHTML=patientDirectoryLanding();setPatientDirectoryVisible(true);
- $('tools').innerHTML='<p class="muted" role="status">Loading patient directory…</p>';
+ $('tools').innerHTML=typeof skeletonMarkup==='function'?skeletonMarkup('rows'):'<p class="muted" role="status">Loading patient directory…</p>';
  const page=await api(typeof patientDirectoryQuery==='function'?patientDirectoryQuery():'/api/v1/patients');if(me!==openingIdentity||openingGeneration!==patientWorkspaceGeneration)return;
  patients=page.items;cursor=page.next_cursor;renderPatients();$('tools').replaceChildren();$('tools').hidden=true;
  $('clinical-workspace').hidden=false;$('new-patient').hidden=!canRegisterPatient();$('toggle-directory').hidden=false;

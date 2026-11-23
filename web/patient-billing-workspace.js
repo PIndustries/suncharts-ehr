@@ -136,25 +136,17 @@ function patientBillingPaymentVisit(item,s){
  return (workspace?.visits||[]).find(v=>(item.visit_id&&v.id===item.visit_id)||(item.appointment_id&&v.appointment_id===item.appointment_id))||null;
 }
 function patientBillingPaymentEncounter(item,s){
- const visit=patientBillingPaymentVisit(item,s);
- if(!visit)return item.appointment_id||item.visit_id?'<span class="muted">Appointment without an encounter yet</span>':'<span class="muted">Not tied to an encounter</span>';
- const appointment=(workspace?.appointments||[]).find(a=>a.id===visit.appointment_id),number=typeof encounterNumberText==='function'?encounterNumberText(visit):'';
- return `<button type="button" class="text-button" data-payment-encounter="${esc(visit.id)}" data-payment-amount="${item.received_cents==null?'':esc(item.received_cents)}" data-payment-date="${esc(item.created_at||'')}">${esc(number||'Encounter')}</button><small>${esc([appointment?.title,appointment?.starts_at?date(appointment.starts_at):''].filter(Boolean).join(' · '))}</small>`;
+ const visit=patientBillingPaymentVisit(item,s),id=item.visit_id||visit?.id;
+ if(!id)return item.appointment_id?'<span class="muted">Appointment without an encounter yet</span>':'<span class="muted">Not tied to an encounter</span>';
+ // The number comes from the payment row itself, so it shows whether or not this chart is open.
+ const appointment=visit?(workspace?.appointments||[]).find(a=>a.id===visit.appointment_id):null;
+ const row={visit_id:id,encounter_number:item.encounter_number??visit?.encounter_number,patient_id:s.patientId};
+ const number=typeof encounterNumberLabel==='function'?encounterNumberLabel(row.encounter_number):'';
+ const extra={amount:item.received_cents==null?'':item.received_cents,date:item.created_at||''};
+ const encounterChip=typeof encounterRowChip==='function'?encounterRowChip(row,extra):`<button type="button" class="text-button" data-encounter-chip="${esc(id)}" data-patient="${esc(s.patientId)}" data-payment-amount="${item.received_cents==null?'':esc(item.received_cents)}" data-payment-date="${esc(item.created_at||'')}">${esc(number||'Encounter')}</button>`;
+ const detail=[appointment?.title,appointment?.starts_at?date(appointment.starts_at):''].filter(Boolean).join(' · ');
+ return `${encounterChip}${detail?`<small>${esc(detail)}</small>`:''}`;
 }
-async function patientBillingEncounterPreview(button){
- const visit=(workspace?.visits||[]).find(v=>v.id===button.dataset.paymentEncounter);if(!visit||typeof sheetOpen!=='function')return;
- const appointment=(workspace?.appointments||[]).find(a=>a.id===visit.appointment_id),number=typeof encounterNumberText==='function'?encounterNumberText(visit):'';
- const panel=document.createElement('div');panel.className='payment-encounter-preview';
- const fact=(label,value)=>value?`<div><dt>${label}</dt><dd>${value}</dd></div>`:'';
- const paid=button.dataset.paymentAmount?`${money(Number(button.dataset.paymentAmount))}${button.dataset.paymentDate?' on '+esc(date(button.dataset.paymentDate)):''}`:'';
- panel.innerHTML=`<dl class="payment-encounter-facts">${fact('Encounter',esc(appointment?.title||'Encounter'))}${fact('Date',appointment?.starts_at?esc(date(appointment.starts_at)):'')}${fact('Note',visit.status==='signed'?'Signed':'Not signed yet')}${fact('This payment',paid)}</dl><div data-preview-codes><p class="muted">Loading charges…</p></div><div class="actions"><button type="button" class="primary" data-preview-open>Open encounter</button><button type="button" data-sheet-close>Close</button></div>`;
- const dialog=sheetOpen(number?`Encounter ${number}`:'Encounter',panel);
- panel.querySelector('[data-preview-open]').addEventListener('click',()=>{sheetClose(dialog);run(()=>openPatientEncounter(visit.id));});
- const evidence=typeof visitReceiptEvidence==='function'?await visitReceiptEvidence(visit.appointment_id).catch(()=>null):null,host=panel.querySelector('[data-preview-codes]');if(!host)return;
- const lines=evidence?.lines||[],diagnoses=evidence?.diagnoses||[],total=lines.reduce((sum,line)=>sum+(Number(line.amount_cents)||0),0);
- host.innerHTML=lines.length||diagnoses.length?`${lines.length?`<table class="billing-table"><thead><tr><th>Charge</th><th></th><th>Amount</th></tr></thead><tbody>${lines.map(line=>`<tr><td><b>${esc(line.code||'')}</b></td><td>${esc(line.description||'')}${Number(line.units)>1?` × ${esc(line.units)}`:''}</td><td>${line.amount_cents==null?'':money(line.amount_cents)}</td></tr>`).join('')}<tr><td colspan="2"><b>Total charges</b></td><td><b>${money(total)}</b></td></tr></tbody></table>`:'<p class="muted">No charges on this encounter yet.</p>'}${diagnoses.length?`<p><span class="muted">Diagnoses</span> ${diagnoses.map(d=>`<b>${esc(String(d.code).trim())}</b> ${esc(d.display||'')}`).join(' · ')}</p>`:''}`:'<p class="muted">No charges on this encounter yet.</p>';
-}
-if(typeof document!=='undefined'&&document.addEventListener)document.addEventListener('click',event=>{const button=event.target?.closest?.('[data-payment-encounter]');if(!button?.dataset?.paymentEncounter)return;event.preventDefault();run(()=>patientBillingEncounterPreview(button));});
 function patientBillingChoosePatient(label){return `<section class="patient-billing-empty"><h3>Choose a patient to view ${esc(label)}</h3><p>Use the patient selector above. Records are retrieved only for the selected patient.</p></section>`;}
 async function patientBillingInvoices(s){
  if(!s.patientId){const data=await patientBillingNative(s);return data?patientBillingChoosePatient('their invoices')+patientBillingAccounts(data,s):null;}
@@ -172,7 +164,7 @@ async function patientBillingInvoices(s){
 }
 async function loadPatientBillingTab(s){
  const panel=s.host.querySelector('#patient-billing-panel');if(!panel||!patientBillingCurrent(s))return;
- const request=++s.panelRequest;panel.innerHTML='<p role="status">Loading billing records…</p>';
+ const request=++s.panelRequest;panel.innerHTML=typeof skeletonMarkup==='function'?skeletonMarkup('rows'):'<p role="status">Loading billing records…</p>';
  try{
   let html;
   if(s.modeAuto&&!await patientBillingNative(s))return;

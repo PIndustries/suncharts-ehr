@@ -413,3 +413,34 @@
 /* Codes read as badges, so the eye finds them before the wording. */
 .codes-strip-code{display:inline-block;padding:1px 8px;border-radius:6px;border:1px solid color-mix(in srgb,var(--blue) 45%,transparent);background:color-mix(in srgb,var(--blue) 16%,transparent);color:var(--ink);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.95em;font-weight:700;letter-spacing:.02em;line-height:1.5}
 .encounter-codes-strip li,.billing-row-lines li{align-items:first baseline}
+
+/* One timeline for an encounter: done steps in success colours, the step staff can act on in the accent colour and
+   glowing, steps passed over in the warning colour, later steps quiet. The same colours and the same
+   steps draw the header row, the preview sheet and the small chip on lists. */
+.encounter-timeline-block{display:grid;gap:6px;min-width:0;width:100%}
+.encounter-timeline-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;font-size:var(--fs-sm)}
+.encounter-timeline-head .encounter-timeline-count{margin-left:auto;color:var(--muted);white-space:nowrap}
+.encounter-timeline{list-style:none;margin:0;padding:0;display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:4px}
+.encounter-timeline>li{display:grid;gap:2px;min-width:0;padding:2px 0;outline:none;border-radius:4px}
+.encounter-timeline>li:focus-visible{box-shadow:0 0 0 2px var(--blue)}
+.encounter-timeline-bar{display:block;height:5px;border-radius:3px;background:var(--line);opacity:.7}
+.encounter-timeline>li>b{font-size:var(--fs-sm);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.encounter-timeline>li>small{font-size:var(--fs-sm);color:var(--muted);min-height:1.2em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.encounter-timeline>li.is-done .encounter-timeline-bar{background:var(--success-text);opacity:1}
+.encounter-timeline>li.is-now .encounter-timeline-bar{background:var(--blue);opacity:1;animation:claim-step-glow 1.8s ease-in-out infinite}
+.encounter-timeline>li.is-now>b{color:var(--blue)}
+.encounter-timeline>li.is-skipped .encounter-timeline-bar{background:var(--warning-text);opacity:1}
+.encounter-timeline>li.is-later>b{color:var(--muted);font-weight:500}
+.patient-banner .patient-banner-row.patient-banner-timeline{display:block;width:100%;padding-top:6px;border-top:1px solid var(--line);margin-top:4px}
+.encounter-chip{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:2px 8px;border:1px solid var(--line);border-radius:999px;background:none;color:var(--ink);font-size:var(--fs-sm);cursor:pointer;vertical-align:middle}
+.encounter-chip:hover{border-color:var(--blue)}
+.encounter-chip-steps{display:inline-flex;gap:2px}
+.encounter-chip-steps>i{display:block;width:10px;height:4px;border-radius:2px;background:var(--line)}
+.encounter-chip-steps>i.is-done{background:var(--success-text)}
+.encounter-chip-steps>i.is-now{background:var(--blue)}
+.encounter-chip-steps>i.is-skipped{background:var(--warning-text)}
+.encounter-chip-now{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.encounter-chip.is-plain .encounter-chip-now{color:var(--blue)}
+.payment-encounter-preview .encounter-timeline-block{padding-bottom:4px}
+@media(max-width:700px){.encounter-timeline{grid-auto-flow:row;grid-template-columns:repeat(2,minmax(0,1fr))}.encounter-timeline>li>b,.encounter-timeline>li>small{white-space:normal}}
+@media(prefers-reduced-motion:reduce){.encounter-timeline>li.is-now .encounter-timeline-bar{animation:none}}

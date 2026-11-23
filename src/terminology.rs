@@ -262,7 +262,7 @@ impl Import {
 // in staff reference responses. All catalog content remains tenant scoped.
 const RELEASE_PUBLIC:&str="jsonb_build_object('id',r.id,'system',r.system,'edition',r.edition,'source_name',r.source_name,'source_url',r.source_url,'source_sha256',r.source_sha256,'effective_start',r.effective_start,'effective_end',r.effective_end,'rights',r.rights,'license_valid_until',r.license_valid_until,'code_count',r.code_count,'created_at',r.created_at)";
 const CODE_PUBLIC:&str="jsonb_build_object('release_id',r.id,'system',r.system,'edition',r.edition,'source_name',r.source_name,'source_url',r.source_url,'source_sha256',r.source_sha256,'code',c.code,'display',c.display,'short_display',c.short_display,'billable',c.billable,'active',c.active,'effective_start',greatest(r.effective_start,c.effective_start),'effective_end',least(r.effective_end,c.effective_end),'metadata',c.metadata)";
-const LICENSE_VISIBLE:&str="(r.rights<>'licensed' OR r.license_valid_until IS NULL OR r.license_valid_until>=CURRENT_DATE)";
+pub(crate) const LICENSE_VISIBLE:&str="(r.rights<>'licensed' OR r.license_valid_until IS NULL OR r.license_valid_until>=CURRENT_DATE)";
 async fn release(tx: &mut Transaction<'_, Postgres>, actor: &Actor, id: Uuid) -> Result<Value> {
     sqlx::query_scalar(&format!("SELECT {RELEASE_PUBLIC} FROM terminology_releases r WHERE r.tenant_id=$1 AND r.id=$2 AND {LICENSE_VISIBLE}"))
         .bind(actor.tenant_id).bind(id).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)
@@ -708,6 +708,50 @@ fn cursor(value: Option<&str>) -> Result<Option<CodeCursor>> {
         })
         .transpose()
 }
+/// What a code lookup asks for. `search` is matched as a code prefix or as the words of a
+/// description; `ranked` puts the closest descriptions first instead of ordering by code.
+pub(crate) struct CodeFilter<'a> {
+    pub tenant: Uuid,
+    pub release: Uuid,
+    pub search: &'a str,
+    pub billable: Option<bool>,
+    pub active: bool,
+    pub date: NaiveDate,
+    pub after: Option<&'a str>,
+    pub limit: i64,
+    pub ranked: bool,
+}
+/// The one lookup behind the code search screen and the assistant's candidate lists, so both
+/// find the same codes for the same words.
+pub(crate) async fn query_codes(
+    conn: &mut sqlx::PgConnection,
+    f: &CodeFilter<'_>,
+) -> Result<Vec<Value>> {
+    let code_prefix = format!(
+        "{}%",
+        f.search
+            .replace('.', "")
+            .to_ascii_uppercase()
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+    let words = f
+        .search
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .take(20)
+        .map(|word| format!("{word}:*"))
+        .collect::<Vec<_>>()
+        .join(" & ");
+    let order = if f.ranked {
+        "ts_rank(c.search_text,to_tsquery('simple',$5)) DESC,length(c.display),c.code"
+    } else {
+        "c.code"
+    };
+    Ok(sqlx::query_scalar(&format!("SELECT {CODE_PUBLIC} FROM terminology_codes c JOIN terminology_releases r ON r.tenant_id=c.tenant_id AND r.id=c.release_id WHERE c.tenant_id=$1 AND c.release_id=$2 AND ($3::text='' OR c.code_key LIKE $4 OR c.search_text@@to_tsquery('simple',$5)) AND ($6::boolean IS NULL OR c.billable=$6) AND c.active=$7 AND greatest(r.effective_start,c.effective_start)<=$8 AND (least(r.effective_end,c.effective_end) IS NULL OR least(r.effective_end,c.effective_end)>=$8) AND ($9::text IS NULL OR c.code>$9) ORDER BY {order} LIMIT $10"))
+        .bind(f.tenant).bind(f.release).bind(f.search).bind(code_prefix).bind(words).bind(f.billable).bind(f.active).bind(f.date).bind(f.after).bind(f.limit).fetch_all(conn).await?)
+}
 async fn search(
     actor: Actor,
     ExtractState(state): ExtractState<State>,
@@ -769,24 +813,21 @@ async fn search(
             "catalog cursor belongs to a different search or service date",
         ));
     }
-    let code_prefix = format!(
-        "{}%",
-        search
-            .replace('.', "")
-            .to_ascii_uppercase()
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_")
-    );
-    let words = search
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .take(20)
-        .map(|word| format!("{word}:*"))
-        .collect::<Vec<_>>()
-        .join(" & ");
-    let rows:Vec<Value>=sqlx::query_scalar(&format!("SELECT {CODE_PUBLIC} FROM terminology_codes c JOIN terminology_releases r ON r.tenant_id=c.tenant_id AND r.id=c.release_id WHERE c.tenant_id=$1 AND c.release_id=$2 AND ($3::text='' OR c.code_key LIKE $4 OR c.search_text@@to_tsquery('simple',$5)) AND ($6::boolean IS NULL OR c.billable=$6) AND c.active=$7 AND greatest(r.effective_start,c.effective_start)<=$8 AND (least(r.effective_end,c.effective_end) IS NULL OR least(r.effective_end,c.effective_end)>=$8) AND ($9::text IS NULL OR c.code>$9) ORDER BY c.code LIMIT $10"))
-        .bind(actor.tenant_id).bind(id).bind(search).bind(code_prefix).bind(words).bind(query.billable).bind(query.active.unwrap_or(true)).bind(date).bind(cursor.as_ref().map(|c|c.code.as_str())).bind(limit+1).fetch_all(&mut *tx).await?;
+    let rows = query_codes(
+        &mut tx,
+        &CodeFilter {
+            tenant: actor.tenant_id,
+            release: id,
+            search,
+            billable: query.billable,
+            active: query.active.unwrap_or(true),
+            date,
+            after: cursor.as_ref().map(|c| c.code.as_str()),
+            limit: limit + 1,
+            ranked: false,
+        },
+    )
+    .await?;
     let has_more = rows.len() > limit as usize;
     let items: Vec<Value> = rows.into_iter().take(limit as usize).collect();
     let next = if has_more {
