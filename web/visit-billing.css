@@ -397,3 +397,13 @@
 #encounter-revenue[data-invoice-tab="billing"][data-billing-part="summary"]>#encounter-revenue-status .visit-billing-more{display:none}
 #encounter-revenue[data-invoice-tab="billing"]>.billing-parts{order:0}
 #encounter-revenue[data-invoice-tab="billing"][data-billing-part="payments"]>#encounter-codes-strip{display:none}
+
+/* The charges, line by line, under the Charges row. */
+.billing-row-lines{margin-top:8px;display:grid;gap:6px}
+.billing-row-lines ul{list-style:none;margin:0;padding:0;display:grid;gap:4px}
+.billing-row-lines li{display:grid;grid-template-columns:minmax(96px,auto) minmax(0,1fr) auto;gap:12px;align-items:baseline;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface-soft)}
+.billing-row-lines li b{font-variant-numeric:tabular-nums;white-space:nowrap}
+.billing-row-lines .codes-strip-code{font-weight:700}
+.billing-row-dx{margin:0;font-size:var(--fs-sm);line-height:1.5}
+.billing-row[data-billing-row="charges"]{align-items:start}
+.billing-row[data-billing-row="charges"]>:is(.billing-row-mark,.billing-row-amount,.billing-row-action){margin-top:2px}

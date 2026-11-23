@@ -1126,10 +1126,14 @@ let encounterCodesEvidence={visit:null,evidence:null};
 function billingRowCodesFill(){
  const node=typeof $==='function'?$('encounter-revenue-status')?.querySelector?.('[data-billing-row-codes]'):null,visit=typeof activeVisit!=='undefined'?activeVisit:null;
  if(!node||!visit||encounterCodesEvidence.visit!==visit.id)return;
- const lines=encounterCodesEvidence.evidence?.lines||[];if(!lines.length)return;
- const words=lines.slice(0,3).map(line=>`${String(line.code||'').trim()}${line.description?' '+line.description:''}`).join(', ')+(lines.length>3?` and ${lines.length-3} more`:'');
- const standing=node.dataset.standing||node.textContent;node.dataset.standing=standing;
- node.textContent=`${words} · ${standing.charAt(0).toLowerCase()}${standing.slice(1)}`;
+ const evidence=encounterCodesEvidence.evidence,lines=evidence?.lines||[],diagnoses=evidence?.diagnoses||[];
+ const host=node.parentElement;if(!host?.insertAdjacentHTML)return;
+ host.querySelector('.billing-row-lines')?.remove();
+ if(!lines.length&&!diagnoses.length)return;
+ // Each charge on its own line with its amount, then the diagnoses they are billed under.
+ const items=lines.map(line=>`<li><span class="codes-strip-code">${esc(String(line.code||'').trim())}${line.modifiers?'-'+esc(String(line.modifiers).trim().replace(/[,\s]+/g,'-')):''}</span><span>${esc(line.description||'')}${Number(line.units)>1?` × ${esc(line.units)}`:''}</span><b>${line.amount_cents==null?'':money(line.amount_cents)}</b></li>`).join('');
+ const dx=diagnoses.length?`<p class="billing-row-dx"><span class="muted">Diagnoses</span> ${diagnoses.map(d=>`<span class="codes-strip-code">${esc(String(d.code).trim())}</span> ${esc(d.display||'')}`).join(' · ')}</p>`:'';
+ host.insertAdjacentHTML('beforeend',`<div class="billing-row-lines">${items?`<ul>${items}</ul>`:''}${dx}</div>`);
 }
 // Put the strip under the encounter tabs and the Billing areas under the next step.
 function encounterBillingChrome(host){
