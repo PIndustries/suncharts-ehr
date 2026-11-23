@@ -714,7 +714,8 @@ main .billing-totals>span>b{display:block;margin:0;font-size:1.5rem;line-height:
 .payment-encounter-facts dt{color:var(--muted);font-size:var(--fs-sm)}
 .payment-encounter-facts dd{margin:2px 0 0;font-weight:600}
 
-.receipt-sheet{display:grid;gap:14px;width:min(640px,84vw);min-width:0}
+.receipt-sheet{display:grid;gap:14px;width:100%;min-width:0;box-sizing:border-box}
+dialog.sheet-dialog:has(.receipt-sheet){width:min(680px,92vw);max-width:none}
 .receipt-sheet>div{min-width:0}
 .receipt-sheet .copay-receipt-card{margin:0;width:auto;max-width:100%;box-sizing:border-box}
 .receipt-sheet .copay-receipt-card header{flex-wrap:wrap}
