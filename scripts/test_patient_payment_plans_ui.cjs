@@ -186,5 +186,52 @@ const mutations=f=>f.calls.filter(call=>call[1]==='POST');
  f.ctx.me.role='front_desk';await c.approveMembershipPrice(priceForm);assert.equal(mutations(f).length,1,'only a practice owner can add a price');
  assert.doesNotMatch(source,/Approve a practice membership price/);
 
+ // Cancel plan: quiet button on active plans only, for people who may create plans.
+ f=fixture();c=f.ctx;
+ let card=c.installmentPlanMarkup(f.plan,f.s);
+ assert.match(card,/<button type="button" data-installment-cancel-plan="plan-one">Cancel plan<\/button>/);assert.doesNotMatch(card,/data-installment-cancel-plan="plan-one" class|class="primary"[^>]*data-installment-cancel-plan/);
+ for(const status of ['complete','cancelled'])assert.doesNotMatch(c.installmentPlanMarkup({...f.plan,status},f.s),/data-installment-cancel-plan/,status+' plan has no cancel button');
+ c.billingCan=()=>false;assert.doesNotMatch(c.installmentPlanMarkup(f.plan,f.s),/data-installment-cancel-plan/,'no button without permission');c.billingCan=()=>true;
+ // The sheet: title, one plain line, required reason, two buttons.
+ {const holder={innerHTML:'',querySelector:()=>null};let opened=null;const sheet={isConnected:true};
+  c.document.createElement=()=>holder;c.sheetOpen=(title,node)=>{opened={title,node};return sheet;};
+  assert.equal(c.openCancelPlanSheet(f.s,'plan-one'),sheet);assert.equal(opened.title,'Cancel payment plan');
+  assert.match(holder.innerHTML,/Payments already taken stay as they are\. Nothing is refunded\. What is left stays owed on the encounter\./);
+  assert.match(holder.innerHTML,/<label>Reason<input name="reason" maxlength="1000" autocomplete="off" required><\/label>/);
+  assert.match(holder.innerHTML,/<button type="submit">Cancel this plan<\/button>/);assert.match(holder.innerHTML,/data-installment-cancel-keep>Keep plan<\/button>/);
+  assert.doesNotMatch(holder.innerHTML,/class="primary"/);assert.doesNotMatch(holder.innerHTML,/visit|Stripe/i);
+  f.s.installmentPlans=[{...f.plan,status:'cancelled'}];assert.equal(c.openCancelPlanSheet(f.s,'plan-one'),null,'no sheet for a cancelled plan');
+  c.billingCan=()=>false;f.s.installmentPlans=[f.plan];assert.equal(c.openCancelPlanSheet(f.s,'plan-one'),null,'no sheet without permission');c.billingCan=()=>true;
+  // Keep plan closes the sheet and sends nothing.
+  let closed=false;c.sheetClose=()=>{closed=true;};f.s.plansSheet=sheet;const before=f.calls.length;
+  for(const handler of f.handlers.click||[])handler({target:{closest:sel=>sel==='button'?{dataset:{},hasAttribute:name=>name==='data-installment-cancel-keep',closest:()=>sheet}:null}});
+  assert.equal(closed,true);assert.equal(f.calls.length,before);}
+ // Submitting needs a reason, posts it with the plan version, closes the sheet, reloads and shows the notice.
+ f=fixture();c=f.ctx;f.s.installmentPlans=[{...f.plan,version:7}];{
+  let closed=0;c.sheetClose=()=>{closed++;};f.s.plansSheet={isConnected:true};
+  const form={dataset:{plan:'plan-one'},elements:{reason:{value:'   '}}};
+  await assert.rejects(c.cancelInstallmentPlan(f.s,form),/Enter a reason/);assert.equal(mutations(f).length,0);
+  form.elements.reason.value='  Patient moved away  ';
+  const cancelled={...f.plan,version:8,status:'cancelled',cancelled_at:'2026-11-12T10:00:00Z',cancel_reason:'Patient moved away',installments:f.plan.installments.map(row=>({...row,status:'cancelled'}))};
+  const base=c.api;c.api=async(path,method='GET',body,version)=>path.endsWith('/cancel')?(f.calls.push([path,method,body,version]),cancelled):base(path,method,body,version);
+  await c.cancelInstallmentPlan(f.s,form);
+  assert.equal(mutations(f).length,1);assert.equal(mutations(f)[0][0],`/api/v1/billing/patients/${patient}/installment-plans/plan-one/cancel`);
+  assert.deepEqual(JSON.parse(JSON.stringify(mutations(f)[0][2])),{reason:'Patient moved away'});assert.equal(mutations(f)[0][3],7);
+  assert.equal(closed,1);assert.ok(f.calls.some(call=>call[0]==='notice'&&call[1]==='Payment plan cancelled.'&&!call[2]));
+  assert.ok(f.calls.some(call=>call[0]===`/api/v1/billing/patients/${patient}/installment-plans`&&call[1]==='GET'),'plans are reloaded');}
+ // A refusal is thrown to the sheet (shown as a line at the top of it) and nothing else changes.
+ f=fixture();c=f.ctx;{
+  const base=c.api;c.api=async(path,...rest)=>{if(path.endsWith('/cancel'))throw Error('A payment for this plan is still in progress. Finish or cancel that payment first.');return base(path,...rest);};
+  f.s.plansSheet={isConnected:true};let closed=0;c.sheetClose=()=>{closed++;};
+  await assert.rejects(c.cancelInstallmentPlan(f.s,{dataset:{plan:'plan-one'},elements:{reason:{value:'Patient asked'}}}),/still in progress/);
+  assert.equal(closed,0);assert.ok(!f.calls.some(call=>call[0]==='notice'));}
+ // A cancelled card: status, date and escaped reason, what was paid, no collect or cancel buttons.
+ f=fixture();c=f.ctx;{
+  const cancelled={...f.plan,status:'cancelled',cancelled_at:'2026-11-12T10:00:00Z',cancel_reason:'<b>Moved</b> away',total_cents:500,remaining_cents:250,installments:[{number:1,due_on:'2026-11-30',amount_cents:250,collected_cents:250,collectible_cents:0,status:'complete'},{number:2,due_on:'2026-12-30',amount_cents:250,collected_cents:0,collectible_cents:250,status:'cancelled'}]};
+  card=c.installmentPlanMarkup(cancelled,f.s);
+  assert.match(card,/<span class="pill">Cancelled<\/span>/);assert.match(card,/Cancelled on 2026-11-12T10:00:00Z\. Reason: &lt;b&gt;Moved&lt;\/b&gt; away/);assert.doesNotMatch(card,/<b>Moved<\/b>/);
+  assert.match(card,/\$5\.00 in 2 payments · 1 paid · \$2\.50 still owed/);assert.doesNotMatch(card,/Next due/);
+  assert.doesNotMatch(card,/data-installment-collect|data-installment-cancel-plan|Collect payment|Cancel plan/);
+  f.s.installmentPlans=[cancelled];c.renderPatientInstallments(f.s);assert.match(f.nodes['patient-billing-installments'].innerHTML,/Cancelled/);}
  console.log('PASS patient plans: exact minor-unit schedule, explicit recurring/patient-present consent, duplicate guard, stable request retry, invoice-version preview/create, read-only membership return and existing-only installment refresh');
 })().catch(error=>{console.error(error);process.exitCode=1;});

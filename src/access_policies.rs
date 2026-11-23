@@ -304,7 +304,8 @@ fn action(method: &Method, path: &str) -> Option<Action> {
             if path.starts_with("/api/v1/billing/patients/")
                 && (path.ends_with("/payment-setups")
                     || path.ends_with("/installment-plans")
-                    || (path.contains("/installment-plans/") && path.ends_with("/checkout")))
+                    || (path.contains("/installment-plans/")
+                        && (path.ends_with("/checkout") || path.ends_with("/cancel"))))
             {
                 return Some(Action::Create);
             }
@@ -1093,6 +1094,7 @@ mod tests {
         for path in [
             "/api/v1/billing/patients/{}/installment-plans",
             "/api/v1/billing/patients/{}/installment-plans/{}/installments/{}/checkout",
+            "/api/v1/billing/patients/{}/installment-plans/{}/cancel",
         ] {
             assert_eq!(action(&Method::POST, path), Some(Action::Create));
             assert_eq!(resources(path), Some(vec!["billing"]));

@@ -388,11 +388,13 @@ function installmentOperationMarkup(op){
 }
 function installmentPlanSummary(plan){
  const rows=plan.installments||[],paid=rows.filter(row=>row.status==='paid'||(row.amount_cents>0&&row.collected_cents>=row.amount_cents)).length,next=rows.find(row=>!(row.status==='paid'||(row.amount_cents>0&&row.collected_cents>=row.amount_cents)));
+ if(plan.status==='cancelled')return `${money(plan.total_cents)} in ${rows.length} payments · ${paid} paid · ${money(plan.remaining_cents)} still owed`;
  return `${money(plan.total_cents)} in ${rows.length} payments · ${paid} paid · ${money(plan.remaining_cents)} left${next?' · Next due '+esc(next.due_on):''}`;
 }
 function installmentPlanMarkup(plan,s){
  const writable=billingCan('create')&&s.installmentAvailability?.available;
- return `<article class="billing-section" data-installment-plan="${esc(plan.id)}"><div class="section-head"><h4>Payment plan</h4><span class="pill">${esc(human(plan.status))}${plan.livemode===false&&planTestTag()?' · '+planTestTag():''}</span></div><p>${installmentPlanSummary(plan)}</p><p class="muted">${plan.created_at?'Arranged '+esc(date(plan.created_at))+'. ':''}${plan.reason?esc(plan.reason)+'. ':''}<b>No automatic payments.</b></p>${plan.blocked_reason?`<p class="mapping-notice">${esc(plan.blocked_reason)}</p>`:''}<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Payment / due</th><th>Amount</th><th>Collected</th><th>Status</th><th></th></tr></thead><tbody>${(plan.installments||[]).map(row=>`<tr><td>${esc(row.number)} · ${esc(row.due_on)}</td><td>${money(row.amount_cents)}</td><td>${money(row.collected_cents)}<small>${money(row.collectible_cents)} can be collected now</small></td><td>${esc(human(row.status))}</td><td>${installmentCheckoutRequests.has(s.patientId+':'+plan.id+':'+row.number)?`<button type="button" data-installment-local-resume="${esc(plan.id)}" data-installment-number="${esc(row.number)}">Review the waiting payment</button>`:writable&&plan.status==='active'&&!plan.blocked_reason&&row.collectible_cents>=50?`<button type="button" data-installment-collect="${esc(plan.id)}" data-installment-number="${esc(row.number)}">Collect payment</button>`:''}</td></tr>`).join('')}</tbody></table></div>${(plan.attempts||[]).map(installmentOperationMarkup).join('')}</article>`;
+ const cancellable=billingCan('create')&&['active','needs_review'].includes(plan.status);
+ return `<article class="billing-section" data-installment-plan="${esc(plan.id)}"><div class="section-head"><h4>Payment plan</h4><span class="pill">${plan.status==='cancelled'?'Cancelled':esc(human(plan.status))}${plan.livemode===false&&planTestTag()?' · '+planTestTag():''}</span></div><p>${installmentPlanSummary(plan)}</p><p class="muted">${plan.created_at?'Arranged '+esc(date(plan.created_at))+'. ':''}${plan.reason?esc(plan.reason)+'. ':''}<b>No automatic payments.</b></p>${plan.status==='cancelled'?`<p class="mapping-notice">Cancelled${plan.cancelled_at?' on '+esc(date(plan.cancelled_at)):''}.${plan.cancel_reason?' Reason: '+esc(plan.cancel_reason):''}</p>`:''}${plan.blocked_reason?`<p class="mapping-notice">${esc(plan.blocked_reason)}</p>`:''}<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Payment / due</th><th>Amount</th><th>Collected</th><th>Status</th><th></th></tr></thead><tbody>${(plan.installments||[]).map(row=>`<tr><td>${esc(row.number)} · ${esc(row.due_on)}</td><td>${money(row.amount_cents)}</td><td>${money(row.collected_cents)}<small>${money(row.collectible_cents)} can be collected now</small></td><td>${esc(human(row.status))}</td><td>${plan.status!=='cancelled'&&installmentCheckoutRequests.has(s.patientId+':'+plan.id+':'+row.number)?`<button type="button" data-installment-local-resume="${esc(plan.id)}" data-installment-number="${esc(row.number)}">Review the waiting payment</button>`:writable&&plan.status==='active'&&!plan.blocked_reason&&row.collectible_cents>=50?`<button type="button" data-installment-collect="${esc(plan.id)}" data-installment-number="${esc(row.number)}">Collect payment</button>`:''}</td></tr>`).join('')}</tbody></table></div>${(plan.attempts||[]).map(installmentOperationMarkup).join('')}${cancellable?`<div class="actions"><button type="button" data-installment-cancel-plan="${esc(plan.id)}">Cancel plan</button></div>`:''}</article>`;
 }
 function renderPatientInstallments(s){
  const host=s.host.querySelector('#patient-billing-installments');if(!host||!patientBillingCurrent(s)||s.tab!=='subscriptions')return;
@@ -560,6 +562,26 @@ async function cancelInstallmentReaderPayment(s,id){
  await api('/api/v1/billing/invoice-checkouts/'+encodeURIComponent(id)+'/reader-cancel','POST',{});
  if(patientBillingCurrent(s)&&s.tab==='subscriptions')await loadPatientInstallments(s,s.planRequest);
 }
+// Cancelling a plan stops further collection. Payments already taken stay as they are.
+function openCancelPlanSheet(s,planId){
+ const plan=s.installmentPlans?.find(item=>item.id===planId);
+ if(!plan||!['active','needs_review'].includes(plan.status)||!patientBillingCurrent(s)||s.tab!=='subscriptions'||!billingCan('create')||typeof sheetOpen!=='function')return null;
+ closePlansSheet(s);
+ const holder=document.createElement('div');
+ holder.innerHTML=`<form id="installment-cancel-form" data-plan="${esc(plan.id)}"><p>Payments already taken stay as they are. Nothing is refunded. What is left stays owed on the encounter.</p><label>Reason<input name="reason" maxlength="1000" autocomplete="off" required></label><div class="actions"><button type="submit">Cancel this plan</button><button type="button" data-installment-cancel-keep>Keep plan</button></div></form>`;
+ s.plansSheet=sheetOpen('Cancel payment plan',holder);
+ holder.querySelector('input[name="reason"]')?.focus?.();
+ return s.plansSheet;
+}
+async function cancelInstallmentPlan(s,form){
+ if(!patientBillingCurrent(s)||s.tab!=='subscriptions'||!billingCan('create'))return;
+ const plan=s.installmentPlans?.find(item=>item.id===form.dataset.plan),reason=String(form.elements.reason.value||'').trim();
+ if(!plan||!reason)throw new Error('Enter a reason for cancelling this plan.');
+ const data=await api(`/api/v1/billing/patients/${encodeURIComponent(s.patientId)}/installment-plans/${encodeURIComponent(plan.id)}/cancel`,'POST',{reason},plan.version);
+ if(data?.id!==plan.id||data.patient_id!==s.patientId)throw new Error('The cancelled plan did not match this patient.');
+ closePlansSheet(s);
+ if(patientBillingCurrent(s)&&s.tab==='subscriptions'){await loadPatientInstallments(s,s.planRequest);notice('Payment plan cancelled.');}
+}
 async function createInstallmentCheckout(s,form){
  if(!patientBillingCurrent(s)||s.tab!=='subscriptions'||!billingCan('create')||!form.elements.patient_present.checked)return;
  installmentSession();const key=s.patientId+':'+form.dataset.plan+':'+form.dataset.number,submitted=patientPlanBaselines.has(form)?patientPlanFormDraft(form):null;
@@ -604,12 +626,13 @@ async function openInvoiceCheckoutReturn(id){
  }catch(error){if(current())host.innerHTML=`<h2>Installment payment result unavailable</h2><p role="alert">${esc(error.message||'This payment could not be loaded with your current access.')}</p><p>No new checkout was created by returning here.</p><button type="button" data-invoice-checkout-review="${esc(id||'')}">Check again</button>`;}
 }
 document.addEventListener('submit',event=>{
- const form=event.target;if(!['patient-membership-form','installment-preview-form','installment-confirm-form','installment-checkout-form'].includes(form.id))return;
+ const form=event.target;if(!['patient-membership-form','installment-preview-form','installment-confirm-form','installment-checkout-form','installment-cancel-form'].includes(form.id))return;
  event.preventDefault();const s=patientBillingWorkspace;if(!patientBillingCurrent(s)||!patientPlanInScope(s,form))return;
  planSheetRun(s,form,async()=>{
   if(form.id==='patient-membership-form'){await createPatientMembership(s,form);closePlansSheet(s);}
   else if(form.id==='installment-preview-form')await previewInstallmentPlan(s,form);
   else if(form.id==='installment-confirm-form')await createInstallmentPlan(s,form,false);
+  else if(form.id==='installment-cancel-form')await cancelInstallmentPlan(s,form);
   else await createInstallmentCheckout(s,form);
  });
 });
@@ -633,6 +656,8 @@ document.addEventListener('click',event=>{
  else if(button.hasAttribute('data-installment-divide')){planSheetRun(s,button,()=>divideInstallmentSchedule(s,button.closest('form')));}
  else if(button.hasAttribute('data-installment-create-retry'))run(()=>createInstallmentPlan(s,null,true));
  else if(d.installmentLocalResume){const saved=installmentCheckoutRequests.get(s.patientId+':'+d.installmentLocalResume+':'+d.installmentNumber);if(saved)openInstallmentCollection(s,saved.plan,saved.number,{request_id:saved.body.request_id,reason:saved.body.reason,amount_cents:saved.amount});}
+ else if(d.installmentCancelPlan)openCancelPlanSheet(s,d.installmentCancelPlan);
+ else if(button.hasAttribute('data-installment-cancel-keep'))closePlansSheet(s);
  else if(d.installmentCollect)openInstallmentCollection(s,d.installmentCollect,Number(d.installmentNumber));
  else if(button.hasAttribute('data-installment-reader'))run(()=>chooseInstallmentReader(s,button.closest('form')));
  else if(button.hasAttribute('data-installment-reader-pay'))run(()=>takeInstallmentOnReader(s,button.closest('form')));

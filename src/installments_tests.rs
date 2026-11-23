@@ -147,7 +147,7 @@ impl Broker for FakeBroker {
         Ok(value)
     }
 }
-async fn setup() -> (PgPool, Actor, Uuid, Uuid, State) {
+async fn setup_at(revision: i64) -> (PgPool, Actor, Uuid, Uuid, State) {
     let url = std::env::var("TEST_DATABASE_URL").expect("disposable database required");
     let schema = format!("invoice_installments_{}", Uuid::new_v4().simple());
     let base = PgPool::connect(&url).await.unwrap();
@@ -165,7 +165,19 @@ async fn setup() -> (PgPool, Actor, Uuid, Uuid, State) {
         .connect(&url)
         .await
         .unwrap();
-    crate::MIGRATOR.run(&pool).await.unwrap();
+    sqlx::migrate::Migrator {
+        migrations: std::borrow::Cow::Owned(
+            crate::MIGRATOR
+                .iter()
+                .filter(|m| m.version <= revision)
+                .cloned()
+                .collect(),
+        ),
+        ..sqlx::migrate::Migrator::DEFAULT
+    }
+    .run(&pool)
+    .await
+    .unwrap();
     let tenant = Uuid::new_v4();
     let mut a = crate::delivery::worker(tenant);
     a.role = crate::auth::Role::Owner;
@@ -291,7 +303,10 @@ fn policy(live: bool) -> Policy {
     }
 }
 async fn fixture() -> (PgPool, Actor, Uuid, Uuid, Uuid, State) {
-    let (pool, a, p, appointment, s) = setup().await;
+    fixture_at(i64::MAX).await
+}
+async fn fixture_at(revision: i64) -> (PgPool, Actor, Uuid, Uuid, Uuid, State) {
+    let (pool, a, p, appointment, s) = setup_at(revision).await;
     let account = posted_account(&pool, &a, p, appointment, &s).await;
     let(code,i)=call(&s,&a,&format!("/api/v1/patients/{p}/billing/accounts/{account}/invoices"),json!({"request_id":Uuid::new_v4(),"responsibility_cents":3000,"reason":"Reviewed synthetic patient share"}),Some(2)).await;
     assert_eq!(code, 200, "{i}");
@@ -937,6 +952,331 @@ async fn billing_only_policy_is_intersected_and_uncertain_creates_are_not_replay
         .unwrap();
     assert_eq!(broker.state.lock().unwrap().calls, calls);
     assert_eq!(unavailable().status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+fn cancel_input() -> Cancel {
+    Cancel {
+        reason: "Patient asked to stop the plan".into(),
+    }
+}
+fn conflict_is(e: Error, want: &str) -> bool {
+    matches!(e, Error::Conflict(m) if m == want)
+}
+async fn audit_count(pool: &PgPool, action: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE action=$1")
+        .bind(action)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+#[tokio::test]
+async fn cancelling_a_plan_stops_collection_keeps_payments_and_frees_the_statement() {
+    let (pool, a, patient, account, invoice, s) = fixture().await;
+    let p = create_with(
+        &pool,
+        &a,
+        patient,
+        plan_input(invoice, false),
+        2,
+        policy(false),
+    )
+    .await
+    .unwrap();
+    let pid: Uuid = serde_json::from_value(p["id"].clone()).unwrap();
+    assert_eq!(p["status"], "active");
+    assert!(p["cancelled_at"].is_null());
+    let broker = FakeBroker::new(false);
+    let out = checkout_with(
+        &pool,
+        &a,
+        patient,
+        pid,
+        1,
+        checkout_input(),
+        1,
+        "https://synthetic.example",
+        &broker,
+        policy(false),
+    )
+    .await
+    .unwrap();
+    let op: Uuid = serde_json::from_value(out["operation"]["id"].clone()).unwrap();
+    // A payment link is still open: the plan cannot be cancelled yet.
+    let open = read_plan(&pool, &a, patient, pid).await;
+    let version = open["version"].as_i64().unwrap();
+    let refused = cancel_with(
+        &pool,
+        &a,
+        patient,
+        pid,
+        cancel_input(),
+        version,
+        policy(false),
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(conflict_is(
+        refused,
+        "A payment for this plan is still in progress. Finish or cancel that payment first."
+    ));
+    assert_eq!(
+        audit_count(&pool, "billing.installment_plan_cancelled").await,
+        0
+    );
+    // The payment is taken; what was paid stays exactly as it is after cancelling.
+    broker.state.lock().unwrap().paid = true;
+    process(&pool, &a, op, &broker, policy(false), false)
+        .await
+        .unwrap();
+    assert_eq!(financial(&pool, &a, account).await, (1500, 1500));
+    let entries = count(&pool, "billing_entries").await;
+    let attempts_before = count(&pool, "invoice_checkout_attempts").await;
+    let before = read_plan(&pool, &a, patient, pid).await;
+    let version = before["version"].as_i64().unwrap();
+    // Wrong version is a conflict and changes nothing.
+    assert!(cancel_with(
+        &pool,
+        &a,
+        patient,
+        pid,
+        cancel_input(),
+        version - 1,
+        policy(false)
+    )
+    .await
+    .is_err());
+    // Another tenant cannot see the plan.
+    let mut other = a.clone();
+    other.tenant_id = Uuid::new_v4();
+    assert!(matches!(
+        cancel_with(
+            &pool,
+            &other,
+            patient,
+            pid,
+            cancel_input(),
+            version,
+            policy(false)
+        )
+        .await,
+        Err(Error::NotFound)
+    ));
+    // A role without billing create is refused over HTTP; an empty reason is invalid.
+    let path = format!("/api/v1/billing/patients/{patient}/installment-plans/{pid}/cancel");
+    let mut role = a.clone();
+    role.role = crate::auth::Role::ReadOnly;
+    assert_eq!(
+        call(&s, &role, &path, json!({"reason":"No"}), Some(version))
+            .await
+            .0,
+        403
+    );
+    assert_eq!(
+        call(&s, &a, &path, json!({"reason":""}), Some(version))
+            .await
+            .0,
+        400
+    );
+    assert!(
+        call(
+            &s,
+            &a,
+            &path,
+            json!({"reason":"No","extra":1}),
+            Some(version)
+        )
+        .await
+        .0 >= 400
+    );
+    let (code, done) = call(
+        &s,
+        &a,
+        &path,
+        json!({"reason":"  Patient asked to stop the plan "}),
+        Some(version),
+    )
+    .await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(done["status"], "cancelled");
+    assert_eq!(done["cancel_reason"], "Patient asked to stop the plan");
+    assert!(done["cancelled_at"].is_string());
+    assert_eq!(done["remaining_cents"], 1500);
+    assert_eq!(done["installments"][1]["status"], "cancelled");
+    let stored: (Option<DateTime<Utc>>, Option<Uuid>, Option<String>) = sqlx::query_as(
+        "SELECT cancelled_at,cancelled_by,cancel_reason FROM patient_installment_plans WHERE id=$1",
+    )
+    .bind(pid)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(stored.0.is_some());
+    assert_eq!(stored.1, Some(a.sub));
+    assert_eq!(stored.2.as_deref(), Some("Patient asked to stop the plan"));
+    assert_eq!(
+        audit_count(&pool, "billing.installment_plan_cancelled").await,
+        1
+    );
+    let events: i64 = sqlx::query_scalar("SELECT count(*) FROM patient_installment_events WHERE plan_id=$1 AND action='plan_cancelled'").bind(pid).fetch_one(&pool).await.unwrap();
+    assert_eq!(events, 1);
+    // Payments, the account and the encounter balance are untouched.
+    assert_eq!(financial(&pool, &a, account).await, (1500, 1500));
+    assert_eq!(count(&pool, "billing_entries").await, entries);
+    assert_eq!(
+        count(&pool, "invoice_checkout_attempts").await,
+        attempts_before
+    );
+    // Repeating the cancel returns the cancelled plan without a second audit entry.
+    let again = cancel_with(
+        &pool,
+        &a,
+        patient,
+        pid,
+        Cancel {
+            reason: "Different".into(),
+        },
+        1,
+        policy(false),
+    )
+    .await
+    .unwrap();
+    assert_eq!(again["status"], "cancelled");
+    assert_eq!(again["cancel_reason"], "Patient asked to stop the plan");
+    assert_eq!(
+        audit_count(&pool, "billing.installment_plan_cancelled").await,
+        1
+    );
+    // The agreed schedule stays immutable and the cancellation cannot be undone.
+    assert!(
+        sqlx::query("UPDATE patient_installment_plans SET total_cents=2000 WHERE id=$1")
+            .bind(pid)
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    assert!(sqlx::query("UPDATE patient_installment_plans SET cancelled_at=NULL,cancelled_by=NULL,cancel_reason=NULL WHERE id=$1").bind(pid).execute(&pool).await.is_err());
+    assert!(
+        sqlx::query("UPDATE patient_installment_plans SET cancel_reason='Edited' WHERE id=$1")
+            .bind(pid)
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    // No instalment can be collected on a cancelled plan.
+    let posts = broker.state.lock().unwrap().posts;
+    let now = read_plan(&pool, &a, patient, pid).await;
+    let blocked = checkout_with(
+        &pool,
+        &a,
+        patient,
+        pid,
+        2,
+        Checkout {
+            amount_cents: 1500,
+            ..checkout_input()
+        },
+        now["version"].as_i64().unwrap(),
+        "https://synthetic.example",
+        &broker,
+        policy(false),
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(conflict_is(blocked, "This payment plan was cancelled."));
+    let blocked = checkout_with(
+        &pool,
+        &a,
+        patient,
+        pid,
+        2,
+        Checkout {
+            amount_cents: 1500,
+            ..checkout_input()
+        },
+        1,
+        "https://synthetic.example",
+        &broker,
+        policy(false),
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(conflict_is(blocked, "This payment plan was cancelled."));
+    assert_eq!(broker.state.lock().unwrap().posts, posts);
+    // The statement is free for a new plan for what is still owed.
+    let listed = {
+        let mut tx = pool.begin().await.unwrap();
+        let p = plan(&mut tx, &a, patient, pid).await.unwrap();
+        plan_value(&mut tx, &a, &p, policy(false)).await.unwrap()
+    };
+    assert_eq!(listed["status"], "cancelled");
+    let account_version: i64 =
+        sqlx::query_scalar("SELECT version FROM billing_accounts WHERE id=$1")
+            .bind(account)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let mut fresh = plan_input(invoice, false);
+    fresh.installments = vec![Installment {
+        due_on: Utc::now().date_naive(),
+        amount_cents: 1500,
+    }];
+    let second = create_with(&pool, &a, patient, fresh, account_version, policy(false))
+        .await
+        .unwrap();
+    assert_eq!(second["status"], "active");
+    assert_eq!(second["total_cents"], 1500);
+    // Still only one live plan per statement.
+    let mut third = plan_input(invoice, false);
+    third.installments = vec![Installment {
+        due_on: Utc::now().date_naive(),
+        amount_cents: 1500,
+    }];
+    assert!(
+        create_with(&pool, &a, patient, third, account_version, policy(false))
+            .await
+            .is_err()
+    );
+    assert_eq!(count(&pool, "patient_installment_plans").await, 2);
+}
+#[tokio::test]
+async fn the_cancel_migration_applies_over_existing_plans() {
+    let (pool, a, patient, _, invoice, _) = fixture_at(120).await;
+    let plan_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO patient_installment_plans(tenant_id,id,patient_id,account_id,invoice_id,request_id,creation_hash,requested_by,reason,livemode,total_cents,responsibility_cents,baseline_version,account_snapshot,ledger_ids,schedule) SELECT tenant_id,$2,patient_id,account_id,id,$3,'synthetic-hash',$4,'Agreed synthetic finite plan',false,3000,3000,2,'{}'::jsonb,'[]'::jsonb,$5 FROM patient_invoice_snapshots WHERE id=$1")
+        .bind(invoice).bind(plan_id).bind(Uuid::new_v4()).bind(a.sub)
+        .bind(json!([{"due_on":"2030-01-01","amount_cents":3000}]))
+        .execute(&pool).await.unwrap();
+    let before: Value = sqlx::query_scalar(
+        "SELECT jsonb_strip_nulls(to_jsonb(p)) FROM patient_installment_plans p WHERE id=$1",
+    )
+    .bind(plan_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    crate::MIGRATOR.run(&pool).await.unwrap();
+    crate::MIGRATOR.run(&pool).await.unwrap();
+    let after: Value = sqlx::query_scalar(
+        "SELECT jsonb_strip_nulls(to_jsonb(p)) FROM patient_installment_plans p WHERE id=$1",
+    )
+    .bind(plan_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(before, after);
+    let cancelled = cancel_with(
+        &pool,
+        &a,
+        patient,
+        plan_id,
+        cancel_input(),
+        1,
+        policy(false),
+    )
+    .await
+    .unwrap();
+    assert_eq!(cancelled["status"], "cancelled");
 }
 
 include!("installments_reader_tests.rs");

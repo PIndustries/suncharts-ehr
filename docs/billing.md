@@ -833,6 +833,17 @@ activity cannot be mixed. Billing-view access is sufficient to inspect plans and
 collections without opening clinical records; new collections and reconciliation
 retain their separate write permissions and audit events.
 
+Staff who may create a plan can cancel it with
+`POST /api/v1/billing/patients/{patient}/installment-plans/{plan}/cancel`, sending
+a required reason and the plan version in `If-Match`. Cancelling stops further
+collection; payments already taken stay as they are, nothing is refunded, and the
+encounter balance is untouched. It is refused while a payment for the plan is in
+progress (a card link that is open or being created, a card-reader payment
+waiting, or a payment that needs review). Repeating a cancel returns the
+cancelled plan. The agreed schedule and consent stay immutable; only the
+cancelled time, person and reason are added. A cancelled plan no longer counts as
+the statement's plan, so a new plan can be started from it while a balance remains.
+
 ### Patient billing workspace
 
 The chart's **Billing** tab and the practice-wide **Patient billing** selector use

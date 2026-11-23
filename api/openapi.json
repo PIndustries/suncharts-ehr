@@ -37762,6 +37762,72 @@
         ]
       }
     },
+    "/api/v1/billing/patients/{patient}/installment-plans/{plan}/cancel": {
+      "post": {
+        "summary": "Cancel a payment plan",
+        "tags": [
+          "Billing"
+        ],
+        "description": "Stops further collection on the plan. Payments already taken stay as they are and nothing is refunded; the encounter balance is untouched. Refused while a payment for the plan is still in progress. Cancelling a cancelled plan returns it unchanged. A cancelled plan frees its statement for a new plan.",
+        "responses": {
+          "200": {
+            "description": "Authenticated tenant-scoped result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatientInstallmentPlan"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Billing permission required"
+          },
+          "409": {
+            "description": "Plan changed, or a payment for the plan is still in progress"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatientInstallmentCancelRequest"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Quoted current plan version."
+          },
+          {
+            "name": "patient",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "plan",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
     "/api/v1/billing/patients/{patient}/installment-plans/{plan}/installments/{number}/checkout": {
       "post": {
         "summary": "Explicit patient-present checkout for the exact displayed collectible amount",
@@ -59453,6 +59519,20 @@
           }
         }
       },
+      "PatientInstallmentCancelRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        }
+      },
       "PatientInstallmentCheckoutRequest": {
         "type": "object",
         "additionalProperties": false,
@@ -59665,7 +59745,8 @@
             "type": "string",
             "enum": [
               "complete",
-              "pending"
+              "pending",
+              "cancelled"
             ]
           }
         },
@@ -59712,7 +59793,29 @@
             "enum": [
               "active",
               "complete",
-              "needs_review"
+              "needs_review",
+              "cancelled"
+            ]
+          },
+          "cancelled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cancel_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "livemode": {
