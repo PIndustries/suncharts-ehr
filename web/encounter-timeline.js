@@ -101,10 +101,11 @@ function encounterTimelineHeading(visit,appointment,summary){
 }
 // The summary for an open encounter is already on the page; any other is read once, the way the
 // encounter page reads it. Without one (no access, or the read failed) the steps come from the encounter alone.
-async function encounterTimelineSummary(visitId){
+async function encounterTimelineSummary(visitId,patientId){
  if(typeof encounterRevenueState!=='undefined'&&encounterRevenueState?.visit===visitId&&encounterRevenueState.data?.summary)return encounterRevenueState.data.summary;
- if(typeof selected==='undefined'||!selected||typeof api!=='function')return null;
- try{return await api(`/api/v1/patients/${encodeURIComponent(selected)}/billing/visit-summary?visit_id=${encodeURIComponent(visitId)}`);}catch{return null;}
+ const patient=patientId||(typeof selected!=='undefined'?selected:null);
+ if(!patient||typeof api!=='function')return null;
+ try{return await api(`/api/v1/patients/${encodeURIComponent(patient)}/billing/visit-summary?visit_id=${encodeURIComponent(visitId)}`);}catch{return null;}
 }
 // A short look at one encounter from anywhere in the chart: its timeline, what was charged, and a way to go to it.
 async function encounterPreviewOpen(visitId,extra={}){
@@ -137,7 +138,7 @@ async function encounterPreviewElsewhere(visitId,patient,number){
   if(!(workspace?.visits||[]).some(v=>v.id===visitId))throw new Error('This encounter could not be found in the patient’s chart.');
   await openPatientEncounter(visitId);
  });});
- const [visit,summary]=await Promise.all([api(`/api/v1/visits/${encodeURIComponent(visitId)}`).catch(()=>null),encounterTimelineSummary(visitId)]);
+ const [visit,summary]=await Promise.all([api(`/api/v1/visits/${encodeURIComponent(visitId)}`).catch(()=>null),encounterTimelineSummary(visitId,patient)]);
  const host=panel.querySelector('[data-preview-timeline]');if(!host||dialog.isConnected===false||me!==identity)return;
  if(!visit){host.innerHTML='<p class="muted">This encounter’s details could not be loaded. Use Go to encounter.</p>';return;}
  host.innerHTML=encounterTimelineMarkup(encounterTimelineSteps(summary,visit,null),encounterTimelineHeading(visit,null,summary));
