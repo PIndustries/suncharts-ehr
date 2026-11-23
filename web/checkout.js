@@ -92,11 +92,11 @@ function workQueueItems(src){
  const rows=[],day=value=>value?(typeof displayDate==='function'?displayDate(String(value).slice(0,10)):String(value).slice(0,10)):'';
  const cash=cents=>Number.isFinite(Number(cents))&&cents!=null?money(cents):'';
  const join=parts=>parts.filter(Boolean).join(' · ');
- for(const v of src.unfinished?.items||[])rows.push({kind:'notes',patient:v.patient_name,mrn:v.mrn,what:v.note_saved?'Finish and sign the note':'Write the encounter note',detail:join([v.title,day(v.starts_at),v.provider_label]),label:'Open encounter',attrs:`data-queue-visit="${esc(v.visit_id)}" data-patient="${esc(v.patient_id)}"`});
+ for(const v of src.unfinished?.items||[])rows.push({kind:'notes',visit:v.visit_id,patientId:v.patient_id,patient:v.patient_name,mrn:v.mrn,what:v.note_saved?'Finish and sign the note':'Write the encounter note',detail:join([v.title,day(v.starts_at),v.provider_label]),label:'Open encounter',attrs:`data-queue-visit="${esc(v.visit_id)}" data-patient="${esc(v.patient_id)}"`});
  const listed=new Set();
  for(const a of src.accounts?.items||[]){
   if(!workQueueStaffStates.includes(a.billing_state))continue;listed.add(a.id);
-  rows.push({kind:'billing',patient:a.patient_name,mrn:a.mrn,what:typeof visitBillingStateName==='function'?visitBillingStateName(a.billing_state):'Billing needs attention',detail:join([day(a.service_date),cash(a.total_cents),a.payer_name]),label:'Open encounter',attrs:`data-queue-account="${esc(a.id)}" data-patient="${esc(a.patient_id)}"`});
+  rows.push({kind:'billing',visit:a.visit_id,patientId:a.patient_id,patient:a.patient_name,mrn:a.mrn,what:typeof visitBillingStateName==='function'?visitBillingStateName(a.billing_state):'Billing needs attention',detail:join([day(a.service_date),cash(a.total_cents),a.payer_name]),label:'Open encounter',attrs:`data-queue-account="${esc(a.id)}" data-patient="${esc(a.patient_id)}"`});
  }
  // A claim whose encounter is not in the list above still needs sending or correcting.
  for(const c of src.claims?.items||[]){
@@ -113,7 +113,7 @@ function workQueueMarkup(rows,tasks,kind,missing){
  const chip=(key,label,n)=>`<button type="button" data-queue-kind="${key}" aria-pressed="${kind===key}">${esc(label)} <span class="pill">${n}</span></button>`;
  const groups=workQueueKinds.filter(([key])=>key!=='tasks'&&(kind==='all'||kind===key)).map(([key,label])=>{
   const mine=rows.filter(row=>row.kind===key);if(!mine.length)return '';
-  return `<section class="work-queue-group" data-queue-group="${key}"><h3>${esc(label)} <span class="pill">${mine.length}</span></h3><ul class="work-queue-list">${mine.map(row=>`<li${row.urgent?' class="is-urgent"':''}><div><p class="work-queue-who"><b>${esc(row.patient||'Patient')}</b>${row.mrn?` <span class="record-id">MRN ${esc(row.mrn)}</span>`:''}</p><p class="work-queue-what"><strong>${esc(row.what)}</strong>${row.detail?` · ${esc(row.detail)}`:''}</p></div><button type="button" ${row.attrs}>${esc(row.label)}</button></li>`).join('')}</ul></section>`;
+  return `<section class="work-queue-group" data-queue-group="${key}"><h3>${esc(label)} <span class="pill">${mine.length}</span></h3><ul class="work-queue-list">${mine.map(row=>`<li${row.urgent?' class="is-urgent"':''}><div><p class="work-queue-who"><b>${esc(row.patient||'Patient')}</b>${row.mrn?` <span class="record-id">MRN ${esc(row.mrn)}</span>`:''}${row.visit&&typeof encounterTimelineChip==='function'?' '+encounterTimelineChip(null,'',{visit:row.visit,patient:row.patientId}):''}</p><p class="work-queue-what"><strong>${esc(row.what)}</strong>${row.detail?` · ${esc(row.detail)}`:''}</p></div><button type="button" ${row.attrs}>${esc(row.label)}</button></li>`).join('')}</ul></section>`;
  }).join('');
  const nothing=kind==='all'?total===0:count(kind)===0;
  return `<p class="muted">Everything waiting on the practice, in one list. Open a row to do the work; it leaves the list when it is done.</p><div class="work-queue-kinds" role="group" aria-label="Show">${chip('all','Everything',total)}${workQueueKinds.map(([key,label])=>chip(key,label,count(key))).join('')}</div>${missing?'<p class="muted" role="status">Some lists are not shown: they could not be loaded, or are outside your access.</p>':''}${groups}${nothing&&kind!=='tasks'?`<p class="work-queue-empty" role="status">${kind==='all'?'Nothing is waiting on the practice right now.':'Nothing is waiting here right now.'}</p>`:''}`;

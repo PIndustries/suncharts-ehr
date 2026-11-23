@@ -324,6 +324,7 @@ function paintEncounterRevenue(state,current){
   const held=node.querySelector?.('[data-claim-send-error]')?.textContent||'';
 state.reviewCard=state.data?.summary||null;node.innerHTML=encounterRevenueStatusMarkup(encounterChargeAccount(),state.data||{});
   if(typeof encounterBarSync==='function')encounterBarSync();
+  if(typeof patientBannerEncounterSync==='function'&&state.data?.summary&&typeof activeVisit!=='undefined'&&activeVisit)patientBannerEncounterSync(state.data.summary,activeVisit);
   if(typeof billingRowCodesFill==='function')billingRowCodesFill();
   if(held&&!node.querySelector?.('[data-claim-send-error]'))node.querySelector?.('.visit-billing-status .actions')?.insertAdjacentHTML?.('beforeend',`<p class="claim-send-error" data-claim-send-error role="alert">${esc(held)}</p>`);
   for(const d of node.querySelectorAll?.('details[data-revenue-disclosure]')||[])d.open=open.includes(d.dataset.revenueDisclosure);
@@ -389,7 +390,7 @@ async function loadEncounterRevenueStatus(account,force=false){
    // The banner's progress line follows this encounter: its claim, or its self-pay steps.
    if(current()&&typeof patientBannerEncounterSync==='function')patientBannerEncounterSync(state.data?.summary,typeof activeVisit!=='undefined'?activeVisit:null);
    const claimId=state.data?.summary?.claim?.id;
-   if(current()&&claimId&&typeof patientBannerClaim!=='undefined'&&patientBannerClaim.claim?.id!==claimId&&typeof claimMdClaimLifecycle==='function'&&typeof claimsBase!=='undefined')void api(`${claimsBase}/${encodeURIComponent(claimId)}`).then(detail=>{if(current()&&detail?.claim?.id===claimId)claimMdClaimLifecycle(detail.claim,detail);}).catch(()=>{});
+   if(current()&&claimId&&!(typeof patientBannerEncounterOpen==='function'&&patientBannerEncounterOpen())&&typeof patientBannerClaim!=='undefined'&&patientBannerClaim.claim?.id!==claimId&&typeof claimMdClaimLifecycle==='function'&&typeof claimsBase!=='undefined')void api(`${claimsBase}/${encodeURIComponent(claimId)}`).then(detail=>{if(current()&&detail?.claim?.id===claimId)claimMdClaimLifecycle(detail.claim,detail);}).catch(()=>{});
   if(current()&&typeof setTimeout==='function'&&state.data?.summary?.account?.status==='posted'){clearTimeout(state.timer);state.timer=setTimeout(()=>{const node=$('encounter-revenue-status');if(current()&&node&&(!node.getClientRects||node.getClientRects().length))void loadEncounterRevenueStatus(encounterChargeAccount(),true);},20000);}}
  })();
  return state.pending;
