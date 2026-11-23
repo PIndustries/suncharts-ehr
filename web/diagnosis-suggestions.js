@@ -36,11 +36,37 @@ function diagnosisSuggestMarkup(id,state){
  else if(state.status==='failed'||state.status==='error')body=`${ask}<p role="alert" data-diagnosis-suggest-error>${esc(state.message||'The assistant could not read the note. Try again.')}</p>`;
  else if(state.status==='ready'&&state.noteChanged)body=`<p role="status" data-diagnosis-suggest-stale>The note changed. Suggest again.</p><div class="actions">${ask}<button type="button" class="text-button" data-diagnosis-suggest-dismiss>Dismiss</button></div>`;
  else if(state.status==='ready'&&!(state.suggestions||[]).length)body=`<p class="muted" data-diagnosis-suggest-empty>No codes found in the note.</p>${diagnosisSuggestUnmatchedMarkup(state)}<div class="actions">${ask}<button type="button" class="text-button" data-diagnosis-suggest-dismiss>Dismiss</button></div>`;
- else if(state.status==='ready')body=`<ul class="diagnosis-suggest-list">${state.suggestions.map((item,index)=>`<li><label><input type="checkbox" data-diagnosis-suggest-pick="${index}" ${state.picked.has(index)?'checked':''}> <span class="codes-strip-code">${esc(item.code)}</span> ${esc(item.description)}</label><small class="muted">${item.evidence_found&&item.evidence?`“${esc(item.evidence)}”`:'No matching sentence found in the note'}</small></li>`).join('')}</ul>${diagnosisSuggestUnmatchedMarkup(state)}<div class="actions"><button type="button" data-diagnosis-suggest-add>Add selected</button><button type="button" class="text-button" data-diagnosis-suggest-dismiss>Dismiss</button></div><p class="muted"><small>Suggestions come from SunCharts AI. Check each one against the note.</small></p>`;
- else body=ask;
+ else if(state.status==='ready')body=`<ul class="diagnosis-suggest-list">${state.suggestions.map((item,index)=>`<li><label><input type="checkbox" data-diagnosis-suggest-pick="${index}" ${state.picked.has(index)?'checked':''}> <span class="codes-strip-code">${esc(item.code)}</span> ${esc(item.description)}</label><small class="muted">${item.evidence_found&&item.evidence?`“${esc(item.evidence)}”`:'No matching sentence found in the note'}</small></li>`).join('')}</ul>${diagnosisSuggestUnmatchedMarkup(state)}<div class="actions"><button type="button" class="primary" data-diagnosis-suggest-add>Add selected</button><button type="button" class="text-button" data-diagnosis-suggest-all>Tick all</button><button type="button" class="text-button" data-diagnosis-suggest-ask>Suggest again</button><button type="button" class="text-button" data-diagnosis-suggest-dismiss>Dismiss</button></div><p class="muted"><small>Suggestions come from SunCharts AI and are read from the saved note. Check each one against the note. If you change the note, save it and press Suggest again.</small></p>`;
+ else body=`${ask}<p class="muted"><small>Reads the saved assessment and plan and proposes ICD-10 codes for you to tick. Nothing is added until you choose.</small></p>`;
  return `<section data-diagnosis-suggest aria-label="Diagnosis suggestions"><h4>Diagnosis suggestions</h4>${state.message&&state.status==='ready'?`<p role="alert">${esc(state.message)}</p>`:''}${body}</section>`;
 }
+// The button beside Save note, and a short line saying where the suggestions stand.
+function diagnosisSuggestNoteSync(id){
+ const button=typeof document!=='undefined'?document.querySelector?.('[data-note-suggest]'):null,line=typeof document!=='undefined'?document.querySelector?.('[data-note-suggest-status]'):null;
+ if(!button||activeVisit?.id!==id)return;
+ const state=diagnosisSuggestStates.get(id);
+ button.hidden=false;button.disabled=state?.status==='asking'||state?.status==='queued';
+ button.textContent=state?.status==='ready'?'Suggest diagnoses again':'Suggest diagnoses';
+ if(!line)return;
+ const count=(state?.suggestions||[]).length;
+ if(state?.status==='queued'||state?.status==='asking')line.textContent=`Reading the note${state.position>0?` · ${state.position} ahead of you`:''}. You can keep working.`;
+ else if(state?.status==='ready'&&state.noteChanged)line.textContent='The note changed since the last suggestions.';
+ else if(state?.status==='ready')line.innerHTML=`${count===1?'1 suggestion':count+' suggestions'} ready · <button type="button" class="text-button" data-note-suggest-review>Review</button>`;
+ else if(state?.status==='failed'||state?.status==='error')line.textContent=state.message||'The assistant could not read the note. Try again.';
+ else line.textContent='';
+}
+function diagnosisSuggestEditorOpen(){
+ if(typeof encounterCodesEditorOpen==='function')encounterCodesEditorOpen(0,true);
+ else if(typeof openEncounterStep==='function')openEncounterStep('diagnoses');
+ setTimeout(()=>{document.querySelector?.('[data-diagnosis-suggest]')?.scrollIntoView?.({block:'center'});},400);
+}
+// Unsaved typing in the note would not be read, so it is saved first.
+function diagnosisSuggestNoteDirty(){
+ const form=$('note-form'),note=activeVisit?.note||{};if(!form?.elements)return false;
+ return ['subjective','objective','assessment','plan','procedure'].some(key=>form.elements[key]&&String(form.elements[key].value||'')!==String(note[key]||''));
+}
 function diagnosisSuggestPaint(id){
+ diagnosisSuggestNoteSync(id);
  const host=$('visit-diagnoses'),state=diagnosisSuggestStates.get(id);
  if(!host||!state||activeVisit?.id!==id||state.account!==me)return;
  host.querySelector?.('[data-diagnosis-suggest]')?.remove();
@@ -60,7 +86,7 @@ async function diagnosisSuggestRefresh(id,{announce=false}={}){
  let data;try{data=await api(`/api/v1/visits/${id}/diagnosis-suggestions`);}catch{return null;}
  if(me!==account)return null;
  state.hydrated=true;diagnosisSuggestApply(state,data);
- diagnosisSuggestPaint(id);diagnosisSuggestSchedulePoll(id);
+ diagnosisSuggestPaint(id);diagnosisSuggestNoteSync(id);diagnosisSuggestSchedulePoll(id);
  if(announce&&before!=='ready'&&(data.status==='ready'||data.status==='failed')&&data.mine!==false&&!($('visit-diagnoses')&&activeVisit?.id===id))diagnosisSuggestNotice(id,state,data.status);
  return data;
 }
@@ -95,6 +121,17 @@ function diagnosisSuggestionsMount(host,data,id,patient){
   if(!state.hydrated)void diagnosisSuggestRefresh(id);
  });
 }
+// The note's own button appears when the encounter page is drawn, whether or not the codes are open.
+function diagnosisSuggestNoteMount(){
+ const id=activeVisit?.id;if(!id||!diagnosisSuggestMayAsk()||activeVisit.status==='signed')return;
+ void diagnosisAiAvailable().then(available=>{
+  if(!available||activeVisit?.id!==id)return;
+  const state=diagnosisSuggestState(id);if(state.account!==me){diagnosisSuggestStates.delete(id);return;}
+  diagnosisSuggestNoteSync(id);
+  if(!state.hydrated)void diagnosisSuggestRefresh(id);
+ });
+}
+if(typeof MutationObserver==='function'&&typeof document!=='undefined'&&document.documentElement)new MutationObserver(()=>{const button=document.querySelector('[data-note-suggest][hidden]');if(button&&!button.dataset.suggestSeen){button.dataset.suggestSeen='1';diagnosisSuggestNoteMount();}}).observe(document.documentElement,{childList:true,subtree:true});
 async function diagnosisSuggestAsk(id){
  const account=me,state=diagnosisSuggestState(id);
  state.status='asking';state.message='';diagnosisSuggestPaint(id);
@@ -127,8 +164,15 @@ function diagnosisSuggestAdd(id){
  void diagnosisSuggestDismiss(id);
 }
 document.addEventListener('click',event=>{
- const target=event.target?.closest?.('[data-diagnosis-suggest-ask],[data-diagnosis-suggest-add],[data-diagnosis-suggest-dismiss],[data-diagnosis-suggest-open]');if(!target)return;
+ const target=event.target?.closest?.('[data-diagnosis-suggest-ask],[data-diagnosis-suggest-add],[data-diagnosis-suggest-dismiss],[data-diagnosis-suggest-open],[data-diagnosis-suggest-all],[data-note-suggest],[data-note-suggest-review]');if(!target)return;
  const id=activeVisit?.id;
+ if(target.hasAttribute('data-note-suggest-review')){event.preventDefault();diagnosisSuggestEditorOpen();return;}
+ if(target.hasAttribute('data-note-suggest')){
+  event.preventDefault();if(!id)return;
+  if(diagnosisSuggestNoteDirty()){notice('Save the note first. Suggestions are read from the saved note.',true);return;}
+  void diagnosisSuggestAsk(id).then(()=>diagnosisSuggestEditorOpen());return;
+ }
+ if(target.hasAttribute('data-diagnosis-suggest-all')){event.preventDefault();if(!id)return;const state=diagnosisSuggestState(id);state.picked=new Set((state.suggestions||[]).map((item,index)=>index));diagnosisSuggestPaint(id);return;}
  if(target.hasAttribute('data-diagnosis-suggest-open')){event.preventDefault();const visit=target.dataset.visitId,patient=target.dataset.patientId;run(async()=>{await diagnosisSuggestOpen(visit,patient);});return;}
  if(!id)return;event.preventDefault();
  if(target.hasAttribute('data-diagnosis-suggest-ask'))void diagnosisSuggestAsk(id);

@@ -61,7 +61,7 @@ const ready=(extra={})=>({request_id:'r1',status:'ready',position:null,suggestio
  assert.match(f.host.suggest,/Type 2 diabetes &lt;b&gt;without&lt;\/b&gt; complications/);assert.doesNotMatch(f.host.suggest,/<b>|<i>/);
  assert.match(f.host.suggest,/“stable on &lt;i&gt;metformin&lt;\/i&gt;”/);
  assert.match(f.host.suggest,/No matching sentence found in the note/);
- assert.match(f.host.suggest,/Suggestions come from SunCharts AI\. Check each one against the note\./);
+ assert.match(f.host.suggest,/Suggestions come from SunCharts AI and are read from the saved note\. Check each one against the note\./);
  assert.match(f.host.suggest,/Add selected/);assert.match(f.host.suggest,/Dismiss/);
  console.log('PASS ready suggestions appear in place, unchecked, with escaped text and quoted or missing evidence');
 
