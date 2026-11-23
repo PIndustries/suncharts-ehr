@@ -51,12 +51,20 @@ function diagnosisSuggestProceduresUnmatchedMarkup(state){
  const level=items.filter(item=>item.reason==='level'),none=items.filter(item=>item.reason!=='level');
  return `<div class="muted" data-diagnosis-suggest-procedures-unmatched>${none.length?`<p>No code found for:</p><ul>${none.map(item=>`<li>${esc(item.service)}${item.evidence?` <small>“${esc(item.evidence)}”</small>`:''}</li>`).join('')}</ul><p><small>Use the procedure box in the charges to add these.</small></p>`:''}${level.length?`<ul data-diagnosis-suggest-level>${level.map(item=>`<li>${esc(item.service)}: choose the visit level yourself.</li>`).join('')}</ul>`:''}</div>`;
 }
+// Whether a code is already typed into the charge table (saved or not), so it is not offered again.
+function diagnosisSuggestOnCharges(code){
+ try{
+  const form=typeof $==='function'?$('billing-account-form'):null,wanted=String(code??'').trim().toUpperCase();
+  if(!form||typeof form.querySelectorAll!=='function'||!wanted)return false;
+  return [...form.querySelectorAll('[name="code"]')].some(input=>String(input?.value??'').trim().toUpperCase()===wanted);
+ }catch{return false;}
+}
 function diagnosisSuggestProceduresMarkup(state,gate){
  const items=state.procedures||[];
  if(!items.length)return diagnosisSuggestProceduresUnmatchedMarkup(state);
  const rows=items.map((item,index)=>{
-  const quantity=diagnosisSuggestQuantityText(item),text=`<span class="codes-strip-code">${esc(item.code)}</span> ${esc(item.description)}`;
-  return `<li>${gate.ok?`<label><input type="checkbox" data-diagnosis-suggest-pick-procedure="${index}" ${state.pickedProcedures.has(index)?'checked':''}> ${text}</label>`:`<span>${text}</span>`}<small class="muted">${item.evidence_found&&item.evidence?`“${esc(item.evidence)}”`:'No matching sentence found in the note'}</small>${quantity?`<small class="muted" data-diagnosis-suggest-quantity>${esc(quantity)}</small>`:''}</li>`;
+  const quantity=diagnosisSuggestQuantityText(item),text=`<span class="codes-strip-code">${esc(item.code)}</span> ${esc(item.description)}`,onCharges=diagnosisSuggestOnCharges(item.code);
+  return `<li>${gate.ok?`<label><input type="checkbox" data-diagnosis-suggest-pick-procedure="${index}" ${!onCharges&&state.pickedProcedures.has(index)?'checked':''}${onCharges?' disabled':''}> ${text}</label>`:`<span>${text}</span>`}<small class="muted">${item.evidence_found&&item.evidence?`“${esc(item.evidence)}”`:'No matching sentence found in the note'}</small>${quantity?`<small class="muted" data-diagnosis-suggest-quantity>${esc(quantity)}</small>`:''}${onCharges?`<small class="muted" data-diagnosis-suggest-on-charges>Already on the charges</small>`:''}</li>`;
  }).join('');
  return `<h5>Procedures</h5>${gate.ok?'':`<p class="muted" data-diagnosis-suggest-charges-note>${esc(gate.why)}</p>`}<ul class="diagnosis-suggest-list" data-diagnosis-suggest-procedures>${rows}</ul>${diagnosisSuggestProceduresUnmatchedMarkup(state)}`;
 }
@@ -205,7 +213,7 @@ function diagnosisSuggestAdd(id){
  const state=diagnosisSuggestState(id);
  if(state.noteChanged){state.message='The note changed. Suggest again.';diagnosisSuggestPaint(id);return;}
  const chosen=(state.suggestions||[]).filter((item,index)=>state.picked.has(index));
- const procedures=(state.procedures||[]).filter((item,index)=>state.pickedProcedures.has(index));
+ const procedures=(state.procedures||[]).filter((item,index)=>state.pickedProcedures.has(index)&&!diagnosisSuggestOnCharges(item.code));
  if(!chosen.length&&!procedures.length){state.message='Tick the codes to add.';diagnosisSuggestPaint(id);return;}
  // Each ticked code joins the list through the same path as a code picked in the type-ahead, in order.
  let added=0;
@@ -231,7 +239,7 @@ document.addEventListener('click',event=>{
   if(diagnosisSuggestNoteDirty()){notice('Save the note first. Suggestions are read from the saved note.',true);return;}
   void diagnosisSuggestAsk(id).then(()=>diagnosisSuggestEditorOpen());return;
  }
- if(target.hasAttribute('data-diagnosis-suggest-all')){event.preventDefault();if(!id)return;const state=diagnosisSuggestState(id);state.picked=new Set((state.suggestions||[]).map((item,index)=>index));state.pickedProcedures=diagnosisSuggestChargeGate().ok?new Set((state.procedures||[]).map((item,index)=>index)):new Set();diagnosisSuggestPaint(id);return;}
+ if(target.hasAttribute('data-diagnosis-suggest-all')){event.preventDefault();if(!id)return;const state=diagnosisSuggestState(id);state.picked=new Set((state.suggestions||[]).map((item,index)=>index));state.pickedProcedures=diagnosisSuggestChargeGate().ok?new Set((state.procedures||[]).map((item,index)=>index).filter(index=>!diagnosisSuggestOnCharges(state.procedures[index].code))):new Set();diagnosisSuggestPaint(id);return;}
  if(target.hasAttribute('data-diagnosis-suggest-open')){event.preventDefault();const visit=target.dataset.visitId,patient=target.dataset.patientId;run(async()=>{await diagnosisSuggestOpen(visit,patient);});return;}
  if(!id)return;event.preventDefault();
  if(target.hasAttribute('data-diagnosis-suggest-ask'))void diagnosisSuggestAsk(id);

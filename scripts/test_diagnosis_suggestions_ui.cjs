@@ -4,13 +4,13 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const source=fs.readFileSync('web/diagnosis-suggestions.js','utf8');
 const esc=s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
-function fixture({available=true,role='clinician',can_edit=true,charges='open',allow=true}={}){
+function fixture({available=true,role='clinician',can_edit=true,charges='open',allow=true,chargeCodes=[]}={}){
  const handlers={},calls=[],added=[],lines=[],noteButton={hidden:true,disabled:false,textContent:''},noteLine={textContent:'',innerHTML:''},timers=new Map(),notices=[];let timerId=0,visible=true;
  const host={suggest:'',querySelector(sel){return sel==='[data-diagnosis-suggest]'&&this.suggest?{remove:()=>{this.suggest='';}}:null;},append(section){this.suggest=section.html;}};
  const holder={appended:[],hidden:false,append(...items){this.appended.push(...items.filter(item=>typeof item!=='string'));}};
  const replies={};
  const context=vm.createContext({console,Map,Set,Promise,selected:'p1',me:{role,user_id:'u1'},activeVisit:{id:'v1',version:3,status:'in_progress'},esc,
-  $:id=>id==='visit-diagnoses'&&visible?host:id==='notice'?holder:id==='billing-account-form'&&charges==='open'?{dataset:{}}:null,
+  $:id=>id==='visit-diagnoses'&&visible?host:id==='notice'?holder:id==='billing-account-form'&&charges==='open'?{dataset:{},querySelectorAll:sel=>sel==='[name="code"]'?chargeCodes.map(value=>({value})):[]}:null,
   chargeLinesAppend:rows=>{lines.push(...rows);return rows.map(()=>({}));},encounterChargeAccount:()=>charges==='posted'?{status:'posted'}:null,billingCan:()=>allow,
   api:async(path,method='GET',body)=>{calls.push({path,method,body});const key=`${method} ${path}`;if(path==='/api/v1/ai/local-status')return {available,model:available?'m':null};const reply=replies[key];if(typeof reply==='function')return reply(body);if(reply instanceof Error)throw reply;return reply??{status:'none',request_id:null};},
   setTimeout:(fn,delay)=>{const id=++timerId;timers.set(id,{fn,delay});return id;},clearTimeout:id=>timers.delete(id),
@@ -160,6 +160,17 @@ const ready=(extra={})=>({request_id:'r1',status:'ready',position:null,suggestio
  f=fixture({charges:'none',allow:false});f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']=withProcedures();await f.mount();assert.doesNotMatch(f.host.suggest,/pick-procedure/);assert.match(f.host.suggest,/You do not have permission to change charges\./);
  f=fixture({charges:'none'});f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']=withProcedures();await f.mount();assert.match(f.host.suggest,/Open the charges to add procedures\./);
  console.log('PASS procedures are shown without checkboxes, and why, when the charges cannot be edited');
+
+ // A procedure code already typed into the charge table is shown disabled and is never added again.
+ f=fixture({chargeCodes:[' 64616 ']});f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']=withProcedures();await f.mount();
+ assert.equal(vm.runInContext("diagnosisSuggestOnCharges('64616')",f.context),true);assert.equal(vm.runInContext("diagnosisSuggestOnCharges('J0585')",f.context),false);
+ assert.match(f.host.suggest,/data-diagnosis-suggest-pick-procedure="0"\s+disabled>/);assert.doesNotMatch(f.host.suggest,/pick-procedure="0"[^>]*checked/);
+ assert.match(f.host.suggest,/data-diagnosis-suggest-pick-procedure="1"\s*>/);assert.doesNotMatch(f.host.suggest,/pick-procedure="1"[^>]*disabled/);assert.match(f.host.suggest,/Already on the charges/);assert.equal((f.host.suggest.match(/Already on the charges/g)||[]).length,1);
+ f.tickProcedure(0);f.tickProcedure(1);f.replies['POST /api/v1/visits/v1/diagnosis-suggestions/dismiss']={status:'dismissed'};await f.click('add');
+ assert.deepEqual(f.lines.map(l=>l.code),['J0585']);
+ f=fixture({chargeCodes:[]});f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']=withProcedures();await f.mount();assert.doesNotMatch(f.host.suggest,/Already on the charges|disabled/);
+ f=fixture({charges:'none'});assert.equal(vm.runInContext("diagnosisSuggestOnCharges('64616')",f.context),false);
+ console.log('PASS a procedure already on the charges is shown disabled and is not added again; the helper is safe without the form');
 
  // Procedures only, and the level message alone, still show.
  f=fixture();f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']=withProcedures({suggestions:[],unmatched:[]});await f.mount();assert.doesNotMatch(f.host.suggest,/<h5>Diagnoses/);assert.match(f.host.suggest,/<h5>Procedures<\/h5>/);assert.doesNotMatch(f.host.suggest,/No codes found in the note/);
