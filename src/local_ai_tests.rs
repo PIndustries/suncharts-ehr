@@ -1612,7 +1612,7 @@ async fn a_practice_with_a_licensed_cpt_list_finds_its_codes_after_its_own() {
 }
 
 #[tokio::test]
-async fn no_more_than_eight_procedures_are_kept() {
+async fn no_more_than_six_services_are_kept() {
     let f = setup_services().await;
     for n in 0..10 {
         sqlx::query("INSERT INTO practice_codes(tenant_id,id,system,code,display,enabled,price_cents,default_units,modifiers,version,created_by,updated_by) VALUES($1,$2,'CPT',$3,$4,true,100,1,'',1,$5,$5)")
@@ -1627,7 +1627,7 @@ async fn no_more_than_eight_procedures_are_kept() {
         .collect();
     let answer = json!({"service_choices":picks}).to_string();
     let (_, out) = f.two_steps(&f.owner, id, &first, &answer).await;
-    assert_eq!(out["procedures"].as_array().unwrap().len(), 8, "{out}");
+    assert_eq!(out["procedures"].as_array().unwrap().len(), 6, "{out}");
     assert_eq!(out["procedures"][0]["code"], "70000");
 }
 
@@ -1680,3 +1680,13 @@ async fn the_services_migration_applies_over_an_existing_database_with_a_waiting
 
 #[path = "local_ai_bakeoff_tests.rs"]
 mod bakeoff;
+
+#[test]
+fn a_missing_bracket_between_the_lists_is_mended() {
+    let (problems, services) = parse_answer(
+        "{\"problems\":[{\"problem\":\"Synthetic problem\",\"evidence\":\"e\",\"search_terms\":[\"a\"]},\"services\":[{\"service\":\"Synthetic service\",\"evidence\":\"e\",\"search_terms\":[\"b\"]}]}",
+    )
+    .unwrap();
+    assert_eq!((problems.len(), services.len()), (1, 1));
+    assert!(parse_answer("{\"problems\":[{\"problem\":\"x\"},\"other\":1}").is_err());
+}
