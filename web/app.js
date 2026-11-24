@@ -437,7 +437,7 @@ function signedOutNote(){
   try{
     const raw=sessionStorage.getItem(signOutKey);sessionStorage.removeItem(signOutKey);
     const seen=raw?JSON.parse(raw):null;
-    return seen&&seen.path?`You were signed out while loading ${seen.path}`:'';
+    return seen&&seen.path?`You were signed out. If this keeps happening, tell support it happened at: ${seen.path}`:'';
   }catch{return '';}
 }
 function signInScreen() {

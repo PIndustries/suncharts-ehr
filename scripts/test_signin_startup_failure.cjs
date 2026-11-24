@@ -41,7 +41,7 @@ const me={user_id:'u1',tenant_id:'t1',role:'owner',email:'staff@example.test',di
  f.run("me={user_id:'u1',tenant_id:'t1'}");
  await f.run("api('/api/v1/patients/123e4567-e89b-12d3-a456-426614174000/billing/visit-summary?visit_id=123e4567-e89b-12d3-a456-426614174000')").catch(e=>e);
  assert.equal(f.node('login-screen').hidden,false);
- assert.equal(f.node('login-signed-out').textContent,'You were signed out while loading /api/v1/patients/:id/billing/visit-summary');
+ assert.equal(f.node('login-signed-out').textContent,'You were signed out. If this keeps happening, tell support it happened at: /api/v1/patients/:id/billing/visit-summary');
  assert.ok(!/123e4567/.test(f.node('login-signed-out').textContent));
  assert.equal(f.store.has('suncharts.signedOutWhile'),false,'the note is shown once');
  console.log('sign-in startup failure checks ok');
