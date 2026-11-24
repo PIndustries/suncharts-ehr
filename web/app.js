@@ -417,12 +417,28 @@ async function api(path, method = 'GET', body, version) {
   catch { throw new Error(method === 'GET' ? 'Connection interrupted. Please try loading again.' : 'Connection interrupted. This change may have saved. Reload the patient before trying again.'); }
   const data = await response.json().catch(() => ({}));
   if(me!==requestIdentity)throw new Error('Staff account changed. Sign in again to continue.');
-  if(response.status===409&&data.message==='Staff account changed. Sign in again to continue.'){signInScreen();$('login-error').textContent=data.message;throw new Error(data.message);}
-  if (response.status === 401) { signInScreen(); throw new Error('Please sign in to continue.'); }
+  if(response.status===409&&data.message==='Staff account changed. Sign in again to continue.'){signInScreen();$('login-error').textContent=data.message;const changed=new Error(data.message);changed.signedOut=true;throw changed;}
+  if (response.status === 401) { recordSignOut(path,response.status); signInScreen(); const out=new Error('Please sign in to continue.');out.signedOut=true;throw out; }
   if (!response.ok) { const error=new Error(data.message || (response.status === 409 ? 'This encounter changed. Reload it before saving.' : 'Unable to complete this action. Please check your entries.'));error.status=response.status;error.code=data.error;throw error; }
   // A save anywhere may change what the open chart's banner shows.
   if(method!=='GET'&&typeof patientBannerChanged==='function')patientBannerChanged();
   return data;
+}
+// Why the page gave up: the request that was refused, with ids taken out, kept for the sign-in
+// screen so staff can tell us where it happened. No patient data and no ids are stored.
+const signOutKey='suncharts.signedOutWhile';
+function signOutPath(path){
+  return String(path||'').split('?')[0].replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,':id').replace(/\/\d+(?=\/|$)/g,'/:id').slice(0,80);
+}
+function recordSignOut(path,status){
+  try{sessionStorage.setItem(signOutKey,JSON.stringify({path:signOutPath(path),status:Number(status)||0}));}catch{}
+}
+function signedOutNote(){
+  try{
+    const raw=sessionStorage.getItem(signOutKey);sessionStorage.removeItem(signOutKey);
+    const seen=raw?JSON.parse(raw):null;
+    return seen&&seen.path?`You were signed out while loading ${seen.path}`:'';
+  }catch{return '';}
 }
 function signInScreen() {
   if(typeof clearAutoRefreshSession==='function')clearAutoRefreshSession();
@@ -461,6 +477,7 @@ function signInScreen() {
   closeNavigation();
   $('app').hidden = true; $('login-screen').hidden = false;
   $('login-error').textContent='';
+  if($('login-signed-out'))$('login-signed-out').textContent=signedOutNote();
   $('patients').replaceChildren(); $('chart').replaceChildren(); $('patient-form').reset(); $('patient-form').hidden=true;
   $('search').value=''; $('notice').hidden=true; $('tools').replaceChildren(); $('tools').hidden=true;
   postSignReminder=null;
@@ -1273,7 +1290,19 @@ document.addEventListener('click',e=>{
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('sidebar').classList.contains('menu-open')){closeNavigation();$('nav-toggle').focus();}});
 $('search').addEventListener('input',renderPatients);
 // Every workspace module is deferred; initialize after all of them are loaded.
-document.addEventListener('DOMContentLoaded',()=>connectLaunchAcceptance.then(()=>enter()).catch(error=>{signInScreen();if(error.message!=='Please sign in to continue.')$('login-error').textContent=error.message;}),{once:true});
+// Only a real sign-out sends staff back to the sign-in screen (api() has already done that for a
+// 401 or a changed staff account). Any other failure while loading keeps the app and offers a retry.
+function startupFailed(){
+  $('login-screen').hidden=true;$('app').hidden=false;
+  notice("SunCharts couldn't finish loading. Your sign-in is fine. Try again.",true);
+  const retry=document.createElement('button');retry.type='button';retry.textContent='Try again';
+  retry.addEventListener('click',()=>{$('notice').hidden=true;startApp();});
+  $('notice').append(' ',retry);
+}
+function startApp(){
+  return enter().catch(error=>{if(error?.signedOut){signInScreen();if(error.message!=='Please sign in to continue.')$('login-error').textContent=error.message;return;}startupFailed();});
+}
+document.addEventListener('DOMContentLoaded',()=>connectLaunchAcceptance.then(()=>startApp(),error=>{signInScreen();if(error?.message!=='Please sign in to continue.')$('login-error').textContent=error?.message||'';}),{once:true});
 
 document.addEventListener('input',e=>{if(e.target.closest?.('#note-form,#vitals-form'))captureVisitDrafts();else if(e.target.closest?.('#amendment-form'))captureVisitAmendmentDraft();});
 window.addEventListener('beforeunload',e=>{captureVisitDrafts();if(visitAmendmentsHaveDrafts()||(typeof patientPaymentPlansHaveDrafts==='function'&&patientPaymentPlansHaveDrafts())||(typeof patientLifecycleHasDrafts==='function'&&patientLifecycleHasDrafts())||(typeof billingChargeHasDrafts==='function'&&billingChargeHasDrafts())||(typeof prescribingHaveDrafts==='function'&&prescribingHaveDrafts())||(typeof portalStaffHasDrafts==='function'&&portalStaffHasDrafts())||(typeof supportHasDrafts==='function'&&supportHasDrafts())||(typeof patientIdentityHasDrafts==='function'&&patientIdentityHasDrafts())||(typeof referralDeliveryHasDrafts==='function'&&referralDeliveryHasDrafts())||(typeof documentsHaveDrafts==='function'&&documentsHaveDrafts())||(typeof referralHasDrafts==='function'&&referralHasDrafts())||(typeof orderDiagnosisLinkDrafts!=='undefined'&&orderDiagnosisLinkDrafts.size)||(typeof accountDiagnosisLinkDrafts!=='undefined'&&accountDiagnosisLinkDrafts.size)||(typeof healthHistoryHasDrafts==='function'&&healthHistoryHasDrafts())||(typeof immunizationHasDrafts==='function'&&immunizationHasDrafts())||visitDrafts.size||(typeof visitDiagnosisDrafts!=='undefined'&&visitDiagnosisDrafts.size)||(typeof roomingDrafts!=='undefined'&&roomingDrafts.size)||(typeof checkoutDrafts!=='undefined'&&checkoutDrafts.size)){e.preventDefault();e.returnValue='';}});

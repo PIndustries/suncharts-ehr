@@ -95,6 +95,7 @@ impl BrowserAuth {
                     Some((tenant.parse::<Uuid>().ok()?, user.parse::<Uuid>().ok()?))
                 });
             if values.next().is_some() || parsed != Some((actor.tenant_id, actor.sub)) {
+                crate::connect_identity::log_refused(9, "staff context differs");
                 return Err(Error::Conflict(
                     "Staff account changed. Sign in again to continue.",
                 ));
