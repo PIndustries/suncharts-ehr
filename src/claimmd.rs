@@ -432,19 +432,33 @@ fn id(v: &Value) -> Option<String> {
         })
 }
 pub(crate) async fn page(r: &Route, cursor: &str) -> Result<Page> {
+    page_request(r, cursor, None).await
+}
+/// Every response Claim.MD holds for one claim. Not for periodic polling and it never moves the cursor.
+pub(crate) async fn claim_page(r: &Route, claimmd_id: &str) -> Result<Page> {
+    if claimmd_id.is_empty() || claimmd_id.len() > 64 {
+        return Err(Error::Invalid("invalid Claim.MD claim ID"));
+    }
+    page_request(r, "0", Some(claimmd_id)).await
+}
+async fn page_request(r: &Route, cursor: &str, claim_id: Option<&str>) -> Result<Page> {
     let endpoint = if r.loopback_test {
         let u = url::Url::parse(&r.endpoint).unwrap();
         format!("{}/services/response/", u.origin().ascii_serialization())
     } else {
         "https://svc.claim.md/services/response/".into()
     };
+    let mut fields = vec![
+        ("AccountKey", token(r)?),
+        ("ResponseID", cursor.to_string()),
+    ];
+    if let Some(claim_id) = claim_id {
+        fields.push(("ClaimID", claim_id.to_string()));
+    }
     let response = stedi::client()?
         .post(endpoint)
         .header("Accept", "application/json")
-        .form(&[
-            ("AccountKey", token(r)?),
-            ("ResponseID", cursor.to_string()),
-        ])
+        .form(&fields)
         .send()
         .await
         .map_err(|_| Error::Invalid("Claim.MD response request failed"))?;

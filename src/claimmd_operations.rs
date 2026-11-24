@@ -268,9 +268,23 @@ async fn sync_modifications(
     Json(input): Json<CursorRequest>,
 ) -> Result<Json<Value>> {
     billing_operator(&actor)?;
-    let claimmd_id = valid_claimmd_id(input.claimmd_id)?;
-    let cursor = load_cursor(db(&state)?, actor.tenant_id, setting, true).await?;
     let route = route(&state, &actor, setting).await?;
+    Ok(Json(
+        sync_modifications_core(db(&state)?, &actor, setting, input.claimmd_id, &route).await?,
+    ))
+}
+
+/// One modifications refresh shared by the staff button and the background loop.
+async fn sync_modifications_core(
+    pool: &PgPool,
+    actor: &Actor,
+    setting: Uuid,
+    claimmd_id: Option<String>,
+    route: &Route,
+) -> Result<Value> {
+    billing_operator(actor)?;
+    let claimmd_id = valid_claimmd_id(claimmd_id)?;
+    let cursor = load_cursor(pool, actor.tenant_id, setting, true).await?;
     let mut fields = vec![(
         "ModID".into(),
         if claimmd_id.is_some() {
@@ -282,7 +296,7 @@ async fn sync_modifications(
     if let Some(value) = &claimmd_id {
         fields.push(("ClaimMD_ID".into(), value.clone()));
     }
-    let response = form(db(&state)?, &route, "modify", fields).await?;
+    let response = form(pool, route, "modify", fields).await?;
     let last = numeric(
         &response["LastModid"],
         "Claim.MD modification cursor is invalid",
@@ -291,7 +305,7 @@ async fn sync_modifications(
         return Err(Error::Invalid("Claim.MD modification cursor regressed"));
     }
     let claims = rows(&response, "claim")?;
-    let mut tx = db(&state)?.begin().await?;
+    let mut tx = pool.begin().await?;
     let locked:String=sqlx::query_scalar("SELECT modification_id FROM claimmd_operation_cursors WHERE tenant_id=$1 AND setting_id=$2 FOR UPDATE").bind(actor.tenant_id).bind(setting).fetch_one(&mut *tx).await?;
     if claimmd_id.is_none() && locked != cursor {
         return Err(Error::Conflict(
@@ -322,11 +336,11 @@ async fn sync_modifications(
     if claimmd_id.is_none() {
         sqlx::query("UPDATE claimmd_operation_cursors SET modification_id=$3,updated_at=clock_timestamp() WHERE tenant_id=$1 AND setting_id=$2").bind(actor.tenant_id).bind(setting).bind(&last).execute(&mut *tx).await?;
     }
-    crate::postgres::audit(&mut tx, &actor, "claimmd.modifications_sync", setting).await?;
+    crate::postgres::audit(&mut tx, actor, "claimmd.modifications_sync", setting).await?;
     tx.commit().await?;
-    Ok(Json(
+    Ok(
         json!({"inserted":inserted,"last_modification_id":last,"cursor_advanced":claimmd_id.is_none()}),
-    ))
+    )
 }
 
 async fn sync_notes(
@@ -349,9 +363,19 @@ pub async fn sync_notes_with_route(
     claimmd_id: Option<String>,
     route: &Route,
 ) -> Result<Value> {
+    sync_notes_core(db(state)?, actor, setting, claimmd_id, route).await
+}
+
+async fn sync_notes_core(
+    pool: &PgPool,
+    actor: &Actor,
+    setting: Uuid,
+    claimmd_id: Option<String>,
+    route: &Route,
+) -> Result<Value> {
     billing_operator(actor)?;
     let claimmd_id = valid_claimmd_id(claimmd_id)?;
-    let cursor = load_cursor(db(state)?, actor.tenant_id, setting, false).await?;
+    let cursor = load_cursor(pool, actor.tenant_id, setting, false).await?;
     let mut fields = vec![(
         "NoteID".into(),
         if claimmd_id.is_some() {
@@ -363,13 +387,13 @@ pub async fn sync_notes_with_route(
     if let Some(value) = &claimmd_id {
         fields.push(("ClaimMD_ID".into(), value.clone()));
     }
-    let response = form(db(state)?, route, "notes", fields).await?;
+    let response = form(pool, route, "notes", fields).await?;
     let last = note_cursor(&response, &cursor);
     if claimmd_id.is_none() && last.parse::<u128>().ok() < cursor.parse::<u128>().ok() {
         return Err(Error::Invalid("Claim.MD note cursor regressed"));
     }
     let notes = rows(&response, "notes")?;
-    let mut tx = db(state)?.begin().await?;
+    let mut tx = pool.begin().await?;
     let locked:String=sqlx::query_scalar("SELECT note_id FROM claimmd_operation_cursors WHERE tenant_id=$1 AND setting_id=$2 FOR UPDATE").bind(actor.tenant_id).bind(setting).fetch_one(&mut *tx).await?;
     if claimmd_id.is_none() && locked != cursor {
         return Err(Error::Conflict(
@@ -635,6 +659,68 @@ async fn file(
         HeaderValue::from_str(&hash).map_err(|_| Error::Invalid("invalid artifact hash"))?,
     );
     Ok(response)
+}
+
+/// How often the background refresh runs.
+const AUTO_SYNC_SECONDS: u64 = 600;
+
+/// One automatic pass for one connection: modifications, then notes, both on the
+/// account-wide positions. The audit rows are written under the nil system actor.
+pub async fn auto_sync_setting(
+    pool: &PgPool,
+    tenant: Uuid,
+    setting: Uuid,
+    route: &Route,
+) -> Result<()> {
+    let actor = Actor {
+        sub: Uuid::nil(),
+        tenant_id: tenant,
+        role: Role::Owner,
+        patient_id: None,
+        iss: "system".into(),
+        aud: "system".into(),
+        iat: 0,
+        exp: i64::MAX,
+    };
+    let modifications = sync_modifications_core(pool, &actor, setting, None, route).await;
+    let notes = sync_notes_core(pool, &actor, setting, None, route).await;
+    modifications.and(notes).map(|_| ())
+}
+
+/// One sweep over every active connection. A failing connection is skipped with
+/// a fixed message so the others still run.
+pub async fn auto_sync_all(pool: &PgPool) {
+    let Ok(settings) = sqlx::query_as::<_, (Uuid, Uuid)>(
+        "SELECT tenant_id,id FROM edi_provider_settings WHERE enabled AND verified AND usage IN ('P','T') ORDER BY tenant_id,id",
+    )
+    .fetch_all(pool)
+    .await
+    else {
+        return;
+    };
+    for (tenant, setting) in settings {
+        let Ok(route) = crate::provider_settings::claimmd_route(pool, tenant, setting).await else {
+            continue;
+        };
+        if route.credential_value.is_none() {
+            continue;
+        }
+        if auto_sync_setting(pool, tenant, setting, &route)
+            .await
+            .is_err()
+        {
+            eprintln!("Claim.MD automatic refresh skipped a connection");
+        }
+    }
+}
+
+pub async fn run(pool: PgPool) {
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(AUTO_SYNC_SECONDS));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        auto_sync_all(&pool).await;
+    }
 }
 
 pub fn router() -> Router<State> {

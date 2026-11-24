@@ -10484,3 +10484,124 @@ async fn ccda_package_imports_onto_the_charts_the_owner_chose_and_reimports_clea
     assert_eq!(stored[0], stored[1]);
     db.close().await;
 }
+
+#[tokio::test]
+async fn check_with_claimmd_now_stores_new_messages_once_applies_them_and_keeps_the_poll_cursor() {
+    use std::sync::Mutex;
+    let (r, db, a, _) = setup().await;
+    let (c, p, out, receipt) = delivered_claimmd_claim(&r, &a).await;
+    let control = c["control_number"].clone();
+    let mut warning = claimmd_status_claim(&control, 7, "A", "CLMMD", "");
+    warning["messages"] = json!([{"responseid":7,"status":"W","mesgid":"WARN","message":"Missing rendering provider NPI on line 1"}]);
+    let page = claimmd_page(vec![warning]);
+    let forms = Arc::new(Mutex::new(
+        Vec::<std::collections::HashMap<String, String>>::new(),
+    ));
+    let seen = forms.clone();
+    let gateway = Router::new()
+        .route(
+            "/services/upload/",
+            axum::routing::post(move || {
+                let receipt = receipt.clone();
+                async move { axum::Json(receipt) }
+            }),
+        )
+        .route(
+            "/services/response/",
+            axum::routing::post(move |body: axum::body::Bytes| {
+                let page = page.clone();
+                let seen = seen.clone();
+                async move {
+                    let form: std::collections::HashMap<String, String> =
+                        url::form_urlencoded::parse(&body).into_owned().collect();
+                    let by_claim = form.contains_key("ClaimID");
+                    seen.lock().unwrap().push(form);
+                    axum::Json(if by_claim { page } else { json!({}) })
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, gateway).await.unwrap() });
+    let config = provider_config(
+        &a,
+        &p,
+        "claim_md",
+        &format!("{base}/services/upload/"),
+        &base,
+    );
+    queue_provider(&r, &a, &out).await;
+    assert!(suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap());
+    let cursor = |db: PgPool, tenant: Uuid| async move {
+        sqlx::query_scalar::<_, Option<String>>("SELECT page_token FROM edi_connections WHERE tenant_id=$1 AND route_key='provider-test'")
+            .bind(tenant)
+            .fetch_one(&db)
+            .await
+            .unwrap()
+    };
+    suncharts_engine::retrieval::sync(&db, &config)
+        .await
+        .unwrap();
+    let before = cursor(db.clone(), a.tenant_id).await;
+    let claim_id: Uuid = c["id"].as_str().unwrap().parse().unwrap();
+
+    let first = suncharts_engine::retrieval::check_claimmd_status(&db, &a, claim_id, &config)
+        .await
+        .unwrap();
+    assert_eq!(first, json!({"checked":true,"new_messages":1}));
+    {
+        let seen = forms.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["ClaimID"], "902000001");
+        assert_eq!(seen[0]["ResponseID"], "0");
+        assert_eq!(seen[0]["AccountKey"], "synthetic-loopback-key");
+    }
+    let state = claimmd_page_state(&r, &a, &c).await;
+    assert_eq!(state["position"]["needs_correction"], true);
+    let second = suncharts_engine::retrieval::check_claimmd_status(&db, &a, claim_id, &config)
+        .await
+        .unwrap();
+    assert_eq!(second, json!({"checked":true,"new_messages":0}));
+    let stored: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM edi_remote_reports WHERE tenant_id=$1 AND remote_id='response:7'",
+    )
+    .bind(a.tenant_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(stored, 1);
+    assert_eq!(
+        cursor(db.clone(), a.tenant_id).await,
+        before,
+        "a manual check never moves the polling cursor"
+    );
+    let leased: bool = sqlx::query_scalar(
+        "SELECT lease_id IS NULL AND lease_until IS NULL FROM edi_connections WHERE tenant_id=$1",
+    )
+    .bind(a.tenant_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert!(leased);
+
+    // A claim nothing was delivered for has no Claim.MD claim ID.
+    sqlx::query("UPDATE edi_delivery_jobs SET receipt_reference=NULL WHERE tenant_id=$1")
+        .bind(a.tenant_id)
+        .execute(&db)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM edi_remote_reports WHERE tenant_id=$1")
+        .bind(a.tenant_id)
+        .execute(&db)
+        .await
+        .ok();
+    let missing = suncharts_engine::retrieval::check_claimmd_status(&db, &a, claim_id, &config)
+        .await
+        .unwrap_err();
+    assert!(missing
+        .to_string()
+        .contains("has not been given a Claim.MD claim ID yet"));
+    server.abort();
+}

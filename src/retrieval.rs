@@ -923,6 +923,10 @@ pub fn router() -> Router<State> {
             "/api/v1/billing/connections/{key}/actions",
             post(connection_action),
         )
+        .route(
+            "/api/v1/billing/claims/{id}/claimmd-status/check",
+            post(claimmd_check),
+        )
         .route("/api/v1/billing/retrieved-reports", get(reports))
         .route(
             "/api/v1/billing/retrieved-reports/from-source",
@@ -933,6 +937,88 @@ pub fn router() -> Router<State> {
             "/api/v1/billing/retrieved-reports/{id}/actions",
             post(report_action),
         )
+}
+async fn claimmd_check(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>> {
+    a.staff()?;
+    let pool = db(&s)?;
+    let config = crate::provider_settings::load_for_tenant(pool, a.tenant_id).await?;
+    Ok(Json(check_claimmd_status(pool, &a, id, &config).await?))
+}
+/// Asks Claim.MD for every message it holds on one claim. The polling cursor is never touched.
+pub async fn check_claimmd_status(
+    pool: &PgPool,
+    a: &Actor,
+    id: Uuid,
+    config: &Config,
+) -> Result<Value> {
+    a.staff()?;
+    let mut tx = pool.begin().await?;
+    crate::claims::claim_row(&mut tx, a, id).await?;
+    let job: Option<(String, String)> = sqlx::query_as("SELECT j.route_key,j.receipt_reference FROM edi_delivery_jobs j JOIN edi_submissions s ON s.tenant_id=j.tenant_id AND s.id=j.submission_id WHERE j.tenant_id=$1 AND s.claim_id=$2 AND j.status='delivered' AND j.receipt_reference LIKE 'claimmd-%' ORDER BY j.created_at DESC,j.id DESC LIMIT 1")
+        .bind(a.tenant_id).bind(id).fetch_optional(&mut *tx).await?;
+    // A file receipt wins at delivery time; the claim ID then comes from the first message Claim.MD sent back.
+    let claimmd_id: Option<String> = match &job {
+        Some((_, reference)) if reference.starts_with("claimmd-claim:") => {
+            Some(reference.trim_start_matches("claimmd-claim:").to_string())
+        }
+        Some(_) => sqlx::query_scalar("SELECT r.parse_summary->>'claimmd_id' FROM edi_remote_reports r JOIN edi_submissions s ON s.tenant_id=r.tenant_id AND s.id=r.native_id WHERE r.tenant_id=$1 AND s.claim_id=$2 AND r.native_kind='submission' AND r.format='claimmd_status' AND coalesce(r.parse_summary->>'claimmd_id','')<>'' ORDER BY r.received_at DESC,r.id DESC LIMIT 1")
+            .bind(a.tenant_id).bind(id).fetch_optional(&mut *tx).await?,
+        None => None,
+    };
+    tx.rollback().await?;
+    let (Some((key, _)), Some(claimmd_id)) = (job, claimmd_id) else {
+        return Err(Error::Invalid(
+            "This claim has not been given a Claim.MD claim ID yet.",
+        ));
+    };
+    let Some(r) = config
+        .route(a.tenant_id, &key)
+        .filter(|r| r.adapter == Adapter::ClaimMd)
+    else {
+        return Err(Error::Conflict(
+            "enable and verify a Claim.MD connection before checking",
+        ));
+    };
+    let lease = Uuid::new_v4();
+    let mut tx = pool.begin().await?;
+    billing::tenant_lock(&mut tx, a).await?;
+    let leased = sqlx::query("UPDATE edi_connections SET lease_id=$3,lease_until=now()+interval '60 seconds' WHERE tenant_id=$1 AND route_key=$2 AND (lease_until IS NULL OR lease_until<now())").bind(a.tenant_id).bind(&key).bind(lease).execute(&mut *tx).await?.rows_affected();
+    tx.commit().await?;
+    if leased == 0 {
+        return Err(Error::Conflict(
+            "Claim.MD is being checked right now. Try again in a minute.",
+        ));
+    }
+    let result = match crate::claimmd_eligibility::acquire_rate_limit(pool, r).await {
+        Ok(()) => crate::claimmd::claim_page(r, &claimmd_id).await,
+        Err(error) => Err(error),
+    };
+    let mut tx = pool.begin().await?;
+    billing::tenant_lock(&mut tx, a).await?;
+    let released = sqlx::query("UPDATE edi_connections SET lease_id=NULL,lease_until=NULL WHERE tenant_id=$1 AND route_key=$2 AND lease_id=$3").bind(a.tenant_id).bind(&key).bind(lease).execute(&mut *tx).await?.rows_affected();
+    let page = match result {
+        Ok(page) if released > 0 => page,
+        other => {
+            tx.commit().await?;
+            return Err(other.err().unwrap_or(Error::Conflict(
+                "Claim.MD is being checked right now. Try again in a minute.",
+            )));
+        }
+    };
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM edi_remote_reports WHERE tenant_id=$1 AND route_key=$2 AND format='claimmd_status'").bind(a.tenant_id).bind(&key).fetch_one(&mut *tx).await?;
+    for item in &page.items {
+        insert_observation(&mut tx, a, &key, item).await?;
+    }
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM edi_remote_reports WHERE tenant_id=$1 AND route_key=$2 AND format='claimmd_status'").bind(a.tenant_id).bind(&key).fetch_one(&mut *tx).await?;
+    attach_claimmd_status(&mut tx, a, &key).await?;
+    reapply_claimmd_status(&mut tx, a, &key).await?;
+    crate::postgres::audit(&mut tx, a, "claim.claimmd_status_check", id).await?;
+    tx.commit().await?;
+    Ok(json!({"checked":true,"new_messages":after-before}))
 }
 async fn connections(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json<Value>> {
     a.staff()?;

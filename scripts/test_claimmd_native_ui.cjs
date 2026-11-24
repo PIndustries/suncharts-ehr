@@ -97,3 +97,13 @@ let submittedAnsweredHtml=context.claimMdClaimLifecycle({status:'submitted',snap
 assert.match(submittedAnsweredHtml,/<li class="is-current" tabindex="0" aria-label="(?:Done|Now|Not done|Later): Payer response\./,'a clearinghouse acknowledgement leaves the payer response step current');
 console.log('PASS a rejected claim expects no payment and an acknowledged claim waits on the payer');
 console.log('PASS the payer response stage follows the claim status, not only the presence of a report');
+
+{
+ const withConn={connections:[{route_key:'r',paused:false}],submissions:[{status:'delivered'}],reports:[]};
+ let out=context.claimMdTrackingSummary(withConn,'claim-1');
+ assert.match(out,/<button type="button" data-claimmd-check="claim-1">Check with Claim.MD now<\/button>/);
+ assert.doesNotMatch(context.claimMdTrackingSummary(withConn),/data-claimmd-check/,'no claim id, no button');
+ assert.doesNotMatch(context.claimMdTrackingSummary({connections:[],submissions:[],reports:[]},'claim-1'),/data-claimmd-check/,'nothing sent, nothing to check');
+ assert.match(native,/No new messages from Claim\.MD\./);assert.match(native,/new message\$\{n===1\?'':'s'\} from Claim\.MD\./);assert.match(native,/Checking…/);
+ console.log('PASS Check with Claim.MD now button renders for sent claims');
+}
