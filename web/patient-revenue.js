@@ -395,14 +395,34 @@ async function loadEncounterRevenueStatus(account,force=false){
  })();
  return state.pending;
 }
-async function prepareVisitClaim(again){
+async function prepareVisitClaim(again,quiet){
  const account=encounterChargeAccount(),state=encounterRevenueState,patient=selected,identity=me;if(!account)throw new Error('Post the charges for this encounter first.');
  state.prepared=true;
  const result=await api(`/api/v1/patients/${encodeURIComponent(patient)}/billing/accounts/${encodeURIComponent(account.id)}/claims/prepare`,'POST',again?{again:true}:{});
  if(selected!==patient||me!==identity)return;
  if(encounterRevenueState===state&&state.data)state.data.prepareError=null;
  await loadEncounterRevenueStatus(encounterChargeAccount(),true);
- if(result.outcome==='prepared')notice('Claim prepared from this encounter. Nothing was sent.');
+ if(result.outcome==='prepared'&&!quiet)notice('Claim prepared from this encounter. Nothing was sent.');
+}
+// A cancelled claim goes out again in one press: the claim is prepared again (keeping what a person
+// corrected on the cancelled one), the encounter is read back, and when nothing needs fixing the same
+// send the review panel's own button runs goes ahead. Otherwise the review panel shows what to fix.
+async function visitClaimResend(button){
+ const patient=selected,identity=me;
+ if(button){button.disabled=true;button.textContent='Sending…';}
+ try{
+  await prepareVisitClaim(true,true);
+  if(selected!==patient||me!==identity)return;
+  const summary=encounterRevenueState.data?.summary;
+  const clear=summary?.state==='send_claim'&&!visitReviewMustFix(visitReviewChecks(summary,visitReviewContext())).length;
+  const account=typeof encounterChargeAccount==='function'?encounterChargeAccount():null;
+  const options=clear?visitReviewSendContext(summary,account):null;
+  visitReviewOpen();
+  if(options)await visitReviewRun(summary.claim?.id||null,options);
+ }catch(error){
+  visitClaimSendFailure(error,button);
+  if(button&&button.isConnected!==false){button.disabled=false;button.textContent='Send the claim again';}
+ }
 }
 // The statement is the patient's side of this encounter. Its record is saved the first time it
 // is opened to print or send, and reused while the amount is unchanged.
@@ -727,6 +747,7 @@ document.addEventListener('click',event=>{
  if(button.hasAttribute('data-refresh-revenue')){event.preventDefault();loadEncounterRevenueStatus(encounterChargeAccount(),true);return;}
  if(button.hasAttribute('data-visit-collect')){event.preventDefault();openVisitCollect();return;}
  if(button.hasAttribute('data-visit-collect-close')){event.preventDefault();if(collectDialog){sheetClose(collectDialog);return;}const panel=$('visit-billing-collect');if(panel)panel.hidden=true;return;}
+ if(button.hasAttribute('data-visit-claim-resend')){event.preventDefault();button.disabled=true;button.textContent='Sending…';run(()=>visitClaimResend(button));return;}
  if(button.dataset.visitClaimPrepare!==undefined){event.preventDefault();button.disabled=true;run(()=>prepareVisitClaim(button.dataset.visitClaimPrepare==='again'));return;}
  if(button.dataset.visitClaimDirectSend){event.preventDefault();run(()=>sendVisitClaimNow(button.dataset.visitClaimDirectSend,button));return;}
  if(button.dataset.visitPostAndSend){event.preventDefault();run(()=>postVisitChargesAndSend());return;}
@@ -1227,7 +1248,7 @@ function encounterCodesEditorClose(){
 // same fields over the page. Only what has a value is listed, so an ordinary encounter stays short.
 function encounterDetailsSummaryRows(form){
  const rows=[],seen=new Set();
- const scopes=form.querySelectorAll('[data-visit-charge-options],[data-encounter-provider],details.charge-more-options');
+ const scopes=form.querySelectorAll('[data-visit-charge-options],[data-charge-prior-auth],[data-encounter-provider],details.charge-more-options');
  for(const scope of scopes){
   for(const field of scope.querySelectorAll('input,select,textarea')){
    if(!field.name||seen.has(field.name)||field.type==='hidden'||['visit_id','coverage_id','fee_facility','fee_setting'].includes(field.name)||field.closest('[data-encounter-provider-fields]'))continue;
@@ -1278,7 +1299,7 @@ if(typeof document!=='undefined'&&document.addEventListener){
   const button=event.target?.closest?.('button');if(!button?.closest?.('#encounter-revenue,#patient-banner,#encounter-bar'))return;
   const has=names=>names.some(name=>button.hasAttribute(name));
   if(has(['data-encounter-charges'])||button.dataset?.visitReviewFix==='line')setTimeout(()=>encounterCodesEditorOpen(),0);
-  else if(has(['data-visit-claim-send','data-visit-claim-fix','data-visit-claim-prepare','data-revenue-claim','data-claim-open','data-revenue-remittance']))billingPartSet('claim',false);
+  else if(has(['data-visit-claim-send','data-visit-claim-fix','data-visit-claim-prepare','data-visit-claim-resend','data-revenue-claim','data-claim-open','data-revenue-remittance']))billingPartSet('claim',false);
  },true);
  document.addEventListener('keydown',event=>{if(event.key!=='Escape'||document.querySelector?.('dialog[open]'))return;if($('encounter-revenue')?.dataset?.codesEditing!==undefined){event.preventDefault();encounterCodesEditorClose();}});
  // A field the browser refuses on save has to be on screen to be fixed.

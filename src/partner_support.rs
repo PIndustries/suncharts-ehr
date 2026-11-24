@@ -23,7 +23,7 @@ use sqlx::{Postgres, Transaction};
 use std::time::Duration;
 use uuid::Uuid;
 
-const MAX_SESSION_SECONDS: i64 = 15 * 60;
+const MAX_SESSION_SECONDS: i64 = 24 * 3600;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -414,7 +414,7 @@ mod tests {
         )
         .is_err());
         claims.purpose = "support".into();
-        claims.exp = now + 901;
+        claims.exp = now + MAX_SESSION_SECONDS + 1;
         assert!(validate_claims(
             &claims,
             "https://connect.example.test",

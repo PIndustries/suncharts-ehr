@@ -138,7 +138,7 @@ assert.match(claimFixPlan(cameBack().claim,'diagnosis_pointer').notice,/a box fo
 assert.match(editor,/name="diagnosis_line_\$\{index\}"/,'the editor renders one diagnosis tick box per charge line');
 assert.equal(claimFixPlan(cameBack().claim,'timely_filing').focus,'','an insurer-side problem has no box to focus');
 assert.equal(claimFixPlan(cameBack().claim,'prior_authorization').focus,'');
-assert.match(claimFixPlan(cameBack().claim,'prior_authorization').notice,/nowhere in SunCharts/i,'no invented box for a number we do not store');
+assert.match(claimFixPlan(cameBack().claim,'prior_authorization').notice,/Prior authorization number under the procedures.*corrected claim/i,'points at the box under the procedures');
 // Every focus the module offers is a box the editor really renders.
 const problemsModule=require(path.join(process.cwd(),'web/claim-problems.js'));
 assert.ok(Object.keys(problemsModule.claimProblemFields).length>=8,'the module knows where each common fix lives');

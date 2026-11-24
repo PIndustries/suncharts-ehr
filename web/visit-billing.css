@@ -283,7 +283,7 @@
 #encounter-revenue[data-invoice-tab="billing"][data-billing-part="codes"]>:is(#visit-billing-payments,#visit-billing-invoices,#visit-billing-collect,#encounter-copay-receipt,#encounter-claims){display:none}
 #encounter-revenue[data-invoice-tab="billing"][data-billing-part="codes"] #billing-account-form>:is([data-visit-charge-options],[data-encounter-provider],details.charge-more-options){display:none}
 #encounter-revenue[data-invoice-tab="billing"][data-billing-part="details"]>:is(#encounter-diagnoses,.section-head,#visit-billing-payments,#visit-billing-invoices,#visit-billing-collect,#encounter-copay-receipt,#encounter-claims,#encounter-billing-detail){display:none}
-#encounter-revenue[data-invoice-tab="billing"][data-billing-part="details"] #billing-account-form>:is(.charge-lines-title,.charge-table-wrap,.charge-table-foot,.encounter-form-actions){display:none}
+#encounter-revenue[data-invoice-tab="billing"][data-billing-part="details"] #billing-account-form>:is(.charge-lines-title,.charge-table-wrap,.charge-table-foot,.encounter-form-actions,[data-charge-prior-auth]){display:none}
 #encounter-revenue[data-invoice-tab="billing"]:is([data-billing-part="payments"],[data-billing-part="claim"])>:is(#encounter-diagnoses,.section-head,#encounter-billing-detail){display:none}
 #encounter-revenue[data-invoice-tab="billing"]:is([data-billing-part="payments"],[data-billing-part="claim"])>#encounter-billing-editor:has(#billing-account-form){display:none}
 #encounter-revenue[data-invoice-tab="billing"][data-billing-part="payments"]>#encounter-claims{display:none}
@@ -360,7 +360,7 @@
 .receipt-email p{grid-column:1/-1;margin:0}
 
 /* Billing in one column. The summary is the tab; an area opened from it takes its place. */
-#encounter-revenue[data-invoice-tab="billing"][data-billing-part="summary"]>:not(.invoice-tabs):not(#encounter-revenue-status):not(.codes-editor-bar):not(.codes-editor-foot){display:none}
+#encounter-revenue[data-invoice-tab="billing"][data-billing-part="summary"]>:not(.invoice-tabs):not(#encounter-revenue-status):not(#visit-billing-review):not(.codes-editor-bar):not(.codes-editor-foot){display:none}
 #encounter-revenue[data-invoice-tab="billing"]:not([data-billing-part="summary"]) .billing-column{display:none}
 #encounter-revenue[data-invoice-tab="billing"][data-billing-part] .visit-billing-totals{display:none}
 #encounter-revenue[data-invoice-tab="billing"] #encounter-revenue-status .visit-billing-breakdown{display:none}

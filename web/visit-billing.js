@@ -54,7 +54,7 @@ function visitBillingStatus(s,ctx={}){
    }
    case 'self_pay_collect':return {headline:'Self-pay: collect payment',detail:`Patient owes ${owes}. Waiting for the patient.`,action:create?button('Collect payment','data-visit-collect'):''};
   case 'prepare_claim':return ctx.prepareError?{headline:`The claim to ${insurer} could not be prepared`,detail:ctx.prepareError,action:create?button('Try again','data-visit-claim-prepare'):''}:create?{headline:`Preparing the claim to ${insurer}`,detail:'The claim is filled in from this encounter. Nothing is sent until you send it.',action:ctx.preparing?'':button('Prepare claim','data-visit-claim-prepare')}:{headline:'Posted',detail:`Billing staff prepare the claim to ${insurer}.`,action:''};
-   case 'claim_cancelled':return {headline:`The claim to ${insurer} was cancelled`,detail:'Nothing is with the insurer.',action:create?button('Prepare a new claim','data-visit-claim-prepare="again"'):''};
+   case 'claim_cancelled':return {headline:`The claim to ${insurer} was cancelled`,detail:'Nothing is with the insurer.',action:create&&!ctx.delegated?button('Send the claim again','data-visit-claim-resend'):''};
    case 'fix_claim':return {headline:`Claim to ${insurer} needs details`,detail:'Nothing has been sent yet. Fill in what is missing right on the claim below.',issues:s.claim?.issues||[],action:write?button('Fix claim details',`data-visit-claim-fix="${esc(claim)}"`):''};
     case 'send_claim':return {headline:`Claim ready to send to ${insurer}`,detail:'Nothing has been sent yet.',action:visitBillingDirectSend(s,ctx)||reviewButton(s,ctx)||(write?button('Review and send claim',`data-visit-claim-send="${esc(claim)}"`):'')};
     case 'correct_claim':return {headline:'Charges changed after the claim was sent',detail:`Send a corrected claim to ${insurer}.`,action:button('Open claim',`data-revenue-claim="${esc(claim)}"`)};
@@ -279,13 +279,19 @@ function visitBillingInsuranceWords(s){
  if(s.state==='claim_cancelled')return 'Claim cancelled. Nothing is with the insurer';
  return ({not_billed:'Claim is made when the charges are posted',not_sent:'Claim not sent yet',waiting:`Claim sent${i.sent_on?` ${visitBillingDate(i.sent_on)}`:''}. Waiting for their answer`,denied:'Denied',answered:s.claim?.answer?.payment_date?`Answered ${visitBillingDate(s.claim.answer.payment_date)}`:'Answered',outside:'Billed outside SunCharts',restricted:'Handled by billing staff'})[i.status]||'';
 }
+// The one prior authorization number the claim will carry, kept with the encounter's charges.
+function visitBillingAuthorizationNote(){
+ const account=typeof encounterChargeAccount==='function'?encounterChargeAccount():null;
+ const number=String(account?.content?.claim_details?.prior_authorization_number||'').trim();
+ return number?` · Prior authorization ${esc(number)}`:'';
+}
 function visitBillingColumn(s,ctx={}){
  const i=s.insurance||{},p=s.patient||{},posted=s.account?.status==='posted',now=visitBillingRowNow(s),standing=visitBillingDue(s),claim=s.claim;
  const mark=(key,done)=>now===key?'<span class="billing-row-mark is-now" aria-label="Next">→</span>':done?'<span class="billing-row-mark is-done" aria-label="Done">✓</span>':'<span class="billing-row-mark" aria-hidden="true"></span>';
  const row=(key,n,title,note,amount,button,done)=>`<li class="billing-row${now===key?' is-now':''}" data-billing-row="${key}">${mark(key,done)}<div class="billing-row-text"><b>${n} · ${title}</b><span class="muted"${key==='charges'?' data-billing-row-codes':''}>${note}</span></div><span class="billing-row-amount">${amount}</span><span class="billing-row-action">${button||''}</span></li>`;
  // 1. Charges.
  const none=s.charges_cents==null;
- const charges=row('charges',1,'Charges',none?'No charges yet':posted?'Posted':'Not posted yet. They can still be changed',none?'':money(s.charges_cents),ctx.canCreate?`<button type="button" data-encounter-charges>${none?'Add charges':'Edit codes'}</button>`:'',posted);
+ const charges=row('charges',1,'Charges',(none?'No charges yet':posted?'Posted':'Not posted yet. They can still be changed')+visitBillingAuthorizationNote(),none?'':money(s.charges_cents),ctx.canCreate?`<button type="button" data-encounter-charges>${none?'Add charges':'Edit codes'}</button>`:'',posted);
  // 2. Insurance.
  let insurance;
  if(!i.insured)insurance=row('insurance',2,'Insurance','No insurance on this encounter. The patient pays','','<button type="button" data-chart-section="insurance">Add insurance</button>',false);

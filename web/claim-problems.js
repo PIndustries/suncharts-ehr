@@ -260,7 +260,7 @@ function claimFixPlan(claim,field){
   if(field==='member_id')return{focus:'',open:'insurance',where:'',notice:member?`The member ID is not typed into the claim: the claim carries the number that was on the insurance when it was prepared, and here it reads “${member}”. Check that against the card and save it, then bring the claim up to date and send it again.`:'There is no member ID on this insurance yet. Add it to the insurance, then bring the claim up to date and send it again.',resend:plan};
   if(field==='subscriber')return{focus:'',open:'insurance',where:'',notice:'The policy holder’s name, date of birth and relationship come from the insurance, not from this form. Put them right there, then bring the claim up to date and send it again.',resend:plan};
   if(field==='diagnosis_pointer')return{focus:'diagnosis_codes',open:'',where:'',diagnosis:true,notice:'There is a box for each charge line under the diagnosis list. Tick the diagnoses that apply to that line, and tick the main reason for it first.',resend:plan};
-  if(field==='prior_authorization')return{focus:'',open:'',where:'the insurer’s approval, which is not stored in SunCharts',notice:'There is nowhere in SunCharts to type the approval number, so it goes on the claim to the insurer with the corrected claim. Add it when the claim goes out.',resend:plan};
+  if(field==='prior_authorization')return{focus:'',open:'',where:'the Prior authorization number under the procedures on the encounter’s Billing',notice:'Add the approval number in Prior authorization number under the procedures on the encounter’s Billing, then send a corrected claim.',resend:plan};
   return{focus:known.input||'',open:'',where:'',notice:'',resend:plan};
 }
 

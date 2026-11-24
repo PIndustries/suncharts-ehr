@@ -95,6 +95,7 @@ impl BrowserAuth {
                     Some((tenant.parse::<Uuid>().ok()?, user.parse::<Uuid>().ok()?))
                 });
             if values.next().is_some() || parsed != Some((actor.tenant_id, actor.sub)) {
+                crate::connect_identity::log_refused(9, "staff context differs");
                 return Err(Error::Conflict(
                     "Staff account changed. Sign in again to continue.",
                 ));
@@ -231,7 +232,7 @@ async fn login_with_policy(
     sqlx::query("DELETE FROM browser_sessions WHERE expires_at<=now()")
         .execute(&mut *tx)
         .await?;
-    let session_seconds = if recovery { 30 * 60 } else { 8 * 3600 };
+    let session_seconds = 24 * 3600;
     sqlx::query("INSERT INTO browser_sessions (token_hash,tenant_id,user_id,expires_at,auth_method) VALUES ($1,$2,$3,now()+make_interval(secs=>$4),$5)")
         .bind(hash(&token)).bind(tenant).bind(id).bind(session_seconds).bind(if recovery{"break_glass"}else{"local"}).execute(&mut *tx).await?;
     let action = if recovery {

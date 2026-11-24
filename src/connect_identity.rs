@@ -276,19 +276,29 @@ pub(crate) async fn authenticate_staff_hash(
     let s: Option<StaffSession> = sqlx::query_as("SELECT s.tenant_id,s.issuer_tenant_id,s.user_id,s.grant_id,s.issuer,s.audience,s.expires_at,u.role,u.email FROM connect_identity_sessions s JOIN browser_users u ON u.tenant_id=s.tenant_id AND u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now() AND s.revoked_at IS NULL AND NOT u.disabled")
         .bind(token_hash).fetch_optional(&auth.db).await?;
     let Some(s) = s else {
+        log_refused(0, "session not found");
         return Ok(None);
     };
-    let i = introspect(&s.issuer, s.grant_id, &s.audience).await?;
+    let i = match introspect(&s.issuer, s.grant_id, &s.audience).await {
+        Ok(i) => i,
+        Err(error) => {
+            log_refused(1, "connect check unreachable");
+            return Err(error);
+        }
+    };
     let now = Utc::now().timestamp();
-    let valid = i.active
-        && i.jti == Some(s.grant_id)
-        && i.aud.as_deref() == Some(auth.origin())
-        && i.kind.as_deref() == Some("staff")
-        && i.tenant_id == Some(s.issuer_tenant_id)
-        && i.email.as_deref() == Some(&s.email)
-        && i.exp
-            .is_some_and(|v| v > now && v <= s.expires_at.timestamp());
-    if !valid {
+    let failed = staff_mismatch(&i, &s, auth.origin(), now);
+    if let Some(field) = failed {
+        if field == "active" {
+            log_refused(2, "connect check said inactive");
+        } else {
+            log_refused(
+                3 + mismatch_slot(field),
+                &format!("connect check mismatch {field}"),
+            );
+        }
+    }
+    if failed.is_some() {
         sqlx::query("UPDATE connect_identity_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE token_hash=$1")
             .bind(token_hash).execute(&auth.db).await?;
         return Err(Error::Unauthorized);
@@ -310,6 +320,58 @@ pub(crate) async fn authenticate_staff_hash(
         iat: now,
         exp: s.expires_at.timestamp(),
     }))
+}
+
+/// Which check on a Connect answer failed, by field name only; None when the session is good.
+fn staff_mismatch(
+    i: &Introspection,
+    s: &StaffSession,
+    origin: &str,
+    now: i64,
+) -> Option<&'static str> {
+    if !i.active {
+        Some("active")
+    } else if i.jti != Some(s.grant_id) {
+        Some("jti")
+    } else if i.aud.as_deref() != Some(origin) {
+        Some("aud")
+    } else if i.kind.as_deref() != Some("staff") {
+        Some("kind")
+    } else if i.tenant_id != Some(s.issuer_tenant_id) {
+        Some("tenant")
+    } else if i.email.as_deref() != Some(&s.email) {
+        Some("email")
+    } else if !i
+        .exp
+        .is_some_and(|v| v > now && v <= s.expires_at.timestamp())
+    {
+        Some("exp")
+    } else {
+        None
+    }
+}
+fn mismatch_slot(field: &str) -> usize {
+    ["jti", "aud", "kind", "tenant", "email", "exp"]
+        .iter()
+        .position(|f| *f == field)
+        .unwrap_or(0)
+}
+
+static REFUSED: [std::sync::atomic::AtomicU64; 16] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 16];
+/// One log line per refusal reason, at most one per ten seconds each: a fixed reason word and
+/// nothing about who asked.
+pub(crate) fn log_refused(slot: usize, reason: &str) {
+    let now = Utc::now().timestamp().max(1) as u64;
+    if refusal_gate(&REFUSED[slot.min(15)], now) {
+        eprintln!("staff sign-in refused: {reason}");
+    }
+}
+pub(crate) fn refusal_gate(last: &std::sync::atomic::AtomicU64, now: u64) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    let before = last.load(Relaxed);
+    (before == 0 || now.saturating_sub(before) >= 10)
+        && last.compare_exchange(before, now, Relaxed, Relaxed).is_ok()
 }
 
 pub(crate) async fn patient_session(
@@ -379,5 +441,52 @@ mod tests {
             exp: now + 60,
         };
         assert!(validate(&c, &c.iss, &c.aud, now).is_err());
+    }
+
+    #[test]
+    fn names_the_failed_check_and_rate_limits_each_reason() {
+        let now = 1_000_000;
+        let grant = Uuid::new_v4();
+        let tenant = Uuid::new_v4();
+        let session = StaffSession {
+            tenant_id: Uuid::new_v4(),
+            issuer_tenant_id: tenant,
+            user_id: Uuid::new_v4(),
+            grant_id: grant,
+            issuer: "https://connect.example".into(),
+            audience: "https://ehr.example".into(),
+            expires_at: DateTime::from_timestamp(now + 600, 0).unwrap(),
+            role: "owner".into(),
+            email: "staff@example.test".into(),
+        };
+        let good = || Introspection {
+            active: true,
+            jti: Some(grant),
+            aud: Some("https://ehr.example".into()),
+            kind: Some("staff".into()),
+            tenant_id: Some(tenant),
+            email: Some("staff@example.test".into()),
+            patient_ehr_puuid: None,
+            exp: Some(now + 300),
+        };
+        let check = |i: &Introspection| staff_mismatch(i, &session, "https://ehr.example", now);
+        assert_eq!(check(&good()), None);
+        let mut i = good();
+        i.active = false;
+        assert_eq!(check(&i), Some("active"));
+        let mut i = good();
+        i.kind = Some("patient".into());
+        assert_eq!(check(&i), Some("kind"));
+        let mut i = good();
+        i.email = Some("other@example.test".into());
+        assert_eq!(check(&i), Some("email"));
+        let mut i = good();
+        i.exp = Some(now - 1);
+        assert_eq!(check(&i), Some("exp"));
+
+        let last = std::sync::atomic::AtomicU64::new(0);
+        assert!(refusal_gate(&last, now as u64));
+        assert!(!refusal_gate(&last, now as u64 + 9));
+        assert!(refusal_gate(&last, now as u64 + 10));
     }
 }
