@@ -79,5 +79,23 @@ assert.equal(calls.at(-1)[3],4);
 // A claim released since the page was drawn is refused in plain words.
 ctx.api=async()=>({claim:{id:'claim-1',status:'ready',version:5,content:{}}});
 await assert.rejects(vm.runInContext('chargePriorAuthorizationSave',ctx)('claim-1','X'),/already been released/);
+// The Billing summary's Charges card carries the box for a draft claim, with its own Save.
+const {visitSummary}=require('./visit_billing_fixture.cjs');
+const postedAccount={id:'account',status:'posted',version:3,patient_id:'patient',total_cents:28000,content:{visit_id:'visit-a',service_date:'2026-11-13',coverage_id:'cov',lines:[{code:'99213',units:1,amount_cents:28000,diagnosis_codes:['M62.81']}],claim_details:{prior_authorization_number:'PA-SYN-1'}}};
+ctx.workspace.billing.accounts=[postedAccount];ctx.activeVisit={id:'visit-a',appointment_id:'appt-a',status:'signed'};
+ctx.encounterChargeAccount=()=>postedAccount;
+const column=claim_=>vm.runInContext('visitBillingColumn',ctx)(visitSummary({state:'send_claim',claim:claim_}),{canCreate:true,canWrite:true,claimsAllowed:true});
+const cardDraft=column({id:'claim-1',status:'draft',content:{encounter:{prior_authorization_number:'PA-SYN-1'}}});
+assert.match(cardDraft,/data-prior-auth-save/,'the Charges card has the box and its Save for a draft claim');
+assert.match(cardDraft,/Prior authorization PA-SYN-1/,'and the row names the number');
+assert.doesNotMatch(column({id:'claim-1',status:'submitted',content:{}}),/data-prior-auth-save/);
+assert.doesNotMatch(column({id:'claim-1',status:'ready',content:{}}),/data-prior-auth-save/);
+
+// The charge editor for posted charges (a correction) never offers it for change.
+ctx.accountEditor(postedAccount,null,true,{correction:true});
+const editor=nodes['encounter-billing-editor'].innerHTML;
+assert.match(editor,/name="cd_prior_authorization_number"[^>]*readonly/,'read-only in the correction editor');
+assert.match(editor,/Change it from the Charges card/);
+assert.equal(vm.runInContext('encounterClaimDetailsValue',ctx)({elements:new Proxy({},{get:(_,k)=>k==='cd_place_of_service'?{value:'11'}:k==='cd_prior_authorization_number'?{value:'PA-SYN-1'}:String(k).startsWith('cd_')?{value:''}:undefined})}).prior_authorization_number,'PA-SYN-1','the value it carries is the stored one, unchanged');
 console.log('prior authorization field checks ok');
 })().catch(e=>{console.error(e);process.exit(1);});
