@@ -75,10 +75,10 @@ async function main(){
  console.log('PASS Procedure appears below Plan in the editor with its hint and stays optional');
 
  assert.deepEqual(f.requests.map(r=>[r.method,r.path]),[['GET','/api/v1/visits/visit-1/previous-note']]);
- assert.match(f.bar(),/^<button type="button" class="primary" data-note-same="all">Same as last visit<\/button><span class="muted">From your visit on [^<]*2026<\/span>/,'offered prominently on an empty note, naming the source');
+ assert.match(f.bar(),/^<button type="button" class="primary" data-note-same="all">Same as last encounter<\/button><span class="muted">From your visit on [^<]*2026<\/span>/,'offered prominently on an empty note, naming the source');
  assert.equal(f.nodes.get('note-previous').hidden,false);
  for(const key of sections)assert.equal(f.nodes.get('note-same-'+key).hidden,false,key+' has its own link');
- assert.match(note,/id="note-same-plan" data-note-same="plan" aria-label="Same as last visit: Plan" hidden>Same as last visit</);
+ assert.match(note,/id="note-same-plan" data-note-same="plan" aria-label="Same as last encounter: Plan" hidden>Same as last encounter</);
  assert.equal(f.nodes.get('note-source-line').hidden,true);
  await f.click({noteSame:'all'});
  assert.equal(f.asked.length,0,'one click fills an empty note without a question');
@@ -152,7 +152,7 @@ async function main(){
  f.context.testPrevious=source();await f.click({noteRetry:''});assert.match(f.bar(),/data-note-same="all"/);assert.equal(f.requests.length,2);
  f=fixture({clinician:'someone-else',previous:source({clinician_id:'someone-else',clinician_name:'Dr. Assigned',same_clinician:true,own:false})});await f.settle();
  assert.deepEqual(f.requests.map(r=>r.path).sort(),['/api/v1/visits/visit-1/note-authorship','/api/v1/visits/visit-1/previous-note'],'anyone who may draft is offered the earlier note');
- assert.match(f.bar(),/data-note-same="all">Same as last visit<\/button><span class="muted">From Dr\. Assigned’s visit on /,'the assigned clinician’s earlier note is named as theirs, not as the covering writer’s');
+ assert.match(f.bar(),/data-note-same="all">Same as last encounter<\/button><span class="muted">From Dr\. Assigned’s visit on /,'the assigned clinician’s earlier note is named as theirs, not as the covering writer’s');
  await f.click({noteSame:'all'});assert.deepEqual(text(f),earlier);
  for(const role of ['front_desk','read_only']){
   f=fixture({role,clinician:'someone-else'});await f.settle();
