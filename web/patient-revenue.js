@@ -357,7 +357,7 @@ state.reviewCard=state.data?.summary||null;node.innerHTML=encounterRevenueStatus
 async function loadEncounterRevenueStatus(account,force=false){
  const visit=typeof activeVisit!=='undefined'?activeVisit:null;if(!visit)return;
  let state=encounterRevenueState;
- if(state.patient!==selected||state.identity!==me||state.visit!==visit.id||state.account!==(account?.id||null)||state.version!==(account?.version||null)){if(typeof clearTimeout==='function')clearTimeout(state.timer);state={patient:selected,identity:me,visit:visit.id,account:account?.id||null,version:account?.version||null,pending:null,data:null,loadedAt:0,filter:'all',prepared:false,review:null,reviewCard:null};encounterRevenueState=state;}
+ if(state.patient!==selected||state.identity!==me||state.visit!==visit.id||state.account!==(account?.id||null)||state.version!==(account?.version||null)){if(typeof clearTimeout==='function')clearTimeout(state.timer);const sameVisit=state.patient===selected&&state.identity===me&&state.visit===visit.id;state={reviewOpen:sameVisit&&state.reviewOpen===true,patient:selected,identity:me,visit:visit.id,account:account?.id||null,version:account?.version||null,pending:null,data:null,loadedAt:0,filter:'all',prepared:false,review:null,reviewCard:null};encounterRevenueState=state;}
  const current=()=>encounterRevenueState===state&&selected===state.patient&&me===state.identity&&activeVisit?.id===state.visit&&(encounterChargeAccount()?.id||null)===state.account;
  const render=()=>paintEncounterRevenue(state,current);
  if(state.pending){render();return state.pending;}
@@ -576,6 +576,7 @@ function renderEncounterRevenue(){
   }else host.innerHTML=(diagnosesHost?diagnosesHost.outerHTML:'')+bodyMarkup;
  // A chart opened on another page keeps its panel empty; the billing step re-opens it.
  if(chartSection!=='visits'&&typeof visitReviewClose==='function')visitReviewClose();
+ else if(typeof visitReviewRestore==='function')visitReviewRestore();
  if(account&&typeof chartSection!=='undefined'&&chartSection==='visits')showBillingAccount(account.id,false);
  // Whether this encounter's charges are on their way onto the table filled in from the patient's
  // last visit. An encounter opened on its billing step with no charges yet is asked first, because
@@ -747,6 +748,7 @@ document.addEventListener('click',event=>{
  if(button.hasAttribute('data-refresh-revenue')){event.preventDefault();loadEncounterRevenueStatus(encounterChargeAccount(),true);return;}
  if(button.hasAttribute('data-visit-collect')){event.preventDefault();openVisitCollect();return;}
  if(button.hasAttribute('data-visit-collect-close')){event.preventDefault();if(collectDialog){sheetClose(collectDialog);return;}const panel=$('visit-billing-collect');if(panel)panel.hidden=true;return;}
+ if(button.hasAttribute('data-prior-auth-save')){event.preventDefault();const box=button.closest('[data-prior-auth-edit]'),input=box?.querySelector?.('input');if(!box||!input)return;button.disabled=true;run(async()=>{try{await chargePriorAuthorizationSave(box.dataset.claim,input.value);notice('Prior authorization number saved.');await loadEncounterRevenueStatus(encounterChargeAccount(),true);}finally{button.disabled=false;}});return;}
  if(button.hasAttribute('data-visit-claim-resend')){event.preventDefault();button.disabled=true;button.textContent='Sending…';run(()=>visitClaimResend(button));return;}
  if(button.dataset.visitClaimPrepare!==undefined){event.preventDefault();button.disabled=true;run(()=>prepareVisitClaim(button.dataset.visitClaimPrepare==='again'));return;}
  if(button.dataset.visitClaimDirectSend){event.preventDefault();run(()=>sendVisitClaimNow(button.dataset.visitClaimDirectSend,button));return;}

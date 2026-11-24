@@ -595,10 +595,30 @@ function chargeRowData(row){return {
 // The charge editor can be reached without the encounter billing card loaded, so the service date
 // is worded here the same plain way staff see it elsewhere in billing.
 function chargeServiceDate(value){return typeof visitBillingDate==='function'?visitBillingDate(value):typeof displayDate==='function'?displayDate(value):String(value||'');}
+// The one prior authorization number a claim carries stays editable until the claim has gone out:
+// a draft claim takes it here, saved onto the claim itself. Anything sent already, or released and
+// waiting, shows it as plain text, and a correction goes through the corrected claim.
+function chargePriorAuthorizationFinishedMarkup(a){
+ const claim=typeof encounterRevenueState!=='undefined'?encounterRevenueState.data?.summary?.claim:null;
+ const number=String((claim?.content?.encounter?.prior_authorization_number)??a.content.claim_details?.prior_authorization_number??'').trim();
+ if(claim?.id&&claim.status==='draft'&&billingCan())return `<div class="charge-prior-auth" data-prior-auth-edit data-claim="${esc(claim.id)}"><label>Prior authorization number<input name="prior_authorization_number" value="${esc(number)}" maxlength="50" autocomplete="off"></label><button type="button" data-prior-auth-save>Save</button><span class="muted">Sent with the claim (box 23). One number per claim.</span></div>`;
+ return number?`<p class="charge-prior-auth-line">Prior authorization number <b>${esc(number)}</b></p>`:'';
+}
+// Saved onto the draft claim the way every other claim edit is: read it back for its version, put
+// the whole content back with the number changed, and let the claim be checked again.
+async function chargePriorAuthorizationSave(claimId,value){
+ const fresh=(await api(`/api/v1/billing/claims/${encodeURIComponent(claimId)}`)).claim;
+ if(!fresh||fresh.status!=='draft')throw new Error('This claim has already been released. Send a corrected claim to change the number.');
+ const number=String(value||'').trim().slice(0,50),encounter={...(fresh.content.encounter||{})};
+ if(number)encounter.prior_authorization_number=number;else delete encounter.prior_authorization_number;
+ const content={...fresh.content,encounter};
+ if(!Object.keys(encounter).length)delete content.encounter;
+ return api(`/api/v1/billing/claims/${encodeURIComponent(claimId)}`,'PUT',{content,reason:'Prior authorization number entered on the encounter'},fresh.version);
+}
 function chargeTableFinishedMarkup(a){
  const state=a.status==='posted'?'These charges are final':'These charges were removed';
  const correction=billingCan()&&a.status==='posted'&&!a.source_history_id&&a.content.visit_id?'<button type="button" data-edit-charges>Edit charges</button>':'';
- return `<section class="charge-table-finished"><div class="section-head"><div><h3>Charges for this encounter</h3><p class="muted">${esc(chargeServiceDate(a.content.service_date))} · ${state}</p></div></div>${chargeTable(a.content.lines)}${a.content.claim_details?.prior_authorization_number?`<p class="charge-prior-auth-line">Prior authorization number <b>${esc(a.content.claim_details.prior_authorization_number)}</b></p>`:''}<div class="actions"><button type="button" data-visit-charges-overview>Go to visit billing</button>${correction}</div></section>`;
+ return `<section class="charge-table-finished"><div class="section-head"><div><h3>Charges for this encounter</h3><p class="muted">${esc(chargeServiceDate(a.content.service_date))} · ${state}</p></div></div>${chargeTable(a.content.lines)}${chargePriorAuthorizationFinishedMarkup(a)}<div class="actions"><button type="button" data-visit-charges-overview>Go to visit billing</button>${correction}</div></section>`;
 }
 function chargeTableAllowed(a){
  // The table is the place charges are worked on: an encounter's draft account, entered by hand.

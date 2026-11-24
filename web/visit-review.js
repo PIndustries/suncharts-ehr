@@ -250,11 +250,14 @@ function visitReviewPaint(ctx={}){
   host.innerHTML=visitReviewPanelMarkup(summary,visitReviewContext({...carried,...ctx}));
 }
 function visitReviewOpen(ctx={}){
-  const host=visitReviewHost();if(!host)return;
   // The panel lives on the encounter's Billing tab. Pressed from the Note or History tab it first
-  // moves there, with the tab switch the tab buttons themselves use, so it is never drawn unseen.
+  // moves there, with the tab switch the tab buttons themselves use. That switch can rebuild the
+  // billing markup, so the panel is looked up only afterwards, never held across it.
   const page=typeof $==='function'?$('encounter-revenue'):null;
   if(page?.dataset?.invoiceTab!=='billing'&&typeof invoiceTabSet==='function')invoiceTabSet('billing',false);
+  const host=visitReviewHost();if(!host)return;
+  // Remembered for this encounter so any later rebuild of the Billing area puts the panel back.
+  encounterRevenueState.reviewOpen=true;
   encounterRevenueState.review=null;
   const summary=encounterRevenueState.data?.summary;
   host.hidden=false;host.innerHTML=summary?visitReviewPanelMarkup(summary,visitReviewContext(ctx)):'<p class="muted">Loading the review…</p>';
@@ -270,7 +273,15 @@ function visitReviewContext(extra={}){
   const mayDraft=typeof canDraftNote==='function'?canDraftNote(visit)===true:true;
   return {canSign:!!(visit&&visit.status!=='signed'&&maySign&&mayDraft),...visitBillingStateContext(),...extra};
 }
+// Called where the Billing markup is rebuilt: a panel that was open stays open, filled in again.
+function visitReviewRestore(){
+  const host=visitReviewHost();
+  if(!host||encounterRevenueState.reviewOpen!==true)return;
+  host.hidden=false;
+  if(encounterRevenueState.data?.summary)host.innerHTML=visitReviewPanelMarkup(encounterRevenueState.data.summary,visitReviewContext());
+}
 function visitReviewClose(){
+  encounterRevenueState.reviewOpen=false;
   const host=visitReviewHost();if(!host)return;
   host.hidden=true;host.replaceChildren();
   if(typeof chargeTableNextRefresh==='function')chargeTableNextRefresh();

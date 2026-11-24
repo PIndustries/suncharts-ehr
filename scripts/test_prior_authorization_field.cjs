@@ -13,6 +13,7 @@ const nodes={},ctx={console,Date,Intl,URL,URLSearchParams,crypto:{randomUUID:()=
  notice(){},run:fn=>fn(),showChartSection(){},setEncounterSection(){}};
 vm.createContext(ctx);
 for(const f of ['billing.js','fees.js','visit-billing.js'])vm.runInContext(fs.readFileSync('web/'+f,'utf8'),ctx);
+(async()=>{
 const markup=d=>vm.runInContext('encounterClaimDetailsMarkup',ctx)(d,'authorization');
 const head=vm.runInContext('encounterClaimDetailsMarkup',ctx)({prior_authorization_number:'PA-SYN-9'},'head');
 
@@ -49,4 +50,34 @@ assert.doesNotMatch(finished,/<input[^>]*prior_authorization/);
 // No stylesheet rule hides it while procedures are being edited.
 const css=fs.readFileSync('web/visit-billing.css','utf8');
 assert.ok(!/data-billing-part="codes"\][^{]*data-charge-prior-auth[^{]*\{display:none/.test(css));
+// Charges posted, claim not sent: the box stays editable and saves onto the draft claim.
+const posted=claim_=>{
+ ctx.encounterRevenueState={data:{summary:{claim:claim_}}};
+ return vm.runInContext('chargeTableFinishedMarkup',ctx)({status:'posted',content:{visit_id:'visit-a',service_date:'2026-11-13',lines:[],claim_details:{}}});
+};
+const draft=posted({id:'claim-1',status:'draft',content:{encounter:{prior_authorization_number:'PA-SYN-1'}}});
+assert.match(draft,/data-prior-auth-edit data-claim="claim-1"/);
+assert.match(draft,/<input name="prior_authorization_number" value="PA-SYN-1" maxlength="50"/);
+assert.match(draft,/data-prior-auth-save>Save</);
+// A claim already released or sent is plain text, shown only when set.
+for(const status of ['ready','submitted','accepted','rejected','adjudicated']){
+ const html=posted({id:'claim-1',status,content:{encounter:{prior_authorization_number:'PA-SYN-1'}}});
+ assert.doesNotMatch(html,/<input|data-prior-auth-edit/,`${status}: read-only`);
+ assert.match(html,/Prior authorization number <b>PA-SYN-1<\/b>/);
+}
+assert.doesNotMatch(posted({id:'claim-1',status:'submitted',content:{}}),/Prior authorization/,'nothing shown when blank');
+// Saving reads the claim back for its version and puts the content back with only the number changed.
+const calls=[];
+ctx.api=async(url,method='GET',body)=>{calls.push([url,method,body]);return method==='GET'?{claim:{id:'claim-1',status:'draft',version:4,content:{billing_npi:'1234567890',encounter:{claim_codes:'X'}}}}:{claim:{}};};
+await vm.runInContext('chargePriorAuthorizationSave',ctx)('claim-1',' PA-SYN-2 ');
+assert.equal(calls[1][1],'PUT');assert.equal(calls[1][0],'/api/v1/billing/claims/claim-1');
+assert.equal(JSON.stringify(calls[1][2].content),JSON.stringify({billing_npi:'1234567890',encounter:{claim_codes:'X',prior_authorization_number:'PA-SYN-2'}}));
+// The version goes as If-Match through api's fourth argument.
+ctx.api=async(url,method='GET',body,version)=>{calls.push([url,method,body,version]);return method==='GET'?{claim:{id:'claim-1',status:'draft',version:4,content:{}}}:{};};
+await vm.runInContext('chargePriorAuthorizationSave',ctx)('claim-1','PA-SYN-3');
+assert.equal(calls.at(-1)[3],4);
+// A claim released since the page was drawn is refused in plain words.
+ctx.api=async()=>({claim:{id:'claim-1',status:'ready',version:5,content:{}}});
+await assert.rejects(vm.runInContext('chargePriorAuthorizationSave',ctx)('claim-1','X'),/already been released/);
 console.log('prior authorization field checks ok');
+})().catch(e=>{console.error(e);process.exit(1);});
