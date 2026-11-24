@@ -367,7 +367,10 @@ async fn create_with(
     };
     body.as_object_mut().unwrap().remove("subscription_id");
     body.as_object_mut().unwrap().remove("cancel_kind");
-    body.as_object_mut().unwrap().remove("price_id");
+    if kind == "price_retire" {
+        // The retire endpoint takes the price in its path, not in the body.
+        body.as_object_mut().unwrap().remove("price_id");
+    }
     body.as_object_mut()
         .unwrap()
         .remove("membership_request_id");
