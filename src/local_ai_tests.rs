@@ -1677,3 +1677,6 @@ async fn the_services_migration_applies_over_an_existing_database_with_a_waiting
         1
     );
 }
+
+#[path = "local_ai_bakeoff_tests.rs"]
+mod bakeoff;
