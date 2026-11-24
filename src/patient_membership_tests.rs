@@ -33,6 +33,39 @@ impl Fake {
         json!({"id":"sub_synthetic","status":status,"currency":"usd","created":1793491200,"cancel_at_period_end":cancel,"items":[{"id":"si_synthetic","quantity":1,"unit_amount":2500,"interval":"month","interval_count":1,"current_period_start":1793491200,"current_period_end":1796083200}]})
     }
 }
+/// The keys each payment-service write route accepts (it rejects unknown keys and missing ones).
+fn strict_body(method: &Method, path: &str, body: &Value) -> std::result::Result<(), &'static str> {
+    const BIND: [&str; 4] = ["account_id", "livemode", "remote_tenant_id", "request_id"];
+    let extra: &[&str] = if *method != Method::POST {
+        return Ok(());
+    } else if path == "/membership-prices" {
+        &[
+            "name",
+            "amount_cents",
+            "currency",
+            "interval",
+            "interval_count",
+            "approved",
+            "approval_reason",
+        ]
+    } else if path.ends_with("/membership-checkouts") {
+        &["price_id", "return_url", "consent"]
+    } else if path.ends_with("/cancel-at-period-end") {
+        &["expected_cancel_at_period_end"]
+    } else if path.ends_with("/cancel-now") || path.ends_with("/retire") {
+        &[]
+    } else {
+        return Ok(());
+    };
+    let Some(have) = body.as_object() else {
+        return Err("Synthetic 422: body is not an object");
+    };
+    let want: Vec<&str> = BIND.iter().chain(extra.iter()).copied().collect();
+    if have.len() != want.len() || !want.iter().all(|k| have.contains_key(*k)) {
+        return Err("Synthetic 422: body keys do not match the payment service");
+    }
+    Ok(())
+}
 #[async_trait]
 impl Source for Fake {
     async fn config(&self, _: &PgPool, _: Uuid, _: &Settings) -> Result<Credentials> {
@@ -110,6 +143,11 @@ impl Source for Fake {
             out["next_cursor"] = Value::Null;
             out["creation_available"] = json!(true);
             return Ok(out);
+        }
+        if let Some(b) = &body {
+            if let Err(why) = strict_body(&method, base, b) {
+                return Err(Error::Invalid(why));
+            }
         }
         let request = if let Some(b) = &body {
             serde_json::from_value(b["request_id"].clone()).unwrap()
@@ -1056,4 +1094,27 @@ async fn membership_price_retire_follows_the_payment_mode_gate_of_price_creation
     let stored: Option<Value> = sqlx::query_scalar("SELECT provider_evidence FROM patient_membership_operations WHERE tenant_id=$1 AND kind='price_retire'").bind(f.actor.tenant_id).fetch_one(&f.pool).await.unwrap();
     assert!(stored.is_none());
     f.untouched().await;
+}
+
+#[tokio::test]
+async fn membership_start_forwards_price_consent_and_binding() {
+    let f = Fixture::new().await;
+    let request = Uuid::new_v4();
+    let out = value(f.create_member(request).await.unwrap()).await;
+    assert_eq!(out["membership"]["status"], "open");
+    let (path, body) = f.fake.bodies.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(
+        path,
+        format!("/patient-billing/{}/membership-checkouts", f.patient)
+    );
+    assert_eq!(body["price_id"], json!(f.fake.price));
+    assert_eq!(body["consent"], json!(true));
+    assert_eq!(body["request_id"], json!(request));
+    assert_eq!(body["account_id"], "acct_synthetic");
+    assert_eq!(body["livemode"], false);
+    assert_eq!(body["remote_tenant_id"], json!(f.actor.tenant_id));
+    assert!(body["return_url"]
+        .as_str()
+        .unwrap()
+        .contains(&request.to_string()));
 }

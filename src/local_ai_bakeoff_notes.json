@@ -1,0 +1,598 @@
+[
+ {
+  "id": "neuro_dystonia",
+  "trap": false,
+  "sections": {
+   "assessment": "Cervical dystonia with head turning to the left and neck pulling, stable response to treatment.",
+   "plan": "Continue botulinum toxin every 12 weeks. Return in 3 months.",
+   "procedure": "Onabotulinumtoxin A 155 units injected today into the left splenius capitis, sternocleidomastoid and trapezius muscles. Patient tolerated well."
+  },
+  "problems": [
+   {
+    "name": "cervical dystonia",
+    "codes": [
+     "G24.3",
+     "G24.1",
+     "G24.8",
+     "G24.9",
+     "M43.6"
+    ]
+   }
+  ],
+  "must_not": [],
+  "services": [
+   "botulinum|onabotulinum|botox"
+  ],
+  "quantity": 155
+ },
+ {
+  "id": "neuro_migraine",
+  "trap": false,
+  "sections": {
+   "subjective": "Three months of throbbing right sided headaches with visual zigzag lines before the pain, nausea and light sensitivity. Lasts about 6 hours. Two per month.",
+   "objective": "Neurological exam normal.",
+   "assessment": "Migraine with aura, not intractable, no status migrainosus.",
+   "plan": "Start rizatriptan as needed. Headache diary."
+  },
+  "problems": [
+   {
+    "name": "migraine with aura",
+    "codes": [
+     "G43.109",
+     "G43.009",
+     "G43.709",
+     "G43.909",
+     "R51.9"
+    ]
+   }
+  ],
+  "must_not": [],
+  "services": [],
+  "quantity": null
+ },
+ {
+  "id": "pc_htn_dm_lipid",
+  "trap": false,
+  "sections": {
+   "assessment": "1. Essential hypertension, blood pressure 148/92 on current dose. 2. Type 2 diabetes mellitus without complications. 3. Hyperlipidemia.",
+   "plan": "Increase lisinopril. Continue metformin. Continue atorvastatin. Recheck in 3 months.",
+   "procedure": "Point of care hemoglobin A1c performed today: 7.4 percent."
+  },
+  "problems": [
+   {
+    "name": "essential hypertension",
+    "codes": [
+     "I10",
+     "I11.9",
+     "I15.9",
+     "I12.9",
+     "R03.0"
+    ]
+   },
+   {
+    "name": "type 2 diabetes",
+    "codes": [
+     "E11.9",
+     "E11.65",
+     "E11.8",
+     "E10.9",
+     "R73.9"
+    ]
+   },
+   {
+    "name": "hyperlipidemia",
+    "codes": [
+     "E78.5",
+     "E78.00",
+     "E78.2",
+     "E78.49",
+     "E78.1"
+    ]
+   }
+  ],
+  "must_not": [],
+  "services": [
+   "a1c|hemoglobin"
+  ],
+  "quantity": null
+ },
+ {
+  "id": "ortho_knee_oa",
+  "trap": false,
+  "sections": {
+   "assessment": "Primary osteoarthritis of the right knee with pain on walking and stairs.",
+   "plan": "Home exercises. Review in 6 weeks.",
+   "procedure": "Right knee prepped with chlorhexidine. Intra-articular injection of triamcinolone 40 mg with lidocaine into the right knee by lateral approach. No complications."
+  },
+  "problems": [
+   {
+    "name": "primary osteoarthritis right knee",
+    "codes": [
+     "M17.11",
+     "M17.0",
+     "M17.12",
+     "M17.9",
+     "M25.561"
+    ]
+   }
+  ],
+  "must_not": [],
+  "services": [
+   "inject|triamcinolone"
+  ],
+  "quantity": 40
+ },
+ {
+  "id": "psych_mdd",
+  "trap": false,
+  "sections": {
+   "subjective": "Low mood, poor sleep and little interest for six weeks. Prior episodes in the past. No suicidal thoughts.",
+   "assessment": "Major depressive disorder, recurrent, moderate.",
+   "plan": "Increase sertraline to 100 mg. Refer for therapy.",
+   "procedure": "Psychotherapy 30 minutes provided today, cognitive behavioural techniques."
+  },
+  "problems": [
+   {
+    "name": "major depressive disorder recurrent moderate",
+    "codes": [
+     "F33.1",
+     "F33.0",
+     "F33.2",
+     "F32.1",
+     "F34.1"
+    ]
+   }
+  ],
+  "must_not": [],
+  "services": [
+   "psychotherapy"
+  ],
+  "quantity": null
+ },
+ {
+  "id": "psych_gad",
+  "trap": false,
+  "sections": {
+   "subjective": "Constant worry about many things for over a year, restlessness, muscle tension, trouble sleeping.",
+   "assessment": "Generalized anxiety disorder.",
+   "plan": "Start escitalopram. Follow up in 4 weeks."
+  },
+  "problems": [
+   {
+    "name": "generalized anxiety disorder",
+    "codes": [
+     "F41.1",
+     "F41.9",
+     "F41.0",
+     "F40.00",
+     "F43.22"
+    ]
+   }
+  ],
+  "must_not": [],
+  "services": [],
+  "quantity": null
+ },
+ {
+  "id": "derm_lesion",
+  "trap": false,
+  "sections": {
+   "assessment": "Seborrheic keratosis of the back, inflamed by clothing rubbing.",
+   "plan": "Wound care instructions given.",
+   "procedure": "Shave removal of one 8 mm seborrheic keratosis from the upper back after local anaesthetic. Sent to pathology."
+  },
+  "problems": [
+   {
+    "name": "seborrheic keratosis",
+    "codes": [
+     "L82.0",
+     "L82.1",
+     "D22.5",
+     "L57.0",
+     "D23.5"
+    ]
+   }
+  ],
+  "must_not": [],
+  "services": [
+   "shave|removal|excision"
+  ],
+  "quantity": null
+ },
+ {
+  "id": "peds_otitis",
+  "trap": false,
+  "sections": {
+   "subjective": "Four year old with two days of left ear pain and fever.",
+   "objective": "Left tympanic membrane red and bulging with pus behind it, no perforation. Right ear normal.",
+   "assessment": "Acute suppurative otitis media of the left ear without rupture.",
+   "plan": "Amoxicillin for 10 days. Return if no better in 48 hours."
+  },
+  "problems": [
+   {
+    "name": "acute suppurative otitis media left ear",
+    "codes": [
+     "H66.002",
+     "H66.92",
+     "H65.192",
+     "H66.001",
+     "H65.92"
+    ]
+   }
+  ],
+  "must_not": [],
+  "services": [],
+  "quantity": null
+ },
+ {
+  "id": "cardio_af",
+  "trap": false,
+  "sections": {
+   "assessment": "Persistent atrial fibrillation, rate controlled. On long term apixaban for stroke prevention.",
+   "plan": "Continue apixaban and metoprolol. Echocardiogram to be ordered next month.",
+   "procedure": "12-lead electrocardiogram performed today showing atrial fibrillation at 76 beats per minute."
+  },
+  "problems": [
+   {
+    "name": "atrial fibrillation",
+    "codes": [
+     "I48.19",
+     "I48.91",
+     "I48.0",
+     "I48.20",
+     "I49.89"
+    ]
+   },
+   {
+    "name": "long term anticoagulant use",
+    "codes": [
+     "Z79.01",
+     "Z79.02",
+     "Z79.82",
+     "Z79.899",
+     "Z92.82"
+    ]
+   }
+  ],
+  "must_not": [],
+  "services": [
+   "electrocardiogram|ecg|ekg"
+  ],
+  "quantity": null
+ },
+ {
+  "id": "trap_negated",
+  "trap": true,
+  "sections": {
+   "subjective": "Five days of cough and sore throat, worse at night.",
+   "objective": "Lungs with scattered wheeze. Chest X-ray 2 views done today: no evidence of pneumonia.",
+   "assessment": "Acute bronchitis. No evidence of pneumonia.",
+   "plan": "Rest, fluids, inhaler as needed."
+  },
+  "problems": [
+   {
+    "name": "acute bronchitis",
+    "codes": [
+     "J20.9",
+     "J40",
+     "J06.9",
+     "R05.9",
+     "J18.9"
+    ]
+   }
+  ],
+  "must_not": [
+   "^J1[2-8]"
+  ],
+  "services": [
+   "x-ray|xray|radiograph|chest"
+  ],
+  "quantity": null
+ },
+ {
+  "id": "trap_family",
+  "trap": true,
+  "sections": {
+   "subjective": "Follow up for high blood pressure. Mother had breast cancer. Father has type 2 diabetes. Patient has neither.",
+   "assessment": "Essential hypertension, controlled on amlodipine.",
+   "plan": "Continue amlodipine. Annual review."
+  },
+  "problems": [
+   {
+    "name": "essential hypertension",
+    "codes": [
+     "I10",
+     "I15.9",
+     "R03.0",
+     "I11.9",
+     "I12.9"
+    ]
+   }
+  ],
+  "must_not": [
+   "^C50",
+   "^E1[0-4]",
+   "^Z80",
+   "^Z83"
+  ],
+  "services": [],
+  "quantity": null
+ },
+ {
+  "id": "trap_rule_out",
+  "trap": true,
+  "sections": {
+   "subjective": "Two hours of left sided chest pain after lifting boxes, worse on movement.",
+   "objective": "Chest wall tender to touch. Vital signs normal.",
+   "assessment": "Chest pain, unspecified. Rule out pulmonary embolism and myocardial infarction.",
+   "plan": "Troponin pending. Return precautions given.",
+   "procedure": "12-lead electrocardiogram performed today: normal sinus rhythm."
+  },
+  "problems": [
+   {
+    "name": "chest pain",
+    "codes": [
+     "R07.9",
+     "R07.89",
+     "R07.2",
+     "R07.1"
+    ]
+   }
+  ],
+  "must_not": [
+   "^I26",
+   "^I2[12]\\."
+  ],
+  "services": [
+   "electrocardiogram|ecg|ekg"
+  ],
+  "quantity": null
+ },
+ {
+  "id": "neuro_chronic_migraine_toxin",
+  "trap": false,
+  "sections": {
+   "assessment": "Chronic migraine without aura, not intractable, without status migrainosus. Good response to preventive injections.",
+   "plan": "Repeat preventive injections in 12 weeks. Continue headache diary.",
+   "procedure": "OnabotulinumtoxinA 155 units injected today across the forehead, temples, back of the head, neck and shoulder muscles following the standard migraine protocol. Patient tolerated well."
+  },
+  "problems": [
+   {
+    "name": "chronic migraine without aura",
+    "codes": [
+     "G43.709",
+     "G43.719",
+     "G43.909",
+     "G43.701"
+    ]
+   }
+  ],
+  "must_not": [],
+  "services": [
+   "botulinum|onabotulinum|botox|toxin"
+  ],
+  "quantity": 155
+ },
+ {
+  "id": "neuro_hemifacial_spasm_toxin",
+  "trap": false,
+  "sections": {
+   "assessment": "Hemifacial spasm on the left, twitching of the eyelid and cheek for two years, stable on treatment.",
+   "plan": "Repeat injections every 3 months.",
+   "procedure": "IncobotulinumtoxinA 40 units injected today into the left orbicularis oculi, zygomaticus and platysma muscles. No complications."
+  },
+  "problems": [
+   {
+    "name": "hemifacial spasm",
+    "codes": [
+     "G51.32",
+     "G51.39",
+     "G51.8",
+     "G51.9"
+    ]
+   }
+  ],
+  "must_not": [
+   "^G51\\.31",
+   "^G51\\.33"
+  ],
+  "services": [
+   "botulinum|incobotulinum|botox|toxin"
+  ],
+  "quantity": 40
+ },
+ {
+  "id": "dx_only_in_assessment",
+  "trap": true,
+  "sections": {
+   "subjective": "Burning pain in both feet at night, numbness and tingling in the toes for several months.",
+   "objective": "Reduced sensation to monofilament in both feet. Ankle reflexes diminished.",
+   "assessment": "Diabetic peripheral neuropathy due to type 2 diabetes mellitus.",
+   "plan": "Start duloxetine. Daily foot checks."
+  },
+  "problems": [
+   {
+    "name": "diabetic peripheral neuropathy",
+    "codes": [
+     "E11.42",
+     "E11.40",
+     "E11.49",
+     "E11.9",
+     "G62.9"
+    ]
+   }
+  ],
+  "must_not": [
+   "^R20",
+   "^R52",
+   "^M79\\.6",
+   "^G56",
+   "^R25"
+  ],
+  "services": [],
+  "quantity": null
+ },
+ {
+  "id": "laterality_carpal_tunnel",
+  "trap": false,
+  "sections": {
+   "subjective": "Numb fingers in the right hand at night.",
+   "objective": "Positive Phalen test on the right. Left wrist normal.",
+   "assessment": "Carpal tunnel syndrome of the right upper limb.",
+   "plan": "Night wrist splint on the right. Review in 6 weeks."
+  },
+  "problems": [
+   {
+    "name": "carpal tunnel syndrome right",
+    "codes": [
+     "G56.01",
+     "G56.00",
+     "G56.03"
+    ]
+   }
+  ],
+  "must_not": [
+   "^G56\\.02"
+  ],
+  "services": [],
+  "quantity": null
+ },
+ {
+  "id": "history_of_resolved",
+  "trap": true,
+  "sections": {
+   "assessment": "Allergic rhinitis due to pollen, symptoms worse in spring. History of deep vein thrombosis of the left leg, resolved, blood thinner course completed in 2023, no current treatment.",
+   "plan": "Start a nasal steroid spray. Return as needed."
+  },
+  "problems": [
+   {
+    "name": "allergic rhinitis due to pollen",
+    "codes": [
+     "J30.1",
+     "J30.2",
+     "J30.9",
+     "J30.89",
+     "J30.81"
+    ],
+    "optional": [
+     "Z86.718"
+    ]
+   }
+  ],
+  "must_not": [
+   "^I82",
+   "^I80",
+   "^I26"
+  ],
+  "services": [],
+  "quantity": null
+ },
+ {
+  "id": "primary_care_multi",
+  "trap": false,
+  "sections": {
+   "assessment": "1. Gastro-esophageal reflux disease without esophagitis, symptoms controlled. 2. Chronic low back pain, no radiation. 3. Obesity. 4. Vitamin D deficiency. 5. Insomnia.",
+   "plan": "Continue omeprazole. Core strengthening exercises. Weight management plan. Start vitamin D supplement. Sleep hygiene advice."
+  },
+  "problems": [
+   {
+    "name": "gerd without esophagitis",
+    "codes": [
+     "K21.9",
+     "K21.00"
+    ]
+   },
+   {
+    "name": "chronic low back pain",
+    "codes": [
+     "M54.50",
+     "M54.59",
+     "M54.9"
+    ],
+    "optional": [
+     "G89.29"
+    ]
+   },
+   {
+    "name": "obesity",
+    "codes": [
+     "E66.9",
+     "E66.811",
+     "E66.01",
+     "E66.09",
+     "E66.89"
+    ]
+   },
+   {
+    "name": "vitamin d deficiency",
+    "codes": [
+     "E55.9",
+     "E55.0"
+    ]
+   },
+   {
+    "name": "insomnia",
+    "codes": [
+     "G47.00",
+     "G47.09",
+     "F51.01",
+     "F51.09",
+     "G47.01"
+    ]
+   }
+  ],
+  "must_not": [],
+  "services": [],
+  "quantity": null
+ },
+ {
+  "id": "peds_asthma_neb",
+  "trap": false,
+  "sections": {
+   "assessment": "Mild persistent asthma with acute exacerbation, wheezing and cough since yesterday.",
+   "plan": "Oral steroid for five days. Continue controller inhaler. Return in one week.",
+   "procedure": "Nebulised albuterol treatment given in clinic today with good response, wheeze improved."
+  },
+  "problems": [
+   {
+    "name": "mild persistent asthma with acute exacerbation",
+    "codes": [
+     "J45.31",
+     "J45.41",
+     "J45.21",
+     "J45.901"
+    ]
+   }
+  ],
+  "must_not": [],
+  "services": [
+   "nebuli|albuterol|breathing treatment|inhalation"
+  ],
+  "quantity": null
+ },
+ {
+  "id": "msk_trigger_points",
+  "trap": false,
+  "sections": {
+   "assessment": "Myofascial pain syndrome of the upper trapezius muscles on both sides with palpable trigger points.",
+   "plan": "Stretching programme. Return in 4 weeks.",
+   "procedure": "Trigger point injections with lidocaine into three points of the right and left upper trapezius under sterile technique. Patient tolerated well."
+  },
+  "problems": [
+   {
+    "name": "myofascial pain syndrome trapezius",
+    "codes": [
+     "M79.18",
+     "M79.12",
+     "M79.10",
+     "M62.838"
+    ]
+   }
+  ],
+  "must_not": [],
+  "services": [
+   "trigger point|inject"
+  ],
+  "quantity": null
+ }
+]
