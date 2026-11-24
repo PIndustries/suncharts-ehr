@@ -294,7 +294,7 @@ async function testJourneyCheckoutVisibility() {
 
   step = await stepFor(checkoutOff);
   assert.match(step, />Charges</,'the step is titled Charges when checkout is off');
-  assert.match(step, /Charges for signed visits/);
+  assert.match(step, /Charges for signed encounters/);
   assert.doesNotMatch(step, /checkout/i,'checkout is not mentioned when the practice hid that chart area');
 
   // Home before the workspace settings have loaded treats checkout as shown.

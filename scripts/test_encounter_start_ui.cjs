@@ -73,7 +73,7 @@ function harness(){
  rejectedForm.querySelectorAll=()=>[field];rejectedForm.querySelector=()=>submit;
  rejected.ctx.api=async()=>{const error=new Error('Synthetic schedule conflict');error.status=409;throw error;};
  rejected.handlers.submit[0]({target:rejectedForm,preventDefault(){},stopImmediatePropagation(){}});await assert.rejects(rejected.ctx.pending,/schedule conflict/);
- assert.equal(field.disabled,false,'a definite booking rejection allows correcting the service time');assert.equal(submit.textContent,'Start visit');
+ assert.equal(field.disabled,false,'a definite booking rejection allows correcting the service time');assert.equal(submit.textContent,'Start encounter');
  const afterRejection=rejected.ctx.encounterStartInput(rejectedForm);assert.equal(afterRejection.booking.request_id,'request-2','only a definite rejection releases the old request');
  const clash=harness(),clashForm=Object.assign(clash.node('encounter-start-form'),clash.form);
  clashForm.querySelectorAll=()=>[];clashForm.querySelector=()=>({textContent:''});

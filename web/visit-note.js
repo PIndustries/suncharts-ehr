@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
-// "Same as last visit": brings the text of the patient's most recent signed note into the
+// "Same as last encounter": brings the text of the patient's most recent signed note into the
 // note being written. The earlier note is only read. Loaded text and undo steps live in
 // this tab only and are dropped when the signed-in person changes.
 const visitNoteSources=new Map(),visitNoteUndo=new Map(),visitNotePeople=new Map();
@@ -77,7 +77,7 @@ function visitNoteBar(visitId,message=''){
  if(entry.failed){host.innerHTML='<span class="muted">The last note could not be checked.</span><button type="button" class="text-button" data-note-retry>Try again</button>';return;}
  if(!source){host.innerHTML='<span class="muted">No earlier signed note for this patient.</span>';return;}
  const empty=Object.values(visitNoteValues(form)).every(text=>!text.trim());
- host.innerHTML=`<button type="button" class="${empty?'primary':''}" data-note-same="all">Same as last visit</button><span class="muted">From ${esc(visitNoteFrom(source))}</span><span id="note-previous-status" class="note-previous-status" role="status">${esc(message)}</span>${undo?'<button type="button" class="text-button" data-note-undo>Undo</button>':''}`;
+ host.innerHTML=`<button type="button" class="${empty?'primary':''}" data-note-same="all">Same as last encounter</button><span class="muted">From ${esc(visitNoteFrom(source))}</span><span id="note-previous-status" class="note-previous-status" role="status">${esc(message)}</span>${undo?'<button type="button" class="text-button" data-note-undo>Undo</button>':''}`;
  // Replacing the bar removes the button that was just used; keep keyboard focus in the bar.
  if(message&&typeof document!=='undefined'&&(!document.activeElement||document.activeElement===document.body))host.querySelector?.('[data-note-undo],[data-note-same]')?.focus?.({preventScroll:true});
 }
@@ -106,10 +106,10 @@ async function applyVisitNoteSource(which){
  if(written.length){
   const from=`From ${visitNoteFrom(source)}.`;
   if(which==='all'){
-   const answer=await confirmAction('Replace what you have written, or fill only the empty sections?',{eyebrow:'YOUR NOTE HAS TEXT',title:'Same as last visit',detail:`${from} You have written in ${visitNoteNames(written)}.`,confirmLabel:'Fill empty sections',alternateLabel:'Replace what I wrote',cancelLabel:'Cancel'});
+   const answer=await confirmAction('Replace what you have written, or fill only the empty sections?',{eyebrow:'YOUR NOTE HAS TEXT',title:'Same as last encounter',detail:`${from} You have written in ${visitNoteNames(written)}.`,confirmLabel:'Fill empty sections',alternateLabel:'Replace what I wrote',cancelLabel:'Cancel'});
    if(!answer)return;replace=answer==='alternate';
   }else{
-   if(!await confirmAction(`Replace what you have written in ${visitNoteLabel(which)}?`,{eyebrow:'THIS SECTION HAS TEXT',title:'Same as last visit',detail:from,confirmLabel:'Replace',cancelLabel:'Cancel',initialFocus:'cancel'}))return;replace=true;
+   if(!await confirmAction(`Replace what you have written in ${visitNoteLabel(which)}?`,{eyebrow:'THIS SECTION HAS TEXT',title:'Same as last encounter',detail:from,confirmLabel:'Replace',cancelLabel:'Cancel',initialFocus:'cancel'}))return;replace=true;
   }
  }
  form=visitNoteCurrent(visitId);if(!form||visitNoteSources.get(visitId)!==entry||entry.identity!==me)return;

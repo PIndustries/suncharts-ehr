@@ -160,7 +160,7 @@ const ready=(extra={})=>({request_id:'r1',status:'ready',position:null,suggestio
  assert.match(f.view(),/<span class="codes-strip-code">64616<\/span> Synthetic neck &lt;b&gt;injection&lt;\/b&gt;/);assert.doesNotMatch(f.view(),/<b>injection/);
  assert.match(f.view(),/“neck injection to the left splenius”/);
  assert.match(f.view(),/data-diagnosis-suggest-quantity>155 units given</);assert.equal((f.view().match(/units given/g)||[]).length,1);
- assert.match(f.view(),/Office visit: choose the visit level yourself\./);
+ assert.match(f.view(),/Office visit: choose the encounter level yourself\./);
  assert.match(f.view(),/No code found for:<\/p><ul><li>Ice &lt;b&gt;pack&lt;\/b&gt; <small>“ice pack applied”<\/small><\/li>/);assert.doesNotMatch(f.view(),/<li>Office visit<\/li>/);
  console.log('PASS both lists show, with the quantity given, the visit-level message and the services with no code');
 
@@ -204,7 +204,7 @@ const ready=(extra={})=>({request_id:'r1',status:'ready',position:null,suggestio
  // Procedures only, and the level message alone, still show.
  f=fixture();f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']=withProcedures({suggestions:[],unmatched:[]});await f.mount();await f.review();assert.doesNotMatch(f.view(),/<h4>Diagnoses/);assert.match(f.view(),/<h4>Procedures<\/h4><p class="muted">Added to the charges<\/p>/);assert.doesNotMatch(f.view(),/No codes found in the note/);
  f=fixture();f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']=ready({suggestions:[],procedures:[],procedures_unmatched:[{service:'Office visit',evidence:null,reason:'level'}]});await f.mount();await f.review();
- assert.match(f.view(),/No codes found in the note\./);assert.match(f.view(),/Office visit: choose the visit level yourself\./);assert.doesNotMatch(f.view(),/No code found for/);
+ assert.match(f.view(),/No codes found in the note\./);assert.match(f.view(),/Office visit: choose the encounter level yourself\./);assert.doesNotMatch(f.view(),/No code found for/);
  console.log('PASS procedures alone, and a visit left to the clinician alone, are shown');
 
  // The button beside Save note and its status line.

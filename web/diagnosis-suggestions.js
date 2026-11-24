@@ -56,7 +56,7 @@ function diagnosisSuggestProceduresUnmatchedMarkup(state){
  const items=(state.proceduresUnmatched||[]).filter(item=>item&&item.service);
  if(!items.length)return '';
  const level=items.filter(item=>item.reason==='level'),none=items.filter(item=>item.reason!=='level');
- return `<div class="muted" data-diagnosis-suggest-procedures-unmatched>${none.length?`<p>No code found for:</p><ul>${none.map(item=>`<li>${esc(item.service)}${item.evidence?` <small>“${esc(item.evidence)}”</small>`:''}</li>`).join('')}</ul><p><small>Use the procedure box in the charges to add these.</small></p>`:''}${level.length?`<ul data-diagnosis-suggest-level>${level.map(item=>`<li>${esc(item.service)}: choose the visit level yourself.</li>`).join('')}</ul>`:''}</div>`;
+ return `<div class="muted" data-diagnosis-suggest-procedures-unmatched>${none.length?`<p>No code found for:</p><ul>${none.map(item=>`<li>${esc(item.service)}${item.evidence?` <small>“${esc(item.evidence)}”</small>`:''}</li>`).join('')}</ul><p><small>Use the procedure box in the charges to add these.</small></p>`:''}${level.length?`<ul data-diagnosis-suggest-level>${level.map(item=>`<li>${esc(item.service)}: choose the encounter level yourself.</li>`).join('')}</ul>`:''}</div>`;
 }
 // Whether a code is already typed into the charge table (saved or not), so it is not offered again.
 function diagnosisSuggestOnCharges(code){

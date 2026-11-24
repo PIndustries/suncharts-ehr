@@ -12,8 +12,8 @@ const ctx={$:id=>nodes[id]||null,localStorage:{getItem:k=>store[k]??null,setItem
  encounterRevenueState:{data:{summary:{}}},encounterChargeAccount:()=>({status:'draft'}),renderEncounterInvoices(){},run(){},billingCan:()=>false};
 vm.createContext(ctx);vm.runInContext(source.slice(start,end)+';this.tabs=invoiceTabs;this.remembered=invoiceTabRemembered;this.set=invoiceTabSet;this.forget=encounterTabForget;',ctx);
 assert.deepEqual(JSON.parse(JSON.stringify(ctx.tabs.map(([,label])=>label))),['Note','Billing','History']);
-// An encounter being written opens on its note; the visit summary and follow-up close the note.
-assert.equal(ctx.remembered(),'note');ctx.encounterSection='checkout';assert.equal(ctx.remembered(),'note','the visit summary and follow-up sit at the end of the note');
+// An encounter being written opens on its note; the encounter summary and follow-up close the note.
+assert.equal(ctx.remembered(),'note');ctx.encounterSection='checkout';assert.equal(ctx.remembered(),'note','the encounter summary and follow-up sit at the end of the note');
 // Billing opens on the billing tab used last; the old name of the codes tab still works.
 ctx.encounterSection='charges';assert.equal(ctx.remembered(),'billing');
 for(const old of ['encounter','codes','claim']){store['suncharts.invoiceTab']=old;assert.equal(ctx.remembered(),'billing',old);}

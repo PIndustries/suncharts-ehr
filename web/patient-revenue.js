@@ -1061,7 +1061,7 @@ const invoiceTabs=[['note','Note'],['billing','Billing'],['history','History']];
 const encounterBillingTabs=['billing','history'];
 // Older names of the tabs, kept so saved places and links still land: codes and the claim are on
 // Billing, invoices are statements on Payments.
-// Payments are a section of Billing; the visit summary and follow-up close the Note.
+// Payments are a section of Billing; the encounter summary and follow-up close the Note.
 const encounterTabAliases={checkout:'note',encounter:'billing',invoice:'billing',codes:'billing',claim:'billing',invoices:'billing',payments:'billing'};
 // The tab open on the encounter on the screen, kept while that encounter is re-drawn after a save.
 let encounterTabFor={visit:null,key:null};
