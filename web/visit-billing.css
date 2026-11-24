@@ -360,7 +360,7 @@
 .receipt-email p{grid-column:1/-1;margin:0}
 
 /* Billing in one column. The summary is the tab; an area opened from it takes its place. */
-#encounter-revenue[data-invoice-tab="billing"][data-billing-part="summary"]>:not(.invoice-tabs):not(#encounter-revenue-status):not(.codes-editor-bar):not(.codes-editor-foot){display:none}
+#encounter-revenue[data-invoice-tab="billing"][data-billing-part="summary"]>:not(.invoice-tabs):not(#encounter-revenue-status):not(#visit-billing-review):not(.codes-editor-bar):not(.codes-editor-foot){display:none}
 #encounter-revenue[data-invoice-tab="billing"]:not([data-billing-part="summary"]) .billing-column{display:none}
 #encounter-revenue[data-invoice-tab="billing"][data-billing-part] .visit-billing-totals{display:none}
 #encounter-revenue[data-invoice-tab="billing"] #encounter-revenue-status .visit-billing-breakdown{display:none}

@@ -251,6 +251,10 @@ function visitReviewPaint(ctx={}){
 }
 function visitReviewOpen(ctx={}){
   const host=visitReviewHost();if(!host)return;
+  // The panel lives on the encounter's Billing tab. Pressed from the Note or History tab it first
+  // moves there, with the tab switch the tab buttons themselves use, so it is never drawn unseen.
+  const page=typeof $==='function'?$('encounter-revenue'):null;
+  if(page?.dataset?.invoiceTab!=='billing'&&typeof invoiceTabSet==='function')invoiceTabSet('billing',false);
   encounterRevenueState.review=null;
   const summary=encounterRevenueState.data?.summary;
   host.hidden=false;host.innerHTML=summary?visitReviewPanelMarkup(summary,visitReviewContext(ctx)):'<p class="muted">Loading the review…</p>';
