@@ -748,6 +748,7 @@ document.addEventListener('click',event=>{
  if(button.hasAttribute('data-refresh-revenue')){event.preventDefault();loadEncounterRevenueStatus(encounterChargeAccount(),true);return;}
  if(button.hasAttribute('data-visit-collect')){event.preventDefault();openVisitCollect();return;}
  if(button.hasAttribute('data-visit-collect-close')){event.preventDefault();if(collectDialog){sheetClose(collectDialog);return;}const panel=$('visit-billing-collect');if(panel)panel.hidden=true;return;}
+ if(button.hasAttribute('data-prior-auth-save')){event.preventDefault();const box=button.closest('[data-prior-auth-edit]'),input=box?.querySelector?.('input');if(!box||!input)return;button.disabled=true;run(async()=>{try{await chargePriorAuthorizationSave(box.dataset.claim,input.value);notice('Prior authorization number saved.');await loadEncounterRevenueStatus(encounterChargeAccount(),true);}finally{button.disabled=false;}});return;}
  if(button.hasAttribute('data-visit-claim-resend')){event.preventDefault();button.disabled=true;button.textContent='Sending…';run(()=>visitClaimResend(button));return;}
  if(button.dataset.visitClaimPrepare!==undefined){event.preventDefault();button.disabled=true;run(()=>prepareVisitClaim(button.dataset.visitClaimPrepare==='again'));return;}
  if(button.dataset.visitClaimDirectSend){event.preventDefault();run(()=>sendVisitClaimNow(button.dataset.visitClaimDirectSend,button));return;}
