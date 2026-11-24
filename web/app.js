@@ -758,7 +758,7 @@ function encounterVisitActions(){
  return actions;
 }
 function encounterSections(){
- return [['visit','Visit'],['intake','Rooming'],['documentation','Notes & diagnoses'],['charges','Charges & billing'],['orders','Orders & prescriptions'],['files','Files & recordings'],['checkout','Encounter summary and follow-up']];
+ return [['visit','Overview'],['intake','Rooming'],['documentation','Notes & diagnoses'],['charges','Charges & billing'],['orders','Orders & prescriptions'],['files','Files & recordings'],['checkout','Encounter summary and follow-up']];
 }
 function renderEncounterOrderActions(){
  const host=$('encounter-orders-actions');if(!host||!activeVisit)return;
