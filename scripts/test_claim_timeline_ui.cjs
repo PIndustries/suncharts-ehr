@@ -66,10 +66,24 @@ const history={items:[{version:1,created_at:'2026-11-11T15:30:00Z',reason:'Claim
  // Forwarded to the payer, then accepted by the payer with its claim number.
  const forwarded=f.context.buildClaimTimeline({claim:claim({status:'accepted'}),now:NOW,history:[...history.items],
   tracking:{submissions:[sent],reports:[
-   {received_at:'2026-11-12T11:00:00Z',evidence:{status:'A',senderid:'CLMMD',sender_name:'Claim.MD',message:{message:'Claim forwarded to payer'}}},
+   {received_at:'2026-11-12T11:00:00Z',evidence:{status:'A',senderid:'CLMMD',sender_name:'Claim.MD',message:{status:'A',message:'Acknowledged'}}},
    {received_at:'2026-11-15T08:00:00Z',evidence:{status:'A',senderid:'P7',sender_name:'Synthetic Health Plan',sender_icn:'ICN-998877',message:{message:'Claim accepted'}}}]}});
- eq(forwarded.steps.map(step=>step.label).slice(2),['Accepted by Claim.MD','Forwarded to the insurance company']);
+ eq(forwarded.steps.map(step=>step.label).slice(2),['Received by Claim.MD','Forwarded to the insurance company']);
  assert.match(forwarded.current,/Waiting on the insurance company since Nov 15, 2026, 3 days/);
+
+ // Claim.MD holds a claim that needs correcting: the message status W wins over claim-level A.
+ const held=f.context.buildClaimTimeline({claim:claim({status:'submitted'}),now:NOW,history:[...history.items],
+  tracking:{submissions:[sent],reports:[{received_at:'2026-11-12T11:00:00Z',evidence:{status:'A',senderid:'CLMMD',sender_name:'Claim.MD',message:{status:'W',message:'NCCI - Procedure Code 11111 requires an appropriate modifier when procedure 22222 present.'}}}]}});
+ const heldStep=held.steps.at(-1);
+ assert.strictEqual(heldStep.label,'Claim.MD found a problem');
+ assert.match(heldStep.detail,/NCCI - Procedure Code/);
+ assert.match(heldStep.detail,/Nothing has gone to the insurer\. Correct the claim and send it again\./);
+ assert.ok(!held.steps.some(step=>/Accepted|Forwarded/.test(step.label)));
+ // A payer sender with a payer claim number stays accepted by the payer.
+ assert.ok(forwarded.steps.some(step=>/Forwarded to the insurance/.test(step.label)));
+ assert.strictEqual(f.context.timelineClaimMdStatusText({status:'A',senderid:'P7',sender_name:'Synthetic Health Plan',sender_icn:'X1',message:{status:'A',message:'ok'}}).accepted,true);
+ // The Claim.MD claim ID is also found in the delivery receipt reference.
+ assert.strictEqual(f.context.claimMdClaimId([],{reports:[]},[{evidence:{receipt_reference:'claimmd-claim:902000777'}}]),'902000777');
 
  // A 277CA acknowledgment is shown with its category, action and reason in words.
  const acknowledged=f.context.buildClaimTimeline({claim:claim({status:'rejected'}),now:NOW,history:[...history.items],tracking:{submissions:[sent],reports:[]},

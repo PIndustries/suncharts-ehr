@@ -50,6 +50,12 @@ assert.doesNotMatch(native,/Sender not identified/,'an unidentified sender is no
 assert.doesNotMatch(native,/Status code/,'status codes are not staff wording');
 console.log('PASS coverage, transport, response sender and remittance milestones require distinct recorded evidence');
 
+html=context.claimMdTrackingSummary({reports:[{evidence:{senderid:'CLMMD',sender_name:'Claim.MD',status:'A',message:{status:'W',message:'NCCI - Procedure Code 11111 requires an appropriate modifier.'}},received_at:'2026-11-11'}]});
+assert.match(html,/Claim\.MD found a problem with this claim/);
+assert.match(html,/Nothing has gone to the insurer\. Correct the claim and send it again\./);
+assert.doesNotMatch(html,/received this claim/);
+html=context.claimMdTrackingSummary({reports:[{evidence:{senderid:'CLMMD',sender_name:'Claim.MD',status:'A',message:{status:'A',message:'Acknowledged'}},received_at:'2026-11-11'}]});
+assert.match(html,/Claim\.MD received this claim/);
 html=context.claimMdTrackingSummary({reports:[{evidence:{senderid:'CLMMD',sender_name:'Claim.MD',status:'A',message:{status:'A',message:'Claim received <unsafe>'}},received_at:'2026-11-11'}]});
 assert.match(html,/Claim.MD received this claim/);assert.match(html,/Claim received &lt;unsafe>/);
 html=context.claimMdTrackingSummary({reports:[{evidence:{senderid:'SYN-PAYER',sender_name:'Synthetic Payer',status:'A',sender_icn:'ICN<SYN0001>',message:{status:'A',message:'Accepted by payer'}},received_at:'2026-11-12'}]});
@@ -91,3 +97,13 @@ let submittedAnsweredHtml=context.claimMdClaimLifecycle({status:'submitted',snap
 assert.match(submittedAnsweredHtml,/<li class="is-current" tabindex="0" aria-label="(?:Done|Now|Not done|Later): Payer response\./,'a clearinghouse acknowledgement leaves the payer response step current');
 console.log('PASS a rejected claim expects no payment and an acknowledged claim waits on the payer');
 console.log('PASS the payer response stage follows the claim status, not only the presence of a report');
+
+{
+ const withConn={connections:[{route_key:'r',paused:false}],submissions:[{status:'delivered'}],reports:[]};
+ let out=context.claimMdTrackingSummary(withConn,'claim-1');
+ assert.match(out,/<button type="button" data-claimmd-check="claim-1">Check with Claim.MD now<\/button>/);
+ assert.doesNotMatch(context.claimMdTrackingSummary(withConn),/data-claimmd-check/,'no claim id, no button');
+ assert.doesNotMatch(context.claimMdTrackingSummary({connections:[],submissions:[],reports:[]},'claim-1'),/data-claimmd-check/,'nothing sent, nothing to check');
+ assert.match(native,/No new messages from Claim\.MD\./);assert.match(native,/new message\$\{n===1\?'':'s'\} from Claim\.MD\./);assert.match(native,/Checking…/);
+ console.log('PASS Check with Claim.MD now button renders for sent claims');
+}
