@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(fs.readFileSync('web/display-format.js','utf8'),context);return context;};}
+// The prior authorization number sits under the procedures, is the same stored value the claim
+// details hold, goes out through the same save, shows on the Charges row, and is plain text once
+// the charges are final. Synthetic values only.
+const nodes={},ctx={console,Date,Intl,URL,URLSearchParams,crypto:{randomUUID:()=>'synthetic-request'},selected:'patient',me:{role:'owner'},chartSection:'billing',
+ workspace:{appointments:[],visits:[{id:'visit-a',appointment_id:'appt-a',created_at:'2026-11-13T14:00:00Z'}],billing:{accounts:[],coverages:[],entries:[]}},
+ $:id=>id==='billing-account-form'?ctx.openedForm:(nodes[id]??={id,innerHTML:'',dataset:{},scrollIntoView(){},replaceChildren(){this.innerHTML='';},querySelector:()=>null,querySelectorAll:()=>[]}),
+ document:{addEventListener(){}},
+ esc:v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'),human:v=>v,date:v=>String(v),money:n=>'$'+(n/100).toFixed(2),dollars:c=>c==null?'':(c/100).toFixed(2),payerName:()=>'Synthetic payer',billingCan:()=>true,
+ notice(){},run:fn=>fn(),showChartSection(){},setEncounterSection(){}};
+vm.createContext(ctx);
+for(const f of ['billing.js','fees.js','visit-billing.js'])vm.runInContext(fs.readFileSync('web/'+f,'utf8'),ctx);
+const markup=d=>vm.runInContext('encounterClaimDetailsMarkup',ctx)(d,'authorization');
+const head=vm.runInContext('encounterClaimDetailsMarkup',ctx)({prior_authorization_number:'PA-SYN-9'},'head');
+
+// The field: one input, optional, 50 characters, carrying the stored value, with its hint.
+const field=markup({prior_authorization_number:'PA-SYN-9'});
+assert.match(field,/name="cd_prior_authorization_number"[^>]*value="PA-SYN-9"[^>]*maxlength="50"|value="PA-SYN-9" maxlength="50"/);
+assert.doesNotMatch(field,/required/);
+assert.match(field,/Sent with the claim \(box 23\)\. One number per claim\./);
+assert.doesNotMatch(head,/prior_authorization_number/,'the number is asked once, not twice');
+
+// Under the procedures in the encounter's charge form.
+ctx.chartSection='visits';ctx.activeVisit={id:'visit-a',appointment_id:'appt-a',status:'in_progress'};ctx.revenueServiceDate=()=>'2026-11-13';
+ctx.accountEditor(null,null,true);
+const form=nodes['encounter-billing-editor'].innerHTML;
+assert.ok(form.indexOf('data-charge-prior-auth')>form.indexOf('id="billing-charge-lines"'),'under the procedure lines');
+assert.ok(form.indexOf('data-charge-prior-auth')<form.indexOf('data-visit-charge-options'),'before the insurance and dates box');
+assert.equal(form.split('cd_prior_authorization_number').length-1,1);
+
+// Saved through the same claim details the account save already sends.
+const els=values=>({elements:new Proxy({},{get:(_,key)=>key==='cd_paper_only'?{checked:false}:String(key).startsWith('cd_')?{value:values[String(key).slice(3)]||''}:undefined})});
+assert.equal(JSON.stringify(ctx.encounterClaimDetailsValue(els({prior_authorization_number:' PA-SYN-9 ',place_of_service:'11'}))),JSON.stringify({prior_authorization_number:'PA-SYN-9',place_of_service:'11'}));
+
+// The Charges row on the Billing summary names it, and says nothing when blank.
+ctx.encounterChargeAccount=()=>({content:{claim_details:{prior_authorization_number:'PA-SYN-9'}}});
+assert.match(vm.runInContext('visitBillingAuthorizationNote',ctx)(),/Prior authorization PA-SYN-9/);
+ctx.encounterChargeAccount=()=>({content:{claim_details:{}}});
+assert.equal(vm.runInContext('visitBillingAuthorizationNote',ctx)(),'');
+
+// Once the charges are final (the claim is out), it is shown as text with no input.
+const finished=vm.runInContext('chargeTableFinishedMarkup',ctx)({status:'posted',content:{visit_id:'visit-a',service_date:'2026-11-13',lines:[],claim_details:{prior_authorization_number:'PA-SYN-9'}}});
+assert.match(finished,/Prior authorization number <b>PA-SYN-9<\/b>/);
+assert.doesNotMatch(finished,/<input[^>]*prior_authorization/);
+
+// No stylesheet rule hides it while procedures are being edited.
+const css=fs.readFileSync('web/visit-billing.css','utf8');
+assert.ok(!/data-billing-part="codes"\][^{]*data-charge-prior-auth[^{]*\{display:none/.test(css));
+console.log('prior authorization field checks ok');

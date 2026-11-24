@@ -1227,7 +1227,7 @@ function encounterCodesEditorClose(){
 // same fields over the page. Only what has a value is listed, so an ordinary encounter stays short.
 function encounterDetailsSummaryRows(form){
  const rows=[],seen=new Set();
- const scopes=form.querySelectorAll('[data-visit-charge-options],[data-encounter-provider],details.charge-more-options');
+ const scopes=form.querySelectorAll('[data-visit-charge-options],[data-charge-prior-auth],[data-encounter-provider],details.charge-more-options');
  for(const scope of scopes){
   for(const field of scope.querySelectorAll('input,select,textarea')){
    if(!field.name||seen.has(field.name)||field.type==='hidden'||['visit_id','coverage_id','fee_facility','fee_setting'].includes(field.name)||field.closest('[data-encounter-provider-fields]'))continue;
