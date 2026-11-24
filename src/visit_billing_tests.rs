@@ -884,6 +884,27 @@ async fn insured_visit_prepares_its_claim_once_and_splits_insurance_from_patient
         claim["content"],
         json!({"billing_provider_name":"Synthetic Clinic","billing_npi":"1234567893","tax_id":"000000017","billing_address":"1 Synthetic Way, Austin TX 78701","rendering_npi":"1234567893","patient_address":"1 Synthetic Way, Austin, TX, 78701, US","subscriber_address":"1 Synthetic Way, Austin, TX, 78701, US","subscriber_birth_date":"1990-01-01","place_of_service":"11","diagnosis_codes":["Z00.00"],"line_diagnosis_pointers":[[1]],"external_control_number":"","notes":"","synthetic_test":false,"tax_id_type":"E"})
     );
+    // The visit summary carries the prepared claim's own form and the patient and account it was
+    // built from, so the review panel judges what will be sent and never calls it missing.
+    let summary = f.summary(&f.owner, p, visit).await;
+    for field in [
+        "billing_provider_name",
+        "billing_npi",
+        "rendering_npi",
+        "billing_address",
+        "patient_address",
+        "place_of_service",
+    ] {
+        assert!(
+            summary["claim"]["content"][field]
+                .as_str()
+                .is_some_and(|v| !v.trim().is_empty()),
+            "{field} is on the summary's claim"
+        );
+    }
+    assert_eq!(summary["claim"]["content"], claim["content"]);
+    assert!(summary["claim"]["snapshot"]["patient"].is_object());
+    assert!(summary["claim"]["snapshot"]["account"].is_object());
     // The same audit trail as the manual action, attributed to the person who opened it.
     let (actor, reason, evidence): (Uuid, String, Value) = sqlx::query_as("SELECT actor_id,reason,evidence FROM claim_revisions WHERE tenant_id=$1 AND claim_id=$2 AND version=1").bind(f.owner.tenant_id).bind(id(&claim)).fetch_one(&f.db).await.unwrap();
     assert_eq!(actor, desk.sub);

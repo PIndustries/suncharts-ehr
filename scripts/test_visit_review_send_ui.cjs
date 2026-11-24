@@ -135,7 +135,7 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
  assert.match(panel,/99213/,'and the line\'s code is on it');
  assert.match(panel,/M62\.81/,'with the diagnosis pointer resolved to its code');
  // A must-fix closes the send button until it is put right.
- openPanel(reviewSummary({claim:{id:'claim',status:'draft',version:2,issues:[{code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'}]}}));
+ openPanel(reviewSummary({claim:{id:'claim',status:'draft',version:2,content:{...filled(),place_of_service:''},snapshot:claim.snapshot,issues:[{code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'}]}}));
  panel=panelHost().innerHTML;
  assert.match(panel,/data-review-level="must"/);assert.match(panel,/must be put right first/);
  assert.doesNotMatch(panel,/data-visit-review-send/,'nothing can be sent past a must fix');

@@ -69,8 +69,14 @@ function visitReviewLineProblems(s,ctx={}){
  });
  return out;
 }
+// A claim the summary named but did not carry the form of has not been read yet. Checks that judge
+// what is written on the claim stay silent then: data we did not load is never reported missing.
+function visitReviewClaimLoaded(claim){
+  return !claim?.id||(!!claim.content&&typeof claim.content==='object'&&!Array.isArray(claim.content));
+}
 function visitReviewPractice(s,ctx={}){
   const claim=s.claim||{},out=[];
+  if(!visitReviewClaimLoaded(claim))return out;
   const missing=new Set((claim.issues||[]).map(issue=>String(issue?.code||'').trim().toLowerCase()));
   const defaults=typeof claimmdClaimProviderDefaults==='function'?claimmdClaimProviderDefaults():{};
   const known=ctx.claimDetails!==false&&(Object.keys(defaults).length>0||Object.keys(claim.content||{}).length>0);
@@ -95,7 +101,7 @@ function visitReviewPractice(s,ctx={}){
 }
 function visitReviewPatient(s,ctx={}){
   const out=[],claim=s.claim||{},content=claim.content||{};
-  if(claim.id&&typeof claimPatientAddressDefault==='function'&&!visitReviewFormValue(claimPatientAddressDefault(claim.snapshot?.account||{}),2)){
+  if(claim.id&&visitReviewClaimLoaded(claim)&&claim.snapshot&&typeof claim.snapshot==='object'&&typeof claimPatientAddressDefault==='function'&&!visitReviewFormValue(claimPatientAddressDefault(claim.snapshot?.account||{}),2)){
     out.push(visitReviewCheck('patient-address',{group:'patient',blocking:true,text:'The patient has no address for the claim.',action:'Edit patient details',attribute:'data-chart-section="profile"'}));
   }
   const patient=claim.snapshot?.patient;
@@ -107,7 +113,7 @@ function visitReviewInsurance(s,ctx={}){
   const out=[],claim=s.claim||{},content=claim.content||{};
   const missing=new Set((s.claim?.issues||[]).map(issue=>String(issue?.code||'').trim().toLowerCase()));
   for(const [field,label] of [['subscriber_address',"the policy holder's address"],['subscriber_birth_date',"the policy holder's date of birth"]]){
-    if(claim.id&&!visitReviewFormValue(content[field],2))out.push(visitReviewCheck(`insurance-${field}`,{group:'insurance',blocking:true,text:`${label[0].toUpperCase()}${label.slice(1)} is missing from the claim.`,action:'Edit insurance',attribute:'data-chart-section="insurance"'}));
+    if(claim.id&&visitReviewClaimLoaded(claim)&&!visitReviewFormValue(content[field],2))out.push(visitReviewCheck(`insurance-${field}`,{group:'insurance',blocking:true,text:`${label[0].toUpperCase()}${label.slice(1)} is missing from the claim.`,action:'Edit insurance',attribute:'data-chart-section="insurance"'}));
   }
   const payer=visitReviewPayer(s);
   if(!payer.known)return out;
@@ -121,10 +127,10 @@ function visitReviewInsurance(s,ctx={}){
 function visitReviewClaimDetailChecks(s,ctx={}){
   const out=[],claim=s.claim||{},content=claim.content||{};
   const missing=new Set((s.claim?.issues||[]).map(issue=>String(issue?.code||'').trim().toLowerCase()));
-  const pos=String(content.place_of_service??'').trim();
-  if(claim.id&&(!/^\d{2}$/.test(pos)||missing.has('place_of_service')))out.push(visitReviewCheck('place-of-service',{group:'claim',blocking:true,text:'The claim needs a two-digit place of service (11 = office).',action:'Fix claim details',attribute:`data-visit-review-fix="claim" data-visit-claim-fix="${esc(claim.id||'')}"`}));
+  const pos=String(content.place_of_service??'').trim(),loaded=visitReviewClaimLoaded(claim);
+  if(claim.id&&loaded&&(!/^\d{2}$/.test(pos)||missing.has('place_of_service')))out.push(visitReviewCheck('place-of-service',{group:'claim',blocking:true,text:'The claim needs a two-digit place of service (11 = office).',action:'Fix claim details',attribute:`data-visit-review-fix="claim" data-visit-claim-fix="${esc(claim.id||'')}"`}));
   const codes=Array.isArray(content.diagnosis_codes)?content.diagnosis_codes.filter(code=>String(code||'').trim()):[];
-  if(claim.id&&(!codes.length||codes.some(code=>!/^[A-Za-z0-9.]+$/.test(String(code).trim()))||missing.has('diagnosis_codes')))out.push(visitReviewCheck('diagnoses',{group:'claim',blocking:true,text:'The claim needs its diagnosis codes.',action:'Fix claim details',attribute:`data-visit-review-fix="claim" data-visit-claim-fix="${esc(claim.id||'')}"`}));
+  if(claim.id&&loaded&&(!codes.length||codes.some(code=>!/^[A-Za-z0-9.]+$/.test(String(code).trim()))||missing.has('diagnosis_codes')))out.push(visitReviewCheck('diagnoses',{group:'claim',blocking:true,text:'The claim needs its diagnosis codes.',action:'Fix claim details',attribute:`data-visit-review-fix="claim" data-visit-claim-fix="${esc(claim.id||'')}"`}));
   if(missing.has('secondary'))out.push(visitReviewCheck('secondary',{group:'claim',blocking:true,text:'This is a secondary claim and the primary insurer’s answer is not on it yet. Open the primary claim and use Review secondary billing.',action:'Open the primary claim',attribute:`data-revenue-claim="${esc(claim.parent_id||claim.id||'')}"`}));
   if(missing.has('tertiary'))out.push(visitReviewCheck('tertiary',{group:'claim',blocking:true,text:'A third insurer cannot be billed electronically from here.',action:'Edit insurance',attribute:'data-chart-section="insurance"'}));
   return out;
