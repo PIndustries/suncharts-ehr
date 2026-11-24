@@ -280,10 +280,18 @@ function visitBillingInsuranceWords(s){
  return ({not_billed:'Claim is made when the charges are posted',not_sent:'Claim not sent yet',waiting:`Claim sent${i.sent_on?` ${visitBillingDate(i.sent_on)}`:''}. Waiting for their answer`,denied:'Denied',answered:s.claim?.answer?.payment_date?`Answered ${visitBillingDate(s.claim.answer.payment_date)}`:'Answered',outside:'Billed outside SunCharts',restricted:'Handled by billing staff'})[i.status]||'';
 }
 // The one prior authorization number the claim will carry, kept with the encounter's charges.
-function visitBillingAuthorizationNote(){
+function visitBillingAuthorizationNote(s){
  const account=typeof encounterChargeAccount==='function'?encounterChargeAccount():null;
- const number=String(account?.content?.claim_details?.prior_authorization_number||'').trim();
+ const number=String(s?.claim?.content?.encounter?.prior_authorization_number??account?.content?.claim_details?.prior_authorization_number??'').trim();
  return number?` · Prior authorization ${esc(number)}`:'';
+}
+// Under the Charges row: the one prior authorization box, while the claim is still a draft. It saves
+// onto the claim itself, so correcting charges (which cancels a claim) is never how it is changed.
+function visitBillingAuthorizationRow(s){
+ const account=typeof encounterChargeAccount==='function'?encounterChargeAccount():null;
+ if(!account||s.account?.status!=='posted'||s.claim?.status!=='draft'||typeof chargePriorAuthorizationFinishedMarkup!=='function')return '';
+ const box=chargePriorAuthorizationFinishedMarkup(account,s.claim);
+ return box?`<li class="billing-row billing-row-authorization">${box}</li>`:'';
 }
 function visitBillingColumn(s,ctx={}){
  const i=s.insurance||{},p=s.patient||{},posted=s.account?.status==='posted',now=visitBillingRowNow(s),standing=visitBillingDue(s),claim=s.claim;
@@ -291,7 +299,7 @@ function visitBillingColumn(s,ctx={}){
  const row=(key,n,title,note,amount,button,done)=>`<li class="billing-row${now===key?' is-now':''}" data-billing-row="${key}">${mark(key,done)}<div class="billing-row-text"><b>${n} · ${title}</b><span class="muted"${key==='charges'?' data-billing-row-codes':''}>${note}</span></div><span class="billing-row-amount">${amount}</span><span class="billing-row-action">${button||''}</span></li>`;
  // 1. Charges.
  const none=s.charges_cents==null;
- const charges=row('charges',1,'Charges',(none?'No charges yet':posted?'Posted':'Not posted yet. They can still be changed')+visitBillingAuthorizationNote(),none?'':money(s.charges_cents),ctx.canCreate?`<button type="button" data-encounter-charges>${none?'Add charges':'Edit codes'}</button>`:'',posted);
+ const charges=row('charges',1,'Charges',(none?'No charges yet':posted?'Posted':'Not posted yet. They can still be changed')+visitBillingAuthorizationNote(s),none?'':money(s.charges_cents),ctx.canCreate?`<button type="button" data-encounter-charges>${none?'Add charges':'Edit codes'}</button>`:'',posted);
  // 2. Insurance.
  let insurance;
  if(!i.insured)insurance=row('insurance',2,'Insurance','No insurance on this encounter. The patient pays','','<button type="button" data-chart-section="insurance">Add insurance</button>',false);
@@ -319,7 +327,7 @@ function visitBillingColumn(s,ctx={}){
  if(claim&&ctx.claimsAllowed!==false&&claim.status!=='void'&&!claim.secondary&&!claim.crossover)more.push(`<button type="button" data-claim-form-preview="${esc(claim.id)}">Claim form (CMS-1500)</button>`);
  more.push('<button type="button" data-chart-section="insurance">Insurance and eligibility</button>','<button type="button" data-invoice-tab-key="history">History</button>');
  const total=standing.copayOnly?['Copay due now',standing.due]:['Patient owes now',Number(p.owes_now_cents)||0];
- return `<section class="billing-column" aria-label="Billing for this encounter"><ol class="billing-rows">${charges}${insurance}${patient}</ol><p class="billing-column-total${total[1]>0?' is-due':''}"><span>${total[0]}</span><b>${money(total[1])}</b></p>${p.receipt_needs_review?'<p role="status">A payment for this encounter needs review. Open History before collecting again.</p>':''}<details class="billing-column-more" data-revenue-disclosure="column-more"><summary>More</summary><div class="actions">${more.join('')}</div></details></section>`;
+ return `<section class="billing-column" aria-label="Billing for this encounter"><ol class="billing-rows">${charges}${visitBillingAuthorizationRow(s)}${insurance}${patient}</ol><p class="billing-column-total${total[1]>0?' is-due':''}"><span>${total[0]}</span><b>${money(total[1])}</b></p>${p.receipt_needs_review?'<p role="status">A payment for this encounter needs review. Open History before collecting again.</p>':''}<details class="billing-column-more" data-revenue-disclosure="column-more"><summary>More</summary><div class="actions">${more.join('')}</div></details></section>`;
 }
 function visitBillingCardMarkup(s,ctx={}){
    const status=visitBillingStatus(s,ctx),owing=['patient_owes','self_pay_collect'].includes(s.state),posted=s.account?.status==='posted';
