@@ -414,7 +414,7 @@ mod tests {
         )
         .is_err());
         claims.purpose = "support".into();
-        claims.exp = now + 901;
+        claims.exp = now + MAX_SESSION_SECONDS + 1;
         assert!(validate_claims(
             &claims,
             "https://connect.example.test",
