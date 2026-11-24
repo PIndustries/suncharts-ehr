@@ -343,9 +343,12 @@ fn stedi_page(v: Value, usage: &str) -> Result<Page> {
 fn claimmd_identity_matches(evidence: &Value, frozen: &Value) -> bool {
     let account = &frozen["snapshot"]["account"];
     let content = &frozen["content"];
+    // Outer whitespace never decides identity: a value saved with a stray space comes back
+    // from the clearinghouse trimmed. An empty value (after trimming) never matches.
     let nonempty_equal = |left: &Value, right: &Value| {
         left.as_str()
-            .is_some_and(|value| !value.is_empty() && right.as_str() == Some(value))
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty() && right.as_str().map(str::trim) == Some(value))
     };
     let control = &evidence["pcn"];
     let Some(cents) = account["total_cents"].as_i64().filter(|v| *v > 0) else {
@@ -363,7 +366,7 @@ fn claimmd_identity_matches(evidence: &Value, frozen: &Value) -> bool {
             &evidence["payerid"],
             &account["coverage_snapshot"]["payer"]["content"]["payer_code"],
         )
-        && evidence["total_charge"].as_str()
+        && evidence["total_charge"].as_str().map(str::trim)
             == Some(format!("{}.{:02}", cents / 100, cents % 100).as_str())
         && nonempty_equal(&evidence["fdos"], &account["content"]["service_date"])
 }
@@ -492,9 +495,9 @@ async fn attach_claimmd_status(
     // delivery it belongs to can be confirmed after the response arrived, and the provider
     // feed is replayed after a cursor reset. `status='retrieved'` and `native_id IS NULL` keep
     // an attached or quarantined report out of the loop, so an applied report stays applied.
-    let reports: Vec<(Uuid, Value)> = sqlx::query_as("SELECT r.id,r.parse_summary FROM edi_remote_reports r WHERE r.tenant_id=$1 AND r.route_key=$2 AND r.format='claimmd_status' AND r.status='retrieved' AND r.native_id IS NULL AND r.metadata->>'source'='claimmd_response_api' AND r.last_result IS DISTINCT FROM 'control_number_needs_review' AND NOT (r.last_result='identity_match_needs_review' AND (coalesce(r.parse_summary->>'fileid','')<>'' OR coalesce(r.parse_summary->>'claimmd_id','')<>'')) AND (EXISTS (SELECT 1 FROM edi_delivery_jobs j WHERE j.tenant_id=r.tenant_id AND j.route_key=r.route_key AND j.status='delivered' AND (j.receipt_reference='claimmd-file:'||(r.parse_summary->>'fileid') OR j.receipt_reference='claimmd-claim:'||(r.parse_summary->>'claimmd_id'))) OR (coalesce(r.parse_summary->>'fileid','')='' AND coalesce(r.parse_summary->>'claimmd_id','')='')) ORDER BY r.received_at,CASE WHEN r.metadata->>'response_id' ~ '^[0-9]{1,20}$' THEN (r.metadata->>'response_id')::numeric END,r.id LIMIT 200")
+    let reports: Vec<(Uuid, Value, Option<String>)> = sqlx::query_as("SELECT r.id,r.parse_summary,r.last_result FROM edi_remote_reports r WHERE r.tenant_id=$1 AND r.route_key=$2 AND r.format='claimmd_status' AND r.status='retrieved' AND r.native_id IS NULL AND r.metadata->>'source'='claimmd_response_api' AND r.last_result IS DISTINCT FROM 'control_number_needs_review' AND (EXISTS (SELECT 1 FROM edi_delivery_jobs j WHERE j.tenant_id=r.tenant_id AND j.route_key=r.route_key AND j.status='delivered' AND (j.receipt_reference='claimmd-file:'||(r.parse_summary->>'fileid') OR j.receipt_reference='claimmd-claim:'||(r.parse_summary->>'claimmd_id'))) OR (coalesce(r.parse_summary->>'fileid','')='' AND coalesce(r.parse_summary->>'claimmd_id','')='')) ORDER BY coalesce(r.last_result='identity_match_needs_review',false),r.received_at,CASE WHEN r.metadata->>'response_id' ~ '^[0-9]{1,20}$' THEN (r.metadata->>'response_id')::numeric END,r.id LIMIT 200")
         .bind(a.tenant_id).bind(key).fetch_all(&mut **tx).await?;
-    for (report, evidence) in reports {
+    for (report, evidence, prior_result) in reports {
         let references = crate::claimmd::receipt_references(&evidence);
         let candidates: Vec<(Uuid, Value)> = if references.is_empty() {
             // Claim.MD answered without ever reporting a file or claim ID, so nothing ties the
@@ -513,7 +516,17 @@ async fn attach_claimmd_status(
             .filter(|(_, frozen)| claimmd_identity_matches(&evidence, frozen))
             .collect();
         if matches.len() != 1 {
-            sqlx::query("UPDATE edi_remote_reports SET last_result=$3,version=version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(report).bind(if references.is_empty() {"control_number_needs_review"} else {"identity_match_needs_review"}).execute(&mut **tx).await?;
+            let result = if references.is_empty() {
+                "control_number_needs_review"
+            } else {
+                "identity_match_needs_review"
+            };
+            // A report still waiting for review is retried every poll; it is written (and an
+            // event recorded) only when its result actually changes.
+            if prior_result.as_deref() == Some(result) {
+                continue;
+            }
+            sqlx::query("UPDATE edi_remote_reports SET last_result=$3,version=version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(report).bind(result).execute(&mut **tx).await?;
             report_event(
                 tx,
                 a,
@@ -561,6 +574,38 @@ async fn attach_claimmd_status(
                 .execute(&mut **tx)
                 .await?;
         }
+    }
+    Ok(())
+}
+
+/// Reports attached before their message was understood (Claim.MD's "W" and "Acknowledged"
+/// letters) were linked to their submission but never applied. Each such report is applied
+/// once more, only while its submission is still the claim's latest delivered one and no later
+/// report on that submission has already been settled, and is then marked `status_applied` so
+/// it is never looked at again. Applying is idempotent per report, and the rejection and
+/// acceptance branches stay guarded by the claim's own status.
+async fn reapply_claimmd_status(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    key: &str,
+) -> Result<()> {
+    let reports: Vec<(Uuid, Uuid, Value)> = sqlx::query_as("SELECT r.id,r.native_id,r.parse_summary FROM edi_remote_reports r JOIN edi_submissions s ON s.tenant_id=r.tenant_id AND s.id=r.native_id WHERE r.tenant_id=$1 AND r.route_key=$2 AND r.format='claimmd_status' AND r.status='retrieved' AND r.native_kind='submission' AND r.metadata->>'source'='claimmd_response_api' AND r.last_result IS DISTINCT FROM 'status_applied' AND s.status='delivered' AND NOT EXISTS (SELECT 1 FROM edi_submissions n WHERE n.tenant_id=s.tenant_id AND n.claim_id=s.claim_id AND n.status='delivered' AND n.created_at>s.created_at) AND NOT EXISTS (SELECT 1 FROM edi_remote_reports l WHERE l.tenant_id=r.tenant_id AND l.format='claimmd_status' AND l.native_id=r.native_id AND l.last_result='status_applied' AND l.received_at>r.received_at) ORDER BY r.received_at,CASE WHEN r.metadata->>'response_id' ~ '^[0-9]{1,20}$' THEN (r.metadata->>'response_id')::numeric END,r.id LIMIT 200")
+        .bind(a.tenant_id).bind(key).fetch_all(&mut **tx).await?;
+    for (report, submission, evidence) in reports {
+        let applied = apply_claimmd_status(tx, a, report, submission, &evidence).await?;
+        sqlx::query("UPDATE edi_remote_reports SET last_result='status_applied',version=version+1 WHERE tenant_id=$1 AND id=$2")
+            .bind(a.tenant_id)
+            .bind(report)
+            .execute(&mut **tx)
+            .await?;
+        report_event(
+            tx,
+            a,
+            report,
+            "Claim.MD status message applied on a later pass",
+            json!({"clinical_status_changed":applied!="none","claim_status":applied}),
+        )
+        .await?;
     }
     Ok(())
 }
@@ -683,6 +728,7 @@ pub async fn poll_one(pool: &PgPool, c: &Config) -> Result<bool> {
             }
             if r.adapter == Adapter::ClaimMd {
                 attach_claimmd_status(&mut tx, &a, &key).await?;
+                reapply_claimmd_status(&mut tx, &a, &key).await?;
             }
             sqlx::query("UPDATE edi_connections SET page_token=$3,pages=pages+1,last_success_at=now() WHERE tenant_id=$1 AND route_key=$2").bind(tenant).bind(&key).bind(page.next).execute(&mut *tx).await?;
             Ok(())
@@ -1198,5 +1244,16 @@ mod claimmd_tracking_tests {
             }
         }
         assert!(!claimmd_identity_matches(&json!({}), &json!({})));
+        let mut spaced = frozen.clone();
+        spaced["snapshot"]["account"]["coverage_snapshot"]["coverage"]["content"]["member_id"] =
+            json!(" SYN-MEMBER ");
+        assert!(claimmd_identity_matches(&evidence, &spaced));
+        let mut echoed = evidence.clone();
+        echoed["ins_number"] = json!("SYN-MEMBER  ");
+        assert!(claimmd_identity_matches(&echoed, &spaced));
+        spaced["snapshot"]["account"]["coverage_snapshot"]["coverage"]["content"]["member_id"] =
+            json!("   ");
+        echoed["ins_number"] = json!("  ");
+        assert!(!claimmd_identity_matches(&echoed, &spaced));
     }
 }

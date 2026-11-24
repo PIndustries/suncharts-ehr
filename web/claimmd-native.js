@@ -19,9 +19,11 @@ function claimMdWorkflowOverview(state=claimMdConnectionState,submissions=[],cla
 }
 
 function claimMdTrackingHeadline(evidence={}){
- const sender=evidence.sender_name||'',isClaimMd=evidence.senderid==='CLMMD',rejected=evidence.status==='R'||evidence.message?.status==='R';
- if(rejected)return{headline:isClaimMd?'Claim.MD rejected this claim':`${sender||'The payer'} rejected this claim`};
- if(evidence.status==='A'){if(isClaimMd)return{headline:'Claim.MD received this claim'};if(evidence.sender_icn)return{headline:`${sender||'The payer'} accepted this claim`,extra:`Payer claim number ${evidence.sender_icn}`};}
+ // The message-level status wins over the claim-level one.
+ const sender=evidence.sender_name||'',isClaimMd=evidence.senderid==='CLMMD',claimLevel=String(evidence.status||'').toUpperCase(),messageLevel=String(evidence.message?.status||'').toUpperCase(),level=messageLevel||claimLevel;
+ if(level==='R'||claimLevel==='R')return{headline:isClaimMd?'Claim.MD rejected this claim':`${sender||'The payer'} rejected this claim`};
+ if(level==='W')return{headline:'Claim.MD found a problem with this claim',extra:'Nothing has gone to the insurer. Correct the claim and send it again.'};
+ if(level==='A'||claimLevel==='A'){if(isClaimMd)return{headline:'Claim.MD received this claim'};if(evidence.sender_icn)return{headline:`${sender||'The payer'} accepted this claim`,extra:`Payer claim number ${evidence.sender_icn}`};}
  return{headline:`Update from ${sender||'the payer'}`};
 }
 function claimMdTrackingSummary(tracking={}){

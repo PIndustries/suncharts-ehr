@@ -6448,6 +6448,141 @@ async fn claimmd_acknowledged_only_is_received_and_a_later_warning_needs_correct
     server.abort();
 }
 
+// Puts a report back the way it sat before its message was understood: attached to its
+// submission, never applied. The claim's own record of applying it is removed (history is
+// immutable, so the guard trigger is lifted for this synthetic setup only).
+async fn claimmd_unapply(db: &PgPool, a: &Actor, event: &str) {
+    sqlx::query("ALTER TABLE claim_revisions DISABLE TRIGGER claim_revisions_immutable")
+        .execute(db)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM claim_revisions WHERE tenant_id=$1 AND evidence->>'event'=$2")
+        .bind(a.tenant_id)
+        .bind(event)
+        .execute(db)
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE claim_revisions ENABLE TRIGGER claim_revisions_immutable")
+        .execute(db)
+        .await
+        .unwrap();
+    let reset = sqlx::query("UPDATE edi_remote_reports SET last_result='original_received' WHERE tenant_id=$1 AND format='claimmd_status' AND native_kind='submission'")
+        .bind(a.tenant_id)
+        .execute(db)
+        .await
+        .unwrap();
+    assert_eq!(reset.rows_affected(), 1);
+}
+
+async fn claimmd_repoll(db: &PgPool, config: &suncharts_engine::delivery::Config, a: &Actor) {
+    sqlx::query(
+        "UPDATE edi_connections SET next_poll_at=now(),version=version+1 WHERE tenant_id=$1",
+    )
+    .bind(a.tenant_id)
+    .execute(db)
+    .await
+    .unwrap();
+    suncharts_engine::retrieval::poll_one(db, config)
+        .await
+        .unwrap();
+}
+
+async fn claimmd_event_count(db: &PgPool, a: &Actor, event: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM claim_revisions WHERE tenant_id=$1 AND evidence->>'event'=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(event)
+    .fetch_one(db)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn claimmd_warning_attached_but_never_applied_is_applied_on_the_next_pass_once() {
+    let (r, db, a, _) = setup().await;
+    let (c, p, out, receipt) = delivered_claimmd_claim(&r, &a).await;
+    let control = c["control_number"].clone();
+    let mut warning = claimmd_status_claim(&control, 1, "A", "CLMMD", "");
+    warning["messages"] = json!([{"responseid":1,"status":"W","mesgid":"WARN","message":"Synthetic claim needs correcting"}]);
+    let (config, server, _base) = claimmd_feed(
+        &a,
+        &p,
+        ClaimMdFeed {
+            receipt,
+            pages: [("0".into(), claimmd_page(vec![warning]))]
+                .into_iter()
+                .collect(),
+            empty: json!({}),
+        },
+    )
+    .await;
+    queue_provider(&r, &a, &out).await;
+    assert!(suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap());
+    assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap());
+    claimmd_unapply(&db, &a, "claimmd_warning").await;
+    assert_eq!(claimmd_event_count(&db, &a, "claimmd_warning").await, 0);
+    claimmd_repoll(&db, &config, &a).await;
+    let state = claimmd_page_state(&r, &a, &c).await;
+    assert_eq!(state["position"]["needs_correction"], true);
+    assert_eq!(claimmd_event_count(&db, &a, "claimmd_warning").await, 1);
+    let result: String = sqlx::query_scalar(
+        "SELECT last_result FROM edi_remote_reports WHERE tenant_id=$1 AND format='claimmd_status'",
+    )
+    .bind(a.tenant_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(result, "status_applied");
+    claimmd_repoll(&db, &config, &a).await;
+    assert_eq!(claimmd_event_count(&db, &a, "claimmd_warning").await, 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn claimmd_acknowledged_attached_but_never_applied_gives_one_received_revision() {
+    let (r, db, a, _) = setup().await;
+    let (c, p, out, receipt) = delivered_claimmd_claim(&r, &a).await;
+    let control = c["control_number"].clone();
+    let mut ack = claimmd_status_claim(&control, 1, "A", "CLMMD", "");
+    ack["messages"] =
+        json!([{"responseid":1,"status":"A","mesgid":"ACK","message":"Acknowledged"}]);
+    let (config, server, _base) = claimmd_feed(
+        &a,
+        &p,
+        ClaimMdFeed {
+            receipt,
+            pages: [("0".into(), claimmd_page(vec![ack]))]
+                .into_iter()
+                .collect(),
+            empty: json!({}),
+        },
+    )
+    .await;
+    queue_provider(&r, &a, &out).await;
+    assert!(suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap());
+    assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap());
+    claimmd_unapply(&db, &a, "claimmd_received").await;
+    assert_eq!(claimmd_event_count(&db, &a, "claimmd_received").await, 0);
+    claimmd_repoll(&db, &config, &a).await;
+    assert_eq!(claimmd_event_count(&db, &a, "claimmd_received").await, 1);
+    claimmd_repoll(&db, &config, &a).await;
+    assert_eq!(claimmd_event_count(&db, &a, "claimmd_received").await, 1);
+    assert_eq!(
+        claimmd_page_state(&r, &a, &c).await["claim_status"],
+        "submitted"
+    );
+    server.abort();
+}
+
 #[tokio::test]
 async fn claimmd_response_without_a_file_id_is_matched_by_control_number() {
     let (r, db, a, _) = setup().await;

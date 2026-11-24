@@ -38,5 +38,28 @@ function fixture(){
  const request=f.calls.find(call=>call.path.endsWith('/appeals'));
  assert.equal(JSON.stringify(request.body),JSON.stringify({setting_id:'setting-1',native_claim_id:'claim-1',reason:'Reviewed denial'}));
  assert.equal(f.context.opened,'https://www.claim.md/appeal/synthetic');
+
+ // The per-claim refresh buttons show when only the delivery receipt knows the Claim.MD claim ID.
+ for(const withTimeline of [true,false]){
+  let activity='';
+  const lifecycle={insertAdjacentHTML:(_where,value)=>{activity+=value;}};
+  const ctx={console,Date,JSON,encodeURIComponent,document:{addEventListener(){}},me:{role:'owner'},esc:escape,human:value=>String(value),date:value=>String(value),
+   claimMdConnectionState:{active:{id:'setting-1',usage:'T'}},
+   $:id=>id==='claims-detail'?{querySelector:()=>lifecycle}:null,
+   api:async path=>{
+    if(path.endsWith('/history'))return{items:[{evidence:{receipt_reference:'claimmd-claim:902000555'}}]};
+    if(path==='/api/v1/billing/claims/claim-9')return{claim:{id:'claim-9'},tracking:{reports:withTimeline?[]:[{evidence:{claimmd_id:'902000555'}}]}};
+    if(path.endsWith('/operations'))return{records:[],operations:[],era_documents:[]};
+    return{};
+   }};
+  vm.createContext(ctx);
+  if(withTimeline)vm.runInContext(fs.readFileSync('web/claim-timeline.js','utf8'),ctx);
+  vm.runInContext(source,ctx);
+  await vm.runInContext('showClaimMdClaimActivity({id:"claim-9",control_number:"CTRL-9",status:"submitted",snapshot:{patient:{}}})',ctx);
+  assert.match(activity,/data-claimmd-claim-sync="notes" data-claimmd-id="902000555"/);
+  assert.match(activity,/data-claimmd-claim-sync="modifications" data-claimmd-id="902000555"/);
+  assert.doesNotMatch(activity,/becomes available|appear once Claim\.MD/);
+ }
+ console.log('PASS the notes and changes refresh shows when only the receipt knows the Claim.MD claim ID');
  console.log('PASS Claim.MD native workflows render scoped callbacks and preserve native claim identity');
 })().catch(error=>{console.error(error);process.exitCode=1;});

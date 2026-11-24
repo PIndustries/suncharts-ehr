@@ -182,11 +182,19 @@ function dayGap(from,to){
 // Claim.MD status letters: a claim is accepted by Claim.MD ("A") and then by the
 // payer; "R" is a rejection. senderid "CLMMD" means the clearinghouse, not the payer.
 function timelineClaimMdStatusText(evidence={}){
- const rejected=evidence.status==='R'||evidence.message?.status==='R';
- const sender=evidence.sender_name||(evidence.senderid==='CLMMD'?'Claim.MD':'the insurance company');
- if(rejected)return{accepted:false,rejected:true,who:evidence.senderid==='CLMMD'?'Claim.MD':(evidence.sender_name||'the insurance company'),message:evidence.message?.message||''};
- if(evidence.status==='A')return{accepted:true,rejected:false,who:evidence.senderid==='CLMMD'?'Claim.MD':(evidence.sender_name||'the insurance company'),message:evidence.message?.message||''};
- return{accepted:false,rejected:false,who:sender,message:evidence.message?.message||''};
+ // The message-level status wins over the claim-level one: "W" means Claim.MD is holding the
+ // claim for correction and nothing went to the insurer, even when the claim-level status is "A".
+ const claimLevel=String(evidence.status||'').toUpperCase(),messageLevel=String(evidence.message?.status||'').toUpperCase();
+ const level=messageLevel||claimLevel,isClaimMd=evidence.senderid==='CLMMD',text=String(evidence.message?.message||'');
+ const who=isClaimMd?'Claim.MD':(evidence.sender_name||'the insurance company');
+ const base={accepted:false,rejected:false,problem:false,received:false,who,message:text};
+ if(level==='R'||claimLevel==='R')return{...base,rejected:true};
+ if(level==='W')return{...base,problem:true,who:'Claim.MD',next:'Nothing has gone to the insurer. Correct the claim and send it again.'};
+ if(level==='A'||claimLevel==='A'){
+  if(isClaimMd)return{...base,received:true};
+  return{...base,accepted:true};
+ }
+ return base;
 }
 function adjustmentLabel(adjustment={}){
  const group=String(adjustment.group||'').toUpperCase(),code=String(adjustment.reason_code||'').trim();
@@ -229,13 +237,16 @@ function buildClaimTimeline(input={}){
 
  for(const report of tracking.reports||[]){
   const evidence=report.evidence||{},status=timelineClaimMdStatusText(evidence);
-  const forwarded=evidence.status==='A'&&evidence.senderid&&evidence.senderid!=='CLMMD';
+  const forwarded=!status.problem&&!status.rejected&&evidence.status==='A'&&evidence.senderid&&evidence.senderid!=='CLMMD';
   let label,detail;
   if(status.rejected)label=status.who==='Claim.MD'?'Rejected by Claim.MD':`Rejected by ${status.who}`;
   else if(forwarded)label='Forwarded to the insurance company';
-  else if(status.accepted)label=evidence.senderid==='CLMMD'?'Accepted by Claim.MD':`Accepted by ${status.who}`;
+  else if(status.problem)label='Claim.MD found a problem';
+  else if(status.received)label='Received by Claim.MD';
+  else if(status.accepted)label=`Accepted by ${status.who}`;
   else label=`Update from ${status.who}`;
   detail=status.message||'';
+  if(status.problem)detail=`${detail}${detail?' ':''}${status.next}`;
   if(forwarded&&evidence.sender_icn)detail=`${detail}${detail?' ':''}Payer claim number ${evidence.sender_icn}.`;
   push({key:`report-${evidence.responseid||report.id}`,label,at:report.received_at,detail,
    rows:[timelineFieldRow('claimmd_id',evidence.claimmd_id,'Claim.MD claim ID'),timelineFieldRow('fileid',evidence.fileid,'Claim.MD file ID'),timelineFieldRow('senderid',evidence.senderid,'Sent by (code)'),timelineFieldRow('sender_name',evidence.sender_name,'Sent by'),timelineFieldRow('sender_icn',evidence.sender_icn,'Payer claim number'),timelineFieldRow('status',timelineValueText(evidence.status),'Status',evidence.status),timelineFieldRow('response_time',evidence.response_time,'Provider time'),timelineFieldRow('total_charge',evidence.total_charge,'Total charge reported by the provider'),timelineFieldRow('fdos',evidence.fdos,'Date of service reported by the provider')].filter(Boolean),
@@ -283,19 +294,21 @@ function buildClaimTimeline(input={}){
   const ordered=[...withTime,...withoutTime];
   const postedStep=ordered.find(isPosted),billedStep=ordered.find(step=>String(step.key||'').startsWith('invoice-'));
  return {steps:ordered,current:claimCurrentLine(claim,{tracking,era,posted:!!postedStep,postedAt:postedStep?.at||null,billed:!!billedStep,billedAt:billedStep?.at||null,now,payerName}),
-  identifiers:{payerControlNumber:claim.payer_control_number||'',claimMdClaimId:claimMdClaimId(claimMdRecords,tracking),controlNumber:claim.control_number||''}};
+  identifiers:{payerControlNumber:claim.payer_control_number||'',claimMdClaimId:claimMdClaimId(claimMdRecords,tracking,history),controlNumber:claim.control_number||''}};
 }
 function path(object,dotted){
  let node=object;
  for(const key of String(dotted).split('.')){if(node===null||node===undefined)return undefined;node=node[key];}
  return node;
 }
-function claimMdClaimId(claimMdRecords=[],tracking={}){
+function claimMdClaimId(claimMdRecords=[],tracking={},history=[]){
  const fromRecords=(claimMdRecords||[]).map(record=>record?.claimmd_id).find(Boolean);
  if(fromRecords)return String(fromRecords);
  const reports=(tracking.reports||[]).slice().reverse();
  const fromReport=reports.map(report=>report?.evidence?.claimmd_id).find(Boolean);
- return fromReport?String(fromReport):'';
+ if(fromReport)return String(fromReport);
+ for(const item of history||[]){const match=/^claimmd-claim:(.+)$/.exec(String(item?.evidence?.receipt_reference||''));if(match)return match[1];}
+ return '';
 }
 // One large plain sentence: where the claim stands and how long it has stood there.
 function claimCurrentLine(claim={},context={}){

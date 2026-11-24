@@ -50,6 +50,12 @@ assert.doesNotMatch(native,/Sender not identified/,'an unidentified sender is no
 assert.doesNotMatch(native,/Status code/,'status codes are not staff wording');
 console.log('PASS coverage, transport, response sender and remittance milestones require distinct recorded evidence');
 
+html=context.claimMdTrackingSummary({reports:[{evidence:{senderid:'CLMMD',sender_name:'Claim.MD',status:'A',message:{status:'W',message:'NCCI - Procedure Code 11111 requires an appropriate modifier.'}},received_at:'2026-11-11'}]});
+assert.match(html,/Claim\.MD found a problem with this claim/);
+assert.match(html,/Nothing has gone to the insurer\. Correct the claim and send it again\./);
+assert.doesNotMatch(html,/received this claim/);
+html=context.claimMdTrackingSummary({reports:[{evidence:{senderid:'CLMMD',sender_name:'Claim.MD',status:'A',message:{status:'A',message:'Acknowledged'}},received_at:'2026-11-11'}]});
+assert.match(html,/Claim\.MD received this claim/);
 html=context.claimMdTrackingSummary({reports:[{evidence:{senderid:'CLMMD',sender_name:'Claim.MD',status:'A',message:{status:'A',message:'Claim received <unsafe>'}},received_at:'2026-11-11'}]});
 assert.match(html,/Claim.MD received this claim/);assert.match(html,/Claim received &lt;unsafe>/);
 html=context.claimMdTrackingSummary({reports:[{evidence:{senderid:'SYN-PAYER',sender_name:'Synthetic Payer',status:'A',sender_icn:'ICN<SYN0001>',message:{status:'A',message:'Accepted by payer'}},received_at:'2026-11-12'}]});

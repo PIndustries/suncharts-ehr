@@ -386,7 +386,7 @@ pub(crate) async fn claimmd_settle_correction(
     claim: Uuid,
     report: Uuid,
 ) -> Result<bool> {
-    let open: bool = sqlx::query_scalar("SELECT coalesce((SELECT reason FROM claim_revisions WHERE tenant_id=$1 AND claim_id=$2 AND evidence->>'evidence_origin'='claimmd_status_feed' AND reason IN ($3,$4))=$3,false)")
+    let open: bool = sqlx::query_scalar("SELECT coalesce((SELECT reason FROM claim_revisions WHERE tenant_id=$1 AND claim_id=$2 AND evidence->>'evidence_origin'='claimmd_status_feed' AND reason IN ($3,$4) ORDER BY version DESC LIMIT 1)=$3,false)")
         .bind(a.tenant_id)
         .bind(claim)
         .bind(CLAIMMD_WARNING_REASON)
