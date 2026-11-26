@@ -2442,6 +2442,22 @@ async fn claim_handoff_keeps_holds_and_missing_fields_and_requires_authority() {
         again["claim_id"], current["claim_id"],
         "same reviewed draft can be retried after posting"
     );
+    let summary = f.summary(&f.owner, patient, visit).await;
+    let claim = &summary["claim"];
+    let stale = f
+        .ok(
+            "POST",
+            &url,
+            json!({"mode":"queue","account_id":id(&draft),"account_version":version(&summary["account"]),
+                "reviewed_claim":{"id":id(claim),"version":version(claim)+1}}),
+            None,
+        )
+        .await;
+    assert_eq!(stale["outcome"], "needs_review");
+    assert_eq!(
+        stale["issues"],
+        json!(["The claim changed. Reopen Claim details to review the current claim."])
+    );
     let self_pay = f.charges(other, other_visit, None, 10000).await;
     let result = f
         .ok(

@@ -864,7 +864,35 @@ document.addEventListener('click',event=>{
  }
  if(button.hasAttribute('data-visit-collect')){event.preventDefault();openVisitCollect();return;}
  if(button.hasAttribute('data-visit-collect-close')){event.preventDefault();if(collectDialog){sheetClose(collectDialog);return;}const panel=$('visit-billing-collect');if(panel)panel.hidden=true;return;}
- if(button.hasAttribute('data-prior-auth-save')){event.preventDefault();const box=button.closest('[data-prior-auth-edit]'),input=box?.querySelector?.('input');if(!box||!input)return;button.disabled=true;run(async()=>{try{await chargePriorAuthorizationSave(box.dataset.claim,input.value);notice('Prior authorization number saved.');await loadEncounterRevenueStatus(encounterChargeAccount(),true);}finally{button.disabled=false;}});return;}
+ if(button.hasAttribute('data-prior-auth-save')){
+  event.preventDefault();
+  const box=button.closest('[data-prior-auth-edit]'),input=box?.querySelector('input');
+  if(!box||!input)return;
+  const dialog=box.closest('[data-signed-claim-details]'),person=selected,visit=activeVisit?.id,identity=me;
+  const current=()=>person===selected&&visit===activeVisit?.id&&identity===me&&(!dialog||dialog.open&&dialog.isConnected&&encounterRevenueState.data?.summary?.claim?.id===box.dataset.claim);
+  const alert=dialog?.querySelector('[data-signed-claim-authorization-alert]');
+  const value=input.value;
+  button.disabled=true;
+  run(async()=>{
+   try{
+    const saved=await chargePriorAuthorizationSave(box.dataset.claim,value,current);
+    if(!saved||!current())return;
+    const number=saved.content?.encounter?.prior_authorization_number||'';
+    if(input.value===value)input.value=number;
+    input.defaultValue=number;
+    const display=dialog?.querySelector('[data-signed-claim-authorization]');
+    if(display)display.textContent=number||'Not entered';
+    if(alert)alert.hidden=true;
+    notice('Prior authorization number saved.');
+    await loadEncounterRevenueStatus(encounterChargeAccount(),true);
+   }catch(error){
+    if(!alert||!current())throw error;
+    alert.textContent=visitClaimErrorText(error);
+    alert.hidden=false;
+   }finally{button.disabled=false;}
+  });
+  return;
+ }
  if(button.hasAttribute('data-visit-claim-resend')){event.preventDefault();button.disabled=true;button.textContent='Sending…';run(()=>visitClaimResend(button));return;}
  if(button.dataset.visitClaimPrepare!==undefined){event.preventDefault();button.disabled=true;run(()=>prepareVisitClaim(button.dataset.visitClaimPrepare==='again'));return;}
  if(button.dataset.visitClaimDirectSend){event.preventDefault();run(()=>sendVisitClaimNow(button.dataset.visitClaimDirectSend,button));return;}
@@ -1269,11 +1297,13 @@ function encounterCodesStripClaimSync(){
  button.hidden=!id;button.dataset.codesStripCms=id;
 }
 // The CMS-1500 view of the claim, opened over the page. Looking at it sends nothing.
-async function openClaimFormPreview(claimId){
+async function openClaimFormPreview(claimId,current=()=>true){
  const response=await fetch(`/api/v1/billing/claims/${encodeURIComponent(claimId)}/cms1500`,{credentials:'same-origin'});
+ if(!current())return;
  if(!response.ok)throw new Error('The claim form could not be opened. Refresh the encounter and try again.');
  // The form's own zoom and print buttons need its script, which a preview does not run; the sheet has Print.
  const html=(await response.text()).replace(/<div class=preview-actions[\s\S]*?<\/div>/,'');
+ if(!current())return;
  const dialog=openReceiptPreview(html,'Claim form (CMS-1500)'),frame=dialog.querySelector('iframe');
  // Open fitted to the window: the whole width of the form is visible without scrolling sideways.
  const fit=()=>{
@@ -2669,7 +2699,18 @@ if(typeof document!=='undefined'&&document.addEventListener){
    return;
   }
   if(target.closest?.('[data-encounter-history-sheet]')){event.preventDefault();encounterHistoryOpen();return;}
-  if(target.closest?.('[data-encounter-claim-form]')){event.preventDefault();const claim=encounterRevenueState.data?.summary?.claim?.id;if(claim){run(()=>openClaimFormPreview(claim));return;}const panel=document.createElement('div');panel.innerHTML=visitReviewFormMarkup(encounterRevenueState.data?.summary||{});sheetOpen('View claim form',panel);}
+  const preview=target.closest?.('[data-encounter-claim-form]');
+  if(preview){
+   event.preventDefault();
+   const claim=preview.dataset.encounterClaimForm||encounterRevenueState.data?.summary?.claim?.id;
+   if(claim){
+    const person=selected,visit=activeVisit?.id,identity=me;
+    const current=()=>person===selected&&visit===activeVisit?.id&&identity===me&&encounterRevenueState.data?.summary?.claim?.id===claim;
+    if(current())run(()=>openClaimFormPreview(claim,current));
+    return;
+   }
+   const panel=document.createElement('div');panel.innerHTML=visitReviewFormMarkup(encounterRevenueState.data?.summary||{});sheetOpen('View claim form',panel);
+  }
  });
 }
 

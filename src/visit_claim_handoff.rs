@@ -44,10 +44,17 @@ impl Confirmations {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ReviewedClaim {
+    id: Uuid,
+    version: i64,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Request {
     account_id: Option<Uuid>,
     account_version: Option<i64>,
     sign_version: Option<i64>,
+    reviewed_claim: Option<ReviewedClaim>,
     mode: Mode,
     #[serde(default)]
     confirmations: Confirmations,
@@ -199,6 +206,11 @@ async fn advance(
             "The charges changed. Refresh this encounter and review the current amount.",
         ));
     }
+    if request.reviewed_claim.is_some() && account.status != "posted" {
+        return Ok(review(
+            "The charges changed. Reopen Claim details to review the current claim.",
+        ));
+    }
     if account.content["coverage_id"].is_null() {
         return Ok(json!({"outcome":"self_pay"}));
     }
@@ -235,17 +247,22 @@ async fn advance(
     } else if account.status != "posted" {
         return Ok(review("These charges cannot be submitted."));
     }
-    let draft = visit_billing::prepare_claim(db, a, patient, account.id, false).await?;
-    let Some(id) = draft["claim_id"]
-        .as_str()
-        .and_then(|v| Uuid::parse_str(v).ok())
-    else {
-        return Ok(review(match draft["outcome"].as_str() {
-            Some("cancelled") => {
-                "The claim was cancelled. Review it before preparing a replacement."
-            }
-            _ => "Review the encounter's payer and posted charges before submitting.",
-        }));
+    let id = if let Some(reviewed) = &request.reviewed_claim {
+        reviewed.id
+    } else {
+        let draft = visit_billing::prepare_claim(db, a, patient, account.id, false).await?;
+        let Some(id) = draft["claim_id"]
+            .as_str()
+            .and_then(|v| Uuid::parse_str(v).ok())
+        else {
+            return Ok(review(match draft["outcome"].as_str() {
+                Some("cancelled") => {
+                    "The claim was cancelled. Review it before preparing a replacement."
+                }
+                _ => "Review the encounter's payer and posted charges before submitting.",
+            }));
+        };
+        id
     };
     let mut tx = db.begin().await?;
     let current = billing::account_row(&mut tx, a, patient, account.id).await?;
@@ -253,7 +270,27 @@ async fn advance(
         return Ok(review("Charges changed while preparing the claim. Review the current encounter before submitting."));
     }
     let loaded = claims::claim_row(&mut tx, a, id).await?;
-    let claim = claims::refill_draft(db, &mut tx, a, &loaded, false).await?;
+    let claim = if let Some(reviewed) = &request.reviewed_claim {
+        let latest: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM ehr_claims WHERE tenant_id=$1 AND account_id=$2 AND status<>'void' ORDER BY created_at DESC,id DESC LIMIT 1",
+        )
+        .bind(a.tenant_id)
+        .bind(account.id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if loaded.patient_id != patient
+            || loaded.account_id != account.id
+            || loaded.version != reviewed.version
+            || latest != Some(reviewed.id)
+        {
+            return Ok(review(
+                "The claim changed. Reopen Claim details to review the current claim.",
+            ));
+        }
+        loaded
+    } else {
+        claims::refill_draft(db, &mut tx, a, &loaded, false).await?
+    };
     let prior = evidence(&mut tx, a, id).await?;
     tx.commit().await?;
     if let Some(row) = &prior {
