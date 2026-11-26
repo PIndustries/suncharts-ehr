@@ -107,21 +107,23 @@ function requireClaimContext(context,claim){
  if(!claimContextCurrent(context))throw new Error('This page changed. Open the claim again from its visit.');
  if(context.kind==='encounter'&&claim&&(claim.patient_id!==context.patient||claim.account_id!==context.account))throw new Error('This claim does not belong to the selected visit.');
 }
-function mountEncounterClaims(accountId){
+function mountEncounterClaims(accountId,{inPlace=false}={}){
  captureClaimDraft();
  const account=(workspace.billing?.accounts||[]).find(a=>a.id===accountId&&a.content.visit_id===activeVisit?.id);
  if(!account||!selected||!activeVisit)throw new Error('Open the encounter for these charges first.');
  if(typeof workspaceResourceAllowed==='function'&&!workspaceResourceAllowed('claims'))throw new Error('Claim review requires access to insurance claims.');
- setEncounterSection('charges');
+ if(!inPlace)setEncounterSection('charges');
  const container=$('encounter-claims');if(!container)throw new Error('Open Billing & claim in this encounter.');
- container.innerHTML='<div id="encounter-claims-detail"></div>';container.hidden=false;if(typeof invoiceTabSet==='function')invoiceTabSet('billing');
+ container.innerHTML='<div id="encounter-claims-detail"></div>';container.hidden=false;
+ if(!inPlace&&typeof invoiceTabSet==='function')invoiceTabSet('billing');
  const actions=container.closest?.('[data-step-claim-actions]');
  if(actions)actions.open=true;
  claimViewContext={kind:'encounter',identity:me,patient:selected,visit:activeVisit.id,account:accountId,host:$('encounter-claims-detail')};
  return claimViewContext;
 }
-async function showEncounterClaim(id,accountId){
- const context=mountEncounterClaims(accountId);
+async function showEncounterClaim(id,accountId,{savedActivityOnly=false}={}){
+ const context=mountEncounterClaims(accountId,{inPlace:savedActivityOnly});
+ context.savedActivityOnly=savedActivityOnly;
  await loadClaimMdConnection();if(!claimContextCurrent(context))return;
  await showClaim(id);
  if(typeof registerAutoRefresh==='function')$('encounter-claims')?.querySelector('.section-head')?.querySelector('.auto-refresh-updated')?.remove();
@@ -832,7 +834,7 @@ async function insertClaimStatusTimeline(context,claim,detail,history){
   anchor.insertAdjacentHTML(box?'afterend':'beforebegin','<div class="claim-status-timeline-host" data-claim-timeline><p class="muted">Reading what happened to this claim…</p></div>');
  const slot=host.querySelector('[data-claim-timeline]'),identity=typeof me==='undefined'?undefined:me;
  let html='<p class="muted">What happened to this claim is not available right now. The claim details below are unaffected.</p>';
- try{const built=await build(claim,detail,history,{});if(built)html=built;}catch{}
+ try{const built=await build(claim,detail,history,{syncClearinghouse:!context.savedActivityOnly});if(built)html=built;}catch{}
  // Another claim may have opened while the provider was answering; never write a
  // stale timeline into the container of the claim now on screen.
  if(claim!==claimCurrent||(typeof me!=='undefined'&&me!==identity)||!slot?.isConnected)return;
@@ -888,11 +890,11 @@ async function showClaim(id){
  const [d,h]=await Promise.all([api(`${claimsBase}/${id}`),api(`${claimsBase}/${id}/history`)]);if(!current())return;
  if(d.claim?.id!==id)throw new Error('The claim response does not match the selected claim.');
  requireClaimContext(context,d.claim);claimCurrent=d.claim;context.claim=d.claim.id;
- claimPane(claimScreenMarkup(d.claim,d,h),{request});claimDetailOnScreen={claimId:d.claim.id,detail:d};
+ claimPane(claimScreenMarkup(d.claim,d,h),{request,quiet:context.savedActivityOnly});claimDetailOnScreen={claimId:d.claim.id,detail:d};
   // The Claim.MD panels and the "what happened" timeline are filled in after the screen is drawn,
   // and sit inside More details. Each is left alone when its own script is not loaded.
   const claim=d.claim;
-  const lifecycle=typeof claimMdClaimLifecycle==='function'?claimMdClaimLifecycle(claim,d,h):'';
+  const lifecycle=typeof claimMdClaimLifecycle==='function'?claimMdClaimLifecycle(claim,d,h,{responsesOpen:context.savedActivityOnly?false:undefined}):'';
   if(lifecycle){const anchor=claimPanelAnchor(claimWorkspaceHost(context));if(anchor?.insertAdjacentHTML)anchor.insertAdjacentHTML('beforeend',`<section class="claim-more-item" data-claim-more="claim-progress"><h3>Claim progress</h3>${lifecycle}</section>`);}
   // "What happened" gets its own container, placed after the rejection box above the
   // lifecycle panel, so the other panels can be replaced without touching it.
@@ -901,7 +903,7 @@ async function showClaim(id){
   if(typeof startClaimMdTracking==='function')startClaimMdTracking(claim.id);
   if(typeof showClaimMdClaimActivity==='function')await showClaimMdClaimActivity(claim);
   if(!current())return;
-  claimProgressToHead(claimWorkspaceHost(context));
+  if(!context.savedActivityOnly)claimProgressToHead(claimWorkspaceHost(context));
   if(claimContextCurrent(context)&&context?.kind!=='encounter')claimDetailTabs(claimWorkspaceHost(context));
   if(typeof registerAutoRefresh==='function'){if(['submitted','accepted','adjudicated'].includes(claim.status)&&claimContextCurrent(context)&&context.kind==='worklist')registerClaimDetailAutoRefresh();else unregisterAutoRefresh('claim-status');}
 }
