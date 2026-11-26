@@ -663,6 +663,14 @@ pub(crate) fn preflight(c: &Claim) -> Result<Vec<String>> {
     // staff reach the send form.
     let cov = &c.snapshot["account"]["coverage_snapshot"]["coverage"]["content"];
     let patient = &c.snapshot["patient"];
+    if cov["relationship"] == "other" {
+        issues.push("Policy holder relationship must be confirmed".into());
+    } else if !matches!(
+        cov["relationship"].as_str(),
+        Some("self" | "spouse" | "child")
+    ) {
+        issues.push("Policy holder relationship is unsupported for electronic claims".into());
+    }
     for (value, min, max, label, issue) in [
         (
             cov["member_id"].as_str().unwrap_or(""),
@@ -1156,6 +1164,10 @@ async fn claim_detail(
     .bind(id)
     .fetch_one(&mut *tx)
     .await?;
+    let can_confirm_self_policyholder = !artifact_generated
+        && a.scheduling().is_ok()
+        && self_policyholder_birth_date(&c).is_some()
+        && self_policyholder_address(&submission_defaults["patient_address"]).is_ok();
     // The resend frequency follows the same rule the create endpoint enforces, so it also has to
     // look at the claim this one is linked to: a correction whose parent is on file with the payer
     // goes back as a replacement carrying the parent's number, not as a second first claim.
@@ -1188,7 +1200,7 @@ async fn claim_detail(
     let transport = clearinghouse_transport(db(&s)?, a.tenant_id, artifact_generated).await?;
     let (frequency, frequency_code) = claim_resend_plan_for(&payer_control);
     Ok(Json(
-        json!({"claim":c,"preflight_issues":issues,"transport":transport,"submission_defaults":submission_defaults,"tracking":tracking,
+        json!({"claim":c,"preflight_issues":issues,"can_confirm_self_policyholder":can_confirm_self_policyholder,"transport":transport,"submission_defaults":submission_defaults,"tracking":tracking,
             "resend":{"frequency":frequency,"frequency_code":frequency_code,"payer_control_number":payer_control},
             "claimmd_position":claimmd_position,
             "responses":{"revisions":responses,"feed":feed}}),
@@ -1232,6 +1244,136 @@ fn structured_x12_address(content: Option<&Value>) -> Value {
         "state": address.get("region").or_else(|| address.get("state")).and_then(Value::as_str).unwrap_or_default(),
         "postal_code": address.get("postal_code").and_then(Value::as_str).unwrap_or_default(),
     })
+}
+
+// Confirmation is only offered for the ambiguous Other relationship on an unsent
+// original primary claim whose saved subscriber already matches the patient.
+fn self_policyholder_birth_date(claim: &Claim) -> Option<NaiveDate> {
+    if claim.status != "draft"
+        || claim.frequency != "original"
+        || claim.parent_id.is_some()
+        || claim.source_history_id.is_some()
+        || !claim.payer_control_number.trim().is_empty()
+        || !claim.snapshot["coordination_of_benefits"].is_null()
+    {
+        return None;
+    }
+    let patient = &claim.snapshot["patient"];
+    let policy = &claim.snapshot["account"]["coverage_snapshot"]["coverage"]["content"];
+    if policy["priority"] != "primary" || policy["relationship"] != "other" {
+        return None;
+    }
+    let normalize = |value: &str| {
+        value
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
+    let given = normalize(patient["given_name"].as_str()?);
+    let family = normalize(patient["family_name"].as_str()?);
+    let subscriber = policy["subscriber_name"].as_str()?;
+    let matches_name = match subscriber.split_once(',') {
+        Some((last, first)) => normalize(first) == given && normalize(last) == family,
+        None => normalize(subscriber) == format!("{given} {family}"),
+    };
+    if given.is_empty() || family.is_empty() || !matches_name {
+        return None;
+    }
+    let birth_date = NaiveDate::parse_from_str(patient["birth_date"].as_str()?, "%Y-%m-%d").ok()?;
+    (policy["subscriber_birth_date"].as_str()? == patient["birth_date"].as_str()?
+        && birth_date <= Utc::now().date_naive())
+    .then_some(birth_date)
+}
+
+fn self_policyholder_address(value: &Value) -> Result<String> {
+    let address: crate::x12::Address = serde_json::from_value(value.clone())
+        .map_err(|_| Error::Invalid("A complete patient address on file is required"))?;
+    address.validate()?;
+    Ok([&address.line1, &address.line2, &address.city]
+        .into_iter()
+        .map(|part| part.trim().to_owned())
+        .filter(|part| !part.is_empty())
+        .chain(std::iter::once(format!(
+            "{} {}",
+            address.state, address.postal_code
+        )))
+        .collect::<Vec<_>>()
+        .join(", "))
+}
+
+async fn confirm_self_policyholder(
+    tx: &mut Transaction<'_, Postgres>,
+    actor: &Actor,
+    claim: &Claim,
+    reason: &str,
+) -> Result<Claim> {
+    let birth_date = self_policyholder_birth_date(claim).ok_or(Error::Conflict(
+        "Only an unsent original primary draft with matching patient and policy holder details can be confirmed",
+    ))?;
+    let posted = account(tx, actor, claim.account_id, Some(claim.patient_id)).await?;
+    let frozen_coverage = &claim.snapshot["account"]["coverage_snapshot"];
+    if posted.status != "posted"
+        || posted.source_history_id.is_some()
+        || posted.coverage_snapshot.as_ref() != Some(frozen_coverage)
+        || frozen_coverage["payer"]["id"] != json!(claim.payer_id)
+    {
+        return Err(Error::Conflict(
+            "Review the current posted account and policy before correcting the claim",
+        ));
+    }
+    let has_artifact_or_send: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM edi_submissions WHERE tenant_id=$1 AND claim_id=$2)
+         OR EXISTS(SELECT 1 FROM claim_revisions WHERE tenant_id=$1 AND claim_id=$2
+                   AND snapshot->>'status' IN ('submitted','accepted','rejected','adjudicated'))
+         OR EXISTS(SELECT 1 FROM claimmd_operation_records WHERE tenant_id=$1
+                   AND (claim_id=$2::uuid::text OR patient_control_number=$3))",
+    )
+    .bind(actor.tenant_id)
+    .bind(claim.id)
+    .bind(&claim.control_number)
+    .fetch_one(&mut **tx)
+    .await?;
+    if has_artifact_or_send {
+        return Err(Error::Conflict(
+            "Review the existing file or delivery evidence before changing the claim",
+        ));
+    }
+    let demographics: Option<Value> = sqlx::query_scalar(
+        "SELECT content FROM patient_demographics WHERE tenant_id=$1 AND patient_id=$2 FOR SHARE",
+    )
+    .bind(actor.tenant_id)
+    .bind(claim.patient_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let address = self_policyholder_address(&structured_x12_address(demographics.as_ref()))?;
+    let mut snapshot = claim.snapshot.clone();
+    snapshot["account"]["coverage_snapshot"]["coverage"]["content"]["relationship"] = json!("self");
+    let mut validated: ClaimContent = serde_json::from_value(claim.content.clone())
+        .map_err(|_| Error::Invalid("Review the stored claim details before correcting them"))?;
+    validated.subscriber_address = address;
+    validated.subscriber_birth_date = Some(birth_date);
+    validated.validate()?;
+    let mut content = claim.content.clone();
+    content["subscriber_address"] = json!(validated.subscriber_address);
+    content["subscriber_birth_date"] = json!(validated.subscriber_birth_date);
+    let changed = sqlx::query(
+        "UPDATE ehr_claims SET content=$3,snapshot=$4,version=version+1
+         WHERE tenant_id=$1 AND id=$2 AND status='draft' AND version=$5",
+    )
+    .bind(actor.tenant_id)
+    .bind(claim.id)
+    .bind(content)
+    .bind(snapshot)
+    .bind(claim.version)
+    .execute(&mut **tx)
+    .await?;
+    if changed.rows_affected() != 1 {
+        return Err(Error::Conflict(
+            "Claim changed; reload before confirming the policy holder",
+        ));
+    }
+    revision(tx, actor, claim.id, reason, json!({"action":"confirm_self_policyholder","address_source":"patient_chart","network_transmitted":false})).await
 }
 
 pub(crate) async fn claim_submission_defaults(
@@ -1542,6 +1684,17 @@ async fn claim_action_versioned(
         ));
     }
     crate::delivery::ensure_claim_unreserved(&mut tx, &a, id).await?;
+    if v.action == "confirm_self_policyholder" {
+        crate::access_policies::require_native(&s, &a, "claims", "edit").await?;
+        if !v.reference.is_empty() || v.event_date.is_some() || !v.payer_control_number.is_empty() {
+            return Err(Error::Invalid(
+                "Policy holder confirmation does not record an external event",
+            ));
+        }
+        let corrected = confirm_self_policyholder(&mut tx, &a, &c, &v.reason).await?;
+        tx.commit().await?;
+        return Ok(Json(corrected));
+    }
     if crate::claim_cob::tracking_only(&c) && v.action != "withdraw_crossover" {
         return Err(Error::Conflict("crossover tracking follows the received remittance; no outbound or manual submission event is allowed"));
     }

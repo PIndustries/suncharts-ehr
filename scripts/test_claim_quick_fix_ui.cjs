@@ -12,10 +12,10 @@ const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const calls=[];let refreshed=null,noticed='';
 const ctx={esc,Date,Object,String,Set,Array,JSON,Promise,FormData:class{constructor(form){this.entries=Object.entries(form.values);}[Symbol.iterator](){return this.entries[Symbol.iterator]();}},
  billingWrite:()=>true,claimIsCrossover:()=>false,claimsBase:'/api/v1/billing/claims',
- claimContextSnapshot:()=>({kind:'worklist'}),requireClaimContext(){},notice:m=>{noticed=m;},
- refreshClaimInContext:async id=>{refreshed=id;},document:{addEventListener(){}}};
+ claimContextSnapshot:()=>({kind:'worklist'}),claimContextCurrent:()=>true,requireClaimContext(){},notice:m=>{noticed=m;},
+ refreshClaimInContext:async id=>{refreshed=id;},showClaim:async id=>{refreshed=id;},document:{addEventListener(){}}};
 vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/display-format.js','utf8'),ctx);
-vm.runInContext(source.slice(start,end)+';this.claimMissingGroupsFor=claimMissingGroupsFor;this.claimMissingMarkup=claimMissingMarkup;this.saveClaimQuickFix=saveClaimQuickFix;this.setCurrent=c=>{claimCurrent=c;};',ctx);
+vm.runInContext(source.slice(start,end)+';this.claimMissingGroupsFor=claimMissingGroupsFor;this.claimMissingMarkup=claimMissingMarkup;this.saveClaimQuickFix=saveClaimQuickFix;this.setCurrent=c=>{claimCurrent=c;};this.confirmClaimSelfPolicyholder=confirmClaimSelfPolicyholder;this.setDetail=(c,d)=>{claimDetailOnScreen={claimId:c.id,detail:d};};',ctx);
 const issues=['Patient address is required','Subscriber address is required','Subscriber date of birth is required','Insurer name can only use plain letters, numbers and basic punctuation (no long dashes, accents or curly quotes), 1 to 60 characters'];
 const claim={id:'claim-1',patient_id:'patient-1',status:'draft',version:3,content:{patient_address:'',subscriber_address:'',subscriber_birth_date:null,place_of_service:'11',notes:''},
  snapshot:{patient:{birth_date:'1980-02-03'},account:{coverage_snapshot:{coverage:{content:{relationship:'self'}}}}}};
@@ -39,6 +39,12 @@ ctx.billingWrite=()=>false;assert.doesNotMatch(ctx.claimMissingMarkup(ctx.claimM
 // A policy holder who is not the patient gets their own address box.
 const other=ctx.claimMissingMarkup(ctx.claimMissingGroupsFor(issues),{...claim,snapshot:{patient:{},account:{coverage_snapshot:{coverage:{content:{relationship:'spouse'}}}}}});
 assert.match(other,/name="subscriber_address"/);assert.doesNotMatch(other,/value="1980-02-03"/);
+const policyholderClaim=JSON.parse(JSON.stringify(claim));
+policyholderClaim.snapshot.account.coverage_snapshot.coverage.content.relationship='other';
+const policyholderIssues=ctx.claimMissingGroupsFor(['Policy holder relationship must be confirmed']);
+assert.doesNotMatch(ctx.claimMissingMarkup(policyholderIssues,policyholderClaim),/data-confirm-self-policyholder/);
+assert.match(ctx.claimMissingMarkup(policyholderIssues,policyholderClaim,{can_confirm_self_policyholder:true}),/data-confirm-self-policyholder>Confirm and update claim/);
+assert.doesNotMatch(ctx.claimMissingMarkup(policyholderIssues,{...policyholderClaim,status:'ready'},{can_confirm_self_policyholder:true}),/data-confirm-self-policyholder/);
 (async()=>{
  // Saving: address to the chart (keeping the rest of the contact profile), then the claim is read
  // again and only what is still empty or changed is saved on it, at the version just read.
@@ -47,7 +53,7 @@ assert.match(other,/name="subscriber_address"/);assert.doesNotMatch(other,/value
   if(url==='/api/v1/billing/claims/claim-1'&&method==='GET')return {claim:{...claim,version:4,content:{...claim.content,patient_address:'',subscriber_address:''}}};
   return {};};
  ctx.setCurrent(claim);
- const inputs=[];const form={dataset:{claim:'claim-1'},isConnected:true,values:{address_line1:'1 Synthetic Way',address_line2:'',address_city:'Austin',address_region:'tx',address_postal_code:'78701',subscriber_birth_date:'1980-02-03'},querySelectorAll:()=>inputs};
+ const inputs=[];const form={dataset:{claim:'claim-1',claimVersion:'3'},isConnected:true,values:{address_line1:'1 Synthetic Way',address_line2:'',address_city:'Austin',address_region:'tx',address_postal_code:'78701',subscriber_birth_date:'1980-02-03'},querySelectorAll:()=>inputs};
  await ctx.saveClaimQuickFix(form);
  assert.deepEqual(calls.map(c=>c[0]+' '+c[1]),['/api/v1/patients/patient-1/demographics GET','/api/v1/patients/patient-1/demographics PUT','/api/v1/billing/claims/claim-1 GET','/api/v1/billing/claims/claim-1 PUT']);
  const chart=calls[1];assert.equal(chart[3],7);assert.equal(chart[2].content.phone,'555-0100','the rest of the contact profile is kept');
@@ -61,4 +67,24 @@ assert.match(other,/name="subscriber_address"/);assert.doesNotMatch(other,/value
  await ctx.saveClaimQuickFix({...form,values:{...form.values,address_line1:'2 Synthetic Way'}});
  assert.deepEqual(calls.map(c=>c[1]),['GET','PUT','GET'],'nothing left to save on the claim');
  console.log('PASS claim quick fix: missing boxes filled in on the claim page, address to the chart, claim checked again in place');
+
+ // Confirm the same policyholder explicitly, using a claim-only action and the optimistic version.
+ calls.length=0;refreshed=null;
+ ctx.setCurrent(policyholderClaim);
+ ctx.setDetail(policyholderClaim,{can_confirm_self_policyholder:true});
+ ctx.api=async(url,method,body,version)=>{calls.push([url,method,body,version]);return {...claim,version:version+1};};
+ ctx.billingWrite=()=>false;
+ await ctx.confirmClaimSelfPolicyholder(form);
+ assert.equal(calls.length,0,'read-only access cannot update the claim');
+ ctx.billingWrite=()=>true;
+ await ctx.confirmClaimSelfPolicyholder({...form,dataset:{...form.dataset,claimVersion:'2'}});
+ assert.equal(calls.length,0,'the open form must match the current claim version');
+ await ctx.confirmClaimSelfPolicyholder(form);
+ assert.equal(calls.length,1,'confirmation writes only to the claim action');
+ assert.deepEqual(calls[0].slice(0,2),['/api/v1/billing/claims/claim-1/actions','POST']);
+ assert.equal(calls[0][2].action,'confirm_self_policyholder');
+ assert.equal(calls[0][3],policyholderClaim.version);
+ assert.equal(refreshed,'claim-1');
+ assert.match(noticed,/Policy holder updated on the claim/);
+ console.log('PASS confirmed self policyholder uses one draft claim action and never writes demographics');
 })().catch(error=>{console.error(error);process.exit(1);});

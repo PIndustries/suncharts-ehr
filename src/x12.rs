@@ -156,7 +156,7 @@ impl Address {
             postal_code: self.postal_code.clone(),
         })
     }
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         element(&self.line1, 1, 55, "address_line1")?;
         element(&self.line2, 0, 55, "address_line2")?;
         element(&self.city, 1, 30, "address_city")?;
