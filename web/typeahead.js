@@ -98,13 +98,13 @@ async function typeaheadFetch(state,query){
   const returned=await state.load(query);
   if(request!==state.request||!state.input.isConnected)return;
   state.input.removeAttribute('aria-busy');state.pending=null;
-  const matches=typeaheadSort(state,query,Array.isArray(returned)?returned:[]);
+  const items=Array.isArray(returned)?returned:[],matches=state.serverMatches?items:typeaheadSort(state,query,items);
   if(!matches.length){typeaheadClose(state);typeaheadStatus(state,typeaheadNone);return;}
-  typeaheadShow(state,matches,`${matches.length} match${matches.length===1?'':'es'} from the insurance company list. ${typeaheadMatchNotice(state)}`);
+  typeaheadShow(state,matches,`${matches.length} match${matches.length===1?'':'es'} from the ${state.sourceLabel}. ${typeaheadMatchNotice(state)}`);
  }catch(error){
   if(request!==state.request||!state.input.isConnected)return;
   state.input.removeAttribute('aria-busy');state.pending=null;
-  typeaheadClose(state);typeaheadStatus(state,`The insurance company list could not be searched just now: ${error.message}. What you typed is still here.`);
+  typeaheadClose(state);typeaheadStatus(state,`The ${state.sourceLabel} could not be searched just now: ${error.message}. What you typed is still here.`);
  }
 }
 // Matches come from the records already on screen. When nothing on screen matches and the
@@ -230,6 +230,7 @@ function attachTypeahead(input,options={}){
   load:typeof options.load==='function'?options.load:null,
   all:typeof options.all==='function'?options.all:(options.load?null:(()=>[])),
   label:options.label||(item=>String(item?.name??'')),sub:options.sub||null,onPick:options.onPick||null,
+  sourceLabel:options.sourceLabel||'insurance company list',serverMatches:options.serverMatches===true,
   limit:options.limit||12,request:0,timer:null,items:[],active:-1,pending:null,picked:'',
   onInput:()=>typeaheadInput(state),onFocus:()=>typeaheadFocus(state),onBlur:()=>typeaheadBlur(state),
   onKeydown:event=>typeaheadKeydown(state,event),onSubmit:()=>typeaheadTabPick(state)};
@@ -299,7 +300,7 @@ if(typeof document.addEventListener==='function'){
    const row=event.target?.closest?.('[data-typeahead-index]');if(!row)return;
    // The row's block holds the name box, so the click resolves to the box it belongs to.
    const block=row.closest('[data-typeahead-host]')?.parentElement||row.parentElement;
-   const state=typeaheadStates.get(block?.querySelector('[data-typeahead-payer],[data-typeahead-pharmacy],[data-typeahead-coverage],[data-typeahead-batch]'));if(!state)return;
+   const state=typeaheadHosts.get(block)||typeaheadStates.get(block?.querySelector('[data-typeahead-payer],[data-typeahead-pharmacy],[data-typeahead-coverage],[data-typeahead-batch]'));if(!state)return;
   event.preventDefault();event.stopPropagation();
   typeaheadCommit(state,state.items[Number(row.dataset.typeaheadIndex)]);
  },true);

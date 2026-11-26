@@ -14,7 +14,7 @@ const ctx={esc,Date,Object,String,Set,Array,JSON,Promise,FormData:class{construc
  billingWrite:()=>true,claimIsCrossover:()=>false,claimsBase:'/api/v1/billing/claims',
  claimContextSnapshot:()=>({kind:'worklist'}),requireClaimContext(){},notice:m=>{noticed=m;},
  refreshClaimInContext:async id=>{refreshed=id;},document:{addEventListener(){}}};
-vm.createContext(ctx);
+vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/display-format.js','utf8'),ctx);
 vm.runInContext(source.slice(start,end)+';this.claimMissingGroupsFor=claimMissingGroupsFor;this.claimMissingMarkup=claimMissingMarkup;this.saveClaimQuickFix=saveClaimQuickFix;this.setCurrent=c=>{claimCurrent=c;};',ctx);
 const issues=['Patient address is required','Subscriber address is required','Subscriber date of birth is required','Insurer name can only use plain letters, numbers and basic punctuation (no long dashes, accents or curly quotes), 1 to 60 characters'];
 const claim={id:'claim-1',patient_id:'patient-1',status:'draft',version:3,content:{patient_address:'',subscriber_address:'',subscriber_birth_date:null,place_of_service:'11',notes:''},

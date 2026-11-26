@@ -35,6 +35,25 @@ impl PatientStatus {
         }
     }
 }
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MissingPatientContact {
+    Address,
+    Phone,
+}
+
+pub(crate) const MISSING_ADDRESS: &str = "coalesce(btrim(d.content->'address'->>'line1'),'')=''";
+pub(crate) const MISSING_PHONE: &str = "coalesce(btrim(d.content->>'phone'),'')=''";
+
+impl MissingPatientContact {
+    pub(crate) fn predicate(self) -> &'static str {
+        match self {
+            Self::Address => MISSING_ADDRESS,
+            Self::Phone => MISSING_PHONE,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Change {

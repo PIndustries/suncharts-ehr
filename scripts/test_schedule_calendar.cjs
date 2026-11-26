@@ -24,8 +24,10 @@ for(const file of ['scheduling.js','schedule-board.js'])run(fs.readFileSync(path
  assert.equal(days.length,42);assert.equal(days[0],'2028-01-30');assert(days.includes('2028-02-29'));assert.equal(days[41],'2028-03-11');
  run("scheduleDate='2026-01-31';shiftSchedulePeriod(1)");assert.equal(run('scheduleDate'),'2026-02-01');
  run('shiftSchedulePeriod(-2)');assert.equal(run('scheduleDate'),'2025-12-01');
- // A device with no saved choice opens on the day view; the month is then chosen here.
- run('loadSchedulePreference()');assert.equal(run('scheduleMode'),'day');
+ // A device with no saved choice opens in Month view.
+ run('loadSchedulePreference()');assert.equal(run('scheduleMode'),'month');
+ // Change the view of the mounted Schedule, as a staff member already on the page would.
+ node('page-title').textContent='Schedule';
  run("scheduleDate='2026-03-08';scheduleMode='month'");await run('showSchedule()');
  const requests=calls.filter(a=>a[0]==='api'&&a[1].includes('/schedule?')).map(a=>new URLSearchParams(a[1].split('?')[1]));
  assert.equal(requests.length,2);
@@ -40,8 +42,12 @@ for(const file of ['scheduling.js','schedule-board.js'])run(fs.readFileSync(path
  c.me.role='read_only';run('renderSchedule()');assert.doesNotMatch(node('tools').innerHTML,/data-calendar-book=/);
  c.me.role='owner';
  run("showSchedule=async()=>calls.push(['show',scheduleDate,scheduleMode]);appointmentEditor=async(a,b,c,day)=>calls.push(['book',day]);appointmentDetail=async id=>calls.push(['detail',id]);");
- const click=listeners.get('click').find(x=>!x.capture).cb;
- async function dispatch(dataset){const b={dataset,type:'button',hasAttribute:()=>false,closest:()=>true};click({target:{closest:()=>b}});await pending;}
+ const workspaceSelector='#schedule-workspace,#schedule-detail[data-chart-patient]';
+ async function dispatch(dataset){
+  const b={dataset,type:'button',hasAttribute:()=>false,closest:selector=>[workspaceSelector,'#schedule-workspace'].includes(selector)?node('schedule-workspace'):null};
+  for(const {cb} of listeners.get('click'))cb({target:{closest:selector=>selector==='button'?b:null}});
+  await pending;
+ }
  await dispatch({calendarDay:'2026-03-22'});assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))),['show','2026-03-22','day']);
  await dispatch({calendarBook:'2026-04-03'});assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))),['book','2026-04-03']);
  await dispatch({scheduleOpen:'overlap'});assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))),['detail','overlap']);

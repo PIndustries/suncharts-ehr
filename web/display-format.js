@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
+// Calendar dates use the browser's local timezone, including date-input defaults.
+function localIsoDate(d=new Date()){
+ return `${String(d.getFullYear()).padStart(4,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
 // How staff see dates, times, statuses, people and counts. These functions only
 // format what is shown; stored values and form inputs are never changed here.
 

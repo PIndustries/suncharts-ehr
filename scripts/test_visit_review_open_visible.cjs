@@ -2,7 +2,7 @@
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 
-// "Review and send" must always end with the review panel on screen: the encounter moves to its
+// Older review callers open the claim screen and scroll to its footer. The encounter moves to its
 // Billing tab first, and no stylesheet rule for the Billing tab hides the panel. Synthetic only.
 const {visitSummary}=require('./visit_billing_fixture.cjs');
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -15,7 +15,9 @@ const ctx={console,Date,Intl,URL,Map,Set,Array,Math,Number,String,JSON,setTimeou
  me:{role:'owner'},activeVisit:{id:'visit',status:'signed'},$:node,esc,human:v=>String(v),date:v=>v,money:v=>String(v),
  document:{addEventListener:(n,f)=>{if(n==='click')handlers.push(f);},createElement:()=>({setAttribute(){}})},
  // The tab switch the Note/Billing/History tabs use: it sets the attribute the stylesheet reads.
+ encounterStepOpen:number=>{node('encounter-revenue').step=number;},
  invoiceTabSet(key){node('encounter-revenue').dataset.invoiceTab=key;rebuild();},
+ billingPartSet(key){node('encounter-revenue').dataset.billingPart=key;},
  encounterRevenueState:{data:{summary:visitSummary()},review:null}};
 vm.createContext(ctx);
 vm.runInContext(fs.readFileSync('web/visit-review.js','utf8'),ctx);
@@ -39,8 +41,8 @@ const open=(tab,part)=>{
  assert.ok(panel.innerHTML.length>0,'the live panel has content');
  assert.equal(panel.hidden,false,`panel shown from ${tab}/${part}`);
  assert.equal(page.dataset.invoiceTab,'billing',`Billing tab active from ${tab}`);
- assert.equal(page.dataset.billingPart,part,'the billing part is left alone');
- assert.ok(panel.scrolled>=1,'scrolled to');
+ assert.equal(page.dataset.billingPart,'summary','the claim screen is the destination');
+ assert.equal(page.step,1,'the legacy content frame opens the visit containing the claim panel');
 };
 open('billing','summary');open('note','summary');open('history','summary');open('billing','claim');
 // A later rebuild of the Billing area keeps an open panel open, and a closed one closed.
@@ -50,8 +52,8 @@ assert.equal(ctx.$('visit-billing-review').hidden,false,'still open after a rebu
 assert.ok(ctx.$('visit-billing-review').innerHTML.length>0);
 // Close hides the panel again and leaves the Billing tab as it was.
 ctx.visitReviewClose?.();vm.runInContext('visitReviewClose',ctx)();
-assert.equal(node('visit-billing-review').hidden,true);
+assert.equal(node('visit-billing-review').hidden,false,'the claim screen remains visible');
 assert.equal(node('encounter-revenue').dataset.invoiceTab,'billing');
 rebuild();vm.runInContext('visitReviewRestore',ctx)();
-assert.equal(ctx.$('visit-billing-review').hidden,true,'closed stays closed after a rebuild');
+assert.equal(ctx.$('visit-billing-review').hidden,false,'the claim screen is restored after a rebuild');
 console.log('visit review open-visible checks ok');

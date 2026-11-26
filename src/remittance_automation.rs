@@ -69,8 +69,8 @@ pub async fn poll_one(pool: &PgPool, c: &Config) -> Result<bool> {
     let r = c.route(tenant, &key).ok_or(Error::NotFound)?;
     let mut tx = pool.begin().await?;
     billing::tenant_lock(&mut tx, &a).await?;
-    let cursor:Option<String>=sqlx::query_scalar("SELECT f.cursor_id FROM edi_era_feeds f JOIN edi_connections conn USING(tenant_id,route_key) WHERE f.tenant_id=$1 AND f.route_key=$2 AND NOT conn.paused AND conn.binding_hash=$3 AND f.next_poll_at<=now() AND (f.lease_until IS NULL OR f.lease_until<now())").bind(tenant).bind(&key).bind(retrieval::binding(r)).fetch_optional(&mut *tx).await?;
-    let Some(cursor) = cursor else {
+    let feed:Option<(String,i32)>=sqlx::query_as("SELECT f.cursor_id,f.poll_failures FROM edi_era_feeds f JOIN edi_connections conn USING(tenant_id,route_key) WHERE f.tenant_id=$1 AND f.route_key=$2 AND NOT conn.paused AND conn.binding_hash=$3 AND f.next_poll_at<=now() AND (f.lease_until IS NULL OR f.lease_until<now())").bind(tenant).bind(&key).bind(retrieval::binding(r)).fetch_optional(&mut *tx).await?;
+    let Some((cursor, failures)) = feed else {
         return Ok(false);
     };
     let lease = Uuid::new_v4();
@@ -84,21 +84,57 @@ pub async fn poll_one(pool: &PgPool, c: &Config) -> Result<bool> {
     )
     .await?;
     tx.commit().await?;
-    let result = crate::claimmd::era_page(r, &cursor).await;
+    let result = crate::claimmd::paced(
+        pool,
+        r,
+        crate::claimmd::ApiBudget::Background,
+        crate::claimmd::era_page(r, &cursor),
+    )
+    .await;
     let mut tx = pool.begin().await?;
     billing::tenant_lock(&mut tx, &a).await?;
     let current:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM edi_era_feeds WHERE tenant_id=$1 AND route_key=$2 AND lease_id=$3)").bind(tenant).bind(&key).bind(lease).fetch_one(&mut *tx).await?;
     if !current {
         return Ok(true);
     }
-    let ok = result.is_ok();
+    let mut ok = result.is_ok();
+    let retry_after = match &result {
+        Err(Error::ClaimMdRateLimited(seconds)) => Some(*seconds),
+        _ => None,
+    };
+    let mut persistence_error = None;
     if let Ok(page) = result {
-        for item in &page.items {
-            retrieval::insert_observation(&mut tx, &a, &key, item).await?;
+        let mut persist = tx.begin().await?;
+        let persisted: Result<()> = async {
+            for item in &page.items {
+                retrieval::insert_observation(&mut persist, &a, &key, item).await?;
+            }
+            sqlx::query("UPDATE edi_era_feeds SET cursor_id=$3,pages=pages+1,last_success_at=now() WHERE tenant_id=$1 AND route_key=$2").bind(tenant).bind(&key).bind(page.next).execute(&mut *persist).await?;
+            Ok(())
+        }.await;
+        match persisted {
+            Ok(()) => persist.commit().await?,
+            Err(error) => {
+                persist.rollback().await?;
+                ok = false;
+                persistence_error = Some(error);
+            }
         }
-        sqlx::query("UPDATE edi_era_feeds SET cursor_id=$3,pages=pages+1,last_success_at=now() WHERE tenant_id=$1 AND route_key=$2").bind(tenant).bind(&key).bind(page.next).execute(&mut *tx).await?;
     }
-    sqlx::query("UPDATE edi_era_feeds SET lease_id=NULL,lease_until=NULL,next_poll_at=now()+make_interval(secs=>$3),last_result=$4,version=version+1 WHERE tenant_id=$1 AND route_key=$2").bind(tenant).bind(&key).bind(r.retrieval.as_ref().unwrap().interval_seconds as f64).bind(if ok{"era_page_persisted"}else{"era_poll_failed_cursor_retained"}).execute(&mut *tx).await?;
+    let (delay, failures) = retrieval::claimmd_poll_delay(
+        r.retrieval.as_ref().unwrap().interval_seconds,
+        failures,
+        ok,
+        retry_after,
+    );
+    let state = if ok {
+        "era_page_persisted"
+    } else if retry_after.is_some() {
+        "claimmd_rate_limited_cursor_retained"
+    } else {
+        "era_poll_failed_cursor_retained"
+    };
+    sqlx::query("UPDATE edi_era_feeds SET lease_id=NULL,lease_until=NULL,next_poll_at=now()+make_interval(secs=>$3),last_result=$4,poll_failures=$5,version=version+1 WHERE tenant_id=$1 AND route_key=$2").bind(tenant).bind(&key).bind(delay as f64).bind(state).bind(failures).execute(&mut *tx).await?;
     event(
         &mut tx,
         &a,
@@ -108,6 +144,9 @@ pub async fn poll_one(pool: &PgPool, c: &Config) -> Result<bool> {
     )
     .await?;
     tx.commit().await?;
+    if let Some(error) = persistence_error {
+        return Err(error);
+    }
     Ok(true)
 }
 pub async fn stage_one(pool: &PgPool, c: &Config) -> Result<bool> {

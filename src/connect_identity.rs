@@ -14,7 +14,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use rand::RngCore;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
 use uuid::Uuid;
@@ -22,6 +22,8 @@ use uuid::Uuid;
 // Must match the maximum Connect grant lifetime. The session remains revocable and is
 // introspected against Connect on authenticated requests.
 const MAX_SESSION_SECONDS: i64 = 30 * 24 * 60 * 60;
+pub(crate) const SESSION_CHECK_UNAVAILABLE: Error =
+    Error::Unavailable("SunCharts Connect could not verify your session. Try again shortly.");
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -242,19 +244,40 @@ pub async fn accept(
 }
 
 async fn introspect(iss: &str, grant: Uuid, audience: &str) -> Result<Introspection> {
-    let r = http()?
+    let request = http()
+        .map_err(|_| SESSION_CHECK_UNAVAILABLE)?
         .post(format!("{iss}/api/v1/managed-ehr/identity/introspect"))
         .json(&IntrospectRequest {
             jti: grant,
             audience,
-        })
+        });
+    let check: Introspection = read_session_check(request).await?;
+    if check.active
+        && (check.jti.is_none()
+            || check.aud.is_none()
+            || check.kind.is_none()
+            || check.tenant_id.is_none()
+            || check.exp.is_none()
+            || check.kind.as_deref() == Some("staff") && check.email.is_none()
+            || check.kind.as_deref() == Some("patient") && check.patient_ehr_puuid.is_none())
+    {
+        return Err(SESSION_CHECK_UNAVAILABLE);
+    }
+    Ok(check)
+}
+
+pub(crate) async fn read_session_check<T: DeserializeOwned>(
+    request: reqwest::RequestBuilder,
+) -> Result<T> {
+    let response = request
         .send()
         .await
-        .map_err(|_| Error::Unauthorized)?;
-    if !r.status().is_success() {
-        return Err(Error::Unauthorized);
+        .map_err(|_| SESSION_CHECK_UNAVAILABLE)?;
+    // Both Connect introspection endpoints report an inactive grant in a successful response.
+    if !response.status().is_success() {
+        return Err(SESSION_CHECK_UNAVAILABLE);
     }
-    r.json().await.map_err(|_| Error::Unauthorized)
+    response.json().await.map_err(|_| SESSION_CHECK_UNAVAILABLE)
 }
 
 #[derive(sqlx::FromRow)]

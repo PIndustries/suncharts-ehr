@@ -26,13 +26,14 @@ const claimFilled=()=>claimOf({content:filled()});
 let claim=claimFilled();
 const ctx={console,Date,Intl,URL,Map,Set,Array,Math,Number,String,JSON,encodeURIComponent,setTimeout:()=>0,clearTimeout(){},crypto:{randomUUID:()=>`req-${sent.length}`},
  me:{role:'owner'},selected:'patient',billingSelected:null,chartSection:'visits',encounterSection:'charges',
- activeVisit:{id:'visit',appointment_id:'appointment',status:'unsigned',version:3},
- workspace:{patient:{id:'patient'},demographics:{patient_id:'patient',content:{address:{line1:'1 Synthetic Way',city:'Synthetic City',region:'SY',postal_code:'00000',country:'US'}}},appointments:[{id:'appointment',status:'in_progress'}],visits:[{id:'visit',appointment_id:'appointment',status:'unsigned'}],billing:{accounts:[account],coverages:[],entries:[],copays:[]}},
+ activeVisit:{id:'visit',appointment_id:'appointment',status:'signed',version:3},
+ workspace:{patient:{id:'patient'},demographics:{patient_id:'patient',content:{address:{line1:'1 Synthetic Way',city:'Synthetic City',region:'SY',postal_code:'00000',country:'US'}}},appointments:[{id:'appointment',status:'in_progress'}],visits:[{id:'visit',appointment_id:'appointment',status:'signed'}],billing:{accounts:[account],coverages:[{id:'synthetic-coverage',content:{status:'active',effective_date:'2020-01-01',priority:'primary',payer_id:'synthetic-payer',relationship:'self',member_id:'SYN-MEMBER'}}],entries:[],copays:[]}},
  $:node,document:{addEventListener:(name,fn)=>(handlers[name]??=[]).push(fn),createElement:()=>({setAttribute(){}})},
  // The panel and the card reach for these the way the live page has them; the billing scripts
  // that own them are not loaded here, so the ones the review module touches are stubbed.
  captureClaimDraft(){},openEncounterCharges(){ctx.chargesOpened=(ctx.chargesOpened||0)+1;},
  esc,human:v=>String(v).replaceAll('_',' '),date:v=>v,money:v=>`$${(v/100).toFixed(2)}`,dollars:v=>(v/100).toFixed(2),cents:v=>Math.round(Number(v)*100),
+ billingPayers:[{id:'synthetic-payer',content:{name:'Synthetic Medicare PPO',payer_code:'SYN'}}],
  payerName:()=>'Synthetic Medicare PPO',billingCan:()=>true,workspaceResourceAllowed:()=>true,claimsApiBase:'/api/v1/billing/claims',
  notice:m=>{ctx.noticed=m;},run:fn=>{ctx.pending=Promise.resolve().then(fn).catch(e=>{ctx.failed=e.stack||String(e);});return ctx.pending;},
  confirmAction:async()=>true,
@@ -45,13 +46,14 @@ const ctx={console,Date,Intl,URL,Map,Set,Array,Math,Number,String,JSON,encodeURI
  showEncounterClaim:async()=>{},claimEditor(){},captureClaimDraft(){},openEncounterCharges(){ctx.chargesOpened=(ctx.chargesOpened||0)+1;},
  api:async(path,method='GET',body,version)=>{
    sent.push({path,method,body:body?JSON.parse(JSON.stringify(body)):null,version});
-   if(path.endsWith('/actions')&&method==='POST'){if(body&&body.action==='post')return {...account,status:'posted',version:account.version+1};if(ctx.failAt==='ready')throw new Error('The claim changed since you opened it');claim={...claim,status:'ready',version:claim.version+1};return claim;}
+   if(path.endsWith('/actions')&&method==='POST'){if(body&&body.action==='post'){setAccount({...account,status:'posted',version:account.version+1});return account;}if(ctx.failAt==='ready')throw new Error('The claim changed since you opened it');claim={...claim,status:'ready',version:claim.version+1};return claim;}
    if(/\/claims\/claim$/.test(path))return {claim,preflight_issues:ctx.preflight||[],transport:{routes:[{provider:'claim_md',route_key:'claimmd'}]}};
    if(path.endsWith('/claims/prepare'))return {outcome:'prepared',claim_id:'claim',issues:[]};
    if(path.endsWith('/visit-summary'))return reviewSummary();
    throw new Error('Unexpected API '+path);
  },
  async openEncounterClaimMdSubmit(id,accountId){
+  if(ctx.failAt==='native-review')throw new Error('Synthetic native review failure');
   const fresh=await ctx.api('/api/v1/billing/claims/'+id);
   assert.equal(fresh.claim.status,'ready');
   ctx.nativeReview={id,accountId,version:fresh.claim.version};
@@ -66,9 +68,9 @@ vm.runInContext('encounterRevenueState.review=null;',ctx);
 const reviewState=()=>vm.runInContext('encounterRevenueState',ctx);
 const review=(summary)=>vm.runInContext('visitReviewChecks',ctx)(summary,vm.runInContext('visitReviewContext',ctx)());
 const settle=async()=>{for(let i=0;i<10;i++)await new Promise(r=>setImmediate(r));};
-const click=dataset=>{
+const click=(dataset,{disabled=false}={})=>{
  const attribute=`data-${Object.keys(dataset)[0]||''}`;
- const button={dataset,disabled:false,hasAttribute:name=>name===attribute,closest:()=>null};
+ const button={dataset,disabled,hasAttribute:name=>name===attribute,closest:()=>null};
  for(const handler of handlers.click)handler({target:{closest:selector=>selector==='button'?button:null},preventDefault(){}});
  return button;};
  // The summary's money lines come from the account in hand, the way /visit-summary fills them.
@@ -91,8 +93,18 @@ function reviewSummary(overrides={}){
 }
 const showOnScreen=summary=>{reviewState().data={summary};reviewState().reviewCard=summary;};
 const panelHost=()=>node('visit-billing-review');
+const assertMustFixFooter=()=>{
+ const count=review(reviewState().data.summary).filter(check=>check.level==='must').length;
+ assert.ok(count>0,'the fixture has must-fix problems');
+ const footer=panelHost().innerHTML.match(/<footer\b[^>]*>[\s\S]*?<\/footer>/)?.[0];
+ assert.ok(footer,'the review footer is present');
+ const button=footer.match(/<button\b[^>]*\bdata-visit-review-send\b[^>]*>/)?.[0];
+ assert.ok(button,'the send button stays present with must-fix problems');
+ assert.match(button,/\sdisabled(?:\s|=|>)/,'the send button is disabled with must-fix problems');
+ assert.match(footer,new RegExp(`data-claim-problems>${count} thing${count===1?'':'s'} to fix<`),'the footer shows the number of things to fix');
+};
 const openPanel=(summary,ctxArgs={})=>{showOnScreen(summary);vm.runInContext('visitReviewOpen',ctx)(ctxArgs);};
-const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.failAt=null;ctx.preflight=null;ctx.nativeReview=null;setAccount(accountOf());claim=claimFilled();ctx.unsigned=false;};
+const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.failAt=null;ctx.preflight=null;ctx.nativeReview=null;setAccount(accountOf());claim=claimFilled();ctx.unsigned=false;ctx.activeVisit.status='signed';};
 (async()=>{
  // ---- Classification: what must be put right, what is only worth a look ----
  claim={...claim,status:'ready'};
@@ -107,47 +119,78 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
  checks=review(postSummary());
  assert.ok(checks.some(c=>/no diagnosis|not.*posted|post/i.test(c.text))||checks.every(c=>c.level==='must'),'the unposted charge lines are answered before the send');
  setAccount(accountOf());
- ctx.unsigned=true;
+ ctx.unsigned=true;ctx.activeVisit.status='in_progress';
  checks=review(reviewSummary());
  const note=checks.find(c=>c.key==='note-unsigned');
  assert.ok(note,'the unsigned note is listed');
- assert.equal(note.level,'note','the unsigned note is worth a look, not a wall');
+ assert.equal(note.level,'must','the note must be signed before claim sending');
  assert.equal(note.action,'Sign the note','and it carries the way to put it right');
- ctx.unsigned=false;
+ ctx.unsigned=false;ctx.activeVisit.status='signed';
  checks=review(reviewSummary({insurance:{insured:true,insurer:'Synthetic Medicare PPO',electronic:false,status:'not_billed',pending_cents:27000}}));
  assert.ok(checks.some(c=>c.level==='must'&&c.group==='insurance'&&/insurer id/i.test(c.text)),'a payer with no electronic ID stops the send, in the insurance group');
+ const missingSetup=reviewSummary({insurance:{insured:true,insurer:'Synthetic Medicare PPO',electronic:false},claim:{id:claim.id,status:'draft',content:{...filled(),rendering_npi:'',billing_npi:''},issues:[{code:'payer_code',missing:'payer ID'}]}});
+ const separate=review(missingSetup);
+ assert.equal(separate.filter(row=>row.key==='payer-code').length,1,'one payer ID correction');
+ assert.equal(separate.find(row=>row.key==='practice-rendering_npi')?.attribute,'data-practice-providers');
+ assert.equal(separate.find(row=>row.key==='practice-billing_npi')?.attribute,'data-billing-organizations');
+ assert.ok(!separate.some(row=>['practice-name','practice-address','insurance-subscriber_birth_date'].includes(row.key)));
  checks=review(reviewSummary({insurance:{insured:false,insurer:null,electronic:false,status:'not_billed',pending_cents:0}}));
  assert.equal(checks.length,1);assert.equal(checks[0].level,'note','self-pay says so and stops, it does not block a send that cannot happen');
  assert.ok(/no insurance/i.test(checks[0].text));
  const listed=checks.concat(review(reviewSummary({claim:{id:'claim',status:'draft',version:2,secondary:true}})));
  assert.ok(listed.some(c=>c.key==='secondary-claim'&&c.level==='must'),'a crossover claim belongs to the primary, and says so');
 
+ // In a draft, show the subscriber and payer for the coverage selected on the charge account.
+ const primary=ctx.workspace.billing.coverages[0];
+ const secondary={id:'secondary',content:{...primary.content,priority:'secondary',relationship:'child',payer_id:'secondary-payer',member_id:'DEPENDENT'}};
+ const heldProviders=ctx.claimmdClaimProviderDefaults;
+ const heldSubscriber=ctx.claimmdSubscriberBirthMissing;
+ const directoryHelpers=vm.runInNewContext(fs.readFileSync('web/claimmd-eligibility.js','utf8')+'\n({claimmdSubscriberBirthMissing,claimmdClaimProviderDefaults})',{document:{addEventListener(){}}});
+ Object.assign(ctx,directoryHelpers);
+ ctx.activeVisit.status='in_progress';ctx.activeVisit.clinician_id='assigned';ctx.workspace.patient.birth_date='1980-02-01';
+ ctx.workspace.billing.coverages.push(secondary);ctx.billingPayers.push({id:'secondary-payer',content:{name:'Secondary insurance',payer_code:'SECONDARY'}});
+ const draft=accountOf({status:'draft'});
+ draft.content={...draft.content,coverage_id:secondary.id,lines:[{code:'J0585',units:1,amount_cents:1500,diagnosis_codes:['M62.81']}]};
+ setAccount(draft);
+ const directory={providers:[{id:'other',npi:'1234567893',display_name:'Another clinician'}],billing_organizations:[{name:'Group',npi:''}],facilities:[{name:'Office',address:'1 Synthetic Way'}]};
+ const preview=()=>review({...postSummary(),practice_directory:directory});
+ let recording=preview();
+ assert.ok(recording.some(row=>row.key==='insurance-subscriber_birth_date'),'a dependent on a selected secondary policy needs their subscriber date');
+ draft.content.coverage_id=primary.id;
+ recording=preview();
+ assert.deepEqual(Array.from(recording,row=>row.key).filter(key=>key!=='note-unsigned').sort(),['line-0-ndc','practice-rendering_npi'],'one rendering NPI supplies both roles for a practice using the clinician NPI, with the separate drug detail still shown');
+ const interrupted=review({...postSummary(),practice_directory:null});
+ assert.ok(interrupted.some(row=>row.key==='practice-directory-unavailable'&&row.attribute==='data-visit-review-refresh'));
+ assert.ok(!interrupted.some(row=>row.key==='practice-billing_npi'||row.key==='practice-rendering_npi'));
+ draft.content.coverage_id=null;
+ assert.deepEqual(Array.from(preview(),row=>row.key),['self-pay'],'explicit self-pay on charges stays self-pay when the patient has active insurance');
+ ctx.billingPayers.pop();ctx.workspace.billing.coverages.pop();delete ctx.workspace.patient.birth_date;delete ctx.activeVisit.clinician_id;
+ ctx.claimmdClaimProviderDefaults=heldProviders;ctx.claimmdSubscriberBirthMissing=heldSubscriber;
  // ---- The panel renders the two lists, the money summary and the form ----
  reset();openPanel(reviewSummary());
  let panel=panelHost().innerHTML;
- assert.match(panel,/Check the claim before it goes out/);assert.match(panel,/data-visit-review-close/);
- assert.match(panel,/What this encounter comes to/);assert.match(panel,/\$280\.00/,'the charges total is said');
+ assert.match(panel,/encounter-review-items/);assert.doesNotMatch(panel,/data-visit-review-close/);
+ assert.match(panel,/1 service line · \$280.00/);assert.match(panel,/\$280\.00/,'the charges total is said');
  assert.match(panel,/Synthetic Medicare PPO/,'who is billed is said');assert.match(panel,/\$10\.00/,'the expected copay is said');
- assert.match(panel,/The claim form/);assert.match(panel,/cms1500/,'the CMS-1500 view is offered, and opening it sends nothing');
+ assert.match(panel,/data-encounter-claim-form>View claim form/,'the CMS-1500 sheet is offered, and opening it sends nothing');
  assert.match(panel,/data-visit-review-send/,'the one send button is there');
  // A claim carrying its own copy of the encounter's charge lines has each of them drawn on the form.
  // The line mapper shadows its own name inside the map callback on the main branch, so a claim with
  // lines crashes instead of rendering; this is the case that catches it.
  openPanel(reviewSummary({claim:{id:claim.id,status:'ready',version:claim.version,content:claim.content,snapshot:claim.snapshot}}));
  panel=panelHost().innerHTML;
- assert.match(panel,/visit-billing-review-lines/,'the claim\'s charge lines are drawn on the form');
+ assert.match(ctx.visitReviewFormMarkup(reviewState().data.summary),/visit-billing-review-lines/,'the claim\'s charge lines are drawn on the form');
  assert.match(panel,/99213/,'and the line\'s code is on it');
  assert.match(panel,/M62\.81/,'with the diagnosis pointer resolved to its code');
- // A must-fix closes the send button until it is put right.
+ // A must-fix disables the send button until it is put right.
  openPanel(reviewSummary({claim:{id:'claim',status:'draft',version:2,content:{...filled(),place_of_service:''},snapshot:claim.snapshot,issues:[{code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'}]}}));
  panel=panelHost().innerHTML;
- assert.match(panel,/data-review-level="must"/);assert.match(panel,/must be put right first/);
- assert.doesNotMatch(panel,/data-visit-review-send/,'nothing can be sent past a must fix');
- assert.match(panel,/Fix claim details/,'the must fix carries its one way forward');
+ assert.match(panel,/data-review-level="must"/);assert.match(panel,/things to fix before sending/);
+ assertMustFixFooter();
+ assert.match(panel,/Edit claim details/,'the must fix carries its one way forward');
 
  // ---- The chain, in order, with the failures stopping where they happen ----
  reset();showOnScreen(reviewSummary());
- ctx.unsigned=true; // the ask path is covered below; here the chain itself
  let ran=await runChain('claim',{allowUnsigned:true,needPost:false,needPrepare:false});
  assert.equal(ctx.failed,null,ctx.failed);assert.equal(ran,true);
  assert.deepEqual(sent.map(c=>[c.path,c.method]).filter((c,i,a)=>!(c[0]==='/api/v1/billing/claims/claim'&&c[1]==='GET'&&a.some((p,j)=>j<i&&p[0]===c[0]&&p[1]==='GET'))),[
@@ -196,7 +239,7 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
  assert.equal(sent.filter(c=>c.path.endsWith('/delivery')).length,0,'and never delivers');
  panel=panelHost().innerHTML;
  assert.match(panel,/role="alert"/);assert.match(panel,/Nothing more was sent\./);
- assert.match(panel,/Try again/,'the button comes back as Try again');
+ assert.match(panel,/data-visit-review-send>Send claim/,'the footer offers the same send action after a failure');
  assert.match(panel,/data-review-stage="post" class|class="visit-billing-review-step is-done" data-review-stage="post"/,'the step already done stays marked done');
  assert.match(panel,/is-failed/,'and the failed step is shown stopped');
  assert.match(panel,/We could not finish/,'said in a plain sentence');
@@ -209,30 +252,45 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
   assert.equal(sent.filter(c=>c.method==='POST').length,0,'a refused preflight writes nothing');
   assert.match(panelHost().innerHTML,/Nothing more was sent\./,'the panel says so where the person is looking');
   assert.match(panelHost().innerHTML,/Rendering provider NPI is missing/,'the server\u2019s own words come through');
-  assert.match(panelHost().innerHTML,/Try again/,'and the button comes back as Try again');
+  assert.match(panelHost().innerHTML,/data-visit-review-send>Send claim/,'the footer offers the same send action after a failure');
 
- // A claim already at Claim.MD is not pushed a second time.
- reset();vm.runInContext('claimHasPreparedSubmission=()=>true',ctx);
- ran=await runChain('claim',{needPost:false,needPrepare:false,allowUnsigned:true});
- assert.equal(ran,false);assert.equal(sent.filter(c=>c.path.endsWith('/837p')).length,0,'no second claim file');
- vm.runInContext('claimHasPreparedSubmission=()=>false',ctx);
+ // A failure opening the native review restores the footer without transmitting anything.
+ reset();ctx.failAt='native-review';openPanel(reviewSummary());
+ ran=await runChain('claim',{needPost:false,needPrepare:false,quietRefresh:true});
+ assert.equal(ran,false);assert.match(panelHost().innerHTML,/data-review-stalled/);
+ assert.match(panelHost().innerHTML,/Synthetic native review failure/);
+ assert.match(panelHost().innerHTML,/data-visit-review-send/);
+ assert.equal(sent.filter(c=>c.path.endsWith('/837p')||c.path.endsWith('/delivery')).length,0,'a native-review failure creates no file or delivery');
 
- // ---- The unsigned note: sign it, or send anyway once the box is ticked ----
- reset();ctx.unsigned=true;setAccount(accountOf({status:'draft'}));
+ // Existing prepared files and recorded submissions both stop a second attempt.
+ for(const guard of ['claimHasPreparedSubmission','claimHasRecordedSubmission']){
+  reset();vm.runInContext(`${guard}=()=>true`,ctx);
+  ran=await runChain('claim',{needPost:false,needPrepare:false});
+  assert.equal(ran,false);
+  assert.equal(ctx.nativeReview,null,'an existing claim file or submission prevents another native review');
+  assert.equal(sent.filter(c=>c.method==='POST').length,0,'an existing file or submission prevents release, generation and delivery');
+  vm.runInContext(`${guard}=()=>false`,ctx);
+ }
+
+ // ---- An unsigned note cannot send, including a stale acknowledgement ----
+ reset();ctx.unsigned=true;ctx.activeVisit.status='in_progress';setAccount(accountOf({status:'draft'}));
  openPanel(postSummary());
  panel=panelHost().innerHTML;
- assert.match(panel,/data-review-note-ask/);assert.match(panel,/Sign the note/);assert.match(panel,/data-note-sign-ack/);
- // Pressing send with nothing ticked asks first and sends nothing.
- panelHost()._q={'[data-note-sign-ack]':{checked:false}};
- click({'visit-review-send':''});await settle();if(ctx.failed)throw new Error(ctx.failed);
- assert.equal(sent.length,0,'an unticked send writes nothing');
- assert.match(panelHost().innerHTML,/note is not signed/,'the panel says what it is waiting for');
-  // The unsigned-note checkbox allows the claim to be prepared for native review.
-  panelHost()._q={'[data-note-sign-ack]':{checked:true}};
+ assert.match(panel,/Sign the note to build the claim\. Problems to fix before sending:/);
+ assert.equal((panel.match(/Sign the note to build the claim/g)||[]).length,1);
+ assert.doesNotMatch(panel,/data-review-note-ask|data-note-sign-ack|Until the note is signed|The encounter note is not signed yet/);
+ for(const checked of [false,true]){
+  panelHost()._q={'[data-note-sign-ack]':{checked}};
   click({'visit-review-send':''});await settle();if(ctx.failed)throw new Error(ctx.failed);
-  assert.deepEqual(ctx.nativeReview,{id:'claim',accountId:'account',version:3});
-  assert.equal(sent.filter(c=>c.path.endsWith('/837p')||c.path.endsWith('/delivery')).length,0,'the unsigned-note checkbox is not an authorization to submit');
-  assert.deepEqual(sent.filter(c=>!c.path.includes('/visit-summary')).map(c=>[c.path.replace(/^\/api\/v1\/patients\/patient\/billing/,'').replace('/api/v1',''),c.method]),[
+  assert.equal(sent.length,0,'an unsigned note writes nothing even with a stale acknowledgement');
+  assert.equal(ctx.visitReviewSendContext(reviewState().data.summary,account),null);
+ }
+ ctx.unsigned=false;ctx.activeVisit.status='signed';
+ openPanel(postSummary());
+ click({'visit-review-send':''});await settle();if(ctx.failed)throw new Error(ctx.failed);
+ assert.deepEqual(ctx.nativeReview,{id:'claim',accountId:'account',version:3});
+ assert.equal(sent.filter(c=>c.path.endsWith('/837p')||c.path.endsWith('/delivery')).length,0,'continuing to the native review does not submit or queue');
+ assert.deepEqual(sent.filter(c=>!c.path.includes('/visit-summary')).map(c=>[c.path.replace(/^\/api\/v1\/patients\/patient\/billing/,'').replace('/api/v1',''),c.method]),[
    ['/accounts/account/actions','POST'],
    ['/accounts/account/claims/prepare','POST'],
    ['/billing/claims/claim','GET'],
@@ -240,16 +298,23 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
    ['/billing/claims/claim','GET']],
    'the chain posts, fills in, reads and releases the claim, then opens the native form');
   // The post from the panel confirms first; a cancelled ask sends nothing.
-  reset();ctx.unsigned=true;setAccount(accountOf({status:'draft'}));
+  reset();setAccount(accountOf({status:'draft'}));
   vm.runInContext('confirmAction=async()=>false',ctx);
   ran=await runChain(claim.id,{needPost:true,needPrepare:false,allowUnsigned:true,confirmPost:true});
   assert.equal(ran,false,'a cancelled post stops before anything else');
   assert.equal(sent.length,0,'a cancelled ask writes nothing');
-  vm.runInContext('delete confirmAction',ctx);
+  vm.runInContext('confirmAction=async()=>true',ctx);
 
- // A must-fix swallows the press: nothing leaves the browser.
+ // A disabled button refuses even a synthetic press on an otherwise clean claim.
+ reset();openPanel(reviewSummary());
+ assert.equal(review(reviewState().data.summary).filter(check=>check.level==='must').length,0);
+ click({'visit-review-send':''},{disabled:true});await settle();if(ctx.failed)throw new Error(ctx.failed);
+ assert.equal(sent.length,0,'a disabled send button starts no API calls');
+
+ // A must-fix swallows the press even if the button's disabled state is bypassed.
  reset();ctx.unsigned=false;
  openPanel(reviewSummary({claim:{id:'claim',status:'draft',version:2,issues:[{code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'}]}}));
+ assertMustFixFooter();
  click({'visit-review-send':''});await settle();if(ctx.failed)throw new Error(ctx.failed);
  assert.equal(sent.length,0,'the send cannot be pressed past a must fix');
 
@@ -263,7 +328,7 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
  showOnScreen(reviewSummary());
  out=ctx.visitBillingCardMarkup(reviewSummary(),all);
  assert.match(out,/class="primary" data-visit-review-open="account">Review and send to the clearinghouse</);
- assert.equal((out.match(/class="primary"/g)||[]).length,1,'one primary button on the card');
+ assert.equal((out.split('<section id="visit-billing-review"')[0].match(/class="primary"/g)||[]).length,1,'one primary button on the encounter bar card');
   out=ctx.visitBillingCardMarkup(reviewSummary(),{...all,delegated:true});
   assert.match(out,/Review and send to the clearinghouse/,'a support session gets the same review-and-send panel');
  showOnScreen(reviewSummary({claim:{id:'claim',status:'submitted',version:3}}));
@@ -288,8 +353,14 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
  reset();openPanel(reviewSummary());
  assert.equal(panelHost().hidden,false,'the panel opens in place');
  click({'visit-review-close':''});
- assert.equal(panelHost().hidden,true,'and closes back to the card');
- assert.equal(panelHost().innerHTML,'','a closed panel holds nothing');
+ assert.equal(panelHost().hidden,false,'the claim screen remains the destination');
+ assert.match(panelHost().innerHTML,/claim-screen-footer/,'the screen retains its footer');
 
- console.log('PASS review panel: plain checks split into must-fix and worth-a-look, CMS-1500 view and money summary, the chain in order with a failure stopping at its step, unsigned note asked once, must fixes closing the send, and one card button per live visit');
+ // Sending on the mounted Visit must never select another step.
+ reset();showOnScreen(reviewSummary());node('visit-page-host').dataset.encounterSteps='';
+ let stepChanges=0;ctx.encounterStepOpen=()=>{stepChanges++;};ctx.encounterContentScroll=()=>{throw new Error('Send must keep the page stationary');};ctx.encounterStepsSchedule=()=>{};
+ assert.equal(await runChain(claim.id,{needPost:false,needPrepare:false}),true);
+ assert.equal(stepChanges,0);delete node('visit-page-host').dataset.encounterSteps;
+ console.log('PASS mounted send updates Claim on the continuous encounter without scrolling');
+ console.log('PASS review panel: plain checks split into must-fix and worth-a-look, CMS-1500 view and money summary, the chain in order with a failure stopping at its step, signature required before sending, must fixes closing the send, and one card button per live visit');
 })().catch(error=>{console.error(error);process.exitCode=1;});

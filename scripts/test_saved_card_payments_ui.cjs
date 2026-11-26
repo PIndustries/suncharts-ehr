@@ -34,7 +34,7 @@ function copay(cards=[visa,old]){
   availability:{available:true,livemode:false,reason:null},
   api:async(...args)=>{calls.push(args);if(args[0].endsWith('/payment-profile'))return profile('patient',cards);if(args[0]===base&&!args[1])return {items:ctx.items||[],availability:ctx.availability};if(typeof ctx.next==='function')return ctx.next(...args);return {operation:ctx.next};}};
  for(const id of ['encounter-hosted-copay-reader','insurance-hosted-copay-reader'])nodes[id]={id,_html:'',get innerHTML(){return this._html;},set innerHTML(html){this._html=html;if(html.includes('id="saved-card-payment-live"'))nodes['saved-card-payment-live']={innerHTML:''};else delete nodes['saved-card-payment-live'];},scrollIntoView(){}};
- ctx.window=ctx;vm.createContext(ctx);
+ ctx.window=Object.assign(new EventTarget(),{localStorage:ctx.localStorage});vm.createContext(ctx);
  const billing=read('billing.js');vm.runInContext(billing.slice(billing.indexOf('function patientPrintBranding('),billing.indexOf('function patientInvoiceDocument(')),ctx);
  vm.runInContext(read('patient-revenue.js'),ctx);vm.runInContext(read('card-readers.js'),ctx);
  const click=(dataset,panel)=>{for(const handler of handlers.click)handler({target:{closest:selector=>selector==='button'?{dataset,disabled:false,hasAttribute:name=>name in dataset,closest:()=>panel?{id:panel}:null}:null},preventDefault(){}});return ctx.pending;};
@@ -238,7 +238,7 @@ test('a patient balance is charged to a card on file directly under the balance'
  c.next=()=>({items:[],eligible_invoices:[invoice,{...invoice,invoice_id:'planned',eligible:false,existing_plan_id:'other'}],availability:{available:true,livemode:false}});
  await c.loadPatientBillingBalances(f.s,1);
  const list=f.nodes['patient-billing-balances'];assert.equal(list.hidden,false);
- assert.match(list.innerHTML,/<h3>Balance due<\/h3>/);assert.match(list.innerHTML,/<b>\$30\.00<\/b><small>Invoice issued 2026-11-11<\/small>/);assert.match(list.innerHTML,/data-balance-saved-card="invoice-one">Charge card on file</);assert.doesNotMatch(list.innerHTML,/planned/);plain(list.innerHTML,'balance list');
+ assert.match(list.innerHTML,/<h3>Balance due<\/h3>/);assert.match(list.innerHTML,/<b>\$30\.00<\/b><small>Invoice issued Nov 11, 2026<\/small>/);assert.match(list.innerHTML,/data-balance-saved-card="invoice-one">Charge card on file</);assert.doesNotMatch(list.innerHTML,/planned/);plain(list.innerHTML,'balance list');
  await c.openBalanceSavedCard(f.s,'invoice-one');
  assert.match(f.slot.innerHTML,/aria-label="visa card ending 4242/);assert.match(f.slot.innerHTML,/\$30\.00 will be charged to the card\./);assert.match(f.slot.innerHTML,/<button type="submit" class="primary">Charge \$30\.00<\/button>/);assert.doesNotMatch(f.slot.innerHTML,/type="checkbox"|name="reason"|4444/);
  const operation={id:'balance-op',patient_id:patient,plan_id:'balance-plan',amount_cents:3000,livemode:false,status:'expired',channel:'saved_card',last_result:'saved_card_needs_patient'};

@@ -19,6 +19,13 @@ assert.doesNotMatch(html,/Supervising/,'empty optional roles are left out');
 html=ctx.encounterProviderSummaryMarkup({rendering_npi:'1245319599',place_of_service:'10',encounter_mode:'telehealth',referring_provider_name:'Synthetic Referrer',referring_npi:'1234567893'});
 assert.match(html,/Synthetic Lee DO · NPI 1245319599/);assert.doesNotMatch(html,/Park/,'a chosen provider replaces the schedule one');
 assert.match(html,/10 · Telehealth, patient at home · Telehealth/);assert.match(html,/Synthetic Referrer · NPI 1234567893/);
+ctx.activeVisit.clinician_id='u-unlisted';
+ctx.workspace.appointments[0].clinician_id='u-unlisted';
+ctx.workspace.appointments[0].provider_label='Assigned clinician Lee';
+ctx.encounterOptions.providers=[ctx.encounterOptions.providers[0]];
+html=ctx.encounterProviderSummaryMarkup({});
+assert.match(html,/Assigned clinician Lee · NPI not on file/);
+assert.doesNotMatch(html,/Synthetic Park|1234567893/,'a single profile belonging to someone else is never the assigned clinician');
 ctx.encounterOptions=null;assert.match(ctx.encounterProviderSummaryMarkup({}),/Loading…/,'until the practice lists arrive');
 // The editing fields start folded behind Change.
 const part=src.slice(src.indexOf("if(part==='provider')"),src.indexOf("if(part==='actions')"));

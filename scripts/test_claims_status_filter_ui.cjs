@@ -1,96 +1,221 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
-const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-// Staff display helpers load before every feature script, exactly as index.html loads them.
-{const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
-
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const vm=require('node:vm');
+const {JSDOM}=require('jsdom');
+const claimsBase='/api/v1/billing/claims';
+const eraBase='/api/v1/billing/remittances';
+const id=n=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
+const claim=(n,status,fields={})=>({
+ id:id(n),patient_name:'Synthetic Patient',patient_id:id(100+n),account_id:id(200+n),
+ control_number:`SYN-${n}`,payer_name:'Synthetic Payer',frequency:'original',
+ service_date:'2026-11-01',status,total_cents:10000,snapshot:{account:{content:{}}},...fields
+});
+const payment=(n,status)=>({
+ id:id(n),payer_name:'Synthetic Payer',trace:'Shared trace',status,
+ payment_date:'2026-11-15',total_paid_cents:2000,claim_count:1,version:2
+});
 const claims=[
- {id:'c1',patient_name:'Adams, Ana',control_number:'SYN-1',payer_name:'Synthetic Payer',frequency:'original',status:'draft',total_cents:12000},
- {id:'c2',patient_name:'Brown, Bo',control_number:'SYN-2',payer_name:'Synthetic Payer',frequency:'original',status:'ready',total_cents:9000},
- {id:'c3',patient_name:'Brown, Bo',control_number:'SYN-3',payer_name:'Synthetic Payer',frequency:'replacement',status:'submitted',total_cents:9000},
- {id:'c4',patient_name:'Cruz, Cal',control_number:'SYN-4',payer_name:'Synthetic Payer',frequency:'original',status:'rejected',total_cents:15000},
- {id:'c5',patient_name:'Diaz, Di',control_number:'SYN-5',payer_name:'Synthetic Payer',frequency:'original',status:'adjudicated',total_cents:22000},
- {id:'c6',patient_name:'Diaz, Di',control_number:'SYN-6',payer_name:'Synthetic Payer',frequency:'original',status:'adjudicated',total_cents:8000},
- {id:'c7',patient_name:'Evans, Ed',control_number:'SYN-7',payer_name:'Synthetic Payer',frequency:'original',status:'void',total_cents:5000}
+ claim(1,'draft'),claim(2,'ready'),claim(3,'submitted',{claimmd_position:{acknowledged:true}}),
+ claim(4,'accepted'),claim(5,'submitted',{claimmd_position:{needs_correction:true}}),
+ claim(6,'rejected'),claim(7,'adjudicated'),claim(8,'adjudicated'),
+ claim(9,'submitted',{crossover_tracking_only:true}),
+ claim(10,'void',{claimmd_position:{needs_correction:true}}),claim(11,'paid')
 ];
-const counts={draft:12,ready:3,submitted:5,accepted:0,rejected:2,adjudicated:40,void:1};
+const remittances=[payment(30,'staged'),payment(31,'reconciled'),payment(32,'posted'),
+ payment(33,'reversed'),payment(34,'rejected'),payment(35,'unrecognized')];
 
-function fixture(){
- const handlers={},nodes=new Map(),calls=[];let claimPage=claims,countsResponse={counts};
- // The two views below are the claims table body and the chip strip. Writing to one
- // rewrites that part of the workspace, the way replacing a node does in the page.
- const claimsMarkup=()=>String(nodes.get('tools')?.innerHTML||'');
- // These two views are the claims table body and the chip strip. Writing to one rewrites
- // that part of the workspace, the way replacing a node does in the page.
- const body={get innerHTML(){return String(claimsMarkup().match(/<tbody data-claim-rows>([\s\S]*?)<\/tbody>/)?.[1]||'');},set innerHTML(rows){nodes.get('tools').innerHTML=claimsMarkup().replace(/<tbody data-claim-rows>[\s\S]*?<\/tbody>/,`<tbody data-claim-rows>${rows}</tbody>`);}};
- const stripView={get outerHTML(){return String(claimsMarkup().match(/<nav[^>]*claims-status-strip[\s\S]*?<\/nav>/)?.[0]||'');},set outerHTML(markup){nodes.get('tools').innerHTML=claimsMarkup().replace(/<nav[^>]*claims-status-strip[\s\S]*?<\/nav>/,markup);}};
- const node=id=>{const item={id,innerHTML:'',dataset:{},values:{},hidden:false,scrollIntoView(){},querySelector(selector){if(selector==='[data-claim-rows]')return body;if(selector==='.claims-status-strip')return stripView;return null;},querySelectorAll(){return [];},insertAdjacentHTML(){}};nodes.set(id,item);return item;};
- const ctx={console,Map,JSON,Date,Error,crypto:{randomUUID:()=>'synthetic-request'},document:{addEventListener:(type,fn)=>(handlers[type]??=[]).push(fn),querySelector:()=>null},$:node,me:{user_id:'clinician',role:'owner'},selected:null,chartSection:null,activeVisit:null,billingPayers:[],window:{},esc:v=>String(v??''),human:v=>String(v),date:v=>String(v),money:v=>`$${v}`,displayDate:v=>String(v),billingWrite:()=>true,notice:()=>{},showTool:()=>{},run:fn=>ctx.pending=fn(),loadClaimMdConnection:async()=>({configured:false,connected:false}),claimMdConnectionCard:()=>'',showEraAutomation:async()=>{},showRecoupments:async()=>{},showEraBatches:async()=>{},async api(path){calls.push(path);
-  if(path==='/api/v1/billing/claims')return {items:claimPage,next_cursor:null};
-  if(path==='/api/v1/billing/claims/status-counts')return typeof countsResponse==='function'?countsResponse():countsResponse;
-  if(path==='/api/v1/billing/payers')return {items:[]};
-  if(path==='/api/v1/billing/remittances')return {items:[],next_cursor:null};
-  if(path==='/api/v1/billing/remittance-sources')return {items:[]};
-  throw new Error('Unexpected API '+path);
- }};
- vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/claims.js','utf8'),ctx);
- const workspace=claimsMarkup;
- const strip=()=>String(workspace().match(/<nav[^>]*claims-status-strip[\s\S]*?<\/nav>/)?.[0]||'');
- const rows=()=>String(workspace().match(/<tbody data-claim-rows>([\s\S]*?)<\/tbody>/)?.[1]||'');
- const chip=(status,label,amount,pressed)=>{const chipMarkup=`data-claim-status="${status}" aria-pressed="${pressed}">${label}<span>${amount}</span>`;assert.ok(strip().includes(chipMarkup),`chip ${status} should read "${label} ${amount}" with aria-pressed=${pressed} in:\n${strip()}`);};
- const load=(...args)=>ctx.showClaimsWorkspace(...args);
- const click=async status=>{for(const handler of handlers.click)handler({target:{closest:selector=>selector==='#claims-tool [data-claim-status]'?{dataset:{claimStatus:status}}:null},preventDefault(){}});await ctx.pending;};
- return {ctx,calls,workspace,strip,rows,chip,load,click,setPage:page=>claimPage=page,setCounts:value=>countsResponse=value};
+function fixture({write=true,claimRows=claims,remittanceRows=remittances,history=false}={}){
+ const dom=new JSDOM('<nav id="workspace-navigation"><button id="nav-claims"></button></nav><div id="clinical-workspace" hidden></div><div id="tools"></div>',{runScripts:'outside-only',pretendToBeVisual:true,url:'https://suncharts.test/'});
+ const ctx=dom.getInternalVMContext(),doc=ctx.document,calls=[],routes=new Map(),opened=[],panels=[];
+ const $=name=>doc.getElementById(name);
+ let pageClaims=claimRows,pageEras=remittanceRows,nextClaims=null,nextEras=null,afterClaims=[],afterEras=[];
+ ctx.HTMLElement.prototype.scrollIntoView=function(){};
+ ctx.scrollTo=()=>{};
+ Object.assign(ctx,{
+  $,me:{user_id:'synthetic-staff',tenant_id:'synthetic-tenant',role:write?'owner':'nurse'},
+  esc:value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),
+  money:value=>`$${(value/100).toFixed(2)}`,human:String,notice(){},billingWrite:()=>write,
+  billingPayers:[],payerName:()=> 'Synthetic Payer',billingField:()=> '<input name="reason">',
+  showTool:()=>$('nav-claims').setAttribute('aria-current','page'),captureVisitDrafts(){},busy:false,
+  claimMdConnectionState:{connected:true},loadClaimMdConnection:async()=>({connected:true}),
+  showEraAutomation:async()=>panels.push('automation'),showRecoupments:async()=>panels.push('recoupments'),
+  showEraBatches:async()=>panels.push('batch'),showProviderSettlement:async key=>panels.push(key),
+  showClinical:async()=>opened.push(['chart']),
+  selectPatient:async (p,visit)=>{opened.push([p,visit]);ctx.selected=p;ctx.activeVisit={id:visit};},
+  setEncounterSection:step=>opened.push([step]),
+  run:action=>{ctx.pending=action();return ctx.pending.catch(()=>{});},
+  async api(path,method='GET'){
+   calls.push([path,method]);
+   if(routes.has(path))return await routes.get(path)();
+   if(path===claimsBase)return {items:pageClaims.map(c=>({...c})),next_cursor:nextClaims};
+   if(path===`${claimsBase}?after=${encodeURIComponent(nextClaims)}`)return {items:afterClaims.map(c=>({...c})),next_cursor:null};
+   if(path===eraBase)return {items:[...pageEras],next_cursor:nextEras};
+   if(path===`${eraBase}?after=${encodeURIComponent(nextEras)}`)return {items:[...afterEras],next_cursor:null};
+   if(path==='/api/v1/billing/payers')return {items:[]};
+   if(path==='/api/v1/billing/remittance-sources')return {items:[{source_history_id:id(40),source_id:'Synthetic import',source_instance:'Archive'}]};
+   if(path.startsWith(claimsBase+'/')){
+    if(path.endsWith('/history'))return {items:[]};
+    const key=path.slice(claimsBase.length+1),row=[...pageClaims,...afterClaims].find(c=>c.id===key);
+    assert.ok(row,`Fixture claim ${key} must exist`);
+    return {claim:row,tracking:{remittance_posted:key===id(7)}};
+   }
+   if(path.startsWith(eraBase+'/')){
+    if(path.endsWith('/history'))return {items:[]};
+    const key=path.slice(eraBase.length+1),row=[...pageEras,...afterEras].find(r=>r.id===key);
+    assert.ok(row,`Fixture remittance ${key} must exist`);
+    return {remittance:{...row,matches:[],document_hash:'synthetic-hash',document:{
+     claims:[],payment_date:row.payment_date,total_paid_cents:row.total_paid_cents,currency:'USD',payer_code:'SYN'
+    }},issues:[],postings:[],ready_to_post:row.status==='reconciled'};
+   }
+   throw new Error(`Unexpected API ${path}`);
+  }
+ });
+ for(const file of ['display-format.js','visit-billing.js','claims.js'])vm.runInContext(fs.readFileSync('web/'+file,'utf8'),ctx);
+ // Exercise the real record-loader and its guards with a lightweight claim-detail template.
+ ctx.claimScreenMarkup=row=>`<p data-opened-claim="${row.id}">${row.control_number}</p>`;
+ ctx.showEncounterClaim=async (key,account)=>opened.push([key,account]);
+ if(history)vm.runInContext(fs.readFileSync('web/navigation-history.js','utf8'),ctx);
+ const $q=selector=>doc.querySelector(selector);
+ const stage=key=>$q(`[data-claim-status="${key}"]`);
+ const stageCounts=()=>Object.fromEntries(Array.from(doc.querySelectorAll('[data-claim-status]'),button=>[button.dataset.claimStatus,Number(button.querySelector('span').textContent)]));
+ const visibleRows=kind=>Array.from(doc.querySelectorAll(`[data-${kind==='claim'?'claim':'era'}-worklist]:not([hidden]) [data-${kind}-open]`),button=>button.dataset[kind+'Open']);
+ const choose=value=>{const select=$('billing-all-claims');select.value=value;select.dispatchEvent(new ctx.Event('change',{bubbles:true}));};
+ const click=selector=>{$q(selector).click();return ctx.pending;};
+ return {ctx,dom,calls,paths:()=>calls.map(([path])=>path),routes,opened,panels,$,$q,stage,stageCounts,visibleRows,choose,click,
+  setClaims:(rows,next=null,after=[])=>{pageClaims=rows;nextClaims=next;afterClaims=after;},
+  setRemittances:(rows,next=null,after=[])=>{pageEras=rows;nextEras=next;afterEras=after;}};
 }
+const hasIds=(f,kind,ids)=>assert.deepEqual(f.visibleRows(kind),ids.map(id));
+const waitFor=async test=>{
+ for(let attempt=0;attempt<30;attempt++){
+  if(test())return;
+  await new Promise(resolve=>setTimeout(resolve,10));
+ }
+ assert.fail('The expected navigation state did not appear');
+};
+
 (async()=>{
- const f=fixture();await f.load();
- assert.equal(f.calls.filter(path=>path==='/api/v1/billing/claims/status-counts').length,1,'the counts endpoint is fetched with the list');
- for(const [status,label,amount] of [['all','All',7],['draft','Draft',12],['ready','Ready to send',3],['submitted','Sent',5],['accepted','Accepted',0],['rejected','Rejected',2],['adjudicated','Adjudicated',40],['void','Voided',1]])f.chip(status,label,amount,status==='all');
- assert.match(f.strip(),/aria-label="Filter claims by status"/);
- assert.doesNotMatch(f.strip(),/>Paid</);assert.doesNotMatch(f.strip(),/>Denied</);
- assert.equal((f.rows().match(/SYN-/g)||[]).length,7,'All lists every loaded claim');
- assert.match(f.workspace(),/class="muted claim-filter-note"/,'staff are told the counts cover every claim');
+ const f=fixture();
+ f.setClaims(claims,'claims cursor',[claim(12,'accepted',{claimmd_position:{needs_correction:true}})]);
+ f.setRemittances(remittances,'payments cursor',[payment(36,'posted'),payment(37,'staged')]);
+ await f.ctx.showClaimsWorkspace();
+ assert.deepEqual(f.stageCounts(),{send:2,wait:2,fix:3,'remittance-review':2,posted:1});
+ assert.deepEqual(Array.from(f.ctx.document.querySelectorAll('[data-claim-status]'),button=>button.firstChild.textContent.trim()),
+  ['To send','Waiting','Needs correction','Remittance to review','Posted']);
+ assert.equal(f.stage('send').getAttribute('aria-pressed'),'true');
+ assert.equal(f.$('nav-claims').getAttribute('aria-current'),'page');
+ assert.ok(f.paths().includes(claimsBase+'?after=claims%20cursor'));
+ assert.ok(!f.paths().includes(claimsBase+'/status-counts'));
+ hasIds(f,'claim',[1,2]);hasIds(f,'era',[]);
+ const queries=f.calls.length;
+ f.stage('wait').focus();f.stage('wait').click();
+ assert.equal(f.ctx.document.activeElement,f.stage('wait'));
+ hasIds(f,'claim',[3,4]);
+ assert.match(f.$q('[data-claim-worklist]').textContent,/Received by the clearinghouse/);
+ f.stage('fix').click();hasIds(f,'claim',[5,6,12]);
+ f.stage('remittance-review').click();hasIds(f,'era',[30,31]);hasIds(f,'claim',[]);
+ assert.equal(f.$('nav-claims').getAttribute('aria-current'),'page','remittance filters stay in Claims & remittances');
+ f.stage('posted').click();hasIds(f,'era',[32]);
+ f.choose('payments');hasIds(f,'era',[30,31,32,33,34,35]);
+ assert.match(f.$q(`[data-era-open="${id(35)}"]`).closest('tr').textContent,/Status unavailable/);
+ f.choose('all');hasIds(f,'claim',[1,2,3,4,5,6,7,8,9,10,11,12]);
+ assert.match(f.$q(`[data-claim-open="${id(7)}"]`).closest('tr').textContent,/Payment posted/);
+ assert.match(f.$q(`[data-claim-open="${id(8)}"]`).closest('tr').textContent,/Insurer answered/);
+ assert.match(f.$q(`[data-claim-open="${id(11)}"]`).closest('tr').textContent,/Claim status unavailable/);
+ f.choose('void');hasIds(f,'claim',[10]);
+ assert.equal(f.calls.length,queries,'stage changes only filter the returned records');
+ assert.match(f.$q('[data-era-more]').textContent,/counts reflect loaded records/);
+ f.stage('posted').click();
+ await f.click('[data-era-next]');
+ assert.ok(f.paths().includes(eraBase+'?after=payments%20cursor'));
+ assert.deepEqual(f.stageCounts(),{send:2,wait:2,fix:3,'remittance-review':3,posted:2});
+ hasIds(f,'era',[32,36]);assert.equal(f.$q('[data-era-more]').hidden,true);
+ assert.deepEqual(f.panels,['automation','recoupments','batch']);
+ assert.ok(f.$q('[data-era-source]'));assert.ok(f.$q('[data-payment-settings]'));
+ await f.ctx.showClaimsWorkspace({filter:'send'});hasIds(f,'claim',[1,2]);
+ await f.ctx.showClaimsWorkspace({filter:'payments'});hasIds(f,'era',[30,31,32,33,34,35,36,37]);
+ console.log('PASS five stages, precise counts and states, shortcuts, older remittances, and legacy management');
 
- await f.click('adjudicated');
- assert.equal(f.ctx.claimStatusFilter,'adjudicated');
- f.chip('adjudicated','Adjudicated',40,true);f.chip('all','All',7,false);
- assert.equal((f.rows().match(/SYN-/g)||[]).length,2);
- assert.doesNotMatch(f.rows(),/SYN-1/);assert.match(f.rows(),/SYN-5/);assert.match(f.rows(),/SYN-6/);
+ const empty=fixture({claimRows:[],remittanceRows:[payment(35,'unrecognized')]});
+ empty.setRemittances([payment(35,'unrecognized')],'next',[payment(32,'posted')]);
+ await empty.ctx.showClaimsWorkspace();
+ assert.deepEqual(empty.stageCounts(),{send:0,wait:0,fix:0,'remittance-review':0,posted:0});
+ assert.match(empty.$q('[data-claim-worklist]').textContent,/No claims to send/);
+ empty.stage('fix').click();assert.match(empty.$q('[data-claim-worklist]').textContent,/No claims need correction/);
+ empty.stage('posted').click();assert.match(empty.$q('[data-era-worklist]').textContent,/No posted remittances in the loaded records/);
+ await empty.click('[data-era-next]');hasIds(empty,'era',[32]);
+ empty.stage('remittance-review').click();assert.match(empty.$q('[data-era-worklist]').textContent,/No remittances to review\./);
+ console.log('PASS empty and unknown states, including a zero count on a partial list');
 
- await f.click('void');assert.equal((f.rows().match(/SYN-/g)||[]).length,1);assert.match(f.rows(),/SYN-7/);
- await f.click('accepted');assert.equal((f.rows().match(/SYN-/g)||[]).length,0);
- assert.match(f.rows(),/No claims here with this status\. Choose All to see every claim\./,'the empty row tells staff what to do next');
- await f.click('all');assert.equal((f.rows().match(/SYN-/g)||[]).length,7);
+ const actions=fixture({history:true});
+ await actions.ctx.showClaimsWorkspace({filter:'remittance-review'});
+ await actions.click(`[data-era-open="${id(31)}"]`);
+ assert.equal(actions.ctx.eraCurrent.id,id(31));
+ assert.equal(actions.ctx.location.hash,`#/remittances/${id(31)}`);
+ assert.deepEqual(Array.from(actions.$('era-action').querySelectorAll('option'),option=>option.value),['post','reject']);
+ actions.ctx.history.back();
+ await waitFor(()=>actions.ctx.location.hash==='#/claims/remittance-review'&&!actions.$('era-action'));
+ assert.equal(actions.stage('remittance-review').getAttribute('aria-pressed'),'true');
+ actions.ctx.history.forward();
+ await waitFor(()=>actions.$('era-action')&&actions.ctx.eraCurrent.id===id(31));
+ await new Promise(resolve=>actions.ctx.requestAnimationFrame(()=>actions.ctx.requestAnimationFrame(resolve)));
+ actions.stage('posted').click();await actions.click(`[data-era-open="${id(32)}"]`);
+ assert.equal(actions.$('era-action').querySelector('option').value,'reverse');
+ actions.choose('payments');await actions.click(`[data-era-open="${id(35)}"]`);
+ assert.match(actions.$('claims-detail').textContent,/Payment status unavailable/);
+ assert.doesNotMatch(actions.$('claims-detail').textContent,/Payment file rejected/);
+ assert.equal(actions.$('era-action'),null);
+ actions.stage('send').click();
+ await actions.click(`[data-claim-open="${id(2)}"]`);
+ assert.equal(actions.ctx.claimCurrent.id,id(2));assert.equal(actions.ctx.location.hash,`#/claims/${id(2)}`);
+ assert.ok(actions.$q(`[data-opened-claim="${id(2)}"]`));
+ actions.routes.set(claimsBase+'/'+id(1),()=>({claim:claims[1]}));
+ await assert.rejects(actions.click(`[data-claim-open="${id(1)}"]`),/does not match the selected claim/);
+ assert.ok(actions.$q(`[data-opened-claim="${id(2)}"]`));
+ assert.ok(actions.calls.every(([,method])=>method==='GET'));
+ const readOnly=fixture({write:false});
+ await readOnly.ctx.showClaimsWorkspace({filter:'remittance-review'});
+ await readOnly.click(`[data-era-open="${id(31)}"]`);
+ assert.equal(readOnly.ctx.eraCurrent.id,id(31));assert.equal(readOnly.$('era-action'),null);
+ assert.equal(readOnly.$q('[data-payment-settings]'),null);
+ assert.ok(!readOnly.paths().includes('/api/v1/billing/remittance-sources'));
+ const visit=fixture({claimRows:[claim(1,'draft',{snapshot:{account:{content:{visit_id:id(400)}}}})]});
+ await visit.ctx.showClaimsWorkspace();
+ await visit.click(`[data-claim-open="${id(1)}"]`);
+ assert.deepEqual(visit.opened,[['chart'],[id(101),id(400)],['charges'],[id(1),id(201)]]);
+ console.log('PASS exact claim, encounter and remittance IDs, Back and Forward, and writer-only remittance actions');
 
- // A chip click filters what is already loaded: it is not a refresh and fetches nothing.
- const calls=f.calls.length;await f.click('ready');
- assert.equal(f.calls.length,calls,'filtering reuses the loaded page');
- assert.equal((f.rows().match(/SYN-/g)||[]).length,1);assert.match(f.rows(),/SYN-2/);
- assert.match(f.rows(),/Open claim/,'a filtered row still opens its claim');
+ const refresh=fixture();
+ refresh.setRemittances([payment(30,'staged')],'older',[payment(36,'posted')]);
+ await refresh.ctx.showClaimsWorkspace({filter:'posted'});
+ await refresh.click('[data-era-next]');
+ const detail=refresh.$('claims-detail');
+ detail.innerHTML='<form id="claim-editor-form"><textarea>Unsaved correction</textarea></form>';
+ const editor=detail.querySelector('form'),data=detail.querySelector('textarea');
+ refresh.setRemittances([payment(30,'posted')],'older',[payment(36,'posted')]);
+ refresh.setClaims([claim(45,'submitted',{claimmd_position:{needs_correction:true}})]);
+ const from=refresh.paths().length;
+ await refresh.ctx.claimsAutoRefreshLoad();
+ assert.deepEqual(refresh.paths().slice(from),[claimsBase,eraBase,eraBase+'?after=older']);
+ hasIds(refresh,'era',[30,36]);assert.equal(refresh.stageCounts().fix,1);
+ assert.equal(refresh.$('claims-detail'),detail);assert.equal(detail.querySelector('form'),editor);
+ assert.equal(data.value,'Unsaved correction');
+ let resolveStale;
+ refresh.routes.set(eraBase,()=>new Promise(resolve=>{resolveStale=resolve;}));
+ const staleRefresh=refresh.ctx.claimsAutoRefreshLoad();
+ refresh.ctx.me={user_id:'new-staff',tenant_id:'another-tenant',role:'owner'};
+ refresh.routes.delete(eraBase);
+ refresh.setClaims([claim(50,'draft')]);
+ refresh.setRemittances([payment(51,'staged')],'tenant-owned-cursor',[payment(52,'staged')]);
+ await refresh.ctx.showClaimsWorkspace();
+ resolveStale({items:[payment(99,'posted')],next_cursor:null});
+ await staleRefresh;
+ assert.equal(refresh.stage('send').getAttribute('aria-pressed'),'true');
+ hasIds(refresh,'claim',[50]);assert.equal(refresh.stageCounts().posted,0);
+ assert.equal(refresh.stageCounts()['remittance-review'],1);
+ console.log('PASS quiet refresh preserves details, loaded pages, and session isolation');
 
- // Reopening the list resets the selection but keeps the tenant-wide counts.
- await f.click('draft');await f.load();
- assert.equal(f.ctx.claimStatusFilter,'all');
- assert.equal((f.rows().match(/SYN-/g)||[]).length,7);
- f.chip('all','All',7,true);f.chip('draft','Draft',12,false);
-
- // Counts cover the whole practice, so a status only present on a later page still counts.
- const paged=fixture();paged.setPage(claims.slice(0,3));await paged.load();
- paged.chip('adjudicated','Adjudicated',40,false);paged.chip('all','All',3,true);
-
- // The loaded page is a floor for a chip: a missing count never reads zero with rows shown.
- const missing=fixture();missing.setCounts({});await missing.load();
- missing.chip('all','All',7,true);missing.chip('draft','Draft',1,false);missing.chip('adjudicated','Adjudicated',2,false);
- await missing.click('draft');assert.equal((missing.rows().match(/SYN-/g)||[]).length,1);
-
- // An unusable counts response degrades to the loaded page instead of breaking the list.
- const broken=fixture();broken.setCounts(()=>{throw new Error('counts endpoint unavailable');});await broken.load();
- broken.chip('draft','Draft',1,false);assert.equal((broken.rows().match(/SYN-/g)||[]).length,7);
-
- // An unknown stored status stays under All and cannot become a selected chip.
- const unknown=fixture();unknown.setPage([...claims,{id:'c8',patient_name:'Fox, Fi',control_number:'SYN-8',payer_name:'Synthetic Payer',frequency:'original',status:'future_state',total_cents:100}]);await unknown.load();
- unknown.chip('all','All',8,true);assert.doesNotMatch(unknown.strip(),/data-claim-status="future_state"/);
- await unknown.click('future_state');assert.equal(unknown.ctx.claimStatusFilter,'all','an unknown status falls back to All');
- assert.equal((unknown.rows().match(/SYN-/g)||[]).length,8);
- console.log('PASS claim status chips show a count per status from the tenant-wide counts endpoint, filter the list on click with All as the default, reset on reload and stay usable when counts are missing');
+ for(const item of [f,empty,actions,readOnly,visit,refresh])item.dom.window.close();
 })().catch(error=>{console.error(error);process.exitCode=1;});

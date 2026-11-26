@@ -1413,6 +1413,120 @@ fn laboratory_order() -> Value {
 fn laboratory_report(specimen: Option<&str>) -> Value {
     json!({"request_id":Uuid::new_v4(),"source_history_id":null,"status":"preliminary","reason":"Synthetic manual result entry","content":{"test_keys":["panel1"],"specimen_id":specimen,"specimen_not_recorded":false,"accession":"SYN-REPORT-1","performing_lab":"Synthetic laboratory","reported_at":"2026-10-23T12:00:00Z","observations":[{"label":"Synthetic potassium","code":null,"value_type":"numeric","number":6.2,"comparator":"","text":"","coded":null,"units":"mmol/L","reference_range":"3.5–5.1","flag":"critical_high","absent_reason":"","notes":"Synthetic result only"}],"notes":"Synthetic panel"}})
 }
+
+#[tokio::test]
+async fn lab_inbox_counts_and_filters_the_entire_tenant_before_the_limit() {
+    let (router, db, first, _) = setup().await;
+    let other = Actor {
+        tenant_id: Uuid::new_v4(),
+        ..first.clone()
+    };
+    let mut orders = Vec::new();
+    for actor in [&first, &other] {
+        let auth = bearer(actor);
+        let (status, _, patient) = json_call(
+            &router,
+            "POST",
+            "/api/v1/patients",
+            Some(&auth),
+            None,
+            json!({"given_name":"Synthetic","family_name":"Inbox","birth_date":"1990-01-01"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, _, order) = json_call(
+            &router,
+            "POST",
+            &format!(
+                "/api/v1/patients/{}/orders",
+                patient["id"].as_str().unwrap()
+            ),
+            Some(&auth),
+            None,
+            laboratory_order(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        orders.push(Uuid::parse_str(order["id"].as_str().unwrap()).unwrap());
+    }
+    // Use fixed timestamps to prove the ordinary page keeps its oldest-first ordering.
+    let ordinary_ids: Vec<Uuid> = sqlx::query_scalar(
+        "INSERT INTO lab_reports
+            (tenant_id,id,order_id,request_id,creation_hash,content,status,author_id,updated_at)
+         SELECT $1,gen_random_uuid(),$2,gen_random_uuid(),'synthetic',
+            '{\"observations\":[{\"flag\":\"normal\"}]}'::jsonb,'final',$3,
+            '2026-01-01T00:00:00Z'::timestamptz + n * interval '1 minute'
+         FROM generate_series(1,100) AS n RETURNING id",
+    )
+    .bind(first.tenant_id)
+    .bind(orders[0])
+    .bind(first.sub)
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    let mut critical_ids = Vec::new();
+    for (actor, order, flag) in [
+        (&first, orders[0], "critical_low"),
+        (&other, orders[1], "critical"),
+    ] {
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO lab_reports
+                (tenant_id,id,order_id,request_id,creation_hash,content,status,author_id,updated_at)
+             VALUES($1,$2,$3,$4,'synthetic',$5,'corrected',$6,'2026-02-01T00:00:00Z')",
+        )
+        .bind(actor.tenant_id)
+        .bind(id)
+        .bind(order)
+        .bind(Uuid::new_v4())
+        .bind(json!({"observations":[{"flag":flag}]}))
+        .bind(actor.sub)
+        .execute(&db)
+        .await
+        .unwrap();
+        critical_ids.push(id);
+    }
+    let auth = bearer(&first);
+    let (status, _, all) = json_call(
+        &router,
+        "GET",
+        "/api/v1/labs/inbox",
+        Some(&auth),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(all["limit"], 100);
+    assert_eq!(all["total"], 101);
+    assert_eq!(all["critical_count"], 1);
+    let ids: Vec<Uuid> = all["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| Uuid::parse_str(row["report_id"].as_str().unwrap()).unwrap())
+        .collect();
+    assert_eq!(ids, ordinary_ids);
+    for (actor, total, id) in [(&first, 101, critical_ids[0]), (&other, 1, critical_ids[1])] {
+        let (status, _, filtered) = json_call(
+            &router,
+            "GET",
+            "/api/v1/labs/inbox?critical=true",
+            Some(&bearer(actor)),
+            None,
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(filtered["total"], total);
+        assert_eq!(filtered["critical_count"], 1);
+        assert_eq!(filtered["items"].as_array().unwrap().len(), 1);
+        assert_eq!(filtered["items"][0]["report_id"], json!(id));
+        assert_eq!(filtered["items"][0]["critical"], true);
+    }
+    db.close().await;
+}
+
 #[tokio::test]
 async fn orders_specimens_panels_corrections_and_acknowledgment_are_atomic() {
     let (r, db, a, _) = setup().await;
@@ -1563,6 +1677,9 @@ async fn orders_specimens_panels_corrections_and_acknowledgment_are_atomic() {
     )
     .await;
     assert_eq!(inbox["items"][0]["critical"], true);
+    assert_eq!(inbox["items"][0]["version"], 2);
+    assert_eq!(inbox["total"], 1);
+    assert_eq!(inbox["critical_count"], 1);
     assert_eq!(
         version_call(
             &r,
@@ -1589,6 +1706,19 @@ async fn orders_specimens_panels_corrections_and_acknowledgment_are_atomic() {
         .0,
         200
     );
+    let (status, _, inbox) = json_call(
+        &r,
+        "GET",
+        "/api/v1/labs/inbox?critical=true",
+        Some(&auth),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(inbox["items"], json!([]));
+    assert_eq!(inbox["total"], 0);
+    assert_eq!(inbox["critical_count"], 0);
     assert_eq!(
         version_call(
             &r,
@@ -7735,6 +7865,7 @@ fn claimmd_835(c: &Value, trace: &str) -> String {
 #[derive(Clone)]
 struct EraMock {
     response: Value,
+    response_retry_after: Option<u32>,
     list: Value,
     download: Value,
     requests: Vec<Value>,
@@ -7750,6 +7881,7 @@ async fn era_mock(
 ) {
     let state = Arc::new(std::sync::Mutex::new(EraMock {
         response: json!({"last_responseid":"9","claim":[]}),
+        response_retry_after: None,
         list: json!({"last_eraid":"2","era":[{"eraid":"1","payerid":"SYN-ONLY","prov_npi":"1234567893","prov_taxid":"000000001","check_number":"SYN-AUTO-ERA","paid_amount":"80.00","paid_date":"2026-10-01","check_type":"eft","AccountKey":"must-not-retain"}]}),
         download: json!({"eraid":"1","data":[raw]}),
         requests: vec![],
@@ -7796,6 +7928,7 @@ async fn era_mock(
             axum::routing::post(move |h: HeaderMap, body: axum::body::Bytes| {
                 let responses = responses.clone();
                 async move {
+                    use axum::response::IntoResponse;
                     assert_eq!(h["accept"], "application/json");
                     let fields: std::collections::HashMap<String, String> =
                         url::form_urlencoded::parse(&body).into_owned().collect();
@@ -7804,7 +7937,15 @@ async fn era_mock(
                     state
                         .requests
                         .push(json!({"response_cursor":fields["ResponseID"]}));
-                    axum::Json(state.response.clone())
+                    if let Some(seconds) = state.response_retry_after {
+                        (
+                            StatusCode::TOO_MANY_REQUESTS,
+                            [(axum::http::header::RETRY_AFTER, seconds.to_string())],
+                        )
+                            .into_response()
+                    } else {
+                        axum::Json(state.response.clone()).into_response()
+                    }
                 }
             }),
         );
@@ -7824,6 +7965,88 @@ async fn era_mock(
         state,
         task,
     )
+}
+#[tokio::test]
+async fn claimmd_poll_429_holds_both_feeds_and_preserves_the_era_download_attempt() {
+    let (router, db, actor, _) = setup().await;
+    let (claim, partner, _) = automated_fixture(&router, &actor).await;
+    let (config, mock, server) =
+        era_mock(&actor, &partner, claimmd_835(&claim, "SYN-PACING")).await;
+
+    assert!(
+        suncharts_engine::remittance_automation::poll_one(&db, &config)
+            .await
+            .unwrap()
+    );
+    mock.lock().unwrap().response_retry_after = Some(240);
+    assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap());
+    let response: (String, String, bool, bool) = sqlx::query_as("SELECT page_token,last_result,lease_id IS NULL,next_poll_at>=now()+interval '235 seconds' FROM edi_connections WHERE tenant_id=$1")
+        .bind(actor.tenant_id).fetch_one(&db).await.unwrap();
+    assert_eq!(
+        response,
+        (
+            "0".into(),
+            "claimmd_rate_limited_cursor_retained".into(),
+            true,
+            true
+        )
+    );
+
+    sqlx::query("UPDATE edi_era_feeds SET next_poll_at=now() WHERE tenant_id=$1")
+        .bind(actor.tenant_id)
+        .execute(&db)
+        .await
+        .unwrap();
+    assert!(
+        suncharts_engine::remittance_automation::poll_one(&db, &config)
+            .await
+            .unwrap()
+    );
+    assert!(suncharts_engine::retrieval::fetch_one(&db, &config)
+        .await
+        .unwrap());
+    assert_eq!(
+        mock.lock().unwrap().requests.len(),
+        2,
+        "cooldown blocks ERA HTTP requests"
+    );
+    let era: (String, String, bool) = sqlx::query_as("SELECT cursor_id,last_result,next_poll_at>=now()+interval '235 seconds' FROM edi_era_feeds WHERE tenant_id=$1")
+        .bind(actor.tenant_id).fetch_one(&db).await.unwrap();
+    assert_eq!(
+        era,
+        (
+            "1".into(),
+            "claimmd_rate_limited_cursor_retained".into(),
+            true
+        )
+    );
+    let download: (String, i32, bool, bool) = sqlx::query_as("SELECT status,attempts,lease_id IS NULL,next_attempt_at>=now()+interval '235 seconds' FROM edi_remote_reports WHERE tenant_id=$1")
+        .bind(actor.tenant_id).fetch_one(&db).await.unwrap();
+    assert_eq!(download, ("pending".into(), 0, true, true));
+
+    mock.lock().unwrap().response_retry_after = None;
+    sqlx::query("UPDATE claimmd_api_cooldowns SET blocked_until=now()-interval '1 second'")
+        .execute(&db)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE edi_connections SET next_poll_at=now() WHERE tenant_id=$1")
+        .bind(actor.tenant_id)
+        .execute(&db)
+        .await
+        .unwrap();
+    assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap());
+    let cursor: String =
+        sqlx::query_scalar("SELECT page_token FROM edi_connections WHERE tenant_id=$1")
+            .bind(actor.tenant_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(cursor, "9");
+    server.abort();
 }
 async fn era_enable(r: &Router, a: &Actor) -> Value {
     let (_, v) = schedule_call(
@@ -8146,10 +8369,19 @@ async fn claimmd_era_audit_failures_replay_discovery_and_roll_back_staging() {
             .unwrap(),
         0
     );
-    sqlx::raw_sql("DROP TRIGGER fail_era_discovery ON audit_events; UPDATE edi_era_feeds SET lease_until=now()-interval '1 second';").execute(&db).await.unwrap();
-    suncharts_engine::remittance_automation::poll_one(&db, &config)
-        .await
-        .unwrap();
+    let deferred: (i32, bool, bool) = sqlx::query_as(
+        "SELECT poll_failures, lease_id IS NULL, next_poll_at > now() FROM edi_era_feeds",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(deferred, (1, true, true));
+    sqlx::raw_sql("DROP TRIGGER fail_era_discovery ON audit_events; UPDATE edi_era_feeds SET next_poll_at=now();").execute(&db).await.unwrap();
+    assert!(
+        suncharts_engine::remittance_automation::poll_one(&db, &config)
+            .await
+            .unwrap()
+    );
     sqlx::raw_sql("CREATE FUNCTION fail_era_download() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='edi.remote_report_change' AND EXISTS(SELECT 1 FROM edi_remote_reports WHERE id=NEW.resource_id AND original_text IS NOT NULL) THEN RAISE EXCEPTION 'synthetic audit failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER fail_era_download BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION fail_era_download();").execute(&db).await.unwrap();
     assert!(suncharts_engine::retrieval::fetch_one(&db, &config)
         .await
@@ -10530,7 +10762,37 @@ async fn check_with_claimmd_now_stores_new_messages_once_applies_them_and_keeps_
         &format!("{base}/services/upload/"),
         &base,
     );
+    let account_hash = suncharts_engine::oauth::hash("synthetic-loopback-key");
+    sqlx::query("INSERT INTO claimmd_api_reservations SELECT $1,now() FROM generate_series(1,100)")
+        .bind(&account_hash)
+        .execute(&db)
+        .await
+        .unwrap();
     queue_provider(&r, &a, &out).await;
+    assert!(suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap());
+    let deferred: (String, String, i32, bool) = sqlx::query_as(
+        "SELECT status,last_result,attempts,lease_id IS NULL AND next_attempt_at>now() FROM edi_delivery_jobs WHERE tenant_id=$1",
+    )
+    .bind(a.tenant_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        deferred,
+        ("queued".into(), "claimmd_rate_limited".into(), 0, true)
+    );
+    sqlx::query("DELETE FROM claimmd_api_reservations WHERE account_hash=$1")
+        .bind(&account_hash)
+        .execute(&db)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE edi_delivery_jobs SET next_attempt_at=now() WHERE tenant_id=$1")
+        .bind(a.tenant_id)
+        .execute(&db)
+        .await
+        .unwrap();
     assert!(suncharts_engine::delivery::process_one(&db, &config)
         .await
         .unwrap());
@@ -10585,6 +10847,49 @@ async fn check_with_claimmd_now_stores_new_messages_once_applies_them_and_keeps_
     .await
     .unwrap();
     assert!(leased);
+
+    // With 79 unexpired and one expired reservation, background can use one
+    // slot. The next poll is held while staff can still check on demand.
+    sqlx::query("DELETE FROM claimmd_api_reservations WHERE account_hash=$1")
+        .bind(&account_hash)
+        .execute(&db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO claimmd_api_reservations SELECT $1,now()-interval '30 seconds' FROM generate_series(1,79) UNION ALL SELECT $1,now()-interval '61 seconds'")
+        .bind(&account_hash)
+        .execute(&db)
+        .await
+        .unwrap();
+    assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap());
+    assert_eq!(forms.lock().unwrap().len(), 3);
+    sqlx::query("UPDATE edi_connections SET next_poll_at=now() WHERE tenant_id=$1")
+        .bind(a.tenant_id)
+        .execute(&db)
+        .await
+        .unwrap();
+    assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap());
+    assert_eq!(forms.lock().unwrap().len(), 3);
+    assert_eq!(
+        suncharts_engine::retrieval::check_claimmd_status(&db, &a, claim_id, &config)
+            .await
+            .unwrap(),
+        json!({"checked":true,"new_messages":0})
+    );
+    assert_eq!(forms.lock().unwrap().len(), 4);
+    sqlx::query("INSERT INTO claimmd_api_reservations SELECT $1,now() FROM generate_series(1,19)")
+        .bind(&account_hash)
+        .execute(&db)
+        .await
+        .unwrap();
+    assert!(matches!(
+        suncharts_engine::retrieval::check_claimmd_status(&db, &a, claim_id, &config).await,
+        Err(suncharts_engine::error::Error::ClaimMdRateLimited(1..=60))
+    ));
+    assert_eq!(forms.lock().unwrap().len(), 4);
 
     // A claim nothing was delivered for has no Claim.MD claim ID.
     sqlx::query("UPDATE edi_delivery_jobs SET receipt_reference=NULL WHERE tenant_id=$1")

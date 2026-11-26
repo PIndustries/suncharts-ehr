@@ -514,7 +514,7 @@ async fn task_detail(
 async fn assignees(ExtractState(s): ExtractState<State>, a: Actor) -> Result<Json<Value>> {
     a.staff()?;
     let mut tx = database(&s)?.begin().await?;
-    let users:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',id,'label',email,'role',role) FROM browser_users WHERE tenant_id=$1 AND NOT disabled AND role IN ('owner','clinician','front_desk') ORDER BY email,id LIMIT 501").bind(a.tenant_id).fetch_all(&mut *tx).await?;
+    let users:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',u.id,'label',COALESCE(NULLIF((SELECT p.display_name FROM practice_providers p WHERE p.tenant_id=u.tenant_id AND p.id=u.id),''),NULLIF(u.display_name,''),u.email),'role',u.role) FROM browser_users u WHERE u.tenant_id=$1 AND NOT u.disabled AND u.role IN ('owner','clinician','front_desk') ORDER BY u.email,u.id LIMIT 501").bind(a.tenant_id).fetch_all(&mut *tx).await?;
     crate::postgres::audit(&mut tx, &a, "followup.assignees.read", a.tenant_id).await?;
     tx.commit().await?;
     Ok(Json(

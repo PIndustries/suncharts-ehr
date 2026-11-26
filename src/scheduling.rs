@@ -253,6 +253,9 @@ async fn detail(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Edit {
+    // Omitted retains the booked snapshot, explicit null detaches it.
+    #[serde(default, deserialize_with = "visit_type_change")]
+    visit_type: Option<Option<crate::model::VisitTypeSelection>>,
     clinician_id: Uuid,
     starts_at: DateTime<Utc>,
     ends_at: DateTime<Utc>,
@@ -262,6 +265,11 @@ struct Edit {
     room: String,
     notes: String,
     reason: String,
+}
+fn visit_type_change<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<Option<crate::model::VisitTypeSelection>>, D::Error> {
+    Option::<crate::model::VisitTypeSelection>::deserialize(d).map(Some)
 }
 async fn edit(
     a: Actor,
@@ -292,6 +300,7 @@ async fn edit(
         || old.facility != p.facility
         || old.room != p.room;
     validate_booking(&NewAppointment {
+        visit_type: None,
         patient_id: old.patient_id,
         clinician_id: p.clinician_id,
         starts_at: p.starts_at,
@@ -317,7 +326,18 @@ async fn edit(
         Some(id),
     )
     .await?;
-    sqlx::query("UPDATE appointments SET clinician_id=$3,starts_at=$4,ends_at=$5,title=$6,category=$7,facility=$8,room=$9,notes=$10,version=version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(id).bind(p.clinician_id).bind(p.starts_at).bind(p.ends_at).bind(p.title).bind(p.category).bind(p.facility).bind(p.room).bind(p.notes).execute(&mut *tx).await?;
+    let visit_type = match &p.visit_type {
+        None => old.visit_type,
+        Some(Some(v))
+            if old.visit_type.as_ref().is_some_and(|snapshot| {
+                snapshot["id"] == json!(v.id) && snapshot["version"] == v.version
+            }) =>
+        {
+            old.visit_type
+        }
+        Some(value) => crate::visit_types::snapshot(&mut tx, &a, value.as_ref()).await?,
+    };
+    sqlx::query("UPDATE appointments SET clinician_id=$3,starts_at=$4,ends_at=$5,title=$6,category=$7,facility=$8,room=$9,notes=$10,visit_type=$11,version=version+1 WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(id).bind(p.clinician_id).bind(p.starts_at).bind(p.ends_at).bind(p.title).bind(p.category).bind(p.facility).bind(p.room).bind(p.notes).bind(visit_type).execute(&mut *tx).await?;
     revision(&mut tx, &a, id, &p.reason).await?;
     crate::postgres::audit(&mut tx, &a, "appointment.edit", id).await?;
     let r = row(&mut tx, &a, id).await?;

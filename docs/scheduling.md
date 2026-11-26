@@ -2,12 +2,17 @@
 
 ## Calendar and patient flow
 
-Schedule opens on today's Day view: a time grid over the practice's opening hours
-(the online-booking hours when set, otherwise 7am–7pm, extended to fit any visit
-outside them) with a column per provider when more than one has visits that day.
-Week uses the same grid with a column per day; Month shows up to three visits per
-day and List shows seven days as rows. The chosen view, provider and row height are
-remembered per staff member on each device. Clicking an empty time books there.
+Schedule opens in Month the first time. Choose Day, Week, Month or List in the
+toolbar to switch immediately. The EHR remembers your view, providers, locations,
+status filter and row density for this practice in this browser.
+
+The toolbar stays visible as you scroll. On a larger screen the mini calendar
+and filters stay beside the appointments. On a phone, use **Filters** in the
+toolbar to open them. Use **Today** or the arrows to move through the calendar.
+
+Day shows the practice’s opening hours and extends to include earlier or later
+visits. Week shows a time grid, Month shows up to three visits per day, and List
+shows seven days as rows. Clicking an empty time starts a booking.
 
 Every view uses one appointment card: time, patient, visit type, provider, status
 and markers for what the visit still needs — intake form, insurance eligibility for
@@ -40,6 +45,20 @@ state transitions; started appointments cannot be dragged.
 Times are stored as UTC instants and displayed in the browser's IANA timezone.
 The UI rejects ambiguous or nonexistent local times at clock changes. An API client
 must supply explicit offsets.
+
+## Practice visit types
+
+Practice owners manage visit types in **Practice administration → Visit types**.
+Each type has a name, category and default length from 5 to 480 minutes. Owners
+can include suggested ICD-10-CM diagnoses and CPT or HCPCS procedures. Procedure
+suggestions may include units, modifiers and drug details. An owner can retire a
+type or restore it for future bookings.
+
+Selecting a type on a booking, walk-in or recurring series saves the version in
+use at that moment. Rescheduling preserves that selection. Updating the practice
+default applies to future selections. Staff review the suggested codes in the
+encounter, edit or remove individual lines, and save the ones that apply. The
+existing service-date fee rules price saved procedure lines.
 
 ## Recurring appointments
 

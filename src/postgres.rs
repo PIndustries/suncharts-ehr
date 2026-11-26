@@ -197,11 +197,33 @@ impl ClinicalBackend for PostgresBackend {
         a: &Actor,
         after: Option<Uuid>,
         status: crate::patient_lifecycle::PatientStatus,
+        missing: Option<crate::patient_lifecycle::MissingPatientContact>,
     ) -> Result<PatientPage> {
         a.staff()?;
         let mut tx = self.0.begin().await?;
-        let mut items:Vec<Patient>=sqlx::query_as("SELECT p.id,p.mrn,p.given_name,p.family_name,p.birth_date,coalesce(e.archived,false) AS archived FROM patients p LEFT JOIN LATERAL (SELECT archived FROM patient_lifecycle_events WHERE tenant_id=p.tenant_id AND patient_id=p.id ORDER BY version DESC LIMIT 1) e ON true WHERE p.tenant_id=$1 AND ($2::uuid IS NULL OR p.id>$2) AND ($3::boolean IS NULL OR coalesce(e.archived,false)=$3) ORDER BY p.id LIMIT 51")
-            .bind(a.tenant_id).bind(after).bind(status.archived()).fetch_all(&mut *tx).await?;
+        let (join, predicate) = match missing {
+            Some(field) => (
+                "LEFT JOIN patient_demographics d ON d.tenant_id=p.tenant_id AND d.patient_id=p.id",
+                field.predicate(),
+            ),
+            None => ("", "true"),
+        };
+        let sql = format!(
+            "SELECT p.id,p.mrn,p.given_name,p.family_name,p.birth_date,coalesce(e.archived,false) AS archived
+             FROM patients p
+             LEFT JOIN LATERAL (SELECT archived FROM patient_lifecycle_events
+                 WHERE tenant_id=p.tenant_id AND patient_id=p.id ORDER BY version DESC LIMIT 1) e ON true
+             {join}
+             WHERE p.tenant_id=$1 AND ($2::uuid IS NULL OR p.id>$2)
+                 AND ($3::boolean IS NULL OR coalesce(e.archived,false)=$3) AND {predicate}
+             ORDER BY p.id LIMIT 51"
+        );
+        let mut items: Vec<Patient> = sqlx::query_as(&sql)
+            .bind(a.tenant_id)
+            .bind(after)
+            .bind(status.archived())
+            .fetch_all(&mut *tx)
+            .await?;
         let next_cursor = if items.len() > 50 {
             items.pop();
             items.last().map(|p| p.id)
@@ -303,6 +325,7 @@ impl ClinicalBackend for PostgresBackend {
             }
         }
         crate::patient_lifecycle::require_active(&mut tx, a, p.patient_id).await?;
+        let visit_type = crate::visit_types::snapshot(&mut tx, a, p.visit_type.as_ref()).await?;
         if let Some(source) = p.source_history_id {
             crate::scheduling::source(&mut tx, a, p.patient_id, source).await?;
         }
@@ -320,8 +343,8 @@ impl ClinicalBackend for PostgresBackend {
         )
         .await?;
         let id = Uuid::new_v4();
-        let result = sqlx::query_as("INSERT INTO appointments (tenant_id,id,patient_id,clinician_id,starts_at,ends_at,title,category,facility,room,notes,source_history_id,request_id,request_digest) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *")
-            .bind(a.tenant_id).bind(id).bind(p.patient_id).bind(p.clinician_id).bind(p.starts_at).bind(p.ends_at).bind(p.title).bind(p.category).bind(p.facility).bind(p.room).bind(p.notes).bind(p.source_history_id).bind(p.request_id).bind(digest).fetch_one(&mut *tx).await?;
+        let result = sqlx::query_as("INSERT INTO appointments (tenant_id,id,patient_id,clinician_id,starts_at,ends_at,title,category,facility,room,notes,source_history_id,request_id,request_digest,visit_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *")
+            .bind(a.tenant_id).bind(id).bind(p.patient_id).bind(p.clinician_id).bind(p.starts_at).bind(p.ends_at).bind(p.title).bind(p.category).bind(p.facility).bind(p.room).bind(p.notes).bind(p.source_history_id).bind(p.request_id).bind(digest).bind(visit_type).fetch_one(&mut *tx).await?;
         crate::scheduling::revision(&mut tx, a, id, &p.reason).await?;
         crate::scheduling::emit_appointment_event(
             &mut tx,

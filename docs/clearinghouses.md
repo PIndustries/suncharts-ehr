@@ -15,6 +15,28 @@ disabled. Test the saved key against the fixed Claim.MD payer-directory service,
 then explicitly enable delivery/retrieval. The authentication test sends no claim
 or patient data; it does not prove enrollment, account mode or payer acceptance.
 
+After retrieval is enabled, SunCharts checks claim responses and remittance
+availability in the background. Each feed retains its own progress, so a closed
+browser or a temporary outage does not require staff to start a new search.
+The default interval is 60 seconds. The minimum configurable interval is 30
+seconds. By default, routine calls pause once tracked use reaches 80 in a
+rolling minute. On-demand checks and queued claim submissions can use the
+remaining allowance, up to 100 calls. A rate-limit response delays further
+calls for that key. Uncertain deliveries stay available for reconciliation.
+
+Workers using the same key in one EHR database share a usage counter. Set
+`CLAIMMD_API_REQUESTS_PER_MINUTE` to the same value on every worker in that
+installation. It defaults to 100 and bounds numeric values to 1 through 100.
+Routine calls can use up to 80% of that allowance, rounded down. An allowance
+of 1 reserves the only slot for staff actions and queued submissions.
+
+Separate installations and tools maintain their own counters. For example,
+set the allowance to 50 in development and 50 in production when both use
+the same Claim.MD account and no other tool uses it. Each installation then
+allows up to 40 routine calls in a rolling minute. Allocate a smaller share
+when other clients use the same account.
+[Claim.MD API](https://api.claim.md/)
+
 Editing settings pauses automation. Credential/cursor changes create a new route
 revision; original reports and delivery history retain their earlier identities.
 Keys are not shared across saved connections. Back up the credential master key

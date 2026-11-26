@@ -92,6 +92,7 @@ pub fn router() -> Router<State> {
         )
         .route("/api/v1/previsit/templates", post(save_template))
         .route("/api/v1/previsit/readiness", get(readiness))
+        .route("/api/v1/previsit/review-queue", get(review_queue))
         .route(
             "/api/v1/previsit/appointments/{appointment_id}/not-needed",
             post(mark_not_needed).delete(clear_not_needed),
@@ -2021,11 +2022,65 @@ async fn clear_not_needed(
     ))
 }
 
-async fn readiness(actor: Actor, ExtractState(state): ExtractState<State>) -> Result<Json<Value>> {
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ReadinessStatus {
+    Submitted,
+}
+
+#[derive(Deserialize)]
+struct ReadinessQuery {
+    status: Option<ReadinessStatus>,
+    offset: Option<u32>,
+}
+
+const READINESS_WINDOW: &str =
+    "a.tenant_id=$1 AND a.status='booked' AND a.starts_at>now()-interval '1 day'";
+
+async fn readiness(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+    Query(query): Query<ReadinessQuery>,
+) -> Result<Json<Value>> {
     actor.staff()?;
+    if query.status.is_some() {
+        crate::access_policies::require_native(&state, &actor, "clinical", "view").await?;
+    }
     let mut tx = db(&state)?.begin().await?;
+    if query.status.is_some() {
+        const LIMIT: i64 = 200;
+        let offset = i64::from(query.offset.unwrap_or_default());
+        let (total, items): (i64, Value) = sqlx::query_as(&format!(
+            "WITH submitted AS (
+                SELECT a.id AS appointment_id,a.starts_at,p.id AS packet_id,
+                    p.status,p.submitted_at,pt.id AS patient_id,
+                    pt.family_name||', '||pt.given_name AS patient_name,pt.mrn
+                FROM appointments a
+                JOIN patients pt ON pt.tenant_id=a.tenant_id AND pt.id=a.patient_id
+                JOIN previsit_intake_packets p
+                  ON p.tenant_id=a.tenant_id AND p.appointment_id=a.id AND p.patient_id=a.patient_id
+                WHERE {READINESS_WINDOW} AND p.status='submitted'
+             ), page AS (
+                SELECT * FROM submitted ORDER BY starts_at,appointment_id,packet_id LIMIT $2 OFFSET $3
+             )
+             SELECT (SELECT count(*) FROM submitted),
+                    coalesce(jsonb_agg(to_jsonb(page) ORDER BY starts_at,appointment_id,packet_id),'[]')
+             FROM page"
+        ))
+        .bind(actor.tenant_id)
+        .bind(LIMIT)
+        .bind(offset)
+        .fetch_one(&mut *tx)
+        .await?;
+        let next_offset = (offset + LIMIT < total).then_some(offset + LIMIT);
+        crate::postgres::audit(&mut tx, &actor, "previsit.readiness_read", actor.tenant_id).await?;
+        tx.commit().await?;
+        return Ok(Json(
+            json!({"items":items,"total":total,"next_offset":next_offset}),
+        ));
+    }
     // The worklist is per appointment; a cancelled form leaves it ready for a new one.
-    let rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('packet_id',p.id,'packet_version',p.version,'status',case when p.id is null and nn.appointment_id is not null then 'not_needed' else coalesce(p.status,'not_issued') end,'due_at',coalesce(p.due_at,a.starts_at),'submitted_at',p.submitted_at,'reviewed_at',p.reviewed_at,'appointment_id',a.id,'starts_at',a.starts_at,'patient_id',pt.id,'patient_name',pt.family_name||', '||pt.given_name,'mrn',pt.mrn,'template_snapshot',p.template_snapshot,'workflow_instance_id',p.workflow_instance_id,'workflow_step_key',p.workflow_step_key,'workflow_definition_version',p.workflow_definition_version,'response',(SELECT response FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1),'attested_name',(SELECT attested_name FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1)) FROM appointments a JOIN patients pt ON pt.tenant_id=a.tenant_id AND pt.id=a.patient_id LEFT JOIN previsit_intake_packets p ON p.tenant_id=a.tenant_id AND p.appointment_id=a.id AND p.status<>'void' LEFT JOIN previsit_intake_not_needed nn ON nn.tenant_id=a.tenant_id AND nn.appointment_id=a.id AND nn.cleared_at IS NULL WHERE a.tenant_id=$1 AND a.status='booked' AND a.starts_at>now()-interval '1 day' ORDER BY a.starts_at LIMIT 200").bind(actor.tenant_id).fetch_all(&mut *tx).await?;
+    let rows:Vec<Value>=sqlx::query_scalar(&format!("SELECT jsonb_build_object('packet_id',p.id,'packet_version',p.version,'status',case when p.id is null and nn.appointment_id is not null then 'not_needed' else coalesce(p.status,'not_issued') end,'due_at',coalesce(p.due_at,a.starts_at),'submitted_at',p.submitted_at,'reviewed_at',p.reviewed_at,'appointment_id',a.id,'starts_at',a.starts_at,'patient_id',pt.id,'patient_name',pt.family_name||', '||pt.given_name,'mrn',pt.mrn,'template_snapshot',p.template_snapshot,'workflow_instance_id',p.workflow_instance_id,'workflow_step_key',p.workflow_step_key,'workflow_definition_version',p.workflow_definition_version,'response',(SELECT response FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1),'attested_name',(SELECT attested_name FROM previsit_intake_responses r WHERE r.tenant_id=p.tenant_id AND r.packet_id=p.id ORDER BY version DESC LIMIT 1)) FROM appointments a JOIN patients pt ON pt.tenant_id=a.tenant_id AND pt.id=a.patient_id LEFT JOIN previsit_intake_packets p ON p.tenant_id=a.tenant_id AND p.appointment_id=a.id AND p.status<>'void' LEFT JOIN previsit_intake_not_needed nn ON nn.tenant_id=a.tenant_id AND nn.appointment_id=a.id AND nn.cleared_at IS NULL WHERE {READINESS_WINDOW} ORDER BY a.starts_at LIMIT 200")).bind(actor.tenant_id).fetch_all(&mut *tx).await?;
     crate::postgres::audit(&mut tx, &actor, "previsit.readiness_read", actor.tenant_id).await?;
     tx.commit().await?;
     Ok(Json(json!({"items":rows})))
@@ -2361,4 +2416,22 @@ mod standard_form_tests {
         let draft = json!({"first_name":"Synthetic","zip":"7"});
         assert_eq!(validate_response(&form, &draft, false).unwrap(), draft);
     }
+}
+
+async fn review_queue(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+) -> Result<Json<Value>> {
+    actor.staff()?;
+    let mut tx = db(&state)?.begin().await?;
+    let rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('packet_id',f.id,'patient_id',p.id,'patient_name',p.family_name||', '||p.given_name,'mrn',p.mrn,'status',f.status,'submitted_at',f.submitted_at) FROM previsit_intake_packets f JOIN patients p ON p.tenant_id=f.tenant_id AND p.id=f.patient_id WHERE f.tenant_id=$1 AND f.status='submitted' ORDER BY f.submitted_at,f.id LIMIT 201").bind(actor.tenant_id).fetch_all(&mut *tx).await?;
+    crate::postgres::audit(
+        &mut tx,
+        &actor,
+        "previsit.review_queue_read",
+        actor.tenant_id,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(json!({"items":rows})))
 }

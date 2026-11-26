@@ -1,10 +1,10 @@
-/* Voice note panel on the SOAP note: recorder, live steps, and suggestions under each box. */
+/* Voice note panel on the SOAP note: recorder, live steps, and an on-demand draft comparison. */
 .voice-note-panel{display:grid;gap:10px;margin:0 0 14px;padding:12px 14px;border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:10px;background:color-mix(in srgb,var(--blue) 7%,var(--surface-soft))}
 .voice-note-panel.is-ready{border-left-color:var(--success-text)}
 .voice-note-panel.is-failed{border-left-color:var(--error-text)}
 .voice-note-panel p,.voice-note-panel .suggest-title{margin:0}
 .voice-note-panel .suggest-title{font-size:1rem}
-.voice-note-panel .actions,.voice-note-card .actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0}
+.voice-note-panel .actions,.voice-review .actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0}
 .voice-switch{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;width:max-content;max-width:100%}
 .voice-switch button{border:0;border-radius:0;background:var(--surface-soft);min-height:32px}
 .voice-switch button[aria-pressed="true"]{background:var(--blue);color:var(--surface-soft)}
@@ -25,9 +25,18 @@
 .voice-ind.is-text i{width:10px;height:3px;animation-name:voice-text}
 .voice-skipped{color:var(--muted)}
 .voice-note-small{font-size:var(--fs-sm);color:var(--muted)}
-.voice-note-card{display:grid;gap:8px;margin:8px 0 0;padding:10px 12px;border:1px solid var(--line);border-left:4px solid var(--success-text);border-radius:10px;background:var(--surface-soft)}
-.voice-note-card b{font-size:var(--fs-sm)}
-.voice-note-card p{margin:0;white-space:pre-wrap}
+.voice-note-panel.is-ready{display:block;margin:4px 0;padding:5px 0;border:0;background:transparent}
+.voice-ready-summary{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px}
+.voice-ready-summary span,.voice-review-resolved summary{color:var(--muted)}
+.voice-ready-summary strong,.voice-review-resolved strong{color:var(--ink)}
+.voice-review{display:grid;gap:14px;min-width:0}
+.voice-review>p,.voice-review h4,.voice-review-comparison p{margin:0}
+.voice-review-field{display:grid;gap:8px;padding:4px 0 12px;border-bottom:1px solid var(--line)}
+.voice-review-comparison{display:grid;grid-template-columns:1fr 1fr;gap:16px;min-width:0}
+.voice-review-comparison b{font-size:var(--fs-sm);color:var(--muted)}
+.voice-review-comparison p{white-space:pre-wrap;overflow-wrap:anywhere}
+.voice-review-actions{border-top:1px solid var(--line);padding-top:10px}
+@media(max-width:620px){.voice-review-comparison{grid-template-columns:1fr;gap:6px}}
 .voice-transcript{display:grid;gap:12px}
 .voice-transcript p{white-space:pre-wrap;margin:0}
 .voice-transcript audio{width:100%}

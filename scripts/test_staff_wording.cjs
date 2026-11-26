@@ -30,6 +30,9 @@ const BANNED_WORDS = [
 // ${...} parts (including nested braces) dropped from templates.
 function extractLiterals(src) {
   const literals = [];
+  // A RegExp passed to String.replace can contain quotes in its character class.
+  // Consume the pattern so those quotes cannot start a string in the scanner.
+  const replacePattern = /\.replace\(\s*\/(?:\\.|\[(?:\\.|[^\]\\\r\n])*\]|[^/[\\\r\n])+\/[a-z]*/y;
   let i = 0;
   const n = src.length;
   while (i < n) {
@@ -41,6 +44,13 @@ function extractLiterals(src) {
     if (c === '/' && src[i + 1] === '*') {
       i = src.indexOf('*/', i + 2) + 2 || n;
       continue;
+    }
+    if (c === '.') {
+      replacePattern.lastIndex = i;
+      if (replacePattern.test(src)) {
+        i = replacePattern.lastIndex;
+        continue;
+      }
     }
     if (c === "'" || c === '"') {
       const quote = c;
@@ -219,6 +229,13 @@ function buildBaseline() {
     scan("const a = 'bad JSON payload here'; const b = 'a json file body';"),
     { JSON: 1, payload: 1 },
     'JSON counts case-sensitively',
+  );
+  assert.deepEqual(
+    scan(`const escape = value => value.replace(/[&<>"']/g, '');
+      const body = JSON.stringify({value: 'synthetic'});
+      const label = 'Catalog summary';`),
+    { catalog: 1 },
+    'quotes inside a replacement pattern cannot misclassify the code that follows',
   );
 })();
 

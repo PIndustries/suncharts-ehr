@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
+require('./chart_test_context.cjs');
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const source=fs.readFileSync('web/navigation-history.js','utf8');
 const clone=value=>value==null?value:JSON.parse(JSON.stringify(value));
-function fixture(billingHub=false){
- const handlers={},events={},calls=[],drafts=new Map(),nodes={'clinical-workspace':{hidden:true},'workspace-back':{hidden:true,disabled:false},chart:{innerHTML:''}};
+function fixture(billingHub=false,realSections=false){
+ const writes=[],handlers={},events={},calls=[],drafts=new Map(),nodes={'clinical-workspace':{hidden:true},'workspace-back':{hidden:true,disabled:false},chart:{innerHTML:''}};
  let activeNav=null,entries=[{value:null,url:'/'}],index=0;
- const ctx={console,URL,JSON,Map,Promise,setTimeout,clearTimeout,me:{tenant_id:'tenant-a',user_id:'staff-a',role:'clinician'},busy:false,selected:null,activeVisit:null,workspace:null,chartSection:'overview',encounterSection:'documentation',insuranceAppointmentSelection:new Map(),billingSelected:null,labSelected:null,scrollX:0,scrollY:0,formText:'',captureCount:0,mutations:0,location:{pathname:'/',search:'',hash:''},$:id=>nodes[id],document:{addEventListener:(type,fn)=>(handlers[type]??=[]).push(fn),querySelector:()=>activeNav?{id:activeNav}:null},requestAnimationFrame:fn=>setImmediate(fn)};
+ const ctx={console,URL,JSON,Map,Promise,setTimeout,clearTimeout,me:{tenant_id:'tenant-a',user_id:'staff-a',role:'clinician'},busy:false,selected:null,activeVisit:null,workspace:null,chartSection:'overview',encounterSection:'documentation',insuranceAppointmentSelection:new Map(),billingSelected:null,labSelected:null,scrollX:0,scrollY:0,formText:'',captureCount:0,mutations:0,location:{pathname:'/',search:'',hash:''},$:id=>nodes[id],document:{addEventListener:(type,fn)=>(handlers[type]??=[]).push(fn),querySelectorAll:()=>[],querySelector:()=>activeNav?{id:activeNav}:null},requestAnimationFrame:fn=>setImmediate(fn)};
  ctx.window=ctx;ctx.addEventListener=(type,fn)=>(events[type]??=[]).push(fn);ctx.scrollTo=point=>{ctx.scrollX=point.left||0;ctx.scrollY=point.top||0;};
  function setUrl(url){const parsed=new URL(url,'https://synthetic.test');ctx.location.pathname=parsed.pathname;ctx.location.search=parsed.search;ctx.location.hash=parsed.hash;}
- const history={get state(){return clone(entries[index].value);},replaceState(value,_,url){entries[index]={value:clone(value),url};setUrl(url);},pushState(value,_,url){entries=entries.slice(0,index+1);entries.push({value:clone(value),url});index++;setUrl(url);},back(){this.go(-1);},forward(){this.go(1);},go(offset){const next=index+offset;if(next<0||next>=entries.length)return;index=next;setUrl(entries[index].url);for(const handler of events.popstate||[])handler({state:clone(entries[index].value)});}};ctx.history=history;
+ const history={get state(){return clone(entries[index].value);},replaceState(value,_,url){writes.push(['replace',url]);entries[index]={value:clone(value),url};setUrl(url);},pushState(value,_,url){writes.push(['push',url]);entries=entries.slice(0,index+1);entries.push({value:clone(value),url});index++;setUrl(url);},back(){this.go(-1);},forward(){this.go(1);},go(offset){const next=index+offset;if(next<0||next>=entries.length)return;index=next;setUrl(entries[index].url);for(const handler of events.popstate||[])handler({state:clone(entries[index].value)});}};ctx.history=history;
  ctx.captureVisitDrafts=()=>{ctx.captureCount++;if(ctx.selected&&ctx.activeVisit&&ctx.formText)drafts.set(`${ctx.selected}:${ctx.activeVisit.id}`,ctx.formText);};
  ctx.run=async action=>{if(ctx.busy)return;ctx.busy=true;try{await action();}catch(error){calls.push(['error',error.message]);}finally{ctx.busy=false;}};
  ctx.api=async(path,method='GET')=>{calls.push([method,path]);if(method!=='GET')ctx.mutations++;return {};};
@@ -24,7 +25,7 @@ function fixture(billingHub=false){
  ctx.showSunPage=async()=>{ctx.showTool('Sun');await ctx.api('/sun');};
  ctx.showSchedule=async()=>{ctx.showTool('Schedule');await ctx.api('/schedule');};
  ctx.showClinical=async()=>{ctx.captureVisitDrafts();ctx.showTool('Patients & encounters');ctx.selected=null;ctx.activeVisit=null;ctx.workspace=null;ctx.chartSection='overview';await ctx.api('/patients');nodes['clinical-workspace'].hidden=false;};
- ctx.selectPatient=async(patient,visit)=>{ctx.captureVisitDrafts();await ctx.api(`/patients/${patient}`);ctx.selected=patient;ctx.activeVisit=visit?{id:visit,status:'in_progress'}:null;ctx.claimRoute=null;ctx.fileRoute=null;ctx.workspace={patient:{id:patient},appointments:[{id:'appointment-one'},{id:'appointment-two'}],billing:{accounts:[{id:'account',content:{visit_id:visit}}]},labs:{orders:[{id:'order'}]}};ctx.formText=drafts.get(`${patient}:${visit}`)||'';};
+ ctx.selectPatient=async(patient,visit)=>{ctx.captureVisitDrafts();await ctx.api(`/patients/${patient}`);ctx.selected=patient;ctx.activeVisit=visit?{id:visit,status:'in_progress'}:null;ctx.claimRoute=null;ctx.fileRoute=null;ctx.workspace={patient:{id:patient},appointments:[{id:'appointment-one'},{id:'appointment-two'}],billing:{accounts:[{id:'account',content:{visit_id:visit}}]},labs:{orders:[{id:'order'}]}};ctx.formText=drafts.get(`${patient}:${visit}`)||'';ctx.page='Patients & encounters';nodes['clinical-workspace'].hidden=false;};
  ctx.showChartSection=section=>{ctx.captureVisitDrafts();ctx.chartSection=section;};
  ctx.setEncounterSection=step=>{ctx.captureVisitDrafts();ctx.encounterSection=step;ctx.showChartSection('visits');};
  ctx.renderVisit=()=>{ctx.chartSection='visits';};ctx.showBillingAccount=id=>{ctx.billingSelected=id;};ctx.showOrder=id=>{ctx.labSelected=id;};
@@ -35,7 +36,7 @@ function fixture(billingHub=false){
  ctx.beginClaim=async account=>{ctx.setEncounterSection('charges');await ctx.api(`/accounts/${account}`);ctx.claimRoute={account,claim:null};};
  ctx.showSupportTickets=async()=>{ctx.showTool('Support tickets');await ctx.api('/support');ctx.detail=null;};
  ctx.showSupportTicket=async id=>{const identity=ctx.me;if(ctx.supportBlock)await ctx.supportBlock;if(ctx.me!==identity)return;ctx.showTool('Support tickets');await ctx.api(`/support/${id}`);ctx.detail=['support',id];};
- ctx.signInScreen=()=>{ctx.me=null;ctx.selected=null;ctx.activeVisit=null;ctx.workspace=null;ctx.formText='';drafts.clear();nodes['clinical-workspace'].hidden=true;activeNav=null;ctx.page='Sign in';};
+ ctx.signInScreen=(sessionEnded=false)=>{ctx.sessionEnded=sessionEnded;ctx.me=null;ctx.selected=null;ctx.activeVisit=null;ctx.workspace=null;ctx.formText='';drafts.clear();nodes['clinical-workspace'].hidden=true;activeNav=null;ctx.page='Sign in';};
  ctx.encounterFileRoute=()=>ctx.chartSection==='documents'||ctx.chartSection==='visits'&&ctx.encounterSection==='files'?ctx.fileRoute||null:null;
  ctx.openDocumentFile=async(id,version=1)=>{await ctx.api(`/documents/${id}/files/${version}`);ctx.fileRoute={document:id,version};};
  ctx.restoreEncounterFileRoute=async route=>ctx.openDocumentFile(route.document,route.version);
@@ -47,16 +48,27 @@ function fixture(billingHub=false){
   ctx.renderPatientBillingChart=async options=>{ctx.showChartSection('billing');ctx.hubRoute={patient:ctx.selected,tab:options.tab||'overview',mode:options.mode||'recorded',surface:'chart'};await ctx.api('/billing/patients/'+ctx.selected);};
   ctx.restorePatientBillingRoute=async route=>route.surface==='chart'?ctx.renderPatientBillingChart(route):ctx.showPatientBillingWorkspace({patientId:route.patient,tab:route.tab,mode:route.mode});
  }
- ctx.enter=async()=>ctx.showPracticeWorkspace();
- vm.createContext(ctx);vm.runInContext(source,ctx);
+ ctx.enter=async()=>{if(!await ctx.restoreInitialWorkspaceRoute())await ctx.showPracticeWorkspace();ctx.restoreInitialWorkspaceScroll();};
+ vm.createContext(ctx);
+ if(realSections){
+  const app=fs.readFileSync('web/app.js','utf8');
+  Object.assign(ctx,{chartAreaEnabled:()=>true,workspaceResourceAllowed:()=>true,applyChartSection:()=>{ctx.renders=(ctx.renders||0)+1;},renders:0});
+  vm.runInContext(app.slice(app.indexOf('function showChartSection('),app.indexOf('const formData=')),ctx);
+  // Run the same left-panel dispatch branches as the live document listener.
+  const start=app.indexOf("  if(button.hasAttribute('data-encounter-history'))"),end=app.indexOf("  if(button.dataset.encounterSection)",start);
+  vm.runInContext("document.addEventListener('click',e=>{const button=e.target.closest('button');"+app.slice(start,end)+"});",ctx);
+  ctx.openPatientEncounterList=()=>ctx.showChartSection('encounters');
+  vm.runInContext(app.slice(app.indexOf("let frameClinicalFocus='problem';"),app.indexOf('function syncPatientNextAction(){')),ctx);
+ }
+ vm.runInContext(source,ctx);
  const settle=async()=>{await new Promise(r=>setTimeout(r,40));for(let i=0;i<4;i++)await new Promise(r=>setImmediate(r));};
- return {ctx,history,nodes,calls,drafts,handlers,settle,entries:()=>clone(entries),index:()=>index,route:()=>history.state?.sunchartsNavigation?.route};
+ return {ctx,history,nodes,calls,writes,drafts,handlers,events,settle,entries:()=>clone(entries),index:()=>index,route:()=>history.state?.sunchartsNavigation?.route};
 }
 const tests=[];const test=(name,fn)=>tests.push([name,fn]);
 test('nested navigation records one final route, captures drafts and stores only identifiers',async()=>{
  const f=fixture(),c=f.ctx;await c.enter();const initial=f.entries().length;
  await c.run(async()=>{await c.showClinical();await c.selectPatient('patient-one','visit-one');c.setEncounterSection('charges');});
- assert.equal(f.entries().length,initial+1);assert.deepEqual(f.route(),{view:'patient',patient:'patient-one',visit:'visit-one',section:'visits',step:'charges',appointment:null,claim:null,billing:null,file:null,account:null,order:null});
+ assert.equal(f.entries().length,initial+1);assert.deepEqual(f.route(),{view:'patient',patient:'patient-one',visit:'visit-one',section:'visits',focus:null,step:'charges',appointment:null,claim:null,billing:null,file:null,account:null,order:null});
  c.formText='PRIVATE UNSAVED SOAP TEXT';c.scrollY=320;c.captureVisitDrafts();await c.run(()=>c.showBillingQueue());
  const count=f.entries().length;f.history.back();await f.settle();assert.equal(c.selected,'patient-one');assert.equal(c.activeVisit.id,'visit-one');assert.equal(c.encounterSection,'charges');assert.equal(c.formText,'PRIVATE UNSAVED SOAP TEXT');assert.equal(c.scrollY,320);assert.equal(f.entries().length,count);assert.ok(c.captureCount>0);assert.doesNotMatch(JSON.stringify(f.entries()),/PRIVATE UNSAVED SOAP TEXT/);
  f.history.forward();await f.settle();assert.equal(c.page,'Billing');assert.equal(f.entries().length,count);
@@ -101,9 +113,10 @@ test('a history restore interrupted by sign-out cannot overwrite the new staff h
 test('patient chart reads from a previous sign-in never publish into the next session',async()=>{
  const app=fs.readFileSync('web/app.js','utf8'),start=app.indexOf('async function selectPatient('),end=app.indexOf('\nconst date =',start),source=app.slice(start,end);
  for(const stage of ['workspace','related']){
-  let resolve,calls=0;const gate=new Promise(r=>resolve=r),ctx={patientWorkspaceGeneration:0,me:{user_id:'old'},selected:'new-patient',workspace:{patient:{id:'new-patient'}},activeVisit:null,captureVisitDrafts(){},workspaceResourceAllowed:()=>true,
+  let resolve,calls=0;const gate=new Promise(r=>resolve=r),ctx={patientWorkspaceGeneration:0,me:{user_id:'old'},selected:'old-patient',workspace:{patient:{id:'old-patient'}},activeVisit:null,captureVisitDrafts(){},workspaceResourceAllowed:()=>true,rememberPatientChart(){},patientChartCache:new Map(),$:()=>({hidden:false}),
    api:async()=>{calls++;if(stage==='workspace'||calls===2)await gate;return {items:[],visits:[]};},renderChart(){throw new Error('stale chart published');},renderPatients(){throw new Error('stale directory published');}};
-  vm.createContext(ctx);vm.runInContext(source,ctx);const pending=ctx.selectPatient('old-patient');await new Promise(r=>setImmediate(r));ctx.me={user_id:'new'};resolve();await pending;assert.equal(ctx.selected,'new-patient');assert.equal(ctx.workspace.patient.id,'new-patient');if(stage==='workspace')assert.equal(calls,1);
+  vm.createContext(ctx);
+ vm.runInContext(source,ctx);const pending=ctx.selectPatient('old-patient');await new Promise(r=>setImmediate(r));ctx.me={user_id:'new'};ctx.selected='new-patient';ctx.workspace={patient:{id:'new-patient'}};resolve();await pending;assert.equal(ctx.selected,'new-patient');assert.equal(ctx.workspace.patient.id,'new-patient');if(stage==='workspace')assert.equal(calls,1);
  }
 });
 test('Back restores claim review within its original encounter and only performs reads',async()=>{
@@ -133,8 +146,39 @@ test('every screen has a readable address and a pasted address opens that screen
  await c.run(()=>c.showBillingQueue());assert.equal(c.location.hash,'#/billing');
  f.history.back();await f.settle();assert.equal(c.location.hash,'#/claims');assert.equal(c.page,'Claims');
  assert.doesNotMatch(JSON.stringify(f.entries()),/[A-Z][a-z]+, [A-Z][a-z]+/,'addresses and history carry no names');
- f=fixture();c=f.ctx;c.location.hash='#/claims';await c.enter();await f.settle();assert.equal(c.page,'Claims');assert.equal(c.mutations,0);
+ f=fixture();c=f.ctx;c.location.hash='#/claims';await c.enter();assert.equal(c.page,'Claims');assert.equal(c.mutations,0);assert.deepEqual(f.calls,[['GET','/claims']]);
  f=fixture();c=f.ctx;c.location.hash='#/not-a-screen/../../x';await c.enter();await f.settle();assert.equal(c.mutations,0);assert.notEqual(c.page,'Claims');
+});
+test('reload opens the matching saved destination and restores its position without fetching Home',async()=>{
+ const f=fixture(),c=f.ctx;
+ f.history.replaceState({sunchartsNavigation:{version:1,identity:'tenant-a:staff-a:clinician',url:'/',route:{view:'tool',nav:'nav-schedule'},index:2,scroll:{x:0,y:210}}},'', '/#/schedule');
+ await c.enter();assert.equal(c.page,'Schedule');assert.equal(c.scrollY,210);assert.deepEqual(f.calls,[['GET','/schedule']]);assert.equal(f.entries().length,1);
+});
+test('reload skips destinations belonging to the previous account or denied by current access',async()=>{
+ const id='11111111-1111-4111-8111-111111111111';
+ for(const actor of ['tenant-other:staff-other:clinician','tenant-a:staff-a:clinician']){
+  const f=fixture(),c=f.ctx;c.workspaceModuleAllowed=module=>actor==='tenant-other:staff-other:clinician'||module!=='clinical';
+  f.history.replaceState({sunchartsNavigation:{version:1,identity:actor,url:'/',route:{view:'patient',patient:id,section:'overview'},index:0}},'', `/#/patients/${id}/overview`);
+  await c.enter();assert.equal(c.page,'Practice home');assert.deepEqual(f.calls,[['GET','/practice']]);assert.equal(c.location.hash,'#/home');
+ }
+});
+test('an expired session clears its durable reload address before the next account signs in',async()=>{
+ const f=fixture(),c=f.ctx,id='11111111-1111-4111-8111-111111111111';
+ f.history.replaceState({sunchartsNavigation:{version:1,identity:'tenant-a:staff-a:clinician',url:'/',route:{view:'patient',patient:id,section:'overview'},index:2}},'', `/#/patients/${id}/overview`);
+ c.me=null;c.signInScreen(false);assert.equal(c.sessionEnded,true);assert.equal(c.location.hash,'');assert.equal(f.history.state,null);
+ c.me={tenant_id:'tenant-b',user_id:'staff-b',role:'owner'};await c.enter();assert.deepEqual(f.calls,[['GET','/practice']]);
+});
+test('practice owner screens recover to the landing page for other roles',async()=>{
+ for(const hash of ['#/practice','#/card-readers']){
+  const f=fixture(),c=f.ctx;c.location.hash=hash;
+  await c.enter();assert.equal(c.page,'Practice home');assert.deepEqual(f.calls,[['GET','/practice']]);
+ }
+});
+test('a missing bookmarked patient falls back to the directory without fetching Home',async()=>{
+ const f=fixture(),c=f.ctx,id='11111111-1111-4111-8111-111111111111',api=c.api;
+ c.api=async path=>{await api(path);if(path===`/patients/${id}`)throw Object.assign(new Error('Record unavailable'),{status:404});};
+ c.location.hash=`#/patients/${id}/overview`;
+ await c.enter();assert.equal(c.page,'Patients & encounters');assert.equal(c.location.hash,'#/patients');assert.deepEqual(f.calls,[['GET',`/patients/${id}`],['GET','/patients']]);
 });
 test('Card readers has its own address and reopens from it without changing anything',async()=>{
  let f=fixture(),c=f.ctx;c.me.role='owner';await c.enter();
@@ -142,6 +186,36 @@ test('Card readers has its own address and reopens from it without changing anyt
  await c.run(()=>c.showClaimsWorkspace());f.history.back();await f.settle();assert.equal(c.location.hash,'#/card-readers');assert.equal(c.page,'Card readers');assert.deepEqual(c.detail,['card-readers']);
  f=fixture();c=f.ctx;c.me.role='owner';c.location.hash='#/card-readers';await c.enter();await f.settle();assert.equal(c.page,'Card readers');assert.deepEqual(c.detail,['card-readers']);assert.equal(c.mutations,0);
  f=fixture();c=f.ctx;c.location.hash='#/card-readers/extra';await c.enter();await f.settle();assert.notEqual(c.page,'Card readers');
+});
+
+test('each left-panel destination is recorded once, including after repeated clicks',async()=>{
+ const f=fixture(false,true),c=f.ctx;await c.enter();
+ const id='11111111-1111-4111-8111-111111111111';
+ await c.run(async()=>{await c.showClinical();await c.selectPatient(id,'22222222-2222-4222-8222-222222222222');});
+ for(const section of ['vitals','encounters','orders','immunizations','history','source','profile','insurance','billing','documents','referrals','prescribing','care_pathways','overview']){
+  const button={dataset:{chartSection:section==='encounters'?'visits':section},hasAttribute:key=>key==='data-encounter-history'&&section==='encounters'};
+  const click=()=>{for(const handler of f.handlers.click||[])handler({target:{closest:selector=>selector==='button'?button:null}});};
+  let before=f.writes.length,renders=c.renders;click();await f.settle();
+  assert.equal(c.chartSection,section);assert.equal(f.writes.length-before,1,section+' writes once');assert.equal(c.renders-renders,1,section+' renders once');
+  before=f.writes.length;click();await f.settle();
+  assert.equal(f.writes.length,before,section+' repeat has no history write');
+  c.scrollY+=50;for(const handler of f.events.scroll||[])handler();await f.settle();assert.equal(f.writes.length,before,'section scrolling adds no history write');
+ }
+ let clinicalRenders=0;c.renderClinical=()=>clinicalRenders++;
+ for(const kind of ['problem','allergy','medication']){
+  const button={dataset:{clinicalFocus:kind},hasAttribute:()=>false};
+  const before=f.writes.length,renders=clinicalRenders;for(const handler of f.handlers.click||[])handler({target:{closest:selector=>selector==='button'?button:null}});await f.settle();
+  assert.equal(c.chartSection,'clinical');assert.ok(f.writes.length-before<=1,kind+' writes at most once');assert.equal(clinicalRenders-renders,1,kind+' replaces only the selected clinical list');
+ }
+});
+test('patient history destinations survive address reload and Back',async()=>{
+ const id='11111111-1111-4111-8111-111111111111';
+ for(const [section,slug] of [['encounters','encounters'],['vitals','vitals'],['immunizations','immunizations'],['history','surgical-dental-history'],['source','imported-records']]){
+  const f=fixture(),c=f.ctx;await c.enter();await c.run(async()=>{await c.showClinical();await c.selectPatient(id);c.showChartSection(section);});
+  const hash=`#/patients/${id}/${slug}`;assert.equal(c.location.hash,hash);
+  await c.run(()=>c.showBillingQueue());f.history.back();await f.settle();assert.equal(c.chartSection,section);
+  const reload=fixture();reload.ctx.location.hash=hash;await reload.ctx.enter();await reload.settle();assert.equal(reload.ctx.chartSection,section);assert.equal(reload.ctx.mutations,0);
+ }
 });
 
 (async()=>{let failed=0;for(const [name,fn] of tests){try{await fn();console.log('PASS '+name);}catch(error){failed++;console.error('FAIL '+name+'\n'+error.message);}}if(failed)process.exitCode=1;})().catch(error=>{console.error(error);process.exitCode=1;});

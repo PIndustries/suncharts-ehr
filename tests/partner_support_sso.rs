@@ -5,6 +5,7 @@ use axum::{
     body::Body,
     extract::State as ExtractState,
     http::{header, Request, StatusCode},
+    response::{IntoResponse, Response},
     routing::post,
     Json, Router,
 };
@@ -22,6 +23,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 struct Cloud {
     active: Arc<AtomicBool>,
+    unavailable: Arc<AtomicBool>,
     issuer: String,
     audience: String,
     tenant: Uuid,
@@ -55,12 +57,12 @@ async fn exchange(
     }))
 }
 
-async fn introspect(
-    ExtractState(cloud): ExtractState<Cloud>,
-    Json(body): Json<Value>,
-) -> Json<Value> {
+async fn introspect(ExtractState(cloud): ExtractState<Cloud>, Json(body): Json<Value>) -> Response {
+    if cloud.unavailable.load(Ordering::SeqCst) {
+        return StatusCode::BAD_GATEWAY.into_response();
+    }
     if !cloud.active.load(Ordering::SeqCst) {
-        return Json(json!({"active":false}));
+        return Json(json!({"active":false})).into_response();
     }
     Json(json!({
         "active":true,"jti":body["jti"],"aud":cloud.audience,"role":"partner_admin",
@@ -68,6 +70,7 @@ async fn introspect(
         "partner_id":cloud.partner,"customer_id":cloud.customer,"order_id":cloud.order,
         "tenant_id":cloud.tenant,"exp":chrono::Utc::now().timestamp()+590
     }))
+    .into_response()
 }
 
 async fn call(
@@ -155,8 +158,10 @@ async fn delegated_support_is_tenant_admin_revalidated_and_audited() {
     let issuer = format!("http://{}", listener.local_addr().unwrap());
     let audience = "http://127.0.0.1:8090".to_string();
     let active = Arc::new(AtomicBool::new(true));
+    let unavailable = Arc::new(AtomicBool::new(false));
     let cloud = Cloud {
         active: active.clone(),
+        unavailable: unavailable.clone(),
         issuer: issuer.clone(),
         audience: audience.clone(),
         tenant,
@@ -525,6 +530,18 @@ async fn delegated_support_is_tenant_admin_revalidated_and_audited() {
 
     let (_, _, revoked_cookie) = accept("synthetic-revoked-code-abcdefghijklmnopqrstuvwxyz").await;
     let revoked_cookie = revoked_cookie.unwrap();
+    unavailable.store(true, Ordering::SeqCst);
+    let (status, error, _) = call(&app, "GET", "/auth/me", Some(&revoked_cookie), None, None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(error["error"], "unavailable");
+    assert!(error.get("user_id").is_none());
+    unavailable.store(false, Ordering::SeqCst);
+    assert_eq!(
+        call(&app, "GET", "/auth/me", Some(&revoked_cookie), None, None)
+            .await
+            .0,
+        StatusCode::OK,
+    );
     active.store(false, Ordering::SeqCst);
     assert_eq!(
         call(&app, "GET", "/auth/me", Some(&revoked_cookie), None, None,)

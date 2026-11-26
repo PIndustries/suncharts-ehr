@@ -59,16 +59,16 @@ function fixture(data={version:3,visit:{id:'v1',version:3,status:'in_progress'},
 }
 (async()=>{
  // Markup: rows type straight into inline ICD-10-CM comboboxes; no Find diagnosis button or dialog.
- let f=fixture();await f.render();await f.click('add');
+ let f=fixture();await f.render();
  assert.match(f.host.innerHTML,/role="combobox"/);assert.match(f.host.innerHTML,/data-terminology-scope="diagnosis"/);assert.match(f.host.innerHTML,/data-terminology-system="ICD-10-CM"/);
  assert.doesNotMatch(f.host.innerHTML,/Find diagnosis|data-terminology-open|data-terminology-picker/);
  assert.equal(f.rows.length,1);assert.ok(f.rows[0].popup,'each diagnosis field carries its own suggestion list');
  console.log('PASS diagnosis rows type straight into inline code-list comboboxes with no Find diagnosis button');
 
  // Focus schedules a search; 2+ characters, 150 ms debounce, against the ICD-10-CM list.
- f=fixture();await f.render();await f.click('add');
+ f=fixture();await f.render();
  let code=f.field(0,'code');
- const focusCalls=f.calls.length;f.send('focusin',code);await f.flush();assert.ok(f.calls.length>focusCalls||/at least two characters/.test(f.rows[0].status.textContent),'focus offers the type-at-least-two-characters hint');
+ const focusCalls=f.calls.length;f.send('focusin',code);await f.flush();assert.equal(f.calls.length,focusCalls,'an empty lookup opens quietly');
  code.value='E';f.send('input',code);assert.match(f.rows[0].status.textContent,/at least two characters/);
  assert.equal(f.calls.filter(c=>c.path.includes('/codes?')).length,0,'one character never searches the list');
  code.value='E1';f.send('input',code);assert.equal([...f.timers.values()].slice(-1)[0].delay,150);assert.equal(f.calls.filter(c=>c.path.includes('/codes?')).length,0,'the search waits for the debounce');
@@ -80,7 +80,7 @@ function fixture(data={version:3,visit:{id:'v1',version:3,status:'in_progress'},
  console.log('PASS typing in the code box searches ICD-10-CM after a 150 ms debounce and shows code plus description');
 
  // Keyboard pick fills Code and Description together and records the code-list snapshot.
- f=fixture();await f.render();await f.click('add');code=f.field(0,'code');
+ f=fixture();await f.render();code=f.field(0,'code');
  code.value='E11';f.send('input',code);await f.flush();
  assert.equal(f.send('keydown',code,{key:'ArrowDown'}).prevented,true);assert.equal(code.getAttribute('aria-activedescendant'),'list-0-option-0');
  assert.equal(f.send('keydown',code,{key:'Enter'}).prevented,true);await tick();
@@ -90,7 +90,7 @@ function fixture(data={version:3,visit:{id:'v1',version:3,status:'in_progress'},
  console.log('PASS ArrowDown and Enter pick a code, fill Code and Description and record the code-list snapshot');
 
  // The description box searches by words; Escape closes and keeps typing.
- f=fixture();await f.render();await f.click('add');
+ f=fixture();await f.render();
  let display=f.field(0,'display');display.value='spastic hemi';f.send('input',display);await f.flush();
  params=new URL(f.calls.find(c=>c.path.includes('/codes?')).path,'http://fixture').searchParams;assert.equal(params.get('q'),'spastic hemi');
  f.send('keydown',display,{key:'ArrowUp'});assert.equal(display.getAttribute('aria-activedescendant'),'list-0-option-1');
@@ -98,7 +98,7 @@ function fixture(data={version:3,visit:{id:'v1',version:3,status:'in_progress'},
  console.log('PASS the description box searches by words and Escape keeps what staff typed');
 
  // No match stays quiet, keeps the text and never blocks.
- f=fixture();await f.render();await f.click('add');f.setResponse(path=>path.includes('/codes?')?{items:[],release:{id:dx.release_id},next_cursor:null}:{...f.data});
+ f=fixture();await f.render();f.setResponse(path=>path.includes('/codes?')?{items:[],release:{id:dx.release_id},next_cursor:null}:{...f.data});
  let zz=f.field(0,'code');zz.value='ZZ999';f.send('input',zz);await f.flush();
  assert.match(f.rows[0].status.textContent,/No match in the code list/);assert.equal(zz.value,'ZZ999');assert.equal(f.rows[0].row.dataset.catalogReleaseId,undefined);
  f.setResponse(path=>path.includes('/codes?')?{items:[],release:null,next_cursor:null}:{...f.data});zz.value='ZZ998';f.send('input',zz);await f.flush();
@@ -106,19 +106,19 @@ function fixture(data={version:3,visit:{id:'v1',version:3,status:'in_progress'},
  console.log('PASS an unknown code shows a quiet no-match message, keeps the text and offers manual entry');
 
  // Leaving the field auto-picks exactly one exact code match; an ambiguous listing is never rewritten.
- f=fixture();await f.render();await f.click('add');
+ f=fixture();await f.render();
  let exact=f.field(0,'code');exact.value='E11.9';f.send('input',exact);await f.flush();
   f.send('focusout',exact,{relatedTarget:null});await tick();
  assert.equal(f.field(0,'display').value,dx.display);assert.equal(f.rows[0].row.dataset.catalogReleaseId,dx.release_id);
- f=fixture();await f.render();await f.click('add');
+ f=fixture();await f.render();
  let lower=f.field(0,'code');lower.value='g82.21';f.send('input',lower);await f.flush();
  f.send('keydown',lower,{key:'Tab'});await tick();
  assert.equal(f.field(0,'display').value,hemi.display);assert.equal(f.rows[0].row.dataset.catalogCode,hemi.code);
- f=fixture();await f.render();await f.click('add');
+ f=fixture();await f.render();
  let amb=f.field(0,'code');amb.value='E11';f.send('input',amb);await f.flush();
  f.send('focusout',amb,{relatedTarget:null});await tick();
  assert.equal(f.field(0,'display').value,'');assert.equal(f.rows[0].row.dataset.catalogReleaseId,undefined);
- f=fixture();await f.render();await f.click('add');
+ f=fixture();await f.render();
  let tabbed=f.field(0,'code');tabbed.value='E11';f.send('input',tabbed);await f.flush();
  f.send('keydown',tabbed,{key:'Tab'});await tick();
  assert.equal(f.field(0,'display').value,'','Tab with an ambiguous listing closes it and keeps the typing');
@@ -157,7 +157,7 @@ function fixture(data={version:3,visit:{id:'v1',version:3,status:'in_progress'},
  console.log('PASS autosave follows the shared version forward and skips work already saved');
 
  // An incomplete form never triggers a save and nothing is ever blocked.
- f=fixture();await f.render();await f.click('add');
+ f=fixture();await f.render();
  f.form.elements.reason.value='Waiting';
  const half=f.field(0,'code');half.value='R05';f.send('input',half);await f.flush();
  assert.equal(f.calls.filter(c=>c.method==='PUT').length,0);assert.equal(half.value,'R05');

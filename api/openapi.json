@@ -30,6 +30,73 @@
     }
   ],
   "paths": {
+    "/api/v1/search": {
+      "get": {
+        "summary": "Search the current practice",
+        "security": [{"oauth2": ["clinical.read", "billing.read", "scheduling.read"]}, {"browserSession": []}],
+        "description": "Audited staff search. Returns capped patient, appointment, encounter, claim, receipt/payment, file, referral, order and action groups. Hidden resource groups are omitted. OAuth clients require clinical.read, billing.read and scheduling.read together; browser and legacy staff authentication follow normal read rules.",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 150
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5,
+              "default": 5
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000,
+              "default": 0
+            }
+          },
+          {
+            "name": "group",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "patients",
+                "appointments",
+                "encounters",
+                "claims",
+                "payments",
+                "files",
+                "referrals",
+                "orders",
+                "actions"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Groups with key, label, items (id, patient_id, title, detail, kind and optional navigation identifiers), more and offset. Queries shorter than two characters return no groups."
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Staff read access required"
+          }
+        }
+      }
+    },
     "/api/v1/care-pathways/instances/{id}/steps/{step}/intake-packet": {
       "post": {
         "operationId": "issueWorkflowIntakePacket",
@@ -350,6 +417,18 @@
               "default": "active"
             },
             "description": "Directory status filter. Archived patients retain direct chart and record access."
+          },
+          {
+            "name": "missing",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "address",
+                "phone"
+              ]
+            },
+            "description": "Filter for patients with a missing or blank address line 1 or phone. Keep this filter on subsequent pages."
           }
         ],
         "responses": {
@@ -560,6 +639,154 @@
             }
           }
         ]
+      }
+    },
+    "/api/v1/practice/visit-types": {
+      "get": {
+        "operationId": "listPracticeVisitTypes",
+        "tags": [
+          "Scheduling"
+        ],
+        "summary": "List the practice visit types available for booking",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "include_disabled",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "description": "Practice owners may include retired visit types."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PracticeVisitType"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createPracticeVisitType",
+        "tags": [
+          "Scheduling"
+        ],
+        "summary": "Create a practice visit type",
+        "description": "Practice owner only. Retired and modified types preserve the versions already assigned to appointments. Suggestions require staff review before they become clinical or billing records.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PracticeVisitTypeInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PracticeVisitType"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid visit type or suggested code"
+          },
+          "403": {
+            "description": "Practice owner required"
+          },
+          "409": {
+            "description": "Duplicate name or stale version"
+          }
+        }
+      }
+    },
+    "/api/v1/practice/visit-types/{id}": {
+      "parameters": [
+        {
+          "in": "path",
+          "name": "id",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "put": {
+        "operationId": "updatePracticeVisitType",
+        "tags": [
+          "Scheduling"
+        ],
+        "summary": "Update a practice visit type",
+        "description": "Practice owner only. Retired and modified types preserve the versions already assigned to appointments. Suggestions require staff review before they become clinical or billing records.",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Quoted current version"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PracticeVisitTypeInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PracticeVisitType"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid visit type or suggested code"
+          },
+          "403": {
+            "description": "Practice owner required"
+          },
+          "409": {
+            "description": "Duplicate name or stale version"
+          },
+          "428": {
+            "description": "Current version required"
+          }
+        }
       }
     },
     "/api/v1/appointments": {
@@ -4757,7 +4984,7 @@
     "/api/v1/labs/inbox": {
       "get": {
         "operationId": "resultReviewInbox",
-        "description": "Up to 100 current preliminary/final/corrected report revisions without an acknowledgment; tenant scoped. Includes critical flag, patient/order/report identity and version. Not an external paging/escalation service.",
+        "description": "Up to 100 current preliminary, final or corrected report revisions without an acknowledgment, ordered by oldest update first. The response contains items, limit, total and critical_count. Both counts cover the entire tenant inbox and are independent of the optional filter.",
         "security": [
           {
             "oauth2": [
@@ -4795,7 +5022,17 @@
           }
         }
       },
-      "parameters": []
+      "parameters": [
+        {
+          "name": "critical",
+          "in": "query",
+          "description": "When true, return only reports with a critical observation. The filter is applied before the limit.",
+          "schema": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      ]
     },
     "/api/v1/patients/{patient}/history/{id}/lab-mapping": {
       "get": {
@@ -7554,6 +7791,12 @@
         "operationId": "remittanceWorklist",
         "description": "List remittance summaries, cursor paginated.",
         "parameters": [
+          {
+            "name": "needs_review",
+            "in": "query",
+            "schema": { "type": "boolean", "default": false },
+            "description": "Return staged or reconciled insurance payments that staff still need to review or post. Filtering precedes pagination."
+          },
           {
             "name": "after",
             "in": "query",
@@ -28315,6 +28558,26 @@
     "/api/v1/previsit/readiness": {
       "get": {
         "summary": "List upcoming intake readiness for the authenticated tenant",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["submitted"]
+            },
+            "description": "List packets awaiting staff review in the readiness window. Returns a total and next_offset. Answer contents are available from packet detail."
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "Offset returned by the previous submitted page."
+          }
+        ],
         "responses": {
           "200": {
             "description": "Up to 200 upcoming packets and latest patient-submitted response"
@@ -34239,6 +34502,147 @@
         }
       }
     },
+    "/api/v1/patients/{p}/billing/copays/{id}/actions": {
+      "parameters": [
+        {
+          "name": "p",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "changeReceiptCredit",
+        "summary": "Refund a receipt or apply unused credit to another encounter",
+        "description": "Billing edit access. Requires an idempotent request ID, positive integer cents and reason. Cash/check refunds record money already paid from unused receipt credit. Card commands retain a pending request and post only retrieved original-payment refund evidence. Apply creates a patient ledger payment and receipt allocation atomically with audit. Retry pending requests with the same details.",
+        "tags": [
+          "Billing"
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "billing.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Invalid values or unsupported shape"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Role or billing scope denied"
+          },
+          "404": {
+            "description": "Tenant/patient scoped record not found"
+          },
+          "409": {
+            "description": "Stale review, duplicate evidence, incompatible lifecycle or unsafe balance"
+          },
+          "500": {
+            "description": "Database/audit failure; transaction rolled back"
+          },
+          "200": {
+            "description": "Completed action or pending card refund",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "enum": [
+                        "pending",
+                        "completed"
+                      ]
+                    },
+                    "request_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "request_id"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "kind": {
+                    "enum": [
+                      "refund",
+                      "apply"
+                    ]
+                  },
+                  "amount_cents": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100000000
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  },
+                  "method": {
+                    "enum": [
+                      "cash",
+                      "check",
+                      "card",
+                      "external"
+                    ]
+                  },
+                  "account_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "uuid"
+                  }
+                },
+                "required": [
+                  "request_id",
+                  "kind",
+                  "amount_cents",
+                  "reason",
+                  "method"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/patients/{p}/billing/copays/{id}/void": {
       "parameters": [
         {
@@ -37761,6 +38165,74 @@
         }
       }
     },
+    "/api/v1/billing/collections/today": {
+      "get": {
+        "operationId": "readBillingCollectionsToday",
+        "summary": "Payments behind the practice’s Collected today total",
+        "description": "Audited staff billing read scoped to the authenticated practice. Copays use their receipt date and are net of refunds. Other ledger payments use their posting date. The total includes all pages and uses the same rules as the practice overview.",
+        "security": [
+          {"oauth2": ["billing.read"]},
+          {"browserSession": []}
+        ],
+        "parameters": [
+          {
+            "name": "tz",
+            "in": "query",
+            "description": "IANA time zone for the day boundary. Unknown zones fall back to UTC.",
+            "schema": {"type": "string", "default": "UTC"}
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Use the next_cursor from the previous page.",
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Practice collection total and up to 50 payments",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["day", "time_zone", "total_cents", "items", "next_cursor"],
+                  "properties": {
+                    "day": {"type": "string", "format": "date"},
+                    "time_zone": {"type": "string"},
+                    "total_cents": {"type": "integer", "format": "int64", "minimum": 0},
+                    "next_cursor": {"type": ["string", "null"]},
+                    "items": {
+                      "type": "array",
+                      "maxItems": 50,
+                      "items": {
+                        "type": "object",
+                        "required": ["id", "created_at", "source", "amount_cents", "method", "party", "patient_id", "patient_name", "mrn", "account_id", "invoice_id"],
+                        "properties": {
+                          "id": {"type": "string", "format": "uuid"},
+                          "created_at": {"type": "string", "format": "date-time"},
+                          "source": {"type": "string", "enum": ["copay", "ledger"]},
+                          "amount_cents": {"type": "integer", "format": "int64", "minimum": 0},
+                          "method": {"type": ["string", "null"]},
+                          "party": {"type": ["string", "null"]},
+                          "patient_id": {"type": "string", "format": "uuid"},
+                          "patient_name": {"type": "string"},
+                          "mrn": {"type": "string"},
+                          "account_id": {"type": ["string", "null"], "format": "uuid"},
+                          "invoice_id": {"type": ["string", "null"], "format": "uuid"}
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {"description": "Invalid query"},
+          "401": {"description": "Authentication required"},
+          "403": {"description": "Staff billing access required"}
+        }
+      }
+    },
     "/api/v1/billing/overview": {
       "get": {
         "operationId": "nativeBillingOverview",
@@ -40531,6 +41003,7 @@
       "get": {
         "summary": "Read one visit's billing summary: next step, charges, insurance and what the patient owes now",
         "operationId": "readVisitBillingSummary",
+        "description": "When a visit is linked, visit.clinician_id and visit.clinician_name identify the assigned clinician even if their practice NPI is missing. The name can be empty when the practice has no display name for that staff account.",
         "parameters": [
           {
             "name": "visit_id",
@@ -40553,11 +41026,23 @@
         ],
         "responses": {
           "200": {
-            "description": "Read-only summary computed from stored charges, ledger entries, receipts, claims and posted remittances. Nothing is written except the read audit.",
+            "description": "Read-only summary computed from stored charges, ledger entries, receipts, claims and posted remittances. May include the current automatic patient invoice status. Nothing is written except the read audit.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "type": "object",
+                  "properties": {
+                    "automatic_invoice": {
+                      "type": "object",
+                      "properties": {
+                        "invoice_id": { "type": "string", "format": "uuid" },
+                        "status": { "type": "string", "enum": ["preparing", "draft", "open", "paid", "void", "uncollectible", "needs_review"] },
+                        "amount_cents": { "type": "integer", "minimum": 1 },
+                        "livemode": { "type": "boolean" }
+                      },
+                      "required": ["status"]
+                    }
+                  }
                 }
               }
             }
@@ -40588,6 +41073,215 @@
           }
         }
       ]
+    },
+    "/api/v1/patients/{p}/billing/visits/{visit}/claim-handoff": {
+      "parameters": [
+        {
+          "name": "p",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "name": "visit",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "post": {
+        "operationId": "handoffEncounterClaim",
+        "summary": "Continue a reviewed encounter claim through the clinic’s clearinghouse",
+        "description": "Optionally sign the reviewed encounter version. Prepare posts the given charge version and builds the draft. Queue uses the expressly confirmed submission fields and active Claim.MD trading partner. Existing submissions and delivery jobs are reused. A queued job is distinct from a confirmed delivery. Uncertain and blocked attempts require review.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "mode"
+                ],
+                "properties": {
+                  "account_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "format": "uuid"
+                  },
+                  "account_version": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 1
+                  },
+                  "sign_version": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 1
+                  },
+                  "mode": {
+                    "enum": [
+                      "prepare",
+                      "queue"
+                    ]
+                  },
+                  "confirmations": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "signature_on_file": {
+                        "type": "boolean",
+                        "default": false
+                      },
+                      "benefits_assigned": {
+                        "type": "boolean",
+                        "default": false
+                      },
+                      "release_authorized": {
+                        "type": "boolean",
+                        "default": false
+                      },
+                      "routine_professional_reviewed": {
+                        "type": "boolean",
+                        "default": false
+                      },
+                      "synthetic_test_reviewed": {
+                        "type": "boolean",
+                        "default": false
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Reports the signed visit and the recorded result of this request. Missing or held claim data can accompany a successful note signature. A claim recorded as externally delivered has no Claim.MD worker receipt.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "visit_id",
+                    "visit_version",
+                    "account_id",
+                    "signed",
+                    "outcome"
+                  ],
+                  "properties": {
+                    "visit_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "visit_version": {
+                      "type": "integer"
+                    },
+                    "account_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "signed": {
+                      "type": "boolean"
+                    },
+                    "outcome": {
+                      "type": "string",
+                      "enum": [
+                        "needs_review",
+                        "held",
+                        "self_pay",
+                        "prepared",
+                        "queued",
+                        "waiting",
+                        "blocked",
+                        "delivered",
+                        "recorded_externally"
+                      ]
+                    },
+                    "claim_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "submission_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "submission_version": {
+                      "type": "integer"
+                    },
+                    "claim_version": {
+                      "type": "integer"
+                    },
+                    "partner_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "partner_version": {
+                      "type": "integer"
+                    },
+                    "job_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "uuid"
+                    },
+                    "delivery_status": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "route_key": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "issues": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing billing, claims or signing authority"
+          },
+          "404": {
+            "description": "Encounter or charges do not belong to this patient"
+          },
+          "409": {
+            "description": "A reviewed record changed"
+          },
+          "400": {
+            "description": "Invalid charge ID/version pair, incomplete clinical note, or invalid request fields"
+          }
+        }
+      }
     },
     "/api/v1/patients/{p}/billing/accounts/{id}/claims/prepare": {
       "post": {
@@ -41098,6 +41792,311 @@
           },
           "503": {
             "$ref": "#/components/responses/PartnerGatewayUnavailable"
+          }
+        }
+      }
+    },
+    "/api/v1/patients/{p}/billing/accounts/{id}/denial": {
+      "post": {
+        "summary": "Resolve a reviewed denied claim with an attributed ledger write-off or patient balance",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Unavailable channel or changed billing state"
+          }
+        },
+        "parameters": [
+          {
+            "name": "p",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "request_id",
+                  "claim_id",
+                  "action",
+                  "reason"
+                ],
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "claim_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "patient_balance",
+                      "write_off"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/patients/{p}/billing/statements/{id}/deliveries": {
+      "get": {
+        "summary": "List confirmed statement deliveries and available portal channel",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Unavailable channel or changed billing state"
+          }
+        },
+        "parameters": [
+          {
+            "name": "p",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      },
+      "post": {
+        "summary": "Deliver a statement to an active patient portal and record delivery atomically",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Unavailable channel or changed billing state"
+          }
+        },
+        "parameters": [
+          {
+            "name": "p",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "request_id"
+                ],
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/previsit/review-queue": {
+      "get": {
+        "summary": "List submitted intake forms awaiting staff review",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Unavailable channel or changed billing state"
+          }
+        }
+      }
+    },
+    "/api/v1/patient-portal/statements": {
+      "get": {
+        "summary": "List statements explicitly delivered to the authenticated patient",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Unavailable channel or changed billing state"
+          }
+        }
+      }
+    },
+    "/api/v1/patient-portal/statements/{id}": {
+      "get": {
+        "summary": "Read an explicitly delivered immutable patient statement",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Unavailable channel or changed billing state"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/patient-portal/statements/{id}/pay": {
+      "post": {
+        "summary": "Start an online payment after patient agreement for a delivered statement",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "403": {
+            "description": "Access denied"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "409": {
+            "description": "Unavailable channel or changed billing state"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "request_id",
+                  "agreed"
+                ],
+                "properties": {
+                  "request_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "agreed": {
+                    "type": "boolean",
+                    "const": true
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -42245,10 +43244,264 @@
         ],
         "description": "Register with name and date of birth. The server assigns the MRN; a caller-supplied MRN is rejected. Reviewed historical imports preserve established identifiers through their separate import contract."
       },
+      "VisitTypeSelection": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "version"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "PracticeVisitTypeInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "duration_minutes"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "category": {
+            "type": "string",
+            "maxLength": 100,
+            "description": "Defaults to name."
+          },
+          "duration_minutes": {
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 480
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "diagnoses": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "code",
+                "description"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string",
+                  "maxLength": 1000
+                }
+              }
+            }
+          },
+          "procedures": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "code_system",
+                "code",
+                "description",
+                "units"
+              ],
+              "properties": {
+                "code_system": {
+                  "type": "string",
+                  "enum": [
+                    "CPT",
+                    "HCPCS"
+                  ]
+                },
+                "code": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string",
+                  "maxLength": 1000
+                },
+                "units": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9999
+                },
+                "modifiers": {
+                  "type": "string"
+                },
+                "ndc_code": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "ndc_quantity": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "ndc_unit": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "PracticeVisitType": {
+        "type": "object",
+        "required": [
+          "id",
+          "version",
+          "name",
+          "category",
+          "duration_minutes",
+          "enabled",
+          "diagnoses",
+          "procedures"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "category": {
+            "type": "string",
+            "maxLength": 100,
+            "description": "Defaults to name."
+          },
+          "duration_minutes": {
+            "type": "integer",
+            "minimum": 5,
+            "maximum": 480
+          },
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "diagnoses": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "code",
+                "description"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string",
+                  "maxLength": 1000
+                }
+              }
+            }
+          },
+          "procedures": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "code_system",
+                "code",
+                "description",
+                "units"
+              ],
+              "properties": {
+                "code_system": {
+                  "type": "string",
+                  "enum": [
+                    "CPT",
+                    "HCPCS"
+                  ]
+                },
+                "code": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string",
+                  "maxLength": 1000
+                },
+                "units": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9999
+                },
+                "modifiers": {
+                  "type": "string"
+                },
+                "ndc_code": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "ndc_quantity": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "ndc_unit": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
       "Appointment": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "visit_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PracticeVisitType"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Frozen visit type at booking. Its diagnosis and procedure suggestions are unconfirmed."
+          },
           "id": {
             "type": "string",
             "format": "uuid"
@@ -42337,6 +43590,17 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "visit_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VisitTypeSelection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional active version to snapshot on each appointment."
+          },
           "patient_id": {
             "type": "string",
             "format": "uuid"
@@ -43666,6 +44930,17 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "visit_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VisitTypeSelection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Omission retains the snapshot when updating; explicit null detaches. Uses an active selected version when supplied."
+          },
           "clinician_id": {
             "type": "string",
             "format": "uuid"
@@ -50463,6 +51738,17 @@
       "RecurringAppointmentPlan": {
         "type": "object",
         "properties": {
+          "visit_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VisitTypeSelection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional active version to snapshot on each appointment."
+          },
           "request_id": {
             "type": "string",
             "format": "uuid"

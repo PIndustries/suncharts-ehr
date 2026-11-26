@@ -470,8 +470,28 @@ pub async fn authenticate(s: &State, raw: &str, method: &Method, path: &str) -> 
     let g:Option<Grant>=sqlx::query_as("SELECT g.id,g.user_id,g.tenant_id,g.scope,u.role FROM oauth_tokens t JOIN oauth_grants g ON g.id=t.grant_id JOIN oauth_clients c ON c.id=g.client_id JOIN browser_users u ON u.id=g.user_id AND u.tenant_id=g.tenant_id WHERE t.hash=$1 AND t.kind='access' AND t.expires_at>now() AND g.revoked_at IS NULL AND NOT c.disabled AND NOT u.disabled")
         .bind(hash(raw)).fetch_optional(&browser(s)?.db).await?;
     let g = g.ok_or(Error::Unauthorized)?;
+    // Search combines clinical, scheduling and financial sources in one response.
+    if path == "/api/v1/search"
+        && !["clinical.read", "billing.read", "scheduling.read"]
+            .iter()
+            .all(|needed| g.scope.split_whitespace().any(|scope| scope == *needed))
+    {
+        return Err(Error::Forbidden);
+    }
     let read = matches!(*method, Method::GET | Method::HEAD);
-    let needed = if path.starts_with("/api/v1/scheduling") {
+    // This single action can sign clinical notes and create a financial submission.
+    if path.starts_with("/api/v1/patients/")
+        && path.ends_with("/claim-handoff")
+        && !["clinical.write", "billing.write"]
+            .iter()
+            .all(|needed| g.scope.split_whitespace().any(|scope| scope == *needed))
+    {
+        return Err(Error::Forbidden);
+    }
+    let needed = if path.starts_with("/api/v1/scheduling")
+        || path == "/api/v1/practice/visit-types"
+        || path.starts_with("/api/v1/practice/visit-types/")
+    {
         if read {
             "scheduling.read"
         } else {

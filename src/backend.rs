@@ -14,6 +14,7 @@ pub trait ClinicalBackend: Send + Sync {
         actor: &Actor,
         after: Option<Uuid>,
         status: crate::patient_lifecycle::PatientStatus,
+        missing: Option<crate::patient_lifecycle::MissingPatientContact>,
     ) -> Result<PatientPage>;
     async fn workspace(&self, actor: &Actor, id: Uuid) -> Result<Workspace>;
     async fn create_patient(&self, actor: &Actor, input: NewPatient) -> Result<Patient>;

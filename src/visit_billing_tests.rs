@@ -679,6 +679,166 @@ fn adds_up(s: &Value) {
     );
 }
 
+/// Exercise the HTTP handoff and its actual queue in a disposable schema. No delivery
+/// or retrieval worker runs, and verification is supplied by the fixture. This
+/// distinguishes a single queued 837P from a clearinghouse or payer receipt.
+#[tokio::test]
+async fn claim_handoff_http_signs_once_and_queues_one_insured_submission_on_replay() {
+    let f = setup().await;
+    f.directory(true).await;
+    sqlx::query("UPDATE practice_providers SET taxonomy='207Q00000X' WHERE tenant_id=$1 AND id=$2")
+        .bind(f.owner.tenant_id)
+        .bind(f.owner.sub)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE practice_facilities SET address_line1='1 Synthetic Way',city='Austin',state='TX',postal_code='78701' WHERE tenant_id=$1")
+        .bind(f.owner.tenant_id).execute(&f.db).await.unwrap();
+
+    let setting = f
+        .ok(
+            "POST",
+            "/api/v1/billing/provider-settings",
+            json!({
+                "label":"Synthetic handoff", "usage":"T", "account_key":"synthetic-handoff-account",
+                "start_at": Utc::now() - chrono::Duration::hours(1)
+            }),
+            None,
+        )
+        .await;
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = f.app.clone();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let token = jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        &f.owner,
+        &jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
+    )
+    .unwrap();
+
+    let mut insured = None;
+    for (scenario, payer) in [
+        ("self_pay", None),
+        ("blocked", Some("SYN01")),
+        ("queued", Some("SYN02")),
+    ] {
+        if scenario == "queued" {
+            sqlx::query("UPDATE edi_provider_settings SET verified=true,enabled=true WHERE tenant_id=$1 AND id=$2")
+                .bind(f.owner.tenant_id).bind(id(&setting)).execute(&f.db).await.unwrap();
+        }
+        let (patient, _, visit) = f.visit(false).await;
+        let saved = f.ok("PUT", &format!("/api/v1/visits/{visit}/note"),
+            json!({"subjective":"Synthetic history","objective":"Synthetic exam","assessment":"Synthetic assessment","plan":"Synthetic plan"}), Some(1)).await;
+        let coverage = if let Some(code) = payer {
+            Some(id(&f
+                .coverage(patient, "primary", code, Some(2500))
+                .await
+                .1))
+        } else {
+            None
+        };
+        let account = f.charges(patient, visit, coverage, 18000).await;
+        let path = format!(
+            "http://{address}/api/v1/patients/{patient}/billing/visits/{visit}/claim-handoff"
+        );
+        let body = json!({
+            "account_id":id(&account), "account_version":version(&account),
+            "sign_version":version(&saved), "mode":"queue", "confirmations":{
+                "signature_on_file":true,"benefits_assigned":true,"release_authorized":true,
+                "routine_professional_reviewed":true,"synthetic_test_reviewed":true
+            }
+        });
+        let response = client
+            .post(&path)
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let result: Value = response.json().await.unwrap();
+        assert_eq!(result["outcome"], scenario, "{result}");
+        assert_eq!(result["signed"], true);
+        assert_eq!(f.action_count("visit.sign", visit).await, 1);
+        if scenario == "queued" {
+            insured = Some((visit, path, body, result));
+        } else {
+            let jobs: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM edi_delivery_jobs WHERE tenant_id=$1")
+                    .bind(f.owner.tenant_id)
+                    .fetch_one(&f.db)
+                    .await
+                    .unwrap();
+            assert_eq!(jobs, 0);
+            if scenario == "self_pay" {
+                let claims: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM ehr_claims WHERE tenant_id=$1 AND patient_id=$2",
+                )
+                .bind(f.owner.tenant_id)
+                .bind(patient)
+                .fetch_one(&f.db)
+                .await
+                .unwrap();
+                assert_eq!(claims, 0);
+            }
+        }
+    }
+    let (visit, path, body, first) = insured.unwrap();
+    let resend = || client.post(&path).bearer_auth(&token).json(&body).send();
+    let (a, b) = tokio::join!(resend(), resend());
+    for response in [a.unwrap(), b.unwrap()] {
+        assert_eq!(response.status(), StatusCode::OK);
+        let replay: Value = response.json().await.unwrap();
+        assert_eq!(replay["outcome"], "queued", "{replay}");
+        for field in ["claim_id", "submission_id", "job_id"] {
+            assert!(first[field].is_string());
+            assert_eq!(replay[field], first[field]);
+        }
+    }
+    let counts: (i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM ehr_claims WHERE tenant_id=$1 AND account_id=$2),
+                (SELECT count(*) FROM edi_submissions WHERE tenant_id=$1 AND claim_id=$3),
+                (SELECT count(*) FROM edi_delivery_jobs WHERE tenant_id=$1)",
+    )
+    .bind(f.owner.tenant_id)
+    .bind(id(&body["account_id"]))
+    .bind(id(&first["claim_id"]))
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        counts,
+        (1, 1, 1),
+        "replays must reuse the claim, file and delivery job"
+    );
+    let rows: Vec<(String, String, String, Option<String>, bool)> = sqlx::query_as(
+        "SELECT s.status,s.payer_outcome,j.status,j.receipt_reference,s.payload LIKE '%ST*837*%'
+         FROM edi_submissions s JOIN edi_delivery_jobs j ON j.tenant_id=s.tenant_id AND j.submission_id=s.id
+         WHERE s.tenant_id=$1 AND s.claim_id=$2",
+    )
+    .bind(f.owner.tenant_id)
+    .bind(id(&first["claim_id"]))
+    .fetch_all(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        vec![(
+            "prepared".into(),
+            "pending".into(),
+            "queued".into(),
+            None,
+            true
+        )]
+    );
+    assert_eq!(f.action_count("visit.sign", visit).await, 1);
+    server.abort();
+}
+
 #[tokio::test]
 async fn self_pay_visit_moves_from_charges_to_paid_in_full_and_never_prepares_a_claim() {
     let f = setup().await;
@@ -794,6 +954,109 @@ async fn self_pay_visit_moves_from_charges_to_paid_in_full_and_never_prepares_a_
     assert_eq!(s["patient"]["unapplied_cents"], 2000);
     assert_eq!(s["patient"]["credit_cents"], 2000);
     assert_eq!(s["patient"]["owes_now_cents"], 0);
+}
+
+#[tokio::test]
+async fn provider_defaults_keep_the_assigned_identity_and_use_the_reviewed_rendering_npi() {
+    let _key_file = crate::test_db::credential_key_lock().lock().await;
+    let key_dir = std::env::temp_dir().join(format!("provider-parity-{}", Uuid::new_v4()));
+    std::env::set_var("ENGINE_CREDENTIAL_KEY_FILE", key_dir.join("master.key"));
+    let f = setup().await;
+    let group = f
+        .billing_organization("Synthetic Billing Group", "000000017")
+        .await;
+    let other = f.staff(Role::Clinician, "clinician").await;
+    sqlx::query(
+        "UPDATE browser_users SET display_name='Assigned clinician' WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(f.owner.tenant_id)
+    .bind(f.owner.sub)
+    .execute(&f.db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO practice_providers(tenant_id,id,display_name,npi) VALUES($1,$2,'Other clinician','1234567893')")
+        .bind(f.owner.tenant_id).bind(other.sub).execute(&f.db).await.unwrap();
+    let directory = f
+        .ok(
+            "GET",
+            "/api/v1/billing/claimmd/provider-defaults",
+            json!(null),
+            None,
+        )
+        .await;
+    assert_eq!(directory["providers"][0]["id"], json!(other.sub));
+    assert_eq!(directory["billing_organizations"][0]["npi"], "");
+    assert!(directory["billing_organizations"][0]
+        .get("tax_id")
+        .is_none());
+    let (p, _, visit) = f.visit(true).await;
+    let (_, policy) = f.coverage(p, "primary", "SYN01", None).await;
+    let summary = f.summary(&f.owner, p, visit).await;
+    assert_eq!(summary["visit"]["clinician_id"], json!(f.owner.sub));
+    assert_eq!(summary["visit"]["clinician_name"], "Assigned clinician");
+
+    let draft = f.charges(p, visit, Some(id(&policy)), 12000).await;
+    let posted = f.post(p, &draft).await;
+    let (_, prepared) = f.prepare(&f.owner, p, id(&posted), json!({})).await;
+    let claim = f.claim(&prepared["claim_id"]).await;
+    assert_eq!(claim["content"]["rendering_npi"], "");
+    assert_eq!(claim["content"]["billing_npi"], "");
+
+    let (p2, _, v2) = f.visit(true).await;
+    let (_, policy2) = f.coverage(p2, "primary", "SYN02", None).await;
+    let draft = f.charges(p2, v2, Some(id(&policy2)), 10000).await;
+    let mut content = draft["content"].clone();
+    content["claim_details"] =
+        json!({"rendering_provider_name":"Covering physician","rendering_npi":"1245319599"});
+    let updated = f
+        .ok(
+            "PUT",
+            &format!("/api/v1/patients/{p2}/billing/accounts/{}", id(&draft)),
+            json!({"content":content,"reason":"Reviewed rendering clinician"}),
+            Some(version(&draft)),
+        )
+        .await;
+    let posted = f.post(p2, &updated).await;
+    let (_, prepared) = f.prepare(&f.owner, p2, id(&posted), json!({})).await;
+    let claim = f.claim(&prepared["claim_id"]).await;
+    assert_eq!(claim["content"]["rendering_npi"], "1245319599");
+    assert_eq!(claim["content"]["billing_npi"], "1245319599");
+
+    let mut content = claim["content"].clone();
+    content["billing_npi"] = json!("");
+    content["rendering_npi"] = json!("1234567893");
+    let patched = f
+        .ok(
+            "PUT",
+            &format!("/api/v1/billing/claims/{}", id(&claim)),
+            json!({"content":content,"reason":"Reviewed claim correction"}),
+            Some(version(&claim)),
+        )
+        .await;
+    let read = f.detail(&patched["id"]).await;
+    assert_eq!(
+        read["claim"]["content"]["billing_npi"], "1234567893",
+        "refill follows the clinician reviewed on the draft itself"
+    );
+
+    sqlx::query(
+        "UPDATE practice_billing_organizations SET npi='1346327099' WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(f.owner.tenant_id)
+    .bind(group)
+    .execute(&f.db)
+    .await
+    .unwrap();
+    let (p3, _, v3) = f.visit(true).await;
+    let (_, policy3) = f.coverage(p3, "primary", "SYN03", None).await;
+    let posted = f
+        .post(p3, &f.charges(p3, v3, Some(id(&policy3)), 9000).await)
+        .await;
+    let (_, prepared) = f.prepare(&f.owner, p3, id(&posted), json!({})).await;
+    let claim = f.claim(&prepared["claim_id"]).await;
+    assert_eq!(claim["content"]["billing_npi"], "1346327099");
+    assert_eq!(claim["content"]["rendering_npi"], "");
+    std::env::remove_var("ENGINE_CREDENTIAL_KEY_FILE");
 }
 
 #[tokio::test]
@@ -2102,7 +2365,100 @@ mod refill {
     }
 }
 
-/// A signed visit whose note carries its own synthetic SOAP text.
+#[tokio::test]
+async fn claim_handoff_keeps_holds_and_missing_fields_and_requires_authority() {
+    let f = setup().await;
+    let (patient, _, visit) = f.visit(false).await;
+    let url = format!("/api/v1/patients/{patient}/billing/visits/{visit}/claim-handoff");
+    let no_charges = json!({"mode":"queue","sign_version":1});
+    let nurse = f.staff(Role::Nurse, "nurse").await;
+    assert_eq!(
+        f.call(&nurse, "POST", &url, no_charges.clone(), None)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let incomplete = f
+        .call(&f.owner, "POST", &url, no_charges.clone(), None)
+        .await;
+    assert!(
+        incomplete.0.is_client_error(),
+        "clinical signing requires a complete note"
+    );
+    sqlx::query("UPDATE visits SET note=$3 WHERE tenant_id=$1 AND id=$2")
+        .bind(f.owner.tenant_id)
+        .bind(visit)
+        .bind(json!({"subjective":"Test","objective":"Test","assessment":"Test","plan":"Test"}))
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let signed = f.ok("POST", &url, no_charges, None).await;
+    assert_eq!(signed["signed"], true);
+    assert_eq!(signed["outcome"], "needs_review");
+    let (_, policy) = f.coverage(patient, "primary", "TEST01", None).await;
+    let draft = f.charges(patient, visit, Some(id(&policy)), 15000).await;
+    let request = json!({"mode":"queue","account_id":id(&draft),"account_version":version(&draft)});
+    let desk = f.staff(Role::FrontDesk, "front_desk").await;
+    billing_only_policy(&f, &desk, "front_desk", true).await;
+    assert_eq!(
+        f.call(&desk, "POST", &url, request.clone(), None).await.0,
+        StatusCode::FORBIDDEN,
+        "billing access alone cannot submit claims"
+    );
+    let (other, _, other_visit) = f.visit(true).await;
+    assert_eq!(
+        f.call(
+            &f.owner,
+            "POST",
+            &format!("/api/v1/patients/{other}/billing/visits/{other_visit}/claim-handoff"),
+            request.clone(),
+            None
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    for key in ["review_requested", "paper_only"] {
+        sqlx::query("UPDATE billing_accounts SET content=jsonb_set(content,'{claim_details}',$3) WHERE tenant_id=$1 AND id=$2").bind(f.owner.tenant_id).bind(id(&draft)).bind(json!({key:true})).execute(&f.db).await.unwrap();
+        assert_eq!(
+            f.ok("POST", &url, request.clone(), None).await["outcome"],
+            "held",
+            "{key}"
+        );
+    }
+    sqlx::query("UPDATE billing_accounts SET content=$3 WHERE tenant_id=$1 AND id=$2")
+        .bind(f.owner.tenant_id)
+        .bind(id(&draft))
+        .bind(&draft["content"])
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let current = f.ok("POST", &url, request.clone(), None).await;
+    assert_eq!(current["outcome"], "needs_review");
+    assert!(current["claim_id"].is_string());
+    assert!(current["issues"].as_array().unwrap().len() >= 2);
+    let again = f.ok("POST", &url, request, None).await;
+    assert_eq!(
+        again["claim_id"], current["claim_id"],
+        "same reviewed draft can be retried after posting"
+    );
+    let self_pay = f.charges(other, other_visit, None, 10000).await;
+    let result = f
+        .ok(
+            "POST",
+            &format!("/api/v1/patients/{other}/billing/visits/{other_visit}/claim-handoff"),
+            json!({"mode":"queue","account_id":id(&self_pay),"account_version":version(&self_pay)}),
+            None,
+        )
+        .await;
+    assert_eq!(result["outcome"], "self_pay");
+    assert_eq!(
+        f.count("SELECT count(*) FROM edi_delivery_jobs WHERE tenant_id=$1")
+            .await,
+        0
+    );
+}
+
 /// Adds one resource to an account's own policy, leaving the rest of it as written.
 async fn grant_policy_module(f: &Fixture, who: &Actor, resource: &str) {
     sqlx::query("UPDATE practice_access_policies SET permissions = permissions || jsonb_build_object($3, $4::jsonb) WHERE tenant_id=$1 AND id=(SELECT policy_id FROM practice_access_assignments WHERE tenant_id=$1 AND user_id=$2)")
@@ -2111,6 +2467,7 @@ async fn grant_policy_module(f: &Fixture, who: &Actor, resource: &str) {
         .execute(&f.db).await.unwrap();
 }
 
+/// A signed visit whose note carries its own synthetic SOAP text.
 async fn signed_visit(f: &Fixture, signer: &Actor) -> (Uuid, Uuid, Uuid, Value) {
     let (p, appointment, visit) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
     let note = json!({"subjective":"Synthetic","objective":"Synthetic","assessment":"Synthetic","plan":"Synthetic"});
@@ -2657,4 +3014,148 @@ async fn patient_overpayment_before_the_insurer_answers_is_credit_not_a_smaller_
         )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn dead_ends_denial_writeoff_and_patient_balance_are_attributed_and_idempotent() {
+    let f = setup().await;
+    f.directory(true).await;
+    for action in ["write_off", "patient_balance"] {
+        let (p, _, visit) = f.visit(true).await;
+        let (payer, policy) = f
+            .coverage(p, "primary", &format!("SYN-{action}"), None)
+            .await;
+        let b = f
+            .post(p, &f.charges(p, visit, Some(id(&policy)), 10000).await)
+            .await;
+        let (_, draft) = f.prepare(&f.owner, p, id(&b), json!({})).await;
+        let c = f.send(&draft["claim_id"]).await;
+        f.respond(
+            p,
+            &payer,
+            &c,
+            10000,
+            0,
+            0,
+            "4",
+            &format!("SYN-DENIAL-{action}"),
+        )
+        .await;
+        let summary = f.summary(&f.owner, p, visit).await;
+        let path = format!("/api/v1/patients/{p}/billing/accounts/{}/denial", id(&b));
+        let input = json!({"request_id":Uuid::new_v4(),"claim_id":id(&c),"action":action,"reason":"Synthetic reviewed denial decision"});
+        let current = summary["account"]["version"].as_i64().unwrap();
+        let mut missing = input.clone();
+        missing["reason"] = json!("");
+        assert_eq!(
+            f.call(&f.owner, "POST", &path, missing, Some(current))
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+        f.ok("POST", &path, input.clone(), Some(current)).await;
+        f.ok("POST", &path, input.clone(), Some(current)).await;
+        let next = f.summary(&f.owner, p, visit).await;
+        assert_eq!(
+            next["state"],
+            if action == "write_off" {
+                "paid_in_full"
+            } else {
+                "patient_owes"
+            }
+        );
+        assert_eq!(
+            next["patient"]["owes_now_cents"],
+            if action == "write_off" { 0 } else { 10000 }
+        );
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM billing_denial_resolutions WHERE tenant_id=$1 AND claim_id=$2",
+        )
+        .bind(f.owner.tenant_id)
+        .bind(id(&c))
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+        if action == "write_off" {
+            let row:(i64,String)=sqlx::query_as("SELECT effect_cents,content->>'reason' FROM billing_entries WHERE tenant_id=$1 AND account_id=$2 AND kind='adjustment_credit'").bind(f.owner.tenant_id).bind(id(&b)).fetch_one(&f.db).await.unwrap();
+            assert_eq!(row, (-10000, "Synthetic reviewed denial decision".into()));
+        }
+        assert_eq!(f.audit_count("billing.denial_resolved", &c["id"]).await, 1);
+        let outsider = Actor {
+            tenant_id: Uuid::new_v4(),
+            ..f.owner.clone()
+        };
+        assert_ne!(
+            f.call(&outsider, "POST", &path, input, Some(current))
+                .await
+                .0,
+            StatusCode::OK
+        );
+    }
+}
+
+#[tokio::test]
+async fn dead_ends_statement_delivery_records_only_confirmed_portal_messages() {
+    let f = setup().await;
+    let (p, _, visit) = f.visit(true).await;
+    let b = f.post(p, &f.charges(p, visit, None, 10000).await).await;
+    let i = f
+        .ok(
+            "POST",
+            &format!("/api/v1/patients/{p}/billing/accounts/{}/statement", id(&b)),
+            json!({}),
+            None,
+        )
+        .await;
+    let invoice = id(&i["invoice"]);
+    let path = format!("/api/v1/patients/{p}/billing/statements/{invoice}/deliveries");
+    let input = json!({"request_id":Uuid::new_v4()});
+    assert_eq!(
+        f.call(&f.owner, "POST", &path, input.clone(), None).await.0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        f.ok("GET", &path, json!(null), None).await["items"],
+        json!([])
+    );
+    sqlx::query("INSERT INTO patient_portal_accounts(tenant_id,id,patient_id,email,password_hash,status) VALUES($1,$2,$3,'synthetic@example.test','not-a-real-password','active')").bind(f.owner.tenant_id).bind(Uuid::new_v4()).bind(p).execute(&f.db).await.unwrap();
+    f.ok("POST", &path, input.clone(), None).await;
+    f.ok("POST", &path, input, None).await;
+    f.ok("POST", &path, json!({"request_id":Uuid::new_v4()}), None)
+        .await;
+    let rows = f.ok("GET", &path, json!(null), None).await;
+    assert_eq!(rows["items"].as_array().unwrap().len(), 2);
+    assert_eq!(rows["items"][0]["channel"], "portal");
+    assert_eq!(rows["items"][0]["actor_id"], json!(f.owner.sub));
+    assert!(rows["items"][0]["at"].is_string());
+    assert_eq!(
+        f.audit_count("billing.statement_sent", &json!(invoice))
+            .await,
+        2
+    );
+    let count:i64=sqlx::query_scalar("SELECT count(*) FROM patient_portal_messages WHERE tenant_id=$1 AND body LIKE '%/patient-portal#statement=%'").bind(f.owner.tenant_id).fetch_one(&f.db).await.unwrap();
+    assert_eq!(count, 2);
+    assert_eq!(
+        f.summary(&f.owner, p, visit).await["timeline"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["code"] == "statement_sent")
+            .count(),
+        2
+    );
+    let (other, _, _) = f.visit(true).await;
+    assert_eq!(
+        f.call(
+            &f.owner,
+            "GET",
+            &format!("/api/v1/patients/{other}/billing/statements/{invoice}/deliveries"),
+            json!(null),
+            None
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
 }

@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const events=new Map(),nodes=new Map(),calls=[],pending=[];
+const node=id=>{if(!nodes.has(id))nodes.set(id,{innerHTML:'',textContent:''});return nodes.get(id);};
+const ctx=vm.createContext({console,Date,Intl,URLSearchParams,Map,Set,crypto:{randomUUID:()=> 'synthetic-request'},document:{addEventListener(type,fn){if(!events.has(type))events.set(type,[]);events.get(type).push(fn);},getElementById:node},selected:'synthetic-patient',me:{role:'owner'},workspace:{demographics:{content:{}},billing:{accounts:[]}},esc:s=>String(s??'').replaceAll('<','&lt;').replaceAll('"','&quot;'),money:n=>'$'+(Number(n||0)/100).toFixed(2),date:s=>s,$:node,calls,pending,notice:()=>{},run:fn=>pending.push(Promise.resolve().then(fn))});
+const run=s=>vm.runInContext(s,ctx);
+for(const file of ['visit-billing','patient-revenue','checkout'])run(fs.readFileSync(`web/${file}.js`,'utf8'));
+async function main(){
+ new vm.Script(fs.readFileSync('web/patient-portal.js','utf8'));
+ new vm.Script(fs.readFileSync('web/claimmd-extended.js','utf8'));
+ const summary={state:'denied',account:{id:'synthetic-account'},claim:{id:'synthetic-claim',payer_name:'Synthetic insurer'},patient:{owes_now_cents:0},insurance:{paid_cents:0}};
+ ctx.summary=summary;
+ let html=run('visitBillingCardMarkup(summary,{canWrite:true})');
+ for(const label of ['Fix and resend claim','Move to patient balance','Write off','Start appeal'])assert.ok(html.includes(label),label);
+ assert.ok(!run('visitBillingCardMarkup(summary,{canWrite:false})').includes('Write off'));
+ summary.state='unknown';assert.match(run('visitBillingStatus(summary).action'),/data-refresh-revenue/);
+ assert.equal(run('copayUnapplied({amount_cents:10000,allocated_cents:2000,cash_refunded_cents:3000})'),5000);
+ assert.equal(run('copayUnapplied({amount_cents:10000,allocated_cents:2000,cash_refunded_cents:1000,hosted_checkout:{refunded_unapplied_cents:3000}})'),4000);
+ assert.equal(run('copayUnapplied({amount_cents:1000,cash_refunded_cents:2000})'),0);
+ ctx.source={now:'2026-11-25T12:00:00Z',accounts:{items:[{id:'account',patient_id:'p',patient_name:'Synthetic',patient_owes_now_cents:4200}]},intake:{items:[{packet_id:'packet',status:'submitted',patient_name:'Synthetic'},{packet_id:'reviewed',status:'reviewed'}]},remittances:{items:[{id:'era',status:'staged'},{id:'posted',status:'posted'}]},referrals:{items:[{id:'referral',patient_id:'p',patient_label:'Synthetic'}]},schedule:{appointments:[{id:'upcoming',patient_id:'p',starts_at:'2026-11-26T12:00:00Z'},{id:'past',starts_at:'2026-11-24T12:00:00Z'},{id:'late',starts_at:'2026-12-04T12:00:00Z'}]},markers:{items:[{appointment_id:'upcoming',insurance:{status:'not_checked'}},{appointment_id:'past',insurance:{status:'not_checked'}},{appointment_id:'late',insurance:{status:'not_checked'}}]}};
+ const rows=run('workQueueItems(source)');
+ for(const kind of ['intake','insurance','insurer_payments','balances'])assert.equal(rows.filter(r=>r.kind===kind).length,1,kind);
+ const referral=rows.find(r=>r.kind==='referrals');assert.match(referral.attrs,/data-referral-id="referral"/);assert.match(referral.attrs,/data-referral-open-patient="p"/);
+ run(`api=async()=>({portal:false,items:[]});currentVisitStatement={invoice:{id:'invoice'},patient:selected,identity:me,request:'request'};`);
+ await run('loadStatementDeliveries(currentVisitStatement)');
+ assert.match(node('statement-send-actions').innerHTML,/No sending channel is configured/);
+ assert.match(node('statement-send-actions').innerHTML,/No email on file — add one in Profile/);
+ assert.match(node('statement-send-actions').innerHTML,/data-statement-profile/);
+ assert.doesNotMatch(node('statement-send-actions').innerHTML,/data-send-statement/);
+ run(`api=async()=>({portal:true,items:[{at:'2026-11-25',channel:'portal',actor_label:'Synthetic staff'}]});`);
+ await run('loadStatementDeliveries(currentVisitStatement)');
+ assert.match(node('statement-send-actions').innerHTML,/data-send-statement/);assert.match(node('statement-deliveries').innerHTML,/Statements sent/);assert.match(node('statement-deliveries').innerHTML,/Synthetic staff/);
+ const button={disabled:false,isConnected:true,hasAttribute:a=>a==='data-send-statement',dataset:{}};
+ run(`api=async(url,method,body)=>{calls.push({url,method,body});return {portal:true,items:[]};};loadEncounterRevenueStatus=async()=>{};`);
+ for(const fn of events.get('click')||[])fn({target:{closest:selector=>selector.startsWith('[data-send-statement]')?button:null},preventDefault(){},stopImmediatePropagation(){}});
+ await Promise.all(pending);
+ const delivery=calls.find(c=>c.method==='POST');assert.match(delivery.url,/statements\/invoice\/deliveries$/);assert.equal(delivery.body.request_id,'request');
+ let refreshed=false;ctx.loadEncounterRevenueStatus=async(_account,force)=>{refreshed=force;};
+ const refresh={dataset:{},hasAttribute:a=>a==='data-refresh-revenue'};
+ const handler=events.get('click').find(fn=>String(fn).includes("button.hasAttribute('data-refresh-revenue')"));
+ handler({target:{closest:()=>refresh},preventDefault(){}});assert.equal(refreshed,true);
+ // A response from the previous patient's sheet must not paint this chart.
+ run(`api=async()=>({portal:true,items:[]});selected='other-patient';`);
+ node('statement-send-actions').innerHTML='other chart';await run('loadStatementDeliveries(currentVisitStatement)');assert.equal(node('statement-send-actions').innerHTML,'other chart');
+ assert.doesNotMatch(fs.readFileSync('web/patient-revenue.js','utf8'),/mailto:|Email the patient/);
+ const portalNodes=new Map(),portalNode=id=>{if(!portalNodes.has(id))portalNodes.set(id,{innerHTML:'',setAttribute(){},querySelector(){return null;}});return portalNodes.get(id);};
+ const portalCtx=vm.createContext({console,Date,Intl,URLSearchParams,crypto:{randomUUID:()=> 'synthetic-payment-request'},location:{hash:'',origin:'https://synthetic.example'},window:{addEventListener(){}},document:{getElementById:portalNode,addEventListener(){}}});
+ const portalSource=fs.readFileSync('web/patient-portal.js','utf8').split('\n').filter(line=>!line.startsWith('(function portalStart()')).join('\n');
+ vm.runInContext(portalSource,portalCtx);
+ vm.runInContext(`portalCapture=()=>{};portalDraftOwner='synthetic-account';portalApi=async()=>({account_id:'synthetic-account',online_payment:true,invoice:{id:'synthetic-invoice',created_at:'2026-11-25',snapshot:{practice_name:'Synthetic practice',patient:{given_name:'Synthetic',family_name:'Patient'},services:[{code:'99213',description:'Synthetic visit',units:1,line_total_cents:12000}],amount_due_cents:10000,gross_charges_cents:12000,responsibility_cents:10000,patient_payment_cents:0,patient_activity:[]}}});`,portalCtx);
+ await vm.runInContext("portalStatement('synthetic-invoice')",portalCtx);
+ const statement=portalNode('portal-content').innerHTML;assert.match(statement,/Synthetic visit/);assert.match(statement,/\$120\.00/);assert.match(statement,/\$100\.00/);assert.match(statement,/Pay online/);assert.match(statement,/Print \/ save PDF/);
+ const safe=vm.runInContext(`portalMessageBody('<script>unsafe()</script> https://synthetic.example/patient-portal#statement=12345678-1234-1234-1234-123456789012')`,portalCtx);
+ assert.doesNotMatch(safe,/<script>/);assert.match(safe,/data-statement="12345678-1234-1234-1234-123456789012"/);
+ console.log('PASS denied actions, refresh, cash/check credit, actionable queue groups, exact referral, statement channel fallback and confirmed delivery');
+}
+main().catch(error=>{console.error(error);process.exitCode=1;});

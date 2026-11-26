@@ -3,6 +3,7 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 // Staff display helpers load before every feature script, exactly as index.html loads them.
 {const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
+const {JSDOM}=require('jsdom');
 const {visitSummary,selfPay}=require('./visit_billing_fixture.cjs');
 // The claim detail a one-click send reads back before it releases anything: the claim itself, the
 // server's own preflight answer, and the Claim.MD route the claim file goes over.
@@ -24,9 +25,18 @@ const card=(summary,context=all)=>{
  // it. That is what the card's main button asks about, so the step is simulated here.
  if(!ctx.billingStep)ctx.billingStep=vm.runInContext('encounterRevenueState',ctx);
  Object.assign(ctx.billingStep,{data:{summary},reviewCard:summary});
- return ctx.visitBillingCardMarkup(summary,context);
+ // These assertions cover the shared encounter bar and payment breakdown. The claim
+ // screen has its own structure and footer assertions in test_claim_screen_layout.cjs.
+ const markup=ctx.visitBillingCardMarkup(summary,context),claim=ctx.visitBillingColumn(summary,context);
+ return claim?markup.replace(claim,''):markup;
 };
-const primaries=html=>[...html.matchAll(/<button type="button" class="primary" ([^>]*)>([^<]*)</g)].map(match=>match[2]);
+// A standalone payment card still presents actionable issues if the full Claim screen is unavailable.
+const standaloneCard=(summary,context=all)=>{
+ const renderClaim=ctx.visitReviewPanelMarkup;
+ ctx.visitReviewPanelMarkup=undefined;
+ try{return card(summary,context);}finally{ctx.visitReviewPanelMarkup=renderClaim;}
+};
+const primaries=html=>Array.from(JSDOM.fragment(html).querySelectorAll('.visit-billing-status .actions > button.primary'),button=>button.textContent);
 const click=dataset=>{const button={dataset,disabled:false,hasAttribute:name=>name.replace(/^data-/,'').replace(/-([a-z])/g,(_,c)=>c.toUpperCase()) in dataset,closest:()=>null};for(const handler of handlers.click)handler({target:{closest:selector=>selector==='button'?button:null},preventDefault(){}});return button;};
 const settle=async()=>{for(let i=0;i<6;i++)await new Promise(resolve=>setImmediate(resolve));};
 
@@ -66,7 +76,11 @@ for(const [summary,headline,label,attribute,detail,shown] of states){
  assert.ok(html.includes(`<p class="visit-billing-headline">${esc(headline)}</p>`),`${summary.state}: ${html.slice(0,400)}`);
  assert.deepEqual(primaries(html),[label],`${summary.state} has one primary action`);
  assert.ok(html.includes(`class="primary" ${attribute}>`),`${summary.state} action target`);
- assert.match(html,detail,summary.state);assert.ok(html.includes(`data-visit-billing-state="${summary.state}"`));
+ if(summary.state==='fix_claim'){
+  assert.doesNotMatch(html,/visit-billing-missing/,'the shared card leaves field warnings to the Claim screen');
+  assert.match(standaloneCard(shown),detail,'standalone cards retain the missing details');
+ }else assert.match(html,detail,summary.state);
+ assert.ok(html.includes(`data-visit-billing-state="${summary.state}"`));
 }
 for(const [summary] of states){const html=card(summary).replace(/<[^>]*>/g,' ');assert.doesNotMatch(html,/Waiting on your office/,'the office is never named as the one who waits');assert.doesNotMatch(html,/Waiting on the patient|Waiting on the insurer(?!’s)/,'staff see "Waiting for" the patient or the insurer');if(summary.state==='sign_visit')assert.doesNotMatch(html,/must be signed[^\n]*Waiting on the clinician/,'a sentence that already says the note must be signed does not also say who it waits on');}
 // A delegated support session acts for the practice: it is given the same Prepare claim button.
@@ -134,7 +148,7 @@ assert.match(ctx.hostedCopayMarkup({...hostedState,items:[{id:'op',appointment_i
 assert.match(ctx.hostedCopayMarkup({...hostedState,availability:{available:false,reason:'Card payments are not set up.'}},true),/Card payments aren’t set up yet\./);
 const more=ctx.visitBillingMore(answered,all);
 for(const expected of ['data-visit-statement>Patient statement','data-new-ledger>Record a payment, write-off or adjustment','data-visit-history="payments">Refunds and card payments','data-revenue-claim="claim">Open claim: correct, void or bill secondary insurance','/api/v1/billing/claims/claim/cms1500','data-chart-section="insurance">Insurance and eligibility'])assert.ok(more.includes(expected),expected);
-assert.match(more,/^<details class="visit-billing-more" data-revenue-disclosure="more"><summary>More actions<\/summary>/);
+assert.equal(JSDOM.fragment(more).querySelector('details.visit-billing-more[data-revenue-disclosure="more"] > summary')?.textContent,'More actions');
 assert.doesNotMatch(ctx.visitBillingMore(visitSummary({claim:{secondary:true}}),all),/cms1500/,'no CMS-1500 for a secondary claim');
 assert.doesNotMatch(ctx.visitBillingMore(visitSummary(),{canCreate:false,canWrite:false,claimsAllowed:false}),/data-new-ledger|data-visit-statement|data-revenue-claim/);
 
@@ -154,7 +168,7 @@ const technical=ctx.visitBillingTechnical(visitSummary({technical:{account_id:'e
 assert.match(technical,/<dt>Charge account<\/dt><dd>e40f1da7-0000<\/dd>/);assert.match(technical,/SYN-&lt;MEMBER&gt;/);assert.match(technical,/manually verified/);assert.match(technical,/SC000TEST · version 3/);
 
 // Escaping: insurer names, issue text and receipt fields are text, never markup.
-const hostile=card(visitSummary({state:'fix_claim',insurance:{insurer:'<img src=x onerror=1>'},claim:{payer_name:'<script>x</script>',id:'"><b>',issues:[{missing:'<i>tax</i>'}]},receipts:[{id:'"onclick="x',appointment_id:'a"b',amount_cents:1000,method:'cash',occurred_on:'2026-11-12'}]}));
+const hostile=standaloneCard(visitSummary({state:'fix_claim',insurance:{insurer:'<img src=x onerror=1>'},claim:{payer_name:'<script>x</script>',id:'"><b>',issues:[{missing:'<i>tax</i>'}]},receipts:[{id:'"onclick="x',appointment_id:'a"b',amount_cents:1000,method:'cash',occurred_on:'2026-11-12'}]}));
 assert.doesNotMatch(hostile,/<img|<script|<i>tax|"onclick="x"/);assert.match(hostile,/&lt;script&gt;x&lt;\/script&gt;/);assert.match(hostile,/Claim:<\/b> &lt;i&gt;tax&lt;\/i&gt;/);
 // The claim id is hostile markup too: it stays escaped in every button and link it seeds.
 // The card's main button hands claim fixes to the review panel, so the id travels through the
@@ -162,7 +176,7 @@ assert.doesNotMatch(hostile,/<img|<script|<i>tax|"onclick="x"/);assert.match(hos
 assert.match(hostile,/data-revenue-claim="&quot;&gt;&lt;b&gt;"/);assert.doesNotMatch(hostile,/data-visit-claim-fix=""><b>"/);
 
 // Missing details are de-duplicated and split into one line per place they are fixed, each with its own button.
-const grouped=card(visitSummary({state:'fix_claim',claim:{id:'claim',issues:[
+const grouped=standaloneCard(visitSummary({state:'fix_claim',claim:{id:'claim',issues:[
  {code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'},
  {code:'npi',missing:'provider NPI',detail:'x'},
  {code:'billing organization tax ID',missing:'billing organization tax ID'}, // duplicate text, same as first
@@ -223,7 +237,7 @@ for(const action of ['postVisitChargesFromCard','prepareVisitClaim','openVisitSt
 }
 assert.match(revenueSource,/finally\{state\.pending=null;render\(\);/,'and the reload is drawn whether the read succeeds or not');
 const claimsSource=fs.readFileSync('web/claims.js','utf8'),overviewSource=fs.readFileSync('web/billing-overview.js','utf8');
-assert.match(claimsSource,/function claimStatusLabel\(claim\)\{return typeof visitBillingClaimState==='function'\?visitBillingClaimState\(claim\)/);assert.match(overviewSource,/visitBillingStateName\(row\.billing_state\)/);
+assert.match(claimsSource,/function claimStatusLabel\(claim\)\{[\s\S]*?if\(typeof visitBillingClaimState==='function'\)return visitBillingClaimState\(claim\)/);assert.match(overviewSource,/visitBillingStateName\(row\.billing_state\)/);
 // No hard-coded colours anywhere in the card's styles or markup.
 const css=fs.readFileSync('web/visit-billing.css','utf8');assert.doesNotMatch(css,/#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|[:\s](white|black|red|green|blue|gray|grey|orange|yellow)[;}\s]/);assert.match(css,/var\(--line\)/);
 assert.doesNotMatch(fs.readFileSync('web/visit-billing.js','utf8'),/style="|#[0-9a-fA-F]{6}\b|rgb\(/);
@@ -237,14 +251,14 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
  let prepared=0;reply=(url,method)=>{if(url.endsWith('/claims/prepare')){prepared++;return {outcome:'prepared',claim_id:'claim',issues:[]};}return prepared?visitSummary():visitSummary({state:'prepare_claim',claim:null,claim_count:0});};
  ctx.renderEncounterRevenue();await settle();
  let host=node('encounter-revenue').innerHTML,status=node('encounter-revenue-status').innerHTML;
- assert.deepEqual(sent.map(c=>[c[0],c[1]]),[['/api/v1/patients/patient/billing/visit-summary?visit_id=visit','GET'],['/api/v1/patients/patient/billing/accounts/account/claims/prepare','POST'],['/api/v1/patients/patient/billing/visit-summary?visit_id=visit','GET']]);
- assert.equal(JSON.stringify(sent[1][2]),'{}','preparing sends no amounts and no claim details');
+ assert.deepEqual(sent.map(c=>[c[0],c[1]]),[['/api/v1/visits/visit/diagnoses','GET'],['/api/v1/patients/patient/billing/visit-summary?visit_id=visit','GET'],['/api/v1/patients/patient/billing/accounts/account/claims/prepare','POST'],['/api/v1/patients/patient/billing/visit-summary?visit_id=visit','GET']]);
+ assert.equal(JSON.stringify(sent.find(c=>c[0].endsWith('/claims/prepare'))[2]),'{}','preparing sends no amounts and no claim details');
  assert.match(status,/Claim ready to send to Synthetic Medicare PPO/);assert.deepEqual(primaries(status),['Review and send to the clearinghouse']);
  await ctx.loadEncounterRevenueStatus(account,true);assert.equal(prepared,1,'a refresh never prepares again');
  // Layout: one card, collect hidden until asked, charges and history collapsed, details not offered to staff.
  assert.match(host,/<h2>Procedures \(CPT\)<\/h2><p class="muted">Nov 12, 2026 · Posted<\/p>/);
  assert.match(host,/<section id="visit-billing-collect" class="billing-section" hidden>/);assert.match(host,/data-record-copay="appointment">Cash or check<\/button>/);
- assert.match(host,/<div class="invoice-lines" id="encounter-billing-detail"><\/div>/);assert.match(host,/<details class="encounter-account-record" id="visit-billing-history"><summary>History<\/summary>/);assert.match(host,/<section class="billing-section" id="visit-billing-payments"><h3>Payments<\/h3><div id="visit-billing-ledger"><\/div><\/section>/);assert.match(host,/<nav class="invoice-tabs[^"]*"[^>]*>.*data-invoice-tab-key="note"[^>]*>Note<.*data-invoice-tab-key="billing"[^>]*>Billing<.*data-invoice-tab-key="history"[^>]*>History</);
+ assert.match(host,/<div class="invoice-lines" id="encounter-billing-detail"><\/div>/);assert.match(host,/<details class="encounter-account-record" id="visit-billing-history"><summary>History<\/summary>/);assert.match(host,/<section class="billing-section" id="visit-billing-payments"><h3>Payments<\/h3><div id="visit-billing-ledger"><\/div><\/section>/);assert.doesNotMatch(host,/<nav class="invoice-tabs|role="tablist"/, 'the encounter has steps instead of tabs');
  assert.doesNotMatch(host,/visit-billing-details|<h3>Copay<\/h3>|Insurance &amp; coverage details|Charges &amp; ledger details|Record a cash or check payment/);
  assert.equal((host.match(/id="encounter-claims"/g)||[]).length,1,'the claim view keeps its place');
  // The owner gets Details; the server decides what is in it.
@@ -254,11 +268,11 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
  ctx.me={role:'front_desk'};node('visit-billing-details').hidden=true;
 
  // Review and send opens the claim for review; Fix opens its editor. Neither sends anything.
- sent.length=0;click({visitClaimSend:'claim'});await ctx.pending;assert.deepEqual(ctx.openedClaim,['claim','account']);assert.equal(sent.length,0);
- ctx.claimCurrent={id:'claim',status:'draft',snapshot:{account}};click({visitClaimFix:'claim'});await ctx.pending;assert.equal(ctx.editedClaim,'claim');assert.equal(sent.length,0);
+ sent.length=0;click({visitClaimSend:'claim'});await ctx.pending;assert.equal(node('visit-billing-review').hidden,false);assert.equal(sent.filter(c=>c[1]!=='GET').length,0);
+ ctx.claimCurrent={id:'claim',status:'draft',snapshot:{account}};click({visitClaimFix:'claim'});await ctx.pending;assert.equal(ctx.editedClaim,'claim');assert.equal(sent.filter(c=>c[1]!=='GET').length,0);
   // The card's one main button opens the review panel beside the charge table; it sends nothing.
-  click({visitReviewOpen:'account'});assert.equal(node('visit-billing-review').hidden,false);assert.match(node('visit-billing-review').innerHTML,/Check before it goes out/);assert.equal(sent.length,0,'opening the review sends nothing');
-   click({visitReviewClose:''});assert.equal(node('visit-billing-review').hidden,true,'the review closes again');
+  click({visitReviewOpen:'account'});assert.equal(node('visit-billing-review').hidden,false);assert.match(node('visit-billing-review').innerHTML,/claim-screen-footer/);assert.equal(sent.filter(c=>c[1]!=='GET').length,0,'opening the review sends nothing');
+   click({visitReviewClose:''});assert.equal(node('visit-billing-review').hidden,false,'the claim screen remains visible');
 
   // ---- One press sends a claim that is ready ----------------------------------------------
   // The card of the encounter on screen, holding a claim the server filled in and checked.
@@ -316,7 +330,7 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
     };
     ctx.billingStep.version=draftAccount.version;
     const pressed=readyButton({dataset:{visitClaimDirectSend:'claim'},disabled:false,textContent:'Send claim to Synthetic Medicare PPO',isConnected:true,hasAttribute:()=>false,closest:()=>null},shown);
-    for(const handler of handlers.click)handler({target:{closest:()=>pressed},preventDefault(){}});
+    for(const handler of handlers.click)handler({target:{closest:selector=>selector==='button'?pressed:null},preventDefault(){}});
     await settle();await ctx.pending;await settle();
     return pressed;
    };
@@ -351,7 +365,7 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
   assert.deepEqual(ctx.nativeReview,{id:'claim',accountId:'account',version:4},'native review sees the new ready version');
   assert.equal(sent.filter(c=>c[0].endsWith('/837p')||c[0].endsWith('/delivery')).length,0,'no claim was generated or queued');
   // The small review link still opens today's panel and sends nothing.
-  sent.length=0;click({visitReviewOpen:'account'});assert.equal(node('visit-billing-review').hidden,false);assert.equal(sent.length,0,'the review link sends nothing');
+  sent.length=0;click({visitReviewOpen:'account'});assert.equal(node('visit-billing-review').hidden,false);assert.equal(sent.filter(c=>c[1]!=='GET').length,0,'the review link sends nothing');
   click({visitReviewClose:''});
 
   // The presses above swapped the live account for the draft they sent from; the workspace goes
@@ -411,7 +425,8 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
   assert.equal(sent.filter(c=>c[0].endsWith('/837p')).length,0,'a claim that needs details is never submitted');
   assert.match(ctx.noticed||'',/needs details/,'the screen says the claim is not ready');
   assert.match(node('encounter-revenue-status').innerHTML,/Claim to Synthetic Medicare PPO needs details/,'the card shows the fix_claim state');
-  assert.match(node('encounter-revenue-status').innerHTML,/billing organization tax ID/,'with its issues listed');
+  assert.match(ctx.visitBillingMissingMarkup(fixAfter.claim.issues,fixAfter.claim.id,all),/billing organization tax ID/);
+  assert.doesNotMatch(node('encounter-revenue-status').innerHTML,/class="visit-billing-missing"/,'the bar leaves field-level guidance to the Claim screen');
   // A cancelled ask writes nothing at all.
   ctx.confirmAction=async()=>false;sent.length=0;
   click({visitPostAndSend:'account'});await ctx.pending;await settle();
@@ -434,12 +449,12 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
  openChart({chartSection:'profile'});assert.equal(chartOpen,'profile','"Edit patient details" opens the chart profile');
  openChart({chartSection:'insurance'});assert.equal(chartOpen,'insurance','"Edit insurance" opens the chart insurance');
  // The buttons the card actually emits carry exactly those hooks, so a real click dispatches here.
- const missingCard=card(visitSummary({state:'fix_claim',claim:{id:'claim',issues:[{code:'tax_id',missing:'billing organization tax ID'},{code:'patient_address',missing:'patient address'},{code:'subscriber_name',missing:'subscriber name'}]}}));
+ const missingCard=standaloneCard(visitSummary({state:'fix_claim',claim:{id:'claim',issues:[{code:'tax_id',missing:'billing organization tax ID'},{code:'patient_address',missing:'patient address'},{code:'subscriber_name',missing:'subscriber name'}]}}));
  assert.match(missingCard,/<button type="button" data-billing-organizations>Open practice billing setup<\/button>/);
  assert.match(missingCard,/<button type="button" data-chart-section="profile">Edit patient details<\/button>/);
  assert.match(missingCard,/<button type="button" data-chart-section="insurance">Edit insurance<\/button>/);
  // With canWrite off the claim-fix button is gone but the three setup buttons still point somewhere useful.
- const readOnly=card(visitSummary({state:'fix_claim',claim:{id:'claim',issues:[{code:'tax_id',missing:'billing organization tax ID'},{code:'patient_address',missing:'patient address'},{code:'subscriber_name',missing:'subscriber name'}]}}),{canCreate:false,canWrite:false,claimsAllowed:false});
+ const readOnly=standaloneCard(visitSummary({state:'fix_claim',claim:{id:'claim',issues:[{code:'tax_id',missing:'billing organization tax ID'},{code:'patient_address',missing:'patient address'},{code:'subscriber_name',missing:'subscriber name'}]}}),{canCreate:false,canWrite:false,claimsAllowed:false});
  assert.doesNotMatch(readOnly,/data-visit-claim-fix/,'read-only staff get no fix-claim button');
  assert.match(readOnly,/data-billing-organizations>Open practice billing setup/);assert.match(readOnly,/data-chart-section="profile">Edit patient details/);assert.match(readOnly,/data-chart-section="insurance">Edit insurance/);
  // With nothing missing there are no lines at all.
@@ -458,7 +473,10 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
  click({visitStatement:''});await ctx.pending;await settle();
  assert.equal(JSON.stringify(sent[0]),JSON.stringify(['/api/v1/patients/patient/billing/accounts/account/statement','POST',{}]),'no amount is typed or sent by the browser');
  assert.match(ctx.editor,/<h3>Invoice<\/h3>/);assert.match(ctx.editor,/\$42\.00 due as of Nov 21, 2026/);assert.match(ctx.editor,/data-print-patient-invoice>Print \/ save PDF/);assert.doesNotMatch(ctx.editor,/mailto:/,'no email on file, no email action');
- ctx.workspace.demographics.content.email='avery@example.test';ctx.showVisitStatement({id:'invoice',created_at:'2026-11-21T10:00:00Z',snapshot:{amount_due_cents:4200}});assert.match(ctx.editor,/href="mailto:avery%40example\.test\?subject=Your%20statement">Email the patient/);assert.doesNotMatch(ctx.editor.match(/mailto:[^"]*/)[0],/42|Nov|visit/i,'no amount or visit detail in the link');
+ ctx.workspace.demographics.content.email='avery@example.test';
+ reply=()=>({portal:true,items:[]});ctx.showVisitStatement({id:'invoice',created_at:'2026-11-21T10:00:00Z',snapshot:{amount_due_cents:4200}});
+ await settle();assert.match(node('statement-send-actions').innerHTML,/data-send-statement>Send statement/);
+ assert.doesNotMatch(ctx.editor,/mailto:/,'the statement is sent through its configured secure channel');
  reply=()=>({created:true,invoice:{id:'invoice',patient_id:'someone-else',account_id:'account',snapshot:{}}});ctx.editor='';click({visitStatement:''});await ctx.pending;assert.equal(ctx.editor,'','a statement for another patient is never shown');
  // An earlier statement opens from history only when it belongs to this encounter.
  reply=()=>({id:'invoice-old',patient_id:'patient',account_id:'account',created_at:'2026-11-01T10:00:00Z',snapshot:{amount_due_cents:900}});click({visitStatementOpen:'invoice-old'});await ctx.pending;assert.match(ctx.editor,/\$9\.00 due as of Nov 1, 2026/);
@@ -466,9 +484,14 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
 
  // History filters and the payments shortcut.
  reply=()=>visitSummary({timeline});await ctx.loadEncounterRevenueStatus(account,true);
+ const historyDocument=new JSDOM('<main><details id="visit-billing-history"></details></main>').window.document;
+ nodes['visit-billing-history']=historyDocument.getElementById('visit-billing-history');
+ ctx.document.createComment=text=>historyDocument.createComment(text);
+ ctx.sheetOpen=(label,content)=>{const dialog=historyDocument.createElement('dialog');dialog.append(content);historyDocument.body.append(dialog);return dialog;};
  click({visitHistory:'payments'});assert.equal(node('visit-billing-history').open,true);assert.equal((node('visit-billing-timeline').innerHTML.match(/<li /g)||[]).length,2);
  click({visitHistoryFilter:'all'});assert.equal((node('visit-billing-timeline').innerHTML.match(/<li /g)||[]).length,timeline.length);
 
+ delete ctx.sheetOpen;
  // A failed prepare says why and offers one way forward; asking again is explicit.
  node('encounter-revenue').dataset.revenueKey='';ctx.workspace.billing.accounts=[{...account,version:3}];sent.length=0;reply=(url)=>{if(url.endsWith('/claims/prepare'))throw new Error('The charges changed; open the encounter again');return visitSummary({state:'prepare_claim',claim:null,claim_count:0,account:{version:3}});};
  ctx.renderEncounterRevenue();await settle();status=node('encounter-revenue-status').innerHTML;
@@ -489,7 +512,7 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
  // Start payment plan is offered from the encounter More list only when charges are posted, the patient owes something and staff can create.
  {const column=(summary,context)=>ctx.visitBillingColumn(summary,context);
   const owes=visitSummary({account:{status:'posted'},patient:{owes_now_cents:4000,received_cents:0}});
-  assert.match(column(owes,{canCreate:true}),/<button type="button" data-start-payment-plan>Start payment plan<\/button>/);
+  assert.match(column(owes,{canCreate:true}),/<button type="button" class="text-button" data-start-payment-plan>Start payment plan<\/button>/);
   assert.doesNotMatch(column(owes,{canCreate:false}),/data-start-payment-plan/,'needs permission to create');
   assert.doesNotMatch(column(visitSummary({account:{status:'draft'},patient:{owes_now_cents:4000}}),{canCreate:true}),/data-start-payment-plan/,'needs posted charges');
   assert.doesNotMatch(column(visitSummary({account:{status:'posted'},patient:{owes_now_cents:0}}),{canCreate:true}),/data-start-payment-plan/,'needs an amount owed');}

@@ -137,12 +137,14 @@
 .charge-lines-title{margin:4px 0 8px}
 .charge-encounter-head label:has(select[name="visit_id"]),.charge-encounter-head label:has(input[readonly][value="USD"]){display:none}
 .charge-more-options{margin-top:10px}
+#billing-account-form:not([data-self-pay="true"]) [data-charge-insurance-detail]>summary{display:none}
+#billing-account-form[data-self-pay="true"] [data-charge-insurance-detail]{margin-block:8px}
+#billing-account-form [data-charge-pays]:empty{display:none}
 #encounter-revenue[data-invoice-tab="billing"] [data-charge-next]{display:none}
 
 /* The encounter form's own pieces. */
 .encounter-form-actions{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;margin:10px 0}
 .encounter-code-check{flex-basis:100%}
-.encounter-code-check ul{margin:4px 0 0;padding-left:18px}
 .charge-unit-note{display:block;color:var(--muted)}
 .charge-line-dates label{display:inline-grid;margin-right:8px}
 #encounter-revenue[data-invoice-tab="billing"]>#visit-billing-collect{order:4}
@@ -179,6 +181,101 @@
 .collect-done{display:grid;justify-items:center;text-align:center;gap:6px;padding:18px 0}
 .collect-done-mark{width:56px;height:56px;border-radius:50%;display:grid;place-items:center;font-size:28px;color:var(--success-text);background:var(--success-bg);border:2px solid var(--success-line);animation:collect-pop .35s cubic-bezier(.2,1.4,.4,1)}
 @keyframes collect-pop{from{transform:scale(.4);opacity:0}to{transform:none;opacity:1}}
+/* Appointment checkout stays focused on the selected visit. */
+.insurance-copay-summary{
+ display:flex;
+ flex-wrap:wrap;
+ align-items:center;
+ justify-content:space-between;
+ gap:8px 16px;
+}
+.insurance-copay-summary [data-insurance-copay-status]{
+ font-variant-numeric:tabular-nums;
+}
+.insurance-copay-summary [data-insurance-copay-collect]{
+ min-height:40px;
+}
+.sheet-dialog.appointment-copay-pos{
+ width:min(510px,calc(100vw - 24px));
+ max-height:calc(100dvh - 24px);
+ box-sizing:border-box;
+ overscroll-behavior:contain;
+}
+.appointment-copay-pos .sheet-head{
+ position:sticky;
+ top:0;
+ z-index:1;
+ padding:14px 20px;
+ border-bottom:1px solid var(--line);
+ background:var(--surface);
+}
+.appointment-copay-pos .sheet-body{padding:16px 20px 20px}
+.appointment-copay-pos [data-appointment-pos-context]{
+ display:grid;
+ grid-template-columns:minmax(0,1fr) auto;
+ align-items:center;
+ column-gap:14px;
+ row-gap:3px;
+ margin-bottom:18px;
+}
+.appointment-copay-pos [data-appointment-pos-name],
+.appointment-copay-pos [data-appointment-pos-date]{grid-column:1;margin:0;overflow-wrap:anywhere}
+.appointment-copay-pos [data-appointment-pos-name]{font-weight:650}
+.appointment-copay-pos [data-appointment-pos-date]{color:var(--muted)}
+.appointment-copay-pos [data-appointment-pos-amount]{
+ grid-column:2;
+ grid-row:1 / span 2;
+ text-align:right;
+ font-size:1.35rem;
+ font-weight:700;
+ font-variant-numeric:tabular-nums;
+}
+.appointment-copay-pos .collect-methods{
+ display:grid;
+ grid-template-columns:repeat(3,minmax(0,1fr));
+ gap:6px;
+ border:0;
+ overflow:visible;
+}
+.appointment-copay-pos [data-collect-method]{
+ min-width:0;
+ min-height:44px;
+ margin:0;
+ padding:7px 9px;
+ white-space:normal;
+ border:1px solid var(--line);
+ border-radius:6px;
+ background:var(--surface);
+ color:var(--ink);
+}
+.appointment-copay-pos [data-collect-method]:is(.active,[aria-pressed="true"]){
+ border-color:var(--blue);
+ background:var(--accent);
+ color:var(--ink);
+ box-shadow:inset 0 0 0 1px var(--blue);
+}
+.appointment-copay-pos [data-collect-holder] form{
+ width:100%;
+ max-width:none;
+ box-sizing:border-box;
+}
+.appointment-copay-pos [data-collect-holder] :is(input,select){
+ max-width:100%;
+ box-sizing:border-box;
+}
+.appointment-copay-pos [data-collect-holder] .collect-submit{
+ justify-self:stretch;
+ min-height:44px;
+}
+@media(max-width:520px){
+ .appointment-copay-pos .sheet-head{padding:12px 16px}
+ .appointment-copay-pos .sheet-body{padding:14px 16px 16px}
+ .appointment-copay-pos .collect-methods{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(forced-colors:active){
+ .appointment-copay-pos [data-collect-method]:is(.active,[aria-pressed="true"]){border:2px solid Highlight}
+}
+
 /* The reader's live steps. */
 .reader-payment .reader-amount{font-size:1.6rem;font-weight:700;margin:4px 0 10px}
 .reader-steps{list-style:none;display:grid;gap:10px;margin:0 0 12px;padding:0}
@@ -197,13 +294,14 @@
 
 .code-check-fix{border-left:3px solid var(--danger-line,var(--warning-line));padding:4px 10px;margin:6px 0}
 .code-check-review{border-left:3px solid var(--warning-line);padding:4px 10px;margin:6px 0}
-.code-check-fix ul,.code-check-review ul{margin:4px 0 0;padding-left:18px}
-.code-check-ok{color:var(--success-text)}
 
 .collect-target{display:grid;grid-template-columns:minmax(0,220px) 1fr auto;gap:12px;align-items:end;margin:0 0 12px}
 .collect-target input{font-size:1.2rem}
 .collect-taken{list-style:none;margin:0;padding:0;display:grid;gap:2px;color:var(--success-text);align-self:center}
 .collect-left{display:grid;justify-items:end;margin:0}
+.collect-sheet #visit-billing-collect .collect-target:not(:has(.collect-taken)) .collect-left{display:none}
+/* A single cash or check payment already has its editable tender amount below. */
+.collect-sheet:is([data-method="cash"],[data-method="check"]) #visit-billing-collect .collect-target:not([data-collect-split]):not(:has(.collect-taken)){display:none}
 .collect-left span{color:var(--muted);font-size:var(--fs-sm)}
 .collect-left b{font-size:1.4rem}
 .collect-step-done{padding:10px 12px;border-left:3px solid var(--success-line);background:var(--success-bg);border-radius:0}
@@ -282,9 +380,9 @@
 #encounter-revenue:not([data-invoice-tab="billing"])>.billing-parts{display:none}
 #encounter-revenue[data-invoice-tab="billing"][data-billing-part="codes"]>:is(#visit-billing-payments,#visit-billing-invoices,#visit-billing-collect,#encounter-copay-receipt,#encounter-claims){display:none}
 #encounter-revenue[data-invoice-tab="billing"][data-billing-part="codes"] #billing-account-form>:is([data-visit-charge-options],[data-encounter-provider],details.charge-more-options){display:none}
-#encounter-revenue[data-invoice-tab="billing"][data-billing-part="details"]>:is(#encounter-diagnoses,.section-head,#visit-billing-payments,#visit-billing-invoices,#visit-billing-collect,#encounter-copay-receipt,#encounter-claims,#encounter-billing-detail){display:none}
+#encounter-revenue[data-invoice-tab="billing"][data-billing-part="details"]>:is(#encounter-diagnoses,.section-head,#visit-billing-payments,#visit-billing-invoices,#visit-billing-collect,#encounter-copay-receipt,#encounter-claims){display:none}
 #encounter-revenue[data-invoice-tab="billing"][data-billing-part="details"] #billing-account-form>:is(.charge-lines-title,.charge-table-wrap,.charge-table-foot,.encounter-form-actions,[data-charge-prior-auth]){display:none}
-#encounter-revenue[data-invoice-tab="billing"]:is([data-billing-part="payments"],[data-billing-part="claim"])>:is(#encounter-diagnoses,.section-head,#encounter-billing-detail){display:none}
+#encounter-revenue[data-invoice-tab="billing"]:is([data-billing-part="payments"],[data-billing-part="claim"])>:is(#encounter-diagnoses,.section-head){display:none}
 #encounter-revenue[data-invoice-tab="billing"]:is([data-billing-part="payments"],[data-billing-part="claim"])>#encounter-billing-editor:has(#billing-account-form){display:none}
 #encounter-revenue[data-invoice-tab="billing"][data-billing-part="payments"]>#encounter-claims{display:none}
 #encounter-revenue[data-invoice-tab="billing"][data-billing-part="claim"]>:is(#visit-billing-payments,#visit-billing-invoices,#visit-billing-collect,#encounter-copay-receipt){display:none}
@@ -487,3 +585,213 @@ dialog.sheet-dialog:has(.payment-encounter-preview){width:min(760px,94vw);max-wi
 .diagnosis-suggest-list label input{flex:none;margin:0;align-self:center}
 .diagnosis-suggest-list .diagnosis-suggest-quote,.diagnosis-suggest-list small{padding-left:28px;font-size:.85em;color:var(--muted)}
 .diagnosis-suggest-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin-top:4px}
+
+/* One claim screen, using the frame's shared surfaces and accent. */
+.claim-screen{min-width:0;box-sizing:border-box;height:var(--claim-area-height,65dvh);overflow:auto;overscroll-behavior:contain;position:relative;display:flex;flex-direction:column;isolation:isolate}
+.claim-screen-columns{flex:1 0 auto;padding-bottom:var(--claim-footer-height,90px);display:grid;grid-template-columns:minmax(0,1fr);gap:20px;align-items:start}
+.claim-screen-cards{display:grid;gap:16px;min-width:0}
+.claim-card{min-width:0;padding:18px;border:1px solid var(--line);border-radius:6px;background:var(--surface);overflow-wrap:anywhere}
+.claim-card .section-head{margin:0 0 12px;align-items:center}
+.claim-card h3{font-size:var(--fs-body);margin:0}
+.claim-card.has-blocking{border-color:var(--warning-line)}
+.claim-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;margin:0}
+.claim-facts dt,.claim-screen th{font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:600}
+.claim-facts dd{margin:4px 0 0}
+.claim-insurance{display:flex;flex-wrap:wrap;gap:6px 16px;align-items:baseline;justify-content:space-between}
+.claim-insurance p{margin:0}
+.claim-problems{list-style:none;padding:0;margin:12px 0 0;display:grid;gap:8px;color:var(--warning-text);font-size:var(--fs-sm)}
+.claim-problems li{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 12px}
+.claim-problems button{font-size:inherit;padding:2px 6px;background:transparent;color:inherit}
+.claim-preview-switch{display:flex;gap:4px;margin-bottom:18px}
+.claim-preview-switch button{flex:1;background:transparent;border:1px solid var(--line);color:var(--muted)}
+.claim-preview-switch button[aria-pressed=true]{color:var(--blue);border-color:var(--blue);background:var(--accent)}
+.claim-preview .note-text{white-space:pre-wrap}
+.claim-preview [hidden]{display:none}
+.claim-screen-footer{position:sticky;bottom:0;flex:none;box-sizing:border-box;width:100%;z-index:12;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 18px;margin-top:18px;border:1px solid var(--line);border-radius:6px;background:var(--surface);box-shadow:var(--theme-shadow)}
+.claim-screen-footer>div{min-width:0}
+.claim-screen-footer p,.claim-screen-footer .actions{margin:0}
+.claim-screen-footer .visit-billing-review-progress{margin-top:10px}
+#encounter-revenue:not([data-invoice-tab="billing"]) .claim-screen,#encounter-revenue[data-invoice-tab="billing"]:not([data-billing-part="summary"]) .claim-screen{display:none}
+#encounter-revenue[data-invoice-tab="billing"][data-billing-part="summary"]>#encounter-codes-strip{display:none}
+@media(min-width:1000px){.claim-screen-columns{grid-template-columns:minmax(0,1fr)}.claim-preview{position:sticky;top:16px;max-height:calc(100vh - 120px);overflow:auto}}
+@media(max-width:600px){.claim-screen-footer{flex-wrap:wrap}.claim-screen-footer .actions{width:100%}.claim-screen-footer button{width:100%}}
+@media print{.claim-screen-footer,.claim-preview{position:static;max-height:none}}
+/* On this tab the footer owns sending; the shared bar remains useful on the other tabs. */
+#visit-page-host[data-encounter-tab="billing"]>#encounter-bar .visit-billing-status .actions,#visit-page-host[data-encounter-tab="billing"]>#encounter-bar>.encounter-bar-next{display:none}
+
+/* The encounter uses the existing content frame; only that frame may scroll. */
+#visit-page-host[data-encounter-steps]{display:flex;flex-direction:column;gap:12px;min-width:0;width:100%;align-items:stretch}
+#visit-page-host[data-encounter-steps]>*{order:initial;min-width:0}
+#visit-page-host[data-encounter-steps] #encounter-revenue:not([data-codes-editing]){display:contents}
+.encounter-step{display:block;width:100%;box-sizing:border-box;align-self:stretch;border:1px solid var(--line);border-radius:8px;background:var(--surface);min-width:0}
+.encounter-step[hidden]{display:none!important}
+.encounter-step-body{width:100%;box-sizing:border-box;padding:14px;min-width:0;height:auto;overflow:visible;overflow-anchor:none}
+.encounter-step-body>.panel{margin:0;border:0;padding:0}
+.encounter-step-chips{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:6px}
+.encounter-step-chips button{min-width:0;white-space:normal;border:1px solid var(--line);background:transparent;color:var(--ink);padding:8px}
+.encounter-step-chips [data-step-viewed=true]{outline:2px solid var(--ink);outline-offset:2px}
+.encounter-step-chips small{display:block;margin-top:4px;font-weight:normal}
+.encounter-step-chips [data-step-state=todo]{background:var(--surface-soft);color:var(--muted)}
+.encounter-step-chips [data-step-state=done]{background:var(--success-bg);border-color:var(--success-line);color:var(--success-text)}
+.encounter-step-chips [data-step-state=current]{background:var(--accent);border-color:var(--blue);box-shadow:0 0 8px color-mix(in srgb,var(--blue) 25%,transparent)}
+.encounter-step-chips [data-step-state=skipped]{background:var(--surface-soft);color:var(--muted)}
+#visit-page-host #encounter-progress:empty{display:none}
+.encounter-step-toolbar{display:flex;align-items:center;gap:10px}
+.encounter-step-toolbar .encounter-step-chips{flex:1;min-width:0}
+@media(max-width:600px){.encounter-step-toolbar{gap:4px}.encounter-step-toolbar .encounter-step-chips{flex:1 0 100%}}
+.encounter-step-instruction{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0}
+#visit-page-host[data-encounter-steps] .encounter-workspace-heading .section-head{align-items:center}
+#visit-page-host[data-encounter-steps] .encounter-selection{display:flex;align-items:center;gap:8px}
+#visit-page-host[data-encounter-steps] #encounter-revenue:not([data-codes-editing])>:is(.section-head,#visit-billing-history,.codes-editor-foot,.codes-editor-bar,.billing-parts,#encounter-codes-strip,#encounter-details-summary){display:none}
+#visit-page-host[data-encounter-steps] .visit-billing-card>.visit-billing-status{display:none}
+#visit-page-host[data-encounter-steps] .claim-screen-footer{position:static}
+#visit-page-host[data-encounter-steps] .claim-screen{max-height:none;overflow:visible}
+#visit-page-host[data-encounter-steps] .visit-billing-totals{display:flex;flex-wrap:wrap}
+@media(max-width:600px){.encounter-step-chips{gap:3px}.encounter-step-chips button{padding:8px 3px;font-size:var(--fs-sm)}.encounter-step-instruction{flex-wrap:wrap}}
+#visit-page-host[data-encounter-steps] [data-step-current-action]{display:none}
+label.claim-field-correction input{border-color:var(--warning-text);outline-offset:2px}
+label.claim-field-correction small#practice-npi-correction{color:var(--warning-text)}
+.encounter-codes-strip .encounter-code-needed{border-inline-start:3px solid var(--warning-line);padding-inline-start:8px;color:var(--warning-text)}
+#visit-page-host[data-encounter-steps] #encounter-revenue-status:has([data-visit-billing-state="add_charges"]){display:block}
+#visit-page-host[data-encounter-steps] #avs-release-form button.primary{background:var(--surface);color:var(--ink)}
+#visit-page-host[data-encounter-steps] .claim-screen{height:auto;display:block}
+#visit-page-host[data-encounter-steps] .visit-billing-totals>span{flex:1 1 120px}
+#visit-page-host[data-encounter-steps] [data-step-claim-actions] .visit-billing-status{display:flex}
+#visit-page-host[data-encounter-steps] [data-step-claim-actions] .visit-billing-status .eyebrow{display:none}
+#visit-page-host[data-encounter-steps] [data-step-billing-options] .visit-billing-status{display:flex}
+#visit-page-host[data-encounter-steps] [data-step-billing-options] .eyebrow{display:none}
+#visit-page-host[data-encounter-steps] [data-step-coding-actions] .eyebrow{display:none}
+#visit-page-host[data-encounter-steps] [data-step-service-details][data-inline="true"] .billing-account-detail>:is(.section-head,.billing-table-wrap,p:not(.note-text)){display:none}
+#visit-page-host[data-encounter-steps] #encounter-documentation #visit-billing-review:empty{display:none}
+
+/* The encounter fills the chart column; progress stays below the shared patient header. */
+#visit-page-host[data-encounter-steps]>:is(#encounter-progress,#encounter-stepper),
+#visit-page-host[data-encounter-steps] .encounter-workspace-heading,
+#visit-page-host[data-encounter-steps] #encounter-revenue-status,
+#visit-page-host[data-encounter-steps] .claim-screen{width:100%;min-width:0;box-sizing:border-box;align-self:stretch}
+#encounter-stepper{position:sticky;top:calc(var(--frame-top-height,58px) + var(--frame-banner-height,80px));z-index:19;background:var(--surface);margin:0;padding:8px 0 0;overflow-anchor:none}
+#visit-page-host[data-encounter-steps] .claim-screen-columns{padding-bottom:0}
+#visit-page-host[data-encounter-steps] .claim-preview{position:static;max-height:none;overflow:visible}
+@media(min-width:900px){#visit-page-host[data-encounter-steps] .claim-screen-columns{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:899px){#visit-page-host[data-encounter-steps] .claim-screen-columns{grid-template-columns:minmax(0,1fr)}}
+
+.frame-content:has(#visit-page-host[data-encounter-steps]),#app > main:has(#visit-page-host[data-encounter-steps]){overflow-anchor:none}
+[data-sign-price-row] td{white-space:normal;overflow-wrap:anywhere}
+
+.encounter-step[open]>summary>[data-step-view]{display:none}
+
+.encounter-timeline>li>button{display:grid;gap:2px;width:100%;min-width:0;padding:2px;text-align:left;border:0;background:transparent;color:inherit;font:inherit;white-space:normal}
+.encounter-timeline>li>button:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+/* The Visit keeps insurance, intake and documentation in a single live body. */
+#visit-page-host[data-encounter-steps]>#encounter-rooming-vitals{position:relative;margin:0;padding:8px 0;border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent}
+#visit-page-host[data-encounter-steps]>#encounter-rooming-vitals>.encounter-section-label{padding:0 7rem 6px 0;min-height:28px}
+#visit-page-host>#encounter-rooming-vitals .visit-rooming-vitals-grid{gap:0}
+#visit-page-host>#encounter-rooming-vitals details[data-rooming-vitals-review]{margin:0;border:0;padding:0}
+#visit-page-host>#encounter-rooming-vitals details[data-rooming-vitals-review]>summary{position:absolute;inset-block-start:8px;inset-inline-end:0;color:var(--blue);padding:2px 4px;text-decoration:underline}
+#visit-page-host>#encounter-rooming-vitals details[data-rooming-vitals-review][open]{padding-block:8px}
+.visit-section-label{font-size:var(--fs-sm);font-weight:600;margin:8px 0}
+.visit-rooming-vitals-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;align-items:start}
+#encounter-rooming-vitals .rooming-text-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+#encounter-rooming-vitals .rooming-review-check{display:flex;align-items:center;gap:8px;margin:0}
+#encounter-rooming-vitals .rooming-review-check input{width:auto;flex:none;margin:0}
+#encounter-rooming-vitals .vitals-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+#vitals-form .vitals-grid>div{min-width:0}
+#vitals-form input[aria-invalid="true"]{border-color:var(--error-line);outline:2px solid var(--error-text);outline-offset:1px}
+#vitals-form [data-vital-issue]:not([hidden]){display:block;margin-top:5px;color:var(--error-text);font-size:var(--fs-sm)}
+#encounter-rooming-vitals textarea{min-height:48px;height:48px;box-sizing:border-box}
+#encounter-rooming-vitals #visit-rooming h3{display:none}
+@media(max-width:700px){#encounter-rooming-vitals .vitals-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+#visit-page-host[data-encounter-steps] #claim-screen-footer .actions{display:flex}
+
+/* One card per section. The frame is the encounter's only scroll container. */
+.encounter-section-label{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:var(--fs-sm);font-weight:600;padding:10px 14px}
+#visit-page-host[data-encounter-steps] :is(.panel,.visit-billing-card,.claim-screen,.claim-card,.claim-preview,.checkout-handoff,.checkout-followups,.released-avs,.billing-section){border:0;box-shadow:none;background:transparent;border-radius:0}
+#visit-page-host[data-encounter-steps] :is(.claim-screen-header,.claim-screen-footer,.claim-screen-columns){position:static;height:auto;max-height:none;overflow:visible}
+#visit-page-host[data-encounter-steps] :is(.claim-screen-header h2,.checkout-workspace>.section-head,.encounter-claim-body>.visit-billing-card>.section-head,#encounter-documentation>.visit-section-label){display:none}
+#visit-page-host[data-encounter-steps] #visit-editor{padding:0;margin:0}
+#visit-page-host[data-encounter-steps] .encounter-step-chips button{padding:4px 8px;border:0;font-size:var(--fs-sm)}
+#visit-page-host[data-encounter-steps] [data-encounter-label]{scroll-margin-top:12px}
+.encounter-result{padding:12px 0;font-weight:600}
+
+#visit-page-host[data-encounter-steps] :is(.visit-billing-review,.visit-billing-status,.visit-billing-review-group,.claim-patient,.claim-insurance,.claim-services){border:0;box-shadow:none;border-radius:0;background:transparent}
+#visit-page-host[data-encounter-steps] :is(.visit-billing-card,.claim-screen-columns,.checkout-workspace){padding:0;margin:0}
+#visit-page-host[data-encounter-steps] .claim-screen-header h3{font-size:var(--fs-sm)}
+
+#visit-page-host[data-encounter-steps] :is(.claim-card,.encounter-step-body>.panel,#encounter-rooming-vitals .panel){padding:0}
+#visit-page-host[data-encounter-steps] :is(.claim-practice-problems,.diagnosis-suggest-line,.diagnosis-suggest-panel,.charge-encounter-head,.charge-prior-auth,.invoice-lines,.billing-account-detail,.billing-totals){border:0;border-radius:0;box-shadow:none;background:transparent}
+.claim-services-summary{display:flex;gap:6px;align-items:baseline;flex-wrap:wrap;margin:0}
+
+[data-signed-intake-warnings]{margin:3px 0 0;color:var(--muted);font-size:var(--fs-sm)}
+[data-encounter-claim-status]:not([hidden]){margin:12px 0 0;padding:10px 0;border-top:1px solid var(--line)}
+[data-encounter-claim-status] .claim-screen{margin:0;padding:0}
+#rooming-form :is([data-rooming-needed-fields],[data-rooming-completed-fields]){display:grid;gap:6px}
+#rooming-form [data-rooming-field="chief_complaint"]{margin:0}
+#rooming-form textarea[name="chief_complaint"]{field-sizing:content;width:100%;min-height:2.25rem;height:auto;max-height:10rem;resize:vertical}
+#rooming-form .actions:has(>button):not(:has(>button:not([hidden]))){display:none}
+#rooming-form .rooming-review-check{min-height:28px}
+#rooming-form [data-rooming-needed]{border-inline-start:3px solid var(--warning-line);padding-inline-start:8px}
+#rooming-form .rooming-needed-label{display:inline-block;margin-inline-start:4px;padding:1px 6px;border:1px solid var(--warning-line);border-radius:4px;background:var(--warning-bg);color:var(--warning-text);font-size:var(--fs-xs);font-weight:700}
+@media(forced-colors:active){#rooming-form [data-rooming-needed],#rooming-form .rooming-needed-label{border-color:CanvasText}#rooming-form .rooming-needed-label{background:Canvas;color:CanvasText}}
+#rooming-form [hidden]{display:none}
+#rooming-form [data-rooming-review],.visit-vitals[data-rooming-vitals-review]{margin-top:8px}
+.visit-vitals[data-rooming-vitals-review]>summary{cursor:pointer;font-weight:600}
+#rooming-form .rooming-links{display:flex;gap:12px;align-items:center}
+#rooming-form .rooming-links button{padding:4px 0}
+#rooming-form .rooming-details-dialog{margin:auto}
+#rooming-form .rooming-details-dialog [data-rooming-completed-fields]{margin-bottom:12px}
+/* On phones the patient and encounter tabs stay in reach while the action prompt
+   scrolls with the visit. The full chart selector is available above those tabs. */
+@media(max-width:600px){
+ #chart.frame-encounter-open>.chart-context{position:static}
+ #chart.frame-encounter-open #encounter-stepper:not([hidden]){display:contents}
+ #chart.frame-encounter-open .encounter-step-toolbar{
+  position:sticky;top:calc(var(--frame-top-height,58px) + var(--frame-banner-height,80px));
+  z-index:19;background:var(--surface);padding-block:4px
+ }
+ #app>main:has(#chart.frame-encounter-open #encounter-stepper:not([hidden])){
+  scroll-padding-block-start:min(60dvh,calc(var(--frame-top-height,58px) + var(--frame-banner-height,80px) + 3rem))
+ }
+}
+.encounter-step-instruction[hidden]{display:none}
+#signed-note-record{margin-block:12px}
+#signed-note-record>summary{font-weight:600;cursor:pointer}
+#signed-note-record[open]>summary{margin-bottom:10px}
+[data-encounter-codes-heading]{margin:20px 0 6px}
+[data-encounter-codes-summary].encounter-codes-strip{grid-template-columns:repeat(2,minmax(0,1fr));margin:0}
+[data-previous-procedure-choices][hidden]{display:none}
+[data-encounter-codes-summary][hidden],[data-encounter-codes-heading][hidden]{display:none}
+dialog.encounter-codes-dialog{width:min(1120px,calc(100vw - 32px));max-height:calc(100dvh - 36px);overflow:hidden}
+dialog.encounter-codes-dialog[open]{display:flex;flex-direction:column}
+.encounter-codes-dialog .sheet-head,.encounter-codes-footer{flex:none;padding:12px 18px}
+.encounter-codes-dialog #billing-account-form[data-mode="draft"]>h3:first-child{display:none}
+.encounter-codes-dialog .sheet-head h2{font-size:var(--fs-lg);margin:0}
+.encounter-codes-dialog .sheet-body{min-height:0;overflow:auto;overscroll-behavior:contain}
+.encounter-codes-footer{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:12px;border-top:1px solid var(--line)}
+.encounter-codes-footer [role=status]{margin-inline-end:auto}
+.frame-content:has(dialog.encounter-codes-dialog[open]){overflow-y:hidden;scrollbar-gutter:stable}
+@media(max-width:640px){dialog.encounter-codes-dialog{width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}}
+@media(max-width:640px){[data-encounter-codes-summary].encounter-codes-strip{grid-template-columns:1fr}}
+[data-step-payment]{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+[data-step-payment]>p{margin:0}
+
+.signed-claim-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.signed-claim-summary .actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.signed-claim-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:12px;margin-top:0}
+.signed-claim-field dt{font-weight:650}.signed-claim-field dd{margin:3px 0}
+.signed-claim-issue{margin:6px 0;color:var(--ink);padding-inline-start:8px;border-inline-start:3px solid var(--warning-line)}
+.signed-claim-issue button{margin:4px}
+
+#visit-followup-dialog{width:min(48rem,calc(100% - 2rem));max-height:85dvh;padding:0}
+#visit-followup-dialog .checkout-workspace{padding:0;border:0;box-shadow:none}
+#visit-followup-dialog [data-checkout-tabs]{display:flex;flex-flow:row wrap;gap:.4rem;margin-bottom:1rem}
+#visit-followup-dialog [data-checkout-tab][aria-pressed=true]{color:var(--accent);border-color:var(--accent)}
+#visit-followup-dialog [data-checkout-pane]{border:0;padding:0;margin:0}
+#visit-followup-dialog [data-checkout-pane][hidden]{display:none}
+[data-step-followup]>[data-open-visit-followup]{margin:.45rem 0}
+
+/* Patient collection amounts belong in Payment. Keep the service total beside the codes. */
+.encounter-codes-dialog .charge-lines-totals :is([data-charge-copay],[data-charge-pays]){display:none}
+
+dialog[data-encounter-codes-dialog] #visit-diagnoses-form button[type="submit"],
+dialog[data-encounter-codes-dialog] #visit-diagnoses > [data-diagnosis-refresh]:not([data-diagnosis-recovery]){display:none}

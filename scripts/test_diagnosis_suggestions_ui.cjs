@@ -92,7 +92,7 @@ const ready=(extra={})=>({request_id:'r1',status:'ready',position:null,suggestio
  assert.match(f.view(),/Type 2 diabetes &lt;b&gt;without&lt;\/b&gt; complications/);assert.doesNotMatch(f.view(),/<b>|<i>/);
  assert.match(f.view(),/“stable on &lt;i&gt;metformin&lt;\/i&gt;”/);
  assert.match(f.view(),/No matching sentence found in the note/);
- assert.match(f.view(),/Suggestions come from SunCharts AI and are read from the saved note\. Check each one against the note\./);assert.match(f.view(),/Read from the saved note\. Tick what applies; nothing is added until you choose\./);assert.match(f.view(),/<h4>Diagnoses<\/h4><p class="muted">Added to this encounter’s diagnoses<\/p>/);assert.match(f.view(),/Suggest again/);assert.doesNotMatch(f.view(),/Procedures/);
+ assert.match(f.view(),/Suggestions come from SunCharts AI and are read from the saved note\. Check each one against the note\./);assert.match(f.view(),/Read from the saved note\. Tick what applies; nothing is added until you choose\./);assert.match(f.view(),/<h4>Diagnoses<\/h4><p class="muted">Select diagnoses for the encounter<\/p>/);assert.match(f.view(),/Suggest again/);assert.doesNotMatch(f.view(),/Procedures/);
  assert.match(f.view(),/Add selected/);assert.match(f.view(),/Dismiss/);
  console.log('PASS ready suggestions appear in place, unchecked, with escaped text and quoted or missing evidence');
 
@@ -154,7 +154,7 @@ const ready=(extra={})=>({request_id:'r1',status:'ready',position:null,suggestio
   {code:'J0585',description:'Injection, onabotulinumtoxinA, 1 unit',system:'HCPCS',source:'practice',evidence:'toxin 155 units injected',evidence_found:true,quantity:155,quantity_unit:'units',default_units:1,modifiers:null,catalog_release_id:'hc1'}],
   procedures_unmatched:[{service:'Office visit',evidence:'Office visit today',reason:'level'},{service:'Ice <b>pack</b>',evidence:'ice pack applied',reason:'none'}],...extra});
  f=fixture();f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']=withProcedures();await f.mount();await f.review();
- assert.match(f.view(),/<h4>Diagnoses<\/h4>/);assert.match(f.view(),/<h4>Procedures<\/h4><p class="muted">Added to the charges<\/p>/);
+ assert.match(f.view(),/<h4>Diagnoses<\/h4>/);assert.match(f.view(),/<h4>Procedures<\/h4><p class="muted">Select procedures for the charge draft<\/p>/);
  assert.equal((f.view().match(/data-diagnosis-suggest-pick-procedure="\d"/g)||[]).length,2);assert.equal((f.view().match(/type="checkbox"/g)||[]).length,5);
  assert.doesNotMatch(f.view(),/data-diagnosis-suggest-pick-procedure="\d" checked/);
  assert.match(f.view(),/<span class="codes-strip-code">64616<\/span> Synthetic neck &lt;b&gt;injection&lt;\/b&gt;/);assert.doesNotMatch(f.view(),/<b>injection/);
@@ -202,7 +202,7 @@ const ready=(extra={})=>({request_id:'r1',status:'ready',position:null,suggestio
  console.log('PASS a procedure already on the charges is shown disabled and is not added again; the helper is safe without the form');
 
  // Procedures only, and the level message alone, still show.
- f=fixture();f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']=withProcedures({suggestions:[],unmatched:[]});await f.mount();await f.review();assert.doesNotMatch(f.view(),/<h4>Diagnoses/);assert.match(f.view(),/<h4>Procedures<\/h4><p class="muted">Added to the charges<\/p>/);assert.doesNotMatch(f.view(),/No codes found in the note/);
+ f=fixture();f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']=withProcedures({suggestions:[],unmatched:[]});await f.mount();await f.review();assert.doesNotMatch(f.view(),/<h4>Diagnoses/);assert.match(f.view(),/<h4>Procedures<\/h4><p class="muted">Select procedures for the charge draft<\/p>/);assert.doesNotMatch(f.view(),/No codes found in the note/);
  f=fixture();f.replies['GET /api/v1/visits/v1/diagnosis-suggestions']=ready({suggestions:[],procedures:[],procedures_unmatched:[{service:'Office visit',evidence:null,reason:'level'}]});await f.mount();await f.review();
  assert.match(f.view(),/No codes found in the note\./);assert.match(f.view(),/Office visit: choose the encounter level yourself\./);assert.doesNotMatch(f.view(),/No code found for/);
  console.log('PASS procedures alone, and a visit left to the clinician alone, are shown');
@@ -220,7 +220,7 @@ const ready=(extra={})=>({request_id:'r1',status:'ready',position:null,suggestio
  assert.match(f.host.suggest,/3 diagnoses and 2 procedures suggested/);assert.match(f.host.suggest,/data-diagnosis-suggest-review>Review and add</);assert.doesNotMatch(f.host.suggest,/type="checkbox"|diagnosis-suggest-list|<h4>/);assert.equal(f.sheets.length,0);
  const noteReview=()=>{const button={dataset:{},hasAttribute:n=>n==='data-note-suggest-review',getAttribute:()=>null};for(const handler of f.handlers.click)handler({target:{closest:()=>button},preventDefault(){}});return f.flush();};
  await noteReview();assert.equal(f.sheets.length,1);assert.equal(f.sheets[0].title,'Suggested codes');assert.equal(f.sheets[0].cls,'sheet-wide');
- assert.match(f.sheets[0].html,/^<div data-diagnosis-suggest /);assert.match(f.sheets[0].html,/<h4>Procedures<\/h4>/);assert.match(f.sheets[0].html,/Added to the charges/);
+ assert.match(f.sheets[0].html,/^<div data-diagnosis-suggest /);assert.match(f.sheets[0].html,/<h4>Procedures<\/h4>/);assert.match(f.sheets[0].html,/Select procedures for the charge draft/);
  assert.match(f.sheets[0].html,/data-diagnosis-suggest-add>Add selected</);
  // Review again, or a change while it is open, repaints the same sheet instead of opening another.
  await noteReview();assert.equal(f.sheets.length,1);

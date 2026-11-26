@@ -97,6 +97,9 @@ jobs:
         env:
           PYTHON_TESTS: ${{ needs.plan.outputs.python_tests }}
         run: python3 -m unittest $PYTHON_TESTS
+      - name: Install browser test dependencies
+        if: needs.plan.outputs.ui_tests != ''
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Run selected UI fixtures
         if: needs.plan.outputs.ui_tests != ''
         env:

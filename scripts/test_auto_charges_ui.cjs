@@ -1,14 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
-// Charges filled in from the last visit. Opening the Charges step of an encounter that is still in
-// progress and has no charge account puts the patient's most recent earlier services on the live
-// table at this encounter's practice prices, with this encounter's diagnoses — no button pressed, no
-// amount copied from the old visit, and nothing that ever has to be typed again.
-//
-// No npm packages: the rows are markup strings, parsed into the same small hand-written element
-// stubs the other charge UI scripts use, with web/billing.js, web/fees.js and web/visit-billing.js
-// loaded into a node vm and driven through the handlers they install on the document. Every value
-// below is synthetic.
+// Previous procedures are offered one at a time and only enter the current draft
+// after the user selects them. Exercise the real charge editor with synthetic data.
 
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 
@@ -80,7 +73,7 @@ function makeNode(tag){
   set:(map,key,value)=>{map[key]=String(value);node.attrs['data-'+dashed(String(key))]=String(value);return true;},
   has:(map,key)=>key in map||('data-'+dashed(String(key))) in node.attrs,
   deleteProperty:(map,key)=>{delete map[key];delete node.attrs['data-'+dashed(String(key))];return true;},
-  ownKeys:map=>Object.keys(map),getOwnPropertyDescriptor:()=>({enumerable:true,configurable:true})});
+  ownKeys:map=>Object.keys(map),getOwnPropertyDescriptor:(map,key)=>Object.hasOwn(map,key)||Object.hasOwn(node.attrs,'data-'+dashed(String(key)))?{enumerable:true,configurable:true}:undefined});
  Object.defineProperty(node,'value',{get:()=>node._value,set:v=>{node._value=String(v);}});
  Object.defineProperty(node,'textContent',{
   get(){if(tag==='select'&&!node._text){const option=node.children[node.selectSelected??0];return option?option.textContent:'';}
@@ -298,9 +291,8 @@ const ctx={console,setTimeout:vmSetTimeout,clearTimeout:vmClearTimeout,Date,Intl
  payerName:()=>'Synthetic payer',$:id=>documentStub.getElementById(id),
  visitBillingDate:v=>new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}).format(new Date(`${v}T00:00:00`)),
  displayDate:v=>String(v),revenueCoverage:()=>null,revenueServiceDate:()=>'2026-11-13',accountDiagnosisSummary:()=>'',billingChargeDraftRecovery:()=>'',accountDiagnosisDraftRecovery:()=>'',
- notice(message){ctx.noticed=message;},run:fn=>fn(),showChartSection(){},setEncounterSection(){},billingCoverageOrderMarkup:()=>'',visitPlanCopayCents:()=>null,
+ notice(message){ctx.noticed=message;},run:fn=>fn(),showVisitNoteMessage(message){throw new Error(message);},showChartSection(){},setEncounterSection(){},billingCoverageOrderMarkup:()=>'',visitPlanCopayCents:()=>null,
  api:async(url,method='GET',body,version)=>{
-   if(url.startsWith('/__trace?')){console.log('REMEMBER\n'+decodeURIComponent(new URL(url,'http://x').searchParams.get('x')));return {};}
   if(url.includes('/fee-quote'))feeSent.push(...codesIn(url));
   sent.push({url,method,body,version});
   if(url.includes('/fee-context'))await settle();
@@ -312,6 +304,7 @@ vm.runInContext(fs.readFileSync('web/billing.js','utf8'),context);
 vm.runInContext(fs.readFileSync('web/fees.js','utf8'),context);
 vm.runInContext(fs.readFileSync('web/visit-billing.js','utf8'),context);
 vm.runInContext(fs.readFileSync('web/patient-revenue.js','utf8'),context);
+vm.runInContext(fs.readFileSync('web/visit-note.js','utf8'),context);
 // Card collection is another screen's work; the panel is left out of this encounter's card here.
 vm.runInContext('hostedCopayPanel=()=>"";loadHostedCopays=async()=>null;encounterRevenueState={patient:null,identity:null,account:null,pending:null,data:null,loadedAt:0};',ctx);
 
@@ -321,8 +314,6 @@ const rowsNow=liveRows;
 const liveRow=code=>liveRows().find(row=>row.querySelector('[name="code"]')?.value===code);
 const codes=()=>rowsNow().map(row=>row.querySelector('[name="code"]').value);
 const amountOf=row=>row.querySelector('[name="amount"]').value;
-const why=()=>({card:$('encounter-revenue-status')?.innerHTML.replace(/<[^>]*>/g,' ').slice(0,220),propose:vm.runInContext('JSON.stringify(chargeProposeCard())',ctx),ctx:vm.runInContext('JSON.stringify(chargeProposeContext(activeVisit))',ctx),choice:vm.runInContext('chargeProposalChoice(activeVisit.id)',ctx)});
-const noteOf=row=>row.querySelector('[data-charge-note-cell]')?.textContent.trim()??'(no cell)';
 // A new browser tab, made by hand: every panel the billing page can fill is put back empty, and
 // nothing remembered about an encounter carries into the next opening of it.
 const freshTab=()=>{
@@ -337,13 +328,11 @@ const advance=async()=>{
  for(let pass=0;pass<4;pass++){
   const form=openForm();
   if(!form?.chargeSaveTimer)break;
-  for(const row of form.querySelectorAll('.billing-charge-row'))delete row.dataset.chargeRemoved;
   vmClearTimeout(form.chargeSaveTimer);form.chargeSaveTimer=null;
-  await vm.runInContext('saveChargeTable($("billing-account-form"))',ctx).catch(e=>{console.error('save failed',e);});
+  await vm.runInContext('saveChargeTable($("billing-account-form"))',ctx);
   await settle();
  }
 };
-const openCharges=async()=>{await vm.runInContext('openEncounterCharges()',ctx);await settle();return openForm();};
 const setVisit=(id,status='in_progress')=>{ctx.activeVisit={...visits.find(v=>v.id===id),status};};
 const summaryFor=(accounts,id,status)=>{
  const account=accounts.find(a=>a.status!=='void'&&a.content.visit_id===id);
@@ -363,248 +352,91 @@ const reset=(accounts,{id='visit-current',status='in_progress'}={})=>{
  summaryFor(ctx.workspace.billing.accounts,id,status);
  setVisit(id,status);
 };
-// The encounter's Charges step, opened the way the practice opens it. The contract, in one place:
-//
-//   1. Opening the step draws it with renderEncounterRevenue() and presses nothing. The page builds
-//      the charge table itself in exactly one case: the encounter has no charge account and there are
-//      charges to fill in from an earlier visit. So the form returned is that filled-in table, or
-//      nothing at all — and "nothing" is the honest starting point every other case is measured
-//      from, since a table the practice has not been offered yet is not on screen.
-//   2. An encounter that already has charges of its own is opened the way staff open it, by the card's
-//      own button. That is pressCardCharges() below, which is only ever called for such an encounter and
-//      says so out loud if it is asked to open an encounter with nothing to open.
-//
-// The step is drawn, never both drawn and pressed: pressing the card here would build the very
-// table the fill-in is being asked about, and the test would pass for the wrong reason.
 const openStep=async(visitId='visit-current',status='in_progress')=>{
  closeStep();openStepFor(visitId);setVisit(visitId,status);
  $('encounter-revenue').dataset.revenueKey='';
  vm.runInContext('renderEncounterRevenue()',ctx);await settle();
  return $('billing-account-form')||null;
 };
-// 2. The card's own button for an encounter whose charges already exist, pressed through the live
-// handler just as a person's click would be.
-const pressCardCharges=async()=>{
- const card=$('encounter-revenue-status');
- const button=card?.querySelector('.visit-billing-status .actions button.primary[data-encounter-charges]')||card?.querySelector('[data-encounter-charges]');
- if(!button)throw new Error('the billing card offers no way to open these charges');
- click(button);await settle();
- return $('billing-account-form')||null;
-};
+
+async function mountPriorChoices(){
+ const wrapper=openHost('<details data-previous-procedure-choices hidden><summary>Use procedures from the previous encounter</summary><div id="note-previous-procedures"></div></details>').children[0];
+ await vm.runInContext('visitNoteInlineMount()',ctx);
+ return wrapper;
+}
+const billingWrites=()=>sent.filter(call=>call.url.includes('/billing/accounts')&&['PUT','POST'].includes(call.method));
+async function pickPrior(wrapper,index){
+ const button=wrapper.querySelector(`[data-note-previous-procedure="${index}"]`);
+ assert.ok(button,'the previous procedure is selectable');
+ click(button);
+ await vm.runInContext('visitNoteSaveQueue',ctx);
+ await settle();
+ assert.ok(button.disabled,'the selected previous procedure cannot be added twice');
+}
 
 (async()=>{
- // ---- 1. the table fills itself in from the most recent earlier visit -------------------
- reset([earlierAccount,emptyAccount]);
- let form=await openStep();
- assert.ok(form,'opening an empty visit\u2019s charges step gives a charge table');
- assert.equal(JSON.stringify(codes()),'["99213","J9270"]','the services from the earlier visit are on the table at once');
- assert.match(form.outerHTML,/Filled in from the encounter on Oct 18, 2026\. Change anything you like\./,'one quiet line says where the lines came from');
- assert.ok(form.querySelector('[data-charge-proposal-blank]'),'and the line offers a way to start blank instead');
- // Amounts come from this encounter's practice prices, never from the old visit's amounts.
- const first=liveRow('99213'),second=liveRow('J9270');
- assert.ok(first&&second,'the two carried lines are on the table in front of the practice');
- assert.equal(amountOf(first),'160.00','the amount is the practice price for this encounter');
- assert.equal(first.querySelector('[data-fee-line]').dataset.feeSchedule,practicePriceHost.id,'the line is linked to the practice price list');
- assert.ok(!first.outerHTML.includes('schedule-old'),'the earlier visit\u2019s price link does not come across');
- assert.ok(!first.outerHTML.includes('150.00'),'the amount the old visit was billed at is not carried over');
- // The service detail travels; the old visit's diagnoses do not.
- assert.equal(second.querySelector('[name="modifiers"]').value,'LT','modifiers carry over as they were done');
- assert.equal(second.querySelector('[name="units"]').value,'2','units carry over as they were done');
- assert.equal(second.querySelector('[name="ndc_code"]').value,'00023114501','the drug\u2019s NDC code carries over');
- assert.equal(second.querySelector('[name="ndc_quantity"]').value,'50','the amount given carries over for checking');
- assert.equal(second.querySelector('[name="ndc_unit"]').value,'UN','the drug unit carries over');
- assert.match(second.outerHTML,/<div class="charge-drug">/,'a drug line is open so its detail is not hidden');
- // No price list entry: the amount stays empty and the row says what it needs, in plain words.
- assert.equal(amountOf(second),'','a code the price list does not cover is left with no amount');
- assert.match(noteOf(second),/Enter the amount/,'and the row says what it still needs');
- // Diagnoses always come from this encounter, never from the earlier one.
- assert.ok(sent.some(call=>call.url.includes('/visits/visit-current/diagnoses')),'this encounter\u2019s diagnoses are read for the lines');
- assert.equal(JSON.stringify(liveRow('99213').querySelectorAll('[data-charge-diagnosis]').map(box=>box.dataset.chargeDiagnosis).sort()),'["J10.0","M62.81"]','this encounter\u2019s diagnoses are offered on the line');
- assert.ok(!form.outerHTML.includes('Z00.00'),'the earlier visit\u2019s diagnoses never come across');
- // The carried-over drug amount is flagged for a look: a note on the row, not a wall between the
- // practice and the table. The row keeps whatever its own line still needs to be complete.
- assert.match(noteOf(second),/Check the amount given/,'a carried-over drug amount is flagged for a check');
- assert.equal(second.querySelector('[data-charge-problem]').textContent,'Add the amount for this line.','the note is not the thing holding the line open');
- type(second.querySelector('[name="diagnoses"]'),'M62.81');
- type(second.querySelector('[name="amount"]'),'9.00');
- assert.equal(second.getAttribute('data-charge-problem')||'','','the amount the practice typed settles the line');
- assert.equal(second.querySelector('[data-charge-problem]').textContent,'','the row has nothing left to answer for');
- // The rows are the live table's own rows, so the autosave that already exists makes the draft.
- assert.equal(form.dataset.autosave,'on','the filled-in table still saves itself');
- type(first.querySelector('[name="diagnoses"]'),'J10.0');
+ const recent=account('wrong-patient',visitOther.id,'2026-11-12',[{...lineOffice,code:'99214'}]);
+ const imported=account('imported',visits[1].id,'2026-11-11',[{...lineOffice,code:'99215'}],'posted',{source_history_id:'source-1'});
+ const voided=account('voided',visits[1].id,'2026-11-10',[{...lineOffice,code:'99212'}],'void');
+ const future=account('future',visits[1].id,'2026-11-18',[{...lineOffice,code:'99211'}]);
+ const older=account('old',visits[2].id,'2026-10-04',[{...lineOffice,code:'20610'}]);
+ reset([recent,imported,voided,future,older,earlierAccount,emptyAccount]);
+ let form=await openStep(),choices=await mountPriorChoices();
+ assert.ok(form);
+ assert.equal(choices.hidden,false);
+ assert.deepEqual(codes(),[''],'opening the encounter leaves its draft empty');
+ assert.equal(billingWrites().length,0);
+ assert.deepEqual(choices.querySelectorAll('[data-note-previous-procedure]').map(button=>button.textContent),['+ 99213 × 1','+ J9270 · LT × 2']);
+ await pickPrior(choices,0);
+ assert.deepEqual(codes(),['99213'],'only the selected procedure enters the draft');
+ const office=liveRow('99213');
+ assert.equal(amountOf(office),'160.00','price comes from the current practice fee schedule');
+ assert.equal(office.querySelector('[data-fee-line]').dataset.feeSchedule,practicePriceHost.id);
+ assert.ok(!office.outerHTML.includes('schedule-old'));
+ await pickPrior(choices,1);
+ const drug=liveRow('J9270');
+ assert.equal(amountOf(drug),'','a missing current price must be entered');
+ for(const [field,value] of Object.entries({modifiers:'LT',units:'2',ndc_code:'00023114501',ndc_quantity:'50',ndc_unit:'UN'})){
+  assert.equal(drug.querySelector(`[name="${field}"]`).value,value,field);
+ }
+ assert.deepEqual(office.querySelectorAll('[data-charge-diagnosis]').map(box=>box.dataset.chargeDiagnosis).sort(),['J10.0','M62.81']);
+ assert.ok(!form.outerHTML.includes('Z00.00'),'prior diagnoses do not come with a procedure');
+ type(office.querySelector('[name="diagnoses"]'),'J10.0');
+ type(drug.querySelector('[name="diagnoses"]'),'M62.81');
+ type(drug.querySelector('[name="amount"]'),'9.00');
  await advance();
- const posted=sent.find(call=>call.method==='POST');
- assert.ok(posted,'nothing had to be pressed for the lines to be saved');
- assert.equal(posted.url,'/api/v1/patients/patient/billing/accounts');
- // The saved draft is read by code, so a redraw of the table can never make a line about the
- // practice's own edits come out as a line about the fill-in.
- const saved=code=>posted.body.content.lines.find(l=>l.code===code);
- assert.equal(JSON.stringify(posted.body.content.lines.map(l=>l.code).sort()),'["99213","J9270"]');
- assert.equal(saved('99213').amount_cents,16000,'the draft is saved at the practice price');
- assert.equal(JSON.stringify(saved('99213').diagnosis_codes),'["J10.0"]','the diagnoses saved are this encounter\u2019s');
- assert.equal(JSON.stringify(saved('J9270').diagnosis_codes),'["M62.81"]','and on every line, never the earlier visit\u2019s');
- assert.equal(saved('J9270').amount_cents,900,'an amount the practice typed is saved as typed');
- assert.equal(saved('J9270').ndc_quantity,'50','the drug detail saves with the line');
- assert.ok(!JSON.stringify(posted.body).includes('filled-in-earlier-visit'),'the filled-in mark stays in the browser');
+ const write=billingWrites().at(-1);
+ assert.ok(write,'accepted lines with required fields save through the normal charge editor');
+ assert.equal(write.body.content.visit_id,'visit-current');
+ const [savedOffice,savedDrug]=write.body.content.lines;
+ assert.equal(savedOffice.code,'99213');
+ assert.equal(savedOffice.amount_cents,16000);
+ assert.deepEqual(Array.from(savedOffice.diagnosis_codes),['J10.0']);
+ assert.equal(savedDrug.code,'J9270');
+ assert.equal(savedDrug.amount_cents,900);
+ assert.deepEqual(Array.from(savedDrug.diagnosis_codes),['M62.81']);
+ assert.equal(savedDrug.ndc_quantity,'50');
+ assert.ok(!JSON.stringify(write.body.content).includes('schedule-old'));
 
- // ---- 2. which visit counts as the earlier one -----------------------------------------
- // An encounter that already has charges of its own is shown as they are, never filled in again. It is
- // opened the way staff open it — by the card's own button — because opening the step alone leaves
- // the table shut, as it does for every visit that is not being filled in.
- reset([earlierAccount,emptyAccount,currentDraft]);
- await openStep();
- assert.equal(JSON.stringify(codes()),'["99213"]','the Billing tab shows a visit\u2019s own charges in place, never filled in again');
- form=await pressCardCharges();
- assert.equal(JSON.stringify(codes()),'["99213"]','the encounter\u2019s own draft charges are shown unchanged');
- assert.ok(!form.outerHTML.includes('Filled in from the encounter'),'a visit with charges of its own is offered nothing');
- // An encounter whose only other accounts have no lines has nothing to be filled in from.
- reset([emptyAccount]);
- form=await openStep();
- assert.ok(!form||!codes().some(Boolean),'with no earlier charges the step still waits for its Add charges button');
- // The most recent earlier visit wins, not the oldest.
- reset([account('account-old','visit-old','2026-08-02',[{code_system:'CPT',code:'20610',description:'Older injection',units:1,amount_cents:9000,diagnosis_codes:[]}]),earlierAccount]);
- form=await openStep();
- assert.equal(JSON.stringify(codes()),'["99213","J9270"]','the most recent earlier visit is the one filled in from');
- // An account already holding this encounter's charges is not a source, nor is a voided one.
- reset([account('account-current-2','visit-current','2026-11-13',[{...lineOffice}]),account('account-void','visit-void','2026-10-18',[{...lineDrug}],'void')]);
- form=await openStep();
- assert.equal(JSON.stringify(codes()),'["99213"]','an account for this encounter shows its own lines; it and a voided one are nothing to fill in from');
- // A charge record from the previous system is not the practice's own charge history.
- reset([account('account-source','visit-source','2026-10-18',[{...lineOffice}],'posted',{source_history_id:'source-1'})]);
- form=await openStep();
- assert.ok(!form||!codes().some(Boolean),'a record from the previous system is never filled in from');
- // Only this patient's chart is ever read.
- reset([earlierAccount]);
- ctx.workspace.billing.accounts=[...ctx.workspace.billing.accounts,{id:'account-other',version:2,status:'posted',content:{visit_id:'visit-other-patient',service_date:'2026-11-12',currency:'USD',notes:'',lines:[{code_system:'CPT',code:'99214',description:'Someone else\u2019s visit',units:1,amount_cents:30000,diagnosis_codes:[]}]}}];
- form=await openStep();
- assert.equal(JSON.stringify(codes()),'["99213","J9270"]','another patient\u2019s charges are not on the way in');
- assert.ok(!form.outerHTML.includes('99214'));
+ reset([emptyAccount,imported,voided,recent,future]);
+ await openStep();choices=await mountPriorChoices();
+ assert.equal(choices.hidden,true,'no eligible prior procedures');
+ assert.deepEqual(codes(),['']);
+ assert.equal(billingWrites().length,0);
 
- // ---- 3. never offered again once staff have dealt with it ------------------------------
- reset([earlierAccount]);
- form=await openStep();
- click(form.querySelector('[data-charge-proposal-blank]'));
- assert.equal(JSON.stringify(codes()),'[""]','Start blank empties the table down to one blank line');
- assert.ok(!openForm().outerHTML.includes('Filled in from the encounter'),'and takes the quiet line away with it');
- assert.ok(!openForm().querySelector('[data-charge-proposal-blank]'),'and nothing is left to press');
- // The answer staff gave by pressing Start blank is kept: leaving the step and coming back finds
- // the table shut, the encounter not refilled from the earlier visit, and the card back to its usual
- // ask rather than the fill-in's "Check the charges". Reopening an encounter that has no account of its
- // own can only ever produce the fill-in, so this is the honest check that it was refused.
- closeStep();
- await openStep();
- assert.ok(!$('billing-account-form')||!codes().some(Boolean),'a visit staff emptied is not quietly filled in again');
- assert.ok(!($('encounter-revenue-status')?.innerHTML.includes('Filled in from the encounter')),'nor is the encounter still spoken of as filled in');
- assert.ok(!($('encounter-revenue-status')?.innerHTML.includes('Check the charges')),'and the card asks for charges in its usual words');
- // Emptying the table by hand is the same answer, and is kept the same way.
- reset([earlierAccount]);
- form=await openStep();
- for(const row of [...rowsNow()])click(row.querySelector('[data-remove-charge]'));
- assert.equal(JSON.stringify(codes()),'[]','removing every line empties the table');
- await advance();
- closeStep();
- await openStep();
- assert.ok(!$('billing-account-form')||!codes().some(Boolean),'a table staff emptied themselves is never quietly refilled');
- assert.ok(!($('encounter-revenue-status')?.innerHTML.includes('Filled in from the encounter')));
- // A browser that will not hand out its session still behaves: the memory lives in the page.
- reset([earlierAccount]);
- ctx.sessionBroken=true;
- form=await openStep();
- assert.equal(JSON.stringify(codes()),'["99213","J9270"]','a refused session store does not stop the table filling in');
- click(form.querySelector('[data-charge-proposal-blank]'));
- closeStep();
- await openStep();
- assert.ok(!$('billing-account-form')||!codes().some(Boolean),'and the choice is still remembered for this encounter without the session store');
-
- // ---- 4. who is ever offered this ------------------------------------------------------
- // Read-only staff are not offered charges to change, and are not blocked from the encounter. The page
- // decides this through its own billingWrite(), which reads the signed-in role, so the role is what
- // is changed here; a stub over billingCan() would switch off one caller and leave the table open.
- reset([earlierAccount]);
- ctx.me={role:'scribe'};
- await openStep();
- assert.ok(!$('billing-account-form'),'staff who cannot write are not put in front of a table to change');
- // An encounter that is no longer in progress is never offered it.
- reset([earlierAccount]);
- ctx.workspace.billing.accounts=[];
- form=await openStep('visit-earlier','signed');
- assert.ok(!form||!codes().some(Boolean),'a visit that is not in progress is never filled in from an earlier one');
- // Once the encounter has an account the table is never refilled from an earlier visit: the charges on
- // screen are the encounter's own, opened the way staff open them.
  reset([earlierAccount,currentDraft]);
- await openStep();
- form=await pressCardCharges();
- assert.ok(!form.outerHTML.includes('Filled in from the encounter'),'an account that exists is left alone');
- assert.equal(JSON.stringify(codes()),'["99213"]','and what is shown are its own charges');
- // An encounter that was filled in, saved, and whose account was then taken away again is not silently
- // offered the lines a second time: the practice has already been given its answer for this encounter.
- // The charge table refuses it from its own memory of the encounter, so reopening the step — the only
- // thing that can ever produce a fill-in — is what proves it.
- reset([earlierAccount]);
- form=await openStep();
- type(form.querySelector('[name="diagnoses"]'),'J10.0');
- // A line the price list did not cover is not sent until it has its amount.
- for(const input of form.querySelectorAll('[name="amount"]'))if(!input.value)type(input,'9.00');
- await advance();
- assert.ok(sent.some(call=>call.method==='POST'),'the filled-in table was saved as this encounter\u2019s charges');
- ctx.workspace.billing.accounts=[earlierAccount];
- summaryFor(ctx.workspace.billing.accounts,'visit-current','in_progress');
- closeStep();
- await openStep();
- assert.ok(!$('billing-account-form')||!codes().some(Boolean),'the encounter was already filled in once; it is not offered a second time');
+ await openStep();await mountPriorChoices();await advance();
+ assert.deepEqual(codes(),['99213'],'existing draft survives reopening');
+ assert.equal(billingWrites().length,0);
 
- // ---- 5. the encounter billing card stops asking for charges by hand ------------------------
- // The card is drawn straight from an encounter summary at 'add_charges' — an encounter with no charges yet —
- // with the practice's owner looking at it. It reads the chart for anything to fill in from, which
- // is why the accounts in the chart decide its words. Whether a person may press anything is the
- // card's own context: canCreate and canWrite.
- const addCharges=()=>({patient_id:'patient',visit:{id:'visit-current',status:'in_progress',appointment_id:'appt-current'},state:'add_charges',waiting_on:'staff',account:null,charges_cents:null,balance_cents:null,claim:null,claim_count:0,insurance:{insured:true,insurer:'Synthetic Medicare PPO',electronic:true,status:'not_billed',paid_cents:0,adjusted_cents:0,pending_cents:0,unassigned_cents:0},patient:{owes_now_cents:0,received_cents:0},receipts:[],statement:{current:false,latest_id:null,count:0},timeline:[]});
- const owner={canCreate:true,canWrite:true,claimsAllowed:true};
- const markup=()=>ctx.visitBillingCardMarkup(addCharges(),owner);
- // With an earlier visit that has charges, the card says they are already on the way.
- reset([earlierAccount]);
- let card=markup();
- assert.match(card,/<p class="visit-billing-headline">Check the charges<\/p>/,'the card asks staff to check, not to type');
- assert.match(card,/Filled in from the last visit\./,'and says where they came from');
- assert.match(card,/data-encounter-charges[^>]*>Check the charges<\/button>/,'its one button opens the table');
- // With nothing to fill in from, the card keeps the wording and the button it has always had.
- reset([emptyAccount]);
- card=markup();
- assert.match(card,/<p class="visit-billing-headline">Add charges<\/p>/);
- assert.match(card,/Add the procedures done at this encounter\./);
- assert.match(card,/data-encounter-charges[^>]*>Add charges<\/button>/);
- // An encounter whose charges are already being worked on is a different state, and is left alone: the
- // card does not speak of a fill-in for charges the practice already has.
- reset([currentDraft]);
- card=ctx.visitBillingCardMarkup({...addCharges(),state:'sign_visit',account:structuredClone(currentDraft)},owner);
- assert.ok(!card.includes('Filled in from the last visit'),'a visit with its own charges is not talked about as filled in');
- // Staff who cannot change charges are given nothing to press.
- reset([earlierAccount]);
- card=ctx.visitBillingCardMarkup(addCharges(),{canCreate:false,canWrite:false,claimsAllowed:false});
- assert.match(card,/Check the charges/);
- assert.doesNotMatch(card,/data-encounter-charges/,'no button for staff who cannot change charges');
- // A once-filled visit is not described as filled in when its table is blank again.
- reset([earlierAccount]);
+ reset([earlierAccount,{...currentDraft,status:'posted'}]);
+ await openStep();choices=await mountPriorChoices();
+ assert.equal(choices.hidden,true,'posted charges require a correction');
+ await assert.rejects(vm.runInContext('visitNoteAddProcedures([])',ctx),/posted/i);
+ assert.equal(billingWrites().length,0);
+ reset([earlierAccount]);ctx.me={role:'scribe'};
  await openStep();
- click(openForm().querySelector('[data-charge-proposal-blank]'));
- card=markup();
- assert.match(card,/<p class="visit-billing-headline">Add charges<\/p>/,'after Start blank the card stops saying the charges are filled in');
- // The card's wording is true on screen: the step really does build the table.
- reset([earlierAccount]);
- card=markup();
- assert.match(card,/Check the charges/);
- form=await openStep();
- assert.equal(JSON.stringify(codes()),'["99213","J9270"]','the card\u2019s Check the charges leads to a table that is filled in');
-
- // ---- 6. plain words only ---------------------------------------------------------------
- const cardText=markup().replace(/<[^>]*>/g,' ');
- assert.doesNotMatch(cardText,/catalog|snapshot|payload|endpoint|schema|tenant|JSON/i,'the card says nothing developer-flavoured');
- reset([earlierAccount]);
- form=await openStep();
- const formText=openForm().outerHTML.replace(/<[^>]*>/g,' ');
- assert.doesNotMatch(formText,/proposed|payload|endpoint|schema|tenant|auto-?fill/i,'the table says nothing developer-flavoured');
- assert.match(fs.readFileSync('web/billing.js','utf8'),/Filled in from the encounter on /,'the quiet line is worded for staff');
- assert.match(fs.readFileSync('web/style.css','utf8'),/\.charge-table-proposal\{/,'the quiet line has its own quiet styling');
-
- console.log('PASS auto charges: filled in from the most recent earlier visit at practice prices with this encounter\u2019s diagnoses, an empty amount and a plain note where the price list has nothing, drug detail flagged for a check, never back after Start blank or an emptied table, never for an encounter that is not in progress or staff who cannot write, and a card that stops asking for hand entry');
-})().catch(error=>{console.error(error);process.exit(1);});
+ await assert.rejects(vm.runInContext('visitNoteAddProcedures([])',ctx),/permission/i);
+ assert.equal(billingWrites().length,0);
+ console.log('PASS previous procedure choices, current pricing and diagnoses, draft save, posted charges and permissions');
+})().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>{for(const timer of liveTimers.values())clearTimeout(timer);});

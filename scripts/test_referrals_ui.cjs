@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
+require('./chart_test_context.cjs');
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const source=fs.readFileSync('web/referrals.js','utf8');
 const esc=s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
@@ -10,6 +11,7 @@ function fixture(){
  const state={items:[entry],next_cursor:null,status:'',documents:[{id:'d1',version:2,filename:'synthetic.pdf',content:{title:'<b>Letter</b>'}}],document_cursor:null};
  hosts['referrals-panel']={innerHTML:'',hidden:false};hosts['referral-editor']={get innerHTML(){return editorHtml},set innerHTML(v){editorHtml=v}};hosts.tools={innerHTML:''};
  const context=vm.createContext({console,Map,Set,URLSearchParams,structuredClone,crypto:{randomUUID:()=> 'request-1'},selected:'p1',me:{user_id:'u1',role:'clinician'},activeVisit:{id:'v1'},workspace:{visits:[{id:'v1',status:'signed',signed_at:'2026-10-26'}]},chartSection:'referrals',document:{addEventListener:(n,h)=>(handlers[n]??=[]).push(h),createElement:()=>({})},window:{confirm:()=>true},$:(id)=>id==='referral-form'?form:hosts[id]||null,esc,human:s=>String(s??'').replaceAll('_',' '),date:s=>s,api:async()=>({items:[],next_cursor:null}),run:fn=>{context.pending=fn()},notice:()=>{},showTool:()=>{},showClinical:async()=>{},selectPatient:async p=>{context.selected=p},showChartSection:()=>{},FormData:class{constructor(f){this.f=f}*[Symbol.iterator](){yield*Object.entries(this.f.values)}get(k){return this.f.values[k]}}});
+ vm.runInContext(fs.readFileSync('web/display-format.js','utf8'),context);
  vm.runInContext(source,context);
  context.fixtureState=state;vm.runInContext('referralStates.set(selected,fixtureState)',context);
  function setForm(mode='content'){form={id:'referral-form',dataset:{patient:'p1',mode},values:mode==='action'?{action:'ready',reason:'Synthetic action',evidence:''}:{visit_id:'v1',...content,reason:'Synthetic edit',document_ids:undefined},querySelectorAll:()=>[{value:'d1'}]};delete form.values.document_ids;return form;}
@@ -28,7 +30,30 @@ function fixture(){
  f=fixture();f.draft();f.context.api=()=>new Promise(resolve=>finish=resolve);const previous=f.submit();f.run('clearReferralSession()');f.context.me={user_id:'u1',role:'clinician'};finish({...f.entry,version:4});await previous;assert.equal(f.run('referralDrafts.size'),0);assert.equal(f.run('referralStates.size'),0);console.log('PASS an old session response cannot restore referral data after reauthentication');
  f=fixture();f.draft();f.context.fixtureDraft.current={...f.entry,status:'sent'};f.run('showReferralEditor(fixtureDraft)');assert.match(f.editor,/content is locked/);assert.match(f.editor,/<button type="submit" disabled>/);assert.match(f.editor,/Discard unsaved referral/);console.log('PASS remotely sent referral content retains a copyable draft with explicit discard');
  f=fixture();f.run("referralBoard.status='sent';referralBoard.overdue=true");let path;f.context.api=async p=>{path=p;return {items:[{...f.entry,patient_label:'<b>Avery</b>',mrn:'SYN'}],next_cursor:'next',overdue_as_of:'2026-10-26'}};await f.run('showReferralWorkspace()');assert.match(path,/status=sent/);assert.match(path,/overdue=true/);assert.match(f.hosts.tools.innerHTML,/&lt;b&gt;Avery/);assert.match(f.hosts.tools.innerHTML,/Load more referrals/);console.log('PASS practice referral worklist uses server status/overdue filters and paging');
- f=fixture();f.context.api=async p=>p.endsWith('/r1')?f.entry:{items:[],next_cursor:null};f.context.renderReferrals=async()=>{f.context.fixtureEmpty={...f.state,items:[]};f.run("referralStates.set(selected,fixtureEmpty)")};await f.click({referralOpenPatient:'p1',referralId:'r1'});assert.equal(f.run("referralStates.get('p1').items[0].id"),'r1');console.log('PASS worklist deep links retrieve the target referral even outside the first patient page');
+ f=fixture();const second={...f.entry,id:'r2',content:{...f.entry.content,requested_service:'Synthetic second referral'}};
+ const requestedPaths=[],opened=[];
+ f.context.workspaceResourceAllowed=resource=>['clinical','scheduling'].includes(resource);
+ for(const id of ['r1','r2'])f.hosts['referral-record-'+id]={id:'referral-record-'+id,content:{cloneNode:()=>id}};
+ f.context.api=async(p,method)=>{requestedPaths.push([p,method]);return p.endsWith('/r2')?second:f.entry;};
+ f.context.document.createElement=()=>({append(value){this.content=value;}});
+ f.context.sheetOpen=(_title,host)=>{opened.push(host.content);return {classList:{add(){}},dataset:{}};};
+ f.context.renderReferrals=async()=>f.run("referralStates.set(selected,fixtureState)");
+ await f.click({referralOpenPatient:'p1',referralId:'r2'});
+ assert.equal(f.state.items.length,1,'opening a record never mutates the loaded page');
+ assert.equal(f.run("referralStates.get('p1').items[1].id"),'r2');
+ await f.click({referralOpenPatient:'p1',referralId:'r1'});
+ assert.deepEqual(opened,['r2','r1']);
+ assert.deepEqual(requestedPaths,[['/api/v1/patients/p1/referrals/r2',undefined],['/api/v1/patients/p1/referrals/r1',undefined]]);
+ console.log('PASS worklist deep links open the exact referral even for two referrals on the same chart and outside the first page');
+ f=fixture();f.context.workspaceResourceAllowed=resource=>resource==='clinical';
+ f.context.api=async()=>assert.fail('restricted referral must not be requested');
+ await assert.rejects(f.click({referralOpenPatient:'p1',referralId:'r1'}),/current access/);
+ f=fixture();f.context.api=async()=>{throw Object.assign(new Error('Not found'),{status:404});};
+ f.context.showClinical=async()=>assert.fail('unavailable referral must leave the worklist in place');
+ await assert.rejects(f.click({referralOpenPatient:'p1',referralId:'r1'}),/Refresh the worklist/);
+ f=fixture();f.context.api=async()=>({...f.entry,patient_id:'p2'});
+ await assert.rejects(f.click({referralOpenPatient:'p1',referralId:'r1'}),/requested referral could not be opened/);
+ console.log('PASS inaccessible, missing and mismatched referrals leave an explicit message in the worklist');
  f=fixture();f.entry.attachment_snapshot=[{id:'d1',version:2,title:'<Letter>',filename:'synthetic.pdf',sha256:'abc'}];f.run('showReferrals()');assert.match(f.hosts['referrals-panel'].innerHTML,/href="\/api\/v1\/patients\/p1\/documents\/d1\/download" download/);assert.match(f.hosts['referrals-panel'].innerHTML,/Captured metadata/);console.log('PASS reviewed referral packages expose authenticated original-byte downloads');
  f.entry.attachment_snapshot[0].file_version=3;f.run('showReferrals()');assert.match(f.hosts['referrals-panel'].innerHTML,/href="\/api\/v1\/patients\/p1\/documents\/d1\/files\/3\/download" download/);assert.match(f.hosts['referrals-panel'].innerHTML,/metadata v2 · file v3/);assert.match(f.hosts['referrals-panel'].innerHTML,/Download reviewed file/);console.log('PASS current referral package downloads the exact reviewed file version');
  f=fixture();f.state.documents=[];let requested;f.context.api=async p=>{requested=p;return {items:[{id:'new-upload',version:1,filename:'new.pdf',content:{title:'Uploaded after chart opened'}}],next_cursor:null}};await f.click({referralNew:''});assert.match(requested,/documents\?status=active/);assert.match(f.editor,/Uploaded after chart opened/);assert.match(f.editor,/Refresh patient documents/);console.log('PASS opening a new referral reloads active documents uploaded since chart preload');

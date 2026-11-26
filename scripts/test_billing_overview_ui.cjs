@@ -16,6 +16,55 @@ function fixture(claims=false){
  vm.createContext(context);vm.runInContext(source,context);return {context,nodes,calls,data,rendered,node};
 }
 (async()=>{
+ {
+  const review=fixture(),{context,nodes,data}=review;
+  const row=data.accounts.items[0];
+  Object.assign(row,{version:2,visit_id:'visit',encounter_number:7,insurance_pending_cents:7000,patient_owes_now_cents:null});
+  const snapshot={id:row.id,patient_id:row.patient_id,version:row.version,content:{lines:[{code:'SYN',description:'Synthetic <procedure>',units:2,amount_cents:10000}]}};
+  const read=context.api,requests=[];
+  context.api=async(path,...args)=>{requests.push([path,...args]);return path.endsWith('/history')?{items:[{snapshot}]}:read(path,...args);};
+  context.encounterNumberText=()=> 'ENC-0007';
+  context.encounterRowChip=()=>'<button data-encounter-chip>Open encounter</button>';
+  const markup=context.billingOverviewAccountRows([row]);
+  assert.match(markup,/data-overview-account-review="account" data-account-patient="patient"/);
+  assert.match(markup,/ENC-0007/);assert.doesNotMatch(markup,/data-billing-patient|data-encounter-chip/);
+  await context.renderBillingOverview();
+  const preview=nodes['billing-overview-preview'],lines={};
+  preview.querySelector=selector=>selector==='#billing-account-charge-lines'?lines:null;
+  await context.showBillingAccountReview(preview,row,()=>true);
+  assert.deepEqual(requests.at(-1),['/api/v1/patients/patient/billing/accounts/account/history']);
+  assert.match(preview.innerHTML,/Gross charges<\/dt><dd>\$100\.00/);
+  assert.match(preview.innerHTML,/Insurance pending<\/dt><dd>\$70\.00/);
+  assert.match(preview.innerHTML,/Patient owes now<\/dt><dd>Not available/);
+  assert.match(preview.innerHTML,/data-overview-invoice="invoice"/);
+  assert.doesNotMatch(preview.innerHTML,/data-encounter-chip|Charge card|Take payment/);
+  assert.match(lines.innerHTML,/Synthetic &lt;procedure&gt; · 2 units · \$100\.00 line total/);
+  snapshot.id='other-account';lines.innerHTML='';
+  await context.showBillingAccountReview(preview,row,()=>true);
+  assert.match(lines.textContent,/unavailable/);assert.equal(lines.innerHTML,'');
+  const listeners=[];
+  context.document.addEventListener=(event,handler)=>{if(event==='click')listeners.push(handler);};
+  vm.runInContext(fs.readFileSync('web/patient-billing-workspace.js','utf8'),context);
+  const host={id:'patient-billing-global',querySelector:()=>preview};
+  nodes[host.id]=host;
+  context.scope={identity:context.me,patientId:row.patient_id,surface:'global',host,native:data};
+  vm.runInContext('patientBillingWorkspace=scope',context);
+  context.selected='existing-chart';context.activeVisit={id:'existing-visit'};
+  const handled=[];
+  context.showBillingAccountReview=(_preview,account,current)=>{if(account&&current())handled.push(account.id);};
+  const click=patient=>listeners[0]({target:{closest:()=>({
+   dataset:{overviewAccountReview:row.id,accountPatient:patient},closest:()=>host,hasAttribute:()=>false
+  })}});
+  click('different-patient');click(row.patient_id);
+  assert.deepEqual(handled,[row.id]);
+  assert.equal(context.selected,'existing-chart');assert.equal(context.activeVisit.id,'existing-visit');
+  context.workspaceResourceAllowed=resource=>resource==='clinical'||resource==='billing';
+  assert.match(context.billingOverviewAccountRows([row]),/data-billing-patient="patient" data-account="account"/);
+  context.workspaceResourceAllowed=()=>false;
+  assert.equal(context.billingOverviewAccountAction(row),'');
+ }
+ {const practice=fixture(true);let forwarded=0;practice.context.showPatientBillingWorkspace=async()=>{forwarded++;};await practice.context.renderBillingOverview('',undefined,{practiceWide:true,patientId:null});await new Promise(setImmediate);assert.equal(forwarded,0);assert.match(practice.nodes['billing-overview'].innerHTML,/<h2>Billing<\/h2>/);assert.match(practice.nodes['billing-overview-claims'].innerHTML,/all claims/);assert(practice.calls.includes('/api/v1/billing/claims'));assert(practice.calls.every(path=>!path.includes('patient_id=')));await practice.context.renderBillingOverview(null,null,{preserveOther:true});assert.equal(forwarded,0,'practice refresh stays practice-wide');}
+
  let f=fixture();await f.context.renderBillingOverview();
  assert.equal(f.context.title,'Billing & insurance');assert.deepEqual(f.calls,['/api/v1/billing/overview?mode=recorded']);
  const html=f.nodes['billing-overview'].innerHTML;
@@ -40,8 +89,9 @@ function fixture(claims=false){
  vm.createContext(tools);vm.runInContext(billing,tools);tools.showBillingQueue=async(...args)=>toolCalls.push(args);
  for(const handler of listeners.change||[])handler({target:{closest:selector=>selector==='#billing-filter select[name="status"]'?{value:'posted'}:null}});
  await tools.pending;assert.deepEqual(toolCalls.pop(),['posted',undefined,true]);
- function click(attribute){const button={dataset:{},type:'button',closest:selector=>selector==='#billing-tool'?{}:null,hasAttribute:name=>name===attribute};for(const handler of listeners.click||[])handler({target:{closest:selector=>selector==='button'?button:null},preventDefault(){}});return tools.pending;}
- await click('data-billing-next');assert.equal(toolCalls.pop()[2],true);
+ function click(attribute){const button={dataset:{},type:'button',closest:selector=>selector.split(',').includes('#billing-tool')?{}:null,hasAttribute:name=>name===attribute};for(const handler of listeners.click||[])handler({target:{closest:selector=>selector==='button'?button:null},preventDefault(){}});return tools.pending;}
+ vm.runInContext("billingQueueStatus='posted';billingQueueCursor='account-page2'",tools);
+ await click('data-billing-next');assert.deepEqual(toolCalls.pop(),['posted','account-page2',true]);
  await click('data-billing-overview');assert.deepEqual(toolCalls.pop(),[]);
  assert.doesNotMatch(billing,/data-billing-refresh/,'the worklist has no manual Refresh button; the shared auto-refresh keeps it current');
  const setupNodes={tools:{innerHTML:''}},setupCalls=[];let setupPermissions=false;

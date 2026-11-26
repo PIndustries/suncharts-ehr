@@ -349,6 +349,15 @@ fn action(method: &Method, path: &str) -> Option<Action> {
             {
                 return Some(Action::Edit);
             }
+            if path.starts_with("/api/v1/patients/")
+                && path.contains("/billing/copays/")
+                && path.ends_with("/actions")
+            {
+                return Some(Action::Edit);
+            }
+            if path.starts_with("/api/v1/patients/") && path.ends_with("/denial") {
+                return Some(Action::Edit);
+            }
             let end = path.rsplit('/').next()?;
             if end == "actions" || path.contains("/actions/") {
                 return Some(Action::Compound);
@@ -375,6 +384,7 @@ fn action(method: &Method, path: &str) -> Option<Action> {
                 "check-in",
                 "commit",
                 "complete",
+                "claim-handoff",
                 "diagnosis-suggestions",
                 "voice-notes",
                 "retry",
@@ -415,6 +425,7 @@ fn action(method: &Method, path: &str) -> Option<Action> {
                 "277ca",
                 "837p",
                 "accounts",
+                "visit-types",
                 "acknowledgments",
                 "amendments",
                 "appointments",
@@ -476,6 +487,7 @@ fn action(method: &Method, path: &str) -> Option<Action> {
                 "specimens",
                 "staff",
                 "statement",
+                "deliveries",
                 "subscriptions",
                 "templates",
                 "threads",
@@ -508,6 +520,9 @@ fn resources(path: &str) -> Option<Vec<&'static str>> {
     let segments = path.split('/').collect::<Vec<_>>();
     if path == "/api/v1/sun/context" {
         return Some(vec!["clinical", "scheduling", "workflows"]);
+    }
+    if path == "/api/v1/practice/visit-types" || path == "/api/v1/practice/visit-types/{}" {
+        return Some(vec!["scheduling"]);
     }
     if path == "/api/v1/practice/worklist" {
         return Some(vec!["practice", "clinical", "scheduling"]);
@@ -619,7 +634,10 @@ fn permitted(permissions: &PolicyPermissions, method: &Method, path: &str) -> bo
     let path = normalized_route(path);
     if matches!(
         path.as_str(),
-        "/api/v1/practice/access-policy/current" | "/api/v1/practice/workspace-settings"
+        // Search checks each source permission inside its handler.
+        "/api/v1/search"
+            | "/api/v1/practice/access-policy/current"
+            | "/api/v1/practice/workspace-settings"
     ) && matches!(*method, Method::GET | Method::HEAD)
     {
         return true;

@@ -2,38 +2,68 @@
 'use strict';
 const claimActionLabels={ready:'Release it to send later',void_draft:'Void this claim',record_submission:'It was sent outside SunCharts',record_acceptance:'The payer accepted it',record_rejection:'The payer rejected it'};
 const eraStatusLabels={staged:'To review',reconciled:'Matched, ready to post',posted:'Posted',reversed:'Posting undone',rejected:'Rejected'};
-function eraStatusLabel(status){return eraStatusLabels[status]||human(status);}
+function eraStatusLabel(status){return Object.hasOwn(eraStatusLabels,status)?eraStatusLabels[status]:'Status unavailable';}
 function eraCurrentBalance(value){return Number.isSafeInteger(value)?value<0?`${money(-value)} patient credit`:`${money(value)} open`:'Unavailable';}
-var claimRows=[],eraRows=[],claimCurrent,eraCurrent,claimAccount,claimSource,eraSource,claimNext,eraNext,claimStatusCounts={},claimStatusFilter='all';
+var claimRows=[],eraRows=[],claimCurrent,eraCurrent,claimAccount,claimSource,eraSource,eraNext,claimStatusFilter='send';
+let claimStatusFilterIdentity,claimMonitorEraPages=1;
 const claimsBase='/api/v1/billing/claims',eraBase='/api/v1/billing/remittances';
-// Chips follow the statuses the database can hold: draft, ready, submitted, accepted,
-// rejected, adjudicated, void. A payer denial arrives as rejected and a payment as an
-// insurance payment, so 'Paid' and 'Denied' are not claim statuses here.
-var claimStatusChips=['draft','ready','submitted','accepted','rejected','adjudicated','void'];
-function claimChipStatus(claim){return claimStatusChips.includes(claim.status)?claim.status:'other';}
-function claimMatchesStatusFilter(claim){return claimStatusFilter==='all'||claimChipStatus(claim)===claimStatusFilter;}
-function claimStatusChipLabel(status){return status==='all'?'All':displayStatus(status);}
-function claimStatusCount(status){
- const counted=status==='all'?claimRows.length:claimRows.filter(claim=>claimChipStatus(claim)===status).length;
- return Math.max(counted,Number(claimStatusCounts[status])||0);
+const claimMonitorStages={send:'To send',wait:'Waiting',fix:'Needs correction','remittance-review':'Remittance to review',posted:'Posted'};
+const claimRecordFilters=['draft','ready','submitted','accepted','rejected','adjudicated','void'];
+const claimMonitorSelectedRecords=['all',...claimRecordFilters,'payments'];
+function claimWorkGroup(c){
+ if(claimIsCrossover(c))return '';
+ if(c.status==='rejected'||claimMdNeedsCorrection(c,c))return 'fix';
+ if(['draft','ready'].includes(c.status))return 'send';
+ if(['submitted','accepted'].includes(c.status))return 'wait';
+ return '';
 }
-function claimStatusChipsHtml(){return `<nav class="practice-status-strip claims-status-strip" aria-label="Filter claims by status">${['all',...claimStatusChips].map(status=>`<button type="button" data-claim-status="${status}" aria-pressed="${claimStatusFilter===status}">${esc(claimStatusChipLabel(status))}<span>${claimStatusCount(status)}</span></button>`).join('')}</nav>`;}
-function claimRowMarkup(claim){return `<tr><td><b>${esc(claim.patient_name)}</b>${claim.service_date?`<small class="claim-service-date">Date of service ${esc(typeof displayDate==='function'?displayDate(claim.service_date):claim.service_date)}</small>`:''}<small class="claim-control">Claim ${esc(claim.control_number)}${claim.visit_id&&typeof encounterRowChip==='function'?' '+encounterRowChip(claim):''}</small></td><td>${esc(claim.payer_name)}<small>${esc(displayStatus(claim.frequency))}</small></td><td><span class="pill">${esc(claimStatusLabel(claim))}</span></td><td class="money-cell">${money(claim.total_cents)}</td><td><button type="button" data-claim-open="${claim.id}" data-claim-visit>Open claim</button></td></tr>`;}
-function claimRowsMarkup(claims){return claims.map(claimRowMarkup).join('');}
-
-function claimEmptyRow(claims){return `<tr><td colspan="5" class="table-empty">${claims.length?'No claims here with this status. Choose All to see every claim.':'No claims yet. A claim is prepared for you when an encounter’s charges are posted.'}</td></tr>`;}
-function claimFinalStatus(claim,detail={}){return ['void','rejected'].includes(claim?.status)||detail?.tracking?.remittance_posted===true;}
+function claimMatchesStatusFilter(c){return claimStatusFilter==='all'||claimWorkGroup(c)===claimStatusFilter||c.status===claimStatusFilter;}
+function eraWorkGroup(r){return ['staged','reconciled'].includes(r.status)?'remittance-review':r.status==='posted'?'posted':'';}
+function claimMonitorShowsRemittances(){return ['remittance-review','posted','payments'].includes(claimStatusFilter);}
+function claimStatusCount(status){
+ return ['remittance-review','posted'].includes(status)?eraRows.filter(r=>eraWorkGroup(r)===status).length:claimRows.filter(c=>claimWorkGroup(c)===status).length;
+}
+function claimStatusChipsHtml(){
+ return `<nav class="practice-status-strip claims-status-strip" aria-label="Filter claims and remittances">${Object.entries(claimMonitorStages).map(([status,label])=>`<button type="button" data-claim-status="${status}" aria-pressed="false">${label} <span></span></button>`).join('')}<select id="billing-all-claims" aria-label="Other billing views"><option value="" disabled>Other views</option><option value="all">All claims</option><optgroup label="Claim status">${claimRecordFilters.map(status=>`<option value="${status}">${esc(displayStatus(status))}</option>`).join('')}</optgroup><option value="payments">All remittances</option></select></nav>`;
+}
+function claimRowMarkup(c){
+ const group=claimWorkGroup(c),posted=c.status==='adjudicated'&&(c.tracking?.remittance_posted===true||c.remittance_posted===true);
+ const tone=posted?'paid':group||'other';
+ return `<tr role="row"><td role="cell" class="monitor-record"><b>${esc(c.patient_name)}</b><small class="claim-control">Claim ${esc(c.control_number||'Not assigned')}${c.visit_id&&typeof encounterRowChip==='function'?' '+encounterRowChip(c):''}</small></td><td role="cell" class="monitor-date">${esc(displayDate(c.service_date)||'—')}</td><td role="cell" class="monitor-payer">${esc(c.payer_name||'—')}<small>${esc(displayStatus(c.frequency||''))}</small></td><td role="cell" class="money-cell monitor-amount">${money(c.total_cents)}</td><td role="cell" class="monitor-status"><span class="pill claim-status-${tone}">${esc(posted?'Payment posted':claimStatusLabel(c)||'Claim status unavailable')}</span></td><td role="cell" class="monitor-action"><button type="button" data-claim-open="${esc(c.id)}" data-claim-visit>Open claim</button></td></tr>`;
+}
+function claimRowsMarkup(claims){return [...claims].sort((a,b)=>String(a.service_date||a.created_at||'').localeCompare(String(b.service_date||b.created_at||''))).map(claimRowMarkup).join('');}
+function claimEmptyRow(){return `<tr><td colspan="6" class="table-empty">${({send:'No claims to send.',fix:'No claims need correction.',wait:'No claims waiting for a response.'})[claimStatusFilter]||'No claims.'}</td></tr>`;}
 function claimWorkspaceMarkup(){
- const rows=$('claims-tool')?.querySelector('[data-claim-rows]');if(!rows)return;
- const shown=claimRows.filter(claimMatchesStatusFilter).map(claimRowMarkup).join('')||claimEmptyRow(claimRows);
- if(rows.innerHTML!==shown)rows.innerHTML=shown;
- const counts=claimStatusChipsHtml();
- const strip=$('claims-tool')?.querySelector('.claims-status-strip');if(strip&&strip.outerHTML!==counts)strip.outerHTML=counts;
+ const host=$('claims-tool');if(!host)return;
+ const payments=claimMonitorShowsRemittances(),claimList=host.querySelector('[data-claim-worklist]'),eraList=host.querySelector('[data-era-worklist]');
+ if(!claimList||!eraList)return;
+ claimList.hidden=payments;
+ eraList.hidden=!payments;
+ if(payments)eraList.querySelector('tbody').innerHTML=eraRowsMarkup();
+ else claimList.querySelector('tbody').innerHTML=claimRowsMarkup(claimRows.filter(claimMatchesStatusFilter))||claimEmptyRow();
+ for(const button of host.querySelectorAll('[data-claim-status]')){
+  const status=button.dataset.claimStatus;
+  button.setAttribute('aria-pressed',String(claimStatusFilter===status));
+  button.querySelector('span').textContent=claimStatusCount(status);
+ }
+ $('billing-all-claims').value=claimMonitorSelectedRecords.includes(claimStatusFilter)?claimStatusFilter:'';
+ host.querySelector('[data-era-more]').hidden=!eraNext;
+ host.querySelector('[data-era-next]').disabled=Boolean(claimViewContext?.loadingEraPage);
+}
+function setClaimMonitorFilter(status){
+ claimStatusFilter=Object.hasOwn(claimMonitorStages,status)||claimMonitorSelectedRecords.includes(status)?status:'all';
 }
 function selectClaimStatusFilter(status){
- claimStatusFilter=claimStatusChips.includes(status)?status:'all';
+ if(!claimContextCurrent(claimViewContext)||claimViewContext.kind!=='worklist')return;
+ setClaimMonitorFilter(status);
  claimWorkspaceMarkup();
+ if(typeof frameBillingMonitorNavigation==='function')frameBillingMonitorNavigation(true);
 }
+document.addEventListener('change',e=>{if(e.target.id==='billing-all-claims')selectClaimStatusFilter(e.target.value);});
+function billingPageTotals(){return `<button type="button" class="text-button" data-billing-claim-queue="send">Claims to send ${claimStatusCount('send')}</button> · <button type="button" class="text-button" data-billing-claim-queue="fix">Needs fixing ${claimStatusCount('fix')}</button>`;}
+function billingPageMore(){return `<div class="actions"><button type="button" data-billing-connect>Claim connections</button><button type="button" data-billing-tools>Practice billing tools</button>${me.role==='owner'?'<button type="button" data-payment-settings>Practice payment settings</button>':''}</div>`;}
+document.addEventListener('click',e=>{const queue=e.target.closest?.('[data-billing-claim-queue]');if(queue){run(async()=>{await showClaimsWorkspace({filter:queue.dataset.billingClaimQueue});});return;}if(e.target.closest?.('[data-billing-connect]'))run(()=>showEdiWorkspace());if(e.target.closest?.('[data-billing-tools]'))run(()=>showBillingQueue('',undefined,true));});
+function claimFinalStatus(claim,detail={}){return ['void','rejected'].includes(claim?.status)||detail?.tracking?.remittance_posted===true;}
 let claimViewContext=null;
 let claimDraftIdentity;
 const claimDrafts=new Map();
@@ -81,6 +111,8 @@ function mountEncounterClaims(accountId){
  setEncounterSection('charges');
  const container=$('encounter-claims');if(!container)throw new Error('Open Billing & claim in this encounter.');
  container.innerHTML='<div id="encounter-claims-detail"></div>';container.hidden=false;if(typeof invoiceTabSet==='function')invoiceTabSet('billing');
+ const actions=container.closest?.('[data-step-claim-actions]');
+ if(actions)actions.open=true;
  claimViewContext={kind:'encounter',identity:me,patient:selected,visit:activeVisit.id,account:accountId,host:$('encounter-claims-detail')};
  return claimViewContext;
 }
@@ -205,7 +237,7 @@ function claimQuickFixMarkup(claim,inputs){
   if(own&&inputs.has('patient_address'))parts.push('<p class="muted">The patient is the policy holder, so the address above is used for the policy holder too.</p>');
   else parts.push(box('subscriber_address',"Policy holder's address (street, city, state, ZIP)",own?v.patient_address:v.subscriber_address,'required maxlength="1000"'));
  }
- if(inputs.has('subscriber_birth_date'))parts.push(box('subscriber_birth_date',"Policy holder's date of birth",v.subscriber_birth_date||(own?claim.snapshot?.patient?.birth_date:'')||'',`type="date" required max="${new Date().toISOString().slice(0,10)}"`));
+ if(inputs.has('subscriber_birth_date'))parts.push(box('subscriber_birth_date',"Policy holder's date of birth",v.subscriber_birth_date||(own?claim.snapshot?.patient?.birth_date:'')||'',`type="date" required max="${localIsoDate()}"`));
  for(const [name,label,extra] of [['billing_provider_name','Billing provider name','maxlength="60"'],['tax_id','Practice tax ID (9 digits)','inputmode="numeric" pattern="[0-9]{2}-?[0-9]{7}"'],['billing_npi','Billing NPI (10 digits)','inputmode="numeric" pattern="[0-9]{10}"'],['rendering_npi','Rendering NPI (10 digits)','inputmode="numeric" pattern="[0-9]{10}"'],['billing_address','Billing address','maxlength="1000"'],['place_of_service','Place of service (2 digits, 11 = office)','inputmode="numeric" pattern="[0-9]{2}"']])
   if(inputs.has(name))parts.push(box(name,label,v[name],`required ${extra}`));
  return `<form id="claim-quick-fix" class="claim-quick-fix" data-claim="${esc(claim.id)}" hidden>${parts.join('')}<div class="actions"><button type="submit" class="primary">Save and check again</button><button type="button" data-claim-quick-fix-cancel>Cancel</button></div></form>`;
@@ -259,19 +291,75 @@ const claimTransport=t=>{
  const claimmd=t.claimmd_connected,artifact=t.artifact==='generated';
  const retrieval=(t.retrieval_health||[]).find(item=>(t.routes||[]).some(route=>route.provider==='claim_md'&&route.route_key===item.route_key));
  const health=retrieval?(retrieval.paused?'Automatic response checks are paused':retrieval.last_result?`Last response check: ${human(retrieval.last_result)}`:'Responses have not been checked yet'):'Response check status is not available yet';
- if(claimmd)return `Claim.MD is connected. ${artifact?'A claim file has been prepared for this claim.':'No claim file has been prepared for this claim yet.'} ${health}.`;
+ if(claimmd)return `The clearinghouse is connected. ${artifact?'A claim file has been prepared for this claim.':'No claim file has been prepared for this claim yet.'} ${health}.`;
  return `No clearinghouse is connected. ${artifact?'A claim file is ready to download and upload to your clearinghouse yourself.':'You can prepare a claim file (837P) and upload it to your clearinghouse yourself.'} Downloading a claim does not send it.`;
 };
-function claimListMarkup(claims,nextCursor){const shown=claims.filter(claimMatchesStatusFilter);return `<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Patient</th><th>Payer</th><th>Status</th><th class="money-cell">Billed</th><th></th></tr></thead><tbody data-claim-rows>${claimRowsMarkup(shown)||claimEmptyRow(claims)}</tbody></table></div><p class="muted claim-filter-note">The counts cover all your claims, not only the ones on this page.</p>${nextCursor?'<button type="button" data-claims-next>Show more claims</button>':''}`;}
-async function claimsAutoRefreshLoad(){
- const context=claimViewContext?claimContextSnapshot():null;
- if(context){
-  if(context.kind==='encounter')return autoRefreshStop();
-  await showClaimsWorkspace(context.claim,eraCurrent?.id);
-  return claimContextCurrent(context)?undefined:autoRefreshStop();
+function claimListMarkup(){return '<div class="billing-table-wrap"><table class="billing-table claims-monitor-table" role="table" aria-label="Claims"><thead><tr><th>Patient</th><th>Date of service</th><th>Insurer</th><th>Amount</th><th>Status</th><th>Review</th></tr></thead><tbody role="rowgroup" data-claim-rows></tbody></table></div>';}
+function eraListMarkup(){return '<div class="billing-table-wrap"><table class="billing-table claims-monitor-table" role="table" aria-label="Remittances"><thead><tr><th>Insurer</th><th>Trace</th><th>Payment date</th><th>Claims</th><th>Amount</th><th>Status</th></tr></thead><tbody role="rowgroup"></tbody></table></div>';}
+function eraRowsMarkup(){
+ const remittances=eraRows.filter(r=>claimStatusFilter==='payments'||eraWorkGroup(r)===claimStatusFilter);
+ if(!remittances.length){
+  const message=({'remittance-review':'No remittances to review',posted:'No posted remittances'})[claimStatusFilter]||'No remittances';
+  return `<tr><td colspan="6" class="table-empty">${message}${eraNext?' in the loaded records':''}.</td></tr>`;
  }
- await showClaimsWorkspace();
- return undefined;
+ return [...remittances].sort((a,b)=>String(b.payment_date||'').localeCompare(String(a.payment_date||''))).map(r=>{
+  return `<tr role="row"><td role="cell" class="monitor-record">${esc(r.payer_name||'—')}</td><td role="cell" class="monitor-action"><button type="button" data-era-open="${esc(r.id)}" aria-label="Open remittance ${esc(r.trace||r.id)}">${esc(r.trace||r.id)}</button></td><td role="cell" class="monitor-date">${esc(displayDate(r.payment_date)||'—')}</td><td role="cell" class="monitor-claim-count">${esc(r.claim_count)}<span class="monitor-mobile-label"> ${r.claim_count===1?'claim':'claims'}</span></td><td role="cell" class="money-cell monitor-amount">${money(r.total_paid_cents)}</td><td role="cell" class="monitor-status">${esc(eraStatusLabel(r.status))}</td></tr>`;
+ }).join('');
+}
+function claimWorklistPage(base,cursor){return cursor?`${base}?after=${encodeURIComponent(cursor)}`:base;}
+async function loadClaimWorklist(context){
+ const claims=await api(claimsBase);
+ while(claims.next_cursor&&claimContextCurrent(context)){
+  const page=await api(claimWorklistPage(claimsBase,claims.next_cursor));
+  claims.items.push(...page.items);claims.next_cursor=page.next_cursor;
+ }
+ if(!claimContextCurrent(context))return;
+ // Adjudication means the insurer answered. Confirm a posted remittance before showing Paid.
+ await Promise.all(claims.items.filter(row=>row.status==='adjudicated').map(async row=>{
+  const detail=await api(`${claimsBase}/${encodeURIComponent(row.id)}`).catch(()=>null);
+  if(detail?.claim?.id===row.id)row.tracking=detail.tracking;
+ }));
+ if(claimContextCurrent(context))return claims;
+}
+async function loadEraWorklist(context){
+ const payments=await api(eraBase);
+ for(let page=1;page<context.eraPages&&payments.next_cursor&&claimContextCurrent(context);page++){
+  const result=await api(claimWorklistPage(eraBase,payments.next_cursor));
+  payments.items.push(...result.items);
+  payments.next_cursor=result.next_cursor;
+ }
+ return payments;
+}
+async function showMoreMonitorRemittances(){
+ const context=claimViewContext,cursor=eraNext;
+ if(!cursor||!claimContextCurrent(context)||context.kind!=='worklist'||context.loadingEraPage)return;
+ context.loadingEraPage=true;
+ context.eraRevision++;
+ const button=$('claims-tool').querySelector('[data-era-next]');
+ button.disabled=true;
+ try{
+  const page=await api(claimWorklistPage(eraBase,cursor));
+  if(!claimContextCurrent(context))return;
+  eraRows=[...eraRows,...page.items];
+  eraNext=page.next_cursor;
+  claimMonitorEraPages=++context.eraPages;
+ }finally{
+  context.loadingEraPage=false;
+  if(claimContextCurrent(context))claimWorkspaceMarkup();
+ }
+}
+async function claimsAutoRefreshLoad(){
+ const context=claimViewContext,host=$('claims-tool');
+ if(context?.kind!=='worklist'||!claimContextCurrent(context)||!host||$('tools')?.hidden)return autoRefreshStop();
+ const eraRevision=context.eraRevision;
+ const [claims,remittances]=await Promise.all([loadClaimWorklist(context),context.loadingEraPage?null:loadEraWorklist(context)]);
+ if(!claims||!claimContextCurrent(context)||$('claims-tool')!==host||$('tools')?.hidden)return;
+ claimRows=claims.items;
+ if(remittances&&eraRevision===context.eraRevision){
+  eraRows=remittances.items;
+  eraNext=remittances.next_cursor;
+ }
+ claimWorkspaceMarkup();
 }
 function registerClaimsAutoRefresh(){
  if(typeof registerAutoRefresh!=='function')return;
@@ -285,34 +373,49 @@ function registerClaimsAutoRefresh(){
  const temporary=$('claims-tool')?.querySelector(':scope > .auto-refresh-head');
  if(temporary&&!temporary.children.length)temporary.remove();
 }
-async function showClaimsWorkspace(afterClaim,afterEra){
+async function showClaimsWorkspace({filter}={}){
  captureClaimDraft();
- const context={kind:'worklist',identity:typeof me==='undefined'?undefined:me};claimViewContext=context;
- if(!afterClaim)claimStatusFilter='all';
+ const identity=typeof me==='undefined'?undefined:me;
+ if(claimStatusFilterIdentity!==identity){claimStatusFilter='send';claimStatusFilterIdentity=identity;claimMonitorEraPages=1;}
+ const context={kind:'worklist',identity,eraPages:claimMonitorEraPages,eraRevision:0};claimViewContext=context;
+ if(filter!==undefined)setClaimMonitorFilter(filter);
  if(typeof loadClaimmdProviderDefaults==='function')await loadClaimmdProviderDefaults();if(!claimContextCurrent(context))return;
- const [c,r,p,s,counts,claimmd]=await Promise.all([api(`${claimsBase}${afterClaim?'?after='+afterClaim:''}`),api(`${eraBase}${afterEra?'?after='+afterEra:''}`),api('/api/v1/billing/payers'),billingWrite()?api('/api/v1/billing/remittance-sources'):{items:[]},api(`${claimsBase}/status-counts`).catch(()=>({})),loadClaimMdConnection()]);
+ const [c,r,p,s]=await Promise.all([loadClaimWorklist(context),loadEraWorklist(context),api('/api/v1/billing/payers'),billingWrite()?api('/api/v1/billing/remittance-sources'):{items:[]},loadClaimMdConnection(()=>claimContextCurrent(context))]);
+ if(!c||!claimContextCurrent(context))return;
+ claimRows=c.items;eraRows=r.items;billingPayers=p.items;eraNext=r.next_cursor;showTool('Claims & remittances');
+ $('tools').innerHTML=`<section id="claims-tool"><div class="section-head"><h2>Claims &amp; remittances</h2></div>
+ ${claimStatusChipsHtml()}
+ <section class="billing-section" data-claim-worklist>${claimListMarkup()}</section>
+ <section class="billing-section" data-era-worklist>${eraListMarkup()}</section>
+ <div class="actions" data-era-more hidden><span class="muted">Remittance counts reflect loaded records.</span><button type="button" data-era-next>Load more remittances</button></div>
+ <details id="claim-monitor-management" class="amendment"><summary>Billing tools${claimMdConnectionState?.connected?'':' · Clearinghouse not connected'}</summary>${billingPageMore()}
+ ${s.items.length?`<details class="amendment"><summary>Insurance payments imported from another system (${s.items.length})</summary>${s.items.map(v=>`<div class="timeline-row"><div><b>${esc(v.source_id)}</b><small>${esc(v.source_instance)}</small></div><button type="button" data-era-source="${v.source_history_id}">${v.native_id?'View payment':'Review and import'}</button></div>`).join('')}</details>`:''}<span id="claim-monitor-tools-anchor" hidden></span></details><div id="claims-detail"></div></section>`;
+ context.host=$('claims-detail');
+ window.eraSources=s.items;
+ claimWorkspaceMarkup();
+ const management='claim-monitor-tools-anchor';
+ await showEraAutomation(management,'beforebegin');
+ if(!claimContextCurrent(context))return;await showRecoupments(management);
+ if(!claimContextCurrent(context))return;await showEraBatches(management);
  if(!claimContextCurrent(context))return;
- claimRows=c.items;eraRows=r.items;billingPayers=p.items;claimNext=c.next_cursor;eraNext=r.next_cursor;claimStatusCounts=counts&&typeof counts==='object'&&counts.counts&&typeof counts.counts==='object'?counts.counts:{};showTool('Claims & remittances');
- $('tools').innerHTML=`<section id="claims-tool"><div class="section-head"><div><h2>Claims and insurance payments</h2><p class="muted">Send claims, see payer responses and post insurance payments.</p></div></div><div class="billing-totals"><span>Claims <b>${c.items.length}</b></span><span>Payments to review <b>${r.items.filter(x=>['staged','reconciled'].includes(x.status)).length}</b></span><span>Payments posted <b>${r.items.filter(x=>x.status==='posted').length}</b></span></div>
- <section class="billing-section"><div class="section-head"><div><h3>Claims</h3><p class="muted">Open a claim to check it, send it or see the payer response.</p></div></div>${claimStatusChipsHtml()}${claimListMarkup(c.items,claimNext)}</section>
- <section class="billing-section"><div class="section-head"><div><h3>Insurance payments</h3><p class="muted">Payments from the clearinghouse appear here to review before they post to patient accounts.</p></div></div><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Payer / trace number</th><th>Payment date</th><th>Claims</th><th>Status</th><th class="money-cell">Payment</th><th></th></tr></thead><tbody>${r.items.map(v=>`<tr><td><b>${esc(v.payer_name)}</b><small>${esc(v.trace)}</small></td><td>${esc(displayDate(v.payment_date))}</td><td>${v.claim_count}</td><td><span class="pill">${esc(eraStatusLabel(v.status))}</span></td><td class="money-cell">${money(v.total_paid_cents)}</td><td><button type="button" data-era-open="${v.id}">Review payment</button></td></tr>`).join('')||'<tr><td colspan="6" class="table-empty">No insurance payments yet.</td></tr>'}</tbody></table></div>${eraNext?'<button type="button" data-era-next>Show more payments</button>':''}</section>
- ${s.items.length?`<details class="amendment"><summary>Insurance payments imported from another system (${s.items.length})</summary>${s.items.map(v=>`<div class="timeline-row"><div><b>${esc(v.source_id)}</b><small>${esc(v.source_instance)}</small></div><button type="button" data-era-source="${v.source_history_id}">${v.native_id?'View payment':'Review and import'}</button></div>`).join('')}</details>`:''}<div id="claims-detail"></div></section>`;
-  context.host=$('claims-detail');
-  await showEraAutomation('claims-detail','beforebegin');
- if(!claimContextCurrent(context))return;await showRecoupments();
- if(!claimContextCurrent(context))return;await showEraBatches();
- if(!claimContextCurrent(context))return;window.eraSources=s.items;
  await decorateClaimsWorkspace(context);
  if(claimContextCurrent(context))registerClaimsAutoRefresh();
  return context;
 }
-function claimPane(html,{quiet=false}={}){const context=claimContextSnapshot();requireClaimContext(context);const host=claimWorkspaceHost(context);if(!host)return;host.innerHTML=html;if(!quiet)host.scrollIntoView({block:'start'});}
+function claimPane(html,{quiet=false,request=null}={}){const context=claimContextSnapshot();requireClaimContext(context);context.detailRequest=request;const host=claimWorkspaceHost(context);if(!host)return;host.innerHTML=html;if(!quiet)host.scrollIntoView({block:'start'});}
 function claimHasRecordedSubmission(detail={}){return detail.tracking?.external_submission_recorded===true||(detail.tracking?.submissions||[]).some(item=>item.status==='delivered');}
 function claimHasPreparedSubmission(detail={}){return (detail.tracking?.submissions||[]).some(item=>item.status==='prepared');}
 // Claim rows use the same state names as the encounter billing card.
 // Claim rows carry the Claim.MD position the list endpoint read for them, so a claim the
 // clearinghouse holds for correction is named as such in the list and not only once opened.
-function claimStatusLabel(claim){return typeof visitBillingClaimState==='function'?visitBillingClaimState(claim):claim?.claimmd_position?.needs_correction===true?claimMdCorrectionWord:claimIsCrossover(claim)&&claim.status==='submitted'?'Crossover response received':displayStatus(claim.status);}
+function claimStatusLabel(claim){
+ if(!claimRecordFilters.includes(claim.status))return 'Claim status unavailable';
+ if(typeof visitBillingClaimState==='function')return visitBillingClaimState(claim);
+ if(claimMdNeedsCorrection(claim,claim))return claimMdCorrectionWord;
+ if(claimIsCrossover(claim)&&claim.status==='submitted')return 'Crossover response received';
+ if(claimMdOnlyAcknowledged(claim,claim))return 'Received by the clearinghouse';
+ return displayStatus(claim.status);
+}
 function claimIsCrossover(claim){return Boolean(claim?.crossover_tracking_only===true||claim?.snapshot?.coordination_of_benefits?.crossover);}
 // The one word on the claim page. The database holds more statuses than staff work with, so several
 // of them share a word: 'Paid' needs the posted insurance payment, and 'Denied' arrives as a
@@ -322,7 +425,7 @@ const claimPlainWords={draft:'Not sent yet',ready:'Not sent yet',submitted:'Sent
 // A claim the clearinghouse holds for correction is worked on, not waited on; a claim it has only
 // acknowledged has not reached the payer at all, and saying "the insurer has it" would be untrue.
 const claimMdCorrectionWord='Needs correcting';
-function claimMdNeedsCorrection(detail={}){return detail?.claimmd_position?.needs_correction===true;}
+function claimMdNeedsCorrection(claim,detail={}){return ['submitted','accepted'].includes(claim?.status)&&detail?.claimmd_position?.needs_correction===true;}
 function claimMdOnlyAcknowledged(claim,detail={}){
  if(detail?.claimmd_position?.acknowledged===true)return true;
  if(detail?.claimmd_position?.acknowledged===false)return false;
@@ -330,17 +433,6 @@ function claimMdOnlyAcknowledged(claim,detail={}){
  // Claim.MD acknowledged the upload and nothing has been heard from the payer since.
  const reports=detail?.tracking?.reports||[],latest=reports[reports.length-1]?.evidence;
  return String(claim?.status||'')==='submitted'&&latest?.message?.status==='A'&&['CLMMD',undefined,'',null].includes(latest?.senderid)&&!claim?.payer_control_number;
-}
-// The provider message that has to be acted on: the server's open correction first, then the
-// newest Claim.MD warning on the claim, then the clearinghouse's words on the claim file.
-function claimMdCorrectionMessage(claim,detail={}){
- const open=detail?.claimmd_position?.correction?.message;
- if(typeof open==='string'&&open.trim())return open.trim();
- const warning=[...(detail?.tracking?.reports||[])].reverse().find(report=>String(report?.evidence?.message?.status||'')==='W');
- if(warning?.evidence?.message?.message)return String(warning.evidence.message.message).trim();
- const needs=[...(detail?.tracking?.submissions||[])].reverse().find(item=>item?.technical_status==='needs_review');
- if(needs?.payer_outcome_words)return String(needs.payer_outcome_words).trim();
- return '';
 }
 function claimPlainStatus(claim,detail={}){
  if(!claim)return '';
@@ -351,7 +443,7 @@ function claimPlainStatus(claim,detail={}){
  // page tells the truth about where the claim is rather than about which column was last written.
  if(['draft','ready'].includes(status)&&claimHasRecordedSubmission(detail))return claimPlainWords.submitted;
  if(status==='adjudicated')return detail?.tracking?.remittance_posted===true?'Paid':'Accepted';
- if(status==='submitted'&&claimMdNeedsCorrection(detail))return claimMdCorrectionWord;
+ if(claimMdNeedsCorrection(claim,detail))return claimMdCorrectionWord;
  return claimPlainWords[status]||displayStatus(claim.status)||'Status unavailable';
 }
 // What the claim was billed for, and what the payer and the patient have put against it. The
@@ -389,11 +481,17 @@ function claimPrimaryActionMarkup(claim,detail={},options={}){
  const canWrite=billingWrite(),connected=typeof claimMdConnectionState!=='undefined'&&claimMdConnectionState?.connected===true;
  const blockers=Array.isArray(detail?.preflight_issues)?detail.preflight_issues.filter(Boolean):[];
  const secondaryPlan=claim.snapshot?.account?.coverage_snapshot?.coverage?.content?.priority;
- let words='',button='';
+ let words='',button='',holdResponse='';
  // A claim file the clearinghouse has already received is out the door whatever the claim row still
  // says, so the next step cannot be to send it again. A file merely prepared is not proof it went.
  const received=claimHasRecordedSubmission(detail);
  if(claim.status==='void')words='This claim is voided. Nothing more goes to the insurer from it.';
+ else if(claimMdNeedsCorrection(claim,detail)){
+  words='Claim.MD is holding this claim for correction.';
+  const message=detail.claimmd_position.correction?.message;
+  if(typeof message==='string'&&message.trim())holdResponse=`<div class="mapping-notice"><b>Claim.MD response</b><p>${esc(message)}</p></div>`;
+  button='<button type="button" class="primary" data-claimmd-review-response>Review status and responses</button>';
+ }
  else if(['submitted','accepted','adjudicated'].includes(claim.status))words=claimHasRecordedSubmission(detail)?'This claim has been sent. The answer shows on this page while the claim is open.':claimHasPreparedSubmission(detail)?'A claim file is prepared but not confirmed as received. Open it to check its delivery before preparing another.':'This claim has been sent. Nothing to do until the insurer answers.';
  // The plain-words box at the top already carries the button that opens the claim with the problem
  // field focused. Repeating it here would put two primary buttons on one screen for one action.
@@ -419,7 +517,7 @@ function claimPrimaryActionMarkup(claim,detail={},options={}){
  const existing=(detail?.tracking?.submissions||[]).filter(item=>['prepared','delivered'].includes(item.status)&&item.id).at(-1);
  const openFile=existing?`<button type="button" data-claim-existing-submission="${esc(existing.id)}">Open the claim file already prepared</button>`:'';
  const extras=[secondary,correction,openFile].filter(Boolean).join('');
- return `<section class="claim-primary" data-claim-primary aria-label="Next step"><div class="claim-primary-action"><p>${esc(words)}</p><div class="claim-primary-buttons">${button}</div>${options.connectionNotice||''}</div><div class="claim-primary-side">${cms}</div>${extras?`<div class="claim-primary-extra">${extras}</div>`:''}${download?`<p class="claim-primary-download">${download}</p>`:''}${claim.parent_id?`<p class="claim-primary-parent"><button type="button" data-claim-open="${claim.parent_id}">Open the claim this one corrects</button></p>`:''}${options.secondaryEvidence||''}</section>`;
+ return `<section class="claim-primary" data-claim-primary aria-label="Next step"><div class="claim-primary-action"><p>${esc(words)}</p>${holdResponse}<div class="claim-primary-buttons">${button}</div>${options.connectionNotice||''}</div><div class="claim-primary-side">${cms}</div>${extras?`<div class="claim-primary-extra">${extras}</div>`:''}${download?`<p class="claim-primary-download">${download}</p>`:''}${claim.parent_id?`<p class="claim-primary-parent"><button type="button" data-claim-open="${claim.parent_id}">Open the claim this one corrects</button></p>`:''}${options.secondaryEvidence||''}</section>`;
 }
 // Everything that is not the next step, under one collapsed heading. The panels themselves are the
 // ones already on the screen; only where they sit changes. The claim's own status and version stay
@@ -479,7 +577,7 @@ function claimConnectionNotice(claim,detail={}){
  if(String(claim?.status||'').toLowerCase()!=='ready')return '';
  if(Array.isArray(detail?.preflight_issues)&&detail.preflight_issues.length)return '';
  if(typeof claimMdConnectionState!=='undefined'&&claimMdConnectionState?.connected===true)return '';
- return '<p class="claim-connection-note" data-claim-connection-note>Claim.MD is not connected, so this claim cannot be sent from here. A claim file can still be prepared and uploaded yourself.</p>';
+ return '<p class="claim-connection-note" data-claim-connection-note>The clearinghouse is not connected, so this claim cannot be sent from here. A claim file can still be prepared and uploaded yourself.</p>';
 }
 // A claim that came back is worked on from the plain-words box at the top of the screen, so the
 // next-step area has one button and never a second instruction competing with it.
@@ -666,18 +764,15 @@ function replaceMarkupSection(page,attribute,markup){
  }
  return page.slice(0,at)+markup+page.slice(end);
 }
-function claimStatusPaneMarkup(pane){return pane?.querySelector?.('.billing-account-detail')?.outerHTML??null;}
 async function claimDetailAutoRefreshLoad(){
  const context=claimContextSnapshot();if(!claimContextCurrent(context))return autoRefreshStop();
- const id=context.claim;if(!id||claimCurrent?.id!==id)return autoRefreshStop();
- const [d,h]=await Promise.all([api(`${claimsBase}/${id}`),api(`${claimsBase}/${id}/history`)]);
- requireClaimContext(context,d.claim);claimCurrent=d.claim;
- const pane=claimWorkspaceHost(context),markup=claimStatusPaneMarkup(pane);
- const edit=$('claim-editor');
- if(markup)if(edit&&pane===edit)edit.innerHTML=markup;else claimPane(markup,{quiet:true});
- if(typeof startClaimMdTracking==='function')startClaimMdTracking(id);
- if(typeof showClaimMdClaimActivity==='function'&&pane)await showClaimMdClaimActivity(d.claim);
- if(!claimContextCurrent(context))return autoRefreshStop();
+ const id=context.claim,request=context.detailRequest;if(!id||claimCurrent?.id!==id||request&&(request.kind!=='claim'||request.id!==id))return autoRefreshStop();
+ const d=await api(`${claimsBase}/${encodeURIComponent(id)}`);
+ if(!claimContextCurrent(context)||context.detailRequest!==request||context.claim!==id||claimCurrent?.id!==id)return;
+ if(d?.claim?.id!==id)throw new Error('Claim status response did not match this claim.');
+ if(d.claim.version<claimCurrent.version)return;
+ requireClaimContext(context,d.claim);claimCurrent=d.claim;claimDetailOnScreen={claimId:id,detail:d};
+ updateClaimStatusSurfaces(d.claim,context,d);
  return claimFinalStatus(d.claim,d)?autoRefreshStop():undefined;
 }
 function registerClaimDetailAutoRefresh(){
@@ -758,8 +853,12 @@ function claimScreenMarkup(claim,detail,history){
 }
 async function showClaim(id){
  const context=claimContextSnapshot(),identity=typeof me==='undefined'?undefined:me;
- const [d,h]=await Promise.all([api(`${claimsBase}/${id}`),api(`${claimsBase}/${id}/history`)]);if(!claimContextCurrent(context)||identity!==(typeof me==='undefined'?undefined:me))return;requireClaimContext(context,d.claim);claimCurrent=d.claim;context.claim=d.claim.id;
- claimPane(claimScreenMarkup(d.claim,d,h));claimDetailOnScreen={claimId:d.claim.id,detail:d};
+ const request={kind:'claim',id};context.detailRequest=request;
+ const current=()=>context.detailRequest===request&&claimContextCurrent(context)&&identity===(typeof me==='undefined'?undefined:me);
+ const [d,h]=await Promise.all([api(`${claimsBase}/${id}`),api(`${claimsBase}/${id}/history`)]);if(!current())return;
+ if(d.claim?.id!==id)throw new Error('The claim response does not match the selected claim.');
+ requireClaimContext(context,d.claim);claimCurrent=d.claim;context.claim=d.claim.id;
+ claimPane(claimScreenMarkup(d.claim,d,h),{request});claimDetailOnScreen={claimId:d.claim.id,detail:d};
   // The Claim.MD panels and the "what happened" timeline are filled in after the screen is drawn,
   // and sit inside More details. Each is left alone when its own script is not loaded.
   const claim=d.claim;
@@ -771,7 +870,8 @@ async function showClaim(id){
   const action=$('claim-action');if(action){action.claimViewContext=context;action.claimRecord=claim;}
   if(typeof startClaimMdTracking==='function')startClaimMdTracking(claim.id);
   if(typeof showClaimMdClaimActivity==='function')await showClaimMdClaimActivity(claim);
-  if(claimContextCurrent(context))claimProgressToHead(claimWorkspaceHost(context));
+  if(!current())return;
+  claimProgressToHead(claimWorkspaceHost(context));
   if(claimContextCurrent(context)&&context?.kind!=='encounter')claimDetailTabs(claimWorkspaceHost(context));
   if(typeof registerAutoRefresh==='function'){if(['submitted','accepted','adjudicated'].includes(claim.status)&&claimContextCurrent(context)&&context.kind==='worklist')registerClaimDetailAutoRefresh();else unregisterAutoRefresh('claim-status');}
 }
@@ -935,7 +1035,10 @@ function claimLineDiagnosisValues(form,pointed,lineCount){
 function claimEditor(b,c=null,source=null,parent=null,coordination=null){
  captureClaimDraft();b={...b,patient_id:b.patient_id||c?.patient_id||parent?.patient_id};
  const context=claimContextSnapshot();requireClaimContext(context,c||parent||{patient_id:b.patient_id,account_id:b.id});
- claimAccount=b;claimSource=source;const defaults=typeof claimmdClaimProviderDefaults==='function'?claimmdClaimProviderDefaults():{},coverage=b.coverage_snapshot?.coverage?.content||{},patientAddress=source?'':claimPatientAddressDefault(b),diagnoses=source?{diagnosis_codes:[],line_diagnosis_pointers:b.content.lines.map(()=>[])}:claimChargeDiagnosisDefaults(b);const v=c?.content||(coordination?{...parent.content,subscriber_address:coverage.relationship==='self'?parent.content.patient_address:'',subscriber_birth_date:coverage.subscriber_birth_date||'',external_control_number:''}:parent?.content)||{billing_provider_name:defaults.billing_provider_name||'',billing_npi:defaults.billing_npi||'',tax_id:'',billing_address:defaults.billing_address||'',rendering_npi:defaults.rendering_npi||'',patient_address:patientAddress,subscriber_address:coverage.relationship==='self'?patientAddress:'',subscriber_birth_date:coverage.subscriber_birth_date||'',place_of_service:'',...diagnoses,external_control_number:'',notes:'',synthetic_test:false};
+ const visitId=b.content.visit_id;
+ const assignedVisit=!visitId?null:(typeof activeVisit!=='undefined'&&activeVisit?.id===visitId?activeVisit:null)||
+  (typeof workspace!=='undefined'?workspace?.visits?.find(visit=>visit.id===visitId):null)||{id:visitId};
+ claimAccount=b;claimSource=source;const defaults=typeof claimmdClaimProviderDefaults==='function'?claimmdClaimProviderDefaults(assignedVisit,b.content.claim_details):{},coverage=b.coverage_snapshot?.coverage?.content||{},patientAddress=source?'':claimPatientAddressDefault(b),diagnoses=source?{diagnosis_codes:[],line_diagnosis_pointers:b.content.lines.map(()=>[])}:claimChargeDiagnosisDefaults(b);const v=c?.content||(coordination?{...parent.content,subscriber_address:coverage.relationship==='self'?parent.content.patient_address:'',subscriber_birth_date:coverage.subscriber_birth_date||'',external_control_number:''}:parent?.content)||{billing_provider_name:defaults.billing_provider_name||'',billing_npi:defaults.billing_npi||'',tax_id:'',billing_address:defaults.billing_address||'',rendering_npi:defaults.rendering_npi||'',patient_address:patientAddress,subscriber_address:coverage.relationship==='self'?patientAddress:'',subscriber_birth_date:coverage.subscriber_birth_date||'',place_of_service:'',...diagnoses,external_control_number:'',notes:'',synthetic_test:false};
  const html=`<form id="claim-editor-form" data-request="${crypto.randomUUID()}" data-edit="${c?.id||''}" data-parent="${parent?.id||''}"><h3>${c?'Edit draft claim':source?'Create a claim from an imported record':coordination?'Create secondary claim':parent?'Create corrected claim':'Create claim'}</h3>${sourceNotice(source)}<p>${money(b.total_cents)} in charges · Service ${esc(displayDate(b.content.service_date))}</p><div class="form-grid">${parent&&!coordination?selectField('frequency','Claim frequency',parent.payer_control_number?['replacement','void_request']:['original'],parent.payer_control_number?'replacement':'original'):'<input type="hidden" name="frequency" value="original">'}${billingField('billing_provider_name','Billing provider name',v.billing_provider_name)}${billingField('billing_npi','Billing NPI',v.billing_npi,'text',10)}${billingField('rendering_npi','Rendering NPI',v.rendering_npi,'text',10)}${billingField('tax_id','Tax ID / EIN (9 digits)',v.tax_id,'text',9)}${billingField('billing_address','Billing address',v.billing_address,'text',1000)}${billingField('patient_address','Patient address',v.patient_address,'text',1000)}${billingField('subscriber_address','Subscriber address',v.subscriber_address,'text',1000)}${billingField('subscriber_birth_date','Subscriber date of birth',v.subscriber_birth_date||'','date')}${claimPlaceOfServiceField(v.place_of_service)}${claimDiagnosisPickerMarkup(v.diagnosis_codes)}${billingField('external_control_number','Claim number from a previous system',v.external_control_number,'text',100)}</div>${claimLineDiagnosisMarkup(b,v)}<label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>${billingField('reason','Reason (saved in the claim history)','','text',1000,true)}${source?'<label class="review-ack"><input type="checkbox" required> I checked that the patient, payer, charges and claim number match the imported record.</label>':''}<button type="submit" class="primary">Save draft claim</button></form>`;
  if($('claim-editor'))$('claim-editor').innerHTML=html;else claimPane(html);
  const editorHost=$('claim-editor')||claimWorkspaceHost(context);
@@ -955,31 +1058,49 @@ function eraImportEditor(source=null){
  eraSource=source;const raw=source?.source_data;const html=`<form id="era-import" data-request="${crypto.randomUUID()}"><button type="button" class="batch-panel" data-batch-from-era>Open as an 835 file with several payments</button><h2>${source?.remote_report_id?'Review ERA from the clearinghouse':source?'Review imported insurance payment':'Import an insurance payment (ERA/835)'}</h2>${sourceNotice(source?{...source,policy:'Check the payer and that this is the right document. Importing does not post anything.'}:null)}${raw?.settlement_mapping?`<details class="amendment"><summary>Provider adjustments and reversals in the imported record</summary><pre class="billing-source">${esc(JSON.stringify({settlement:raw.settlement_mapping,source_ar_references:raw.source_ar_references||[]},null,2))}</pre></details>`:''}${raw?.provider?`<div class="mapping-notice"><b>${esc(raw.provider)} ERA ${esc(raw.provider_report_id||'')}</b><p>Payer in the imported record: ${esc(raw.source_payer_id||'')}. Importing does not post a payment.</p></div>`:''}<div class="form-grid">${payerPickerMarkup('payer','Insurance company',{value:raw?.source_payer_id||''})}${selectField('format','File format',['x12_835','normalized'],raw?.format||'x12_835')}<label>Choose file<input id="era-file" type="file" accept=".835,.txt,.json"></label></div><label>835 text (or JSON)<textarea name="document_text" rows="12" maxlength="1048576" required>${esc(raw?.original_text|| (raw?.document?JSON.stringify(raw.document,null,2):''))}</textarea></label><p class="muted">One payment per file, up to 1 MB, 1,000 claim rows and 1,000 provider adjustments (PLB), in US dollars.</p><details class="amendment"><summary>JSON format example</summary><pre class="billing-source">${esc(JSON.stringify({payer_code:'YOUR-PAYER-CODE',trace:'UNIQUE-TRACE',payment_date:'2026-10-23',total_paid_cents:8000,currency:'USD',claims:[{control_number:'SC… or claim number from a previous system',payer_control_number:'PAYER-CLAIM-ID',status:'1',patient_name:'Sample Patient',charged_cents:12550,paid_cents:8000,patient_responsibility_cents:2000,adjustments:[{group:'CO',reason_code:'45',amount_cents:2550,service_index:null},{group:'PR',reason_code:'1',amount_cents:2000,service_index:null}],services:[]}]},null,2))}</pre></details>${billingField('reason','Reason (saved in the history)','','text',1000,true)}<button class="primary" type="submit">Import for review</button></form>`;claimPane(html);typeaheadInit(claimWorkspaceHost()||document);}
 async function showEra(id){
  const context=claimContextSnapshot(),identity=typeof me==='undefined'?undefined:me;
- const [d,h]=await Promise.all([api(`${eraBase}/${id}`),api(`${eraBase}/${id}/history`)]);if(!claimContextCurrent(context)||identity!==(typeof me==='undefined'?undefined:me))return;eraCurrent=d.remittance;const r=eraCurrent,doc=r.document,editable=billingWrite()&&['staged','reconciled'].includes(r.status),suggested=Boolean(d.automation)&&r.version===2;
- claimPane(`<section class="billing-account-detail"><div class="section-head"><div><h2>Insurance payment (ERA)</h2><p>${esc(r.trace)} · ${esc(payerName(r.payer_id))} · ${esc(doc.payment_date)}</p><small>v${r.version} · ${esc(doc.payer_code)}</small></div><span class="status-badge">${esc(eraStatusLabel(r.status))}</span></div><div class="billing-totals"><span>Payment total <b>${money(doc.total_paid_cents)}</b></span><span>Claim payments <b>${money(doc.claims.reduce((sum,c)=>sum+c.paid_cents,0))}</b></span><span>Provider adjustments (PLB) <b>${money((doc.provider_adjustments||[]).reduce((sum,p)=>sum+p.amount_cents,0))}</b></span><span>Claims <b>${doc.claims.length}</b></span><span>Currency <b>${esc(doc.currency)}</b></span></div>${['staged','reconciled'].includes(r.status)?claimIssues(d.issues):`<div class="mapping-notice"><b>${r.status==='reversed'?'Posting undone':r.status==='posted'?'Payment posted':'Payment file rejected'}</b><p>${r.status==='reversed'?'The posting was undone. The original amounts are kept below for reference.':r.status==='posted'?'The payment and the selected contractual write-offs (CO) were posted together.':'This payment file was rejected and nothing was posted.'}</p></div>`}${suggested?'<p class="mapping-notice">These matches were suggested automatically. Check each claim and its balance before saving.</p>':''}${doc.supplemental?.length?`<details class="amendment"><summary>Other amounts from the payer (${doc.supplemental.length})</summary><p>These amounts are for information only. They do not add payments or patient charges.</p><pre class="billing-source">${esc(JSON.stringify(doc.supplemental,null,2))}</pre></details>`:''}<form id="era-matches">${doc.claims.map((row,i)=>{const m=r.matches.find(m=>m.row_index===i);return `<fieldset class="era-row" data-row="${i}"><legend>Claim ${i+1} · ${esc(row.control_number)}</legend><p>${esc(row.patient_name)} · Payer claim ${esc(row.payer_control_number)} · Claim status code ${esc(row.status)}</p><div class="billing-totals"><span>Charges <b>${money(row.charged_cents)}</b></span><span>Paid <b>${money(row.paid_cents)}</b></span><span>Patient responsibility (PR) <b>${money(row.patient_responsibility_cents)}</b></span></div>${editable?`<label>SunCharts claim<select name="claim_id"><option value="">Choose the matching claim</option>${claimRows.filter(c=>c.payer_id===r.payer_id&&['adjudicated','submitted','accepted'].includes(c.status)).map(c=>`<option value="${c.id}" ${m?.claim_id===c.id?'selected':''}>${esc(c.patient_name)} · ${esc(c.control_number)} · ${money(c.total_cents)}</option>`).join('')}${m&&!claimRows.some(c=>c.id===m.claim_id)?`<option value="${m.claim_id}" selected>Matched claim ${esc(m.claim_id)}</option>`:''}</select></label><label>Or paste the claim ID<input name="claim_lookup" placeholder="For a claim that is not in the list"></label><button type="button" data-era-inspect="${i}">Check claim and balance</button>`:`<p>Matched claim: ${m?`<button type="button" data-claim-open="${m.claim_id}">${esc(m.claim_id.slice(0,8))}</button>`:'None'}</p>`}${editable&&row.status!=='22'?`<details class="amendment" ${m?.correction_of_remittance_id?'open':''}><summary>This corrects an earlier reversal</summary><div class="form-grid"><label>ID of the payment with the reversal<input name="correction_of_remittance_id" value="${esc(m?.correction_of_remittance_id||'')}"></label><label>Claim row in that payment<input name="correction_of_row" type="number" min="1" max="1000" value="${m?.correction_of_row_index===undefined?'':m.correction_of_row_index+1}"></label></div><p class="muted">If the reversal is in this same payment, use ${esc(r.id)} and its claim row.</p></details>`:''}${editable&&row.status==='22'?`<div class="form-grid"><label>ID of the original posted payment<input name="reverses_remittance_id" value="${esc(m?.reverses_remittance_id||'')}" required></label><label>Claim row in that payment<input name="reverses_row" type="number" min="1" max="1000" value="${m?.reverses_row_index===undefined?'':m.reverses_row_index+1}" required></label></div><p class="mapping-notice">A reversal (claim status 22) must match the original posted claim and adjustments exactly.</p>`:''}<div class="era-match-evidence">${m?`${suggested?'Suggested - check the claim':'Checked'} · claim v${m.claim_version} · account v${m.account_version}`:'No claim matched yet'}</div><h4>Adjustments</h4>${row.adjustments.map((a,j)=>`<label class="review-ack">${editable&&row.status!=='22'&&a.group==='CO'?`<input type="checkbox" name="writeoff" value="${j}" ${m?.writeoff_adjustments.includes(j)?'checked':''}>`:'<span class="pill">'+esc(a.group)+'</span>'}<span>${esc(a.group)} · ${esc(a.reason_code)} · ${money(a.amount_cents)}${a.service_index===null?'':` · Service ${a.service_index+1}`}<small>${a.group==='CO'?(editable?'Tick to write off this contractual amount.':m?.writeoff_adjustments.includes(j)?'Written off.':'Not written off.'):'Shown for reference. Not written off.'}</small></span></label>`).join('')||'<p>No adjustments.</p>'}${row.services.length?`<details><summary>Service lines (${row.services.length})</summary><pre class="billing-source">${esc(JSON.stringify(row.services,null,2))}</pre></details>`:''}</fieldset>`;}).join('')}${editable?`${billingField('reason','Reason (saved in the history)','','text',1000,true)}<button class="primary" type="submit">Save matches</button>`:''}</form>
- ${billingWrite()&&!d.batch_id&&['staged','reconciled','posted'].includes(r.status)?`<form id="era-action"><h3>${r.status==='posted'?'Undo posting':'Post or reject this payment'}</h3><label>Action<select name="action">${r.status==='posted'?'<option value="reverse">Undo everything posted from this payment</option>':`${d.ready_to_post?'<option value="post">Post payment and selected write-offs</option>':''}<option value="reject">Reject this payment file</option>`}</select></label>${billingField('reason','Reason (saved in the history)','','text',1000,true)}<label class="review-ack"><input type="checkbox" required> I checked the claim matches, payment, write-offs and account balances.</label><p class="muted">Patient responsibility (PR) is never written off automatically.</p><button type="submit" class="primary">Confirm</button></form>`:''}${d.postings.length?`<h3>What was posted</h3><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Claim / account</th><th>Patient responsibility</th><th>Write-off (CO)</th><th>Current account balance</th></tr></thead><tbody>${d.postings.map(p=>`<tr><td>${esc(p.claim_id.slice(0,8))}<small>Account ${esc(p.account_id.slice(0,8))}</small></td><td>${money(p.patient_responsibility_cents)}</td><td>${money(p.writeoff_cents)}</td><td>${esc(eraCurrentBalance(p.current_account_balance_cents))}</td></tr>`).join('')}</tbody></table></div>`:''}<details class="amendment"><summary>Original payment file · ID ${esc(r.document_hash.slice(0,16))}</summary><pre class="billing-source">${esc(r.original_text||JSON.stringify(doc,null,2))}</pre></details><h3>Payment history</h3>${claimHistory(h)}</section>`);
+ const request={kind:'era',id};context.detailRequest=request;
+ const current=()=>context.detailRequest===request&&claimContextCurrent(context)&&identity===(typeof me==='undefined'?undefined:me);
+ const [d,h]=await Promise.all([api(`${eraBase}/${id}`),api(`${eraBase}/${id}/history`)]);if(!current())return;
+ if(d.remittance?.id!==id)throw new Error('The payment response does not match the selected remittance.');
+ eraCurrent=d.remittance;const r=eraCurrent,doc=r.document,editable=billingWrite()&&['staged','reconciled'].includes(r.status),suggested=Boolean(d.automation)&&r.version===2;
+ claimPane(`<section class="billing-account-detail"><div class="section-head"><div><h2>Insurance payment (ERA)</h2><p>${esc(r.trace)} · ${esc(payerName(r.payer_id))} · ${esc(doc.payment_date)}</p><small>v${r.version} · ${esc(doc.payer_code)}</small></div><span class="status-badge">${esc(eraStatusLabel(r.status))}</span></div><div class="billing-totals"><span>Payment total <b>${money(doc.total_paid_cents)}</b></span><span>Claim payments <b>${money(doc.claims.reduce((sum,c)=>sum+c.paid_cents,0))}</b></span><span>Provider adjustments (PLB) <b>${money((doc.provider_adjustments||[]).reduce((sum,p)=>sum+p.amount_cents,0))}</b></span><span>Claims <b>${doc.claims.length}</b></span><span>Currency <b>${esc(doc.currency)}</b></span></div>${['staged','reconciled'].includes(r.status)?claimIssues(d.issues):`<div class="mapping-notice"><b>${({reversed:'Posting undone',posted:'Payment posted',rejected:'Payment file rejected'})[r.status]||'Payment status unavailable'}</b><p>${r.status==='reversed'?'The posting was undone. The original amounts are kept below for reference.':r.status==='posted'?'The payment and the selected contractual write-offs (CO) were posted together.':r.status==='rejected'?'This payment file was rejected and nothing was posted.':'Open the payment history to review its recorded activity.'}</p></div>`}${suggested?'<p class="mapping-notice">These matches were suggested automatically. Check each claim and its balance before saving.</p>':''}${doc.supplemental?.length?`<details class="amendment"><summary>Other amounts from the payer (${doc.supplemental.length})</summary><p>These amounts are for information only. They do not add payments or patient charges.</p><pre class="billing-source">${esc(JSON.stringify(doc.supplemental,null,2))}</pre></details>`:''}<form id="era-matches">${doc.claims.map((row,i)=>{const m=r.matches.find(m=>m.row_index===i);return `<fieldset class="era-row" data-row="${i}"><legend>Claim ${i+1} · ${esc(row.control_number)}</legend><p>${esc(row.patient_name)} · Payer claim ${esc(row.payer_control_number)} · Claim status code ${esc(row.status)}</p><div class="billing-totals"><span>Charges <b>${money(row.charged_cents)}</b></span><span>Paid <b>${money(row.paid_cents)}</b></span><span>Patient responsibility (PR) <b>${money(row.patient_responsibility_cents)}</b></span></div>${editable?`<label>SunCharts claim<select name="claim_id"><option value="">Choose the matching claim</option>${claimRows.filter(c=>c.payer_id===r.payer_id&&['adjudicated','submitted','accepted'].includes(c.status)).map(c=>`<option value="${c.id}" ${m?.claim_id===c.id?'selected':''}>${esc(c.patient_name)} · ${esc(c.control_number)} · ${money(c.total_cents)}</option>`).join('')}${m&&!claimRows.some(c=>c.id===m.claim_id)?`<option value="${m.claim_id}" selected>Matched claim ${esc(m.claim_id)}</option>`:''}</select></label><label>Or paste the claim ID<input name="claim_lookup" placeholder="For a claim that is not in the list"></label><button type="button" data-era-inspect="${i}">Check claim and balance</button>`:`<p>Matched claim: ${m?`<button type="button" data-claim-open="${m.claim_id}">${esc(m.claim_id.slice(0,8))}</button>`:'None'}</p>`}${editable&&row.status!=='22'?`<details class="amendment" ${m?.correction_of_remittance_id?'open':''}><summary>This corrects an earlier reversal</summary><div class="form-grid"><label>ID of the payment with the reversal<input name="correction_of_remittance_id" value="${esc(m?.correction_of_remittance_id||'')}"></label><label>Claim row in that payment<input name="correction_of_row" type="number" min="1" max="1000" value="${m?.correction_of_row_index===undefined?'':m.correction_of_row_index+1}"></label></div><p class="muted">If the reversal is in this same payment, use ${esc(r.id)} and its claim row.</p></details>`:''}${editable&&row.status==='22'?`<div class="form-grid"><label>ID of the original posted payment<input name="reverses_remittance_id" value="${esc(m?.reverses_remittance_id||'')}" required></label><label>Claim row in that payment<input name="reverses_row" type="number" min="1" max="1000" value="${m?.reverses_row_index===undefined?'':m.reverses_row_index+1}" required></label></div><p class="mapping-notice">A reversal (claim status 22) must match the original posted claim and adjustments exactly.</p>`:''}<div class="era-match-evidence">${m?`${suggested?'Suggested - check the claim':'Checked'} · claim v${m.claim_version} · account v${m.account_version}`:'No claim matched yet'}</div><h4>Adjustments</h4>${row.adjustments.map((a,j)=>`<label class="review-ack">${editable&&row.status!=='22'&&a.group==='CO'?`<input type="checkbox" name="writeoff" value="${j}" ${m?.writeoff_adjustments.includes(j)?'checked':''}>`:'<span class="pill">'+esc(a.group)+'</span>'}<span>${esc(a.group)} · ${esc(a.reason_code)} · ${money(a.amount_cents)}${a.service_index===null?'':` · Service ${a.service_index+1}`}<small>${a.group==='CO'?(editable?'Tick to write off this contractual amount.':m?.writeoff_adjustments.includes(j)?'Written off.':'Not written off.'):'Shown for reference. Not written off.'}</small></span></label>`).join('')||'<p>No adjustments.</p>'}${row.services.length?`<details><summary>Service lines (${row.services.length})</summary><pre class="billing-source">${esc(JSON.stringify(row.services,null,2))}</pre></details>`:''}</fieldset>`;}).join('')}${editable?`${billingField('reason','Reason (saved in the history)','','text',1000,true)}<button class="primary" type="submit">Save matches</button>`:''}</form>
+ ${billingWrite()&&!d.batch_id&&['staged','reconciled','posted'].includes(r.status)?`<form id="era-action"><h3>${r.status==='posted'?'Undo posting':'Post or reject this payment'}</h3><label>Action<select name="action">${r.status==='posted'?'<option value="reverse">Undo everything posted from this payment</option>':`${d.ready_to_post?'<option value="post">Post payment and selected write-offs</option>':''}<option value="reject">Reject this payment file</option>`}</select></label>${billingField('reason','Reason (saved in the history)','','text',1000,true)}<label class="review-ack"><input type="checkbox" required> I checked the claim matches, payment, write-offs and account balances.</label><p class="muted">Patient responsibility (PR) is never written off automatically.</p><button type="submit" class="primary">Confirm</button></form>`:''}${d.postings.length?`<h3>What was posted</h3><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Claim / account</th><th>Patient responsibility</th><th>Write-off (CO)</th><th>Current account balance</th></tr></thead><tbody>${d.postings.map(p=>`<tr><td>${esc(p.claim_id.slice(0,8))}<small>Account ${esc(p.account_id.slice(0,8))}</small></td><td>${money(p.patient_responsibility_cents)}</td><td>${money(p.writeoff_cents)}</td><td>${esc(eraCurrentBalance(p.current_account_balance_cents))}</td></tr>`).join('')}</tbody></table></div>`:''}<details class="amendment"><summary>Original payment file · ID ${esc(r.document_hash.slice(0,16))}</summary><pre class="billing-source">${esc(r.original_text||JSON.stringify(doc,null,2))}</pre></details><h3>Payment history</h3>${claimHistory(h)}</section>`,{request});
  if(d.batch_id)$('claims-detail').insertAdjacentHTML('afterbegin',`<div class="batch-panel mapping-notice"><b>This payment is part of a larger 835 file</b><p>Save the matches here, then post or undo the whole file from the file page.</p><button type="button" data-batch-open="${d.batch_id}">Open the whole file</button></div>`);
- await showProviderSettlement(id);
- const fields=$('era-matches').querySelectorAll('.era-row');for(const field of fields){const m=r.matches.find(m=>m.row_index===Number(field.dataset.row));if(m&&!suggested)field.reviewedMatch={...m};}
+ const form=$('era-matches');
+ for(const editor of [form,$('era-action')])if(editor){editor.remittance=r;editor.viewCurrent=()=>current()&&$(editor.id)===editor;}
+ const fields=form.querySelectorAll('.era-row');for(const field of fields){const m=r.matches.find(m=>m.row_index===Number(field.dataset.row));if(m&&!suggested)field.reviewedMatch={...m};}
+ await showProviderSettlement(id,current);
+}
+async function refreshSavedEra(form){
+ if(!form.viewCurrent())return false;
+ const context=await showClaimsWorkspace();if(!context||!claimContextCurrent(context)||context.detailRequest)return false;
+ await showEra(form.remittance.id);return claimContextCurrent(context)&&context.detailRequest?.kind==='era'&&context.detailRequest.id===form.remittance.id;
 }
 async function inspectEraMatch(index){
- const field=$('era-matches').querySelector(`[data-row="${index}"]`),id=field.querySelector('[name=claim_lookup]').value.trim()||field.querySelector('[name=claim_id]').value;if(!id)throw new Error('Select a claim first.');
- const d=await api(`${claimsBase}/${encodeURIComponent(id)}`),c=d.claim,b=await api(`/api/v1/patients/${c.patient_id}/billing`),a=b.accounts.find(a=>a.id===c.account_id);if(!a)throw new Error('The charges for this claim could not be found.');const balance=a.total_cents+b.entries.filter(e=>e.account_id===a.id).reduce((sum,e)=>sum+e.effect_cents,0);
+ const form=$('era-matches'),field=form.querySelector(`[data-row="${index}"]`);
+ const selection=()=>field.querySelector('[name=claim_lookup]').value.trim()||field.querySelector('[name=claim_id]').value;
+ const id=selection(),request={};field.matchRequest=request;field.reviewedMatch=null;field.chainHistory=[];
+ const current=()=>form.viewCurrent()&&field.matchRequest===request&&selection()===id;
+ if(!id)throw new Error('Select a claim first.');
+ const d=await api(`${claimsBase}/${encodeURIComponent(id)}`);if(!current())return;
+ const c=d.claim;if(c.id!==id)throw new Error('The response does not match the selected claim.');
+ const b=await api(`/api/v1/patients/${c.patient_id}/billing`);if(!current())return;
+ const a=b.accounts.find(a=>a.id===c.account_id);if(!a)throw new Error('The charges for this claim could not be found.');const balance=a.total_cents+b.entries.filter(e=>e.account_id===a.id).reduce((sum,e)=>sum+e.effect_cents,0);
  field.reviewedMatch={row_index:index,claim_id:c.id,claim_version:c.version,account_version:a.version,writeoff_adjustments:[]};field.querySelector('.era-match-evidence').innerHTML=`<b>${esc(c.snapshot.patient.given_name)} ${esc(c.snapshot.patient.family_name)}</b><p class="claim-control">${esc(c.control_number)} · ${esc(c.status)}</p><p>Claim v${c.version} · Account v${a.version} · Current open balance <b>${money(balance)}</b></p>${c.snapshot.coordination_of_benefits?`<div class="mapping-notice"><b>Primary credits already on this account: ${money((c.snapshot.coordination_of_benefits.primary_credits||[]).reduce((n,a)=>n+a.amount_cents,0))}</b><p>The primary payer write-offs are already on this account. Do not write them off again.</p><pre>${esc(JSON.stringify(c.snapshot.coordination_of_benefits.primary_credits||[],null,2))}</pre></div>`:''}`;
- const history=await api(`${claimsBase}/${c.id}/era-history`);field.chainHistory=history.items;field.querySelector('.era-match-evidence').insertAdjacentHTML('beforeend',`<details class="amendment"><summary>Earlier posted payments for this claim (${history.items.length})</summary>${history.active_head?`<p><b>Current posting</b> · ${esc(history.active_head.remittance_id)} · Row ${history.active_head.row_index+1} · Claim v${history.active_head.claim_version}</p>`:''}${history.items.map((h,i)=>`<p>${esc(h.trace)} · Row ${h.row_index+1} · ${esc(h.status)} · ${h.claim.status==='22'?'Reversal':'Payment'} · ${money(h.claim.paid_cents)}<small>${esc(h.remittance_id)}</small><button type="button" data-chain-select="${i}" data-chain-row="${index}">Use this payment</button></p>`).join('')||'<p>No posting history for this claim.</p>'}</details>`);
+ const history=await api(`${claimsBase}/${c.id}/era-history`);if(!current())return;field.chainHistory=history.items;field.querySelector('.era-match-evidence').insertAdjacentHTML('beforeend',`<details class="amendment"><summary>Earlier posted payments for this claim (${history.items.length})</summary>${history.active_head?`<p><b>Current posting</b> · ${esc(history.active_head.remittance_id)} · Row ${history.active_head.row_index+1} · Claim v${history.active_head.claim_version}</p>`:''}${history.items.map((h,i)=>`<p>${esc(h.trace)} · Row ${h.row_index+1} · ${esc(h.status)} · ${h.claim.status==='22'?'Reversal':'Payment'} · ${money(h.claim.paid_cents)}<small>${esc(h.remittance_id)}</small><button type="button" data-chain-select="${i}" data-chain-row="${index}">Use this payment</button></p>`).join('')||'<p>No posting history for this claim.</p>'}</details>`);
 
 }
-document.addEventListener('change',e=>{if(e.target.id==='era-file')run(async()=>{const f=e.target.files[0];if(!f)return;if(f.size>1048576)throw new Error('File is larger than 1 MB.');$('era-import').elements.document_text.value=await f.text();});if(e.target.name==='claim_id'||e.target.name==='claim_lookup'){const row=e.target.closest('.era-row');if(row){row.reviewedMatch=null;row.querySelector('.era-match-evidence').textContent='Use Check claim and balance before saving.';}}});
+document.addEventListener('change',e=>{if(e.target.id==='era-file')run(async()=>{const f=e.target.files[0];if(!f)return;if(f.size>1048576)throw new Error('File is larger than 1 MB.');$('era-import').elements.document_text.value=await f.text();});if(e.target.name==='claim_id'||e.target.name==='claim_lookup'){const row=e.target.closest('.era-row');if(row){row.matchRequest=null;row.chainHistory=[];row.reviewedMatch=null;row.querySelector('.era-match-evidence').textContent='Use Check claim and balance before saving.';}}});
 document.addEventListener('click',e=>{const chip=e.target.closest?.('#claims-tool [data-claim-status]');if(chip){e.preventDefault();selectClaimStatusFilter(chip.dataset.claimStatus);return;}
- const b=e.target.closest('button');if(!b||b.hasAttribute('data-chain-select')||b.closest('.batch-panel')||b.closest('.settlement-panel')||b.closest('.era-automation-panel')||b.dataset.ediClaim||b.type==='submit'||(!b.closest('#claims-tool')&&!b.closest('#encounter-claims')&&!b.dataset.newClaim&&!b.dataset.mapClaim))return;const owned=['newClaim','mapClaim','sourceClaimAccount','claimAccount','claimOpen','claimRelease','claimExistingSubmission','eraOpen','eraSource','eraInspect'].some(key=>b.dataset[key]!==undefined)||['data-claims-next','data-era-next','data-edit-claim','data-secondary-claim','data-replacement-claim','data-new-era','data-close-encounter-claim','data-rebase-claim-draft','data-discard-claim-draft','data-claim-fix-resend'].some(name=>b.hasAttribute(name));if(!owned)return;run(async()=>{
+ const b=e.target.closest('button');if(!b||b.hasAttribute('data-chain-select')||b.closest('.batch-panel')||b.closest('.settlement-panel')||b.closest('.era-automation-panel')||b.dataset.ediClaim||b.type==='submit'||(!b.closest('#claims-tool')&&!b.closest('#encounter-claims')&&!b.dataset.newClaim&&!b.dataset.mapClaim))return;const owned=['newClaim','mapClaim','sourceClaimAccount','claimAccount','claimOpen','claimRelease','claimExistingSubmission','eraOpen','eraSource','eraInspect'].some(key=>b.dataset[key]!==undefined)||['data-era-next','data-edit-claim','data-secondary-claim','data-replacement-claim','data-new-era','data-close-encounter-claim','data-rebase-claim-draft','data-discard-claim-draft','data-claim-fix-resend'].some(name=>b.hasAttribute(name));if(!owned)return;run(async()=>{
  if(b.hasAttribute('data-rebase-claim-draft')){const form=$('claim-editor-form')||$('claimmd-submit-form');requireClaimContext(form.claimViewContext);form.claimDraftStale=false;form.querySelectorAll('button[type="submit"]').forEach(submit=>submit.disabled=false);form.querySelectorAll('[data-claim-draft-notice]').forEach(n=>n.remove());captureClaimDraft(form);return;}
  if(b.hasAttribute('data-discard-claim-draft')){const form=$('claim-editor-form')||$('claimmd-submit-form');requireClaimContext(form.claimViewContext);claimDrafts.delete(form.claimDraftKey);const account=form.claimAccount,record=form.claimRecord,source=form.claimSource,parent=form.claimParent;form.claimDraftKey=null;if(form.id==='claimmd-submit-form')claimMdSubmitEditor(form.claimMdDetail);else claimEditor(account,record,source,parent);return;}
  if(b.hasAttribute('data-close-encounter-claim')){const context=claimContextSnapshot();requireClaimContext(context);captureClaimDraft();$('encounter-claims').replaceChildren();$('encounter-claims').hidden=true;claimViewContext=null;return;}
  if(b.dataset.newClaim){await beginClaim(b.dataset.newClaim);return;}
  if(b.dataset.mapClaim){const m=await api(`/api/v1/patients/${selected}/history/${b.dataset.mapClaim}/claim-mapping`);if(m.native_id){await showClaimsWorkspace();await showClaim(m.native_id);return;}const candidates=workspace.billing.accounts.filter(a=>a.status==='posted'&&a.coverage_snapshot),patient=selected;await showClaimsWorkspace();claimSource=m;claimPane(`<h2>Create a claim from an imported record</h2>${sourceNotice(m)}<p>Choose the posted charges this claim belongs to.</p>${candidates.map(a=>`<button type="button" data-source-claim-account="${a.id}" data-patient="${patient}">${esc(a.content.service_date)} · ${money(a.total_cents)} · ${a.id.slice(0,8)}</button>`).join('')||'<p>No posted charges with insurance for this patient. Post the charges in the patient chart first.</p>'}`);window.claimSourceAccounts=candidates;return;}
  if(b.dataset.sourceClaimAccount){claimEditor({...window.claimSourceAccounts.find(a=>a.id===b.dataset.sourceClaimAccount),patient_id:b.dataset.patient},null,claimSource);return;}
- if(b.hasAttribute('data-claims-next')){await showClaimsWorkspace(claimNext);return;}if(b.hasAttribute('data-era-next')){await showClaimsWorkspace(null,eraNext);return;}
- if(b.dataset.claimAccount){const context=claimContextSnapshot();requireClaimContext(context,claimCurrent);if(context.kind!=='encounter'&&claimCurrent&&await openClaimOnVisit(claimCurrent.id))return;billingSelected=b.dataset.claimAccount;if(context.kind==='encounter'){captureClaimDraft();$('encounter-claims').replaceChildren();$('encounter-claims').hidden=true;claimViewContext=null;showBillingAccount(b.dataset.claimAccount,false,true);$('encounter-billing-detail')?.scrollIntoView({block:'start'});return;}await showClinical();await selectPatient(b.dataset.patient);showBillingAccount(b.dataset.claimAccount);return;}
+ if(b.hasAttribute('data-era-next')){await showMoreMonitorRemittances();return;}
+ if(b.dataset.claimAccount){const context=claimContextSnapshot();requireClaimContext(context,claimCurrent);if(context.kind!=='encounter'&&claimCurrent&&await openClaimOnVisit(claimCurrent.id))return;billingSelected=b.dataset.claimAccount;if(context.kind==='encounter'){captureClaimDraft();$('encounter-claims').replaceChildren();$('encounter-claims').hidden=true;claimViewContext=null;if(typeof openVisitChargesDetail==='function')openVisitChargesDetail(b.dataset.claimAccount);else showBillingAccount(b.dataset.claimAccount,false,true);return;}await showClinical();await selectPatient(b.dataset.patient);showBillingAccount(b.dataset.claimAccount);return;}
  if(b.dataset.claimExistingSubmission){await reviewExistingClaimSubmission(b.dataset.claimExistingSubmission);return;}
  if(b.dataset.claimRelease){await releaseClaimToSend(b.dataset.claimRelease);return;}
  if(b.dataset.claimOpen){if(b.hasAttribute('data-claim-visit')&&claimViewContext?.kind!=='encounter'&&await openClaimOnVisit(b.dataset.claimOpen))return;await showClaim(b.dataset.claimOpen);return;}if(b.hasAttribute('data-edit-claim')){claimEditor(claimCurrent.snapshot.account,claimCurrent);return;}
@@ -1013,23 +1134,23 @@ document.addEventListener('submit',e=>{const f=e.target;if(!['claim-editor-form'
  if(f.id==='claim-editor-form')await saveClaimEditorForm(f,d);
  if(f.id==='claim-action'){const context=f.claimViewContext||claimContextSnapshot(),claim=f.claimRecord||claimCurrent;requireClaimContext(context,claim);d.event_date=d.event_date||null;await api(`${claimsBase}/${claim.id}/actions`,'POST',d,claim.version);await refreshClaimInContext(claim.id,context);}
  if(f.id==='era-import'){const body={request_id:f.dataset.request,payer_id:d.payer_id,format:d.format,source_history_id:eraSource?.source_history_id||null,remote_report_id:eraSource?.remote_report_id||null,reason:d.reason,document:d.format==='normalized'?JSON.parse(d.document_text):null,original_text:d.format==='x12_835'?d.document_text:null};const r=await api(eraBase,'POST',body);await showClaimsWorkspace();await showEra(r.id);}
- if(f.id==='era-matches'){const matches=Array.from(f.querySelectorAll('.era-row')).map(row=>{if(!row.reviewedMatch)throw new Error('Use Check claim and balance on every row first.');return {...row.reviewedMatch,correction_of_remittance_id:row.querySelector('[name=correction_of_remittance_id]')?.value.trim()||null,correction_of_row_index:row.querySelector('[name=correction_of_remittance_id]')?.value.trim()?Number(row.querySelector('[name=correction_of_row]').value)-1:null,reverses_remittance_id:row.querySelector('[name=reverses_remittance_id]')?.value.trim()||null,reverses_row_index:row.querySelector('[name=reverses_row]')?Number(row.querySelector('[name=reverses_row]').value)-1:null,writeoff_adjustments:Array.from(row.querySelectorAll('[name=writeoff]:checked')).map(c=>Number(c.value))};});await api(`${eraBase}/${eraCurrent.id}/matches`,'PUT',{matches,reason:d.reason},eraCurrent.version);const id=eraCurrent.id;await showClaimsWorkspace();await showEra(id);}
- if(f.id==='era-action'){await api(`${eraBase}/${eraCurrent.id}/actions`,'POST',{action:d.action,reason:d.reason},eraCurrent.version);const id=eraCurrent.id;await showClaimsWorkspace();await showEra(id);}
+ if(f.id==='era-matches'||f.id==='era-action'){if(!f.viewCurrent?.()||!f.remittance)throw new Error('Open the payment again before saving.');}
+ if(f.id==='era-matches'){const r=f.remittance,matches=Array.from(f.querySelectorAll('.era-row')).map(row=>{if(!row.reviewedMatch)throw new Error('Use Check claim and balance on every row first.');return {...row.reviewedMatch,correction_of_remittance_id:row.querySelector('[name=correction_of_remittance_id]')?.value.trim()||null,correction_of_row_index:row.querySelector('[name=correction_of_remittance_id]')?.value.trim()?Number(row.querySelector('[name=correction_of_row]').value)-1:null,reverses_remittance_id:row.querySelector('[name=reverses_remittance_id]')?.value.trim()||null,reverses_row_index:row.querySelector('[name=reverses_row]')?Number(row.querySelector('[name=reverses_row]').value)-1:null,writeoff_adjustments:Array.from(row.querySelectorAll('[name=writeoff]:checked')).map(c=>Number(c.value))};});await api(`${eraBase}/${r.id}/matches`,'PUT',{matches,reason:d.reason},r.version);if(!await refreshSavedEra(f))return;}
+ if(f.id==='era-action'){const r=f.remittance;await api(`${eraBase}/${r.id}/actions`,'POST',{action:d.action,reason:d.reason},r.version);if(!await refreshSavedEra(f))return;}
  notice('Saved.');});});
 
 document.addEventListener('click',e=>{const b=e.target.closest('[data-chain-select]');if(!b)return;const field=$('era-matches').querySelector(`[data-row="${b.dataset.chainRow}"]`),source=field.chainHistory[Number(b.dataset.chainSelect)],reversal=field.querySelector('[name=reverses_remittance_id]');if(reversal){reversal.value=source.remittance_id;field.querySelector('[name=reverses_row]').value=source.row_index+1;}else{field.querySelector('[name=correction_of_remittance_id]').value=source.remittance_id;field.querySelector('[name=correction_of_row]').value=source.row_index+1;}notice('Payment selected. Check it is the right one before saving.');});
 
 async function decorateClaimsWorkspace(context){
  if(!claimContextCurrent(context))return;
- const heading=$('claims-tool')?.querySelector('.section-head');
- const subtitle=heading?.querySelector('.muted');
- if(subtitle)subtitle.textContent='Send claims, see payer responses and post insurance payments.';
- if(heading)heading.insertAdjacentHTML('afterend',claimMdConnectionCard());
+ const management=$('claim-monitor-tools-anchor');
+ if(management&&!claimMdConnectionState?.connected)management.insertAdjacentHTML('beforebegin',claimMdConnectionCard());
  const setting=claimMdConnectionState?.active?.id;
  if(setting&&typeof claimmdAccountUploads==='function'){
   const account=await claimmdAccountUploads(setting,{refresh:true});
-  if(!claimContextCurrent(context))return;const firstSection=$('claims-tool')?.querySelector('.billing-section');
-  const uploadsBlock=`<details class="amendment claim-advanced"><summary>Files received by Claim.MD (${account.uploads.length})</summary>${account.html}</details>`,detailHost=$('claims-detail');if(detailHost?.insertAdjacentHTML)detailHost.insertAdjacentHTML('beforebegin',uploadsBlock);else if(firstSection)firstSection.insertAdjacentHTML('beforebegin',uploadsBlock);
+  if(!claimContextCurrent(context))return;
+  const uploadsBlock=`<details class="amendment claim-advanced"><summary>Files received by the clearinghouse (${account.uploads.length})</summary>${account.html}</details>`;
+  management?.insertAdjacentHTML('beforebegin',uploadsBlock);
  }
 };
 
@@ -1068,10 +1189,12 @@ document.addEventListener('submit',event=>{if(event.target.id!=='claim-quick-fix
 // the patient's visit with the claim below the invoice. A claim with no visit (an imported record)
 // answers false and stays on the claims page.
 async function openClaimOnVisit(claimId){
- const identity=typeof me==='undefined'?undefined:me;
+ const context=claimContextSnapshot(),identity=context.identity;
+ const request={kind:'visit-claim',id:claimId};context.detailRequest=request;
  const claim=(await api(`${claimsBase}/${encodeURIComponent(claimId)}`)).claim,visitId=claim?.snapshot?.account?.content?.visit_id;
+ if(!claimContextCurrent(context)||context.detailRequest!==request)return true;
+ if(claim?.id!==claimId)throw new Error('The claim response does not match the selected claim.');
  if(!visitId||typeof selectPatient!=='function'||typeof showClinical!=='function')return false;
- if((typeof me==='undefined'?undefined:me)!==identity)return true;
  captureClaimDraft();await showClinical();if(me!==identity)return true;
  await selectPatient(claim.patient_id,visitId);if(me!==identity||selected!==claim.patient_id||activeVisit?.id!==visitId)return true;
  setEncounterSection('charges');
@@ -1082,8 +1205,9 @@ async function openClaimOnVisit(claimId){
 // The claim's Fix here opens the boxes in a window over the page (a sheet), so nothing on the page
 // jumps. Cancel or Esc closes it and the boxes go back where they were; a save closes it and the
 // claim, checked again, is highlighted where it changed.
-function sheetOpen(title,node){
- const dialog=document.createElement('dialog');dialog.className='sheet-dialog';
+function sheetOpen(title,node,{className='',label=false}={}){
+ const dialog=document.createElement('dialog');dialog.className=className?'sheet-dialog '+className:'sheet-dialog';
+ if(label)dialog.setAttribute('aria-label',title);
  dialog.innerHTML=`<header class="sheet-head"><h3>${esc(title)}</h3><button type="button" class="sheet-close" data-sheet-close aria-label="Close">×</button></header><div class="sheet-body"></div>`;
  dialog.querySelector('.sheet-body').append(node);document.body.append(dialog);
  dialog.addEventListener('cancel',event=>{event.preventDefault();sheetClose(dialog);});
@@ -1099,31 +1223,91 @@ function sheetClose(dialog,after){
 // page in a sheet instead of unfolding in place, so the page under it never moves and staff keep
 // their place. The detail's own nodes move into the sheet and back on close, so fields inside still
 // belong to their form and keep what was typed. A <details data-inline> stays inline.
+const detailsMenuSelector='details[data-menu],details.frame-add-menu,details.chart-list-more,details.patient-banner-more';
+const detailsSheets=new WeakMap();
+function detailsSheetTitle(details,summary){
+ const clean=value=>(value||'').replace(/[▾▸▿▹▼▶]/g,'').replace(/\s+/g,' ').trim();
+ const title=clean(summary?.textContent);
+ if(title&&title.toLowerCase()!=='more')return title;
+ for(let section=details.parentElement;section;section=section.parentElement){
+  const heading=[...section.querySelectorAll('h1,h2,h3,h4,h5,h6')].find(node=>!details.contains(node)&&!node.closest('dialog'));
+  if(heading&&clean(heading.textContent))return clean(heading.textContent)+' — more';
+ }
+ return 'Additional details';
+}
 function detailsSheetOpen(details){
+ if(details.matches(detailsMenuSelector)||!details.isConnected)return null;
+ const current=detailsSheets.get(details);if(current)return current;
  const summary=details.querySelector(':scope>summary');
+ const moved=[...details.childNodes].filter(node=>node!==summary);
+ const contentSelector='input,select,textarea,button,a[href],img,svg,canvas,video,audio,iframe,object';
+ const hasContent=nodes=>nodes.some(node=>node.textContent.trim()||(node.nodeType===1&&(node.matches(contentSelector)||node.querySelector(contentSelector))));
+ if(!hasContent(moved))return null;
  const dialog=document.createElement('dialog');dialog.className='sheet-dialog';
  dialog.innerHTML='<header class="sheet-head"><h3></h3><button type="button" class="sheet-close" data-sheet-close aria-label="Close">×</button></header><div class="sheet-body"></div>';
- dialog.querySelector('h3').textContent=(summary?.textContent||'Details').replace(/\s+/g,' ').trim();
- const body=dialog.querySelector('.sheet-body'),moved=[...details.childNodes].filter(node=>node!==summary);
+ dialog.querySelector('h3').textContent=detailsSheetTitle(details,summary);
+ const marker=document.createComment('details-sheet'),body=dialog.querySelector('.sheet-body');
+ details.append(marker);
  for(const node of moved)body.append(node);
- details.after(dialog);
- const restore=()=>{for(const node of moved)details.append(node);summary?.focus?.({preventScroll:true});};
- dialog.addEventListener('cancel',event=>{event.preventDefault();sheetClose(dialog,restore);});
- dialog.addEventListener('click',event=>{if(event.target===dialog||event.target.closest('[data-sheet-close]'))sheetClose(dialog,restore);});
+ details.after(dialog);detailsSheets.set(details,dialog);
+ const homeCurrent=()=>details.isConnected&&marker.parentNode===details&&summary?.parentNode===details;
+ let restored=false;
+ const restore=()=>{
+  if(restored)return;restored=true;watch.disconnect();detailsSheets.delete(details);
+  if(homeCurrent()){
+   for(const node of moved)if(node.parentNode===body)details.insertBefore(node,marker);
+   if(dialog.isConnected)summary?.focus?.({preventScroll:true});
+  }
+  marker.remove();dialog.remove();
+ };
+ const watch=new MutationObserver(()=>{
+  if(!homeCurrent()||!dialog.isConnected||!hasContent([...body.childNodes])){
+   if(dialog.open)dialog.close();restore();
+  }
+ });
+ watch.observe(document.documentElement,{childList:true,subtree:true,characterData:true});
+ dialog.addEventListener('close',restore,{once:true});
+ dialog.addEventListener('cancel',event=>{event.preventDefault();sheetClose(dialog);});
+ dialog.addEventListener('click',event=>{if(event.target===dialog||event.target.closest('[data-sheet-close]'))sheetClose(dialog);});
  dialog.showModal();return dialog;
 }
-if(typeof document!=='undefined'&&document.addEventListener)document.addEventListener('click',event=>{
- const summary=event.target?.closest?.('summary');const details=summary?.parentElement;
- if(!details||details.tagName!=='DETAILS'||details.open||details.hasAttribute('data-inline')||!details.closest?.('#visit-page-host'))return;
- event.preventDefault();detailsSheetOpen(details);
-});
+if(typeof document!=='undefined'&&document.addEventListener){
+ // Capture before action handlers that may stop propagation or redraw the page.
+ document.addEventListener('click',event=>{
+  const inside=event.target?.closest?.(detailsMenuSelector);
+  const action=event.target?.closest?.('button,a');
+  for(const menu of document.querySelectorAll(detailsMenuSelector)){
+   if(menu.open&&(!menu.contains(event.target)||(action&&menu.contains(action))))menu.open=false;
+  }
+  if(inside&&!inside.hasAttribute('data-menu'))inside.setAttribute('data-menu','');
+ },true);
+ document.addEventListener('keydown',event=>{
+  if(event.key!=='Escape')return;
+  for(const menu of document.querySelectorAll(detailsMenuSelector))if(menu.open){
+   menu.open=false;menu.querySelector(':scope>summary')?.focus?.({preventScroll:true});event.preventDefault();
+  }
+ },true);
+ document.addEventListener('click',event=>{
+  const summary=event.target?.closest?.('summary');const details=summary?.parentElement;
+  if(!details||details.tagName!=='DETAILS'||details.open||details.matches(detailsMenuSelector)||details.hasAttribute('data-inline')||!details.closest?.('#visit-page-host'))return;
+  event.preventDefault();detailsSheetOpen(details);
+ });
+}
 // Editing a signed note opens over the page. The form goes back where it was on close, and the
 // sheet closes by itself once the note is redrawn after a save.
 function noteEditSheetOpen(){
  const form=$('amendment-form'),editor=$('visit-editor');if(!form||form.closest('dialog'))return;
  const marker=document.createComment('amendment-form');form.before(marker);
- const dialog=sheetOpen('Edit note',form);form.classList.add('in-sheet');
- const back=()=>{form.classList.remove('in-sheet');if(marker.isConnected)marker.replaceWith(form);watch?.disconnect();};
+ const launcher=editor?.querySelector('[data-action="focus-amendment"]');form.hidden=false;
+ const dialog=sheetOpen('Add correction',form,{label:true});form.classList.add('in-sheet');
+ const back=()=>{
+  form.classList.remove('in-sheet');
+  if(marker.isConnected){
+   form.hidden=true;marker.replaceWith(form);
+   launcher?.focus({preventScroll:true});
+  }
+  watch?.disconnect();
+ };
  const watch=editor&&typeof MutationObserver!=='undefined'?new MutationObserver(()=>{if(!marker.isConnected){watch.disconnect();if(dialog.open)dialog.close();dialog.remove();}}):null;
  watch?.observe(editor,{childList:true,subtree:true});
  dialog.addEventListener('close',back);

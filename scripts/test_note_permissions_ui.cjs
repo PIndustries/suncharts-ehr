@@ -15,7 +15,7 @@ function fixture({user='covering',role='clinician',delegated=false,assigned='ass
   if(nodes.has(id))return nodes.get(id);
   let html='';
   const n={id,hidden:false,disabled:false,isConnected:true,dataset:{},value:'',textContent:'',className:'',classList:{add(){},remove(){},contains:()=>false,toggle(){}},
-   setAttribute(){},removeAttribute(){},addEventListener(){},replaceChildren(){this.innerHTML='';},querySelector(){return null;},focus(){},scrollIntoView(){}};
+   contains(){return false;},setAttribute(){},removeAttribute(){},addEventListener(){},replaceChildren(){this.innerHTML='';},querySelector(){return null;},focus(){},scrollIntoView(){}};
   Object.defineProperty(n,'innerHTML',{get:()=>html,set(value){html=value;if(id==='visit-editor')parseEditor(value);}});
   nodes.set(id,n);return n;
  }
@@ -35,7 +35,7 @@ function fixture({user='covering',role='clinician',delegated=false,assigned='ass
   }
  }
  const known=id=>id==='visit-editor'||!editorOwned(id);
- const context=vm.createContext({console,Date,Intl,URL,URLSearchParams,TextEncoder,crypto:{randomUUID:()=>'synthetic-request'},location:{search:'',hash:'',pathname:'/'},
+ const context=vm.createContext({console,Date,Intl,setTimeout,clearTimeout,URL,URLSearchParams,TextEncoder,crypto:{randomUUID:()=>'synthetic-request'},location:{search:'',hash:'',pathname:'/'},
   FormData:class{constructor(form){this.form=form;}*[Symbol.iterator](){yield*Object.entries(this.form.values||{});}},
   document:{documentElement:{classList:{add(){},remove(){}}},getElementById:id=>known(id)?node(id):nodes.get(id)||null,querySelectorAll:()=>[],addEventListener(type,callback){if(!listeners.has(type))listeners.set(type,[]);listeners.get(type).push(callback);}},
   window:{scrollTo(){},addEventListener(){}},fetch(){throw new Error('Unexpected network request');},billingWrite:()=>true,billingCan:()=>true,canDocument:()=>true,
@@ -62,7 +62,7 @@ function fixture({user='covering',role='clinician',delegated=false,assigned='ass
  const settle=async()=>{for(let i=0;i<12;i++)await new Promise(done=>setImmediate(done));};
  const form=()=>nodes.get('note-form');
  function type(values){Object.assign(form().values,values);for(const callback of listeners.get('input')||[])callback({target:{closest:selector=>selector.includes('#note-form')?form():null}});}
- async function click(dataset,reply=[]){answers=[...reply];const button={id:'',type:'button',dataset,closest:()=>null,hasAttribute:()=>false};for(const callback of listeners.get('click')||[])callback({target:{closest:()=>button}});await settle();assert.equal(answers.length,0,'every prepared answer was used');}
+ async function click(dataset,reply=[]){answers=[...reply];const button={id:'',type:'button',dataset,closest:()=>null,hasAttribute:()=>false};for(const callback of listeners.get('click')||[])callback({target:{closest:selector=>selector==='button'?button:null},preventDefault(){}});await settle();assert.equal(answers.length,0,'every prepared answer was used');}
  async function submit(){for(const callback of listeners.get('submit')||[])callback({target:form(),preventDefault(){}});await settle();}
  const editor=()=>nodes.get('visit-editor').innerHTML,line=id=>{const n=nodes.get(id);return n&&!n.hidden?n.textContent:'';};
  return {run,context,nodes,requests,asked,settle,form,type,click,submit,editor,line,notice:()=>node('notice').textContent,server:context.testServer};
@@ -75,14 +75,14 @@ async function main(){
  const draft={...soap,saved_by:savedBy('assistant')};
  for(const [user,role] of [['covering','clinician'],['owner','owner']]){
   const f=fixture({user,role,note:draft});await f.settle();
-  assert.match(f.editor(),/<button type="submit">Save note<\/button><button class="primary" type="button" data-action="sign">Sign note<\/button>/,role);
+  assert.match(f.editor(),/<button type="submit" class="quiet">Save note<\/button><button class="primary" type="button" data-action="sign-bill">.*?<\/button><button type="button" data-action="sign">Sign only<\/button>/,role);
   assert.doesNotMatch(f.editor(),/ readonly|You can read this note|You can draft this note/,role);
   assert.match(f.line('note-authorship'),/^Drafting for Dr\. Avery Assigned · Last saved by Morgan Assistant, [^·]*2026/,role);
   assert.equal(count(f,'GET','/previous-note'),1,role+' is offered the earlier note');
  }
  for(const [user,role] of [['nurse','nurse'],['assistant','medical_assistant']]){
   const f=fixture({user,role,note:draft});await f.settle();
-  assert.match(f.editor(),/<button type="submit">Save note<\/button><span id="note-sign-help" class="muted">You can draft this note\. A clinician signs it\.<\/span>/,role);
+  assert.match(f.editor(),/<button type="submit" class="quiet">Save note<\/button><span id="note-sign-help" class="muted">You can draft this note\. A clinician signs it\.<\/span>/,role);
   assert.doesNotMatch(f.editor(),/data-action="sign"| readonly|You can read this note|amendment-form/,role);
   assert.match(f.line('note-authorship'),/^Drafting for Dr\. Avery Assigned · Last saved by Morgan Assistant, /,role);
   // A forged sign click is refused before any request leaves the page.
@@ -113,7 +113,7 @@ async function main(){
   console.log('PASS the vitals form is enabled for front desk while notes stay closed, and stays locked for read-only staff and a support session');
 
   let f=fixture({user:'support',role:'owner',delegated:true,display:'platform_admin:synthetic',note:draft});await f.settle();
- assert.match(f.editor(),/<button type="submit">Save note<\/button><span id="note-sign-help" class="muted">You can draft this note\. A clinician at the practice must sign it\.<\/span>/);
+ assert.match(f.editor(),/<button type="submit" class="quiet">Save note<\/button><span id="note-sign-help" class="muted">You can draft this note\. A clinician at the practice must sign it\.<\/span>/);
  assert.doesNotMatch(f.editor(),/data-action="sign"|You can read this note/);
  await f.click({action:'sign'});assert.equal(count(f,'POST','/sign'),0,'a support session never signs');
  f=fixture({user:'support',role:'owner',delegated:true,display:'platform_admin:synthetic',note:{...soap,saved_by:savedBy('support','Support staff',{support:true})},status:'signed',signedBy:'assigned'});await f.settle();
@@ -132,10 +132,10 @@ async function main(){
  f=fixture({user:'assigned',role:'clinician',note:{...soap,saved_by:savedBy('assigned')}});await f.settle();
  assert.equal(f.line('note-authorship').replace(/, .*/,''),'Last saved by Dr. Avery Assigned');assert.doesNotMatch(f.line('note-authorship'),/Drafting for/);
  assert.equal(count(f,'GET','/note-authorship'),0);
- await f.click({action:'sign'},[true]);
- assert.equal(f.asked[0].options.title,'Sign note?');assert.equal(count(f,'POST','/sign'),1);
+ await f.click({action:'sign'});
+ assert.equal(f.asked.length,0);assert.equal(count(f,'POST','/sign'),1);
  f=fixture({user:'assigned',role:'clinician',note:null});await f.settle();assert.equal(f.line('note-authorship'),'','a note nobody has saved names nobody');
- console.log('PASS the assigned clinician’s own visit keeps its usual editor and signature question');
+ console.log('PASS the assigned clinician’s own explicit signature submits in one action');
 
  // Saved vitals render as a summary. Clicking Sign must still require the clinician's confirmation.
  f=fixture({user:'assigned',role:'clinician',note:soap,vitals:{heart_rate_bpm:72}});await f.settle();
@@ -167,12 +167,12 @@ async function main(){
  assert.equal(f.asked.length,1);
  assert.equal(f.asked[0].options.title,'Sign as yourself for Dr. Avery Assigned’s visit?');
  assert.equal(f.asked[0].options.confirmLabel,'Sign');assert.equal(f.asked[0].options.cancelLabel,'Cancel');
- assert.equal(f.asked[0].message,'Signing locks the note and records you as the signer. The encounter stays assigned to Dr. Avery Assigned. Check the rendering provider on the claim if you saw the patient.');
+ assert.equal(f.asked[0].message,'The encounter stays assigned to Dr. Avery Assigned. Check the rendering provider on the claim if you saw the patient.');
  assert.equal(count(f,'POST','/sign'),0,'Cancel signs nothing');
  await f.click({action:'sign'},[true]);
  const signRequest=f.requests.find(r=>r.path.endsWith('/sign'));assert.equal(signRequest.version,4);assert.equal(signRequest.body,undefined,'signing never reassigns the encounter');
  f=fixture({user:'covering',role:'clinician',note:draft});await f.settle();f.type({plan:'Unsaved plan'});
- await f.click({action:'sign'});assert.equal(f.notice(),'Save your current note before signing.');assert.equal(f.asked.length,0);
+ await f.click({action:'sign'},[true]);assert.equal(count(f,'PUT','/note'),1);assert.equal(count(f,'POST','/sign'),1);
  console.log('PASS a covering clinician is asked once, by name, and Cancel signs nothing');
 
  // Saving updates "Last saved by" to the writer.

@@ -1,0 +1,426 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/* Stage 1 frame: shared theme tokens keep the same structure in every appearance. */
+#app.shell{display:block;background:var(--paper)}
+#app>.sidebar,#shell-nav-dismiss{display:none!important}
+#app>main{margin:0;width:100%;max-width:none;padding:0 20px 176px;min-width:0}
+#app .shell-topbar{display:flex;position:sticky;top:0;z-index:40;align-items:center;flex-wrap:nowrap;gap:20px;margin:0 -20px;padding:8px 16px;height:auto;min-height:58px;background:var(--surface);border-bottom:1px solid var(--line)}
+.shell-topbar>.wordmark{flex:none;font-size:16px;white-space:nowrap}
+.shell-topbar .shell-location,.shell-topbar #shell-date,.shell-topbar .shell-environment{display:none}
+#workspace-navigation{display:flex;flex:1;align-items:center;gap:12px;min-width:0;padding:0;flex-wrap:nowrap;overflow:visible}
+.frame-primary{display:flex;flex:none;flex-wrap:nowrap;max-width:100%;gap:6px;align-items:center}
+#workspace-navigation .nav-item{display:block;width:auto;min-height:40px;border:0;border-bottom:2px solid transparent;border-radius:0;margin:0;padding:8px 12px;background:transparent;color:var(--muted);white-space:nowrap;font-weight:600}
+#workspace-navigation .nav-item svg{display:none}
+#workspace-navigation .nav-item[aria-current=page]{border-bottom-color:var(--blue);color:var(--blue);background:transparent}
+#app .shell-topbar-actions{display:flex;flex:none;flex-wrap:nowrap;gap:8px;align-items:center}
+.frame-patient-tabs{display:flex;flex-wrap:nowrap;max-width:100%;align-items:center;gap:4px;min-width:0;flex:1 1 auto;overflow-x:auto}
+.frame-patient-tab{display:flex;flex:1 0 140px;min-width:140px;max-width:220px;align-items:center;border:1px solid var(--line);border-radius:7px;background:var(--surface-soft)}
+.frame-patient-tab.active{background:var(--surface);border-bottom:2px solid var(--blue)}
+.frame-patient-tab button{display:flex;align-items:center;gap:6px;border:0;background:transparent;padding:6px;min-height:34px;font-size:var(--fs-xs);white-space:nowrap}
+.frame-patient-tab .avatar{display:grid;flex:none;place-items:center;width:22px;height:22px;border-radius:50%;background:var(--accent);color:var(--blue);font-size:10px}
+.frame-user-menu{position:relative;flex:none}
+.frame-user-menu>button{cursor:pointer;border:0;background:transparent;padding:4px}
+.frame-user-menu>summary::-webkit-details-marker{display:none}
+.frame-user-menu .account-avatar{display:grid;place-items:center;width:32px;height:32px;border-radius:50%;background:var(--accent);color:var(--blue);font-weight:700}
+.frame-user-panel{position:absolute;right:0;top:42px;width:280px;padding:14px;display:flex;flex-direction:column;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:8px;box-shadow:var(--theme-shadow)}
+.frame-user-panel .sidebar-account{display:flex;gap:8px;border:0;padding:0}
+.frame-user-panel .sidebar-account>.account-avatar,.frame-user-panel .account-label{display:none}
+.frame-user-panel .sidebar-account>div{display:flex;flex-direction:column;flex:1;min-width:0}
+.frame-user-panel .sidebar-source{display:flex;flex-direction:column;gap:4px;border:0;padding:0;color:var(--muted)}
+.frame-user-panel .nav-item{width:100%;margin:0;background:transparent;color:var(--ink)}
+.frame-user-panel .nav-item svg{width:16px;height:16px}
+.frame-user-panel .theme-control{justify-content:space-between}
+.frame-billing-tabs{display:flex;gap:6px;border-bottom:1px solid var(--line);margin:0 0 16px}
+.frame-billing-tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--muted)}
+.frame-billing-tabs button[aria-current=page]{color:var(--blue);border-bottom-color:var(--blue)}
+.frame-billing-tabs svg{display:none}
+#app .workspace-header{position:static;padding:12px 0;min-height:0;background:transparent;border:0}
+#app .workspace-header .eyebrow,#app #page-description,#app #identity,#app #toggle-directory{display:none}
+#app .workspace-header:has(~.workspace.frame-chart-open:not([hidden])){display:none}
+#app .workspace{display:block}
+#app #patient-directory{max-width:none}
+#app .workspace:not(.frame-chart-open) #chart{display:none}
+#app .frame-chart-open #patient-directory{display:none}
+#app .frame-chart-open #chart{position:relative;padding-left:220px;display:flow-root;margin-top:12px}
+#chart>#patient-banner{margin-left:-220px;margin-bottom:16px;position:sticky;top:var(--frame-top-height,58px);z-index:20;background:var(--surface);box-shadow:none;border-radius:6px;padding:10px 12px}
+#chart>.chart-context{position:sticky;top:calc(var(--frame-top-height,58px) + var(--frame-banner-height,80px) + 16px);max-height:calc(100dvh - var(--frame-top-height,58px) - var(--frame-banner-height,80px) - 32px);overflow-y:auto;overscroll-behavior:contain;float:left;margin-left:-220px;width:204px;box-sizing:border-box;margin-top:0;border:1px solid var(--line);border-radius:5px;padding:6px;background:var(--surface)}
+#chart .frame-chart-navigation{display:block;border:0;padding:0;background:transparent;box-shadow:none}
+.frame-chart-group{margin-bottom:16px}
+.frame-chart-group .nav-group-label{font-size:10px;color:var(--muted);font-weight:650;letter-spacing:.06em;margin:14px 8px 6px}
+#chart .frame-chart-navigation button{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:0;border-radius:4px;padding:8px;background:transparent;color:var(--ink);font-size:var(--fs-sm);font-weight:500;margin:0;min-width:0;white-space:nowrap;overflow-wrap:normal}
+#chart .frame-chart-navigation button[aria-pressed=true]{background:var(--accent);color:var(--blue);box-shadow:inset 2px 0 var(--blue)}
+.frame-section-icon{display:flex;width:16px;height:16px;flex:none;align-items:center;justify-content:center}
+.frame-section-label{flex:1;white-space:nowrap;overflow-wrap:normal;word-break:normal}
+.frame-section-markers{display:flex;flex:none;flex-wrap:nowrap;justify-content:flex-end;align-items:center;gap:4px;margin-left:auto}
+.frame-section-markers:empty{display:none}
+.frame-nav-count{font-size:var(--fs-xs);white-space:nowrap;border-radius:4px;padding:1px 4px;background:var(--surface-soft);color:var(--muted)}
+.frame-nav-count.is-warning{background:var(--warning-bg);color:var(--warning-text)}
+.frame-nav-count.is-danger{background:var(--error-bg);color:var(--error-text)}
+.frame-nav-dot{width:7px;height:7px;border-radius:50%;background:var(--warning-text);flex:none}
+#record-context:not([hidden]){margin:0 0 12px}
+.frame-chart-select{display:none}
+#chart .patient-banner-who{display:flex;flex:1;min-width:0;gap:8px}
+#chart .patient-banner-identity{display:flex;align-items:center;min-width:0;gap:12px;overflow:hidden}
+#chart .patient-banner-name{flex:none;font-size:var(--fs-lg)}
+#chart .patient-banner-facts{color:var(--muted);margin:0;gap:6px;overflow:hidden;text-overflow:ellipsis}
+#chart .patient-banner-facts>span+span{border:0;padding:0}
+#chart .patient-banner-facts>span+span:before{content:'·';margin-right:6px}
+#chart .patient-banner-facts>span{color:var(--muted)}
+#chart .patient-banner-top{flex-wrap:wrap}
+.frame-banner-alerts{display:flex;gap:4px;flex:none}
+.frame-banner-alerts .patient-banner-item{background:var(--warning-bg);color:var(--warning-text);border:1px solid var(--warning-line)}
+#chart .patient-banner-actions{margin-left:auto}
+#chart .patient-banner-menu-facts [data-banner-collapsed]{display:block}
+#chart .patient-banner-menu-facts .patient-banner-visit{display:flex}
+#chart .patient-banner-menu-facts .patient-banner-details>summary{display:block}
+#chart .patient-banner-menu-facts .patient-banner-details>div{position:static;width:auto;box-shadow:none;border:0}
+#app .panel{box-shadow:none;border:1px solid var(--line);background:var(--surface)}
+@media(max-width:1100px){
+ #app .shell-topbar{gap:8px}.shell-topbar>.wordmark b{display:none}
+ #workspace-navigation .nav-item{padding-inline:8px}
+ #chart .patient-banner-identity{gap:8px}.frame-banner-alerts{max-width:180px;overflow:auto}
+}
+@media(max-width:900px){
+ #app .frame-chart-open #chart{padding-left:58px}
+ #chart>#patient-banner{margin-left:-58px}
+ #chart>.chart-context{width:44px;margin-left:-58px}
+ .frame-section-label,.frame-section-markers,.frame-chart-group .nav-group-label{display:none}
+ #chart .frame-chart-navigation button{justify-content:center;padding:6px}
+ .frame-chart-group{margin-bottom:8px}
+ .shell-topbar>.wordmark{display:none}
+ #app .shell-patient-search span,#app .shell-patient-search kbd{display:none}
+ #app .shell-patient-search{min-width:0;width:32px;padding:6px}
+ #chart .patient-banner-facts{max-width:280px}
+}
+@media(max-width:600px){
+ #app>main{padding-inline:10px}#app .shell-topbar{margin-inline:-10px;padding-inline:8px;gap:4px}
+ #workspace-navigation .nav-item{padding-inline:6px;font-size:var(--fs-xs)}
+ #app .frame-chart-open #chart{padding-left:0}
+ #chart>#patient-banner{margin-left:0}
+ #chart>.chart-context{float:none;width:auto;margin:0 0 12px}
+ .frame-chart-items{display:none}.frame-chart-select{display:flex;align-items:center;gap:8px;font-size:var(--fs-xs);color:var(--muted)}
+ .frame-chart-select select{flex:1;min-width:0}
+ #chart .patient-banner-identity{max-width:100%;overflow:auto}
+ #chart .patient-banner-who{overflow:hidden}
+ #chart .patient-banner-name{font-size:var(--fs-sm)}
+ #chart .patient-banner-actions{gap:4px}
+ #chart .patient-banner-actions>button{max-width:100px;overflow:hidden;text-overflow:ellipsis}
+ .frame-banner-alerts{max-width:55px}
+}
+#app .workspace-header{margin:0 0 12px}
+#workspace-navigation .nav-item[aria-current=page]::before{display:none}
+.frame-user-panel :is(.sidebar-account strong,.account-role,.sidebar-source .preview,.sidebar-source a,.sidebar-signout){color:var(--muted)}
+.frame-user-panel .sidebar-account strong{color:var(--ink)}
+.frame-chart-group .nav-group-label{font-size:var(--fs-eyebrow)}
+
+.frame-patient-tab [data-frame-patient]{flex:1;min-width:0;overflow:hidden}
+.frame-patient-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.frame-patient-tab [data-frame-close]{flex:none}
+.frame-section-label{min-width:0;white-space:normal;overflow-wrap:anywhere}
+.frame-add-menu{position:relative}
+.frame-add-menu>summary{cursor:pointer;list-style:none;border:1px solid var(--line);border-radius:6px;padding:8px 12px;background:var(--surface)}
+.frame-add-items{position:absolute;top:100%;right:0;z-index:30;display:flex;flex-direction:column;align-items:stretch;gap:4px;width:180px;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--surface);box-shadow:var(--theme-shadow)}
+#clinical-lists .clinical-domain{scroll-margin-top:calc(var(--frame-banner-height,80px) + 16px)}
+@media(max-width:899px){
+ #app .shell-topbar{flex-wrap:wrap}
+ #workspace-navigation{flex-basis:100%;order:3}
+ #app .shell-topbar-actions{margin-left:auto;max-width:100%;flex-wrap:wrap}
+}
+@media(max-width:600px){
+ .frame-primary{flex-wrap:wrap;max-width:100%}
+ #workspace-navigation{gap:8px}
+ .frame-patient-tabs{flex-basis:100%}
+ .frame-user-panel{width:min(280px,calc(100vw - 32px))}
+}
+
+/* Flatten the live step into Summary’s single action box. */
+#patient-next-action>.visit-billing-status{display:contents}
+
+.frame-user-panel[hidden]{display:none}
+.frame-user-panel .shell-environment{display:block}
+
+#chart.frame-encounter-open .patient-banner-actions>[data-chart-section="visits"]{display:none}
+#chart:not(.frame-encounter-open) .patient-banner-timeline{display:none}
+@media(max-width:1199px){
+ #app .shell-patient-search span,#app .shell-patient-search kbd{display:none}
+ #app .shell-patient-search{min-width:32px;width:32px;padding:6px}
+}
+
+.frame-user-panel .sidebar-signout{width:auto;height:auto;margin:0;min-height:36px;text-align:left;justify-content:start}
+
+/* A section occupies one stable content surface beneath the two sticky headers. */
+html:has(.frame-chart-open){scroll-behavior:auto;overflow-anchor:none}
+#chart{overflow:visible;min-height:calc(100dvh + 160px)}
+#chart>.panel,#chart>#billing-workspace{min-height:480px}
+.chart-section-skeleton{height:480px;box-sizing:border-box;padding:24px;overflow:hidden}
+.chart-section-skeleton span{display:block;height:36px;margin:0 0 20px;background:var(--surface-soft);border-radius:4px}
+.chart-list-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+.chart-list-header h2{margin:0}
+.chart-list-note{font-size:var(--fs-sm);color:var(--muted);margin:4px 0 12px}
+.chart-list-toolbar{display:flex;gap:8px;margin-bottom:16px;align-items:center}
+.chart-list-toolbar input{flex:1;min-width:100px}.chart-list-toolbar select{width:auto;max-width:220px}
+.chart-list-table{overflow-x:auto}.chart-list-table table{width:100%;border-collapse:collapse}
+.chart-list-table th{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);font-weight:600;text-align:left;background:var(--surface-soft);padding:10px 12px}
+.chart-list-table td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+.chart-list-table tbody tr:has(button){cursor:pointer}.chart-list-table tbody tr:hover{background:var(--surface-soft)}
+.chart-empty-row{color:var(--muted);padding:16px 0}
+.chart-record-sheet .sheet-body{overflow:auto}
+#chart .chart-list-header h2:focus{outline:none}
+@media(max-width:600px){#chart>.chart-context{position:sticky;top:calc(var(--frame-top-height,58px) + var(--frame-banner-height,80px));z-index:19;background:var(--surface);max-height:120px}.chart-list-toolbar{flex-wrap:wrap}}
+
+/* Keep the browser viewport fixed; each workspace owns its scrolling. */
+html:has(#app.shell),body:has(#app.shell){height:100%;overflow:hidden;scroll-behavior:auto}
+#app.shell{height:100dvh;overflow:hidden}
+#app>main{height:100dvh;overflow:auto;overscroll-behavior:contain;overflow-anchor:none}
+#app .shell-topbar,#app .shell-topbar *{filter:none;backdrop-filter:none;opacity:1;transform:none;text-shadow:none}
+/* The wrapped navigation must occupy its full height in the scrolling flex column. */
+#app .shell-topbar{padding-block:0;flex-shrink:0}
+#workspace-navigation{align-self:stretch}
+.frame-primary{align-self:stretch;align-items:stretch}
+#workspace-navigation .nav-item{color:var(--fg,var(--ink));font-weight:500;border-bottom-width:3px}
+#workspace-navigation .nav-item:hover{background:var(--surface-soft)}
+#workspace-navigation .nav-item[aria-current=page]{color:var(--blue);font-weight:700}
+.frame-patient-tab{background:var(--surface)}
+.frame-patient-tab.active{background:var(--blue);border-color:var(--blue);color:white}
+.frame-patient-tab.active button{color:white}
+.frame-patient-tab.active .avatar{background:white;color:var(--blue)}
+#chart .frame-chart-navigation button{opacity:1}
+#chart .frame-chart-navigation button[aria-pressed=false]{background:transparent;color:var(--ink);font-weight:500;box-shadow:none;border-color:transparent}
+#chart .frame-chart-navigation button[aria-pressed=true]{background:var(--accent);color:var(--blue);font-weight:700;box-shadow:inset 3px 0 var(--blue)}
+#chart>#patient-banner{background:color-mix(in srgb,var(--blue) 7%,var(--surface));border-left:4px solid var(--blue);padding:8px 12px}
+#chart .patient-banner-name{font-size:20px;font-weight:600}
+#chart .patient-banner-who>.avatar{display:grid;place-items:center;width:36px;height:36px;flex:none;border-radius:50%;background:var(--blue);color:white}
+#chart .patient-banner-bottom{display:flex;flex-wrap:wrap;gap:4px;overflow:visible;padding-top:6px;margin:0;scrollbar-width:thin}
+#chart .patient-banner-bottom :is(.patient-banner-item,.patient-banner-flag){display:inline-flex;align-items:center;flex:none;gap:4px;min-height:24px;padding:2px 6px;font-size:11px;white-space:nowrap;border:1px solid var(--line);background:var(--surface-soft);color:var(--fg,var(--ink));border-radius:5px}
+#chart .patient-banner-bottom :is(.is-unreviewed,.is-recorded,.patient-banner-flag.is-warning),#chart .patient-banner-bottom .patient-banner-item:has(.patient-banner-owes),#chart .patient-banner-bottom .patient-banner-insurance:has([data-eligibility-state]:not([data-eligibility-state=active])){background:var(--warning-bg);color:var(--warning-text);border-color:var(--warning-line)}
+#chart .patient-banner-bottom :is(.is-none,.is-empty),#chart .patient-banner-bottom .patient-banner-balance:not(:has(.patient-banner-owes)),#chart .patient-banner-bottom .patient-banner-insurance:has([data-eligibility-state=active]){background:var(--success-bg);color:var(--success-text);border-color:var(--success-line)}
+#chart .patient-banner-bottom :is(.patient-banner-wide,.patient-banner-mid,.patient-banner-card){display:inline}
+#chart .patient-banner-bottom .patient-banner-visit{display:inline-flex;flex:none}
+#chart .patient-banner-bottom>.patient-banner-item{max-width:none;flex:none}
+#chart .patient-banner-bottom .patient-banner-text{overflow:visible;text-overflow:clip}
+#chart .patient-banner-bottom .patient-banner-flags{display:inline-flex;flex:none}
+#chart .patient-banner-bottom .patient-banner-flag.is-success{background:var(--success-bg);color:var(--success-text);border-color:var(--success-line)}
+#chart .patient-banner-bottom .patient-banner-claim{display:flex;flex:none;flex-wrap:nowrap;margin:0;padding:0;align-items:center}
+#app .shell-topbar{--fg:var(--ink)}
+#workspace-navigation .nav-item{color:var(--fg)}
+#workspace-navigation .nav-item[aria-current=page]{color:var(--blue)}
+#clinical-workspace.screen-in{animation:none;transform:none;filter:none}
+#chart .patient-banner-bottom .patient-banner-timeline{display:flex;flex:none;padding:0;margin:0}
+#chart .patient-banner-bottom .encounter-timeline-block,#chart .patient-banner-bottom .encounter-timeline-head,#chart .patient-banner-bottom .encounter-timeline{display:flex;align-items:center;gap:6px;margin:0;padding:0;white-space:nowrap}
+#chart .patient-banner-bottom .encounter-timeline li{display:flex;align-items:center;gap:4px;min-height:24px;margin:0;padding:2px 5px}
+/* Practice administration shares the chart's in-page left panel. */
+.frame-admin{display:grid;grid-template-columns:204px minmax(0,1fr);gap:16px;align-items:start}
+#app .practice-admin-nav{display:block;margin:0;padding:0;border:0;background:transparent}
+.frame-admin-group{margin:0 0 16px}
+.frame-admin-group h3{margin:14px 8px 6px;font-size:var(--fs-eyebrow);font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+#app .practice-admin-nav button{display:block;width:100%;margin:0;padding:8px;text-align:left;white-space:normal;overflow-wrap:anywhere;border:0;border-radius:4px;background:transparent;color:var(--ink);font-size:var(--fs-sm);font-weight:500}
+#app .practice-admin-nav button[aria-current=page]{background:var(--accent);color:var(--blue);box-shadow:inset 2px 0 var(--blue)}
+.frame-admin-main,.frame-admin-content{min-width:0}
+.frame-admin-breadcrumb{margin:0 0 12px;color:var(--muted);font-size:var(--fs-xs)}
+.frame-admin-content{padding:16px;border:1px solid var(--line);border-radius:6px;background:var(--surface)}
+.frame-admin-content>.panel{border:0!important;padding:0;box-shadow:none}
+.frame-admin-content .billing-setup{border:0;background:transparent;padding:0;margin:0}
+.frame-admin-content .billing-setup ul{padding:0;list-style:none;margin:16px 0}
+.frame-admin-content .billing-setup li{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
+.frame-admin-status{min-width:64px;color:var(--muted);font-size:var(--fs-xs)}
+.frame-admin-content .billing-setup li button{border:0;background:transparent;color:var(--blue);padding:4px;text-align:left}
+@media(max-width:600px){
+ .frame-admin{grid-template-columns:minmax(0,1fr)}
+ #app .practice-admin-nav{max-height:240px;overflow:auto;border-bottom:1px solid var(--line);padding-bottom:8px}
+ .frame-admin-content{padding:12px}
+}
+.frame-admin-content :is(.integration-hero,.integration-section,.studio-toolbar){background:var(--surface);border:1px solid var(--line);box-shadow:none;border-radius:6px}
+/* Profile summaries share the frame surfaces and keep forms in sheets. */
+#patient-demographics .profile-cards{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
+.profile-card{min-width:0;margin:0;overflow-wrap:anywhere}
+.profile-card h2,#patient-identity-panel h2{font-size:var(--fs-sm)}
+.profile-card .summary-line{display:flex;justify-content:space-between;gap:12px;padding:6px 0}
+.profile-card .summary-line b,#patient-identity-panel dt{font-size:var(--fs-xs);color:var(--muted);font-weight:500}
+@media(min-width:1000px){#patient-demographics .profile-cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
+/* Billing keeps navigation outside its scrolling work area. */
+#app:has(#frame-billing-tabs:not([hidden])){height:100dvh;overflow:hidden}
+#app:has(#frame-billing-tabs:not([hidden]))>main{height:100%;display:flex;flex-direction:column;overflow:hidden}
+#app:has(#frame-billing-tabs:not([hidden])) :is(.shell-topbar,.workspace-header,.frame-billing-tabs){flex-shrink:0}
+#app:has(#frame-billing-tabs:not([hidden])) #tools{min-height:0;overflow:auto;flex:1}
+#claims-tool,#patient-billing-global{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:16px}
+:is(#claims-tool,#patient-billing-global) th{font-size:var(--fs-xs);text-transform:uppercase;color:var(--muted);font-weight:600}
+.billing-more{position:relative;align-self:start}
+.billing-more>summary{cursor:pointer;color:var(--muted);padding:8px;list-style:none}
+.billing-more>div{padding:8px;background:var(--surface);border:1px solid var(--line);display:flex;gap:8px;flex-wrap:wrap}
+#claims-tool>.billing-totals{display:none}
+
+/* Encounter context stays next to its switcher even when the chart header wraps. */
+#chart .patient-banner-encounter{display:flex;align-items:center;gap:10px;min-width:0;max-width:100%;margin-left:auto}
+#chart .patient-banner-encounter>div{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:baseline;gap:1px 6px;min-width:0}
+#chart .patient-banner-encounter-caption,#chart .patient-banner-encounter small{color:var(--muted);font-size:var(--fs-xs)}
+#chart .patient-banner-encounter small{grid-column:1/-1}
+#chart .patient-banner-encounter .text-button{padding:0;min-height:0;text-align:left;white-space:normal}
+#chart .patient-banner-encounter>button{flex:none;white-space:nowrap}
+#chart .patient-banner-encounter+.patient-banner-actions{margin-left:0}
+@media(max-width:820px){
+ #chart .patient-banner-encounter{order:3;flex:1 0 100%;margin-left:0;justify-content:space-between}
+ #chart .patient-banner-encounter+.patient-banner-actions{margin-left:auto}
+}
+@media(max-width:520px){
+ #chart .patient-banner-encounter>div{display:flex;flex-direction:column;align-items:flex-start;gap:1px}
+ #chart .patient-banner-encounter-caption{font-size:var(--fs-eyebrow)}
+ #chart .patient-banner-encounter small{line-height:1.25}
+}
+#chart:has(#patient-banner [data-banner-item="current-encounter"]) #record-context{display:none}
+/* Keep the open encounter and the header chips readable at every width. */
+#chart .patient-banner-bottom .patient-banner-visit{max-width:100%;flex-wrap:wrap;white-space:normal;overflow:visible}
+#chart .patient-banner-visit .patient-banner-text{white-space:normal;overflow:visible;overflow-wrap:anywhere}
+#chart .patient-banner-actions{flex-wrap:wrap;max-width:100%}
+#chart .patient-banner-actions>button{max-width:none;overflow:visible;white-space:normal;height:auto}
+.claim-status-send{background:var(--warning-bg);color:var(--warning-text);border-color:var(--warning-line)}
+.claim-status-fix{background:var(--error-bg);color:var(--error-text);border-color:var(--error-line)}
+.claim-status-wait{background:var(--accent);color:var(--blue);border-color:var(--blue)}
+.claim-status-paid{background:var(--success-bg);color:var(--success-text);border-color:var(--success-line)}
+#chart .patient-banner-visit .patient-banner-item{max-width:100%;white-space:normal;overflow:visible}
+#chart .patient-banner-bottom .patient-banner-timeline{flex:1 1 auto;min-width:0;max-width:100%}
+#chart .patient-banner-bottom :is(.encounter-timeline-block,.encounter-timeline-head,.encounter-timeline){flex-wrap:wrap;white-space:normal;min-width:0;max-width:100%;overflow-wrap:anywhere}
+
+/* Action menus stay anchored to their summary, including inside encounter steps. */
+details[data-menu]{position:relative;width:fit-content;max-width:100%;margin-left:auto}
+details[data-menu]>summary{cursor:pointer;list-style:none}
+details[data-menu]>summary::-webkit-details-marker{display:none}
+details[data-menu][open]{z-index:100}
+details[data-menu][open]>:not(summary){position:absolute;top:calc(100% + 4px);right:0;left:auto;z-index:100;display:flex;flex-direction:column;align-items:stretch;gap:4px;width:max-content;min-width:180px;max-width:min(300px,calc(100vw - 32px));max-height:65dvh;overflow:auto;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--surface);box-shadow:var(--theme-shadow)}
+details[data-menu]:not([open])>:not(summary){display:none}
+.encounter-workspace-heading{overflow:visible}
+.encounter-workspace-heading:has(details[open]){position:relative;z-index:100}
+/* Preserve right anchoring over the schedule's narrow-screen menu rule. */
+#schedule-workspace details[data-menu][open]>.schedule-more-menu{right:0;left:auto;z-index:100}
+/* Record lists retain visible status colour and headings in every state. */
+:is(#lab-workspace,#referrals-panel,#immunizations-panel,#health-history-panel,#documents-panel,#source-history,#care-pathways-panel) .status-badge{border-radius:999px}
+:is(#lab-workspace,#referrals-panel,#immunizations-panel,#health-history-panel,#documents-panel,#source-history,#care-pathways-panel) .status-badge:is(.active,.signed,.final,.corrected,.accepted,.completed,.resolved,.reconciled,.confirmed){background:var(--success-bg,#edf7f0);color:var(--success-text,#286744);border-color:var(--success-border,#b5d8c2)}
+:is(#lab-workspace,#referrals-panel,#immunizations-panel,#health-history-panel,#documents-panel,#source-history,#care-pathways-panel) .status-badge:is(.draft,.pending,.preliminary,.in_progress,.ready,.awaiting_approval,.abnormal,.not_given,.unconfirmed){background:var(--warning-bg,#fff7e7);color:var(--warning-text,#805c13);border-color:var(--warning-border,#e4cd94)}
+:is(#lab-workspace,#referrals-panel,#immunizations-panel,#health-history-panel,#documents-panel,#source-history,#care-pathways-panel) .status-badge:is(.critical,.entered_in_error,.cancelled,.rejected,.refuted,.blocked){background:var(--danger-bg,#fceeed);color:var(--danger-text,#a52a29);border-color:var(--danger-border,#e8b6b3)}
+:is(#lab-workspace,#referrals-panel,#immunizations-panel,#health-history-panel,#documents-panel,#source-history,#care-pathways-panel) .status-badge:is(.archived,.skipped){background:var(--surface-soft);color:var(--muted);border-color:var(--line)}
+/* Patient vitals history and compact chronological trends. */
+#patient-vitals-history .chart-list-table td{white-space:nowrap;font-variant-numeric:tabular-nums}
+.patient-vitals-trends{display:flex;flex-wrap:wrap;gap:16px;padding:12px;color:var(--muted)}
+.patient-vitals-trends figure{margin:0;max-width:240px;flex:1 1 160px}
+.patient-vitals-trends figcaption small{display:block}
+.patient-vitals-trends svg{display:block;width:160px;height:44px}
+.vitals-trend-line{fill:none;stroke:var(--accent,#167a85);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.vitals-trend-line-1{stroke:#a56025;stroke-dasharray:4 2}
+#insurance-workspace .pill.green{background:#e6f4eb;border-color:#acd4b8;color:#23623b}
+#insurance-workspace .pill.grey{background:#edf2f6;border-color:#d2dce3;color:#546979}
+#insurance-workspace .pill.amber{background:#fff3dd;border-color:#e7cc96;color:#80591c}
+
+/* Compact encounter history keeps dates and charge summaries readable. */
+.encounter-list-heading{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.encounter-list-heading h2{display:flex;align-items:center;gap:8px}
+.encounter-filter-chips{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.encounter-filter-chips button{font-size:var(--fs-xs);padding:3px 7px;border-radius:12px;white-space:nowrap}
+.encounter-filter-chips button[aria-pressed=true]{background:var(--accent);color:var(--blue);border-color:var(--blue)}
+#appointments-panel .encounter-date{white-space:nowrap;min-width:190px;overflow-wrap:normal;word-break:normal}
+#appointments-panel .encounter-charge-summary{white-space:nowrap}
+#appointments-panel .encounter-charge-summary small{display:block}
+#appointments-panel .encounter-row-details{white-space:normal;min-width:180px}
+
+#appointments-panel .encounter-number{white-space:nowrap;min-width:110px;overflow-wrap:normal;word-break:normal}
+
+/* Global search shares the record sheet's focus trap and backdrop. */
+dialog.global-search-sheet{width:min(700px,calc(100vw - 32px));max-height:80vh;margin:auto}
+.global-search input{width:100%;font-size:1.1rem}
+#global-search-results{max-height:52vh;overflow:auto;margin-top:12px}
+#global-search-results h3{font-size:.8rem;color:var(--muted,#667085);margin:14px 8px 6px}
+#global-search-results button{display:block;width:100%;text-align:left;margin:3px 0}
+#global-search-results button small{display:block;font-weight:normal;margin-top:3px}
+#global-search-results [aria-selected="true"]{outline:2px solid var(--accent,#377e69);outline-offset:-2px}
+/* Cold chart links use the same header/menu geometry as an open chart. */
+#chart>.chart-skeleton-header{min-height:80px;box-sizing:border-box;display:grid;gap:12px;align-content:center}
+.chart-skeleton-menu{display:grid;gap:6px}
+.chart-skeleton-content{min-height:420px;display:grid;gap:16px;align-content:start}
+
+@media(max-width:600px){
+ [data-visit-types] table, [data-visit-types] tbody{display:block;width:100%}
+ [data-visit-types] thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+ [data-visit-types] tr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 8px;padding:10px 0;border-bottom:1px solid var(--line)}
+ [data-visit-types] td{min-width:0;border:0;padding:0;overflow-wrap:anywhere}
+ [data-visit-types] td:nth-child(2){text-align:right}
+ [data-visit-types] td:nth-child(n+3){grid-column:1/-1}
+ [data-visit-types] td:nth-child(3){color:var(--muted);font-size:var(--fs-sm)}
+ [data-visit-types] td:last-child{display:flex;gap:8px;margin-top:4px}
+}
+
+/* Staff identity, work links, and the running environment share one compact menu. */
+.frame-user-panel{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 8px;max-height:calc(100dvh - var(--frame-top-height,58px) - 12px);overflow-y:auto}
+.frame-user-panel>:is(.sidebar-account,.nav-item,.theme-control,#frame-build-context,.sidebar-signout){grid-column:1 / -1}
+.frame-user-panel .sidebar-account{padding-bottom:6px;border-bottom:1px solid var(--line)}
+.frame-user-panel .theme-control{display:flex;align-items:center;margin-top:4px}
+.frame-user-panel .theme-control>span{display:inline}
+.shell-topbar-actions>#frame-build-context{display:none}
+.frame-user-panel #frame-build-context{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px 8px;padding-top:8px;border-top:1px solid var(--line)}
+.frame-build-version{color:var(--muted);font-size:var(--fs-xs);white-space:nowrap;font-variant-numeric:tabular-nums}
+[data-encounter-navigation] .frame-nav-count[data-zero]{display:none}
+[data-encounter-navigation] .frame-chart-group{margin-bottom:7px}
+[data-encounter-navigation] .nav-group-label{margin:8px 8px 3px}
+#chart [data-chart-sidebar-group] .frame-chart-group-toggle{color:var(--muted);font-weight:650}
+.frame-chart-group-label{flex:1}
+.frame-chart-flyout-title{display:none}
+#chart [data-chart-sidebar-group] .frame-chart-group-toggle:hover{color:var(--blue);background:var(--surface-soft)}
+.frame-chart-group-toggle svg{flex:none}
+.frame-chart-group-chevron{transition:transform var(--motion-fast,180ms) ease}
+.frame-chart-group-toggle[aria-expanded=true] .frame-chart-group-chevron{transform:rotate(90deg)}
+.frame-chart-group-panel{display:grid;grid-template-rows:1fr;transition:grid-template-rows var(--motion-fast,180ms) ease}
+.frame-chart-group-panel[inert]{grid-template-rows:0fr}
+.frame-chart-group-panel>div{min-height:0;overflow:hidden}
+#chart [data-encounter-navigation] button{padding-block:6px}
+@media(min-width:601px) and (max-width:900px){
+ #app .frame-chart-open #chart:has(.frame-chart-navigation){padding-left:0}
+ #chart:has(.frame-chart-navigation)>#patient-banner{margin-left:0}
+ #chart>.chart-context:has(.frame-chart-navigation){position:static;float:none;width:auto;margin:0 0 8px;max-height:none}
+ .frame-chart-navigation .frame-chart-items{display:none}
+ .frame-chart-navigation .frame-chart-select{display:flex;align-items:center;gap:8px;font-size:var(--fs-sm)}
+ .frame-chart-navigation .frame-chart-select select{flex:1;min-width:0}
+}
+
+@media(max-width:600px){
+ #app .shell-topbar-actions{width:100%;gap:4px;flex-wrap:nowrap;justify-content:flex-end}
+ #app .shell-topbar-actions #shell-connect-status{min-width:0;flex:0 1 auto}
+ #shell-connect-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
+ #app .frame-user-menu{flex:none}
+ #chart.frame-encounter-open .patient-banner-who{flex-basis:100%}
+ #chart.frame-encounter-open .patient-banner-encounter{display:contents}
+ #chart.frame-encounter-open .patient-banner-encounter>div{display:flex;flex-flow:row wrap;align-items:baseline;gap:0 6px;flex-basis:100%}
+ #chart.frame-encounter-open .patient-banner-encounter small{flex-basis:100%}
+ #chart.frame-encounter-open .patient-banner-actions{margin-inline-start:0}
+}
+
+.frame-chart-sidebar-toggle{display:none}
+@media(min-width:901px){
+ #chart .frame-chart-sidebar-toggle{display:flex;align-items:center;justify-content:center;width:32px;min-height:32px;margin:0 0 4px auto;padding:0;color:var(--muted);border:0;background:transparent}
+ #chart .frame-chart-sidebar-toggle:hover{color:var(--blue);background:var(--accent)}
+ #app .frame-chart-open #chart:has(> .chart-context [data-sidebar-collapsed="true"]){padding-inline-start:52px}
+ #chart:has(> .chart-context [data-sidebar-collapsed="true"])>#patient-banner{margin-inline-start:-52px}
+ #chart>.chart-context:has([data-sidebar-collapsed="true"]){width:42px;margin-inline-start:-52px;padding:4px;overflow:visible;z-index:21}
+ #chart.chart-sidebar-animate{transition:padding-inline-start var(--motion-fast,180ms) ease}
+ #chart.chart-sidebar-animate>#patient-banner{transition:margin-inline-start var(--motion-fast,180ms) ease}
+ #chart.chart-sidebar-animate>.chart-context{transition:width var(--motion-fast,180ms) ease,margin-inline-start var(--motion-fast,180ms) ease}
+ #chart.chart-sidebar-animate #frame-chart-navigation[data-sidebar-collapsed="false"]{animation:chart-sidebar-reveal var(--motion-fast,180ms) ease}
+ #chart .frame-chart-sidebar-toggle[aria-expanded=false]{margin:0}
+ #chart .frame-chart-sidebar-toggle[aria-expanded=false] svg{transform:scaleX(-1)}
+ #chart [data-sidebar-collapsed="true"] :is(.frame-chart-group-label,.frame-chart-group-chevron){display:none}
+ #chart [data-sidebar-collapsed="true"] .frame-chart-group>button .frame-section-label{display:none}
+ #chart [data-sidebar-collapsed="true"] .frame-chart-group>button{justify-content:center;min-height:34px;padding:7px 2px}
+ #chart [data-sidebar-collapsed="true"] .frame-chart-group{margin:3px 0}
+ #chart [data-sidebar-collapsed="true"] .frame-chart-group:has([aria-pressed=true])>.frame-chart-group-toggle,
+ #chart [data-sidebar-collapsed="true"] .frame-chart-group-toggle[aria-expanded=true]{background:var(--accent);color:var(--blue)}
+ #chart [data-sidebar-collapsed="true"] [data-chart-group-flyout]:not([open]){display:none}
+ #chart [data-sidebar-collapsed="true"] [data-chart-group-flyout][open]{
+  display:block;position:fixed;inset:auto;left:var(--chart-flyout-left);top:var(--chart-flyout-top);z-index:30;
+  width:242px;max-height:calc(100dvh - 20px);overflow-y:auto;overscroll-behavior:contain;
+  margin:0;padding:6px;border:1px solid var(--line);border-radius:8px;color:var(--ink);background:var(--surface);box-shadow:var(--theme-shadow)
+ }
+ #chart [data-chart-group-flyout][open] .frame-chart-flyout-title{display:block;margin:0 0 4px;padding:5px 8px;font-size:var(--fs-xs);font-weight:700;color:var(--muted)}
+ #chart [data-chart-group-flyout][open] .frame-section-label{white-space:normal}
+ #chart [data-chart-group-flyout][open] button:hover{background:var(--surface-soft);color:var(--blue)}
+}
+
+@keyframes chart-sidebar-reveal{from{opacity:0}to{opacity:1}}
+@media(prefers-reduced-motion:reduce){
+ #chart.chart-sidebar-animate,#chart.chart-sidebar-animate>:is(#patient-banner,.chart-context),.frame-chart-group-toggle svg,.frame-chart-group-panel{transition:none}
+ #chart.chart-sidebar-animate #frame-chart-navigation[data-sidebar-collapsed="false"]{animation:none}
+}

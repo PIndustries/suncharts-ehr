@@ -38,7 +38,7 @@ function fixture(options={}){
  for(const source of sources)run(source);
  run(`scheduleDate='${DAY}';scheduleProviders=[{id:'p1',label:'Dr. Dana Owner'}]`);
  const load=(appointments,markers=[])=>{c.fixtureAppointments=appointments;c.fixtureMarkers=markers;run("scheduleState={appointments:given_appointments,blocks:[]};scheduleMarkerState={key:'k',items:new Map(given_markers.map(m=>[m.appointment_id,m])),loaded:true,failed:false}",{});};
- const click=async dataset=>{const button={dataset,type:'button',textContent:'',hasAttribute:name=>Object.hasOwn(dataset,name.replace(/^data-/,'').replace(/-([a-z])/g,(_,x)=>x.toUpperCase())),closest:selector=>selector==='button'||selector==='#schedule-workspace'?button:null};for(const listener of listeners.get('click'))if(!listener.capture)listener.callback({target:{closest:selector=>selector==='button'?button:null,hasAttribute:()=>false}});await c.pending.catch(()=>{});};
+ const click=async dataset=>{const button={dataset,type:'button',textContent:'',hasAttribute:name=>Object.hasOwn(dataset,name.replace(/^data-/,'').replace(/-([a-z])/g,(_,x)=>x.toUpperCase())),closest:selector=>selector.split(',').includes('#schedule-workspace')?node('schedule-workspace'):null};for(const listener of listeners.get('click'))if(!listener.capture)listener.callback({target:{closest:selector=>selector==='button'?button:null,hasAttribute:()=>false}});await c.pending.catch(()=>{});};
  // Load without the helper's own identifiers, so names stay out of the board's scope.
  const give=(appointments,markers)=>{const holder={given_appointments:plain(appointments),given_markers:plain(markers)};loadWith(appointments,markers,holder);};
  const loadWith=(appointments,markers,holder)=>{c.given=holder;c.fixtureAppointments=appointments;c.fixtureMarkers=markers;run("scheduleState={appointments:given.given_appointments,blocks:[]};scheduleMarkerState={key:'k',items:new Map(given.given_markers.map(m=>[m.appointment_id,m])),loaded:true,failed:false}")};
@@ -51,14 +51,14 @@ async function main(){
  // ---- One chip per claim step, with its own words and colour ----
  let f=fixture();
  const chipFor=(claim,status='completed',variant='day')=>{f.load([appointment('a','09:00','09:30',{status})],[{...base,claim}]);return chips(f.run(`scheduleMarkersHtml(scheduleState.appointments[0],'${variant}')`)).filter(m=>m.kind==='claim');};
- assert.deepEqual(chipFor({status:'not_sent',claim_id:null}),[{tone:'amber',kind:'claim',tip:sentence('not_sent'),label:'Claim not sent'}]);
+ assert.deepEqual(chipFor({status:'not_sent',claim_id:null}),[{tone:'red',kind:'claim',tip:sentence('not_sent'),label:'Claim not sent'}]);
  assert.deepEqual(chipFor({status:'not_sent',claim_id:CLAIM}).map(m=>m.label),['Claim not sent'],'a claim prepared but not sent is still not sent');
  assert.deepEqual(chipFor({status:'sent',claim_id:CLAIM}),[{tone:'grey',kind:'claim',tip:sentence('sent'),label:'Claim sent'}]);
  assert.deepEqual(chipFor({status:'accepted',claim_id:CLAIM}),[{tone:'green',kind:'claim',tip:sentence('accepted'),label:'Claim accepted'}]);
  assert.deepEqual(chipFor({status:'rejected',claim_id:CLAIM}),[{tone:'red',kind:'claim',tip:sentence('rejected'),label:'Claim rejected'}]);
  assert.deepEqual(chipFor({status:'answered',claim_id:CLAIM}),[{tone:'green',kind:'claim',tip:sentence('answered'),label:'Insurer answered'}]);
  assert.deepEqual(chipFor(null),[],'a self-pay visit, unposted charges or no visit says nothing about a claim');
- assert.deepEqual(chipFor({status:'not_sent',claim_id:null},'in_progress'),[{tone:'amber',kind:'claim',tip:sentence('not_sent'),label:'Claim not sent'}],'a visit still open already has posted charges, so its unsent claim is shown');
+ assert.deepEqual(chipFor({status:'not_sent',claim_id:null},'in_progress'),[{tone:'red',kind:'claim',tip:sentence('not_sent'),label:'Claim not sent'}],'a visit still open already has posted charges, so its unsent claim is shown');
  // Money facts stay on the card once the encounter is closed, exactly like copay and balance.
  assert.deepEqual(chipFor({status:'not_sent',claim_id:null},'cancelled').map(m=>m.label),['Claim not sent']);
  assert.deepEqual(chipFor({status:'answered',claim_id:CLAIM},'no_show').map(m=>m.label),['Insurer answered']);
@@ -72,7 +72,7 @@ async function main(){
  assert.match(html,/<dt>Insurance claim<\/dt><dd><span class="appt-fact-state tone-red">The insurer rejected the claim\. It needs fixing and resending\.<\/span>/,'the row says the same sentence as the chip');
  assert.match(html,new RegExp(`data-board-action="open-claim" data-appointment="a" data-claim="${CLAIM}">Open claim</button>`));
  html=panel({status:'not_sent',claim_id:null});
- assert.match(html,/<dt>Insurance claim<\/dt><dd><span class="appt-fact-state tone-amber">Charges are posted but the claim has not been sent\.<\/span>/);
+ assert.match(html,/<dt>Insurance claim<\/dt><dd><span class="appt-fact-state tone-red">Charges are posted but the claim has not been sent\.<\/span>/);
  assert.match(html,new RegExp(`data-board-action="charges" data-appointment="a">Open invoice</button>`),'with no claim yet the encounter’s own billing step is the way in');
  assert.doesNotMatch(html,/data-claim=/);
  assert.doesNotMatch(panel(null),/Insurance claim/,'no claim, no row');
@@ -102,7 +102,7 @@ async function main(){
  const visits=['a','b','c','d','e'].map((id,index)=>appointment(id,clock(9+index),clock(9+index+1),{status:'completed'}));
  const markers=visits.map(v=>({...base,appointment_id:v.id,patient_id:v.patient_id,claim:null}));
  const withClaim=(id,claim)=>markers.map(m=>m.appointment_id===id?{...m,claim}:m);
- const summary=g=>g.run('scheduleSummaryHtml()').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
+ const summary=g=>g.run('scheduleSummaryOptionsHtml()').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
  f=fixture();f.load(visits,withClaim('a',{status:'not_sent',claim_id:null}).map(m=>m.appointment_id==='b'?{...m,claim:{status:'rejected',claim_id:CLAIM}}:m));
  f.run("scheduleMode='day';scheduleFilter='all'");
  assert.match(summary(f),/5 appointments · 0 checked in · 0 in progress · 1 claims not sent · 1 claims rejected/);

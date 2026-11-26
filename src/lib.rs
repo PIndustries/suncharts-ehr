@@ -5,6 +5,7 @@ pub mod action_governance;
 pub mod ai_privacy;
 pub mod ai_provider_adapter;
 pub mod auth;
+pub mod automatic_invoices;
 pub mod automation_event_runtime;
 pub mod backend;
 pub mod billing;
@@ -95,6 +96,7 @@ pub mod rooming;
 pub mod saved_card_payments;
 pub mod schedule_markers;
 pub mod scheduling;
+mod search;
 pub mod settlements;
 pub mod sftp_transport;
 pub mod specialty_workspace;
@@ -105,7 +107,9 @@ pub mod terminology;
 #[doc(hidden)]
 pub mod test_db;
 mod visit_billing;
+mod visit_claim_handoff;
 pub mod visit_diagnoses;
+mod visit_types;
 pub mod voice_notes;
 pub mod workflow_dispatcher;
 pub mod workflow_evidence;
@@ -205,30 +209,26 @@ fn render_index(
     branding: &branding::InstanceBranding,
     environment: DeploymentEnvironment,
 ) -> String {
-    let (local_visibility, connect_visibility, connect_url, description, state_visibility) =
-        match login {
-            LoginPresentation::Local => (
-                "",
-                "hidden",
-                "#".to_owned(),
-                "Sign in to your self-hosted SunCharts EHR.",
-                "hidden",
-            ),
-            LoginPresentation::Connect(url) => (
-                "hidden",
-                "",
-                url,
-                "Use your SunCharts Connect passkey or emailed sign-in link.",
-                "",
-            ),
-            LoginPresentation::Pending => (
-                "hidden",
-                "hidden",
-                "#".to_owned(),
-                "Checking your sign-in options…",
-                "",
-            ),
-        };
+    let (local_visibility, connect_visibility, connect_url, description) = match login {
+        LoginPresentation::Local => (
+            "",
+            "hidden",
+            "#".to_owned(),
+            "Sign in to your self-hosted SunCharts EHR.",
+        ),
+        LoginPresentation::Connect(url) => (
+            "hidden",
+            "",
+            url,
+            "Use your SunCharts Connect passkey or emailed sign-in link.",
+        ),
+        LoginPresentation::Pending => (
+            "hidden",
+            "hidden",
+            "#".to_owned(),
+            "Checking your sign-in options…",
+        ),
+    };
     web_content("index.html", include_str!("../web/index.html"))
         .replace("__CLINIC_LOGIN_BRAND__", &branding.login_html())
         .replace("__CLINIC_SIDEBAR_IDENTITY__", &branding.sidebar_html())
@@ -239,7 +239,6 @@ fn render_index(
         .replace("__CONNECT_LOGIN_VISIBILITY__", connect_visibility)
         .replace("__CONNECT_LOGIN_URL__", &connect_url)
         .replace("__LOGIN_DESCRIPTION__", description)
-        .replace("__CONNECT_STATE_VISIBILITY__", state_visibility)
         .replace("__ENVIRONMENT_NOTICE__", environment.notice())
         .replace("__ENVIRONMENT_SHORT__", environment.short())
 }
@@ -343,7 +342,7 @@ mod login_presentation_tests {
             "id=\"connect-login\" class=\"primary\" href=\"https://connect.suncharts.app/ehr/launch?audience=https%3A%2F%2Fclinic.example\" >"
         ));
         assert!(html.contains("class=\"login-panel\""));
-        assert!(html.contains("class=\"login-connection\""));
+        assert!(!html.contains("login-connection"));
         assert!(html.contains("Open the patient portal"));
         assert!(html.contains("Secure organizational access"));
         assert!(!html.contains("__CONNECT_LOGIN_"));
@@ -422,6 +421,7 @@ pub fn app(state: State) -> Router {
         .merge(erx_setup::router())
         .merge(labs::router())
         .merge(scheduling::router())
+        .merge(search::router())
         .merge(calendar_feed::router())
         .merge(schedule_markers::router())
         .merge(recurrence::router())
@@ -436,6 +436,7 @@ pub fn app(state: State) -> Router {
         .merge(practice_admin::router())
         .merge(practice_billing::router())
         .merge(practice_codes::router())
+        .merge(visit_types::router())
         .merge(previsit::router())
         .merge(partner_scheduling::router())
         .merge(partners::router())
@@ -1010,6 +1011,16 @@ pub fn app(state: State) -> Router {
                     "patient-banner.js",
                     "text/javascript; charset=utf-8",
                     include_str!("../web/patient-banner.js"),
+                )
+            }),
+        )
+        .route(
+            "/frame.css",
+            get(|| async {
+                web_asset(
+                    "frame.css",
+                    "text/css; charset=utf-8",
+                    include_str!("../web/frame.css"),
                 )
             }),
         )
@@ -1744,13 +1755,16 @@ struct PatientQuery {
     after: Option<Uuid>,
     #[serde(default)]
     status: patient_lifecycle::PatientStatus,
+    missing: Option<patient_lifecycle::MissingPatientContact>,
 }
 async fn patients(
     a: Actor,
     ExtractState(s): ExtractState<State>,
     axum::extract::Query(q): axum::extract::Query<PatientQuery>,
 ) -> Result<Json<PatientPage>> {
-    Ok(Json(s.backend.patients(&a, q.after, q.status).await?))
+    Ok(Json(
+        s.backend.patients(&a, q.after, q.status, q.missing).await?,
+    ))
 }
 async fn workspace(
     a: Actor,

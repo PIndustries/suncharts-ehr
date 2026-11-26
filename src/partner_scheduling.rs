@@ -287,7 +287,7 @@ async fn create_appointment(
         if old != hash || old_source != v.source_system || old_reference != v.external_reference {
             return Err(Error::Conflict("request identifier was already used"));
         }
-        let row: Value = sqlx::query_scalar("SELECT to_jsonb(a)-'tenant_id'-'request_digest'-'request_id' FROM appointments a WHERE tenant_id=$1 AND id=$2")
+        let row: Value = sqlx::query_scalar("SELECT to_jsonb(a)-'tenant_id'-'request_digest'-'request_id'-'visit_type' FROM appointments a WHERE tenant_id=$1 AND id=$2")
             .bind(a.tenant_id)
             .bind(appointment)
             .fetch_one(&mut *tx)
@@ -295,7 +295,7 @@ async fn create_appointment(
         tx.commit().await?;
         return Ok((StatusCode::OK, Json(json!({"appointment":row,"already_recorded":true}))).into_response());
     }
-    if let Some((appointment,old))=sqlx::query_as::<_,(Uuid,String)>("SELECT appointment_id,request_digest FROM scheduling_external_appointments WHERE tenant_id=$1 AND source_system=$2 AND external_reference=$3").bind(a.tenant_id).bind(&v.source_system).bind(&v.external_reference).fetch_optional(&mut *tx).await?{if old!=hash{return Err(Error::Conflict("external reference already identifies a different booking"));}let row:Value=sqlx::query_scalar("SELECT to_jsonb(a)-'tenant_id'-'request_digest'-'request_id' FROM appointments a WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(appointment).fetch_one(&mut *tx).await?;tx.commit().await?;return Ok((StatusCode::OK,Json(json!({"appointment":row,"already_recorded":true}))).into_response());}
+    if let Some((appointment,old))=sqlx::query_as::<_,(Uuid,String)>("SELECT appointment_id,request_digest FROM scheduling_external_appointments WHERE tenant_id=$1 AND source_system=$2 AND external_reference=$3").bind(a.tenant_id).bind(&v.source_system).bind(&v.external_reference).fetch_optional(&mut *tx).await?{if old!=hash{return Err(Error::Conflict("external reference already identifies a different booking"));}let row:Value=sqlx::query_scalar("SELECT to_jsonb(a)-'tenant_id'-'request_digest'-'request_id'-'visit_type' FROM appointments a WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(appointment).fetch_one(&mut *tx).await?;tx.commit().await?;return Ok((StatusCode::OK,Json(json!({"appointment":row,"already_recorded":true}))).into_response());}
     let hold:Option<(Uuid,Uuid,DateTime<Utc>,DateTime<Utc>)>=sqlx::query_as("SELECT id,service_id,starts_at,ends_at FROM scheduling_holds WHERE tenant_id=$1 AND id=$2 AND status='active' AND expires_at>now() FOR UPDATE").bind(a.tenant_id).bind(v.hold_id).fetch_optional(&mut *tx).await?;
     let (hold_id, service_id, start, end) =
         hold.ok_or(Error::Conflict("slot hold is missing or expired"))?;
@@ -407,7 +407,7 @@ async fn external_row(
     a: &Actor,
     id: Uuid,
 ) -> Result<(Value, i64, Uuid, Uuid)> {
-    sqlx::query_as("SELECT to_jsonb(ap)-'tenant_id'-'request_digest'-'request_id',ap.version,x.service_id,ap.patient_id FROM scheduling_external_appointments x JOIN appointments ap ON ap.tenant_id=x.tenant_id AND ap.id=x.appointment_id WHERE x.tenant_id=$1 AND x.appointment_id=$2 FOR UPDATE OF ap").bind(a.tenant_id).bind(id).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)
+    sqlx::query_as("SELECT to_jsonb(ap)-'tenant_id'-'request_digest'-'request_id'-'visit_type',ap.version,x.service_id,ap.patient_id FROM scheduling_external_appointments x JOIN appointments ap ON ap.tenant_id=x.tenant_id AND ap.id=x.appointment_id WHERE x.tenant_id=$1 AND x.appointment_id=$2 FOR UPDATE OF ap").bind(a.tenant_id).bind(id).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)
 }
 async fn appointment(
     a: Actor,
@@ -436,7 +436,7 @@ async fn appointment_by_external_reference(
     q.source_system = clean(&q.source_system, 80)?.to_ascii_lowercase();
     q.external_reference = clean(&q.external_reference, 200)?;
     let mut tx = db(&s)?.begin().await?;
-    let (id, row): (Uuid, Value) = sqlx::query_as("SELECT ap.id,to_jsonb(ap)-'tenant_id'-'request_digest'-'request_id' FROM scheduling_external_appointments x JOIN appointments ap ON ap.tenant_id=x.tenant_id AND ap.id=x.appointment_id WHERE x.tenant_id=$1 AND x.source_system=$2 AND x.external_reference=$3")
+    let (id, row): (Uuid, Value) = sqlx::query_as("SELECT ap.id,to_jsonb(ap)-'tenant_id'-'request_digest'-'request_id'-'visit_type' FROM scheduling_external_appointments x JOIN appointments ap ON ap.tenant_id=x.tenant_id AND ap.id=x.appointment_id WHERE x.tenant_id=$1 AND x.source_system=$2 AND x.external_reference=$3")
         .bind(a.tenant_id)
         .bind(q.source_system)
         .bind(q.external_reference)
@@ -480,7 +480,7 @@ async fn repeated_mutation(
         {
             return Err(Error::Conflict("request identifier was already used"));
         }
-        let row: Value = sqlx::query_scalar("SELECT to_jsonb(a)-'tenant_id'-'request_digest'-'request_id' FROM appointments a WHERE tenant_id=$1 AND id=$2")
+        let row: Value = sqlx::query_scalar("SELECT to_jsonb(a)-'tenant_id'-'request_digest'-'request_id'-'visit_type' FROM appointments a WHERE tenant_id=$1 AND id=$2")
             .bind(a.tenant_id)
             .bind(appointment_id)
             .fetch_one(&mut **tx)
@@ -542,7 +542,7 @@ async fn reschedule(
         json!({"appointment_id":id,"starts_at":v.starts_at,"ends_at":end}),
     )
     .await?;
-    let row:Value=sqlx::query_scalar("SELECT to_jsonb(a)-'tenant_id'-'request_digest'-'request_id' FROM appointments a WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(id).fetch_one(&mut *tx).await?;
+    let row:Value=sqlx::query_scalar("SELECT to_jsonb(a)-'tenant_id'-'request_digest'-'request_id'-'visit_type' FROM appointments a WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(id).fetch_one(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(row))
 }
@@ -606,7 +606,7 @@ async fn cancel(
         json!({"appointment_id":id}),
     )
     .await?;
-    let row:Value=sqlx::query_scalar("SELECT to_jsonb(a)-'tenant_id'-'request_digest'-'request_id' FROM appointments a WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(id).fetch_one(&mut *tx).await?;
+    let row:Value=sqlx::query_scalar("SELECT to_jsonb(a)-'tenant_id'-'request_digest'-'request_id'-'visit_type' FROM appointments a WHERE tenant_id=$1 AND id=$2").bind(a.tenant_id).bind(id).fetch_one(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(row))
 }

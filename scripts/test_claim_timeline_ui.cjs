@@ -58,7 +58,7 @@ const history={items:[{version:1,created_at:'2026-11-11T15:30:00Z',reason:'Claim
  const rejected=f.context.buildClaimTimeline({claim:claim({status:'rejected'}),history:[...history.items],now:NOW,
   tracking:{submissions:[sent],reports:[{received_at:'2026-11-14T10:00:00Z',evidence:{status:'R',senderid:'CLMMD',sender_name:'Claim.MD',message:{message:'Missing rendering provider NPI'},claimmd_id:'902000001'}}]}});
  const rejection=rejected.steps.at(-1);
- assert.strictEqual(rejection.label,'Rejected by Claim.MD');
+ assert.strictEqual(rejection.label,'Rejected by the clearinghouse');
  assert.strictEqual(rejection.detail,'Missing rendering provider NPI');
  assert.match(rejected.current,/Rejected since Nov 14, 2026, 4 days\. Missing rendering provider NPI/);
  assert.strictEqual(rejected.identifiers.claimMdClaimId,'902000001');
@@ -68,14 +68,14 @@ const history={items:[{version:1,created_at:'2026-11-11T15:30:00Z',reason:'Claim
   tracking:{submissions:[sent],reports:[
    {received_at:'2026-11-12T11:00:00Z',evidence:{status:'A',senderid:'CLMMD',sender_name:'Claim.MD',message:{status:'A',message:'Acknowledged'}}},
    {received_at:'2026-11-15T08:00:00Z',evidence:{status:'A',senderid:'P7',sender_name:'Synthetic Health Plan',sender_icn:'ICN-998877',message:{message:'Claim accepted'}}}]}});
- eq(forwarded.steps.map(step=>step.label).slice(2),['Received by Claim.MD','Forwarded to the insurance company']);
+ eq(forwarded.steps.map(step=>step.label).slice(2),['Received by the clearinghouse','Forwarded to the insurance company']);
  assert.match(forwarded.current,/Waiting on the insurance company since Nov 15, 2026, 3 days/);
 
  // Claim.MD holds a claim that needs correcting: the message status W wins over claim-level A.
  const held=f.context.buildClaimTimeline({claim:claim({status:'submitted'}),now:NOW,history:[...history.items],
   tracking:{submissions:[sent],reports:[{received_at:'2026-11-12T11:00:00Z',evidence:{status:'A',senderid:'CLMMD',sender_name:'Claim.MD',message:{status:'W',message:'NCCI - Procedure Code 11111 requires an appropriate modifier when procedure 22222 present.'}}}]}});
  const heldStep=held.steps.at(-1);
- assert.strictEqual(heldStep.label,'Claim.MD found a problem');
+ assert.strictEqual(heldStep.label,'The clearinghouse found a problem');
  assert.match(heldStep.detail,/NCCI - Procedure Code/);
  assert.match(heldStep.detail,/Nothing has gone to the insurer\. Correct the claim and send it again\./);
  assert.ok(!held.steps.some(step=>/Accepted|Forwarded/.test(step.label)));
@@ -100,12 +100,12 @@ const history={items:[{version:1,created_at:'2026-11-11T15:30:00Z',reason:'Claim
  // Claim.MD website notes and edits arrive as labelled rows, not raw JSON.
  const edited=f.context.buildClaimTimeline({claim:claim(),now:NOW,history:[...history.items],tracking:{submissions:[sent],reports:[]},
   claimMdRecords:[{kind:'note',remote_id:'7',claimmd_id:'902000001',recorded_at:'2026-11-13T12:00:00Z',content:{noteid:'7',notedate:'2026-11-13',notetime:'14:05',user:'clinic.user',note:'Payer call reference 5150'}}]});
- const note=edited.steps.find(step=>step.label==='Note added on the Claim.MD website');
+ const note=edited.steps.find(step=>step.label==='Note added on the clearinghouse website');
  // The provider's own clock is shown as a wall clock, not shifted by a time zone.
  assert.match(timelineClock(f.run,note.at),/2026-11-13 14:05/);
  eq(note.rows,[
-  {label:'Claim.MD claim ID',value:'902000001',raw:'claimmd_id: 902000001'},
-  {label:'Claim.MD note ID',value:'7',raw:'noteid: 7'},
+  {label:'Clearinghouse claim ID',value:'902000001',raw:'claimmd_id: 902000001'},
+  {label:'Clearinghouse note ID',value:'7',raw:'noteid: 7'},
   {label:'Date of the note',value:'2026-11-13',raw:'notedate: 2026-11-13'},
   {label:'Time of the note',value:'14:05',raw:'notetime: 14:05'},
   {label:'Written by',value:'clinic.user',raw:'user: clinic.user'},
@@ -159,7 +159,7 @@ const history={items:[{version:1,created_at:'2026-11-11T15:30:00Z',reason:'Claim
   throw new Error('unexpected '+args[0]);};
  const openTimeline=()=>f.run(`claimTimelineSection(${JSON.stringify(claim())},${JSON.stringify(detail())},${JSON.stringify(history)},{now:new Date(${NOW.getTime()}),api:stubApi,connection:{id:'setting-1'}})`);
  const section=await openTimeline();
- assert.match(section,/Note added on the Claim\.MD website/);
+ assert.match(section,/Note added on the clearinghouse website/);
  assert.match(section,/Payment received \(ERA\)/);
  assert.match(section,/Patient billed/);
  assert.match(section,/Paid \$80\.00/);
@@ -168,6 +168,7 @@ const history={items:[{version:1,created_at:'2026-11-11T15:30:00Z',reason:'Claim
  const before=calls.length;
  assert.strictEqual(await openTimeline(),section);
  assert.strictEqual(calls.length,before,'a cached claim must not call the provider again');
+ f.context.invalidateClaimTimeline('claim-1');assert.strictEqual(await openTimeline(),section);assert.ok(calls.length>before,'a successfully refreshed claim uses the newly stored clearinghouse notes');
 
  // A Claim.MD outage degrades to a plain note; the claim screen still renders.
  f.context.stubApi=async()=>{throw new Error('provider down');};
@@ -206,7 +207,7 @@ const history={items:[{version:1,created_at:'2026-11-11T15:30:00Z',reason:'Claim
   vm.runInContext(fs.readFileSync(path.join(__dirname,'..',file),'utf8'),activity);
  const ops=activity,ext=activity;
  const noteCell=ops.claimmdRecords([{kind:'note',remote_id:'9',claimmd_id:'9001',recorded_at:'2026-11-13T10:00:00Z',content:{noteid:'9',notedate:'2026-11-12',user:'clinic.user',note:'Payer call reference <5150>'}}],'note');
- assert.match(noteCell,/Claim\.MD note ID<\/th><td>9<\/td>/);
+ assert.match(noteCell,/Clearinghouse note ID<\/th><td>9<\/td>/);
  assert.match(noteCell,/Note<\/th><td>Payer call reference &lt;5150&gt;<\/td>/);
  assert.match(noteCell,/Show technical details/);
  assert.ok(!/summary>Details<\/summary><pre/.test(noteCell),'the Details view must not open on raw JSON');
@@ -217,7 +218,7 @@ const history={items:[{version:1,created_at:'2026-11-11T15:30:00Z',reason:'Claim
  assert.match(archiveCell,/Details/,'an archive row still offers its record');
  const events=ext.claimMdEventRows([{event_id:'e1',received_at:'2026-11-13T10:00:00Z',account_number:'ACCT-77123',payload:{type:'enrollment_approved',status:'A'}}]);
  assert.match(events,/Enrollment approved/);
- assert.match(events,/Claim\.MD account ending 7123/,'never print a whole Claim.MD account number');
+ assert.match(events,/Clearinghouse account ending 7123/,'never print a whole Claim.MD account number');
  assert.ok(!events.includes('ACCT-77123'),events);
  assert.match(events,/Status<\/th><td>Accepted<\/td>/);
  assert.match(events,/Show technical details/);
@@ -299,5 +300,12 @@ const history={items:[{version:1,created_at:'2026-11-11T15:30:00Z',reason:'Claim
 	assert.equal(absent.panel.created.length,0);
 
 
+ const race=mountingScreen({}),read=new Map(),painted=[];
+ race.context.api=url=>new Promise(resolve=>read.set(url,resolve));race.context.claimPane=html=>painted.push(html);
+ race.context.claimScreenMarkup=claim=>claim.id;race.context.claimProgressToHead=()=>{};race.context.claimDetailTabs=()=>{};
+ const a=race.context.showClaim('first'),b=race.context.showClaim('second');
+ const respond=id=>{read.get('/api/v1/billing/claims/'+id)({claim:{id,status:'draft'}});read.get('/api/v1/billing/claims/'+id+'/history')({items:[]});};
+ respond('second');await b;respond('first');await a;assert.deepEqual(painted,['second']);
+ console.log('PASS overlapping claim reads preserve the most recently opened claim');
  console.log('PASS claim status timeline builds plain-language steps, waits and provider evidence');
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -89,6 +89,7 @@ function patientMembershipTerms(s,form){
  host.innerHTML=price?`<section class="mapping-notice"><b>${esc(price.name)}</b><p>${esc(membershipCadence(price))}. Billing continues until canceled. Cancellation is scheduled for the end of the paid period; it does not issue an immediate refund.</p><p>Only the secure checkout can start this membership. Saving a card alone does not enroll the patient.</p></section>`:'<p>Choose a price to see the amount and how often it is charged.</p>';
 }
 function installmentDueDateBounds(){
+ // The server validates against the UTC calendar day.
  const earliest=new Date().toISOString().slice(0,10);
  return {earliest,latest:new Date(Date.parse(earliest+'T00:00:00Z')+1826*86400000).toISOString().slice(0,10)};
 }
@@ -96,7 +97,7 @@ function installmentDueDateAttributes(){const dates=installmentDueDateBounds();r
 function validateInstallmentDueDates(rows){
  const dates=installmentDueDateBounds();
  for(const [index,row] of rows.entries()){
-  if(row.due_on<dates.earliest)throw new Error(`Installment ${index+1} must be due on or after ${dates.earliest}. Payment plans use today in UTC, which may be tomorrow in your local time.`);
+  if(row.due_on<dates.earliest)throw new Error(`Installment ${index+1} must be due on or after ${dates.earliest}. Payment plans use today in UTC, which may differ from your local date.`);
   if(row.due_on>dates.latest)throw new Error(`Installment ${index+1} must be due on or before ${dates.latest}, within the five-year scheduling limit.`);
  }
 }
@@ -320,7 +321,8 @@ function paintMembershipPricesAdmin(target){
 }
 function renderMembershipPricesAdmin(target){
  const st=membershipAdminState();
- target.innerHTML=`<div class="section-head"><div><h2>Practice administration</h2><p class="muted">Staff, providers, locations and billing setup for the practice.</p></div><button type="button" data-admin-refresh>Refresh directory</button></div>${typeof adminTabs==='function'?adminTabs('memberships'):''}<section id="membership-prices-admin" class="panel">${membershipPricesAdminMarkup(st)}</section>`;
+ target.innerHTML=`<div class="section-head"><div><h2>Practice administration</h2><p class="muted">Staff, providers, locations and billing setup for the practice.</p></div></div><section id="membership-prices-admin" class="panel">${membershipPricesAdminMarkup(st)}</section>`;
+ if(typeof practiceAdminFrame==='function')practiceAdminFrame('memberships',target);
  void loadMembershipPrices(target,null);
 }
 async function loadMembershipPrices(target,cursor){

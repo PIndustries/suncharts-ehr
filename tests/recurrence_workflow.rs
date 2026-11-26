@@ -479,3 +479,116 @@ async fn timezone_dst_month_end_and_cadence_are_validated_server_side() {
     assert_eq!(call(&r, &a, "POST", CREATE, too_short, None).await.0, 400);
     db.close().await;
 }
+
+#[tokio::test]
+async fn visit_types_freeze_booking_suggestions_without_coding_or_charging() {
+    let (db, owner, patient) = setup().await;
+    let router = app(db.clone());
+    let catalog = "/api/v1/practice/visit-types";
+    let (status, defaults) = call(&router, &owner, "GET", catalog, Value::Null, None).await;
+    assert_eq!(status, 200, "{defaults}");
+    assert_eq!(defaults["items"].as_array().unwrap().len(), 5);
+    let starter = defaults["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "New patient")
+        .unwrap();
+    assert_eq!(starter["duration_minutes"], 60);
+    let body = json!({"name":"Synthetic follow up","duration_minutes":45,"diagnoses":[{"code":"m542","description":"Synthetic neck complaint"}],"procedures":[{"code_system":"CPT","code":"99214","description":"Synthetic visit","modifiers":"25","units":1}]});
+    let nurse = Actor {
+        role: Role::Nurse,
+        sub: Uuid::new_v4(),
+        ..owner.clone()
+    };
+    assert_eq!(
+        call(&router, &nurse, "GET", catalog, Value::Null, None)
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        call(&router, &nurse, "POST", catalog, body.clone(), None)
+            .await
+            .0,
+        403
+    );
+    let (status, typ) = call(&router, &owner, "POST", catalog, body.clone(), None).await;
+    assert_eq!(status, 200, "{typ}");
+    assert_eq!(typ["diagnoses"][0]["code"], "M54.2");
+    assert_eq!(typ["category"], body["name"]);
+    assert_eq!(
+        call(&router, &owner, "POST", catalog, body.clone(), None)
+            .await
+            .0,
+        409
+    );
+    let type_url = format!("{catalog}/{}", typ["id"].as_str().unwrap());
+    let sel = json!({"id":typ["id"],"version":1});
+    let mut series = plan(&owner, patient, 2);
+    series["visit_type"] = sel.clone();
+    let (status, res) = call(&router, &owner, "POST", CREATE, series.clone(), None).await;
+    assert_eq!(status, 200, "{res}");
+    for booked in res["occurrences"].as_array().unwrap() {
+        assert_eq!(booked["visit_type"], typ);
+    }
+    let (status, res) = call(
+        &router,
+        &owner,
+        "GET",
+        &format!("/api/v1/patients/{patient}/workspace"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{res}");
+    assert_eq!(res["appointments"][0]["visit_type"], typ);
+    let first = &res["appointments"][0];
+    let appt_url = format!("/api/v1/appointments/{}", first["id"].as_str().unwrap());
+    let mut editor = json!({"title":"Edited title","category":first["category"],"clinician_id":owner.sub,"starts_at":first["starts_at"],"ends_at":first["ends_at"],"notes":"","reason":"Synthetic edit","room":"","facility":""});
+    let mut retired = body.clone();
+    retired["enabled"] = json!(false);
+    assert_eq!(
+        call(&router, &owner, "PUT", &type_url, retired.clone(), Some(1))
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        call(&router, &owner, "PUT", &type_url, retired, Some(1))
+            .await
+            .0,
+        409
+    );
+    assert_eq!(
+        call(&router, &owner, "POST", CREATE, series.clone(), None)
+            .await
+            .0,
+        200,
+        "same booking safely replays after retirement"
+    );
+    series["request_id"] = json!(Uuid::new_v4());
+    assert_eq!(
+        call(
+            &router,
+            &owner,
+            "POST",
+            "/api/v1/schedule/series/preview",
+            series,
+            None
+        )
+        .await
+        .0,
+        409
+    );
+    let (status, edited) = call(&router, &owner, "PUT", &appt_url, editor.clone(), Some(1)).await;
+    assert_eq!(status, 200, "{edited}");
+    assert_eq!(edited["visit_type"], typ);
+    editor["visit_type"] = Value::Null;
+    let (status, cleared) = call(&router, &owner, "PUT", &appt_url, editor, Some(2)).await;
+    assert_eq!(status, 200, "{cleared}");
+    assert!(cleared["visit_type"].is_null());
+    let amount:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM billing_accounts WHERE tenant_id=$1),(SELECT count(*) FROM visits WHERE tenant_id=$1),(SELECT count(*) FROM ehr_claims WHERE tenant_id=$1)")
+        .bind(owner.tenant_id).fetch_one(&db).await.unwrap();
+    assert_eq!(amount, (0, 0, 0));
+}

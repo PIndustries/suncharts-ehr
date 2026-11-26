@@ -20,11 +20,11 @@ evaluate("scheduleDate='2026-10-28';scheduleMode='week_grid';scheduleProviders=[
  assert.equal(evaluate('scheduleWeekDays()[0]'),'2026-10-26');assert.equal(evaluate('scheduleWeekDays()[6]'),'2026-11-01');
  const bounds=evaluate('scheduleBounds()');assert(new Date(bounds.end)-new Date(bounds.start)<=8*86400000);
  let html=evaluate('scheduleWeekCalendar()');
- // Seven day columns share one time grid; providers appear on the cards and blocks.
- assert.deepEqual([...html.matchAll(/data-grid-column data-grid-day="([^"]+)"/g)].map(m=>m[1]),['2026-10-26','2026-10-27','2026-10-28','2026-10-29','2026-10-30','2026-10-31','2026-11-01']);
+ // Every provider gets a column for each of the seven days on the shared time grid.
+ assert.deepEqual([...html.matchAll(/data-grid-column data-grid-day="([^"]+)" data-grid-provider="([^"]+)"/g)].map(m=>m.slice(1)),['2026-10-26','2026-10-27','2026-10-28','2026-10-29','2026-10-30','2026-10-31','2026-11-01'].flatMap(day=>[[day,'p1'],[day,'p2']]));
  assert.match(html,/Provider two/);assert.match(html,/Lunch block/);assert.match(html,/Synthetic &lt;test&gt;/);assert.doesNotMatch(html,/<test>/);assert.match(html,/data-drag-appointment="a1"/);
  // 9:00 to 9:45 that morning: placed by its start and sized by its length.
- assert.match(html,/class="grid-item" data-start="540" data-len="45" data-lane="0" data-lanes="1"><article class="appt-card appt-week status-booked/);
+ assert.match(html,/class="grid-item" data-start="540" data-len="45" data-display-len="45" data-lane="0" data-lanes="1"><article class="appt-card appt-week status-booked/);
  assert.match(html,/class="grid-block"[^>]*data-schedule-block="b1" data-start="600" data-len="60"/);
  assert.match(html,/data-calendar-book="2026-10-27"/);
  c.me.role='read_only';html=evaluate('scheduleWeekCalendar()');assert.doesNotMatch(html,/draggable="true"|data-slot-book=|data-calendar-book=|Click an empty time/);c.me.role='owner';
@@ -43,7 +43,7 @@ evaluate("scheduleDate='2026-10-28';scheduleMode='week_grid';scheduleProviders=[
  // Dropping on a day column takes the time from where the card lands and keeps the provider.
  listeners.get('dragstart')[0]({target:{closest:()=>dragButton},dataTransfer:{setData(){}}});
  const column={dataset:{gridDay:'2026-10-29',gridProvider:''},closest:()=>({dataset:{first:'420'}}),getBoundingClientRect:()=>({top:100})};
- listeners.get('drop')[0]({target:{closest:()=>column},clientY:100+(13*60+20-420)*2,preventDefault(){}});await pending;
+ listeners.get('drop')[0]({target:{closest:()=>column},clientY:100+(13*60+20-420)*1.6,preventDefault(){}});await pending;
  assert.equal(evaluate('scheduleMove.body.starts_at'),new Date('2026-10-29T13:15:00-05:00').toISOString());assert.equal(evaluate('scheduleMove.body.clinician_id'),'p1');
  listeners.get('dragstart')[0]({target:{closest:()=>dragButton},dataTransfer:{setData(){}}});
  listeners.get('drop')[0]({target:{closest:()=>cell},preventDefault(){}});await pending;

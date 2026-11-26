@@ -5,7 +5,8 @@
 function motionReduced(){try{return typeof matchMedia==='function'&&!!matchMedia('(prefers-reduced-motion: reduce)').matches;}catch{return false;}}
 function motionLater(fn,ms){try{if(typeof setTimeout==='function')return setTimeout(fn,ms);}catch{}return null;}
 function motionClassOnce(node,name,ms){
- if(!node||!node.classList||motionReduced())return;
+ if(!node||!node.classList)return;
+ if(motionReduced()){node.classList.remove(name);return;}
  try{
   node.classList.remove(name);
   if(typeof node.offsetWidth==='number')void node.offsetWidth;
@@ -65,3 +66,35 @@ if(typeof document!=='undefined'&&typeof document.addEventListener==='function')
  const node=document.getElementById('notice');if(node)node.hidden=true;
  if(motionNoticeTimer!==null&&typeof clearTimeout==='function')clearTimeout(motionNoticeTimer);motionNoticeTimer=null;
 });
+
+// Animate content siblings only: the sticky patient header and navigation stay mounted.
+function motionChartIn(){
+ const chart=document.getElementById('chart');
+ if(!chart)return;
+ for(const node of chart.children)if(!node.hidden&&node.id!=='patient-banner'&&!node.classList.contains('chart-context'))motionIn(node);
+}
+// Keep the last painted panel over an asynchronous renderer's placeholders until it is ready.
+function motionRetainChart(chart,includeHidden=false){
+ const saved=new Map();
+ for(const node of chart.children){
+  if(!node.id||(!includeHidden&&node.hidden)||node.id==='patient-banner')continue;
+  const copy=node.cloneNode(true);
+  const originals=node.querySelectorAll('input,textarea,select');
+  copy.querySelectorAll('input,textarea,select').forEach((field,i)=>{field.value=originals[i].value;});
+  copy.hidden=false;copy.removeAttribute('id');for(const child of copy.querySelectorAll('[id]'))child.removeAttribute('id');
+  copy.classList.add('motion-retained');copy.setAttribute('aria-hidden','true');copy.inert=true;
+  saved.set(node.id,{copy,height:node.getBoundingClientRect().height});
+ }
+ return ()=>{
+  for(const [id,{copy,height}] of saved){
+   const node=document.getElementById(id);if(!node||node.hidden)continue;
+   const pending=()=>Array.from(node.children).filter(child=>child!==copy).some(child=>child.matches('[data-skeleton],.skeleton,.chart-loading,.chart-section-skeleton,[role="status"]')||child.querySelector('[data-skeleton],.skeleton,.chart-loading,.chart-section-skeleton')||/^Loading(?:[.…]|$)/.test(child.textContent.trim()));
+   if(!pending())continue;
+   node.classList.add('motion-refresh-pending');node.style.minHeight=height+'px';node.append(copy);
+   const observer=new MutationObserver(()=>{
+    if(!pending()||!node.isConnected){observer.disconnect();copy.remove();node.classList.remove('motion-refresh-pending');node.style.minHeight='';}
+   });
+   observer.observe(node,{childList:true,subtree:true,characterData:true});
+  }
+ };
+}

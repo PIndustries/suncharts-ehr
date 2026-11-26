@@ -227,6 +227,15 @@ async fn session(ExtractState(s): ExtractState<State>, h: HeaderMap) -> Result<J
 pub fn router() -> Router<State> {
     Router::new()
         .route("/api/v1/patient-portal/session", get(session))
+        .route("/api/v1/patient-portal/statements", get(statement_list))
+        .route(
+            "/api/v1/patient-portal/statements/{id}",
+            get(statement_detail),
+        )
+        .route(
+            "/api/v1/patient-portal/statements/{id}/pay",
+            post(statement_pay),
+        )
         .route("/api/v1/patient-portal/activate", post(activate))
         .route("/api/v1/patient-portal/login", post(login))
         .route("/api/v1/patient-portal/logout", post(logout))
@@ -1004,4 +1013,80 @@ async fn staff_status(
     .await?;
     tx.commit().await?;
     Ok(Json(json!({"id":id,"status":input.status,"version":v+1})))
+}
+
+// Only explicitly delivered immutable statements cross the patient publication boundary.
+async fn statement_list(ExtractState(s): ExtractState<State>, h: HeaderMap) -> Result<Json<Value>> {
+    let (mut tx, p) = patient(&s, &h, false).await?;
+    let items:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',i.id,'created_at',i.created_at,'amount_due_cents',i.snapshot->'amount_due_cents') FROM patient_invoice_snapshots i WHERE i.tenant_id=$1 AND i.patient_id=$2 AND EXISTS(SELECT 1 FROM billing_statement_deliveries d WHERE d.tenant_id=i.tenant_id AND d.invoice_id=i.id) ORDER BY i.created_at DESC,i.id LIMIT 101").bind(p.tenant).bind(p.id).fetch_all(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(Json(json!({"account_id":p.account,"items":items})))
+}
+async fn delivered_statement(tx: &mut Tx<'_>, p: &Patient, id: Uuid) -> Result<Value> {
+    sqlx::query_scalar("SELECT to_jsonb(i)-'tenant_id'-'creation_hash'-'request_id'-'actor_id' FROM patient_invoice_snapshots i WHERE i.tenant_id=$1 AND i.patient_id=$2 AND i.id=$3 AND EXISTS(SELECT 1 FROM billing_statement_deliveries d WHERE d.tenant_id=i.tenant_id AND d.invoice_id=i.id)")
+        .bind(p.tenant).bind(p.id).bind(id).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)
+}
+async fn statement_detail(
+    ExtractState(s): ExtractState<State>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>> {
+    let (mut tx, p) = patient(&s, &h, false).await?;
+    let i = delivered_statement(&mut tx, &p, id).await?;
+    let ready:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM payment_settings WHERE tenant_id=$1 AND enabled AND verified AND mode='suncharts_connect')").bind(p.tenant).fetch_one(&mut *tx).await?;
+    let policy = crate::copay_checkout::Policy::current();
+    let ready = ready && (!policy.production || policy.live_enabled);
+    tx.commit().await?;
+    Ok(Json(
+        json!({"account_id":p.account,"invoice":i,"online_payment":ready}),
+    ))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StatementPay {
+    request_id: Uuid,
+    agreed: bool,
+}
+async fn statement_pay(
+    ExtractState(s): ExtractState<State>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(v): Json<StatementPay>,
+) -> Result<Json<Value>> {
+    let (mut tx, p) = patient(&s, &h, true).await?;
+    delivered_statement(&mut tx, &p, id).await?;
+    if !v.agreed || v.request_id.is_nil() {
+        return Err(Error::Invalid(
+            "Agree to pay this statement before continuing.",
+        ));
+    }
+    let actor:Uuid=sqlx::query_scalar("SELECT actor_id FROM billing_statement_deliveries WHERE tenant_id=$1 AND invoice_id=$2 ORDER BY created_at LIMIT 1").bind(p.tenant).bind(id).fetch_one(&mut *tx).await?;
+    audit(
+        &mut tx,
+        p.tenant,
+        p.id,
+        p.account,
+        "patient",
+        "statement_payment_agreed",
+        id,
+        None,
+        json!({"request_id":v.request_id,"recorded_by_staff":actor}),
+    )
+    .await?;
+    tx.commit().await?;
+    let now = chrono::Utc::now().timestamp();
+    // This actor is restricted to the patient's delivered invoice in this operation.
+    let a = Actor {
+        sub: actor,
+        tenant_id: p.tenant,
+        role: crate::auth::Role::FrontDesk,
+        patient_id: Some(p.id),
+        iss: s.issuer.clone(),
+        aud: s.audience.clone(),
+        iat: now,
+        exp: now + 60,
+    };
+    Ok(Json(
+        crate::installments::portal_statement_checkout(&s, &a, p.id, id, v.request_id).await?,
+    ))
 }

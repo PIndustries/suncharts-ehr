@@ -76,6 +76,6 @@ const finished=insured({...posted,state:'paid_in_full',balance_cents:0,insurance
  vm.createContext(c2);vm.runInContext(fs.readFileSync('web/encounter-timeline.js','utf8'),c2);
  await c2.encounterPreviewOpen('v1',{amount:'2500',date:'2030-01-02'});await new Promise(r=>setTimeout(r,0));
  assert.equal(reads,0,'the open encounter is not read again');assert.match(sheet.timeline.innerHTML,/Now: Claim sent\. Ready to send/);
- c2.encounterRevenueState.visit='other';await c2.encounterPreviewOpen('v1');await new Promise(r=>setTimeout(r,0));assert.equal(reads,1,'another encounter is read once');assert.match(sheet.timeline.innerHTML,/Now: Note signed|Now: Charges posted/,'with no answer the steps come from the encounter alone');
+ c2.encounterRevenueState.visit='other';await c2.encounterPreviewOpen('v1');await new Promise(r=>setTimeout(r,0));assert.equal(reads,1,'another encounter is read once');assert.match(sheet.timeline.innerHTML,/aria-label="Now: Charges\./,'with no answer the steps come from the encounter alone');
  console.log('PASS encounter timeline: now step per billing state, self-pay and no-copay steps, closed chip, markup, chip, preview');
 })().catch(e=>{console.error(e);process.exit(1);});

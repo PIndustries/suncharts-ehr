@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
+require('./chart_test_context.cjs');
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const source=fs.readFileSync('web/care-pathways.js','utf8'),handlers={},calls=[],pendingRuns=[],panel={innerHTML:'',hidden:false};
 const instance={id:'path-1',patient_id:'patient-1',appointment_id:'appointment-1',definition_name:'Spasticity <movement>',definition_slug:'spasticity-movement-previsit',definition_version:2,status:'active',version:3,steps:[
@@ -11,12 +12,14 @@ const readiness={instance_id:'path-1',definition_version:2,observed_at:'2026-11-
 const definition={id:'definition-1',slug:'spasticity-movement-previsit',name:'Spasticity & movement pre-visit',trigger_type:'appointment_created',status:'active',version:2,definition:{steps:[]}};
 const api=async(path,method='GET',body,version)=>{calls.push({path,method,body,version});if(path==='/api/v1/care-pathways/definitions')return {items:[definition]};if(path.startsWith('/api/v1/care-pathways/instances?'))return {items:[instance]};if(path.endsWith('/readiness'))return readiness;if(path.endsWith('/events'))return {items:[{sequence:2,event_type:'step.submitted',step_key:'insurance',actor_id:'staff-1',reason:'Reviewed <record>',created_at:'2026-11-06T10:00:00Z'}]};if(path==='/api/v1/care-pathways/trigger')return {items:[instance]};return instance;};
 const context=vm.createContext({console,Map,Set,Object,Number,Date,JSON,encodeURIComponent,crypto:{randomUUID:()=> 'synthetic-request'},document:{addEventListener:(name,fn)=>(handlers[name]??=[]).push(fn)},$:id=>id==='care-pathways-panel'?panel:null,me:{role:'owner',user_id:'owner'},selected:'patient-1',activeVisit:null,esc:v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'),human:v=>String(v??'').replaceAll('_',' '),date:v=>String(v),api,notice:()=>{},run:fn=>{const result=Promise.resolve().then(fn);pendingRuns.push(result);return result},applyChartSection:()=>{},FormData:class{constructor(form){this.values=form.values||{}}get(k){return this.values[k]??null}}});
+vm.runInContext(fs.readFileSync('web/display-format.js','utf8'),context);
 vm.runInContext(source,context);
 (async()=>{
  await vm.runInContext('renderCarePathways()',context);
- assert.match(panel.innerHTML,/Spasticity &lt;movement&gt;/);assert.match(panel.innerHTML,/Verify &lt;insurance&gt;/);assert.doesNotMatch(panel.innerHTML,/<movement>|<insurance>/);
- assert.match(panel.innerHTML,/Needs approval/);assert.match(panel.innerHTML,/Approve/);assert.match(panel.innerHTML,/overdue/i);assert.match(panel.innerHTML,/Immutable timeline/);assert.match(panel.innerHTML,/Reviewed &lt;record&gt;/);
- assert.match(panel.innerHTML,/Assigned: front desk/);assert.match(panel.innerHTML,/Escalates to owner/);assert.match(panel.innerHTML,/3\/3|1\/3/);
+ assert.match(panel.innerHTML,/data-pathway-select="path-1">Spasticity &lt;movement&gt;/);const board=vm.runInContext('pathwayBoard(patientPathways[0])',context);
+ assert.match(board,/Spasticity &lt;movement&gt;/);assert.match(board,/Verify &lt;insurance&gt;/);assert.doesNotMatch(board,/<movement>|<insurance>/);
+ assert.match(board,/Needs approval/);assert.match(board,/Approve/);assert.match(board,/overdue/i);assert.match(board,/<h3>Workflow history<\/h3>/);assert.match(board,/Reviewed &lt;record&gt;/);
+ assert.match(board,/Assigned: front desk/);assert.match(board,/Escalates to owner/);assert.match(board,/3\/3|1\/3/);
  const nurse=vm.runInContext(`(()=>{me={role:'nurse'};return pathwayStepCard(${JSON.stringify(instance.steps[0])})})()`,context);assert.doesNotMatch(nurse,/>Approve</);
  const ready={...instance.steps[0],state:'ready',assigned_role:'front_desk',due_at:null};const owner=vm.runInContext(`(()=>{me={role:'owner'};return pathwayStepCard(${JSON.stringify(ready)},patientPathways[0],pathwayReadiness)})()`,context);assert.match(owner,/>Start</);assert.match(owner,/Submit for approval/);
  vm.runInContext(`me={role:'owner'};selectedPathwayId='path-1';patientPathways=[${JSON.stringify(instance)}]`,context);
@@ -24,7 +27,7 @@ vm.runInContext(source,context);
  for(const handler of handlers.submit)handler({target:actionForm,preventDefault(){}});await Promise.all(pendingRuns.splice(0));
  const action=calls.find(c=>c.path.includes('/steps/insurance/actions'));assert.equal(action.version,4);assert.equal(JSON.stringify(action.body),JSON.stringify({action:'approve',reason:'Human reviewed',evidence:{}}));
  const startForm={id:'pathway-start-form',dataset:{request:'stable-start',trigger:'patient:patient-1:stable-start'},values:{definition_id:'definition-1',insurance_present:'on',reason:'Reviewed start'}};for(const handler of handlers.submit)handler({target:startForm,preventDefault(){}});await Promise.all(pendingRuns.splice(0));const trigger=calls.find(c=>c.path==='/api/v1/care-pathways/trigger');assert.equal(trigger.body.request_id,'stable-start');assert.equal(trigger.body.trigger_key,'patient:patient-1:stable-start');assert.equal(trigger.body.context.insurance.present,true);
- const stalePanel=panel.innerHTML;let release;context.api=path=>path.includes('definitions')?new Promise(r=>release=r):Promise.resolve({items:[]});const pending=vm.runInContext('renderCarePathways()',context);context.selected='patient-2';release({items:[]});await pending;assert.match(panel.innerHTML,/Loading care pathways/);assert.notEqual(panel.innerHTML,stalePanel);
+ const stalePanel=panel.innerHTML;let release;context.api=path=>path.includes('definitions')?new Promise(r=>release=r):Promise.resolve({items:[]});const pending=vm.runInContext('renderCarePathways()',context);context.selected='patient-2';release({items:[]});await pending;assert.match(panel.innerHTML,/chart-section-skeleton/);assert.notEqual(panel.innerHTML,stalePanel);
  const app=fs.readFileSync('web/app.js','utf8'),index=fs.readFileSync('web/index.html','utf8');assert.match(app,/care_pathways:\['care-pathways-panel'\]/);assert.match(app,/renderCarePathways/);assert.match(index,/src="\/care-pathways.js"/);
  console.log('PASS care pathway board, role gates, escaped timeline, API actions and stale-patient isolation');
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -19,7 +19,7 @@ function directory(storage){
  vm.createContext(ctx);
  vm.runInContext(extract("let chartSection='overview'",'// Unsaved clinical edits'),ctx);
  vm.runInContext(extract('async function selectPatient(','\nconst date ='),ctx);
- vm.runInContext(extract('async function showClinical()','\nconst scopeNames='),ctx);
+ vm.runInContext(extract('async function showClinical(','\nconst scopeNames='),ctx);
  // The header button, exactly as the click handler runs it.
  const handler=/if\(button\.id==='toggle-directory'\)\{([^\n]*?)return;\}/.exec(app);assert(handler,'the patient list toggle handler exists');
  ctx.toggle=()=>vm.runInContext(`(()=>{${handler[1]}})()`,ctx);
@@ -34,21 +34,14 @@ const collapsed=f=>f.node('clinical-workspace').classList.contains('directory-co
  await f.ctx.selectPatient('patient-a');assert.equal(collapsed(f),true,'an open chart hides the list by default');
  assert.equal(f.node('toggle-directory').textContent,'Show patients');assert.equal(f.node('toggle-directory').attributes['aria-expanded'],'false');
  assert.equal(store.values.size,0,'opening a chart stores nothing by itself');
- // The toggle shows it, and that choice is remembered on this device.
- f.ctx.toggle();assert.equal(collapsed(f),false);assert.equal(f.node('toggle-directory').textContent,'Hide patients');
- assert.deepEqual([...store.values],[['suncharts.patientDirectory.besideChart','shown']]);
- await f.ctx.selectPatient('patient-b');assert.equal(collapsed(f),false,'the next chart keeps the list because the user asked for it');
- f=directory(store);await f.ctx.selectPatient('patient-a');assert.equal(collapsed(f),false,'a new session on the same device remembers the choice');
- f.ctx.toggle();assert.equal(collapsed(f),true);assert.equal(store.values.get('suncharts.patientDirectory.besideChart'),'hidden');
- f=directory(store);await f.ctx.selectPatient('patient-a');assert.equal(collapsed(f),true,'hiding is remembered too');
- // Toggling before any chart is open changes the view but not the remembered choice.
- f=directory(store);await f.ctx.showClinical();f.ctx.toggle();assert.equal(collapsed(f),true);assert.equal(store.values.get('suncharts.patientDirectory.besideChart'),'hidden');
- const untouched=memory();f=directory(untouched);await f.ctx.showClinical();f.ctx.toggle();f.ctx.toggle();assert.equal(untouched.values.size,0);
- // Storage that is missing or blocked never breaks the chart.
- f=directory(null);await f.ctx.selectPatient('patient-a');assert.equal(collapsed(f),true);f.ctx.toggle();assert.equal(collapsed(f),false);await f.ctx.selectPatient('patient-b');assert.equal(collapsed(f),false,'the choice still holds for this session');
+ // An open chart never restores the old beside-chart directory preference.
+ f.ctx.toggle();assert.equal(collapsed(f),true);
+ await f.ctx.selectPatient('patient-b');assert.equal(collapsed(f),true);
+ const saved=memory();saved.setItem('suncharts.patientDirectory.besideChart','shown');
+ f=directory(saved);await f.ctx.selectPatient('patient-a');assert.equal(collapsed(f),true);
+ await f.ctx.showClinical();assert.equal(collapsed(f),false);
  const blocked={getItem(){throw new Error('blocked');},setItem(){throw new Error('blocked');}};
- f=directory(blocked);await f.ctx.selectPatient('patient-a');assert.equal(collapsed(f),true);assert.doesNotThrow(()=>f.ctx.toggle());assert.equal(collapsed(f),false);
-
+ f=directory(blocked);await f.ctx.selectPatient('patient-a');assert.equal(collapsed(f),true);
  // Archive: out of the main flow, one click away in the patient banner's More menu. It lives in one place only.
  const {node}=nodes(),chart=vm.createContext({console,Map,Date,Intl,esc:value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),$:node,selected:'patient-a',me:{user_id:'owner',role:'owner'},workspace:{patient:{id:'patient-a',mrn:'SYN-1',given_name:'Avery',family_name:'Synthetic',birth_date:'1990-01-01',archived:false},appointments:[],visits:[],clinical:{items:[],reviews:[]},billing:{coverages:[]},demographics:{content:{}}},patients:[],cursor:null,activeVisit:undefined,chartSection:'overview',encounterSection:'documentation',
   chartAreaEnabled:()=>true,encounterSections:()=>[['documentation','Notes']],document:{addEventListener(){},querySelectorAll:()=>[],querySelector:()=>null},URLSearchParams});
@@ -58,7 +51,7 @@ const collapsed=f=>f.node('clinical-workspace').classList.contains('directory-co
  vm.runInContext(lifecycle,chart);vm.runInContext(fs.readFileSync(path.join(root,'web/patient-banner.js'),'utf8'),chart);
  const tabs=[['overview','Summary'],['profile','Patient details'],['visits','Encounters']];
  const menu=vm.runInContext(`chartNavigation(${JSON.stringify(tabs)})`,chart);
- assert.match(menu,/<details class="patient-record-navigation" id="patient-record-navigation"><summary>Patient record<\/summary>/);
+ assert.match(menu,/frame-chart-navigation/);
  assert.doesNotMatch(menu,/Archive/,'the Patient record menu no longer carries a second Archive entry');
  assert.doesNotMatch(app,/chart-archive-entry|data-patient-lifecycle-show|revealPatientLifecycle|patientLifecycleRevealed/);assert.doesNotMatch(style,/chart-archive-entry/);
  assert.match(app,/<section id="patient-lifecycle" class="panel" hidden><\/section>/,'the archive panel starts out of the main flow');
@@ -84,5 +77,5 @@ const collapsed=f=>f.node('clinical-workspace').classList.contains('directory-co
  // The step row and the note stay on screen: the encounter band is one row and its tabs do not scroll sideways.
  assert.doesNotMatch(style,/encounter-step-tabs/,'the numbered step bar has no styles left behind');assert.match(style,/\.encounter-visit-actions \{?/,'the single action row is styled');
  assert.match(style,/\.encounter-workspace-heading \.eyebrow\{display:none\}/);
- console.log('PASS patient list default, remembered toggle and reachable Archive');
+ console.log('PASS separate patient directory, ignored beside-chart preference and reachable Archive');
 })().catch(error=>{console.error(error);process.exit(1);});

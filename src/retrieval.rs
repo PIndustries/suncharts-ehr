@@ -659,6 +659,25 @@ pub(crate) async fn claim_tracking(
     )
 }
 
+pub(crate) fn claimmd_poll_delay(
+    interval: i64,
+    failures: i32,
+    ok: bool,
+    retry_after: Option<u32>,
+) -> (i64, i32) {
+    if ok {
+        return (interval, 0);
+    }
+    if let Some(retry) = retry_after {
+        return (interval.max(i64::from(retry)), failures);
+    }
+    let failures = (failures + 1).min(6);
+    (
+        (interval * (1 << failures)).min(interval.max(1800)),
+        failures,
+    )
+}
+
 pub async fn poll_one(pool: &PgPool, c: &Config) -> Result<bool> {
     sync(pool, c).await?;
     let candidate:Option<(Uuid,String)>=sqlx::query_as("SELECT c.tenant_id,c.route_key FROM edi_connections c JOIN jsonb_to_recordset($1) cfg(tenant_id uuid,route_key text) ON cfg.tenant_id=c.tenant_id AND cfg.route_key=c.route_key WHERE NOT paused AND next_poll_at<=now() AND (lease_until IS NULL OR lease_until<now()) ORDER BY next_poll_at,route_key LIMIT 1").bind(json!(c.routes.iter().filter(|r|r.retrieval.is_some()).map(|r|json!({"tenant_id":r.tenant_id,"route_key":r.key})).collect::<Vec<_>>())).fetch_optional(pool).await?;
@@ -671,8 +690,8 @@ pub async fn poll_one(pool: &PgPool, c: &Config) -> Result<bool> {
     };
     let mut tx = pool.begin().await?;
     billing::tenant_lock(&mut tx, &a).await?;
-    let row:Option<(String,Option<String>,DateTime<Utc>)>=sqlx::query_as("SELECT binding_hash,page_token,start_at FROM edi_connections WHERE tenant_id=$1 AND route_key=$2 AND NOT paused AND next_poll_at<=now() AND (lease_until IS NULL OR lease_until<now())").bind(tenant).bind(&key).fetch_optional(&mut *tx).await?;
-    let Some((hash, token, start)) = row else {
+    let row:Option<(String,Option<String>,DateTime<Utc>,i32)>=sqlx::query_as("SELECT binding_hash,page_token,start_at,poll_failures FROM edi_connections WHERE tenant_id=$1 AND route_key=$2 AND NOT paused AND next_poll_at<=now() AND (lease_until IS NULL OR lease_until<now())").bind(tenant).bind(&key).fetch_optional(&mut *tx).await?;
+    let Some((hash, token, start, failures)) = row else {
         return Ok(false);
     };
     if hash != binding(r) {
@@ -703,10 +722,15 @@ pub async fn poll_one(pool: &PgPool, c: &Config) -> Result<bool> {
         Adapter::Stedi => stedi::page(r, token.as_deref(), start)
             .await
             .and_then(|v| stedi_page(v, &r.usage)),
-        Adapter::ClaimMd => match crate::claimmd_eligibility::acquire_rate_limit(pool, r).await {
-            Ok(()) => crate::claimmd::page(r, token.as_deref().unwrap_or("0")).await,
-            Err(error) => Err(error),
-        },
+        Adapter::ClaimMd => {
+            crate::claimmd::paced(
+                pool,
+                r,
+                crate::claimmd::ApiBudget::Background,
+                crate::claimmd::page(r, token.as_deref().unwrap_or("0")),
+            )
+            .await
+        }
         Adapter::OfficeAllySftp | Adapter::AvailitySftp => crate::sftp_transport::page(r).await,
         _ => Err(Error::Invalid("unsupported retrieval adapter")),
     };
@@ -717,6 +741,10 @@ pub async fn poll_one(pool: &PgPool, c: &Config) -> Result<bool> {
         return Ok(true);
     }
     let mut ok = result.is_ok();
+    let retry_after = match &result {
+        Err(Error::ClaimMdRateLimited(seconds)) => Some(*seconds),
+        _ => None,
+    };
     let mut persistence_error = None;
     if let Ok(page) = result {
         sqlx::query("SAVEPOINT provider_page")
@@ -744,7 +772,20 @@ pub async fn poll_one(pool: &PgPool, c: &Config) -> Result<bool> {
             .execute(&mut *tx)
             .await?;
     }
-    sqlx::query("UPDATE edi_connections SET lease_id=NULL,lease_until=NULL,next_poll_at=now()+make_interval(secs=>$3),last_result=$4,version=version+1 WHERE tenant_id=$1 AND route_key=$2").bind(tenant).bind(&key).bind(r.retrieval.as_ref().unwrap().interval_seconds as f64).bind(if ok{"page_persisted"}else{"poll_failed_cursor_retained"}).execute(&mut *tx).await?;
+    let interval = r.retrieval.as_ref().unwrap().interval_seconds;
+    let (delay, failures) = if r.adapter == Adapter::ClaimMd {
+        claimmd_poll_delay(interval, failures, ok, retry_after)
+    } else {
+        (interval, 0)
+    };
+    let state = if ok {
+        "page_persisted"
+    } else if retry_after.is_some() {
+        "claimmd_rate_limited_cursor_retained"
+    } else {
+        "poll_failed_cursor_retained"
+    };
+    sqlx::query("UPDATE edi_connections SET lease_id=NULL,lease_until=NULL,next_poll_at=now()+make_interval(secs=>$3),last_result=$4,poll_failures=$5,version=version+1 WHERE tenant_id=$1 AND route_key=$2").bind(tenant).bind(&key).bind(delay as f64).bind(state).bind(failures).execute(&mut *tx).await?;
     connection_event(
         &mut tx,
         &a,
@@ -795,8 +836,13 @@ pub async fn fetch_one(pool: &PgPool, c: &Config) -> Result<bool> {
             Err(_) => Err(Error::Invalid("invalid Stedi transaction ID")),
         }
     } else if r.adapter == Adapter::ClaimMd {
-        crate::claimmd_eligibility::acquire_rate_limit(pool, r).await?;
-        crate::claimmd::era_input(r, &remote).await
+        crate::claimmd::paced(
+            pool,
+            r,
+            crate::claimmd::ApiBudget::Background,
+            crate::claimmd::era_input(r, &remote),
+        )
+        .await
     } else {
         crate::sftp_transport::input(r, &remote).await
     };
@@ -819,6 +865,9 @@ pub async fn fetch_one(pool: &PgPool, c: &Config) -> Result<bool> {
                 status = "quarantined".into();
             }
             sqlx::query("UPDATE edi_remote_reports SET status=$3,original_text=$4,original_hash=$5,parse_summary=$6,last_result='original_downloaded',lease_id=NULL,lease_until=NULL,version=version+1 WHERE tenant_id=$1 AND id=$2").bind(tenant).bind(id).bind(status).bind(&raw).bind(crate::oauth::hash(&raw)).bind(summary).execute(&mut *tx).await?;
+        }
+        Err(Error::ClaimMdRateLimited(seconds)) => {
+            sqlx::query("UPDATE edi_remote_reports SET status='pending',attempts=greatest(attempts-1,0),last_result='claimmd_rate_limited',next_attempt_at=now()+make_interval(secs=>$3),lease_id=NULL,lease_until=NULL,version=version+1 WHERE tenant_id=$1 AND id=$2").bind(tenant).bind(id).bind(f64::from(seconds)).execute(&mut *tx).await?;
         }
         Err(_) => {
             sqlx::query("UPDATE edi_remote_reports SET status=$3,last_result='download_failed',next_attempt_at=now()+interval '60 seconds',lease_id=NULL,lease_until=NULL,version=version+1 WHERE tenant_id=$1 AND id=$2").bind(tenant).bind(id).bind(if attempts>=3{"quarantined"}else{"pending"}).execute(&mut *tx).await?;
@@ -993,10 +1042,13 @@ pub async fn check_claimmd_status(
             "Claim.MD is being checked right now. Try again in a minute.",
         ));
     }
-    let result = match crate::claimmd_eligibility::acquire_rate_limit(pool, r).await {
-        Ok(()) => crate::claimmd::claim_page(r, &claimmd_id).await,
-        Err(error) => Err(error),
-    };
+    let result = crate::claimmd::paced(
+        pool,
+        r,
+        crate::claimmd::ApiBudget::Foreground,
+        crate::claimmd::claim_page(r, &claimmd_id),
+    )
+    .await;
     let mut tx = pool.begin().await?;
     billing::tenant_lock(&mut tx, a).await?;
     let released = sqlx::query("UPDATE edi_connections SET lease_id=NULL,lease_until=NULL WHERE tenant_id=$1 AND route_key=$2 AND lease_id=$3").bind(a.tenant_id).bind(&key).bind(lease).execute(&mut *tx).await?.rows_affected();
@@ -1309,6 +1361,15 @@ async fn from_source(
 #[cfg(test)]
 mod claimmd_tracking_tests {
     use super::*;
+    #[test]
+    fn claimmd_poll_delay_backs_off_until_a_successful_page() {
+        assert_eq!(claimmd_poll_delay(60, 0, false, None), (120, 1));
+        assert_eq!(claimmd_poll_delay(60, 1, false, None), (240, 2));
+        assert_eq!(claimmd_poll_delay(60, 6, false, None), (1800, 6));
+        assert_eq!(claimmd_poll_delay(3600, 6, false, None), (3600, 6));
+        assert_eq!(claimmd_poll_delay(60, 2, false, Some(2400)), (2400, 2));
+        assert_eq!(claimmd_poll_delay(60, 2, true, None), (60, 0));
+    }
     #[test]
     fn exact_status_link_requires_all_frozen_nonempty_identities() {
         let frozen = json!({"control_number":"SYN-CONTROL","content":{"billing_npi":"1234567893","tax_id":"000000001","external_control_number":""},"snapshot":{"account":{"total_cents":12550,"content":{"service_date":"2026-10-01"},"coverage_snapshot":{"coverage":{"content":{"member_id":"SYN-MEMBER"}},"payer":{"content":{"payer_code":"SYN-PAYER"}}}}}});

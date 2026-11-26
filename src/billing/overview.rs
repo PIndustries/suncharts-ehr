@@ -23,10 +23,10 @@ const COPAYS: &str = r#"WITH receipt_rows AS (
  SELECT r.id,r.patient_id,p.family_name||', '||p.given_name AS patient_name,p.mrn,
  r.appointment_id,r.amount_cents,r.method,r.occurred_on,r.created_at,
  o.id AS hosted_operation_id,o.livemode,o.status AS hosted_status,
- coalesce(o.refunded_cents,0) AS refunded_cents,
+ coalesce(o.refunded_cents,0)+coalesce((SELECT f.amount_cents FROM billing_receipt_cash_refunds f WHERE f.tenant_id=r.tenant_id AND f.receipt_id=r.id),0) AS refunded_cents,
  coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),0)::bigint AS allocated_cents,
  coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x JOIN billing_entries e ON e.tenant_id=x.tenant_id AND e.reverses_id=x.entry_id WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),0)::bigint AS reversed_cents,
- coalesce((SELECT sum(f.unapplied_cents) FROM copay_checkout_refund_events f WHERE f.tenant_id=o.tenant_id AND f.operation_id=o.id),0)::bigint AS refunded_unapplied_cents,
+ coalesce((SELECT sum(f.unapplied_cents) FROM copay_checkout_refund_events f WHERE f.tenant_id=o.tenant_id AND f.operation_id=o.id),0)::bigint+coalesce((SELECT c.amount_cents FROM billing_receipt_cash_refunds c WHERE c.tenant_id=r.tenant_id AND c.receipt_id=r.id),0) AS refunded_unapplied_cents,
  EXISTS(SELECT 1 FROM billing_copay_voids v WHERE v.tenant_id=r.tenant_id AND v.receipt_id=r.id) AS voided,
  coalesce(o.livemode=false,false) AS test_activity
  FROM billing_copay_receipts r JOIN patients p ON p.tenant_id=r.tenant_id AND p.id=r.patient_id

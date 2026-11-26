@@ -45,7 +45,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 const AUTO_REASON: &str = "Prepared automatically from the visit's posted charges";
-const STATEMENT_REASON: &str = "Statement prepared from the visit's billing summary";
+pub(crate) const STATEMENT_REASON: &str = "Statement prepared from the visit's billing summary";
 
 fn db(s: &State) -> Result<&PgPool> {
     Ok(&s.browser.as_ref().ok_or(Error::NotFound)?.db)
@@ -53,7 +53,7 @@ fn db(s: &State) -> Result<&PgPool> {
 fn cents(v: &Value) -> i64 {
     v.as_i64().unwrap_or(0)
 }
-fn derived_id(parts: &impl serde::Serialize) -> Result<Uuid> {
+pub(crate) fn derived_id(parts: &impl serde::Serialize) -> Result<Uuid> {
     let hex = billing::digest(parts)?;
     u128::from_str_radix(hex.get(..32).unwrap_or(""), 16)
         .map(Uuid::from_u128)
@@ -88,7 +88,8 @@ fn receipts(rows: Vec<Value>, appointment: Option<Uuid>, production: bool) -> Re
         // The credit still unused on the whole payment, before it is narrowed to one part.
         let whole_unapplied = (cents(&row["amount_cents"])
             - cents(&row["allocated_cents"])
-            - cents(&row["hosted_checkout"]["refunded_unapplied_cents"]))
+            - cents(&row["hosted_checkout"]["refunded_unapplied_cents"])
+            - cents(&row["cash_refunded_cents"]))
         .max(0);
         let mut part_unapplied = whole_unapplied;
         if let Some(parts) = row["hosted_checkout"]["splits"].as_array() {
@@ -114,7 +115,7 @@ fn receipts(rows: Vec<Value>, appointment: Option<Uuid>, production: bool) -> Re
         let voided = row["voided"] == true;
         let reversed = cents(&row["reversed_cents"]) > 0;
         let held = hosted["status"] == "needs_review";
-        let amount = cents(&row["amount_cents"]);
+        let amount = cents(&row["amount_cents"]) - cents(&row["cash_refunded_cents"]);
         if !voided {
             out.net_received += (amount - cents(&hosted["refunded_cents"])).max(0);
             out.needs_review |= reversed || held;
@@ -226,7 +227,7 @@ const BALANCES: &str = r#"WITH acct AS (
  CROSS JOIN LATERAL (SELECT
    coalesce((SELECT sum(a.amount_cents) FROM billing_copay_allocations a WHERE a.tenant_id=r.tenant_id AND a.receipt_id=r.id),0)::bigint AS allocated,
    coalesce((SELECT sum(a.amount_cents) FROM billing_copay_allocations a JOIN billing_entries e ON e.tenant_id=a.tenant_id AND e.reverses_id=a.entry_id WHERE a.tenant_id=r.tenant_id AND a.receipt_id=r.id),0)::bigint AS reversed,
-   coalesce((SELECT sum(f.unapplied_cents) FROM copay_checkout_refund_events f WHERE f.tenant_id=o.tenant_id AND f.operation_id=o.id),0)::bigint AS refunded_unapplied,
+   coalesce((SELECT sum(f.unapplied_cents) FROM copay_checkout_refund_events f WHERE f.tenant_id=o.tenant_id AND f.operation_id=o.id),0)::bigint+coalesce((SELECT f.amount_cents FROM billing_receipt_cash_refunds f WHERE f.tenant_id=r.tenant_id AND f.receipt_id=r.id),0) AS refunded_unapplied,
    EXISTS(SELECT 1 FROM billing_copay_voids d WHERE d.tenant_id=r.tenant_id AND d.receipt_id=r.id) AS voided) y
  CROSS JOIN LATERAL (
   SELECT r.appointment_id,r.amount_cents AS part_left WHERE NOT EXISTS(SELECT 1 FROM copay_checkout_splits s WHERE s.tenant_id=o.tenant_id AND s.operation_id=o.id)
@@ -242,7 +243,7 @@ const BALANCES: &str = r#"WITH acct AS (
   coalesce(l.test_activity,false) OR coalesce((i.snapshot->>'test_activity')::boolean,false) AS test_activity,
   c.id AS claim_id,c.status AS claim_status,c.response_to_review,
   n.claim_id IS NOT NULL AND coalesce(c.status NOT IN ('draft','ready','submitted','accepted'),false) AS answered,n.responsibility AS settled_responsibility,n.answered_at,
-  coalesce(c.status='rejected' OR (c.status='adjudicated' AND c.answered AND c.denied),false) AS denied,
+  coalesce(c.status='rejected' OR (c.status='adjudicated' AND c.answered AND c.denied),false) AND NOT EXISTS(SELECT 1 FROM billing_denial_resolutions dr WHERE dr.tenant_id=a.tenant_id AND dr.claim_id=c.id) AS denied,
   EXISTS(SELECT 1 FROM ehr_claims z WHERE z.tenant_id=a.tenant_id AND z.account_id=a.id AND z.status='void') AS any_void,
   m.id IS NOT NULL AND m.account_version=a.version AND (l.last_entry_at IS NULL OR l.last_entry_at<=m.created_at) AS statement_current,m.created_at AS statement_at,
   CASE WHEN jsonb_typeof(m.snapshot->'responsibility_cents')='number' THEN (m.snapshot->>'responsibility_cents')::bigint END AS statement_responsibility
@@ -693,8 +694,8 @@ pub(crate) async fn summarize(
         .and_then(|b| b.content["visit_id"].as_str())
         .and_then(|v| Uuid::parse_str(v).ok())
         .or(visit);
-    let visit_row: Option<(Uuid, String, Uuid, chrono::DateTime<chrono::Utc>)> = match visit_id {
-        Some(v) => sqlx::query_as("SELECT v.id,v.status,v.appointment_id,ap.starts_at FROM visits v JOIN appointments ap ON ap.tenant_id=v.tenant_id AND ap.id=v.appointment_id WHERE v.tenant_id=$1 AND v.patient_id=$2 AND v.id=$3")
+    let visit_row: Option<(Uuid, String, Uuid, chrono::DateTime<chrono::Utc>, Uuid, String)> = match visit_id {
+        Some(v) => sqlx::query_as("SELECT v.id,v.status,v.appointment_id,ap.starts_at,v.clinician_id,coalesce(nullif(pp.display_name,''),u.display_name,'') FROM visits v JOIN appointments ap ON ap.tenant_id=v.tenant_id AND ap.id=v.appointment_id LEFT JOIN practice_providers pp ON (pp.tenant_id,pp.id)=(v.tenant_id,v.clinician_id) LEFT JOIN browser_users u ON (u.tenant_id,u.id)=(v.tenant_id,v.clinician_id) WHERE v.tenant_id=$1 AND v.patient_id=$2 AND v.id=$3")
             .bind(a.tenant_id).bind(p).bind(v).fetch_optional(&mut **tx).await?,
         None => None,
     };
@@ -949,7 +950,7 @@ pub(crate) async fn summarize(
 
     let mut out = json!({
         "patient_id": p,
-        "visit": visit_row.as_ref().map(|row| json!({"id":row.0,"status":row.1,"appointment_id":row.2,"starts_at":row.3})),
+        "visit": visit_row.as_ref().map(|row| json!({"id":row.0,"status":row.1,"appointment_id":row.2,"starts_at":row.3,"clinician_id":row.4,"clinician_name":row.5})),
         "account": account.as_ref().map(|b| json!({"id":b.id,"status":b.status,"version":b.version,"total_cents":b.total_cents,"service_date":b.content["service_date"],"has_visit":b.content["visit_id"].is_string()})),
         "state": state,
         "waiting_on": waiting_on,
@@ -1003,10 +1004,22 @@ pub(crate) async fn summarize(
         "balance_cents": posted.then_some(balance),
         "claim": claim_json,
         "claim_count": live.len(),
-        "receipts": paid_at_desk.items.iter().map(|row| json!({"id":row["id"],"appointment_id":row["appointment_id"],"amount_cents":row["amount_cents"],"method":if row["hosted_checkout"].is_object() { json!("card") } else { row["method"].clone() },"occurred_on":row["occurred_on"],"payment_group_id":row["payment_group_id"],"reference":row["reference"],"voided":row["voided"],"refunded_cents":row["hosted_checkout"]["refunded_cents"],"needs_review":row["hosted_checkout"]["status"]=="needs_review" || cents(&row["reversed_cents"])>0,"test":row["hosted_checkout"]["livemode"]==false})).collect::<Vec<_>>(),
+        "receipts": paid_at_desk.items.iter().map(|row| json!({"id":row["id"],"appointment_id":row["appointment_id"],"amount_cents":row["amount_cents"],"method":if row["hosted_checkout"].is_object() { json!("card") } else { row["method"].clone() },"occurred_on":row["occurred_on"],"payment_group_id":row["payment_group_id"],"reference":row["reference"],"voided":row["voided"],"refunded_cents":cents(&row["hosted_checkout"]["refunded_cents"])+cents(&row["cash_refunded_cents"]),"needs_review":row["hosted_checkout"]["status"]=="needs_review" || cents(&row["reversed_cents"])>0,"test":row["hosted_checkout"]["livemode"]==false})).collect::<Vec<_>>(),
     });
 
+    if let Some(id) = out["claim"]["id"]
+        .as_str()
+        .and_then(|v| Uuid::parse_str(v).ok())
+        .filter(|_| opt.claims)
+    {
+        if let Some(evidence) = crate::visit_claim_handoff::evidence(tx, a, id).await? {
+            out["claim_handoff"] = evidence;
+        }
+    }
     if let Some(b) = account.as_ref().filter(|_| opt.history) {
+        if let Some(status) = crate::automatic_invoices::current_status(tx, a, b, &out).await? {
+            out["automatic_invoice"] = status;
+        }
         let statements: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('id',i.id,'created_at',i.created_at,'amount_due_cents',i.snapshot->'amount_due_cents','responsibility_cents',i.snapshot->'responsibility_cents','account_version',i.account_version) FROM patient_invoice_snapshots i WHERE i.tenant_id=$1 AND i.patient_id=$2 AND i.account_id=$3 ORDER BY i.created_at DESC,i.id LIMIT 100")
             .bind(a.tenant_id).bind(p).bind(b.id).fetch_all(&mut **tx).await?;
         let current = statements.first().is_some_and(|row| {
@@ -1062,7 +1075,7 @@ async fn timeline(
         prior = Some((status.as_str(), content));
     }
     for row in receipts {
-        events.push(json!({"at":row["created_at"],"group":"payments","code":if row["voided"]==true {"receipt_voided"} else {"payment_received"},"amount_cents":row["amount_cents"],"method":if row["hosted_checkout"].is_object() { json!("card") } else { row["method"].clone() },"occurred_on":row["occurred_on"],"receipt_id":row["id"],"appointment_id":row["appointment_id"],"refunded_cents":row["hosted_checkout"]["refunded_cents"]}));
+        events.push(json!({"at":row["created_at"],"group":"payments","code":if row["voided"]==true {"receipt_voided"} else {"payment_received"},"amount_cents":row["amount_cents"],"method":if row["hosted_checkout"].is_object() { json!("card") } else { row["method"].clone() },"occurred_on":row["occurred_on"],"receipt_id":row["id"],"appointment_id":row["appointment_id"],"refunded_cents":cents(&row["hosted_checkout"]["refunded_cents"])+cents(&row["cash_refunded_cents"])}));
     }
     let entries: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('id',e.id,'at',e.created_at,'kind',e.kind,'effect_cents',e.effect_cents,'party',CASE WHEN e.kind='reversal' THEN o.content->>'party' ELSE e.content->>'party' END,'method',e.content->>'method','occurred_on',e.content->>'occurred_on','reverses_id',e.reverses_id,'reversed',EXISTS(SELECT 1 FROM billing_entries r WHERE r.tenant_id=e.tenant_id AND r.reverses_id=e.id),'from_receipt',e.content ? 'copay_receipt_id','from_insurer_response',e.content ? 'remittance_id','remittance_id',e.content->>'remittance_id','card',(e.content ? 'managed_payment_id' OR e.content ? 'hosted_copay_operation_id' OR e.content ? 'invoice_checkout_operation_id'),'test',coalesce(e.content->>'test_mode','false')='true','reference',e.content->>'reference','reason',e.content->>'reason') FROM billing_entries e LEFT JOIN billing_entries o ON o.tenant_id=e.tenant_id AND o.account_id=e.account_id AND o.id=e.reverses_id WHERE e.tenant_id=$1 AND e.account_id=$2 ORDER BY e.created_at,e.id LIMIT 2000")
         .bind(a.tenant_id).bind(b.id).fetch_all(&mut **tx).await?;
@@ -1117,6 +1130,8 @@ async fn timeline(
             before = Some(status);
         }
     }
+    let deliveries:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('at',d.created_at,'group','statements','code','statement_sent','invoice_id',d.invoice_id,'channel',d.channel,'actor_label',coalesce(nullif(u.display_name,''),u.email)) FROM billing_statement_deliveries d JOIN patient_invoice_snapshots i ON i.tenant_id=d.tenant_id AND i.id=d.invoice_id JOIN browser_users u ON u.tenant_id=d.tenant_id AND u.id=d.actor_id WHERE d.tenant_id=$1 AND i.patient_id=$2 AND i.account_id=$3 ORDER BY d.created_at,d.id").bind(a.tenant_id).bind(b.patient_id).bind(b.id).fetch_all(&mut **tx).await?;
+    events.extend(deliveries);
     for row in statements {
         events.push(json!({"at":row["created_at"],"group":"statements","code":"statement","amount_cents":row["amount_due_cents"],"invoice_id":row["id"]}));
     }
@@ -1214,28 +1229,15 @@ fn joined_address(demographics: Option<&Value>) -> String {
         .collect::<Vec<_>>()
         .join(", ")
 }
-fn luhn_npi(s: &str) -> bool {
-    s.len() == 10
-        && s.bytes().all(|b| b.is_ascii_digit())
-        && format!("80840{s}")
-            .bytes()
-            .rev()
-            .enumerate()
-            .map(|(i, b)| {
-                let n = (b - b'0') as u32;
-                if i % 2 == 1 {
-                    if n * 2 > 9 {
-                        n * 2 - 9
-                    } else {
-                        n * 2
-                    }
-                } else {
-                    n
-                }
-            })
-            .sum::<u32>()
-            % 10
-            == 0
+fn claim_provider(
+    providers: &[(Uuid, String, String)],
+    clinician: Option<Uuid>,
+) -> Option<&(Uuid, String, String)> {
+    match clinician {
+        Some(id) => providers.iter().find(|row| row.0 == id),
+        None if providers.len() == 1 => providers.first(),
+        None => None,
+    }
 }
 
 /// The claim details a person would otherwise type: provider and place from the practice
@@ -1254,6 +1256,7 @@ pub(crate) async fn claim_defaults(
     a: &Actor,
     p: Uuid,
     b: &billing::Account,
+    claim_rendering_npi: Option<&str>,
 ) -> Result<ClaimContent> {
     let clinician: Option<Uuid> =
         match b.content["visit_id"]
@@ -1270,16 +1273,17 @@ pub(crate) async fn claim_defaults(
             .await?,
             None => None,
         };
-    let providers: Vec<(Uuid, String, String)> = sqlx::query_as("SELECT p.id,p.display_name,p.npi FROM practice_providers p JOIN browser_users u ON u.tenant_id=p.tenant_id AND u.id=p.id WHERE p.tenant_id=$1 AND p.active AND NOT u.disabled AND u.role IN ('owner','clinician') ORDER BY p.display_name,p.id LIMIT 100")
-        .bind(a.tenant_id).fetch_all(pool).await?;
-    let providers: Vec<_> = providers
-        .into_iter()
-        .filter(|row| luhn_npi(&row.2))
-        .collect();
-    let provider = providers
-        .iter()
-        .find(|row| Some(row.0) == clinician)
-        .or_else(|| (providers.len() == 1).then(|| &providers[0]));
+    let providers: Vec<_> =
+        crate::claimmd_eligibility::provider_choices(pool, a.tenant_id, clinician)
+            .await?
+            .into_iter()
+            .map(|p| (p.id, p.display_name, p.npi))
+            .collect();
+    let provider = if b.content["visit_id"].as_str().is_some() && clinician.is_none() {
+        None
+    } else {
+        claim_provider(&providers, clinician)
+    };
     let facilities: Vec<(String, String)> = sqlx::query_as("SELECT name,address FROM practice_facilities WHERE tenant_id=$1 AND active ORDER BY name,id LIMIT 2")
         .bind(a.tenant_id).fetch_all(pool).await?;
     let facility = (facilities.len() == 1).then(|| &facilities[0]);
@@ -1288,8 +1292,9 @@ pub(crate) async fn claim_defaults(
     let mut tax_id = String::new();
     let mut tax_id_type = String::new();
     let mut organization_name = String::new();
-    let mut organization_npi = String::new();
+
     if let [organization] = organizations.as_slice() {
+        organization_name = organization["name"].as_str().unwrap_or_default().to_owned();
         if let Some(id) = organization["id"]
             .as_str()
             .and_then(|v| Uuid::parse_str(v).ok())
@@ -1305,10 +1310,6 @@ pub(crate) async fn claim_defaults(
                     _ => "E",
                 }
                 .to_owned();
-                organization_name = organization["name"].as_str().unwrap_or("").to_owned();
-                // A practice billing under its organization NPI sends the group's code with
-                // its own tax ID; blank leaves the clinician's NPI as the billing provider.
-                organization_npi = organization["npi"].as_str().unwrap_or("").to_owned();
             }
         }
     }
@@ -1347,6 +1348,29 @@ pub(crate) async fn claim_defaults(
     // What the front desk filled in on the encounter form beside the charges.
     let details: crate::encounter_claim::EncounterClaimDetails =
         serde_json::from_value(b.content["claim_details"].clone()).unwrap_or_default();
+    let rendering_npi = if let Some(saved) = claim_rendering_npi.filter(|npi| !npi.is_empty()) {
+        saved.to_owned()
+    } else if details.rendering_npi.is_empty() {
+        provider.map(|row| row.2.clone()).unwrap_or_default()
+    } else {
+        details.rendering_npi.clone()
+    };
+    // A single billing entity may be configured to bill under the rendering clinician's NPI.
+    // With multiple active entities the billing identity must be chosen explicitly on the claim.
+    let individual_billing_npi = if crate::practice_admin::valid_npi(&rendering_npi) {
+        rendering_npi.as_str()
+    } else {
+        ""
+    };
+    let billing_npi = match organizations.as_slice() {
+        [] => individual_billing_npi.to_owned(),
+        [organization] => organization["npi"]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .unwrap_or(individual_billing_npi)
+            .to_owned(),
+        _ => String::new(),
+    };
     Ok(ClaimContent {
         billing_provider_name: facility
             .map(|row| row.0.clone())
@@ -1354,19 +1378,11 @@ pub(crate) async fn claim_defaults(
             .or_else(|| Some(organization_name).filter(|name| !name.is_empty()))
             .or_else(|| provider.map(|row| row.1.clone()))
             .unwrap_or_default(),
-        billing_npi: if organization_npi.is_empty() {
-            provider.map(|row| row.2.clone()).unwrap_or_default()
-        } else {
-            organization_npi
-        },
+        billing_npi,
         tax_id,
         tax_id_type,
         billing_address: facility.map(|row| row.1.clone()).unwrap_or_default(),
-        rendering_npi: if details.rendering_npi.is_empty() {
-            provider.map(|row| row.2.clone()).unwrap_or_default()
-        } else {
-            details.rendering_npi.clone()
-        },
+        rendering_npi,
         subscriber_address: if own_policy {
             patient_address.clone()
         } else {
@@ -1432,11 +1448,14 @@ pub(crate) async fn prepare_claim(
     {
         return skipped("no_payer_id");
     }
-    let mut content = claim_defaults(pool, a, p, &account).await?;
+    let mut content = claim_defaults(pool, a, p, &account, None).await?;
     let mut tx = pool.begin().await?;
     billing::tenant_lock(&mut tx, a).await?;
     let b = claims::account(&mut tx, a, account_id, Some(p)).await?;
-    if b.status != "posted" || b.coverage_snapshot != account.coverage_snapshot {
+    if b.status != "posted"
+        || b.version != account.version
+        || b.coverage_snapshot != account.coverage_snapshot
+    {
         return Err(Error::Conflict("the charges changed; open the visit again"));
     }
     let existing: Vec<(Uuid, String, Value)> = sqlx::query_as("SELECT id,status,content FROM ehr_claims WHERE tenant_id=$1 AND account_id=$2 ORDER BY created_at,id")
@@ -1719,6 +1738,10 @@ pub fn router() -> Router<State> {
     Router::new()
         .route("/api/v1/patients/{p}/billing/visit-summary", get(read))
         .route(
+            "/api/v1/patients/{p}/billing/visits/{visit}/claim-handoff",
+            post(crate::visit_claim_handoff::handoff),
+        )
+        .route(
             "/api/v1/patients/{p}/billing/encounters",
             get(encounter_balances),
         )
@@ -1764,6 +1787,28 @@ mod db_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claim_provider_preserves_the_assigned_clinician() {
+        let assigned = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let sole = [(other, "Other clinician".to_owned(), "1234567893".to_owned())];
+        assert!(claim_provider(&sole, Some(assigned)).is_none());
+        assert_eq!(claim_provider(&sole, None).map(|row| row.0), Some(other));
+        let both = [
+            sole[0].clone(),
+            (
+                assigned,
+                "Assigned clinician".to_owned(),
+                "1245319599".to_owned(),
+            ),
+        ];
+        assert_eq!(
+            claim_provider(&both, Some(assigned)).map(|row| row.0),
+            Some(assigned)
+        );
+        assert!(claim_provider(&both, None).is_none());
+    }
 
     #[test]
     fn diagnoses_follow_the_charge_lines_like_the_claim_form() {

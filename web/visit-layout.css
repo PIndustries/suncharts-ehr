@@ -39,3 +39,11 @@
 .encounter-benefits-line>summary b{font-weight:600}
 .encounter-benefits-line[open]>summary{margin-bottom:8px}
 .encounter-switch-history{margin-right:auto}
+
+/* Inline note controls stay inside the encounter's existing scroll area. */
+[data-note-inline]{min-width:0;max-width:100%;margin-top:.75rem}
+[data-note-inline] input{max-width:100%;min-width:0}
+[data-note-inline] .actions{flex-wrap:wrap}
+#note-procedure-chips .actions{margin-block:.4rem;align-items:end}
+#note-procedure-chips label{flex:1 1 7rem;min-width:0}
+#note-save-status{font-size:.8rem;font-weight:400}

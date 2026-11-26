@@ -8,10 +8,6 @@
   "fees.js": {
     "JSON": 1
   },
-  "patient-portal.js": {
-    "JSON": 3,
-    "snapshot": 7
-  },
   "previsit.js": {
     "JSON": 1
   },

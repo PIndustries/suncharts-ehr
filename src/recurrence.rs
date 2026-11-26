@@ -33,6 +33,8 @@ struct Occurrence {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SeriesPlan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    visit_type: Option<crate::model::VisitTypeSelection>,
     request_id: Uuid,
     patient_id: Uuid,
     clinician_id: Uuid,
@@ -50,6 +52,7 @@ struct SeriesPlan {
 impl SeriesPlan {
     fn booking(&self, o: &Occurrence) -> NewAppointment {
         NewAppointment {
+            visit_type: self.visit_type.clone(),
             request_id: None,
             source_history_id: None,
             patient_id: self.patient_id,
@@ -258,6 +261,7 @@ async fn preview(
         Vec::new()
     } else {
         authorize_plan(&mut tx, &a, &plan).await?;
+        crate::visit_types::snapshot(&mut tx, &a, plan.visit_type.as_ref()).await?;
         preview_rows(&mut tx, &a, &plan).await?
     };
     let ready = rows.iter().all(|o| o["available"] == true);
@@ -269,7 +273,7 @@ async fn preview(
 }
 async fn series_detail(tx: &mut Tx<'_>, a: &Actor, id: Uuid) -> Result<Value> {
     let mut series:Value=sqlx::query_scalar("SELECT (to_jsonb(s)-'tenant_id'-'request_id'-'request_digest'-'plan'-'repeat_interval')||jsonb_build_object('interval',s.repeat_interval,'title',s.plan->'title','category',s.plan->'category','facility',s.plan->'facility','room',s.plan->'room','notes',s.plan->'notes','patient_name',p.family_name||', '||p.given_name,'mrn',p.mrn,'provider_label',u.email) FROM appointment_series s JOIN patients p ON p.tenant_id=s.tenant_id AND p.id=s.patient_id JOIN browser_users u ON u.tenant_id=s.tenant_id AND u.id=s.clinician_id WHERE s.tenant_id=$1 AND s.id=$2").bind(a.tenant_id).bind(id).fetch_optional(&mut **tx).await?.ok_or(Error::NotFound)?;
-    let occurrences:Vec<Value>=sqlx::query_scalar("SELECT (to_jsonb(ap)-'tenant_id'-'request_id'-'request_digest'-'source_history_id')||jsonb_build_object('position',o.position,'appointment_id',ap.id,'planned',o.planned,'changed_from_plan',ap.starts_at IS DISTINCT FROM (o.planned->>'starts_at')::timestamptz OR ap.ends_at IS DISTINCT FROM (o.planned->>'ends_at')::timestamptz OR ap.clinician_id<>s.clinician_id OR ap.title IS DISTINCT FROM (s.plan->>'title') OR ap.category IS DISTINCT FROM (s.plan->>'category') OR ap.facility IS DISTINCT FROM (s.plan->>'facility') OR ap.room IS DISTINCT FROM (s.plan->>'room') OR ap.notes IS DISTINCT FROM (s.plan->>'notes')) FROM appointment_series_occurrences o JOIN appointments ap ON ap.tenant_id=o.tenant_id AND ap.id=o.appointment_id JOIN appointment_series s ON s.tenant_id=o.tenant_id AND s.id=o.series_id WHERE o.tenant_id=$1 AND o.series_id=$2 ORDER BY o.position").bind(a.tenant_id).bind(id).fetch_all(&mut **tx).await?;
+    let occurrences:Vec<Value>=sqlx::query_scalar("SELECT (to_jsonb(ap)-'tenant_id'-'request_id'-'request_digest'-'source_history_id')||jsonb_build_object('position',o.position,'appointment_id',ap.id,'planned',o.planned,'changed_from_plan',ap.starts_at IS DISTINCT FROM (o.planned->>'starts_at')::timestamptz OR ap.ends_at IS DISTINCT FROM (o.planned->>'ends_at')::timestamptz OR ap.clinician_id<>s.clinician_id OR ap.title IS DISTINCT FROM (s.plan->>'title') OR ap.category IS DISTINCT FROM (s.plan->>'category') OR ap.facility IS DISTINCT FROM (s.plan->>'facility') OR ap.room IS DISTINCT FROM (s.plan->>'room') OR ap.notes IS DISTINCT FROM (s.plan->>'notes') OR ap.visit_type->'id' IS DISTINCT FROM s.plan->'visit_type'->'id' OR ap.visit_type->'version' IS DISTINCT FROM s.plan->'visit_type'->'version') FROM appointment_series_occurrences o JOIN appointments ap ON ap.tenant_id=o.tenant_id AND ap.id=o.appointment_id JOIN appointment_series s ON s.tenant_id=o.tenant_id AND s.id=o.series_id WHERE o.tenant_id=$1 AND o.series_id=$2 ORDER BY o.position").bind(a.tenant_id).bind(id).fetch_all(&mut **tx).await?;
     let events:Vec<Value>=sqlx::query_scalar("SELECT to_jsonb(e)-'tenant_id'-'series_id' FROM appointment_series_events e WHERE tenant_id=$1 AND series_id=$2 ORDER BY version DESC").bind(a.tenant_id).bind(id).fetch_all(&mut **tx).await?;
     series["cancellable_count"] = json!(occurrences
         .iter()
@@ -300,6 +304,7 @@ async fn create(
         return Ok(Json(data));
     }
     authorize_plan(&mut tx, &a, &plan).await?;
+    let visit_type = crate::visit_types::snapshot(&mut tx, &a, plan.visit_type.as_ref()).await?;
     let rows = preview_rows(&mut tx, &a, &plan).await?;
     if rows.iter().any(|o| o["available"] != true) {
         return Err(Error::Conflict(
@@ -312,7 +317,7 @@ async fn create(
     sqlx::query("INSERT INTO appointment_series(tenant_id,id,patient_id,clinician_id,request_id,request_digest,frequency,repeat_interval,timezone,plan,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)").bind(a.tenant_id).bind(id).bind(plan.patient_id).bind(plan.clinician_id).bind(plan.request_id).bind(digest).bind(&plan.frequency).bind(plan.interval as i32).bind(&plan.timezone).bind(json_plan).bind(a.sub).execute(&mut *tx).await?;
     for (index, o) in plan.occurrences.iter().enumerate() {
         let appointment = Uuid::new_v4();
-        sqlx::query("INSERT INTO appointments(tenant_id,id,patient_id,clinician_id,starts_at,ends_at,title,category,facility,room,notes) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)").bind(a.tenant_id).bind(appointment).bind(plan.patient_id).bind(plan.clinician_id).bind(o.starts_at).bind(o.ends_at).bind(&plan.title).bind(&plan.category).bind(&plan.facility).bind(&plan.room).bind(&plan.notes).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO appointments(tenant_id,id,patient_id,clinician_id,starts_at,ends_at,title,category,facility,room,notes,visit_type) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)").bind(a.tenant_id).bind(appointment).bind(plan.patient_id).bind(plan.clinician_id).bind(o.starts_at).bind(o.ends_at).bind(&plan.title).bind(&plan.category).bind(&plan.facility).bind(&plan.room).bind(&plan.notes).bind(&visit_type).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO appointment_series_occurrences(tenant_id,series_id,position,appointment_id,planned) VALUES($1,$2,$3,$4,$5)").bind(a.tenant_id).bind(id).bind((index+1)as i32).bind(appointment).bind(serde_json::to_value(o).map_err(|_|Error::Invalid("invalid occurrence metadata"))?).execute(&mut *tx).await?;
         scheduling::revision(&mut tx, &a, appointment, &plan.reason).await?;
         crate::postgres::audit(&mut tx, &a, "appointment.book", appointment).await?;

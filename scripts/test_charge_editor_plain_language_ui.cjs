@@ -9,7 +9,7 @@ const handlers={},nodes={},ctx={console,Date,Intl,URL,URLSearchParams,crypto:{ra
  $:id=>id==='billing-account-form'?ctx.openedForm:(nodes[id]??={id,innerHTML:'',dataset:{},scrollIntoView(){},replaceChildren(){this.innerHTML='';},querySelector:()=>null,querySelectorAll:()=>[]}),
  document:{addEventListener:(name,fn)=>(handlers[name]??=[]).push(fn)},
  esc:v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'),human:v=>v,date:v=>String(v),money:n=>'$'+(n/100).toFixed(2),dollars:c=>c==null?'':(c/100).toFixed(2),payerName:()=>'Synthetic payer',billingCan:()=>true,
- notice(){},run:fn=>fn(),showChartSection(){},setEncounterSection(){},
+ notice(){},run:fn=>fn(),showChartSection(){},chartOpenEditor(){},setEncounterSection(){},
  openBillingEditor(html){nodes['billing-editor'].innerHTML=html;}};
 vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/billing.js','utf8'),ctx);vm.runInContext(fs.readFileSync('web/fees.js','utf8'),ctx);
 (async()=>{

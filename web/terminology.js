@@ -203,7 +203,7 @@ async function selectTerminologyCombobox(state,index){
    if(system)system.value=detail.system;
    Object.assign(state.row.dataset,{catalogReleaseId:detail.release_id,catalogCode:detail.code,catalogDisplay:detail.display,catalogSystem:detail.system});
    state.row.querySelector('[data-terminology-selection]')?.remove();
-   const note=document.createElement('p');note.dataset.terminologySelection='';note.className='muted';note.textContent=`Selected from ${terminologyReleaseLabel(detail)}.${state.scope==='diagnosis'?' Saving this list records which code list it came from.':' Save the charge account to record which code list this came from.'}`;state.row.append(note);
+   const note=document.createElement('p');note.dataset.terminologySelection='';note.className='muted';note.textContent=`Selected from ${terminologyReleaseLabel(detail)}.${state.scope==='diagnosis'?' Saving this list records which code list it came from.':' Save the charge account to record which code list this came from.'}`;(state.row.querySelector('[data-terminology-source]')||state.row).append(note);
    for(const other of terminologyComboboxes.values())if(other.row===state.row)closeTerminologyCombobox(other);
    for(const field of [visible,system])field?.dispatchEvent(new Event('input',{bubbles:true}));
   }finally{terminologyApplying.delete(state.row);}
@@ -345,7 +345,7 @@ async function selectTerminologyCode(state,index){
  state.row.dataset.catalogReleaseId=detail.release_id;state.row.dataset.catalogCode=detail.code;state.row.dataset.catalogDisplay=detail.display;state.row.dataset.catalogSystem=detail.system;
  for(const field of new Set([code,display,filled].filter(Boolean)))field.dispatchEvent(new Event('input',{bubbles:true}));
  state.row.querySelector('[data-terminology-selection]')?.remove();
- const note=document.createElement('p');note.dataset.terminologySelection='';note.className='muted';note.textContent=`Selected from ${terminologyReleaseLabel(detail)}. Save this row to record which code list it came from. Choosing a code here does not mean the claim will be accepted.`;state.row.append(note);
+ const note=document.createElement('p');note.dataset.terminologySelection='';note.className='muted';note.textContent=`Selected from ${terminologyReleaseLabel(detail)}. Save this row to record which code list it came from. Choosing a code here does not mean the claim will be accepted.`;(state.row.querySelector('[data-terminology-source]')||state.row).append(note);
  terminologyPickers.delete(state.host);state.host.remove();(filled||display).focus();
 }
 // The owner's Codes & prices screen: which code sets staff may look up, the practice's own codes
@@ -389,6 +389,7 @@ async function showTerminologyCatalogs(){
  if(account!==me||generation!==terminologyGeneration||$('tools')!==host||!loading?.isConnected)return;
  practiceCodes.sets=sets?.items||[];practiceCodes.items=codes?.items||[];practiceCodes.loaded=true;
  host.innerHTML=`<header class="integration-hero"><div><p class="eyebrow">THIS PRACTICE</p><h2>Codes &amp; prices</h2><p>Choose which code sets staff can look up, keep the codes you charge for, and set the price each one starts a charge line at. Clinical records keep the code and description recorded with them.</p></div><button type="button" data-terminology-manage>Refresh codes and prices</button></header>${practiceCodesMarkup(practiceCodes.sets,result)}${practiceCodesMyCodesMarkup()}${practiceCodesCatalogsMarkup(result)}`;terminologyImport=null;
+ if(typeof practiceAdminFrame==='function')practiceAdminFrame('codes');
 }
 async function saveCodeSet(system,enabled,version,status,toggle){
  status.textContent='Saving…';
@@ -403,7 +404,7 @@ async function saveCodeSet(system,enabled,version,status,toggle){
  }catch(error){status.textContent=error.message;}
 }
 async function loadPracticeCodeSearch(host,query){
- const request=++practiceCodes.searchRequest,systems=['CPT','HCPCS','ICD-10-CM'],serviceDate=new Date().toISOString().slice(0,10);
+ const request=++practiceCodes.searchRequest,systems=['CPT','HCPCS','ICD-10-CM'],serviceDate=localIsoDate();
  const answers=await Promise.all(systems.map(system=>api(`/api/v1/terminology/codes?${new URLSearchParams({system,q:query,service_date:serviceDate,billable:'true',limit:'20'})}`).catch(()=>null)));
  if(request!==practiceCodes.searchRequest||!practiceCodesCurrent(host))return;
  const seen=new Set(),items=[];

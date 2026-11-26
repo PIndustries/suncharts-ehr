@@ -79,6 +79,13 @@ impl Broker for FakeBroker {
                 json!({"installation_id":self.installation,"remote_tenant_id":binding.tenant,"account_id":"acct_synthetic","livemode":self.live,"checkout_contract_version":1,"hosted_checkout_enabled":true,"charges_enabled":true,"card_payments_active":state.card_capability_override.clone().unwrap_or(json!(true)),"details_submitted":true}),
             );
         }
+        if method == Method::POST && path == "/refunds" {
+            let body = body.unwrap();
+            assert_eq!(body["account_id"], "acct_synthetic");
+            assert_eq!(body["livemode"], self.live);
+            state.refunded += body["amount_cents"].as_i64().unwrap();
+            return Ok(json!({"status":"succeeded"}));
+        }
         if method == Method::POST {
             let body = body.unwrap();
             assert_eq!(path, "/hosted-checkouts");
@@ -1780,4 +1787,132 @@ async fn one_card_charge_pays_several_encounters_each_by_its_own_part() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn receipt_credit_actions_refund_card_and_apply_cash_credit() {
+    if std::env::var("TEST_DATABASE_URL").is_err() {
+        eprintln!(
+            "SKIP receipt refund and credit application: TEST_DATABASE_URL is not configured"
+        );
+        return;
+    }
+    let (pool, a, p, appointment, state) = setup().await;
+    let broker = FakeBroker::new(false);
+    let op = create_with(
+        &pool,
+        &a,
+        p,
+        appointment,
+        input(false),
+        "http://127.0.0.1:8099",
+        &broker,
+        policy(false),
+    )
+    .await
+    .unwrap();
+    broker.state.lock().unwrap().paid = true;
+    process_id_mode(&pool, &a, op.id, &broker, policy(false), false)
+        .await
+        .unwrap();
+    let paid = row(&pool, &a, op.id).await;
+    let receipt = paid.receipt_id.unwrap();
+    let request = Uuid::new_v4();
+    let command = json!({"request_id":request,"kind":"refund","amount_cents":500,"reason":"Synthetic partial refund","method":"card","account_id":null});
+    assert_eq!(
+        billing::record_test(&pool, &a, p, receipt, command.clone())
+            .await
+            .unwrap()
+            .1,
+        Some(op.id)
+    );
+    refund_receipt_with(
+        &pool,
+        &a,
+        op.id,
+        request,
+        500,
+        "Synthetic partial refund",
+        &broker,
+        policy(false),
+    )
+    .await
+    .unwrap();
+    refund_receipt_with(
+        &pool,
+        &a,
+        op.id,
+        request,
+        500,
+        "Synthetic partial refund",
+        &broker,
+        policy(false),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        row(&pool, &a, op.id).await.refunded_cents,
+        500,
+        "replaying the same refund cannot refund twice"
+    );
+    assert_eq!(count(&pool, "copay_checkout_refund_events").await, 1);
+    let mut changed = command.clone();
+    changed["amount_cents"] = json!(600);
+    assert!(billing::record_test(&pool, &a, p, receipt, changed)
+        .await
+        .is_err());
+    // A new cash receipt has no card call. Partial refunds consume only unused credit.
+    let cash = Uuid::new_v4();
+    sqlx::query("INSERT INTO billing_copay_receipts(tenant_id,id,patient_id,appointment_id,amount_cents,method,reference,occurred_on,reason,request_id,creation_hash,actor_id) VALUES($1,$2,$3,$4,3000,'cash','SYN-CASH',current_date,'Synthetic',$5,'synthetic',$6)")
+        .bind(a.tenant_id).bind(cash).bind(p).bind(appointment).bind(Uuid::new_v4()).bind(a.sub).execute(&pool).await.unwrap();
+    let refund = json!({"request_id":Uuid::new_v4(),"kind":"refund","amount_cents":500,"reason":"Synthetic cash paid back","method":"cash","account_id":null});
+    assert_eq!(
+        billing::record_test(&pool, &a, p, cash, refund.clone())
+            .await
+            .unwrap()
+            .1,
+        None
+    );
+    billing::record_test(&pool, &a, p, cash, refund)
+        .await
+        .unwrap();
+    let cash_refunded:i64=sqlx::query_scalar("SELECT amount_cents FROM billing_receipt_cash_refunds WHERE tenant_id=$1 AND receipt_id=$2").bind(a.tenant_id).bind(cash).fetch_one(&pool).await.unwrap();
+    assert_eq!(cash_refunded, 500);
+    let second = another_appointment(&pool, &a, p, "2026-10-26").await;
+    let account = posted_account(&pool, &a, p, second, &state).await;
+    let apply = json!({"request_id":Uuid::new_v4(),"kind":"apply","amount_cents":2000,"reason":"Synthetic transfer","method":"cash","account_id":account});
+    billing::record_test(&pool, &a, p, cash, apply.clone())
+        .await
+        .unwrap();
+    billing::record_test(&pool, &a, p, cash, apply.clone())
+        .await
+        .unwrap();
+    assert_eq!(account_net(&pool, account).await, -2000);
+    let mut over = apply.clone();
+    over["request_id"] = json!(Uuid::new_v4());
+    over["amount_cents"] = json!(501);
+    assert!(billing::record_test(&pool, &a, p, cash, over)
+        .await
+        .is_err());
+    let mut foreign = a.clone();
+    foreign.tenant_id = Uuid::new_v4();
+    assert!(
+        billing::record_test(&pool, &foreign, p, cash, apply.clone())
+            .await
+            .is_err()
+    );
+    assert!(billing::record_test(&pool, &a, Uuid::new_v4(), cash, apply)
+        .await
+        .is_err());
+    let actions: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM billing_receipt_actions WHERE tenant_id=$1")
+            .bind(a.tenant_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        actions, 3,
+        "failed and duplicate requests create no extra actions"
+    );
+    pool.close().await;
 }

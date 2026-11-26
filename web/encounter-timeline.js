@@ -30,7 +30,7 @@ function encounterTimelineSteps(summary,visit,appointment){
   add('copay','Copay',settled?(paid>0?`${encounterTimelineMoney(paid)} paid`:'Nothing due'):paid>0&&due<=0?`${encounterTimelineMoney(paid)} paid`:due>0?`${encounterTimelineMoney(due)} due`:done?'Nothing due':'',done);
  }
  add('note','Note signed',signed?encounterTimelineTime(visit?.signed_at):'',signed);
- add('charges','Charges posted',s&&s.charges_cents!=null?encounterTimelineMoney(s.charges_cents):'',posted);
+ add('charges',posted?'Charges posted':'Charges',s&&s.charges_cents!=null?encounterTimelineMoney(s.charges_cents)+(s.account?.status==='draft'?' (not posted)':''):'',posted);
  let sentDetail='',insurerDone=false,claimDone=false;
  if(insured){
   const sent=['waiting','answered','denied'].includes(i.status)&&!encounterTimelineClaimFix.includes(state)&&state!=='claim_cancelled';
@@ -69,10 +69,11 @@ function encounterTimelineSteps(summary,visit,appointment){
 }
 function encounterTimelineDoneCount(steps){return steps.filter(step=>step.state==='done').length;}
 function encounterTimelineLabel(step){return `${encounterTimelineStateWords[step.state]||'Later'}: ${step.label}.${step.detail?' '+step.detail:''}`;}
-function encounterTimelineMarkup(steps,{title='',subtitle=''}={}){
+function encounterTimelineMarkup(steps,{title='',subtitle='',nextAction=''}={}){
  const done=encounterTimelineDoneCount(steps);
  const head=`<div class="encounter-timeline-head"><b>${esc(title)}</b>${subtitle?`<span class="muted">${esc(subtitle)}</span>`:''}<span class="encounter-timeline-count">${done} of ${steps.length} done</span></div>`;
- const items=steps.map(step=>`<li class="is-${esc(step.state)}" data-timeline-step="${esc(step.key)}" tabindex="0" aria-label="${esc(encounterTimelineLabel(step))}"${step.state==='now'?' aria-current="step"':''}><span class="encounter-timeline-bar"></span><b>${esc(step.label)}</b><small>${esc(step.detail)}</small></li>`).join('');
+ const action=nextAction.match(/<button\b([^>]*)>/)?.[1]||' type="button" data-timeline-now';
+ const items=steps.map(step=>{const body=`<span class="encounter-timeline-bar"></span><b>${esc(step.label)}</b><small>${esc(step.detail)}</small>`;return `<li class="is-${esc(step.state)}" data-timeline-step="${esc(step.key)}"${step.state==='now'?' aria-current="step"':''}>${step.state==='now'?`<button${action} aria-label="${esc(encounterTimelineLabel(step))}">${body}</button>`:body}</li>`;}).join('');
  return `<section class="encounter-timeline-block" aria-label="Encounter progress">${head}<ol class="encounter-timeline">${items}</ol></section>`;
 }
 // The small inline version for lists. With no steps (nothing is known about the money) it is a plain chip.
@@ -97,7 +98,8 @@ function encounterRowChip(row,extra={}){
 function encounterTimelineHeading(visit,appointment,summary){
  const number=typeof encounterNumberText==='function'?encounterNumberText(visit):'',kind=appointment?.title||'';
  const when=appointment?.starts_at?(typeof displayDate==='function'?displayDate(appointment.starts_at):''):'',insurer=summary?.insurance?.insured===false?'Self-pay':(summary?.claim?.payer_name||summary?.insurance?.insurer||'');
- return {title:[number||'Encounter',kind].filter(Boolean).join(' · '),subtitle:[when,insurer].filter(Boolean).join(' · ')};
+ const nextAction=summary&&typeof visitBillingStatus==='function'?visitBillingStatus(summary,{canWrite:typeof billingCan==='function'&&billingCan(),canCreate:typeof billingCan==='function'&&billingCan('create')}).action:'';
+ return {title:[number||'Encounter',kind].filter(Boolean).join(' · '),subtitle:[when,insurer].filter(Boolean).join(' · '),nextAction};
 }
 // The summary for an open encounter is already on the page; any other is read once, the way the
 // encounter page reads it. Without one (no access, or the read failed) the steps come from the encounter alone.
@@ -111,7 +113,7 @@ async function encounterTimelineSummary(visitId,patientId){
 async function encounterPreviewOpen(visitId,extra={}){
  const visit=(workspace?.visits||[]).find(v=>v.id===visitId);if(!visit||typeof sheetOpen!=='function')return;
  const appointment=(workspace?.appointments||[]).find(a=>a.id===visit.appointment_id),number=typeof encounterNumberText==='function'?encounterNumberText(visit):'';
- const panel=document.createElement('div');panel.className='payment-encounter-preview';
+ const panel=document.createElement('div');panel.className='payment-encounter-preview';panel.dataset.timelineVisit=visitId;panel.dataset.timelinePatient=typeof selected!=='undefined'?selected:'';
  const fact=(label,value)=>value?`<div><dt>${label}</dt><dd>${value}</dd></div>`:'';
  const paid=extra.amount!=null&&extra.amount!==''?`${money(Number(extra.amount))}${extra.date?' on '+esc(date(extra.date)):''}`:'';
  const paint=summary=>{const host=panel.querySelector('[data-preview-timeline]');if(host)host.innerHTML=encounterTimelineMarkup(encounterTimelineSteps(summary,visit,appointment),encounterTimelineHeading(visit,appointment,summary));};
@@ -127,7 +129,6 @@ async function encounterPreviewOpen(visitId,extra={}){
 // Go to an encounter from anywhere: the patient area, that patient's chart, then the encounter.
 async function encounterGoTo(visitId,patientId){
  const identity=me;
- if(typeof showClinical==='function')await showClinical();
  if(me!==identity)return;
  const patient=patientId||(typeof selected!=='undefined'?selected:null);
  if(patient&&(selected!==patient||!(workspace?.visits||[]).some(v=>v.id===visitId)))await selectPatient(patient,null);
@@ -138,7 +139,7 @@ async function encounterGoTo(visitId,patientId){
 // The preview of an encounter whose chart is not open: its timeline, read on its own, and the way in.
 async function encounterPreviewElsewhere(visitId,patient,number){
  if(typeof sheetOpen!=='function')return;
- const identity=me,panel=document.createElement('div');panel.className='payment-encounter-preview';
+ const identity=me,panel=document.createElement('div');panel.className='payment-encounter-preview';panel.dataset.timelineVisit=visitId;panel.dataset.timelinePatient=patient;
  panel.innerHTML=`<div data-preview-timeline>${typeof skeletonMarkup==='function'?skeletonMarkup('card'):'<p class="muted" role="status">Loading…</p>'}</div><div class="actions"><button type="button" class="primary" data-preview-open>Go to encounter</button><button type="button" data-sheet-close>Close</button></div>`;
  const dialog=sheetOpen(number?`Encounter ${number}`:'Encounter',panel);
  panel.querySelector('[data-preview-open]').addEventListener('click',()=>{sheetClose(dialog);run(()=>encounterGoTo(visitId,patient));});
@@ -163,4 +164,12 @@ async function encounterChipOpen(chip){
 if(typeof document!=='undefined'&&document.addEventListener)document.addEventListener('click',event=>{
  const chip=event.target?.closest?.('[data-encounter-chip]');if(!chip||!chip.dataset?.encounterChip)return;
  event.preventDefault();event.stopPropagation();run(()=>encounterChipOpen(chip));
+},true);
+
+if(typeof document!=='undefined')document.addEventListener('click',event=>{
+ const button=event.target.closest?.('.encounter-timeline button');if(!button)return;
+ const preview=button.closest('.payment-encounter-preview');
+ if(preview){event.preventDefault();event.stopImmediatePropagation();const attr=Array.from(button.attributes).find(a=>a.name.startsWith('data-')&&a.name!=='data-timeline-now');let next,patient;run(async()=>{const dialog=preview.closest('dialog');if(dialog)sheetClose(dialog);await encounterGoTo(preview.dataset.timelineVisit,preview.dataset.timelinePatient);patient=selected;if(typeof loadEncounterRevenueStatus==='function')await loadEncounterRevenueStatus(typeof encounterChargeAccount==='function'?encounterChargeAccount():null);const scope=$('encounter-revenue');if(attr)next=Array.from(scope?.querySelectorAll(`[${attr.name}]`)||[]).find(b=>b.getAttribute(attr.name)===attr.value);else next=document.querySelector('.visit-billing-status .actions button,#patient-next-action button');}).then(()=>{if(next?.isConnected&&selected===patient)next.click();});return;}
+ if(!button.hasAttribute('data-timeline-now'))return;event.preventDefault();event.stopImmediatePropagation();
+ const next=document.querySelector('.visit-billing-status .actions button,#patient-next-action button');next?.click();
 },true);

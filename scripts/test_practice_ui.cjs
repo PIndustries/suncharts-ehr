@@ -37,7 +37,7 @@ function fixture({search = '', practice = false} = {}) {
     FormData: class { constructor(form) {this.form=form;} *[Symbol.iterator]() {yield* Object.entries(this.form.values||{});} },
     location: {search}, window: {scrollTo() {},addEventListener() {}}, crypto: {randomUUID: () => 'fixture-request'},
     document: {
-      getElementById: node, querySelectorAll: () => [],
+      getElementById: id=>id==='patient-banner'?null:node(id), querySelectorAll: () => [],
       addEventListener(type, callback, options) {
         if (!listeners.has(type)) listeners.set(type, []);
         listeners.get(type).push({callback, options});
@@ -49,6 +49,8 @@ function fixture({search = '', practice = false} = {}) {
   });
   const evaluate = code => vm.runInContext(code, context);
   evaluate(fs.readFileSync(path.join(root, 'web/app.js'), 'utf8'));
+const noteMarkup=fs.readFileSync('web/visit-note.js','utf8');
+vm.runInContext(noteMarkup.slice(noteMarkup.indexOf('function visitNoteInlineDiagnosesMarkup('),noteMarkup.indexOf('const visitNoteSearches=')),context);
   if (practice) evaluate(fs.readFileSync(path.join(root, 'web/practice.js'), 'utf8'));
   // Home reads the same chart-area setting the patient chart uses. The settings arrive as a
   // loaded workspace object, so Home only needs the reader; the browser's copy of it lives
@@ -126,7 +128,7 @@ async function testDelegatedRoomingControls(){
   f.evaluate(`me.role=${JSON.stringify(role)};activeVisit.clinician_id='another-clinician';activeVisit.status='in_progress';renderVisit(false)`);
   assert.match(f.node('visit-editor').innerHTML,/>Save vitals</,role);
   // Rooming staff may draft the note for the clinician but are never offered the signature.
-  assert.match(f.node('visit-editor').innerHTML,/>Save note<\/button><span id="note-sign-help" class="muted">You can draft this note\. A clinician signs it\.<\/span>/,role);
+  assert.match(f.node('visit-editor').innerHTML,/>Save note<\/button><\/div><\/details><span id="note-sign-help" class="muted">You can draft this note\. A clinician signs it\.<\/span>/,role);
   assert.doesNotMatch(f.node('visit-editor').innerHTML,/data-action="sign"|id="amendment-form"/,role);
   assert.match(f.node('encounter-progress').innerHTML,/encounter-visit-actions/,role+' action row');
   f.evaluate(`activeVisit.status='signed';renderVisit(false)`);
@@ -188,7 +190,7 @@ async function testEncounterSelectionRefresh(){
  const f=clinicalFixture();f.context.pending=[];
  f.evaluate(`workspace.visits=[{...activeVisit,id:'signed-visit',patient_id:selected,status:'signed'}];api=async()=>workspace.visits[0];run=action=>pending.push(Promise.resolve().then(action));renderChart=()=>calls.push(['chart',activeVisit.id]);renderVisit=()=>calls.push(['editor-only']);`);
  const button={id:'',type:'button',dataset:{visit:'signed-visit'},closest(){return null;},hasAttribute(name){return name==='data-visit';}};
- f.listeners.get('click')[0].callback({target:{closest:()=>button}});
+ f.listeners.get('click')[1].callback({target:{closest:selector=>selector==='button'?button:null}});
  await Promise.all(f.context.pending);
  assert.deepEqual(JSON.parse(JSON.stringify(f.context.calls)),[['chart','signed-visit']]);
 }
@@ -220,8 +222,8 @@ async function testPracticeQueues() {
   await f.evaluate('showPracticeWorkspace()');
   f.evaluate(`practiceBoardMode='unfinished';renderPracticeWorkspace()`);
   let html = practiceHtml(f);
-  assert.match(html, /No unfinished visits/);
-  assert.match(html, /No results to review/);
+  assert.match(html, /No unfinished encounters/);
+  assert.match(html, /Results to review<\/span><b>0/);
   assert.doesNotMatch(html, /could not be loaded/);
   const values = empty();
   values.schedule.appointments = [
@@ -245,69 +247,33 @@ async function testPracticeQueues() {
   assert.match(html, /Note saved/);
   assert.match(html, /Vitals not recorded/);
   assert.doesNotMatch(html, /cancelled-patient|<img src=x/);
-  assert(html.indexOf('data-practice-result="critical-order"') < html.indexOf('data-practice-result="ordinary-order"'));
+  assert.match(html,/Results to review<\/span><b>2/);
   // Exercise the actual event route, verifying the selected patient and encounter.
-  f.evaluate(`showClinical=async()=>calls.push(['clinical']);selectPatient=async(p,v)=>calls.push(['patient',p,v]);showChartSection=s=>calls.push(['section',s]);`);
+  f.evaluate(`showClinical=async()=>calls.push(['directory']);frameSelectPatient=async(patient,position)=>calls.push(['chart',patient,position]);`);
+  const previousCalls=f.context.calls.length;
   const click = f.listeners.get('click').find(item => item.options === true).callback;
   let prevented = false, stopped = false;
   await click({target:{closest:()=>({id:'',dataset:{practiceVisit:'visit-1',practiceVisitPatient:'patient-1'},hasAttribute:n=>n==='data-practice-visit'})},preventDefault(){prevented=true;},stopImmediatePropagation(){stopped=true;}});
   // run() starts the asynchronous action; drain its chained continuations.
   await new Promise(resolve => setImmediate(resolve));
   assert(prevented && stopped);
-  assert.deepEqual(JSON.parse(JSON.stringify(f.context.calls.slice(-3))), [['clinical'], ['patient','patient-1','visit-1'], ['section','visits']]);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.context.calls.slice(previousCalls))), [['chart','patient-1',{section:'visits',visit:'visit-1',step:'visit'}]]);
   const failed = empty(); failed.results = {error:'<script>fixture failure</script>'};
   f = practiceFixture(failed);
   await f.evaluate('showPracticeWorkspace()');
   html = practiceHtml(f);
-  assert.match(html, /Results queue could not be loaded/);
+  assert.match(html, /Results to review<\/span><b>—/);
   assert.doesNotMatch(html, /No results to review|<script>/);
-  assert.match(html, /&lt;script&gt;fixture failure&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /fixture failure/);
   f.evaluate(`practiceBoardMode='unfinished';renderPracticeWorkspace()`);
-  assert.match(practiceHtml(f), /No unfinished visits/); // An independent queue remains usable.
+  assert.match(practiceHtml(f), /No unfinished encounters/); // An independent queue remains usable.
 }
 
-function journeyStep(html, index) {
-  const nav = (html.split('<nav class="practice-journey"')[1] || '').split('</nav>')[0];
-  // Steps carry no number of their own any more (the only number on a step is its count), so a
-  // step is found by its place in the row.
-  return (nav.split('</button>')[index - 1] || '').trim();
-}
-
-async function testJourneyCheckoutVisibility() {
-  const loaded = {version:1,content:{chart_tabs:['overview','visits','billing','checkout']}};
-  const checkoutOff = {version:1,content:{chart_tabs:['overview','visits','billing']}};
-  const visits = {total:2,has_more:false,items:[
-    {visit_id:'v1',patient_id:'p1',patient_name:'Signed Patient',mrn:'MRN-1',starts_at:'2026-10-25T14:00:00Z',note_saved:true,vitals_saved:true},
-    {visit_id:'v2',patient_id:'p2',patient_name:'Unsigned Patient',mrn:'MRN-2',starts_at:'2026-10-25T15:00:00Z',note_saved:false,vitals_saved:false}
-  ]};
-  async function stepFor(settings){
-    const f = practiceFixture({schedule:{appointments:[],blocks:[]},results:{items:[],limit:100},visits});
-    // Loaded workspace settings are a global every module reads; Home only uses the reader.
-    if (settings) f.context.practiceWorkspaceSettings = settings;
-    await f.evaluate('showPracticeWorkspace()');
-    return journeyStep(practiceHtml(f), 4);
-  }
-
-  let step = await stepFor(loaded);
-  assert.match(step, />Wrap-up</);
-  assert.match(step, /Instructions, charges and handoff/);
-
-  step = await stepFor(checkoutOff);
-  assert.match(step, />Charges</,'the step is titled Charges when checkout is off');
-  assert.match(step, /Charges for signed encounters/);
-  assert.doesNotMatch(step, /checkout/i,'checkout is not mentioned when the practice hid that chart area');
-
-  // Home before the workspace settings have loaded treats checkout as shown.
-  step = await stepFor(null);
-  assert.match(step, />Wrap-up</,'an unloaded settings read defaults checkout to shown');
-  assert.match(step, /Instructions, charges and handoff/);
-
-  // The count is visits with a saved note, and the click target, whichever title shows.
-  for (const settings of [loaded, checkoutOff]) {
-    const step = await stepFor(settings);
-    assert.match(step, /<em>1<\/em>/,'the count of visits with a saved note is unchanged');
-    assert.match(step, /data-practice-action="patients"/,'the click target is unchanged');
-  }
+async function testJourneyRemoved() {
+ const f=practiceFixture(empty());
+ await f.evaluate('showPracticeWorkspace()');
+ assert.doesNotMatch(practiceHtml(f),/practice-journey|Where patients are today|Wrap-up/);
+ assert.match(practiceHtml(f),/Needs attention/);
 }
 
 async function testPracticeFilters() {
@@ -343,7 +309,7 @@ async function testPracticeFilters() {
   assert.doesNotMatch(f.node('practice-worklist').innerHTML,/First Patient|Third Patient/);
   await dispatch({practiceBoard:'unfinished'},'data-practice-board');
   assert.match(f.node('practice-worklist').innerHTML,/Dr Fixture/);
-  assert.match(f.node('practice-row-summary').textContent,/of 101 unsigned visits/);
+  assert.match(f.node('practice-row-summary').textContent,/of 101 unsigned encounters/);
   await dispatch({practiceResultFilter:'critical'},'data-practice-result-filter');
   assert.match(f.node('practice-results').innerHTML,/data-practice-result="urgent"/);
   assert.doesNotMatch(f.node('practice-results').innerHTML,/data-practice-result="routine"/);
@@ -364,7 +330,7 @@ async function testEntryRouting() {
     assert.deepEqual(JSON.parse(JSON.stringify(f.context.calls)), expected, search);
   }
   const f = fixture();
-  const boots = f.listeners.get('DOMContentLoaded');
+  const boots = f.listeners.get('DOMContentLoaded').filter(listener=>listener.options?.once);
   assert.equal(boots.length, 1);
   assert.equal(boots[0].options.once, true);
   assert.equal(f.evaluate('me'), undefined); // Loading scripts must not start authentication.
@@ -381,7 +347,7 @@ async function testEntryRouting() {
     ['single bundled SunCharts connection setup',testSunChartsConnection],
     ['encounter selection refreshes header and chart context',testEncounterSelectionRefresh],
     ['practice queues, escaping, and encounter routing', testPracticeQueues],
-    ['Home journey follows the practice chart areas', testJourneyCheckoutVisibility],
+    ['Home removes the journey strip and merges attention', testJourneyRemoved],
     ['practice workboard filters, search, and exact resume links', testPracticeFilters],
     ['entry route precedence and deferred bootstrap', testEntryRouting]
   ]) { await test(); console.log(`PASS ${name}`); }

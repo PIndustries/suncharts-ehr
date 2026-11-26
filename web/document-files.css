@@ -21,3 +21,26 @@
 #document-office-status{padding:8px 0;margin:4px 0;min-height:24px}#document-office-status.error{color:var(--danger,#aa2020)}.document-office-save-note{font-size:var(--fs-body);margin:0 0 12px}.document-office-start{padding:32px 12px}
 #document-office-stage{height:calc(100% - 160px);min-height:300px;border:1px solid var(--line);position:relative}#document-office-stage[inert]{opacity:.7}#document-office-editor{height:100%;width:100%}#document-office-stage>iframe{height:100%;width:100%;border:0}
 @media(max-width:800px){.document-office-modal{width:98vw;padding:10px}.document-office-modal header .actions{gap:6px}.document-office-modal header button{font-size:var(--fs-sm);padding:8px}#document-office-stage{height:calc(100% - 220px)}}
+
+/* The list and preview both remain usable at chart-page widths. */
+#documents-panel .document-file-workspace{grid-template-columns:minmax(0,1.2fr) minmax(0,1fr)}
+#documents-panel .document-file-workspace[data-file-preview-open=false]{grid-template-columns:minmax(0,1fr)}
+#documents-panel .document-file-list{min-width:0;max-height:none;padding:0;border:0;background:transparent}
+#documents-panel .chart-list-table small{display:block;color:var(--muted);overflow-wrap:anywhere}
+#documents-panel .document-file-detail{--file-preview-top:calc(var(--frame-top-height,0px) + var(--frame-banner-height,0px) + 16px);position:sticky;top:var(--file-preview-top);scroll-margin-block-start:var(--file-preview-top)}
+#documents-panel .document-file-detail:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+#documents-panel .document-file-detail[hidden]{display:none}
+#documents-panel .document-file-detail>.section-head{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}
+#documents-panel .document-file-detail>.section-head>.actions{justify-content:flex-start}
+#documents-panel [data-file-open][aria-current=true]{color:var(--blue);text-decoration:underline}
+@media(max-width:1100px){
+ #documents-panel .document-file-workspace{grid-template-columns:minmax(0,1fr)}
+ #documents-panel .document-file-detail{position:static;grid-row:1}
+}
+@media(max-width:650px){
+ #documents-panel .chart-list-toolbar{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:end}
+ #documents-panel [name="file_search"]{grid-column:1/-1;width:100%}
+ #documents-panel .chart-list-toolbar label{min-width:0}
+ #documents-panel .chart-list-table table{min-width:36rem}
+ #documents-panel .chart-list-table th:first-child{width:42%}
+}

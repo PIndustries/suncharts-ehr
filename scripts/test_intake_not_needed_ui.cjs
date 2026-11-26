@@ -7,7 +7,7 @@ const plain=value=>JSON.parse(JSON.stringify(value??null));
 const escape=value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
 function previsitFixture(role='front_desk'){
  const handlers={},calls=[],notices=[];
- const tools={innerHTML:''};
+ const tools={innerHTML:'',querySelector(selector){const match=selector.match(/data-intake-loading="(\d+)"/);return match&&this.innerHTML.includes(`data-intake-loading="${match[1]}"`)?{}:null;}};
  const ctx={console,Map,Set,JSON,Array,Number,String,Object,Math,Date,Intl,URL,URLSearchParams,encodeURIComponent,structuredClone,Promise,FormData:class{},crypto:{randomUUID:()=>'synthetic-request'},
   me:{tenant_id:'tenant',user_id:'staff',role},selected:'patient-one',workspace:{},
   location:{origin:'https://ehr.example.test'},navigator:{clipboard:{writeText:async()=>{}}},
@@ -31,11 +31,15 @@ function practiceFixture(items){
   esc:escape,date:value=>String(value??'').slice(0,10),human:value=>String(value).replaceAll('_',' '),notice(){},showTool(){},run:work=>ctx.pending=work(),
   $:id=>node(id),renderPracticeRows(){},renderPracticeResults(){},workspaceResourceAllowed:()=>true};
  ctx.responses={schedule:{appointments:[],blocks:[]},results:{items:[],limit:100},visits:{items:[],total:0,has_more:false},followup:{items:[]},referrals:{items:[]},claims:{items:[]},items};
- ctx.api=async path=>{const key=path.startsWith('/api/v1/schedule?')?'schedule':path.includes('/labs/inbox')?'results':path.includes('/previsit/readiness')?'previsit':path.includes('/follow-up/tasks')?'followup':path.includes('/referrals/worklist')?'referrals':path.includes('/billing/claims')?'claims':'visits';if(key==='previsit')return {items:ctx.responses.items};return ctx.responses[key];};
+ ctx.api=async path=>{if(path==='/api/v1/previsit/readiness?status=submitted'){
+  if(!Array.isArray(items))throw new Error('Readiness unavailable');
+  const submitted=items.filter(item=>item.status==='submitted');return {items:submitted,total:submitted.length,next_offset:null};
+ }
+ const key=path.startsWith('/api/v1/schedule?')?'schedule':path.includes('/labs/inbox')?'results':path.includes('/previsit/readiness')?'previsit':path.includes('/follow-up/tasks')?'followup':path.includes('/referrals/worklist')?'referrals':path.includes('/billing/claims')?'claims':'visits';if(key==='previsit')return {items:ctx.responses.items};return ctx.responses[key];};
  vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/display-format.js','utf8'),ctx);vm.runInContext(fs.readFileSync('web/practice.js','utf8'),ctx);
  return {ctx,tools};
 }
-const intakeCount=html=>{const nav=(html.split('<nav class="practice-journey"')[1]||'').split('</nav>')[0];const step=nav.split('</button>').find(part=>part.includes('data-practice-action="intake"'))||'';const match=step.match(/<em>(\d+)<\/em>/);return match?Number(match[1]):null;};
+const intakeCount=html=>{const match=html.match(/Intake to review<\/span><b>(\d+)<\/b>/);return match?Number(match[1]):null;};
 
 (async()=>{
  const appointment='00000000-0000-4000-8000-000000000001';
@@ -84,9 +88,23 @@ const intakeCount=html=>{const nav=(html.split('<nav class="practice-journey"')[
  const home=()=>vm.runInContext("$('practice-home').innerHTML",f.ctx);
  f=practiceFixture(['not_issued','sent','in_progress','submitted','reviewed','not_needed'].map((status,index)=>({appointment_id:`appointment-${index}`,status})));
  await vm.runInContext('showPracticeWorkspace().then(()=>renderPracticeWorkspace())',f.ctx);
- assert.equal(intakeCount(home()),2);
+ assert.equal(intakeCount(home()),1);
  f=practiceFixture('broken');
  await vm.runInContext('showPracticeWorkspace().then(()=>renderPracticeWorkspace())',f.ctx);
  assert.equal(intakeCount(home()),null,'unusable readiness data shows no count');
+ f=previsitFixture();c=f.ctx;
+ const packet={...base,packet_id:'submitted-packet',packet_version:2,patient_id:'patient-one',status:'submitted',submitted_at:'2026-11-20T12:00:00Z',response:{},template_snapshot:{sections:[]}};
+ c.reply=path=>path.endsWith('/submitted-packet')?packet:{items:[packet],total:1,next_offset:null};
+ await c.showPrevisit({submitted:true});
+ assert.match(f.tools.innerHTML,/1 submitted response/);
+ assert.match(f.tools.innerHTML,/data-previsit-queued-packet="submitted-packet"/);
+ assert.match(f.tools.innerHTML,/All readiness/);
+ click(f,{previsitQueuedPacket:packet.packet_id,offset:'0'});await c.pending;
+ assert.deepEqual(f.calls.map(call=>call.slice(0,2)),[['/api/v1/previsit/readiness?status=submitted','GET'],['/api/v1/previsit/packets/submitted-packet','GET']]);
+ assert.match(f.tools.innerHTML,/data-packet="submitted-packet"/);
+ assert.match(f.tools.innerHTML,/Back to intake queue/);
+ click(f,{'data-previsit-back':true});await c.pending;
+ assert.equal(f.calls.at(-1)[0],'/api/v1/previsit/readiness?status=submitted');
+ assert.match(f.tools.innerHTML,/1 submitted response/);
  console.log('PASS intake not-needed UI: two choices before a form is sent; plain rows and Undo for no-form-needed; Home counts only what waits on staff');
 })().catch(error=>{console.error(error);process.exitCode=1;});

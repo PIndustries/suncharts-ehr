@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
+process.env.TZ='America/Chicago';
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const source=fs.readFileSync('web/patient-payment-plans.js','utf8');
 const patient='11111111-1111-4111-8111-111111111111',request='22222222-2222-4222-8222-222222222222',operation='33333333-3333-4333-8333-333333333333';

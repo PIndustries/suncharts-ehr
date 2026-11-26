@@ -515,7 +515,7 @@ const DUPLICATE_BUNDLE: &str = "A bundle with this name already exists.";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct BundleLine {
+pub(crate) struct BundleLine {
     code_system: String,
     code: String,
     description: String,
@@ -551,8 +551,11 @@ fn bundle_fields(body: &BundleBody) -> Result<(String, Value)> {
     if body.lines.is_empty() || body.lines.len() > 20 {
         return Err(Error::Invalid("A bundle has 1 to 20 procedure lines."));
     }
-    let mut lines = Vec::with_capacity(body.lines.len());
-    for line in &body.lines {
+    Ok((name.to_owned(), bundle_lines(&body.lines)?))
+}
+pub(crate) fn bundle_lines(input: &[BundleLine]) -> Result<Value> {
+    let mut lines = Vec::with_capacity(input.len());
+    for line in input {
         let selected = system(&line.code_system)?;
         if !matches!(selected, "CPT" | "HCPCS") {
             return Err(Error::Invalid("A bundle holds procedure codes only."));
@@ -580,7 +583,7 @@ fn bundle_fields(body: &BundleBody) -> Result<(String, Value)> {
         }
         lines.push(stored);
     }
-    Ok((name.to_owned(), Value::Array(lines)))
+    Ok(Value::Array(lines))
 }
 async fn bundle_row(tx: &mut Transaction<'_, Postgres>, a: &Actor, id: Uuid) -> Result<Value> {
     sqlx::query_scalar(&format!(

@@ -28,7 +28,7 @@ function fixture(){
 (async()=>{
  const f=fixture();
  await f.run('showClaimMdExtended()');
- assert.match(f.html(),/Claim\.MD native services/);
+ assert.match(f.html(),/Clearinghouse native services/);
  assert.match(f.html(),/https:\/\/ehr\.synthetic\.test\/api\/v1\/billing\/claimmd\/webhook\/setting-1/);
  assert.match(f.html(),/Synthetic &lt;account&gt;/);
  f.run('showClaimMdAppealEditor()');

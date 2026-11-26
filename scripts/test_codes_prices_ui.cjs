@@ -186,6 +186,7 @@ function screen({sets,codeItems=[],catalog}={}){
   run:async fn=>{try{await fn();}catch(error){context.runError=error;}},
   setTimeout:(fn,ms)=>{const id=++token;timers.set(id,{fn,ms});return id;},clearTimeout:id=>{timers.delete(id);},
   Event:class{constructor(name,options){this.type=name;Object.assign(this,options);}}});
+ vm.runInContext(fs.readFileSync('web/display-format.js','utf8'),context);
  vm.runInContext(source,context);
  const open=async()=>{await context.showTerminologyCatalogs();await settle();};
  const rows=()=>tools.querySelectorAll('[data-code-row]');
@@ -250,6 +251,7 @@ function chargeFixture({practice=[],amount='',catalog=true,disabled=[],disableBi
   document:localDocument,Event:class{constructor(name,options){this.type=name;Object.assign(this,options);}},
   api:async(path,method='GET',body)=>{calls.push({path,method,body});return response(path,method,body);},
   setTimeout:(fn,ms)=>{const id=++token;timers.set(id,{fn,ms});return id;},clearTimeout:id=>{timers.delete(id);}});
+ vm.runInContext(fs.readFileSync('web/display-format.js','utf8'),vmContext);
  vm.runInContext(source,vmContext);
   const readAmount=()=>{
    // Exactly what web/billing.js chargeRowAmountCents reads: dollars and cents, no symbol.
@@ -297,6 +299,7 @@ function diagnosisFixture({disabled}){
   document:localDocument,Event:class{constructor(name,options){this.type=name;Object.assign(this,options);}},
   api:async path=>disabled?{items:[],release:null,next_cursor:null,disabled:true,service_date:'2026-11-07'}:{items:[],release:{id:'release-1'},next_cursor:null},
   setTimeout:(fn,ms)=>{const id=++token;timers.set(id,{fn,ms});return id;},clearTimeout:id=>{timers.delete(id);}});
+ vm.runInContext(fs.readFileSync('web/display-format.js','utf8'),context);
  vm.runInContext(source,context);
  const harness={context,fields,list,status,box:fields.display,send,
   async flush(){const pending=[...timers.values()];timers.clear();for(const timer of pending)timer.fn();await tick();},

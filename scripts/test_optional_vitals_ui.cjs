@@ -34,7 +34,7 @@ function fixture(vitals){
   }
  }
  const state=()=>({visit:vm.runInContext('activeVisit',context)});
- const sandbox={state,console,Object,Array,Number,Boolean,String,JSON,Map,Set,Math,Date,parseInt,parseFloat,isNaN,
+ const sandbox={state,console,setTimeout:()=>0,clearTimeout(){},Object,Array,Number,Boolean,String,JSON,Map,Set,Math,Date,parseInt,parseFloat,isNaN,
   document:{addEventListener(type,callback){(listeners[type]??=[]).push(callback);},querySelectorAll:()=>[],documentElement:{classList:{add(){},remove(){}}}},
   window:{addEventListener(){},SunChartsDialog:{restoreFocus(){}}},
   $:id=>nodes[id]||node(id),
@@ -62,11 +62,14 @@ function fixture(vitals){
  vm.runInContext(extract('function updateDraftStatus(){','// The saved note, read-only'),context);
  vm.runInContext(extract('function isRoomingStaff()','function renderHistory()'),context);
  vm.runInContext(`clinicalAccess=()=>'edit';canDocument=()=>true;`,context);
- vm.runInContext(extract('function rememberVisit(','document.addEventListener(\'submit\''),context);
+ vm.runInContext(extract('function rememberVisit(',"\nif(typeof document!=='undefined'&&document.addEventListener)document.addEventListener('submit'"),context);
  vm.runInContext(extract('async function run(action) {','async function enter() {'),context);
- vm.runInContext(extract("document.addEventListener('submit',e=>{","document.addEventListener('click'"),context);
+ vm.runInContext(extract("document.addEventListener('submit',e=>{","\nif(typeof document!=='undefined'&&document.addEventListener)document.addEventListener('click'"),context);
  vm.runInContext('run=globalThis.run;',context);
  vm.runInContext(`captureVisitAmendmentDraft=()=>{};currentAmendmentDraft=()=>null;updateVisitAmendmentStatus=()=>{};visitNoteAuthorshipLine=()=>'';visitNoteSignedLine=()=>'Signed';visitNoteAmendmentAuthor=()=>'';visitNoteSaved=()=>{};renderVisitNoteSource=()=>{};renderRooming=()=>{};renderVisitDiagnoses=()=>{};renderVisitCheckout=()=>{};refreshEncounterProgress=()=>{};setEncounterSection=()=>{};encounterSections=()=>['vitals'];renderPatients=()=>{};renderChart=()=>{};renderEncounterOrderActions=()=>{};revenueServiceDate=()=>null;applyChartSection=()=>{};encounterSection='documentation';chartSection='visits';visitNoteOwnsDiagnoses=()=>true;chartAreaEnabled=()=>true;encounterShows=()=>true;noteSavedText=n=>n||{};noteSaverName=()=>null;showVisitNoteAuthorship=()=>{};patientBannerChanged=()=>{};`,context);
+const noteMarkup=fs.readFileSync('web/visit-note.js','utf8');
+vm.runInContext(noteMarkup.slice(noteMarkup.indexOf('let visitNoteSaveQueue='),noteMarkup.indexOf('const visitNoteSearches=')),context);
+ vm.runInContext('hasVisitNoteText=()=>false;',context);
  const run=code=>vm.runInContext(code,context);
  for(const id of ['visit-editor','visit-draft-status','note-conflict','note-saved-copy','note-message','notice','shell-loading','login-error'])node(id);
  run(`me={tenant_id:'tenant-1',user_id:'nurse-1',role:'nurse'};selected='patient-1';busy=false;
@@ -138,7 +141,7 @@ async function main(){
  f.type({heart_rate_bpm:''});
  await f.submit();
  assert.equal(f.requests.length,0,'an empty form sends nothing at all');
- assert.equal(f.notices.at(-1).message,'Enter at least one measurement.','an empty save says what is needed');
+ assert.equal(f.notices.at(-1).message,'Enter at least one measurement, or restore the saved vitals.','an empty save says what is needed');
  assert.deepEqual(JSON.parse(f.run('JSON.stringify(activeVisit.vitals)')),{heart_rate_bpm:72},'the earlier record is untouched');
  console.log('PASS a save with no values is refused with plain wording');
 

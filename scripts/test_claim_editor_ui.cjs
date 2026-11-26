@@ -37,6 +37,25 @@ function readBoxes(html){
 const boxesOf=index=>built.boxes[`diagnosis_line_${index}`]||[];
 const tick=(index,codes)=>boxesOf(index).forEach(box=>{box.checked=codes.includes(box.value);});
 
+// Opening a new claim from Billing must carry the selected charge account's own visit,
+ // even while a different encounter is selected on the chart.
+{
+ const previous=ctx.claimmdClaimProviderDefaults,calls=[];
+ ctx.claimmdClaimProviderDefaults=(visit,details)=>{calls.push({visit,details});return {};};
+ ctx.activeVisit={id:'other',clinician_id:'other-clinician'};
+ ctx.workspace.visits=[{id:'billed-visit',clinician_id:'assigned'}];
+ const withVisit={...account,content:{...account.content,visit_id:'billed-visit',claim_details:{rendering_npi:'1245319599'}}};
+ draw(withVisit);
+ assert.equal(calls[0].visit.clinician_id,'assigned');
+ assert.equal(calls[0].details.rendering_npi,'1245319599');
+ ctx.workspace.visits=[];
+ draw(withVisit);
+ assert.equal(calls[1].visit.id,'billed-visit');
+ assert.equal(calls[1].visit.clinician_id,undefined);
+ delete ctx.activeVisit;
+ ctx.claimmdClaimProviderDefaults=previous;
+}
+
 const original=JSON.stringify(account);
 // 1. A fresh claim fills its diagnosis list in from the posted charges and ticks each charge line
 //    with the diagnoses recorded against it - as ticks now, not as hand-typed pointer numbers.

@@ -1,9 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
-let patientDirectoryStatus='active',patientLifecycleGeneration=0;
+let patientDirectoryStatus='active',patientDirectoryMissing='',patientLifecycleGeneration=0;
+const patientDirectoryMissingLabels={address:'Missing address',phone:'Missing phone'};
+function canOpenPatientDirectory(){
+ return (typeof workspaceModuleAllowed!=='function'||workspaceModuleAllowed('clinical'))&&
+  (typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('clinical'));
+}
 const patientLifecycleStates=new Map(),patientLifecycleDrafts=new Map(),patientLifecycleRetiredForms=new WeakSet();
-function patientDirectoryQuery(after){const q=new URLSearchParams({status:patientDirectoryStatus});if(after)q.set('after',after);return '/api/v1/patients?'+q;}
-function clearPatientLifecycleSession(){patientDirectoryStatus='active';patientLifecycleGeneration++;patientLifecycleStates.clear();patientLifecycleDrafts.clear();if($('patient-status-filter'))$('patient-status-filter').value='active';}
+function patientDirectoryQuery(after,status=patientDirectoryStatus,missing=patientDirectoryMissing){
+ const q=new URLSearchParams({status});
+ if(missing)q.set('missing',missing);
+ if(after)q.set('after',after);
+ return '/api/v1/patients?'+q;
+}
+function clearPatientLifecycleSession(){patientDirectoryStatus='active';patientDirectoryMissing='';patientLifecycleGeneration++;patientLifecycleStates.clear();patientLifecycleDrafts.clear();if($('patient-status-filter'))$('patient-status-filter').value='active';}
 function patientLifecycleValues(form){return {reason:form.elements.reason.value,confirmed:form.elements.confirmed.checked,archived:form.dataset.archived==='true',version:Number(form.dataset.version)};}
 function capturePatientLifecycleDraft(){const form=$('patient-lifecycle-form');if(form&&!patientLifecycleRetiredForms.has(form))patientLifecycleDrafts.set(form.dataset.patient,patientLifecycleValues(form));}
 function patientLifecycleHasDrafts(){return [...patientLifecycleDrafts.values()].some(d=>d.reason.trim()||d.confirmed);}
@@ -20,10 +30,18 @@ async function renderPatientLifecycle(){
  try{const data=await api(`/api/v1/patients/${patient}/lifecycle`);if(me!==identity||selected!==patient||generation!==patientLifecycleGeneration||$('patient-lifecycle')!==host)return;if(data.patient_id!==patient)throw new Error('Patient status does not match this chart.');patientLifecycleStates.set(patient,data);workspace.patient.archived=data.archived;showPatientLifecycle(data);}
  catch(error){if(me===identity&&selected===patient&&generation===patientLifecycleGeneration&&$('patient-lifecycle')===host){host.textContent=`Patient archive status unavailable: ${error.message}`;host.hidden=!workspace.patient.archived;}}
 }
-async function changePatientDirectoryStatus(value){
- if(!['active','archived','all'].includes(value))return;const identity=me,previous=patientDirectoryStatus;patientDirectoryStatus=value;
- try{const page=await api(patientDirectoryQuery());if(me!==identity||patientDirectoryStatus!==value)return;patients=page.items;cursor=page.next_cursor;renderPatients();}
- catch(error){if(me===identity&&patientDirectoryStatus===value){patientDirectoryStatus=previous;if($('patient-status-filter'))$('patient-status-filter').value=previous;}throw error;}
+async function changePatientDirectoryStatus(value,missing=patientDirectoryMissing){
+ if(!['active','archived','all'].includes(value))return;
+ const identity=me;
+ try{
+  const page=await api(patientDirectoryQuery(undefined,value,missing));
+  if(me!==identity)return;
+  patientDirectoryStatus=value;patientDirectoryMissing=missing;
+  patients=page.items;cursor=page.next_cursor;renderPatients();
+ }catch(error){
+  if(me===identity&&$('patient-status-filter'))$('patient-status-filter').value=patientDirectoryStatus;
+  throw error;
+ }
 }
 async function savePatientLifecycle(form){
  capturePatientLifecycleDraft();const patient=form.dataset.patient,identity=me,submitted=patientLifecycleValues(form);
@@ -46,3 +64,17 @@ document.addEventListener('input',event=>{if(event.target.closest?.('#patient-li
 document.addEventListener('change',event=>{if(event.target.id==='patient-status-filter'){if(typeof busy!=='undefined'&&busy){event.target.value=patientDirectoryStatus;return;}run(()=>changePatientDirectoryStatus(event.target.value));return;}if(event.target.closest?.('#patient-lifecycle-form'))capturePatientLifecycleDraft();});
 document.addEventListener('click',event=>{const button=event.target.closest?.('[data-patient-lifecycle-open],[data-patient-lifecycle-cancel]');if(!button)return;event.preventDefault();event.stopImmediatePropagation();const data=patientLifecycleStates.get(selected);if(!data?.can_manage)return;if(button.hasAttribute('data-patient-lifecycle-cancel'))patientLifecycleDrafts.delete(selected);else if(!patientLifecycleDrafts.has(selected))patientLifecycleDrafts.set(selected,{reason:'',confirmed:false,archived:!data.archived,version:data.version});showPatientLifecycle(data);if(button.hasAttribute('data-patient-lifecycle-open')){const form=$('patient-lifecycle-form');form?.scrollIntoView?.({block:'center'});form?.elements?.confirmed?.focus?.({preventScroll:true});}},true);
 document.addEventListener('submit',event=>{if(event.target.id!=='patient-lifecycle-form')return;event.preventDefault();event.stopImmediatePropagation();run(()=>savePatientLifecycle(event.target));},true);
+
+function patientDirectoryMissingMarkup(){return patientDirectoryMissing?`<p role="status">Showing: missing ${patientDirectoryMissing} · <button type="button" data-directory-missing-clear>Clear</button></p>`:'';}
+async function openMissingPatients(missing){
+ if(!canOpenPatientDirectory())throw Object.assign(new Error('Your role does not have access to the patient directory.'),{status:403});
+ patientDirectoryMissing=['address','phone'].includes(missing)?missing:'';
+ patientDirectoryStatus='active';
+ if($('patient-status-filter'))$('patient-status-filter').value='active';
+ $('search').value='';
+ await showClinical();
+}
+document.addEventListener('click',event=>{
+ if(!event.target.closest('[data-directory-missing-clear]'))return;
+ event.preventDefault();run(()=>openMissingPatients(''));
+});

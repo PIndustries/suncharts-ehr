@@ -256,10 +256,44 @@ async fn queue(
     h: HeaderMap,
     Json(v): Json<Queue>,
 ) -> Result<Json<Value>> {
+    queue_versioned(a, s, id, crate::expected(&h)?, v, false).await
+}
+
+pub(crate) async fn queue_handoff_file(
+    s: &State,
+    a: &Actor,
+    id: Uuid,
+    version: i64,
+    request_id: Uuid,
+    route_key: &str,
+) -> Result<Value> {
+    Ok(queue_versioned(
+        a.clone(),
+        s.clone(),
+        id,
+        version,
+        Queue {
+            request_id,
+            route_key: route_key.into(),
+            reason: "Queued from an authorized encounter claim handoff".into(),
+        },
+        true,
+    )
+    .await?
+    .0)
+}
+
+async fn queue_versioned(
+    a: Actor,
+    s: State,
+    id: Uuid,
+    version: i64,
+    v: Queue,
+    require_claimmd_route: bool,
+) -> Result<Json<Value>> {
     a.scheduling()?;
     text(&v.reason, 1000)?;
     text(&v.route_key, 80)?;
-    let version = crate::expected(&h)?;
     let hash = crate::oauth::hash(&json!({"submission":id,"request":v}).to_string());
     let mut tx = db(&s)?.begin().await?;
     billing::tenant_lock(&mut tx, &a).await?;
@@ -302,11 +336,24 @@ async fn queue(
             "artifact already has an active or completed delivery job",
         ));
     }
+    let other:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM edi_submissions s LEFT JOIN edi_delivery_jobs j ON j.tenant_id=s.tenant_id AND j.submission_id=s.id WHERE s.tenant_id=$1 AND s.claim_id=$2 AND s.id<>$3 AND (s.status='delivered' OR j.status<>'cancelled'))").bind(a.tenant_id).bind(out.claim_id).bind(id).fetch_one(&mut *tx).await?;
+    if other {
+        return Err(Error::Conflict("This claim already has a delivery attempt. Review its status before sending another file."));
+    }
     let config = crate::provider_settings::load_for_tenant(db(&s)?, a.tenant_id).await?;
-    if config
-        .route(a.tenant_id, &v.route_key)
-        .is_some_and(|route| route.adapter == Adapter::ClaimMd)
+    let route = config.route(a.tenant_id, &v.route_key);
+    if require_claimmd_route
+        && !route.is_some_and(|r| {
+            r.adapter == Adapter::ClaimMd
+                && r.partner_id == out.partner_id
+                && out.partner_snapshot["content"]["usage"] == r.usage
+        })
     {
+        return Err(Error::Conflict(
+            "The Claim.MD connection changed. Review the current connection before sending.",
+        ));
+    }
+    if route.is_some_and(|r| r.adapter == Adapter::ClaimMd) {
         crate::claimmd::preflight(&out)?;
     }
     let jid = Uuid::new_v4();
@@ -542,6 +589,30 @@ pub async fn process_one(pool: &PgPool, config: &Config) -> Result<bool> {
         return Ok(true);
     }
     let route = route.unwrap().clone();
+    if route.adapter == Adapter::ClaimMd {
+        let account_hash = crate::oauth::hash(&crate::claimmd::token(&route)?);
+        let budget = crate::claimmd_eligibility::reserve_api_budget(
+            &mut tx,
+            &account_hash,
+            crate::claimmd::ApiBudget::Foreground,
+        )
+        .await;
+        if let Err(Error::ClaimMdRateLimited(seconds)) = budget {
+            sqlx::query("UPDATE edi_delivery_jobs SET next_attempt_at=now()+make_interval(secs=>$3),last_result='claimmd_rate_limited',version=version+1 WHERE tenant_id=$1 AND id=$2")
+                .bind(tenant).bind(id).bind(f64::from(seconds)).execute(&mut *tx).await?;
+            event(
+                &mut tx,
+                &a,
+                id,
+                "Claim.MD request budget is temporarily full; delivery deferred before releasing the payload",
+                json!({"retry_after_seconds":seconds}),
+            )
+            .await?;
+            tx.commit().await?;
+            return Ok(true);
+        }
+        budget?;
+    }
     let lease = Uuid::new_v4();
     sqlx::query("UPDATE edi_delivery_jobs SET status='leased',lease_id=$3,lease_until=now()+interval '45 seconds',attempts=attempts+1,version=version+1 WHERE tenant_id=$1 AND id=$2").bind(tenant).bind(id).bind(lease).execute(&mut *tx).await?;
     event(&mut tx,&a,id,"Automated delivery attempt leased",json!({"attempt":j.attempts+1,"submission_id":out.id,"payload_hash":out.payload_hash,"requested_by":j.requested_by})).await?;
@@ -571,7 +642,6 @@ pub async fn process_one(pool: &PgPool, config: &Config) -> Result<bool> {
             });
         }
     } else if route.adapter == Adapter::ClaimMd {
-        crate::claimmd_eligibility::acquire_rate_limit(pool, &route).await?;
         if let Ok(Some(reference)) = crate::claimmd::upload(&route, &out).await {
             result = "claimmd_upload_confirmed";
             receipt = Some(Receipt {

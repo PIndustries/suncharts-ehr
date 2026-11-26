@@ -33,6 +33,8 @@ pub enum Error {
     /// A dependency is briefly out of reach; nothing was changed and a retry is safe.
     #[error("{0}")]
     Unavailable(&'static str),
+    #[error("Claim.MD is temporarily rate limited. Try again later.")]
+    ClaimMdRateLimited(u32),
     /// Stored content failed verification; no bytes were returned.
     #[error("{0}")]
     Integrity(&'static str),
@@ -43,6 +45,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
+        let retry_after = match &self {
+            Self::ClaimMdRateLimited(seconds) => Some(*seconds),
+            _ => None,
+        };
         let (status, code, message) = match self {
             Self::OAuth(code) => (
                 if code == "invalid_client" {
@@ -69,6 +75,11 @@ impl IntoResponse for Error {
                 "If-Match with the current record version is required",
             ),
             Self::Unavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, "unavailable", m),
+            Self::ClaimMdRateLimited(_) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                "Claim.MD is temporarily rate limited. Try again later.",
+            ),
             Self::Integrity(m) => (StatusCode::INTERNAL_SERVER_ERROR, "integrity", m),
             Self::Database(e)
                 if e.as_database_error()
@@ -84,6 +95,12 @@ impl IntoResponse for Error {
         };
         let mut response =
             (status, Json(json!({"error": code, "message": message}))).into_response();
+        if let Some(seconds) = retry_after {
+            response.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from(seconds),
+            );
+        }
         if status == StatusCode::UNAUTHORIZED {
             response.headers_mut().insert(
                 axum::http::header::WWW_AUTHENTICATE,

@@ -48,9 +48,9 @@ async function main(){
 
  // With a mark on file the card never offers to send a form…
  assert.doesNotMatch(f.run("scheduleMarkersHtml(scheduleState.appointments[0],'day')"),/send-intake/,'a marked card does not offer to send a form');
- // …while an appointment with nothing sent still does.
+ // A card with nothing sent has no forms badge. Sending remains in the appointment panel.
  f.load([{...base}]);
- assert.match(f.run("scheduleMarkersHtml(scheduleState.appointments[0],'day')"),/data-board-action="send-intake"[^>]*>.*Send intake form/);
+ assert.doesNotMatch(f.run("scheduleMarkersHtml(scheduleState.appointments[0],'day')"),/data-marker="forms"|data-board-action="send-intake"/);
 
  // The panel says the encounter needs no form, and offers no send button there either.
  f.load([notNeeded]);
