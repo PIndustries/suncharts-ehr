@@ -620,7 +620,7 @@ async function postVisitChargesFromCard(options={}){
   }
  }
 const insured=state.data?.summary?.insurance?.insured===true&&account.content.coverage_id!=null;
- const message=options.send&&insured?`Charges of ${money(account.total_cents)} become final and the claim is sent once it is ready.`:insured?`Charges of ${money(account.total_cents)} become final and the insurance claim is prepared.`:`Charges of ${money(account.total_cents)} become final.`;
+ const message=options.send&&insured?`Charges of ${money(account.total_cents)} become final. Review and submit the claim on the Claim.MD form.`:insured?`Charges of ${money(account.total_cents)} become final and the insurance claim is prepared.`:`Charges of ${money(account.total_cents)} become final.`;
  // Codes are checked on every post, as approving an encounter does elsewhere: what must be fixed
  // stops the post and is shown on the table; what should be checked is asked about once.
  const form=$('billing-account-form'),findings=form&&typeof encounterCodeFindings==='function'?encounterCodeFindings(form):[];
@@ -631,7 +631,7 @@ const insured=state.data?.summary?.insurance?.insured===true&&account.content.co
   const host=form.querySelector('[data-code-check]');if(host){host.innerHTML=encounterCodeFindingsMarkup(findings);host.scrollIntoView?.({block:'center',behavior:'smooth'});if(typeof flashUpdated==='function')flashUpdated(host);}notice(`${fixes.length===1?'1 thing needs':fixes.length+' things need'} fixing before these charges can be posted.`,true);visitChargePostResult.cancelled=true;return false;}
  const held=account.content.claim_details?.review_requested===true;
  const checks=reviews.length?`\n\nCheck before posting:\n${reviews.map(f=>'• '+f.text).join('\n')}`:'';
- if(!await confirmAction(message+(held?' These charges were held for review; posting approves them.':'')+checks,{title:held?'Approve and post these charges?':'Post these charges?',confirmLabel:held?'Approve and post':options.send&&insured?'Post charges and send claim':'Post charges'})){visitChargePostResult.cancelled=true;return false;}
+ if(!await confirmAction(message+(held?' These charges were held for review; posting approves them.':'')+checks,{title:held?'Approve and post these charges?':'Post these charges?',confirmLabel:held?'Approve and post':'Post charges'})){visitChargePostResult.cancelled=true;return false;}
  visitChargePostResult.posted=true;
  const patient=selected,identity=me;
  await api(`${billingBase()}/${account.id}/actions`,'POST',{action:'post',reason:held?'Charges reviewed and posted':'Charges posted',local_only:false,...(held?{review_approved:true}:{})},account.version);

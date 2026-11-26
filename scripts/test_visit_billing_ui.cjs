@@ -6,7 +6,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 const {visitSummary,selfPay}=require('./visit_billing_fixture.cjs');
 // The claim detail a one-click send reads back before it releases anything: the claim itself, the
 // server's own preflight answer, and the Claim.MD route the claim file goes over.
-const claimDetail=(over={})=>({claim:{id:'claim',status:'ready',version:2},preflight_issues:[],transport:{routes:[{provider:'claim_md',route_key:'claimmd'}]},...over});
+const claimDetail=({claim={},...over}={})=>({claim:{id:'claim',patient_id:'patient',account_id:'account',status:'ready',version:2,...claim},preflight_issues:[],...over});
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const handlers={},nodes={};
 const node=id=>nodes[id]??={id,innerHTML:'',dataset:{},hidden:false,open:false,scrollIntoView(){},querySelectorAll(){return [];},querySelector(sel){if(sel!=='[data-claim-send-error]'&&sel!=='.visit-billing-status .actions')return null;const at=this.innerHTML.indexOf('<div class="actions">');if(at<0)return null;const actionsEnd=this.innerHTML.indexOf('</div>',at);if(sel==='.visit-billing-status .actions')return{insertAdjacentHTML:(_,html)=>{this.alert=(html.match(/role="alert">(.*?)<\/p>/)||[])[1]||'';this.innerHTML=this.innerHTML.slice(0,actionsEnd)+html+this.innerHTML.slice(actionsEnd);}};return this.alert?{textContent:this.alert,remove:()=>{this.alert='';this.innerHTML=this.innerHTML.replace(/<p class="claim-send-error".*?<\/p>/,'');}}:null;},replaceChildren(){this.innerHTML='';},append(child){this.appended=child;}};
@@ -292,46 +292,39 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
   ctx.billingStep.reviewCard={...readySummary};
   assert.doesNotMatch(ctx.visitBillingCardMarkup({...readySummary,account:{...readySummary.account,id:'other'}},all),/data-visit-claim-direct-send/,'a card for another visit keeps its own button');
   ctx.billingStep.reviewCard=readySummary;
-   // Pressing it runs exactly the request the review panel's final send uses today: the claim read
-   // back, released if it is a draft, submitted as an 837, then delivered over the Claim.MD route.
-   // A reply that answers for itself, the way the review panel's own test drives the chain.
+   // The encounter button opens the native form with the current released claim.
    let apiReply=()=>({});
-   // Whether this press's own chain reached the insurer: it is the 837 being submitted that moves
-   // the encounter on, so the reload answers accordingly and nothing else.
-   let claimSendLanded=detail=>false;
    ctx.api=async(url,method='GET',body,version)=>{sent.push([url,method,body,version]);return apiReply(url,method,body,version);};
-   // The card is drawn from the summary given, as it is before the press, so the screen answers
-   // for that visit and nothing the last press left behind.
+   ctx.openEncounterClaimMdSubmit=async(id,accountId)=>{
+    const detail=await ctx.api('/api/v1/billing/claims/'+id);
+    assert.equal(detail.claim.status,'ready');
+    ctx.nativeReview={id,accountId,version:detail.claim.version};
+    return true;
+   };
    const pressSend=async(detail,button,shown=readySummary)=>{
-    sent.length=0;ctx.noticed=null;ctx.failed=null;
-    claimSendLanded=()=>sent.some(c=>c[1]==='POST'&&c[0].endsWith('/837p'));
-    // The chain stops before it runs for a claim that already reached the insurer.
-    if(detail.claim.status==='submitted'){apiReply=()=>detail;}else
+    sent.length=0;ctx.noticed=null;ctx.failed=null;ctx.nativeReview=null;
+    let current=detail;
     apiReply=(url,method)=>{
      if(url==='/api/v1/billing/claimmd/status')return {configured:true,connected:true};
-     if(url==='/api/v1/billing/claims/claim')return detail;
-     if(url==='/api/v1/billing/claims/claim/actions')return {claim:{...detail.claim,status:'ready',version:detail.claim.version+1}};
-     if(url.endsWith('/837p'))return {id:'submission',version:1};
-     if(url.endsWith('/delivery'))return {submission:{id:'submission',version:2}};
-     // The card's reload after the press: a send that went through leaves the encounter waiting on
-     // the insurer; a send that stopped leaves it exactly as it was.
-     if(url.includes('/visit-summary'))return claimSendLanded&&claimSendLanded(detail)?visitSummary({state:'waiting_insurer',waiting_on:'insurer',insurance:{status:'waiting',sent_on:'2026-11-12'},claim:{status:'submitted',sent_on:'2026-11-12'}}):shown;
-     throw new Error('Unexpected API '+url);};
-    // The step is opened on this encounter as the page opens it, so the pressed button answers for it.
-   ctx.billingStep.version=draftAccount.version;
-   const pressed=readyButton({dataset:{visitClaimDirectSend:'claim'},disabled:false,textContent:'Send claim to Synthetic Medicare PPO',isConnected:true,hasAttribute:()=>false,closest:()=>null},shown);
-   for(const handler of handlers.click)handler({target:{closest:()=>pressed},preventDefault(){}});
-   await settle();await ctx.pending;await settle();
-   return pressed;
-  };
+     if(url==='/api/v1/billing/claims/claim')return current;
+     if(url==='/api/v1/billing/claims/claim/actions'){
+      current={...current,claim:{...current.claim,status:'ready',version:current.claim.version+1}};
+      return current.claim;
+     }
+     if(url.includes('/visit-summary'))return shown;
+     throw new Error('Unexpected API '+url);
+    };
+    ctx.billingStep.version=draftAccount.version;
+    const pressed=readyButton({dataset:{visitClaimDirectSend:'claim'},disabled:false,textContent:'Send claim to Synthetic Medicare PPO',isConnected:true,hasAttribute:()=>false,closest:()=>null},shown);
+    for(const handler of handlers.click)handler({target:{closest:()=>pressed},preventDefault(){}});
+    await settle();await ctx.pending;await settle();
+    return pressed;
+   };
   let pressed=await pressSend(claimDetail());
   assert.equal(ctx.failed||null,null,ctx.failed);
-  assert.deepEqual(sent.filter(c=>c[1]==='POST').map(c=>[c[0],c[1],JSON.stringify(c[2])]),[
-   ['/api/v1/billing/claims/claim/837p','POST',JSON.stringify({request_id:'request',details:{},acknowledged:false})],
-   ['/api/v1/billing/submissions/submission/delivery','POST',JSON.stringify({request_id:'request',route_key:'claimmd',reason:'Sent from the encounter'})]],'submitted then delivered, exactly as the panel sends');
-  assert.equal(sent.filter(c=>c[0].endsWith('/claims/claim/actions')).length,0,'a claim already released is not released again');
-  assert.equal(ctx.noticed,'Claim sent to Synthetic Medicare PPO.','the notice names the insurer');
-  assert.match(node('encounter-revenue-status').innerHTML,/Waiting on Synthetic Medicare PPO/,'the card re-renders to what the server now says');
+  assert.deepEqual(sent.filter(c=>c[1]==='POST'),[],'opening the native form sends nothing');
+  assert.deepEqual(ctx.nativeReview,{id:'claim',accountId:'account',version:2});
+  assert.equal(pressed.disabled,false,'the encounter button is usable after the form opens');
   // While it runs the button is disabled and says so; a claim already at Claim.MD is not pushed
   // again and the button comes back with its own words.
   ctx.claimHasPreparedSubmission=()=>true;
@@ -355,7 +348,8 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
   // A draft claim is released first, with the version it was read at.
   sent.length=0;pressed=await pressSend(claimDetail({claim:{id:'claim',status:'draft',version:3}}));
   assert.deepEqual(sent.filter(c=>c[0].endsWith('/claims/claim/actions')).map(c=>[c[1],JSON.stringify(c[2]),c[3]]),[['POST',JSON.stringify({action:'ready',reason:'Claim details reviewed before sending',reference:'',event_date:null,payer_control_number:''}),3]],'released with the version it read');
-  assert.ok(sent.filter(c=>c[0].endsWith('/837p')).length===1,'and then sent');
+  assert.deepEqual(ctx.nativeReview,{id:'claim',accountId:'account',version:4},'native review sees the new ready version');
+  assert.equal(sent.filter(c=>c[0].endsWith('/837p')||c[0].endsWith('/delivery')).length,0,'no claim was generated or queued');
   // The small review link still opens today's panel and sends nothing.
   sent.length=0;click({visitReviewOpen:'account'});assert.equal(node('visit-billing-review').hidden,false);assert.equal(sent.length,0,'the review link sends nothing');
   click({visitReviewClose:''});
