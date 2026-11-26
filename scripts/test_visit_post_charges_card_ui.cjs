@@ -61,12 +61,15 @@ const useAccount=coverageId=>{ctx.workspace.billing={...ctx.workspace.billing,ac
  // A coding blocker opens the existing codes editor and brings the exact problem into view.
  const feedback={setAttribute(){},focus(){this.focused=true;},scrollIntoView(){this.visible=true;}};
  const finding={level:'fix',text:'Choose the diagnoses this service was for.',fieldProblem:true,row:{querySelector:sel=>sel==='[data-charge-problem]'?feedback:null}};
- ctx.encounterCodeFindings=()=>[finding];ctx.renderEncounterCodeChecks=(_form,items)=>assert.equal(items[0],finding);
+ const chargeEditor=node('billing-account-form');
+ Object.assign(chargeEditor,{dataset:{id:'account',patient:'patient'},elements:{visit_id:{value:'visit'}}});
+ ctx.encounterCodeFindings=form=>{assert.equal(form,chargeEditor);return [finding];};
+ ctx.renderEncounterCodeChecks=(form,items)=>{assert.equal(form,chargeEditor);assert.equal(items[0],finding);};
  const openCodes=ctx.encounterCodesEditorOpen;ctx.encounterCodesEditorOpen=()=>opened.push('codes');
  reset();press();await settle();if(ctx.failed)throw new Error(ctx.failed);
  assert.equal(ctx.asked,null);assert.equal(posts().length,0);assert.deepEqual(opened,['codes']);
  assert.ok(feedback.focused&&feedback.visible,'the staff member lands on the issue before any charge posts');
- delete ctx.encounterCodeFindings;delete ctx.renderEncounterCodeChecks;ctx.encounterCodesEditorOpen=openCodes;
+ delete nodes['billing-account-form'];delete ctx.encounterCodeFindings;delete ctx.renderEncounterCodeChecks;ctx.encounterCodesEditorOpen=openCodes;
  // An unsigned visit note gives the card no way to post, so nothing is sent even by passing it.
  ctx.answer=true;ctx.activeVisit={...ctx.activeVisit,status:'in_progress'};ctx.workspace.visits=[{id:'visit',appointment_id:'appointment',status:'in_progress'}];
  reset();press();await settle();if(ctx.failed)throw new Error(ctx.failed);
