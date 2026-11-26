@@ -45604,6 +45604,10 @@
             },
             "maxItems": 100
           },
+          "can_confirm_self_policyholder": {
+            "type": "boolean",
+            "description": "Whether this unsent draft has matching patient and policy holder details and a complete patient address on file for staff confirmation. Writes also recheck version, access and artifact evidence."
+          },
           "transport": {
             "type": "object",
             "additionalProperties": true,
@@ -45621,6 +45625,7 @@
         "required": [
           "claim",
           "preflight_issues",
+          "can_confirm_self_policyholder",
           "transport"
         ]
       },
@@ -45630,6 +45635,7 @@
         "properties": {
           "action": {
             "enum": [
+              "confirm_self_policyholder",
               "ready",
               "void_draft",
               "record_submission",
@@ -45640,7 +45646,7 @@
               "reverse",
               "withdraw_crossover"
             ],
-            "description": "withdraw_crossover only withdraws submitted/accepted/rejected crossover tracking without an active ERA head or non-void descendant; history remains. Normal outbound/manual submission events are refused for tracking records."
+            "description": "confirm_self_policyholder corrects the claim-only relationship and policy holder address on a matching unsent original primary draft, without changing the chart, insurance, posted charges, or ledger. withdraw_crossover only withdraws submitted/accepted/rejected crossover tracking without an active ERA head or non-void descendant; history remains. Normal outbound/manual submission events are refused for tracking records."
           },
           "reason": {
             "type": "string",
