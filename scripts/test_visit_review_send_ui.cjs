@@ -164,6 +164,16 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
  assert.ok(!interrupted.some(row=>row.key==='practice-billing_npi'||row.key==='practice-rendering_npi'));
  draft.content.coverage_id=null;
  assert.deepEqual(Array.from(preview(),row=>row.key),['self-pay'],'explicit self-pay on charges stays self-pay when the patient has active insurance');
+ const organizations=[{name:'Synthetic Billing Group One',npi:'1245319599'},{name:'Synthetic Billing Group Two',npi:'1548469802'}];
+ const multiDirectory={...directory,providers:[{id:'assigned',npi:'1234567893',display_name:'Assigned Clinician'}],billing_organizations:organizations};
+ const ambiguous=reviewSummary({practice_directory:multiDirectory,claim:{...claim,content:{...filled(),billing_npi:'',tax_id:'',rendering_npi:'1234567893'},issues:[{code:'npi',missing:'provider NPI'},{code:'tax_id',missing:'billing organization tax ID'}]}});
+ const ambiguousChecks=review(ambiguous);
+ assert.equal(ambiguousChecks.find(row=>row.key==='practice-billing_npi')?.text,'Confirm which organization bills this claim.');
+ assert.ok(!ambiguousChecks.some(row=>row.key==='practice-rendering_npi'),'the assigned clinician’s valid rendering NPI remains on the claim');
+ const rendered=ctx.visitSignedClaimDetailBody(ambiguous,{canWrite:true,claimsAllowed:true},false);
+ assert.match(rendered,/data-visit-claim-fix="claim" data-signed-focus="billing_provider_name">Edit billing details/);
+ const corrected=review({...ambiguous,claim:{...ambiguous.claim,content:{...ambiguous.claim.content,billing_provider_name:'Synthetic Billing Group Two',billing_npi:'1548469802',tax_id:'000000018'},issues:[]}});
+ assert.ok(!corrected.some(row=>['practice-billing_npi','practice-rendering_npi','practice-tax'].includes(row.key)),'the reviewed billing identity resolves the claim checks');
  ctx.billingPayers.pop();ctx.workspace.billing.coverages.pop();delete ctx.workspace.patient.birth_date;delete ctx.activeVisit.clinician_id;
  ctx.claimmdClaimProviderDefaults=heldProviders;ctx.claimmdSubscriberBirthMissing=heldSubscriber;
  // ---- The panel renders the two lists, the money summary and the form ----

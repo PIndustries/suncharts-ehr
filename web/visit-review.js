@@ -116,8 +116,11 @@ function visitReviewPractice(s,ctx={}){
   const address=String(content.billing_address??defaults.billing_address??'').trim();
   if(!address)out.push(visitReviewCheck('practice-address',{group:'practice',blocking:true,text:'The claim has no billing address for the practice.',action:'Open practice billing setup',attribute:'data-billing-organizations'}));
   const taxId=String(content.tax_id??'').trim();
+  const groups=s.practice_directory?.billing_organizations||[];
+  const chooseBilling=groups.length>1&&!String(content.billing_npi||'').trim();
+  const editBilling=chooseBilling&&claim.status==='draft'&&claim.id?{action:'Edit billing details',attribute:`data-visit-review-fix="claim" data-visit-claim-fix="${esc(claim.id)}" data-signed-focus="billing_provider_name"`}:{};
   if(taxId&&(!/^\d{9}$/.test(taxId)||missing.has('tax_id')))out.push(visitReviewCheck('practice-tax',{group:'practice',blocking:true,text:`The tax ID on the claim (“${visitReviewFormValue(taxId,12)}”) is not nine digits.`,action:'Open practice billing setup',attribute:'data-billing-organizations'}));
-  else if(!taxId&&Object.keys(content).length)out.push(visitReviewCheck('practice-tax',{group:'practice',blocking:true,text:'The claim has no tax ID for the practice.',action:'Open practice billing setup',attribute:'data-billing-organizations'}));
+  else if(!taxId&&Object.keys(content).length)out.push(visitReviewCheck('practice-tax',{group:'practice',blocking:true,text:'The claim has no tax ID for the practice.',action:'Open practice billing setup',attribute:'data-billing-organizations',...editBilling}));
   for(const [field,label,fromDefault] of [['billing_npi','billing NPI','billing_npi'],['rendering_npi','rendering NPI','rendering_npi']]){
     // The NPI the claim will actually carry is the claim's own, or the practice's setup where
     // the claim has none yet; an invalid one on either side still has to be put right.
@@ -125,13 +128,21 @@ function visitReviewPractice(s,ctx={}){
     const destination=field==='rendering_npi'?{action:'Open provider directory',attribute:'data-practice-providers'}:
       {action:'Open practice billing setup',attribute:'data-billing-organizations'};
     // When one billing organization uses the rendering clinician's NPI, entering that NPI resolves both fields.
-    const groups=s.practice_directory?.billing_organizations||[];
     if(!claim.id&&field==='billing_npi'&&!npi&&!defaults.rendering_npi&&groups.length===1&&!String(groups[0].npi||'').trim())continue;
-    if(!npi)out.push(visitReviewCheck(`practice-${field}`,{group:'practice',blocking:true,text:`The claim has no ${label}.`,...destination}));
-    else if(!/^\d{10}$/.test(npi)||missing.has('npi'))out.push(visitReviewCheck(`practice-${field}`,{group:'practice',blocking:true,text:`The ${label} on the claim (“${visitReviewFormValue(npi,12)}”) is not a valid 10-digit NPI.`,...destination}));
+    if(field==='billing_npi'&&chooseBilling)out.push(visitReviewCheck('practice-billing_npi',{group:'practice',blocking:true,text:'Confirm which organization bills this claim.',...editBilling}));
+    else if(!npi)out.push(visitReviewCheck(`practice-${field}`,{group:'practice',blocking:true,text:`The claim has no ${label}.`,...destination}));
+    else if(!/^\d{10}$/.test(npi)||(missing.has('npi')&&(!chooseBilling||!visitReviewNpiCheckDigit(npi))))out.push(visitReviewCheck(`practice-${field}`,{group:'practice',blocking:true,text:`The ${label} on the claim (“${visitReviewFormValue(npi,12)}”) is not a valid 10-digit NPI.`,...destination}));
   }
   if(missing.has('taxonomy_code')||missing.has('billing_taxonomy'))out.push(visitReviewCheck('practice-taxonomy',{group:'practice',blocking:false,text:'The provider has no specialty (taxonomy) code, so the insurer may ask for it later.',action:'Open practice billing setup',attribute:'data-billing-organizations'}));
   return out;
+}
+function visitReviewNpiCheckDigit(npi){
+ const digits=Array.from(`80840${npi}`,Number).reverse();
+ const sum=digits.reduce((total,digit,index)=>{
+  const value=index%2?digit*2:digit;
+  return total+(value>9?value-9:value);
+ },0);
+ return sum%10===0;
 }
 function visitReviewPatient(s,ctx={}){
   const out=[],claim=s.claim||{},content=claim.content||{};
@@ -316,7 +327,7 @@ function visitDraftClaimIssues(checks,ctx){
   groups.get(target).push(check);
  }
  const items=[...groups.values()].map(group=>{
-  const first=group[0],practice=first.group==='practice',blocking=group.some(check=>check.level==='must');
+  const first=group[0],practice=['data-billing-organizations','data-practice-providers'].includes(first.attribute),blocking=group.some(check=>check.level==='must');
   const mayFix=ctx.claimsAllowed&&ctx.canWrite&&(!practice||typeof me!=='undefined'&&me?.role==='owner');
   const issues=group.map(check=>{
    const text=check.key==='practice-tax'?'The practice tax ID is missing or invalid.':check.text;

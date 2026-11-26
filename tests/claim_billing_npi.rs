@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! A claim's billing provider is the organization: its legal name, tax ID and,
 //! when the practice bills under a group NPI, that NPI. The rendering provider
-//! stays the clinician who saw the patient. When the practice has no organization
-//! NPI, or cannot be reduced to exactly one active organization, the prepared
-//! claim keeps billing under the clinician's own NPI, as it always did.
+//! stays the clinician who saw the patient. With zero active organizations or
+//! one without an organization NPI, the clinician's NPI is the billing default.
+//! With several active organizations, staff review the billing identity.
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -27,7 +27,7 @@ use uuid::Uuid;
 const SECRET: &str = "synthetic-claim-billing-npi-secret";
 const ORIGIN: &str = "http://127.0.0.1:8099";
 const CLINICIAN_NPI: &str = "1234567893";
-const ORG_NPI: &str = "1234567893";
+const ORG_NPI: &str = "1245319599";
 const SECOND_ORG_NPI: &str = "1548469802";
 const FOREIGN_ORG_NPI: &str = "1447325998";
 
@@ -286,11 +286,15 @@ async fn organization(
     assert_eq!(count, 1, "organization row recorded with its NPI");
 }
 
-/// Posts charges under a synthetic payer, prepares the claim through the API, then
-/// reads the stored content. A draft with an ambiguous billing organization cannot
-/// be read back through the detail route (preflight asks a person to choose), so
-/// the stored row is what every case is checked against.
-async fn prepare_content(r: &Router, a: &Actor, db: &PgPool, p: Uuid, visit: Uuid) -> Value {
+/// Posts charges under a synthetic payer and returns the draft and its persisted
+/// content before opening the detail route can fill in any missing fields.
+async fn prepare_content(
+    r: &Router,
+    a: &Actor,
+    db: &PgPool,
+    p: Uuid,
+    visit: Uuid,
+) -> (Uuid, Value) {
     let payer = ok(r, a, "POST", "/api/v1/billing/payers",
         json!({"request_id":Uuid::new_v4(),"content":{"name":"Medicare NJ","payer_code":"SYN-MCARE","address":"Synthetic payer address","phone":"","active":true},"reason":"Synthetic payer"}), None).await;
     let coverage = ok(r, a, "POST", &format!("/api/v1/patients/{p}/coverages"),
@@ -320,12 +324,13 @@ async fn prepare_content(r: &Router, a: &Actor, db: &PgPool, p: Uuid, visit: Uui
     .await;
     assert_eq!(out["outcome"], "prepared", "{out}");
     let claim: Uuid = serde_json::from_value(out["claim_id"].clone()).expect("claim id");
-    sqlx::query_scalar("SELECT content FROM ehr_claims WHERE tenant_id=$1 AND id=$2")
+    let content = sqlx::query_scalar("SELECT content FROM ehr_claims WHERE tenant_id=$1 AND id=$2")
         .bind(a.tenant_id)
         .bind(claim)
         .fetch_one(db)
         .await
-        .unwrap()
+        .unwrap();
+    (claim, content)
 }
 
 #[tokio::test]
@@ -383,7 +388,7 @@ async fn sole_organization_npi_becomes_the_billing_provider_npi() {
         },
     )
     .await;
-    let content = prepare_content(&r, &a, &db, p, visit).await;
+    let (_, content) = prepare_content(&r, &a, &db, p, visit).await;
     assert_eq!(
         content["billing_npi"], ORG_NPI,
         "the sole active organization's NPI bills the claim"
@@ -417,14 +422,28 @@ async fn without_an_organization_npi_the_clinician_npi_bills() {
         },
     )
     .await;
-    let content = prepare_content(&r, &a, &db, p, visit).await;
+    let (_, content) = prepare_content(&r, &a, &db, p, visit).await;
     assert_eq!(content["billing_npi"], CLINICIAN_NPI);
     assert_eq!(content["rendering_npi"], CLINICIAN_NPI);
     db.close().await;
 }
 
 #[tokio::test]
-async fn two_active_organizations_fall_back_to_the_clinician_npi() {
+async fn without_active_organizations_the_clinicians_npi_is_the_default() {
+    let _key_file = suncharts_engine::test_db::credential_key_lock()
+        .lock()
+        .await;
+    let db = database().await;
+    let (r, a, p, visit, _) = fixture(&db).await;
+    let (_, content) = prepare_content(&r, &a, &db, p, visit).await;
+    assert_eq!(content["billing_npi"], CLINICIAN_NPI);
+    assert_eq!(content["rendering_npi"], CLINICIAN_NPI);
+    assert_eq!(content["tax_id"], "");
+    db.close().await;
+}
+
+#[tokio::test]
+async fn two_active_organizations_require_reviewed_billing_identity() {
     let _key_file = suncharts_engine::test_db::credential_key_lock()
         .lock()
         .await;
@@ -460,14 +479,65 @@ async fn two_active_organizations_fall_back_to_the_clinician_npi() {
         },
     )
     .await;
-    // With an ambiguous billing organization the prepared draft still records the
-    // clinician's NPI; a person reviews and confirms it before anything is sent.
-    let content = prepare_content(&r, &a, &db, p, visit).await;
+    sqlx::query("INSERT INTO patient_demographics(tenant_id,patient_id,version,content) VALUES($1,$2,1,$3)")
+        .bind(a.tenant_id).bind(p)
+        .bind(json!({"address":{"line1":"2 Synthetic Way","city":"Austin","region":"TX","postal_code":"78701","country":"US"}}))
+        .execute(&db).await.unwrap();
+    let (claim, mut content) = prepare_content(&r, &a, &db, p, visit).await;
     assert_eq!(
-        content["billing_npi"], CLINICIAN_NPI,
-        "an ambiguous practice keeps billing under the clinician"
+        content["billing_npi"], "",
+        "the practice must review which organization bills this claim"
     );
+    assert_eq!(content["tax_id"], "");
     assert_eq!(content["rendering_npi"], CLINICIAN_NPI);
+
+    let path = format!("/api/v1/billing/claims/{claim}");
+    let actions = format!("{path}/actions");
+    let detail = ok(&r, &a, "GET", &path, Value::Null, None).await;
+    let status = detail["preflight_issues"].as_array().unwrap();
+    assert!(status.iter().any(|issue| issue == "Tax ID is required"));
+    assert!(status
+        .iter()
+        .any(|issue| issue == "Billing and rendering NPIs require valid check digits"));
+    let release = json!({"action":"ready","reason":"Reviewed synthetic billing identity"});
+    let before = version(&detail["claim"]);
+    let (blocked, _) = call(&r, &a, "POST", &actions, release.clone(), Some(before)).await;
+    assert_eq!(blocked, StatusCode::CONFLICT);
+
+    content["billing_provider_name"] = json!("Synthetic Group Two");
+    content["billing_npi"] = json!(SECOND_ORG_NPI);
+    content["tax_id"] = json!("000000018");
+    content["tax_id_type"] = json!("E");
+    let edited = ok(
+        &r,
+        &a,
+        "PUT",
+        &path,
+        json!({"content":content,"reason":"Chose Synthetic Group Two"}),
+        Some(before),
+    )
+    .await;
+    assert_eq!(edited["content"]["billing_npi"], SECOND_ORG_NPI);
+    assert_eq!(edited["content"]["rendering_npi"], CLINICIAN_NPI);
+    let detail = ok(&r, &a, "GET", &path, Value::Null, None).await;
+    assert_eq!(detail["preflight_issues"], json!([]));
+    let ready = ok(
+        &r,
+        &a,
+        "POST",
+        &actions,
+        release,
+        Some(version(&detail["claim"])),
+    )
+    .await;
+    assert_eq!(ready["status"], "ready");
+    assert_eq!(
+        ready["content"]["billing_provider_name"],
+        "Synthetic Group Two"
+    );
+    assert_eq!(ready["content"]["billing_npi"], SECOND_ORG_NPI);
+    assert_eq!(ready["content"]["tax_id"], "000000018");
+    assert_eq!(ready["content"]["rendering_npi"], CLINICIAN_NPI);
     db.close().await;
 }
 
@@ -493,7 +563,7 @@ async fn a_practice_billing_under_an_ssn_prepares_the_claim_as_an_ssn() {
         },
     )
     .await;
-    let content = prepare_content(&r, &a, &db, p, visit).await;
+    let (_, content) = prepare_content(&r, &a, &db, p, visit).await;
     assert_eq!(
         content["tax_id_type"], "S",
         "the prepared claim says the tax ID is a Social Security number"
@@ -524,7 +594,7 @@ async fn a_practice_billing_under_an_ein_prepares_the_claim_as_an_ein() {
         },
     )
     .await;
-    let content = prepare_content(&r, &a, &db, p, visit).await;
+    let (_, content) = prepare_content(&r, &a, &db, p, visit).await;
     assert_eq!(content["tax_id_type"], "E");
     db.close().await;
 }
