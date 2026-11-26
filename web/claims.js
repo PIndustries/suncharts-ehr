@@ -126,6 +126,7 @@ const claimMissingGroups=[
   rules:[
    {key:'member_id',texts:[/member id|subscriber id|insured id/i],words:'Member ID from the card',input:''},
    {key:'subscriber_name',texts:[/policy holder name|subscriber name/i],words:'Policy holder name',input:''},
+   {key:'subscriber_relationship',texts:[/policy holder relationship/i],words:'Confirm how the patient is related to the policy holder',input:''},
    {key:'subscriber_address',texts:[/subscriber address|policy holder.{0,3} address/i],words:"Policy holder's address",input:'subscriber_address'},
    {key:'subscriber_birth_date',texts:[/subscriber (date of birth|birth date|dob)|policy holder.{0,3} (date of birth|birth date)/i],words:"Policy holder's date of birth",input:'subscriber_birth_date'},
    {key:'payer_name',texts:[/payer name|insurer name/i],words:'Insurance company name',input:''},
@@ -196,10 +197,14 @@ function claimMissingGroupMarkup(group,bucket,inline=new Set()){
  return `<li data-missing-group="${group.key}"><b>${esc(group.label)}</b><ul>${items.map(item=>`<li>${esc(item.words)}</li>`).join('')}</ul><button type="button" ${group.attribute}>${esc(group.action)}</button></li>`;
 }
 function claimOwnPolicy(claim){return claim?.snapshot?.account?.coverage_snapshot?.coverage?.content?.relationship==='self';}
-function claimQuickFixMarkup(claim,inputs){
- if(!inputs.size)return '';
+function claimQuickFixMarkup(claim,inputs,canConfirmSelf=false,address){
+ if(!inputs.size&&!canConfirmSelf)return '';
  const v=claim.content||{},own=claimOwnPolicy(claim),box=(name,label,value='',extra='')=>`<label>${esc(label)}<input name="${name}" value="${esc(value)}" ${extra}></label>`;
  const parts=[];
+ if(canConfirmSelf){
+  const formatted=address?[address.line1,address.line2,address.city,[address.state,address.postal_code].filter(Boolean).join(' ')].filter(Boolean).join(', '):'';
+  parts.push(`<section class="mapping-notice"><p>The policy holder matches the patient’s name and date of birth. Confirm the patient is the policy holder and their address on file is correct for this claim.</p>${formatted?`<p><b>${esc(formatted)}</b></p>`:''}<button type="button" data-confirm-self-policyholder>Confirm and update claim</button></section>`);
+ }
  if(inputs.has('patient_address'))parts.push(`<fieldset><legend>Patient address <small>saved to the patient's chart</small></legend><div class="claim-quick-grid">${box('address_line1','Street','','required maxlength="200" autocomplete="off"')}${box('address_line2','Apt, suite (optional)','','maxlength="200" autocomplete="off"')}${box('address_city','City','','required maxlength="100" autocomplete="off"')}${box('address_region','State','','required maxlength="2" pattern="[A-Za-z]{2}" title="Two letters, for example TX" autocomplete="off"')}${box('address_postal_code','ZIP','','required inputmode="numeric" pattern="[0-9]{5}(-?[0-9]{4})?" title="5 or 9 digits" autocomplete="off"')}</div></fieldset>`);
  if(inputs.has('subscriber_address')){
   if(own&&inputs.has('patient_address'))parts.push('<p class="muted">The patient is the policy holder, so the address above is used for the policy holder too.</p>');
@@ -208,16 +213,18 @@ function claimQuickFixMarkup(claim,inputs){
  if(inputs.has('subscriber_birth_date'))parts.push(box('subscriber_birth_date',"Policy holder's date of birth",v.subscriber_birth_date||(own?claim.snapshot?.patient?.birth_date:'')||'',`type="date" required max="${new Date().toISOString().slice(0,10)}"`));
  for(const [name,label,extra] of [['billing_provider_name','Billing provider name','maxlength="60"'],['tax_id','Practice tax ID (9 digits)','inputmode="numeric" pattern="[0-9]{2}-?[0-9]{7}"'],['billing_npi','Billing NPI (10 digits)','inputmode="numeric" pattern="[0-9]{10}"'],['rendering_npi','Rendering NPI (10 digits)','inputmode="numeric" pattern="[0-9]{10}"'],['billing_address','Billing address','maxlength="1000"'],['place_of_service','Place of service (2 digits, 11 = office)','inputmode="numeric" pattern="[0-9]{2}"']])
   if(inputs.has(name))parts.push(box(name,label,v[name],`required ${extra}`));
- return `<form id="claim-quick-fix" class="claim-quick-fix" data-claim="${esc(claim.id)}" hidden>${parts.join('')}<div class="actions"><button type="submit" class="primary">Save and check again</button><button type="button" data-claim-quick-fix-cancel>Cancel</button></div></form>`;
+ return `<form id="claim-quick-fix" class="claim-quick-fix" data-claim="${esc(claim.id)}" data-claim-version="${esc(claim.version)}" hidden>${parts.join('')}<div class="actions">${inputs.size?'<button type="submit" class="primary">Save and check again</button>':''}<button type="button" data-claim-quick-fix-cancel>Cancel</button></div></form>`;
 }
-function claimMissingMarkup(buckets,claim){
+function claimMissingMarkup(buckets,claim,detail={}){
  const fixable=claimQuickFixable(claim),inline=new Set();
+ const canConfirmSelf=fixable&&detail.can_confirm_self_policyholder===true&&
+  (typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('claims','edit'));
  if(fixable)for(const bucket of Object.values(buckets||{}))for(const item of bucket.items||[])if(claimQuickFixInputs.includes(item.input))inline.add(item.input);
  const lines=claimMissingGroups.map(group=>claimMissingGroupMarkup(group,buckets[group.key],inline)).join('');
- const form=fixable?claimQuickFixMarkup(claim,inline):'';
+ const form=fixable?claimQuickFixMarkup(claim,inline,canConfirmSelf,detail.submission_defaults?.patient_address):'';
  if(!lines&&!form)return '';
  const inlineWords=form?Object.values(buckets||{}).flatMap(bucket=>(bucket.items||[]).filter(item=>inline.has(item.input)).map(item=>item.words)):[];
- const view=inlineWords.length?`<div class="claim-quick-view" data-claim-quick-view><ul>${inlineWords.map(words=>`<li>${esc(words)}</li>`).join('')}</ul><button type="button" class="primary" data-claim-quick-fix-open>Fix here</button></div>`:'';
+ const view=inlineWords.length||canConfirmSelf?`<div class="claim-quick-view" data-claim-quick-view>${inlineWords.length?`<ul>${inlineWords.map(words=>`<li>${esc(words)}</li>`).join('')}</ul>`:''}<button type="button" class="primary" data-claim-quick-fix-open>Fix here</button></div>`:'';
  return `<section class="claim-missing" data-claim-missing aria-label="Before this can be sent"><h3>Before this can be sent</h3>${view}${form}${lines?`<ul>${lines}</ul>`:''}</section>`;
 }
 // Saves the boxes of the "Fix it here" form: the patient's address to the chart, the rest on the
@@ -247,6 +254,25 @@ async function saveClaimQuickFix(form){
   if(typeof document!=='undefined'&&document.querySelector)flashUpdated(document.querySelector('[data-claim-primary]')||document.querySelector('[data-claim-missing]'));
   notice('Saved. The claim was checked again.');
  }finally{if(form.isConnected)controls.forEach(control=>{control.disabled=false;});}
+}
+async function confirmClaimSelfPolicyholder(form){
+ const claim=claimCurrent,context=form?.claimViewContext||claimContextSnapshot();
+ if(!claimQuickFixable(claim)||form?.dataset.claim!==claim.id||Number(form.dataset.claimVersion)!==claim.version||
+  claimDetailCache(claim)?.can_confirm_self_policyholder!==true||
+  typeof workspaceResourceAllowed==='function'&&!workspaceResourceAllowed('claims','edit'))return;
+ requireClaimContext(context,claim);
+ const result=await api(`${claimsBase}/${encodeURIComponent(claim.id)}/actions`,'POST',{
+  action:'confirm_self_policyholder',
+  reason:'Confirmed the patient is the policy holder and uses the address on file'
+ },claim.version);
+ if(!claimContextCurrent(context)||claimCurrent?.id!==claim.id)return;
+ if(result?.id!==claim.id||!claimOwnPolicy(result))throw new Error('Reload the claim to check whether the policy holder was updated.');
+ const sheet=form.claimSheet;
+ if(sheet?.open&&!sheet.dataset.closing)await new Promise(resolve=>sheetClose(sheet,resolve));
+ if(!claimContextCurrent(context)||claimCurrent?.id!==claim.id)return;
+ notice('Policy holder updated on the claim. Check the updated claim before sending.');
+ if(context.kind==='worklist')await showClaim(claim.id);
+ else await refreshClaimInContext(claim.id,context);
 }
 // Staff wording for a list of problems on a screen this brief does not cover (remittances,
 // acknowledgments). The claim page has its own grouped list above.
@@ -748,7 +774,7 @@ function claimScreenMarkup(claim,detail,history){
  return `<section class="billing-account-detail">${claimScreenHeadMarkup(claim,account,patient,detail)}
  ${typeof claimProblemReport==='function'?claimProblemBoxMarkup(claimProblemReport(claim,detail),claimResponseWords(detail),claim.id):''}
  ${claimPrimaryActionMarkup(claim,detail,{connectionNotice:claimConnectionNotice(claim,detail),secondaryEvidence:sections.secondaryEvidence,recordOutside})}
- ${claimIsCrossover(claim)?'<p class="muted">Nothing is sent or downloaded for a crossover claim. The secondary payment stays with the original visit.</p>':['void','voided'].includes(claim.status)?'':claimMissingMarkup(missing,claim)}
+ ${claimIsCrossover(claim)?'<p class="muted">Nothing is sent or downloaded for a crossover claim. The secondary payment stays with the original visit.</p>':['void','voided'].includes(claim.status)?'':claimMissingMarkup(missing,claim,detail)}
  ${inVisit?'':claimMoneySummaryMarkup(claim,detail)}
  ${inVisit?'':`<div class="claim-lines" data-claim-lines>${lines}</div>`}
  ${withdraw}
@@ -1134,14 +1160,16 @@ function flashUpdated(node){if(!node?.classList)return;node.classList.remove('ju
 function openClaimQuickFix(){
  const form=$('claim-quick-fix');if(!form)return false;
  const home=form.parentNode,marker=document.createComment('claim-quick-fix');home.insertBefore(marker,form);
- form.hidden=false;
+ form.hidden=false;form.claimViewContext=claimViewContext;
  const dialog=sheetOpen('Fill in what the claim needs',form);form.claimSheet=dialog;
  const putBack=()=>{if(marker.parentNode){form.hidden=true;form.reset();marker.parentNode.insertBefore(form,marker);marker.remove();}else form.remove();};
  dialog.addEventListener('close',putBack,{once:true});
- form.querySelector('input:not([type=hidden])')?.focus();
+ (form.querySelector('[data-confirm-self-policyholder]')||form.querySelector('input:not([type=hidden])'))?.focus();
  return true;
 }
 document.addEventListener('click',event=>{
+ const confirm=event.target.closest?.('[data-confirm-self-policyholder]');
+ if(confirm){event.preventDefault();run(()=>confirmClaimSelfPolicyholder(confirm.closest('form')));return;}
  const open=event.target.closest?.('[data-claim-quick-fix-open]'),cancel=event.target.closest?.('[data-claim-quick-fix-cancel]');
  if(open){event.preventDefault();openClaimQuickFix();return;}
  if(cancel){event.preventDefault();const form=$('claim-quick-fix');sheetClose(form?.claimSheet||form?.closest('dialog'));}

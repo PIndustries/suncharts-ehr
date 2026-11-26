@@ -311,9 +311,19 @@ fn claim_content(control_number: &str) -> Value {
     })
 }
 
-/// Build a posted account, a draft claim on the Medicare payer, and return the
-/// claim JSON. Leaves the account/claim in `draft`.
+/// Build a posted account and a draft claim on the Medicare payer.
 async fn draft_medicare_claim(r: &Router, a: &Actor, p: Uuid, visit: Uuid) -> Value {
+    draft_medicare_claim_for_policy(r, a, p, visit, "self", "Avery Synthetic").await
+}
+
+async fn draft_medicare_claim_for_policy(
+    r: &Router,
+    a: &Actor,
+    p: Uuid,
+    visit: Uuid,
+    relationship: &str,
+    subscriber_name: &str,
+) -> Value {
     let payer = ok(
         r,
         a,
@@ -328,7 +338,7 @@ async fn draft_medicare_claim(r: &Router, a: &Actor, p: Uuid, visit: Uuid) -> Va
         a,
         "POST",
         &format!("/api/v1/patients/{p}/coverages"),
-        json!({"request_id":Uuid::new_v4(),"content":{"payer_id":id(&payer),"priority":"primary","status":"active","member_id":"SYN-MEMBER","group_number":"SYN-GROUP","plan_name":"Synthetic plan","subscriber_name":"Avery Synthetic","subscriber_birth_date":"1990-01-01","relationship":"self","effective_date":"2026-01-01","end_date":null,"copay_cents":null,"verification":"manually_verified","notes":"Synthetic"},"reason":"Synthetic coverage"}),
+        json!({"request_id":Uuid::new_v4(),"content":{"payer_id":id(&payer),"priority":"primary","status":"active","member_id":"SYN-MEMBER","group_number":"SYN-GROUP","plan_name":"Synthetic plan","subscriber_name":subscriber_name,"subscriber_birth_date":"1990-01-01","relationship":relationship,"effective_date":"2026-01-01","end_date":null,"copay_cents":null,"verification":"manually_verified","notes":"Synthetic"},"reason":"Synthetic coverage"}),
         None,
     )
     .await;
@@ -398,6 +408,190 @@ fn x12_details() -> Value {
     })
 }
 
+async fn synthetic_trading_partner(r: &Router, a: &Actor) -> Value {
+    ok(
+        r,
+        a,
+        "POST",
+        "/api/v1/billing/clearinghouses",
+        json!({"request_id":Uuid::new_v4(),"content":{"name":"Synthetic transport","active":true,"sender_qualifier":"ZZ","sender_id":"SYN-SEND","receiver_qualifier":"ZZ","receiver_id":"SYN-RECV","application_sender":"SYN-SEND","application_receiver":"SYN-RECV","submitter_name":"Synthetic Clinic","submitter_id":"SYN-CLINIC","receiver_name":"Synthetic Receiver","receiver_identifier":"SYN-R","contact_name":"Synthetic Contact","contact_phone":"5125550101","usage":"T","guide_reference":"Synthetic contract"},"reason":"Synthetic partner"}),
+        None,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn matching_self_policyholder_correction_preserves_posted_sources_and_releases_correct_packet(
+) {
+    let (db, a, p, visit, _) = setup(TAXONOMY, 1).await;
+    let r = app(db.clone());
+    let draft =
+        draft_medicare_claim_for_policy(&r, &a, p, visit, "other", "synthetic, avery").await;
+    let claim_id = id(&draft);
+    let account_id = Uuid::parse_str(draft["account_id"].as_str().unwrap()).unwrap();
+    let path = format!("/api/v1/billing/claims/{claim_id}");
+    let actions = format!("{path}/actions");
+    let mut content = draft["content"].clone();
+    content["subscriber_address"] = json!("");
+    content["encounter"] = json!({"prior_authorization_number":"SYN-PA-123"});
+    let draft = ok(
+        &r,
+        &a,
+        "PUT",
+        &path,
+        json!({"content":content,"reason":"Synthetic authorization before correction"}),
+        Some(version(&draft)),
+    )
+    .await;
+    let read_sources = || {
+        sqlx::query_scalar::<_, Value>(
+            "SELECT jsonb_build_object('account',to_jsonb(b),'coverage',to_jsonb(c),'demographics',to_jsonb(d),
+             'ledger',(SELECT jsonb_agg(to_jsonb(e) ORDER BY e.id) FROM billing_entries e WHERE e.tenant_id=b.tenant_id AND e.account_id=b.id))
+             FROM billing_accounts b JOIN insurance_coverages c ON c.tenant_id=b.tenant_id AND c.id=b.coverage_id
+             JOIN patient_demographics d ON d.tenant_id=b.tenant_id AND d.patient_id=b.patient_id
+             WHERE b.tenant_id=$1 AND b.id=$2",
+        ).bind(a.tenant_id).bind(account_id)
+    };
+    let sources = read_sources().fetch_one(&db).await.unwrap();
+    let before = ok(&r, &a, "GET", &path, Value::Null, None).await;
+    assert_eq!(before["can_confirm_self_policyholder"], true);
+    let issues = before["preflight_issues"].as_array().unwrap();
+    assert!(issues.contains(&json!("Policy holder relationship must be confirmed")));
+    assert!(issues.contains(&json!("Subscriber address is required")));
+    assert_eq!(
+        call(
+            &r,
+            &a,
+            "POST",
+            &actions,
+            json!({"action":"ready","reason":"Synthetic check"}),
+            Some(version(&draft))
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT,
+    );
+    let confirm = json!({"action":"confirm_self_policyholder","reason":"Confirmed the saved synthetic policy holder and address"});
+    assert_eq!(
+        call(
+            &r,
+            &a,
+            "POST",
+            &actions,
+            confirm.clone(),
+            Some(version(&draft) - 1)
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT,
+    );
+    let corrected = ok(
+        &r,
+        &a,
+        "POST",
+        &actions,
+        confirm.clone(),
+        Some(version(&draft)),
+    )
+    .await;
+    assert_eq!(corrected["status"], "draft");
+    assert_eq!(version(&corrected), version(&draft) + 1);
+    assert_eq!(corrected["control_number"], draft["control_number"]);
+    let coverage_path = "/account/coverage_snapshot/coverage/content/relationship";
+    let mut expected_snapshot = draft["snapshot"].clone();
+    *expected_snapshot.pointer_mut(coverage_path).unwrap() = json!("self");
+    assert_eq!(corrected["snapshot"], expected_snapshot);
+    let mut expected_content = draft["content"].clone();
+    expected_content["subscriber_address"] =
+        json!(format!("{PAT_ADDRESS}, {PAT_CITY}, {PAT_STATE} {PAT_ZIP}"));
+    assert_eq!(corrected["content"], expected_content);
+    assert_eq!(read_sources().fetch_one(&db).await.unwrap(), sources);
+    let evidence: Value = sqlx::query_scalar(
+        "SELECT evidence FROM claim_revisions WHERE tenant_id=$1 AND claim_id=$2 AND version=$3",
+    )
+    .bind(a.tenant_id)
+    .bind(claim_id)
+    .bind(version(&corrected))
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(evidence["action"], "confirm_self_policyholder");
+    assert_eq!(evidence["network_transmitted"], false);
+    let detail = ok(&r, &a, "GET", &path, Value::Null, None).await;
+    assert_eq!(detail["can_confirm_self_policyholder"], false);
+    assert_eq!(detail["preflight_issues"], json!([]));
+    assert_eq!(
+        detail["submission_defaults"]["subscriber_address"]["line1"],
+        PAT_ADDRESS
+    );
+    let preview = ok(&r, &a, "GET", &format!("{path}/cms1500"), Value::Null, None).await;
+    let html = preview["message"].as_str().unwrap();
+    assert!(html.contains("PATIENT RELATIONSHIP TO INSURED</label>Self"));
+    assert!(html.contains("SYN-PA-123"));
+    let ready = ok(
+        &r,
+        &a,
+        "POST",
+        &actions,
+        json!({"action":"ready","reason":"Reviewed synthetic correction"}),
+        Some(version(&corrected)),
+    )
+    .await;
+    let partner = synthetic_trading_partner(&r, &a).await;
+    let artifact = ok(
+        &r,
+        &a,
+        "POST",
+        &format!("{path}/837p"),
+        json!({"request_id":Uuid::new_v4(),"partner_id":id(&partner),"partner_version":version(&partner),"details":x12_details(),"reason":"Synthetic correction artifact only"}),
+        Some(version(&ready)),
+    )
+    .await;
+    let payload: String =
+        sqlx::query_scalar("SELECT payload FROM edi_submissions WHERE tenant_id=$1 AND id=$2")
+            .bind(a.tenant_id)
+            .bind(id(&artifact))
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert!(payload.contains("SBR*P*18*"));
+    assert!(payload.contains("REF*G1*SYN-PA-123~"));
+    assert_eq!(
+        call(&r, &a, "POST", &actions, confirm, Some(version(&ready)))
+            .await
+            .0,
+        StatusCode::CONFLICT,
+    );
+    db.close().await;
+}
+
+#[tokio::test]
+async fn a_different_policyholder_cannot_be_marked_as_the_patient() {
+    let (db, a, p, visit, _) = setup(TAXONOMY, 1).await;
+    let r = app(db.clone());
+    let draft =
+        draft_medicare_claim_for_policy(&r, &a, p, visit, "other", "Different Synthetic").await;
+    let path = format!("/api/v1/billing/claims/{}", id(&draft));
+    let before = ok(&r, &a, "GET", &path, Value::Null, None).await;
+    assert_eq!(before["can_confirm_self_policyholder"], false);
+    assert_eq!(
+        call(
+            &r,
+            &a,
+            "POST",
+            &format!("{path}/actions"),
+            json!({"action":"confirm_self_policyholder","reason":"Synthetic mismatch"}),
+            Some(version(&draft)),
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT,
+    );
+    let after = ok(&r, &a, "GET", &path, Value::Null, None).await;
+    assert_eq!(after["claim"], before["claim"]);
+    db.close().await;
+}
+
 #[tokio::test]
 async fn submission_defaults_prefill_taxonomy_facility_address_and_filing_indicator() {
     let (db, a, p, visit, cookie) = setup(TAXONOMY, 1).await;
@@ -465,15 +659,7 @@ async fn submission_defaults_prefill_taxonomy_facility_address_and_filing_indica
         Some(version(&claim)),
     )
     .await;
-    let partner = ok(
-        &r,
-        &a,
-        "POST",
-        "/api/v1/billing/clearinghouses",
-        json!({"request_id":Uuid::new_v4(),"content":{"name":"Synthetic transport","active":true,"sender_qualifier":"ZZ","sender_id":"SYN-SEND","receiver_qualifier":"ZZ","receiver_id":"SYN-RECV","application_sender":"SYN-SEND","application_receiver":"SYN-RECV","submitter_name":"Synthetic Clinic","submitter_id":"SYN-CLINIC","receiver_name":"Synthetic Receiver","receiver_identifier":"SYN-R","contact_name":"Synthetic Contact","contact_phone":"5125550101","usage":"T","guide_reference":"Synthetic contract"},"reason":"Synthetic partner"}),
-        None,
-    )
-    .await;
+    let partner = synthetic_trading_partner(&r, &a).await;
     let artifact = ok(
         &r,
         &a,
