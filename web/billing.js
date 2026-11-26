@@ -1622,7 +1622,14 @@ document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||
  if(f.id==='billing-filter'){await showBillingQueue(data.status,undefined,true);return;}
  if(f.id==='coverage-payer-form'){const payer=await api('/api/v1/billing/payers','POST',{request_id:f.dataset.request,source_history_id:null,content:{name:data.name,payer_code:data.payer_code,phone:data.phone,address:data.address,active:true},reason:'Created while recording patient coverage'});billingPayers.push(payer);billingPayers.sort((a,b)=>a.content.name.localeCompare(b.content.name));coveragePayerSelected(payer);$('coverage-payer-setup').innerHTML='<div class="mapping-notice"><b>Insurance company added and chosen</b><p>Finish the coverage details, then save the coverage.</p></div>';notice('Insurance company added and chosen for this coverage.');return;}
  if(f.id==='payer-form'){const reason=data.reason;delete data.reason;data.active=data.active==='true';const body={content:data,reason};if(!f.dataset.id){body.request_id=f.dataset.request;body.source_history_id=f.dataset.source||null;}await api(`/api/v1/billing/payers${f.dataset.id?'/'+f.dataset.id:''}`,f.dataset.id?'PUT':'POST',body,f.dataset.id?Number(f.dataset.version):undefined);await showBillingQueue(billingQueueStatus,undefined,true);notice('Insurer saved.');return;}
- if(f.id==='coverage-form'){const reason=data.reason;delete data.reason;if(!data.status)data.status='active';data.subscriber_birth_date=data.subscriber_birth_date||null;data.end_date=data.end_date||null;data.copay_cents=cents(data.copay,true);delete data.copay;const body={content:data,reason};if(!f.dataset.id){body.request_id=f.dataset.request;body.source_history_id=f.dataset.source||null;}await api(`/api/v1/patients/${selected}/coverages${f.dataset.id?'/'+f.dataset.id:''}`,f.dataset.id?'PUT':'POST',body,f.dataset.id?Number(f.dataset.version):undefined);}
+ if(f.id==='coverage-form'){
+  if(!data.payer_id){
+   f.elements.payer_name?.focus?.();
+   throw new Error('Choose an insurance company from the matching results before saving.');
+  }
+  // The search label is only for display. Coverage records identify the insurer by payer_id.
+  delete data.payer_name;
+  const reason=data.reason;delete data.reason;if(!data.status)data.status='active';data.subscriber_birth_date=data.subscriber_birth_date||null;data.end_date=data.end_date||null;data.copay_cents=cents(data.copay,true);delete data.copay;const body={content:data,reason};if(!f.dataset.id){body.request_id=f.dataset.request;body.source_history_id=f.dataset.source||null;}await api(`/api/v1/patients/${selected}/coverages${f.dataset.id?'/'+f.dataset.id:''}`,f.dataset.id?'PUT':'POST',body,f.dataset.id?Number(f.dataset.version):undefined);}
   // A record from the previous system still becomes a draft through one reviewed step; the
  // reason and the acknowledgement travel with it. Editing a draft saves itself.
  if(f.id==='billing-account-form'){

@@ -369,7 +369,7 @@ const settle=async()=>{for(let step=0;step<40;step++)await new Promise(resolve=>
   ctx.asker=asker;vm.runInContext('confirmAction=(message,options)=>asker(message,options)',ctx);
   click(openForm().querySelector('.charge-table-next button'));await settle();await ctx.pending;await settle();
   vm.runInContext('confirmAction=async()=>true',ctx);
-  assert.deepEqual(asked,[['Charges of $280.00 become final and the claim is sent once it is ready.','Post these charges?','Post charges and send claim']],'one plain ask, naming the send that follows, and only before anything is sent');
+  assert.deepEqual(asked,[['Charges of $280.00 become final. Review and submit the claim on the Claim.MD form.','Post these charges?','Post charges']],'posting confirms charges; sending is confirmed on the Claim.MD form');
   const posts=()=>ctx.sent.filter(call=>String(call[0]).endsWith('/actions'));
   assert.deepEqual(posts().map(call=>[call[0],call[1],JSON.stringify(call[2]),call[3]]),[['/api/v1/patients/patient/billing/accounts/account/actions','POST','{"action":"post","reason":"Charges posted","local_only":false}',2]],'the lower form\'s endpoint, action, a default reason and the account version');
   assert.ok(ctx.sent.some(call=>call[0]==='rerender'),'the encounter is reopened the way the lower form reopens it');

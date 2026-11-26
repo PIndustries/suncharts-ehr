@@ -6,8 +6,8 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 const {visitSummary}=require('./visit_billing_fixture.cjs');
 
 // The review-and-send panel: the checks it shows and how it classifies them, the one button
-// that runs post → prepare → ready → send, a failure stopping the chain where it happened,
-// and sending with an unsigned note only after the tick. Every API call is recorded; nothing
+// that runs post → prepare → ready → the native review form, a failure stopping the chain,
+// and continuing with an unsigned note only after the tick. Every API call is recorded; nothing
 // here talks to a real server and every value is synthetic.
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const nodes={},handlers={},sent=[];
@@ -45,13 +45,17 @@ const ctx={console,Date,Intl,URL,Map,Set,Array,Math,Number,String,JSON,encodeURI
  showEncounterClaim:async()=>{},claimEditor(){},captureClaimDraft(){},openEncounterCharges(){ctx.chargesOpened=(ctx.chargesOpened||0)+1;},
  api:async(path,method='GET',body,version)=>{
    sent.push({path,method,body:body?JSON.parse(JSON.stringify(body)):null,version});
-   if(path.endsWith('/actions')&&method==='POST'){if(body&&body.action==='post'){setAccount({...account,status:'posted',version:account.version+1});return account;}if(ctx.failAt==='ready')throw new Error('The claim changed since you opened it');claim={...claim,status:'ready',version:claim.version+1};return claim;}
-   if(path.endsWith('/837p')){if(ctx.failAt==='send')throw new Error('Claim.MD is not connected');return {id:'submission',version:1};}
-   if(path.endsWith('/delivery'))return {submission:{id:'submission'}};
+   if(path.endsWith('/actions')&&method==='POST'){if(body&&body.action==='post')return {...account,status:'posted',version:account.version+1};if(ctx.failAt==='ready')throw new Error('The claim changed since you opened it');claim={...claim,status:'ready',version:claim.version+1};return claim;}
    if(/\/claims\/claim$/.test(path))return {claim,preflight_issues:ctx.preflight||[],transport:{routes:[{provider:'claim_md',route_key:'claimmd'}]}};
    if(path.endsWith('/claims/prepare'))return {outcome:'prepared',claim_id:'claim',issues:[]};
    if(path.endsWith('/visit-summary'))return reviewSummary();
    throw new Error('Unexpected API '+path);
+ },
+ async openEncounterClaimMdSubmit(id,accountId){
+  const fresh=await ctx.api('/api/v1/billing/claims/'+id);
+  assert.equal(fresh.claim.status,'ready');
+  ctx.nativeReview={id,accountId,version:fresh.claim.version};
+  return true;
  }};
 vm.createContext(ctx);
 vm.runInContext('const billingBase=()=>"/api/v1/patients/"+selected+"/billing/accounts";',ctx);
@@ -68,7 +72,7 @@ const click=dataset=>{
  for(const handler of handlers.click)handler({target:{closest:selector=>selector==='button'?button:null},preventDefault(){}});
  return button;};
  // The summary's money lines come from the account in hand, the way /visit-summary fills them.
-const runChain=(claimId,options={})=>vm.runInContext('visitReviewRun',ctx)(claimId,{afterPost:()=>{setAccount({...account,status:'posted',version:account.version+1});showOnScreen(reviewSummary());},afterSend:()=>{},quietRefresh:true,confirmPost:true,...options});
+const runChain=(claimId,options={})=>vm.runInContext('visitReviewRun',ctx)(claimId,{confirmPost:true,...options});
 // A post from the panel is the same call the lower form makes; without it the chain posts nothing.
 // The state the encounter is in before anything has been posted or prepared; visit-summary gives
 // it no claim yet, and the practice's own details come from its billing setup, not a claim.
@@ -88,7 +92,7 @@ function reviewSummary(overrides={}){
 const showOnScreen=summary=>{reviewState().data={summary};reviewState().reviewCard=summary;};
 const panelHost=()=>node('visit-billing-review');
 const openPanel=(summary,ctxArgs={})=>{showOnScreen(summary);vm.runInContext('visitReviewOpen',ctx)(ctxArgs);};
-const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.failAt=null;ctx.preflight=null;setAccount(accountOf());claim=claimFilled();ctx.unsigned=false;};
+const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.failAt=null;ctx.preflight=null;ctx.nativeReview=null;setAccount(accountOf());claim=claimFilled();ctx.unsigned=false;};
 (async()=>{
  // ---- Classification: what must be put right, what is only worth a look ----
  claim={...claim,status:'ready'};
@@ -148,39 +152,35 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
  assert.equal(ctx.failed,null,ctx.failed);assert.equal(ran,true);
  assert.deepEqual(sent.map(c=>[c.path,c.method]).filter((c,i,a)=>!(c[0]==='/api/v1/billing/claims/claim'&&c[1]==='GET'&&a.some((p,j)=>j<i&&p[0]===c[0]&&p[1]==='GET'))),[
   ['/api/v1/billing/claims/claim','GET'],
-  ['/api/v1/billing/claims/claim/actions','POST'],
-  ['/api/v1/billing/claims/claim/837p','POST'],
-  ['/api/v1/billing/submissions/submission/delivery','POST']],
-  'the claim is read, released, submitted, then delivered, in that order');
- assert.equal(sent.filter(c=>c.path==='/api/v1/billing/claims/claim'&&c.method==='GET').length,2,'the claim is read once before the check step and once as that step');
+  ['/api/v1/billing/claims/claim/actions','POST']],
+  'the claim is read and released before opening the native confirmation form');
+ assert.equal(sent.filter(c=>c.path==='/api/v1/billing/claims/claim'&&c.method==='GET').length,3,'the native form reads the released claim');
+ assert.deepEqual(ctx.nativeReview,{id:'claim',accountId:'account',version:3});
  const ready=sent.find(c=>c.path.endsWith('/actions'));
  assert.equal(ready.body.action,'ready');assert.equal(ready.version,2,'release carries the claim version it read');
- assert.ok(/^req-/.test(sent.find(c=>c.path.endsWith('/837p')).body.request_id),'the submission carries one request id');
- assert.equal(sent.find(c=>c.path.endsWith('/delivery')).body.route_key,'claimmd','delivered over the Claim.MD route');
+ assert.equal(sent.filter(c=>c.path.endsWith('/837p')||c.path.endsWith('/delivery')).length,0,'opening the form never generates or queues a claim');
 
  // The whole chain from a draft account: post first, with the server's version.
  reset();setAccount(accountOf({status:'draft'}));ctx.unsigned=false;
  showOnScreen(postSummary());
- vm.runInContext('visitReviewRun',ctx)(claim.id,{needPost:true,needPrepare:false,allowUnsigned:true,quietRefresh:true,confirmPost:true}).then(r=>{ctx.chainRan=r;},e=>{ctx.chainErr=e.message;});await settle();
+ vm.runInContext('visitReviewRun',ctx)(claim.id,{needPost:true,needPrepare:false,allowUnsigned:true,confirmPost:true}).then(r=>{ctx.chainRan=r;},e=>{ctx.chainErr=e.message;});await settle();
  ran=ctx.chainRan;
  assert.equal(ran,true,ctx.failed||JSON.stringify(sent));
+ assert.equal(ctx.workspace.billing.accounts[0].status,'posted','the client applies the posting response before native review');
  const paths=sent.filter(c=>!c.path.includes('/visit-summary')).map(c=>[c.path,c.method]);
  assert.equal(paths[0][0],'/api/v1/patients/patient/billing/accounts/account/actions');assert.equal(paths[0][1],'POST');
  assert.deepEqual(paths.slice(1).filter((c,i,a)=>!(c[1]==='GET'&&i>0&&a[i-1][0]===c[0])),[
   ['/api/v1/billing/claims/claim','GET'],
   ['/api/v1/billing/claims/claim/actions','POST'],
-  ['/api/v1/billing/claims/claim/837p','POST'],
-  ['/api/v1/billing/submissions/submission/delivery','POST']],
-  'post comes first, then the claim the server filled in is read back, released, submitted and delivered');
+  ['/api/v1/billing/claims/claim','GET']],
+  'post comes first, then release the claim and open the current native confirmation form');
  assert.equal(sent[0].body.action,'post');assert.equal(sent[0].version,4,'the post carries the account version');
  assert.ok(sent[0].body.reason.trim().length>0&&sent[0].body.reason.length<=1000,'the post carries a reason');
   // A chain that cannot find its claim stops where it is and sends nothing onward.
   reset();setAccount(accountOf({status:'draft'}));showOnScreen(postSummary());
   // The server prepares nothing: after the post the screen still shows no claim for this encounter.
   vm.runInContext("var _api=api;api=async(p,m,b,v)=>{if(p.indexOf('/claims/prepare')>=0)return {outcome:'not_prepared',issues:['no charges to claim']};return _api(p,m,b,v);}",ctx);
-  const gone=reviewSummary({claim:null});
-  ran=await vm.runInContext('visitReviewRun',ctx)(null,{needPost:true,needPrepare:true,allowUnsigned:true,quietRefresh:true,confirmPost:true,
-    afterPost:()=>{setAccount({...account,status:'posted',version:account.version+1});showOnScreen(gone);},afterSend:()=>{}});
+   ran=await vm.runInContext('visitReviewRun',ctx)(null,{needPost:true,needPrepare:true,allowUnsigned:true,confirmPost:true});
   vm.runInContext('api=_api',ctx);
  assert.equal(ran,false,'a chain that cannot find its claim stops');
  assert.equal(sent.filter(c=>c.path.endsWith('/837p')).length,0,'and the claim is never submitted');
@@ -204,7 +204,7 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
   // The preflight the server refuses is shown and stops the send before any write.
   reset();ctx.preflight=['Rendering provider NPI is missing'];
   openPanel(reviewSummary());
-  ran=await runChain('claim',{needPost:false,needPrepare:false,allowUnsigned:true,quietRefresh:true});
+  ran=await runChain('claim',{needPost:false,needPrepare:false,allowUnsigned:true});
   assert.equal(ran,false,'a refused preflight stops the send');
   assert.equal(sent.filter(c=>c.method==='POST').length,0,'a refused preflight writes nothing');
   assert.match(panelHost().innerHTML,/Nothing more was sent\./,'the panel says so where the person is looking');
@@ -213,7 +213,7 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
 
  // A claim already at Claim.MD is not pushed a second time.
  reset();vm.runInContext('claimHasPreparedSubmission=()=>true',ctx);
- ran=await runChain('claim',{needPost:false,needPrepare:false,allowUnsigned:true,quietRefresh:true});
+ ran=await runChain('claim',{needPost:false,needPrepare:false,allowUnsigned:true});
  assert.equal(ran,false);assert.equal(sent.filter(c=>c.path.endsWith('/837p')).length,0,'no second claim file');
  vm.runInContext('claimHasPreparedSubmission=()=>false',ctx);
 
@@ -227,24 +227,22 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
  click({'visit-review-send':''});await settle();if(ctx.failed)throw new Error(ctx.failed);
  assert.equal(sent.length,0,'an unticked send writes nothing');
  assert.match(panelHost().innerHTML,/note is not signed/,'the panel says what it is waiting for');
-  // Ticking it sends once, and the send says so on its face: the chain posts the draft, fills
-  // the claim in from the encounter, releases it, submits it and asks Claim.MD to deliver it.
+  // The unsigned-note checkbox allows the claim to be prepared for native review.
   panelHost()._q={'[data-note-sign-ack]':{checked:true}};
   click({'visit-review-send':''});await settle();if(ctx.failed)throw new Error(ctx.failed);
-  assert.ok(sent.some(c=>c.path.endsWith('/837p')),'ticked, the send goes through');
-  assert.equal(sent.filter(c=>c.path.endsWith('/837p')).length,1);
+  assert.deepEqual(ctx.nativeReview,{id:'claim',accountId:'account',version:3});
+  assert.equal(sent.filter(c=>c.path.endsWith('/837p')||c.path.endsWith('/delivery')).length,0,'the unsigned-note checkbox is not an authorization to submit');
   assert.deepEqual(sent.filter(c=>!c.path.includes('/visit-summary')).map(c=>[c.path.replace(/^\/api\/v1\/patients\/patient\/billing/,'').replace('/api/v1',''),c.method]),[
    ['/accounts/account/actions','POST'],
    ['/accounts/account/claims/prepare','POST'],
    ['/billing/claims/claim','GET'],
    ['/billing/claims/claim/actions','POST'],
-   ['/billing/claims/claim/837p','POST'],
-   ['/billing/submissions/submission/delivery','POST']],
-   'the whole chain runs from the one press, in order: post, fill in, read the claim back once, release, submit, deliver');
+   ['/billing/claims/claim','GET']],
+   'the chain posts, fills in, reads and releases the claim, then opens the native form');
   // The post from the panel confirms first; a cancelled ask sends nothing.
   reset();ctx.unsigned=true;setAccount(accountOf({status:'draft'}));
   vm.runInContext('confirmAction=async()=>false',ctx);
-  ran=await runChain(claim.id,{needPost:true,needPrepare:false,allowUnsigned:true,quietRefresh:true,confirmPost:true});
+  ran=await runChain(claim.id,{needPost:true,needPrepare:false,allowUnsigned:true,confirmPost:true});
   assert.equal(ran,false,'a cancelled post stops before anything else');
   assert.equal(sent.length,0,'a cancelled ask writes nothing');
   vm.runInContext('delete confirmAction',ctx);

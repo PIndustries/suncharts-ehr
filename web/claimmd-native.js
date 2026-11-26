@@ -109,6 +109,33 @@ async function submitClaimMdForm(form,submitter){
  }finally{unlock();}
 }
 
-document.addEventListener('click',event=>{const journey=event.target.closest('[data-claimmd-journey]');if(journey){event.preventDefault();event.stopImmediatePropagation();run(async()=>{if(journey.dataset.claimmdJourney==='coverage'){await showBillingQueue();document.querySelector('#claimmd-payer-search')?.scrollIntoView({block:'start'});return}if(journey.dataset.claimmdJourney==='remittances'){await showClaimsWorkspace();document.querySelector('#claims-tool .billing-section:last-of-type')?.scrollIntoView({block:'start'});return}if(journey.dataset.claimmdJourney==='claims'){await showClaimsWorkspace();return}document.querySelector('#edi-submission-queue')?.scrollIntoView({block:'start'});});return}const button=event.target.closest('[data-claimmd-submit]');if(!button)return;event.preventDefault();run(async()=>{const context=typeof claimContextSnapshot==='function'?claimContextSnapshot():null,identity=me;if(context)requireClaimContext(context);if(!claimMdConnectionState?.connected)await loadClaimMdConnection();if(identity!==me||context&&!claimContextCurrent(context))return;if(!claimMdConnectionState?.connected)throw new Error('Connect a clearinghouse before sending claims.');const detail=await api(`${claimsBase}/${button.dataset.claimmdSubmit}`);if(identity!==me||context&&!claimContextCurrent(context))return;if(context)requireClaimContext(context,detail.claim);if(detail.claim.id!==button.dataset.claimmdSubmit)throw new Error('The claim that loaded is not the one you opened. Try again.');if(detail.claim.status!=='ready'||typeof claimHasRecordedSubmission==='function'&&claimHasRecordedSubmission(detail)||typeof claimHasPreparedSubmission==='function'&&claimHasPreparedSubmission(detail)){await showClaim(detail.claim.id);notice(`This claim is ${human(detail.claim.status)} and may already have been sent. Check its status before sending again.`);return;}claimCurrent=detail.claim;claimMdSubmitEditor(detail);});});
+async function openClaimMdSubmit(id){
+ const context=typeof claimContextSnapshot==='function'?claimContextSnapshot():null,identity=me;
+ const current=()=>me===identity&&(!context||claimContextCurrent(context));
+ if(context)requireClaimContext(context);
+ if(!claimMdConnectionState?.connected)await loadClaimMdConnection(current);
+ if(!current())return false;
+ if(!claimMdConnectionState?.connected)throw new Error('Connect a clearinghouse before sending claims.');
+ const detail=await api(`${claimsBase}/${encodeURIComponent(id)}`);
+ if(!current())return false;
+ if(detail.claim?.id!==id)throw new Error('The claim that loaded is not the one you opened. Try again.');
+ if(context)requireClaimContext(context,detail.claim);
+ if(detail.claim.status!=='ready'||typeof claimHasRecordedSubmission==='function'&&claimHasRecordedSubmission(detail)||typeof claimHasPreparedSubmission==='function'&&claimHasPreparedSubmission(detail)){
+  await showClaim(id);
+  if(current())notice(`This claim is ${human(detail.claim.status)} and may already have been sent. Check its status before sending again.`);
+  return false;
+ }
+ claimCurrent=detail.claim;
+ if(context)context.claim=id;
+ claimMdSubmitEditor(detail);
+ return true;
+}
+function openEncounterClaimMdSubmit(id,accountId){
+ mountEncounterClaims(accountId);
+ if(typeof billingPartSet==='function')billingPartSet('claim',false);
+ return openClaimMdSubmit(id);
+}
+
+document.addEventListener('click',event=>{const journey=event.target.closest('[data-claimmd-journey]');if(journey){event.preventDefault();event.stopImmediatePropagation();run(async()=>{if(journey.dataset.claimmdJourney==='coverage'){await showBillingQueue();document.querySelector('#claimmd-payer-search')?.scrollIntoView({block:'start'});return}if(journey.dataset.claimmdJourney==='remittances'){await showClaimsWorkspace();document.querySelector('#claims-tool .billing-section:last-of-type')?.scrollIntoView({block:'start'});return}if(journey.dataset.claimmdJourney==='claims'){await showClaimsWorkspace();return}document.querySelector('#edi-submission-queue')?.scrollIntoView({block:'start'});});return}const button=event.target.closest('[data-claimmd-submit]');if(!button)return;event.preventDefault();run(()=>openClaimMdSubmit(button.dataset.claimmdSubmit));});
 
 document.addEventListener('submit',event=>{const form=event.target;if(form.id!=='claimmd-submit-form')return;event.preventDefault();run(()=>submitClaimMdForm(form,event.submitter));});
