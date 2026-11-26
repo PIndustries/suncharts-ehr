@@ -360,7 +360,7 @@ function loadClaimTimelineExtras(claim,options={}){
  const identity=typeof me==='undefined'?null:me;
  if(claimTimelineIdentity!==identity){claimTimelineCache.clear();claimTimelineIdentity=identity;}
  const active=options.connection!==undefined?options.connection:typeof claimMdConnectionState==='undefined'?null:claimMdConnectionState?.active;
- const key=[claim?.id,claim?.patient_id,claim?.account_id,claim?.version,claim?.control_number,claim?.payer_control_number,active?.id].join(':');
+ const key=[claim?.id,claim?.patient_id,claim?.account_id,claim?.version,claim?.control_number,claim?.payer_control_number,active?.id,options.syncClearinghouse!==false].join(':');
  if(options.refresh!==true&&claimTimelineCache.has(key))return claimTimelineCache.get(key);
  const read=fetchClaimTimelineExtras(claim,options,active);
  claimTimelineCache.set(key,read);
@@ -380,7 +380,7 @@ async function fetchClaimTimelineExtras(claim,options,active){
   // must not hide what is already stored, so the read runs either way.
   jobs.push((async()=>{
    let refreshed=true;
-   for(const kind of ['notes','modifications']){
+   for(const kind of options.syncClearinghouse===false?[]:['notes','modifications']){
     try{await apiCall(`/api/v1/billing/claimmd/${active.id}/${kind}/sync`,'POST',{claimmd_id:null});}
     catch{refreshed=false;}
    }

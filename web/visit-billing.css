@@ -782,6 +782,36 @@ dialog.encounter-codes-dialog[open]{display:flex;flex-direction:column}
 .signed-claim-issue{margin:6px 0;color:var(--ink);padding-inline-start:8px;border-inline-start:3px solid var(--warning-line)}
 .signed-claim-issue button{margin:4px}
 
+/* Encounter claim details keep the reason and next step visible above supporting information. */
+.sheet-dialog.signed-claim-dialog{width:min(760px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overscroll-behavior:contain}
+.signed-claim-dialog>.sheet-head{position:sticky;top:0;z-index:2;padding:12px clamp(16px,4vw,28px);background:var(--surface);border-bottom:1px solid var(--line)}
+.signed-claim-dialog>.sheet-head .sheet-close{display:grid;place-items:center;min-width:44px;min-height:44px}
+.signed-claim-dialog>.sheet-body{padding:20px clamp(16px,4vw,28px) 24px;overflow:visible;overflow-wrap:anywhere}
+.signed-claim-identity,.signed-claim-stage,.signed-claim-disclosure{min-width:0}
+.signed-claim-identity p{margin:0}
+.signed-claim-person{font-size:var(--fs-xl);font-weight:700;line-height:1.3}
+.signed-claim-meta,.signed-claim-stage-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,130px),1fr));gap:8px 16px;margin:12px 0}
+.signed-claim-meta dt,.signed-claim-stage-facts dt{font-size:var(--fs-sm);color:var(--muted)}
+.signed-claim-meta dd,.signed-claim-stage-facts dd{font-weight:600;margin:0}
+.signed-claim-stage{margin:16px 0 20px;padding:16px;border:1px solid var(--line);border-radius:10px;background:var(--surface-soft)}
+.signed-claim-stage[data-tone=warning]{border-color:var(--warning-line);background:var(--warning-bg)}
+.signed-claim-stage h4{font-size:var(--fs-lg);margin:0}
+.signed-claim-reason{font-weight:600;white-space:pre-wrap;margin:6px 0 0}
+.signed-claim-next{margin:10px 0 0}
+.signed-claim-stage>button{margin-top:12px}
+.signed-claim-disclosure{border-top:1px solid var(--line)}
+.signed-claim-disclosure>summary{cursor:pointer;font-weight:650;padding:12px 0}
+.signed-claim-disclosure[open]{padding-bottom:12px}
+.signed-claim-disclosure .actions{display:flex;flex-wrap:wrap;gap:8px}
+.signed-claim-dialog :is(.claim-screen-head>div:first-child,.claim-screen-head .claim-status-word,.claim-progress-bar,.claim-progress-now){display:none}
+.signed-claim-dialog .claim-screen-head:not(:has(button)){display:none}
+.signed-claim-dialog[data-signed-claim-read-only] [data-claim-fix-resend]{display:none}
+@media(max-width:560px){
+ .sheet-dialog.signed-claim-dialog{width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}
+ .signed-claim-stage>button{width:100%;min-height:44px}
+}
+
+
 #visit-followup-dialog{width:min(48rem,calc(100% - 2rem));max-height:85dvh;padding:0}
 #visit-followup-dialog .checkout-workspace{padding:0;border:0;box-shadow:none}
 #visit-followup-dialog [data-checkout-tabs]{display:flex;flex-flow:row wrap;gap:.4rem;margin-bottom:1rem}
